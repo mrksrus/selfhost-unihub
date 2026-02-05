@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -56,29 +56,23 @@ const CalendarPage = () => {
   const { data: events = [], isLoading } = useQuery({
     queryKey: ['calendar-events', format(currentMonth, 'yyyy-MM')],
     queryFn: async () => {
+      const response = await api.get<{ events: CalendarEvent[] }>('/calendar/events');
+      if (response.error) throw new Error(response.error);
+      const allEvents = response.data?.events || [];
       const start = startOfMonth(currentMonth);
       const end = endOfMonth(currentMonth);
-      
-      const { data, error } = await supabase
-        .from('calendar_events')
-        .select('*')
-        .gte('start_time', start.toISOString())
-        .lte('start_time', end.toISOString())
-        .order('start_time', { ascending: true });
-      
-      if (error) throw error;
-      return data as CalendarEvent[];
+      return allEvents.filter((e) => {
+        const eventDate = new Date(e.start_time);
+        return eventDate >= start && eventDate <= end;
+      });
     },
   });
 
   // Create event mutation
   const createEvent = useMutation({
     mutationFn: async (event: typeof formData) => {
-      const { error } = await supabase.from('calendar_events').insert({
-        ...event,
-        user_id: user!.id,
-      });
-      if (error) throw error;
+      const response = await api.post('/calendar/events', event);
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['calendar-events'] });
@@ -94,8 +88,8 @@ const CalendarPage = () => {
   // Update event mutation
   const updateEvent = useMutation({
     mutationFn: async ({ id, ...event }: Partial<CalendarEvent> & { id: string }) => {
-      const { error } = await supabase.from('calendar_events').update(event).eq('id', id);
-      if (error) throw error;
+      const response = await api.put(`/calendar/events/${id}`, event);
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['calendar-events'] });
@@ -111,8 +105,8 @@ const CalendarPage = () => {
   // Delete event mutation
   const deleteEvent = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('calendar_events').delete().eq('id', id);
-      if (error) throw error;
+      const response = await api.delete(`/calendar/events/${id}`);
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['calendar-events'] });

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash VARCHAR(255) NOT NULL,
     full_name VARCHAR(255),
     avatar_url TEXT,
+    role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
     is_active BOOLEAN DEFAULT TRUE,
     email_verified BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -153,11 +154,12 @@ CREATE TABLE IF NOT EXISTS email_attachments (
 
 -- Create default admin user (password: admin123 - CHANGE IN PRODUCTION!)
 -- The password hash is for 'admin123' using bcrypt
-INSERT INTO users (id, email, password_hash, full_name, email_verified)
+INSERT INTO users (id, email, password_hash, full_name, email_verified, role)
 VALUES (
     UUID(),
     'admin@unihub.local',
     '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4gIXPq.EgG',
     'Admin User',
-    TRUE
+    TRUE,
+    'admin'
 ) ON DUPLICATE KEY UPDATE email = email;

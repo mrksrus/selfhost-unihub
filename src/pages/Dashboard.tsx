@@ -5,21 +5,20 @@ import { Users, Calendar, Mail, Plus, ArrowRight, Clock } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { format } from 'date-fns';
 
 const Dashboard = () => {
   const { user } = useAuth();
-  const firstName = user?.user_metadata?.full_name?.split(' ')[0] || 'there';
+  const firstName = user?.full_name?.split(' ')[0] || 'there';
 
-  // Fetch contacts count
-  const { data: contactsCount = 0 } = useQuery({
-    queryKey: ['contacts-count'],
+  // Fetch stats
+  const { data: stats } = useQuery({
+    queryKey: ['stats'],
     queryFn: async () => {
-      const { count } = await supabase
-        .from('contacts')
-        .select('*', { count: 'exact', head: true });
-      return count || 0;
+      const response = await api.get<{ contacts: number; upcomingEvents: number; unreadEmails: number }>('/stats');
+      if (response.error) throw new Error(response.error);
+      return response.data || { contacts: 0, upcomingEvents: 0, unreadEmails: 0 };
     },
   });
 
@@ -27,13 +26,13 @@ const Dashboard = () => {
   const { data: upcomingEvents = [] } = useQuery({
     queryKey: ['upcoming-events'],
     queryFn: async () => {
-      const { data } = await supabase
-        .from('calendar_events')
-        .select('*')
-        .gte('start_time', new Date().toISOString())
-        .order('start_time', { ascending: true })
-        .limit(3);
-      return data || [];
+      const response = await api.get<{ events: any[] }>('/calendar/events');
+      if (response.error) throw new Error(response.error);
+      const events = response.data?.events || [];
+      return events
+        .filter((e: any) => new Date(e.start_time) >= new Date())
+        .sort((a: any, b: any) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())
+        .slice(0, 3);
     },
   });
 
@@ -41,24 +40,14 @@ const Dashboard = () => {
   const { data: mailAccountsCount = 0 } = useQuery({
     queryKey: ['mail-accounts-count'],
     queryFn: async () => {
-      const { count } = await supabase
-        .from('mail_accounts')
-        .select('*', { count: 'exact', head: true });
-      return count || 0;
+      const response = await api.get<{ accounts: any[] }>('/mail/accounts');
+      if (response.error) throw new Error(response.error);
+      return response.data?.accounts?.length || 0;
     },
   });
 
-  // Fetch unread emails count
-  const { data: unreadCount = 0 } = useQuery({
-    queryKey: ['unread-emails-count'],
-    queryFn: async () => {
-      const { count } = await supabase
-        .from('emails')
-        .select('*', { count: 'exact', head: true })
-        .eq('is_read', false);
-      return count || 0;
-    },
-  });
+  const contactsCount = stats?.contacts || 0;
+  const unreadCount = stats?.unreadEmails || 0;
 
   const modules = [
     {

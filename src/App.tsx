@@ -11,6 +11,7 @@ import Contacts from "./pages/Contacts";
 import CalendarPage from "./pages/CalendarPage";
 import MailPage from "./pages/MailPage";
 import Settings from "./pages/Settings";
+import AdminUsers from "./pages/AdminUsers";
 import Install from "./pages/Install";
 import NotFound from "./pages/NotFound";
 
@@ -32,6 +33,7 @@ const App = () => (
               <Route path="/calendar" element={<CalendarPage />} />
               <Route path="/mail" element={<MailPage />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/admin/users" element={<AdminUsers />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>

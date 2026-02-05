@@ -7,6 +7,7 @@ import {
   Calendar, 
   Mail, 
   Settings, 
+  Shield,
   LogOut,
   ChevronLeft,
   ChevronRight
@@ -29,7 +30,7 @@ const AppSidebar = () => {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
 
-  const userInitials = user?.user_metadata?.full_name
+  const userInitials = user?.full_name
     ?.split(' ')
     .map((n: string) => n[0])
     .join('')
@@ -106,7 +107,7 @@ const AppSidebar = () => {
 
       <Separator className="bg-sidebar-border" />
 
-      {/* Settings & User */}
+      {/* Settings & Admin */}
       <div className="p-3 space-y-1">
         <NavLink
           to="/settings"
@@ -130,6 +131,30 @@ const AppSidebar = () => {
             )}
           </AnimatePresence>
         </NavLink>
+        {user?.role === 'admin' && (
+          <NavLink
+            to="/admin/users"
+            className={cn(
+              'sidebar-nav-item',
+              location.pathname === '/admin/users' && 'active'
+            )}
+          >
+            <Shield className="h-5 w-5 shrink-0" />
+            <AnimatePresence mode="wait">
+              {!collapsed && (
+                <motion.span
+                  initial={{ opacity: 0, width: 0 }}
+                  animate={{ opacity: 1, width: 'auto' }}
+                  exit={{ opacity: 0, width: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="whitespace-nowrap"
+                >
+                  Admin
+                </motion.span>
+              )}
+            </AnimatePresence>
+          </NavLink>
+        )}
       </div>
 
       <Separator className="bg-sidebar-border" />
@@ -141,7 +166,7 @@ const AppSidebar = () => {
           collapsed ? 'justify-center' : ''
         )}>
           <Avatar className="h-9 w-9 shrink-0">
-            <AvatarImage src={user?.user_metadata?.avatar_url} />
+            <AvatarImage src={user?.avatar_url} />
             <AvatarFallback className="bg-sidebar-accent text-sidebar-foreground text-sm">
               {userInitials}
             </AvatarFallback>
@@ -156,7 +181,7 @@ const AppSidebar = () => {
                 className="flex-1 min-w-0"
               >
                 <p className="text-sm font-medium text-sidebar-foreground truncate">
-                  {user?.user_metadata?.full_name || 'User'}
+                  {user?.full_name || 'User'}
                 </p>
                 <p className="text-xs text-sidebar-foreground/60 truncate">
                   {user?.email}

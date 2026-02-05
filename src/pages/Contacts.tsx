@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -60,25 +60,17 @@ const Contacts = () => {
   const { data: contacts = [], isLoading } = useQuery({
     queryKey: ['contacts'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('contacts')
-        .select('*')
-        .order('is_favorite', { ascending: false })
-        .order('first_name', { ascending: true });
-      
-      if (error) throw error;
-      return data as Contact[];
+      const response = await api.get<{ contacts: Contact[] }>('/contacts');
+      if (response.error) throw new Error(response.error);
+      return response.data?.contacts || [];
     },
   });
 
   // Create contact mutation
   const createContact = useMutation({
     mutationFn: async (contact: typeof formData) => {
-      const { error } = await supabase.from('contacts').insert({
-        ...contact,
-        user_id: user!.id,
-      });
-      if (error) throw error;
+      const response = await api.post('/contacts', contact);
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
@@ -94,8 +86,8 @@ const Contacts = () => {
   // Update contact mutation
   const updateContact = useMutation({
     mutationFn: async ({ id, ...contact }: Partial<Contact> & { id: string }) => {
-      const { error } = await supabase.from('contacts').update(contact).eq('id', id);
-      if (error) throw error;
+      const response = await api.put(`/contacts/${id}`, contact);
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
@@ -110,8 +102,8 @@ const Contacts = () => {
   // Delete contact mutation
   const deleteContact = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('contacts').delete().eq('id', id);
-      if (error) throw error;
+      const response = await api.delete(`/contacts/${id}`);
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
@@ -126,8 +118,8 @@ const Contacts = () => {
   // Toggle favorite mutation
   const toggleFavorite = useMutation({
     mutationFn: async ({ id, is_favorite }: { id: string; is_favorite: boolean }) => {
-      const { error } = await supabase.from('contacts').update({ is_favorite }).eq('id', id);
-      if (error) throw error;
+      const response = await api.put(`/contacts/${id}/favorite`, { is_favorite });
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contacts'] });

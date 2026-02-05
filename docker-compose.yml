@@ -1,7 +1,15 @@
 version: '3.8'
 
+x-db-credentials: &db_credentials
+  # ── Database credentials (single source of truth) ──────────────────
+  # Change these before first launch.
+  MYSQL_DATABASE: unihub
+  MYSQL_USER: unihub
+  MYSQL_PASSWORD: unihub_password_secure_123
+  MYSQL_ROOT_PASSWORD: unihub_root_password_secure_123
+
 services:
-  # UniHub Web Application
+  # ── UniHub Web Application ─────────────────────────────────────────
   unihub-app:
     build:
       context: .
@@ -9,38 +17,37 @@ services:
     container_name: unihub-app
     restart: unless-stopped
     ports:
-      - "${APP_PORT:-3000}:80"
-    environment:
-      - NODE_ENV=production
-      - DATABASE_URL=mysql://${MYSQL_USER:-unihub}:${MYSQL_PASSWORD:-unihub_password}@unihub-mysql:3306/${MYSQL_DATABASE:-unihub}
-      - API_URL=http://unihub-api:4000
-      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
+      # Host port → container port.  Change the left side only.
+      - "3000:80"
     depends_on:
-      unihub-mysql:
+      unihub-api:
         condition: service_healthy
     networks:
       - unihub-network
     volumes:
       - ./data/uploads:/app/uploads
 
-  # MySQL Database
+  # ── MySQL Database ─────────────────────────────────────────────────
   unihub-mysql:
     image: mysql:8.0
     container_name: unihub-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password_change_me}
-      MYSQL_DATABASE: ${MYSQL_DATABASE:-unihub}
-      MYSQL_USER: ${MYSQL_USER:-unihub}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-unihub_password}
-    ports:
-      - "${MYSQL_PORT:-3306}:3306"
+      <<: *db_credentials
     volumes:
       - mysql_data:/var/lib/mysql
       - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
       - ./docker/mysql/conf:/etc/mysql/conf.d:ro
+    #
+    # Default admin account (created on first start by the DB seed):
+    #   Email:    admin@unihub.local
+    #   Password: admin123
+    #
+    # ⚠  Change the admin password after first login:
+    #    Settings → Security → Change Password
+    #
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root_password_change_me}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -48,7 +55,7 @@ services:
     networks:
       - unihub-network
 
-  # Backend API Service (for email sync, notifications, etc.)
+  # ── Backend API (internal only – not exposed to host) ──────────────
   unihub-api:
     build:
       context: .
@@ -56,17 +63,21 @@ services:
     container_name: unihub-api
     restart: unless-stopped
     environment:
-      - NODE_ENV=production
-      - DATABASE_URL=mysql://${MYSQL_USER:-unihub}:${MYSQL_PASSWORD:-unihub_password}@unihub-mysql:3306/${MYSQL_DATABASE:-unihub}
-      - JWT_SECRET=${JWT_SECRET:-your-super-secret-jwt-key-change-in-production}
-      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-your-encryption-key-for-email-credentials}
+      NODE_ENV: production
+      <<: *db_credentials
+      MYSQL_HOST: unihub-mysql
+      MYSQL_PORT: "3306"
+      # ── Required: set a strong, random JWT secret ──────────────────
+      # Generate one with:  openssl rand -base64 48
+      JWT_SECRET: ""
+      # ── Encryption key for stored email passwords ──────────────────
+      # Change this to a random string before first launch.
+      ENCRYPTION_KEY: unihub_encryption_key_change_me
     depends_on:
       unihub-mysql:
         condition: service_healthy
     networks:
       - unihub-network
-    ports:
-      - "${API_PORT:-4000}:4000"
 
 networks:
   unihub-network:

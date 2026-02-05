@@ -1,10 +1,17 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, Session } from '@supabase/supabase-js';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
+
+interface User {
+  id: string;
+  email: string;
+  full_name?: string;
+  avatar_url?: string;
+  role?: 'user' | 'admin';
+}
 
 interface AuthContextType {
   user: User | null;
-  session: Session | null;
+  session: { token: string } | null;
   loading: boolean;
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
@@ -15,55 +22,83 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [session, setSession] = useState<Session | null>(null);
+  const [session, setSession] = useState<{ token: string } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Set up auth state listener FIRST
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
+    // Check for existing session
+    const token = localStorage.getItem('auth_token');
+    if (token) {
+      api.setToken(token);
+      // Verify token and get user info
+      api.get<{ user: User }>('/auth/me').then((response) => {
+        if (response.data?.user) {
+          setUser(response.data.user);
+          setSession({ token });
+        } else {
+          // Invalid token, clear it
+          api.setToken(null);
+          setUser(null);
+          setSession(null);
+        }
         setLoading(false);
-      }
-    );
-
-    // THEN check for existing session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
+      }).catch(() => {
+        api.setToken(null);
+        setUser(null);
+        setSession(null);
+        setLoading(false);
+      });
+    } else {
       setLoading(false);
-    });
-
-    return () => subscription.unsubscribe();
+    }
   }, []);
 
   const signUp = async (email: string, password: string, fullName: string) => {
-    const redirectUrl = `${window.location.origin}/`;
-    
-    const { error } = await supabase.auth.signUp({
+    const response = await api.post<{ token: string; user: User }>('/auth/signup', {
       email,
       password,
-      options: {
-        emailRedirectTo: redirectUrl,
-        data: {
-          full_name: fullName,
-        },
-      },
+      full_name: fullName,
     });
-    return { error: error as Error | null };
+
+    if (response.error) {
+      return { error: new Error(response.error) };
+    }
+
+    if (response.data?.token && response.data?.user) {
+      api.setToken(response.data.token);
+      setUser(response.data.user);
+      setSession({ token: response.data.token });
+      return { error: null };
+    }
+
+    return { error: new Error('Failed to sign up') };
   };
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
+    const response = await api.post<{ token: string; user: User }>('/auth/signin', {
       email,
       password,
     });
-    return { error: error as Error | null };
+
+    if (response.error) {
+      return { error: new Error(response.error) };
+    }
+
+    if (response.data?.token && response.data?.user) {
+      api.setToken(response.data.token);
+      setUser(response.data.user);
+      setSession({ token: response.data.token });
+      return { error: null };
+    }
+
+    return { error: new Error('Failed to sign in') };
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
+    await api.post('/auth/signout');
+    api.setToken(null);
+    setUser(null);
+    setSession(null);
   };
 
   return (

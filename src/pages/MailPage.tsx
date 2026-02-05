@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
+import { api } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -85,13 +85,9 @@ const MailPage = () => {
   const { data: accounts = [], isLoading: accountsLoading } = useQuery({
     queryKey: ['mail-accounts'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('mail_accounts')
-        .select('*')
-        .order('created_at', { ascending: true });
-      
-      if (error) throw error;
-      return data as MailAccount[];
+      const response = await api.get<{ accounts: MailAccount[] }>('/mail/accounts');
+      if (response.error) throw new Error(response.error);
+      return response.data?.accounts || [];
     },
   });
 
@@ -101,22 +97,16 @@ const MailPage = () => {
     queryFn: async () => {
       if (!selectedAccount) return [];
       
-      let query = supabase
-        .from('emails')
-        .select('*')
-        .eq('mail_account_id', selectedAccount)
-        .order('received_at', { ascending: false });
+      const folder = selectedFolder === 'starred' ? 'inbox' : selectedFolder;
+      const response = await api.get<{ emails: Email[] }>(`/mail/emails?account_id=${selectedAccount}&folder=${folder}`);
+      if (response.error) throw new Error(response.error);
+      let emails = response.data?.emails || [];
       
       if (selectedFolder === 'starred') {
-        query = query.eq('is_starred', true);
-      } else {
-        query = query.eq('folder', selectedFolder);
+        emails = emails.filter(e => e.is_starred);
       }
       
-      const { data, error } = await query.limit(50);
-      
-      if (error) throw error;
-      return data as Email[];
+      return emails;
     },
     enabled: !!selectedAccount,
   });
@@ -124,13 +114,12 @@ const MailPage = () => {
   // Add mail account mutation
   const addAccount = useMutation({
     mutationFn: async (account: typeof accountForm) => {
-      const { error } = await supabase.from('mail_accounts').insert({
+      const response = await api.post('/mail/accounts', {
         ...account,
-        user_id: user!.id,
         imap_port: 993,
         smtp_port: 587,
       });
-      if (error) throw error;
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
@@ -153,8 +142,8 @@ const MailPage = () => {
   // Delete account mutation
   const deleteAccount = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('mail_accounts').delete().eq('id', id);
-      if (error) throw error;
+      const response = await api.delete(`/mail/accounts/${id}`);
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
@@ -167,8 +156,8 @@ const MailPage = () => {
   // Toggle star mutation
   const toggleStar = useMutation({
     mutationFn: async ({ id, is_starred }: { id: string; is_starred: boolean }) => {
-      const { error } = await supabase.from('emails').update({ is_starred }).eq('id', id);
-      if (error) throw error;
+      const response = await api.put(`/mail/emails/${id}/star`, { is_starred });
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
@@ -178,8 +167,8 @@ const MailPage = () => {
   // Mark as read mutation
   const markAsRead = useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('emails').update({ is_read: true }).eq('id', id);
-      if (error) throw error;
+      const response = await api.put(`/mail/emails/${id}/read`, { is_read: true });
+      if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });

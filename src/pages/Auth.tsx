@@ -87,8 +87,8 @@ const Auth = () => {
       });
     } else {
       toast({
-        title: 'Check your email',
-        description: 'We sent you a confirmation link. Please check your email to complete registration.',
+        title: 'Account created',
+        description: "You're signed in. Welcome!",
       });
     }
   };
