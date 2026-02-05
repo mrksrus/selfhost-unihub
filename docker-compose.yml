@@ -16,7 +16,7 @@ services:
   #
   unihub:
     image: ghcr.io/mrksrus/unify-self-host:latest
-    build: .                          # Remove this line on TrueNAS / when using pre-built images
+    # build: .                          # Remove this line on TrueNAS / when using pre-built images
     container_name: unihub
     restart: unless-stopped
     ports:
