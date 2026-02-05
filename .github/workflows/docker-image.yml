@@ -1,4 +1,4 @@
-name: Build and Push Docker Images
+name: Build and Push Docker Image
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: mrksrus/unify-self-host
+  IMAGE_NAME: mrksrus/unify-self-host
 
 jobs:
   build-and-push:
@@ -27,40 +27,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── Frontend (Nginx + built React app) ──────────────────────
-      - name: Extract metadata (app)
-        id: meta-app
+      - name: Extract metadata
+        id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-app
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=latest
             type=sha,prefix=
 
-      - name: Build and push app image
+      - name: Build and push image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: true
-          tags: ${{ steps.meta-app.outputs.tags }}
-          labels: ${{ steps.meta-app.outputs.labels }}
-
-      # ── Backend API (Node.js) ───────────────────────────────────
-      - name: Extract metadata (api)
-        id: meta-api
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-api
-          tags: |
-            type=raw,value=latest
-            type=sha,prefix=
-
-      - name: Build and push api image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile.api
-          push: true
-          tags: ${{ steps.meta-api.outputs.tags }}
-          labels: ${{ steps.meta-api.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

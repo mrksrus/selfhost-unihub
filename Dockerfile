@@ -1,35 +1,47 @@
-# Build stage
-FROM node:20-alpine AS builder
+# ── Stage 1: Build the React frontend ──────────────────────────────
+FROM node:20-alpine AS frontend-builder
 
-WORKDIR /app
+WORKDIR /build
 
-# Copy package files
 COPY package*.json ./
+RUN npm ci
 
-# Install dependencies
-RUN npm install
-
-# Copy source files
 COPY . .
-
-# Build the application
 RUN npm run build
 
-# Production stage
-FROM nginx:alpine
+# ── Stage 2: Production image (Nginx + Node.js API) ───────────────
+FROM node:20-alpine
 
-# Copy custom nginx config
+# Install nginx and temporary build deps for native node modules
+RUN apk add --no-cache nginx \
+    && apk add --no-cache --virtual .build-deps python3 make g++
+
+# ── Set up the API ─────────────────────────────────────────────────
+WORKDIR /app
+
+COPY api/package.json ./api/
+RUN cd api && npm install --omit=dev \
+    && apk del .build-deps
+
+COPY api/server.js ./api/
+
+# ── Set up Nginx for the frontend ─────────────────────────────────
 COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf
 
-# Copy built assets from builder stage
-COPY --from=builder /app/dist /usr/share/nginx/html
+# Copy built frontend assets from Stage 1
+COPY --from=frontend-builder /build/dist /usr/share/nginx/html
 
-# Create directory for uploads
-RUN mkdir -p /app/uploads && chown -R nginx:nginx /app/uploads
+# Create uploads directory
+RUN mkdir -p /app/uploads
 
-# Expose port 80
+# Copy startup script
+COPY docker/start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
 EXPOSE 80
 
-# Start nginx
-CMD ["nginx", "-g", "daemon off;"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -q -O /dev/null http://localhost/health || exit 1
+
+CMD ["/app/start.sh"]

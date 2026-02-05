@@ -73,23 +73,191 @@ async function initDatabase() {
     console.error('✗ Missing database configuration. Set DATABASE_URL or MYSQL_* in docker-compose.yml.');
     process.exit(1);
   }
-  try {
-    const dbUrl = new URL(databaseUrl);
-    db = mysql.createPool({
-      host: dbUrl.hostname,
-      port: parseInt(dbUrl.port, 10) || 3306,
-      user: decodeURIComponent(dbUrl.username),
-      password: decodeURIComponent(dbUrl.password),
-      database: dbUrl.pathname.slice(1),
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-    });
-    console.log('✓ Database connected');
-  } catch (error) {
-    console.error('✗ Database connection failed:', error.message);
-    process.exit(1);
+
+  const dbUrl = new URL(databaseUrl);
+  const poolConfig = {
+    host: dbUrl.hostname,
+    port: parseInt(dbUrl.port, 10) || 3306,
+    user: decodeURIComponent(dbUrl.username),
+    password: decodeURIComponent(dbUrl.password),
+    database: dbUrl.pathname.slice(1),
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+  };
+
+  // Retry connection — MySQL may still be starting
+  for (let attempt = 1; attempt <= 15; attempt++) {
+    try {
+      db = mysql.createPool(poolConfig);
+      await db.execute('SELECT 1');
+      console.log('✓ Database connected');
+      break;
+    } catch (error) {
+      // Clean up the failed pool before retrying
+      if (db) { await db.end().catch(() => {}); db = null; }
+      if (attempt === 15) {
+        console.error('✗ Database connection failed after 15 attempts:', error.message);
+        process.exit(1);
+      }
+      console.log(`⏳ Waiting for database (attempt ${attempt}/15)…`);
+      await new Promise(r => setTimeout(r, 3000));
+    }
   }
+
+  await ensureSchema();
+}
+
+// ── Auto-create tables & seed admin user on first run ─────────────
+async function ensureSchema() {
+  console.log('Checking database schema…');
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS users (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    full_name VARCHAR(255),
+    avatar_url TEXT,
+    role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+    is_active BOOLEAN DEFAULT TRUE,
+    email_verified BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_users_email (email),
+    INDEX idx_users_active (is_active)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS sessions (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    token VARCHAR(512) NOT NULL UNIQUE,
+    expires_at TIMESTAMP NOT NULL,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_sessions_token (token),
+    INDEX idx_sessions_user (user_id),
+    INDEX idx_sessions_expires (expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS contacts (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    first_name VARCHAR(100) NOT NULL,
+    last_name VARCHAR(100),
+    email VARCHAR(255),
+    phone VARCHAR(50),
+    company VARCHAR(255),
+    job_title VARCHAR(255),
+    notes TEXT,
+    avatar_url TEXT,
+    is_favorite BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_contacts_user (user_id),
+    INDEX idx_contacts_name (first_name, last_name),
+    INDEX idx_contacts_email (email),
+    INDEX idx_contacts_favorite (user_id, is_favorite)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS calendar_events (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    start_time DATETIME NOT NULL,
+    end_time DATETIME NOT NULL,
+    all_day BOOLEAN DEFAULT FALSE,
+    location VARCHAR(500),
+    color VARCHAR(20) DEFAULT '#22c55e',
+    recurrence VARCHAR(100),
+    reminder_minutes INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_events_user (user_id),
+    INDEX idx_events_start (start_time),
+    INDEX idx_events_user_time (user_id, start_time, end_time)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS mail_accounts (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    email_address VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255),
+    provider VARCHAR(50) NOT NULL,
+    imap_host VARCHAR(255),
+    imap_port INT DEFAULT 993,
+    smtp_host VARCHAR(255),
+    smtp_port INT DEFAULT 587,
+    encrypted_password TEXT,
+    is_active BOOLEAN DEFAULT TRUE,
+    last_synced_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_mail_accounts_user (user_id),
+    INDEX idx_mail_accounts_email (email_address),
+    UNIQUE KEY unique_user_email (user_id, email_address)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS emails (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    mail_account_id CHAR(36) NOT NULL,
+    message_id VARCHAR(500),
+    subject TEXT,
+    from_address VARCHAR(255) NOT NULL,
+    from_name VARCHAR(255),
+    to_addresses JSON NOT NULL,
+    cc_addresses JSON,
+    bcc_addresses JSON,
+    body_text LONGTEXT,
+    body_html LONGTEXT,
+    folder VARCHAR(50) DEFAULT 'inbox',
+    is_read BOOLEAN DEFAULT FALSE,
+    is_starred BOOLEAN DEFAULT FALSE,
+    is_draft BOOLEAN DEFAULT FALSE,
+    has_attachments BOOLEAN DEFAULT FALSE,
+    received_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE,
+    INDEX idx_emails_user (user_id),
+    INDEX idx_emails_account (mail_account_id),
+    INDEX idx_emails_folder (mail_account_id, folder),
+    INDEX idx_emails_date (received_at DESC),
+    INDEX idx_emails_unread (user_id, is_read, received_at DESC),
+    FULLTEXT INDEX ft_emails_search (subject, body_text)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS email_attachments (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    email_id CHAR(36) NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    content_type VARCHAR(100),
+    size_bytes BIGINT,
+    storage_path TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    INDEX idx_attachments_email (email_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  // Seed default admin user if no users exist yet
+  const [rows] = await db.execute('SELECT COUNT(*) as count FROM users');
+  if (rows[0].count === 0) {
+    const adminHash = await hashPassword('admin123');
+    await db.execute(
+      `INSERT INTO users (id, email, password_hash, full_name, email_verified, role)
+       VALUES (UUID(), 'admin@unihub.local', ?, 'Admin User', TRUE, 'admin')`,
+      [adminHash]
+    );
+    console.log('✓ Default admin created (admin@unihub.local / admin123)');
+  }
+
+  console.log('✓ Database schema ready');
 }
 
 // Password hashing
@@ -202,13 +370,13 @@ async function isAdmin(userId) {
   }
 }
 
-// Parse JSON body (max 1000 characters)
-async function parseBody(req) {
+// Parse JSON body (configurable max size, default 1000 chars)
+async function parseBody(req, maxSize = 1000) {
   return new Promise((resolve) => {
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
-      if (body.length > 1000) { resolve(null); return; }
+      if (body.length > maxSize) { resolve(null); return; }
       try {
         resolve(body ? JSON.parse(body) : {});
       } catch {
@@ -216,6 +384,112 @@ async function parseBody(req) {
       }
     });
   });
+}
+
+// ── vCard helpers (3.0, compatible with Google & Apple) ──────────
+function escapeVCard(str) {
+  if (!str) return '';
+  return str.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\n/g, '\\n');
+}
+
+function unescapeVCard(str) {
+  if (!str) return '';
+  return str.replace(/\\n/gi, '\n').replace(/\\;/g, ';').replace(/\\,/g, ',').replace(/\\\\/g, '\\');
+}
+
+function decodeQuotedPrintable(str) {
+  return str.replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function contactToVCard(c) {
+  const lines = ['BEGIN:VCARD', 'VERSION:3.0'];
+  const ln = escapeVCard(c.last_name || '');
+  const fn = escapeVCard(c.first_name || '');
+  lines.push(`N:${ln};${fn};;;`);
+  lines.push(`FN:${escapeVCard([c.first_name, c.last_name].filter(Boolean).join(' '))}`);
+  if (c.email)     lines.push(`EMAIL;TYPE=INTERNET:${escapeVCard(c.email)}`);
+  if (c.phone)     lines.push(`TEL;TYPE=CELL:${escapeVCard(c.phone)}`);
+  if (c.company)   lines.push(`ORG:${escapeVCard(c.company)}`);
+  if (c.job_title) lines.push(`TITLE:${escapeVCard(c.job_title)}`);
+  if (c.notes)     lines.push(`NOTE:${escapeVCard(c.notes)}`);
+  lines.push('END:VCARD');
+  return lines.join('\r\n');
+}
+
+function parseVCards(vcfData) {
+  // Unfold continuation lines (RFC 2425 §5.8.1)
+  const unfolded = vcfData.replace(/\r\n[ \t]/g, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const contacts = [];
+  const blocks = unfolded.split(/(?=BEGIN:VCARD)/i);
+
+  for (const block of blocks) {
+    if (!block.trim().match(/^BEGIN:VCARD/i)) continue;
+    if (!block.match(/END:VCARD/i)) continue;
+
+    const contact = {
+      first_name: '', last_name: null, email: null,
+      phone: null, company: null, job_title: null, notes: null,
+    };
+
+    for (const line of block.split('\n')) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx === -1) continue;
+
+      const propFull = line.substring(0, colonIdx).toUpperCase();
+      let value = line.substring(colonIdx + 1).trim();
+      const propName = propFull.split(';')[0];
+
+      // Handle quoted-printable encoding (used by some Apple exports)
+      if (propFull.includes('ENCODING=QUOTED-PRINTABLE')) {
+        value = decodeQuotedPrintable(value);
+      }
+
+      value = unescapeVCard(value);
+
+      switch (propName) {
+        case 'N': {
+          const parts = value.split(';');
+          contact.last_name = parts[0] || null;
+          contact.first_name = parts[1] || '';
+          break;
+        }
+        case 'FN':
+          // Only use FN as fallback if N wasn't parsed
+          if (!contact.first_name) {
+            const parts = value.split(' ');
+            contact.first_name = parts[0] || '';
+            contact.last_name = parts.slice(1).join(' ') || null;
+          }
+          break;
+        case 'EMAIL':
+          if (!contact.email) contact.email = value;
+          break;
+        case 'TEL':
+          if (!contact.phone) contact.phone = value;
+          break;
+        case 'ORG':
+          contact.company = value.split(';')[0] || null;
+          break;
+        case 'TITLE':
+          contact.job_title = value || null;
+          break;
+        case 'NOTE':
+          contact.notes = value || null;
+          break;
+      }
+    }
+
+    // Must have at least a name
+    if (contact.first_name || contact.last_name) {
+      if (!contact.first_name && contact.last_name) {
+        contact.first_name = contact.last_name;
+        contact.last_name = null;
+      }
+      contacts.push(contact);
+    }
+  }
+
+  return contacts;
 }
 
 // Simple router
@@ -512,6 +786,71 @@ const routes = {
     }
   },
   
+  'GET /api/contacts/export': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const [contacts] = await db.execute(
+        'SELECT * FROM contacts WHERE user_id = ? ORDER BY first_name ASC',
+        [userId]
+      );
+
+      if (contacts.length === 0) {
+        return { error: 'No contacts to export', status: 404 };
+      }
+
+      const vcf = contacts.map(contactToVCard).join('\r\n');
+      return { __raw: vcf, __contentType: 'text/vcard', __filename: 'contacts.vcf' };
+    } catch (error) {
+      console.error('Export error:', error);
+      return { error: 'Failed to export contacts', status: 500 };
+    }
+  },
+
+  'POST /api/contacts/import': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    const { vcf_data } = body;
+    if (!vcf_data || typeof vcf_data !== 'string') {
+      return { error: 'Missing vcf_data field', status: 400 };
+    }
+
+    try {
+      const parsed = parseVCards(vcf_data);
+
+      if (parsed.length === 0) {
+        return { error: 'No valid contacts found in the file. Make sure it is a .vcf (vCard) file.', status: 400 };
+      }
+
+      let imported = 0;
+      const errors = [];
+
+      for (const c of parsed) {
+        try {
+          const contactId = crypto.randomUUID();
+          await db.execute(
+            'INSERT INTO contacts (id, user_id, first_name, last_name, email, phone, company, job_title, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [contactId, userId, c.first_name, c.last_name, c.email, c.phone, c.company, c.job_title, c.notes]
+          );
+          imported++;
+        } catch (err) {
+          const name = [c.first_name, c.last_name].filter(Boolean).join(' ');
+          errors.push(`Failed to import "${name}": ${err.message}`);
+        }
+      }
+
+      return {
+        message: `Imported ${imported} of ${parsed.length} contacts`,
+        imported,
+        total: parsed.length,
+        errors: errors.length > 0 ? errors : undefined,
+      };
+    } catch (error) {
+      console.error('Import error:', error);
+      return { error: 'Failed to import contacts', status: 500 };
+    }
+  },
+
   'PUT /api/contacts/:id/favorite': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
@@ -809,15 +1148,28 @@ async function handleRequest(req, res) {
   
   try {
     const userId = await verifyToken(req.headers.authorization);
-    const body = await parseBody(req);
+
+    // Allow larger bodies for vCard import
+    const maxBodySize = routeKey === 'POST /api/contacts/import' ? 500000 : 1000;
+    const body = await parseBody(req, maxBodySize);
 
     if (body === null) {
       res.writeHead(413, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Request body too large (max 1000 characters)' }));
+      res.end(JSON.stringify({ error: `Request body too large (max ${maxBodySize} characters)` }));
       return;
     }
 
     const result = await handler(req, userId, body);
+
+    // Raw response (used by vCard export)
+    if (result.__raw) {
+      res.writeHead(200, {
+        'Content-Type': result.__contentType || 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${result.__filename || 'download'}"`,
+      });
+      res.end(result.__raw);
+      return;
+    }
     
     const status = result.status || 200;
     delete result.status;

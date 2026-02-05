@@ -1,49 +1,58 @@
-version: '3.8'
-
+# ── Shared database credentials (change before first launch) ──────
 x-db-credentials: &db_credentials
-  # ── Database credentials (single source of truth) ──────────────────
-  # Change these before first launch.
   MYSQL_DATABASE: unihub
   MYSQL_USER: unihub
-  MYSQL_PASSWORD: unihub_password_secure_123
-  MYSQL_ROOT_PASSWORD: unihub_root_password_secure_123
+  MYSQL_PASSWORD: changeme_user_password          # ← CHANGE THIS
 
 services:
-  # ── UniHub Web Application ─────────────────────────────────────────
-  unihub-app:
-    image: ghcr.io/mrksrus/unify-self-host-app:latest
-    container_name: unihub-app
+  # ── UniHub Application (Frontend + API) ─────────────────────────
+  #
+  # Default admin account (created automatically on first start):
+  #   Email:    admin@unihub.local
+  #   Password: admin123
+  #
+  # ⚠  Change the admin password immediately after first login:
+  #    Settings → Security → Change Password
+  #
+  unihub:
+    image: ghcr.io/mrksrus/unify-self-host:latest
+    build: .                          # Remove this line on TrueNAS / when using pre-built images
+    container_name: unihub
     restart: unless-stopped
     ports:
-      # Host port → container port.  Change the left side only.
       - "3000:80"
+    environment:
+      NODE_ENV: production
+      <<: *db_credentials
+      MYSQL_HOST: unihub-mysql
+      MYSQL_PORT: "3306"
+      # ── Required: set a strong, random secret ──────────────────────
+      # Generate one with:  openssl rand -base64 48
+      JWT_SECRET: ""                               # ← REQUIRED – fill this in
+      # ── Encryption key for stored email passwords ──────────────────
+      ENCRYPTION_KEY: changeme_encryption_key      # ← CHANGE THIS
     depends_on:
-      unihub-api:
+      unihub-mysql:
         condition: service_healthy
     networks:
       - unihub-network
     volumes:
-      - ./data/uploads:/app/uploads
+      - uploads_data:/app/uploads
 
-  # ── MySQL Database ─────────────────────────────────────────────────
+  # ── MySQL Database ──────────────────────────────────────────────
   unihub-mysql:
     image: mysql:8.0
     container_name: unihub-mysql
     restart: unless-stopped
     environment:
       <<: *db_credentials
+      MYSQL_ROOT_PASSWORD: changeme_root_password  # ← CHANGE THIS
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max-connections=100
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./docker/mysql/init:/docker-entrypoint-initdb.d:ro
-      - ./docker/mysql/conf:/etc/mysql/conf.d:ro
-    #
-    # Default admin account (created on first start by the DB seed):
-    #   Email:    admin@unihub.local
-    #   Password: admin123
-    #
-    # ⚠  Change the admin password after first login:
-    #    Settings → Security → Change Password
-    #
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
@@ -53,32 +62,12 @@ services:
     networks:
       - unihub-network
 
-  # ── Backend API (internal only – not exposed to host) ──────────────
-  unihub-api:
-    image: ghcr.io/mrksrus/unify-self-host-api:latest
-    container_name: unihub-api
-    restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      <<: *db_credentials
-      MYSQL_HOST: unihub-mysql
-      MYSQL_PORT: "3306"
-      # ── Required: set a strong, random JWT secret ──────────────────
-      # Generate one with:  openssl rand -base64 48
-      JWT_SECRET: ""
-      # ── Encryption key for stored email passwords ──────────────────
-      # Change this to a random string before first launch.
-      ENCRYPTION_KEY: unihub_encryption_key_change_me
-    depends_on:
-      unihub-mysql:
-        condition: service_healthy
-    networks:
-      - unihub-network
-
 networks:
   unihub-network:
     driver: bridge
 
 volumes:
   mysql_data:
+    driver: local
+  uploads_data:
     driver: local

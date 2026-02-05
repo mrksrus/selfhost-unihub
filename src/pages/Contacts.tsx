@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -21,7 +21,9 @@ import {
   Trash2,
   Edit,
   Users,
-  Loader2
+  Loader2,
+  Upload,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -53,6 +55,7 @@ const Contacts = () => {
     job_title: '',
     notes: '',
   });
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Open new contact dialog if linked from dashboard
   useEffect(() => {
@@ -170,6 +173,72 @@ const Contacts = () => {
     }
   };
 
+  const handleExport = async () => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const response = await fetch('/api/contacts/export', {
+        headers: { 'Authorization': `Bearer ${token}` },
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        toast({ title: 'Export failed', description: data.error, variant: 'destructive' });
+        return;
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'contacts.vcf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast({ title: `Exported ${contacts.length} contacts` });
+    } catch (error: any) {
+      toast({ title: 'Export failed', description: error.message, variant: 'destructive' });
+    }
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (fileInputRef.current) fileInputRef.current.value = '';
+
+    if (!file.name.toLowerCase().endsWith('.vcf')) {
+      toast({ title: 'Invalid file', description: 'Please select a .vcf (vCard) file', variant: 'destructive' });
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const response = await api.post<{ message: string; imported: number; total: number; errors?: string[] }>(
+        '/contacts/import',
+        { vcf_data: text }
+      );
+
+      if (response.error) {
+        toast({ title: 'Import failed', description: response.error, variant: 'destructive' });
+        return;
+      }
+
+      const data = response.data!;
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
+      queryClient.invalidateQueries({ queryKey: ['contacts-count'] });
+
+      if (data.errors && data.errors.length > 0) {
+        toast({
+          title: `Imported ${data.imported} of ${data.total} contacts`,
+          description: `${data.errors.length} failed`,
+          variant: 'destructive',
+        });
+      } else {
+        toast({ title: data.message });
+      }
+    } catch (error: any) {
+      toast({ title: 'Import failed', description: error.message, variant: 'destructive' });
+    }
+  };
+
   const filteredContacts = contacts.filter((contact) => {
     const searchLower = searchQuery.toLowerCase();
     return (
@@ -194,16 +263,32 @@ const Contacts = () => {
           <h1 className="text-2xl font-bold text-foreground">Contacts</h1>
           <p className="text-muted-foreground">Manage your contacts in one place</p>
         </div>
-        <Dialog open={isDialogOpen} onOpenChange={(open) => {
-          setIsDialogOpen(open);
-          if (!open) resetForm();
-        }}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Contact
-            </Button>
-          </DialogTrigger>
+        <div className="flex items-center gap-2">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".vcf"
+            className="hidden"
+            onChange={handleImport}
+          />
+          <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()}>
+            <Upload className="h-4 w-4 mr-2" />
+            Import
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleExport} disabled={contacts.length === 0}>
+            <Download className="h-4 w-4 mr-2" />
+            Export
+          </Button>
+          <Dialog open={isDialogOpen} onOpenChange={(open) => {
+            setIsDialogOpen(open);
+            if (!open) resetForm();
+          }}>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Contact
+              </Button>
+            </DialogTrigger>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
               <DialogTitle>{editingContact ? 'Edit Contact' : 'Add New Contact'}</DialogTitle>
@@ -286,6 +371,7 @@ const Contacts = () => {
             </form>
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       {/* Search */}
