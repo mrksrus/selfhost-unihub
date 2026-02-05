@@ -11,9 +11,7 @@ x-db-credentials: &db_credentials
 services:
   # ── UniHub Web Application ─────────────────────────────────────────
   unihub-app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/mrksrus/unify-self-host-app:latest
     container_name: unihub-app
     restart: unless-stopped
     ports:
@@ -57,9 +55,7 @@ services:
 
   # ── Backend API (internal only – not exposed to host) ──────────────
   unihub-api:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
+    image: ghcr.io/mrksrus/unify-self-host-api:latest
     container_name: unihub-api
     restart: unless-stopped
     environment:
