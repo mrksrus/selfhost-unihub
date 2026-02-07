@@ -9,7 +9,10 @@
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "imap-simple": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
-    "mysql2": "^3.11.5"
+    "mailparser": "^3.7.1",
+    "mysql2": "^3.11.5",
+    "nodemailer": "^6.9.16"
   }
 }

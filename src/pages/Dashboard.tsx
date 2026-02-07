@@ -48,6 +48,7 @@ const Dashboard = () => {
 
   const contactsCount = stats?.contacts || 0;
   const unreadCount = stats?.unreadEmails || 0;
+  const upcomingEventsCount = stats?.upcomingEvents ?? upcomingEvents.length;
 
   const modules = [
     {
@@ -64,7 +65,7 @@ const Dashboard = () => {
       description: 'Schedule and organize',
       icon: Calendar,
       href: '/calendar',
-      stat: `${upcomingEvents.length} upcoming events`,
+      stat: `${upcomingEventsCount} upcoming event${upcomingEventsCount !== 1 ? 's' : ''}`,
       color: 'calendar',
       cardClass: 'module-card-calendar',
     },

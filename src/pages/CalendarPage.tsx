@@ -84,6 +84,7 @@ const CalendarPage = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['calendar-events'] });
       queryClient.invalidateQueries({ queryKey: ['upcoming-events'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
       toast({ title: 'Event created successfully' });
       resetForm();
     },
@@ -101,6 +102,7 @@ const CalendarPage = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['calendar-events'] });
       queryClient.invalidateQueries({ queryKey: ['upcoming-events'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
       toast({ title: 'Event updated successfully' });
       resetForm();
     },
@@ -118,6 +120,7 @@ const CalendarPage = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['calendar-events'] });
       queryClient.invalidateQueries({ queryKey: ['upcoming-events'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
       toast({ title: 'Event deleted successfully' });
     },
     onError: (error: Error) => {

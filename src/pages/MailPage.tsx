@@ -5,6 +5,22 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription } from '@/components/ui/dialog';
+import { 
+  AlertDialog, 
+  AlertDialogAction, 
+  AlertDialogCancel, 
+  AlertDialogContent, 
+  AlertDialogDescription, 
+  AlertDialogFooter, 
+  AlertDialogHeader, 
+  AlertDialogTitle 
+} from '@/components/ui/alert-dialog';
+import { 
+  DropdownMenu, 
+  DropdownMenuContent, 
+  DropdownMenuItem, 
+  DropdownMenuTrigger 
+} from '@/components/ui/dropdown-menu';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -17,10 +33,11 @@ import {
   Star, 
   Archive,
   Mail,
-  Settings,
   Loader2,
   RefreshCw,
-  PenSquare
+  PenSquare,
+  MoreVertical,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
@@ -49,11 +66,12 @@ interface Email {
 }
 
 const mailProviders = [
-  { value: 'gmail', label: 'Gmail', imapHost: 'imap.gmail.com', smtpHost: 'smtp.gmail.com' },
-  { value: 'outlook', label: 'Outlook / Hotmail', imapHost: 'outlook.office365.com', smtpHost: 'smtp.office365.com' },
-  { value: 'yahoo', label: 'Yahoo Mail', imapHost: 'imap.mail.yahoo.com', smtpHost: 'smtp.mail.yahoo.com' },
-  { value: 'icloud', label: 'iCloud Mail', imapHost: 'imap.mail.me.com', smtpHost: 'smtp.mail.me.com' },
-  { value: 'custom', label: 'Custom IMAP', imapHost: '', smtpHost: '' },
+  { value: 'gmail', label: 'Gmail', imapHost: 'imap.gmail.com', smtpHost: 'smtp.gmail.com', imapPort: 993, smtpPort: 587 },
+  { value: 'yahoo', label: 'Yahoo Mail', imapHost: 'imap.mail.yahoo.com', smtpHost: 'smtp.mail.yahoo.com', imapPort: 993, smtpPort: 587 },
+  { value: 'icloud', label: 'iCloud Mail', imapHost: 'imap.mail.me.com', smtpHost: 'smtp.mail.me.com', imapPort: 993, smtpPort: 587 },
+  { value: 'outlook', label: 'Outlook / Office 365', imapHost: 'outlook.office365.com', smtpHost: 'smtp.office365.com', imapPort: 993, smtpPort: 587 },
+  { value: 'exchange', label: 'Exchange (On-Premise)', imapHost: '', smtpHost: '', imapPort: 993, smtpPort: 587 },
+  { value: 'custom', label: 'Other (Custom IMAP/SMTP)', imapHost: '', smtpHost: '', imapPort: 993, smtpPort: 587 },
 ];
 
 const folders = [
@@ -71,12 +89,22 @@ const MailPage = () => {
   const [selectedFolder, setSelectedFolder] = useState('inbox');
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
   const [isComposeOpen, setIsComposeOpen] = useState(false);
+  const [accountToDelete, setAccountToDelete] = useState<string | null>(null);
+  const [composeForm, setComposeForm] = useState({
+    to: '',
+    subject: '',
+    body: '',
+  });
   const [accountForm, setAccountForm] = useState({
     email_address: '',
     display_name: '',
     provider: '',
+    username: '',
+    password: '',
     imap_host: '',
     smtp_host: '',
+    imap_port: 993,
+    smtp_port: 587,
   });
 
   // Open compose dialog if linked from dashboard
@@ -123,8 +151,7 @@ const MailPage = () => {
     mutationFn: async (account: typeof accountForm) => {
       const response = await api.post('/mail/accounts', {
         ...account,
-        imap_port: 993,
-        smtp_port: 587,
+        encrypted_password: account.password, // Will be encrypted on server
       });
       if (response.error) throw new Error(response.error);
     },
@@ -137,8 +164,12 @@ const MailPage = () => {
         email_address: '',
         display_name: '',
         provider: '',
+        username: '',
+        password: '',
         imap_host: '',
         smtp_host: '',
+        imap_port: 993,
+        smtp_port: 587,
       });
     },
     onError: (error: Error) => {
@@ -155,8 +186,13 @@ const MailPage = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
       setSelectedAccount(null);
-      toast({ title: 'Mail account removed' });
+      setAccountToDelete(null);
+      toast({ title: 'Mail account and all associated emails deleted' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to delete account', description: error.message, variant: 'destructive' });
     },
   });
 
@@ -180,6 +216,42 @@ const MailPage = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
       queryClient.invalidateQueries({ queryKey: ['unread-emails-count'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+    },
+  });
+  
+  // Sync mail mutation
+  const syncMail = useMutation({
+    mutationFn: async (account_id: string) => {
+      const response = await api.post('/mail/sync', { account_id });
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: () => {
+      toast({ title: 'Syncing emails...' });
+      // Refetch after a delay
+      setTimeout(() => {
+        queryClient.invalidateQueries({ queryKey: ['emails'] });
+        queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      }, 3000);
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to sync', description: error.message, variant: 'destructive' });
+    },
+  });
+  
+  // Send email mutation
+  const sendEmailMutation = useMutation({
+    mutationFn: async (data: { account_id: string; to: string; subject: string; body: string }) => {
+      const response = await api.post('/mail/send', data);
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: () => {
+      toast({ title: 'Email sent successfully' });
+      setIsComposeOpen(false);
+      setComposeForm({ to: '', subject: '', body: '' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to send email', description: error.message, variant: 'destructive' });
     },
   });
 
@@ -190,12 +262,26 @@ const MailPage = () => {
       provider,
       imap_host: providerConfig?.imapHost || '',
       smtp_host: providerConfig?.smtpHost || '',
+      imap_port: providerConfig?.imapPort || 993,
+      smtp_port: providerConfig?.smtpPort || 587,
     });
   };
 
   const handleAddAccount = (e: React.FormEvent) => {
     e.preventDefault();
     addAccount.mutate(accountForm);
+  };
+  
+  const handleSendEmail = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAccount) {
+      toast({ title: 'Please select an account', variant: 'destructive' });
+      return;
+    }
+    sendEmailMutation.mutate({
+      account_id: selectedAccount,
+      ...composeForm,
+    });
   };
 
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
@@ -288,25 +374,80 @@ const MailPage = () => {
                       placeholder="John Doe"
                     />
                   </div>
-                  {accountForm.provider === 'custom' && (
+                  <div className="space-y-2">
+                    <Label htmlFor="username">Username</Label>
+                    <Input
+                      id="username"
+                      value={accountForm.username}
+                      onChange={(e) => setAccountForm({ ...accountForm, username: e.target.value })}
+                      placeholder={accountForm.provider === 'gmail' ? 'Usually your email' : 'IMAP/SMTP username'}
+                      required
+                    />
+                    {(accountForm.provider === 'gmail' || accountForm.provider === 'yahoo') && (
+                      <p className="text-xs text-muted-foreground">
+                        {accountForm.provider === 'gmail' ? 'Use an App Password (not your regular password). Generate one at myaccount.google.com/apppasswords' : 'You may need an App Password for Yahoo Mail'}
+                      </p>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="password">Password</Label>
+                    <Input
+                      id="password"
+                      type="password"
+                      value={accountForm.password}
+                      onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })}
+                      placeholder="Password or App Password"
+                      required
+                    />
+                  </div>
+                  {(accountForm.provider === 'custom' || accountForm.provider === 'exchange') && (
                     <>
+                      {accountForm.provider === 'exchange' && (
+                        <p className="text-xs text-muted-foreground -mt-2 mb-2">
+                          For on-premise Exchange, enter your server hostname (e.g., mail.company.com) and use your domain\username format if required.
+                        </p>
+                      )}
                       <div className="space-y-2">
-                        <Label htmlFor="imap_host">IMAP Host</Label>
+                        <Label htmlFor="imap_host">IMAP/Exchange Server</Label>
                         <Input
                           id="imap_host"
                           value={accountForm.imap_host}
                           onChange={(e) => setAccountForm({ ...accountForm, imap_host: e.target.value })}
-                          placeholder="imap.example.com"
+                          placeholder={accountForm.provider === 'exchange' ? 'mail.company.com' : 'imap.example.com'}
+                          required
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="smtp_host">SMTP Host</Label>
+                        <Label htmlFor="smtp_host">SMTP Server</Label>
                         <Input
                           id="smtp_host"
                           value={accountForm.smtp_host}
                           onChange={(e) => setAccountForm({ ...accountForm, smtp_host: e.target.value })}
-                          placeholder="smtp.example.com"
+                          placeholder={accountForm.provider === 'exchange' ? 'mail.company.com' : 'smtp.example.com'}
+                          required
                         />
+                      </div>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="imap_port">IMAP Port</Label>
+                          <Input
+                            id="imap_port"
+                            type="number"
+                            value={accountForm.imap_port}
+                            onChange={(e) => setAccountForm({ ...accountForm, imap_port: parseInt(e.target.value) || 993 })}
+                            placeholder="993"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="smtp_port">SMTP Port</Label>
+                          <Input
+                            id="smtp_port"
+                            type="number"
+                            value={accountForm.smtp_port}
+                            onChange={(e) => setAccountForm({ ...accountForm, smtp_port: parseInt(e.target.value) || 587 })}
+                            placeholder="587"
+                          />
+                        </div>
                       </div>
                     </>
                   )}
@@ -336,23 +477,35 @@ const MailPage = () => {
               </div>
             ) : (
               accounts.map((account) => (
-                <button
-                  key={account.id}
-                  onClick={() => setSelectedAccount(account.id)}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                    selectedAccount === account.id
-                      ? 'bg-mail/10 text-mail font-medium'
-                      : 'text-muted-foreground hover:bg-muted'
-                  }`}
-                >
-                  <div className="w-8 h-8 rounded-full bg-mail/10 flex items-center justify-center text-mail text-xs font-medium">
-                    {account.email_address[0].toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0 text-left">
-                    <p className="truncate">{account.display_name || account.email_address}</p>
-                    <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
-                  </div>
-                </button>
+                <div key={account.id} className="relative group">
+                  <button
+                    onClick={() => setSelectedAccount(account.id)}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                      selectedAccount === account.id
+                        ? 'bg-mail/10 text-mail font-medium'
+                        : 'text-muted-foreground hover:bg-muted'
+                    }`}
+                  >
+                    <div className="w-8 h-8 rounded-full bg-mail/10 flex items-center justify-center text-mail text-xs font-medium">
+                      {account.email_address[0].toUpperCase()}
+                    </div>
+                    <div className="flex-1 min-w-0 text-left">
+                      <p className="truncate">{account.display_name || account.email_address}</p>
+                      <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
+                    </div>
+                  </button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setAccountToDelete(account.id);
+                    }}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
               ))
             )}
           </div>
@@ -365,11 +518,14 @@ const MailPage = () => {
         <div className="h-14 border-b border-border flex items-center justify-between px-4">
           <h2 className="font-semibold capitalize">{selectedFolder}</h2>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon">
-              <RefreshCw className="h-4 w-4" />
-            </Button>
-            <Button variant="ghost" size="icon">
-              <Settings className="h-4 w-4" />
+            <Button 
+              variant="ghost" 
+              size="icon"
+              onClick={() => selectedAccount && syncMail.mutate(selectedAccount)}
+              disabled={!selectedAccount || syncMail.isPending}
+              title="Refresh emails"
+            >
+              <RefreshCw className={`h-4 w-4 ${syncMail.isPending ? 'animate-spin' : ''}`} />
             </Button>
           </div>
         </div>
@@ -455,13 +611,35 @@ const MailPage = () => {
         </div>
       </div>
 
+      {/* Delete Account Confirmation */}
+      <AlertDialog open={!!accountToDelete} onOpenChange={(open) => !open && setAccountToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Mail Account?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the account and all associated emails from the database. 
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => accountToDelete && deleteAccount.mutate(accountToDelete)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Compose Dialog */}
       <Dialog open={isComposeOpen} onOpenChange={setIsComposeOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>New Message</DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 mt-4">
+          <form onSubmit={handleSendEmail} className="space-y-4 mt-4">
             <div className="space-y-2">
               <Label>From</Label>
               <Select value={selectedAccount || ''} onValueChange={setSelectedAccount}>
@@ -478,30 +656,48 @@ const MailPage = () => {
               </Select>
             </div>
             <div className="space-y-2">
-              <Label>To</Label>
-              <Input placeholder="recipient@example.com" />
+              <Label htmlFor="compose-to">To</Label>
+              <Input 
+                id="compose-to"
+                type="email"
+                placeholder="recipient@example.com"
+                value={composeForm.to}
+                onChange={(e) => setComposeForm({ ...composeForm, to: e.target.value })}
+                required
+              />
             </div>
             <div className="space-y-2">
-              <Label>Subject</Label>
-              <Input placeholder="Enter subject" />
+              <Label htmlFor="compose-subject">Subject</Label>
+              <Input 
+                id="compose-subject"
+                placeholder="Enter subject"
+                value={composeForm.subject}
+                onChange={(e) => setComposeForm({ ...composeForm, subject: e.target.value })}
+                required
+              />
             </div>
             <div className="space-y-2">
-              <Label>Message</Label>
+              <Label htmlFor="compose-body">Message</Label>
               <textarea 
+                id="compose-body"
                 className="w-full min-h-[200px] p-3 rounded-md border border-input bg-background resize-none focus:outline-none focus:ring-2 focus:ring-ring"
                 placeholder="Write your message..."
+                value={composeForm.body}
+                onChange={(e) => setComposeForm({ ...composeForm, body: e.target.value })}
+                required
               />
             </div>
             <div className="flex justify-end gap-3">
-              <Button variant="outline" onClick={() => setIsComposeOpen(false)}>
+              <Button type="button" variant="outline" onClick={() => setIsComposeOpen(false)}>
                 Cancel
               </Button>
-              <Button>
+              <Button type="submit" disabled={sendEmailMutation.isPending}>
+                {sendEmailMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                 <Send className="h-4 w-4 mr-2" />
                 Send
               </Button>
             </div>
-          </div>
+          </form>
         </DialogContent>
       </Dialog>
     </div>

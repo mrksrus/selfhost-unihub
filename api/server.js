@@ -6,6 +6,9 @@ const mysql = require('mysql2/promise');
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const nodemailer = require('nodemailer');
+const imaps = require('imap-simple');
+const { simpleParser } = require('mailparser');
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -39,6 +42,153 @@ function decrypt(encryptedText) {
     return decrypted;
   } catch {
     return null;
+  }
+}
+
+// ── Mail sync and send functions ──────────────────────────────────
+
+async function syncMailAccount(accountId) {
+  try {
+    const [accounts] = await db.execute(
+      'SELECT * FROM mail_accounts WHERE id = ?',
+      [accountId]
+    );
+    if (!accounts[0]) {
+      console.error(`Account ${accountId} not found`);
+      return;
+    }
+
+    const account = accounts[0];
+    const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
+    if (!password) {
+      console.error(`No password for account ${accountId}`);
+      return;
+    }
+
+    const config = {
+      imap: {
+        user: account.username || account.email_address,
+        password,
+        host: account.imap_host,
+        port: account.imap_port || 993,
+        tls: true,
+        tlsOptions: { rejectUnauthorized: false },
+        authTimeout: 10000,
+      },
+    };
+
+    console.log(`Syncing ${account.email_address}...`);
+    const connection = await imaps.connect(config);
+    await connection.openBox('INBOX');
+
+    // Fetch emails from last 3 months
+    const threeMonthsAgo = new Date();
+    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+    const sinceDate = threeMonthsAgo.toLocaleDateString('en-US', { 
+      day: '2-digit', 
+      month: 'short', 
+      year: 'numeric' 
+    }).replace(/,/g, ''); // Format: "DD MMM YYYY"
+    
+    const searchCriteria = ['SINCE', sinceDate];
+    const fetchOptions = {
+      bodies: ['HEADER', 'TEXT'],
+      markSeen: false,
+      struct: true,
+    };
+
+    const messages = await connection.search(searchCriteria, fetchOptions);
+    console.log(`Found ${messages.length} messages from last 3 months for ${account.email_address}`);
+
+    // Limit to 500 messages max to avoid overwhelming the database
+    const messagesToSync = messages.slice(-500);
+    console.log(`Syncing ${messagesToSync.length} messages...`);
+
+    for (const item of messagesToSync) {
+      const all = item.parts.find(p => p.which === '');
+      const id = item.attributes.uid;
+      const idHeader = `Imap-ID: ${id}`;
+      const rawEmail = all ? all.body : '';
+
+      const parsed = await simpleParser(idHeader + '\r\n' + rawEmail);
+      const messageId = parsed.messageId || `${account.id}-${id}`;
+
+      // Check if already synced
+      const [existing] = await db.execute(
+        'SELECT id FROM emails WHERE message_id = ? AND mail_account_id = ?',
+        [messageId, accountId]
+      );
+      if (existing.length > 0) continue;
+
+      // Insert email
+      const emailId = crypto.randomUUID();
+      await db.execute(
+        'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          emailId,
+          account.user_id,
+          accountId,
+          messageId,
+          parsed.subject || '(No subject)',
+          parsed.from?.value?.[0]?.address || parsed.from?.text || 'unknown',
+          parsed.from?.value?.[0]?.name || null,
+          JSON.stringify((parsed.to?.value || []).map(t => t.address)),
+          parsed.text || null,
+          parsed.html || null,
+          parsed.date || new Date(),
+        ]
+      );
+    }
+
+    connection.end();
+
+    // Update last synced
+    await db.execute(
+      'UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ?',
+      [accountId]
+    );
+
+    console.log(`✓ Synced ${account.email_address}`);
+  } catch (error) {
+    console.error(`Error syncing account ${accountId}:`, error.message);
+  }
+}
+
+async function sendEmail(accountId, { to, subject, body, isHtml = false }) {
+  try {
+    const [accounts] = await db.execute(
+      'SELECT * FROM mail_accounts WHERE id = ?',
+      [accountId]
+    );
+    if (!accounts[0]) throw new Error('Account not found');
+
+    const account = accounts[0];
+    const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
+    if (!password) throw new Error('No password configured');
+
+    const transporter = nodemailer.createTransport({
+      host: account.smtp_host,
+      port: account.smtp_port || 587,
+      secure: account.smtp_port === 465,
+      auth: {
+        user: account.username || account.email_address,
+        pass: password,
+      },
+    });
+
+    const info = await transporter.sendMail({
+      from: `${account.display_name || account.email_address} <${account.email_address}>`,
+      to,
+      subject,
+      text: isHtml ? undefined : body,
+      html: isHtml ? body : undefined,
+    });
+
+    console.log(`✓ Sent email from ${account.email_address}: ${info.messageId}`);
+    return { success: true, messageId: info.messageId };
+  } catch (error) {
+    console.error(`Error sending email from account ${accountId}:`, error.message);
+    throw error;
   }
 }
 
@@ -84,6 +234,7 @@ async function initDatabase() {
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0,
+    timezone: '+00:00', // interpret DATETIME as UTC (we store UTC)
   };
 
   // Retry connection — MySQL may still be starting
@@ -188,6 +339,7 @@ async function ensureSchema() {
     email_address VARCHAR(255) NOT NULL,
     display_name VARCHAR(255),
     provider VARCHAR(50) NOT NULL,
+    username VARCHAR(255),
     imap_host VARCHAR(255),
     imap_port INT DEFAULT 993,
     smtp_host VARCHAR(255),
@@ -202,6 +354,13 @@ async function ensureSchema() {
     INDEX idx_mail_accounts_email (email_address),
     UNIQUE KEY unique_user_email (user_id, email_address)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  
+  // Add username column if it doesn't exist (migration for existing installs)
+  try {
+    await db.execute(`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS username VARCHAR(255) AFTER provider`);
+  } catch (e) {
+    // Column might already exist or unsupported syntax, ignore
+  }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS emails (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -696,7 +855,7 @@ const routes = {
         [userId]
       );
       const [events] = await db.execute(
-        'SELECT COUNT(*) as count FROM calendar_events WHERE user_id = ? AND start_time >= NOW()',
+        'SELECT COUNT(*) as count FROM calendar_events WHERE user_id = ? AND start_time >= UTC_TIMESTAMP()',
         [userId]
       );
       const [unread] = await db.execute(
@@ -873,10 +1032,16 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const [events] = await db.execute(
+      const [rows] = await db.execute(
         'SELECT * FROM calendar_events WHERE user_id = ? ORDER BY start_time ASC',
         [userId]
       );
+      // Serialise dates as UTC ISO strings so the client gets correct times
+      const events = rows.map((row) => ({
+        ...row,
+        start_time: row.start_time instanceof Date ? row.start_time.toISOString() : row.start_time,
+        end_time: row.end_time instanceof Date ? row.end_time.toISOString() : row.end_time,
+      }));
       return { events };
     } catch (error) {
       return { error: 'Failed to get events', status: 500 };
@@ -974,17 +1139,23 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const { email_address, display_name, provider, imap_host, imap_port, smtp_host, smtp_port, encrypted_password } = body;
+      const { email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password } = body;
       const accountId = crypto.randomUUID();
+      const actualUsername = username || email_address; // fallback to email if no username
       await db.execute(
-        'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, imap_host, imap_port, smtp_host, smtp_port, encrypted_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [accountId, userId, email_address, display_name || null, provider, imap_host || null, imap_port || 993, smtp_host || null, smtp_port || 587, encrypted_password ? encrypt(encrypted_password) : null]
+        'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, imap_port || 993, smtp_host || null, smtp_port || 587, encrypted_password ? encrypt(encrypted_password) : null]
       );
       
       const [accounts] = await db.execute('SELECT id, user_id, email_address, display_name, provider, is_active FROM mail_accounts WHERE id = ?', [accountId]);
+      
+      // Trigger initial sync
+      syncMailAccount(accountId).catch(err => console.error('Initial sync failed:', err));
+      
       return { account: accounts[0] };
     } catch (error) {
-      return { error: 'Failed to create mail account', status: 500 };
+      console.error('Create mail account error:', error);
+      return { error: error.message || 'Failed to create mail account', status: 500 };
     }
   },
   
@@ -1062,6 +1233,53 @@ const routes = {
       return { message: 'Email star status updated' };
     } catch (error) {
       return { error: 'Failed to update email', status: 500 };
+    }
+  },
+  
+  'POST /api/mail/sync': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { account_id } = body;
+      if (!account_id) return { error: 'Account ID required', status: 400 };
+      
+      // Verify account belongs to user
+      const [accounts] = await db.execute(
+        'SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?',
+        [account_id, userId]
+      );
+      if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+      
+      // Sync in background
+      syncMailAccount(account_id).catch(err => console.error('Sync error:', err));
+      
+      return { message: 'Sync started' };
+    } catch (error) {
+      return { error: 'Failed to sync mail', status: 500 };
+    }
+  },
+  
+  'POST /api/mail/send': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { account_id, to, subject, body: emailBody, isHtml } = body;
+      if (!account_id || !to || !subject || !emailBody) {
+        return { error: 'Missing required fields', status: 400 };
+      }
+      
+      // Verify account belongs to user
+      const [accounts] = await db.execute(
+        'SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?',
+        [account_id, userId]
+      );
+      if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+      
+      const result = await sendEmail(account_id, { to, subject, body: emailBody, isHtml });
+      return { success: true, messageId: result.messageId };
+    } catch (error) {
+      console.error('Send email error:', error);
+      return { error: error.message || 'Failed to send email', status: 500 };
     }
   },
 
@@ -1215,6 +1433,25 @@ async function start() {
   server.listen(PORT, () => {
     console.log(`✓ UniHub API server running on port ${PORT}`);
   });
+  
+  // Periodic mail sync every 10 minutes
+  setInterval(async () => {
+    try {
+      const [accounts] = await db.execute(
+        'SELECT id, email_address FROM mail_accounts WHERE is_active = TRUE'
+      );
+      console.log(`\n[${new Date().toISOString()}] Starting periodic mail sync for ${accounts.length} accounts...`);
+      for (const account of accounts) {
+        syncMailAccount(account.id).catch(err => 
+          console.error(`Failed to sync ${account.email_address}:`, err.message)
+        );
+      }
+    } catch (error) {
+      console.error('Periodic sync error:', error);
+    }
+  }, 10 * 60 * 1000); // 10 minutes
+  
+  console.log('✓ Periodic mail sync enabled (every 10 minutes)');
 }
 
 start();
