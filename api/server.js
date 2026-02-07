@@ -48,21 +48,20 @@ function decrypt(encryptedText) {
 // ── Mail sync and send functions ──────────────────────────────────
 
 async function syncMailAccount(accountId) {
+  let connection = null;
   try {
     const [accounts] = await db.execute(
       'SELECT * FROM mail_accounts WHERE id = ?',
       [accountId]
     );
     if (!accounts[0]) {
-      console.error(`Account ${accountId} not found`);
-      return;
+      return { success: false, error: `Account ${accountId} not found in database` };
     }
 
     const account = accounts[0];
     const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
     if (!password) {
-      console.error(`No password for account ${accountId}`);
-      return;
+      return { success: false, error: 'No password configured for this account' };
     }
 
     const config = {
@@ -73,12 +72,13 @@ async function syncMailAccount(accountId) {
         port: account.imap_port || 993,
         tls: true,
         tlsOptions: { rejectUnauthorized: false },
-        authTimeout: 10000,
+        authTimeout: 15000,
       },
     };
 
-    console.log(`Syncing ${account.email_address}...`);
-    const connection = await imaps.connect(config);
+    console.log(`[SYNC] Connecting to ${account.email_address} at ${account.imap_host}:${account.imap_port}...`);
+    connection = await imaps.connect(config);
+    console.log(`[SYNC] Connected. Opening INBOX...`);
     await connection.openBox('INBOX');
 
     // Fetch emails from last 3 months
@@ -90,6 +90,7 @@ async function syncMailAccount(accountId) {
       year: 'numeric' 
     }).replace(/,/g, ''); // Format: "DD MMM YYYY"
     
+    console.log(`[SYNC] Searching for emails since ${sinceDate}...`);
     const searchCriteria = ['SINCE', sinceDate];
     const fetchOptions = {
       bodies: ['HEADER', 'TEXT'],
@@ -98,11 +99,11 @@ async function syncMailAccount(accountId) {
     };
 
     const messages = await connection.search(searchCriteria, fetchOptions);
-    console.log(`Found ${messages.length} messages from last 3 months for ${account.email_address}`);
+    console.log(`[SYNC] Found ${messages.length} messages from last 3 months`);
 
     // Limit to 500 messages max to avoid overwhelming the database
     const messagesToSync = messages.slice(-500);
-    console.log(`Syncing ${messagesToSync.length} messages...`);
+    let newEmailsCount = 0;
 
     for (const item of messagesToSync) {
       const all = item.parts.find(p => p.which === '');
@@ -138,9 +139,10 @@ async function syncMailAccount(accountId) {
           parsed.date || new Date(),
         ]
       );
+      newEmailsCount++;
     }
 
-    connection.end();
+    if (connection) connection.end();
 
     // Update last synced
     await db.execute(
@@ -148,9 +150,29 @@ async function syncMailAccount(accountId) {
       [accountId]
     );
 
-    console.log(`✓ Synced ${account.email_address}`);
+    const resultMsg = `Synced ${account.email_address}: ${newEmailsCount} new emails (${messages.length} total in last 3 months)`;
+    console.log(`[SYNC] ✓ ${resultMsg}`);
+    return { success: true, newEmails: newEmailsCount, totalFound: messages.length, message: resultMsg };
   } catch (error) {
-    console.error(`Error syncing account ${accountId}:`, error.message);
+    if (connection) {
+      try { connection.end(); } catch (e) { /* ignore */ }
+    }
+    const errorMsg = error.message || String(error);
+    console.error(`[SYNC] ✗ Error syncing account ${accountId}:`, errorMsg);
+    
+    // Provide user-friendly error messages
+    let friendlyError = errorMsg;
+    if (errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
+      friendlyError = 'Authentication failed. Check your username and password (use App Password for Gmail/Yahoo).';
+    } else if (errorMsg.includes('ETIMEDOUT') || errorMsg.includes('timeout')) {
+      friendlyError = 'Connection timeout. Check server address and port, or try again later.';
+    } else if (errorMsg.includes('ENOTFOUND')) {
+      friendlyError = 'Server not found. Check the IMAP host address.';
+    } else if (errorMsg.includes('ECONNREFUSED')) {
+      friendlyError = 'Connection refused. Check the IMAP port and server settings.';
+    }
+    
+    return { success: false, error: friendlyError, details: errorMsg };
   }
 }
 
@@ -1140,6 +1162,14 @@ const routes = {
     
     try {
       const { email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password } = body;
+      
+      if (!email_address || !encrypted_password) {
+        return { error: 'Email address and password are required', status: 400 };
+      }
+      if (!imap_host || !smtp_host) {
+        return { error: 'IMAP and SMTP server addresses are required', status: 400 };
+      }
+      
       const accountId = crypto.randomUUID();
       const actualUsername = username || email_address; // fallback to email if no username
       await db.execute(
@@ -1149,13 +1179,79 @@ const routes = {
       
       const [accounts] = await db.execute('SELECT id, user_id, email_address, display_name, provider, is_active FROM mail_accounts WHERE id = ?', [accountId]);
       
-      // Trigger initial sync
-      syncMailAccount(accountId).catch(err => console.error('Initial sync failed:', err));
+      // Test connection and initial sync
+      console.log(`[ACCOUNT] Testing connection for ${email_address}...`);
+      const syncResult = await syncMailAccount(accountId);
       
-      return { account: accounts[0] };
+      if (!syncResult.success) {
+        // Connection failed - delete the account and return error
+        await db.execute('DELETE FROM mail_accounts WHERE id = ?', [accountId]);
+        return { 
+          error: syncResult.error, 
+          details: syncResult.details,
+          status: 400 
+        };
+      }
+      
+      return { 
+        account: accounts[0], 
+        syncResult: {
+          success: true,
+          newEmails: syncResult.newEmails,
+          totalFound: syncResult.totalFound,
+          message: syncResult.message
+        }
+      };
     } catch (error) {
-      console.error('Create mail account error:', error);
+      console.error('[ACCOUNT] Create mail account error:', error);
       return { error: error.message || 'Failed to create mail account', status: 500 };
+    }
+  },
+  
+  'PUT /api/mail/accounts/:id': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const id = req.url.split('/').pop();
+      const { email_address, display_name, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password } = body;
+      
+      // Verify account belongs to user
+      const [accounts] = await db.execute(
+        'SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?',
+        [id, userId]
+      );
+      if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+      
+      // Build update query dynamically
+      const updates = [];
+      const params = [];
+      
+      if (email_address) { updates.push('email_address = ?'); params.push(email_address); }
+      if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name || null); }
+      if (username !== undefined) { updates.push('username = ?'); params.push(username || email_address); }
+      if (imap_host) { updates.push('imap_host = ?'); params.push(imap_host); }
+      if (imap_port) { updates.push('imap_port = ?'); params.push(imap_port); }
+      if (smtp_host) { updates.push('smtp_host = ?'); params.push(smtp_host); }
+      if (smtp_port) { updates.push('smtp_port = ?'); params.push(smtp_port); }
+      if (encrypted_password) { updates.push('encrypted_password = ?'); params.push(encrypt(encrypted_password)); }
+      
+      if (updates.length === 0) return { error: 'No fields to update', status: 400 };
+      
+      params.push(id, userId);
+      await db.execute(
+        `UPDATE mail_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+        params
+      );
+      
+      const [updated] = await db.execute(
+        'SELECT id, user_id, email_address, display_name, provider, is_active FROM mail_accounts WHERE id = ?',
+        [id]
+      );
+      
+      return { account: updated[0] };
+    } catch (error) {
+      console.error('[ACCOUNT] Update error:', error);
+      return { error: error.message || 'Failed to update mail account', status: 500 };
     }
   },
   
@@ -1250,12 +1346,27 @@ const routes = {
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
       
-      // Sync in background
-      syncMailAccount(account_id).catch(err => console.error('Sync error:', err));
+      // Sync and wait for result
+      console.log(`[SYNC] Manual sync requested for account ${account_id}`);
+      const result = await syncMailAccount(account_id);
       
-      return { message: 'Sync started' };
+      if (!result.success) {
+        return { 
+          error: result.error, 
+          details: result.details,
+          status: 400 
+        };
+      }
+      
+      return { 
+        success: true,
+        newEmails: result.newEmails,
+        totalFound: result.totalFound,
+        message: result.message
+      };
     } catch (error) {
-      return { error: 'Failed to sync mail', status: 500 };
+      console.error('[SYNC] Sync error:', error);
+      return { error: error.message || 'Failed to sync mail', status: 500 };
     }
   },
   

@@ -37,7 +37,8 @@ import {
   RefreshCw,
   PenSquare,
   MoreVertical,
-  X
+  X,
+  Edit
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
@@ -90,6 +91,7 @@ const MailPage = () => {
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [accountToDelete, setAccountToDelete] = useState<string | null>(null);
+  const [editingAccount, setEditingAccount] = useState<MailAccount | null>(null);
   const [composeForm, setComposeForm] = useState({
     to: '',
     subject: '',
@@ -153,12 +155,23 @@ const MailPage = () => {
         ...account,
         encrypted_password: account.password, // Will be encrypted on server
       });
-      if (response.error) throw new Error(response.error);
+      if (response.error) {
+        const errorDetails = response.details ? `\n\nTechnical details:\n${response.details}` : '';
+        throw new Error(response.error + errorDetails);
+      }
+      return response.data;
     },
-    onSuccess: () => {
+    onSuccess: (data: any) => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
-      toast({ title: 'Mail account added successfully' });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      
+      const syncMsg = data.syncResult?.message || 'Account added';
+      toast({ 
+        title: '✓ Account connected successfully', 
+        description: syncMsg 
+      });
+      
       setIsAddAccountOpen(false);
       setAccountForm({
         email_address: '',
@@ -173,7 +186,61 @@ const MailPage = () => {
       });
     },
     onError: (error: Error) => {
-      toast({ title: 'Failed to add mail account', description: error.message, variant: 'destructive' });
+      const errorLines = error.message.split('\n');
+      const mainError = errorLines[0];
+      const details = errorLines.slice(1).join('\n');
+      
+      toast({ 
+        title: 'Failed to add mail account', 
+        description: (
+          <div className="space-y-2">
+            <p>{mainError}</p>
+            {details && (
+              <pre className="text-xs bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap break-all select-all">
+                {details}
+              </pre>
+            )}
+          </div>
+        ),
+        variant: 'destructive',
+        duration: 10000,
+      });
+    },
+  });
+
+  // Update account mutation
+  const updateAccount = useMutation({
+    mutationFn: async ({ id, ...data }: { id: string } & Partial<typeof accountForm>) => {
+      const response = await api.put(`/mail/accounts/${id}`, {
+        ...data,
+        encrypted_password: data.password || undefined,
+      });
+      if (response.error) throw new Error(response.error);
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      toast({ title: '✓ Account updated successfully' });
+      setEditingAccount(null);
+      setIsAddAccountOpen(false);
+      setAccountForm({
+        email_address: '',
+        display_name: '',
+        provider: '',
+        username: '',
+        password: '',
+        imap_host: '',
+        smtp_host: '',
+        imap_port: 993,
+        smtp_port: 587,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ 
+        title: 'Failed to update account', 
+        description: error.message, 
+        variant: 'destructive' 
+      });
     },
   });
 
@@ -224,18 +291,43 @@ const MailPage = () => {
   const syncMail = useMutation({
     mutationFn: async (account_id: string) => {
       const response = await api.post('/mail/sync', { account_id });
-      if (response.error) throw new Error(response.error);
+      if (response.error) {
+        const errorDetails = response.details ? `\n\nTechnical details:\n${response.details}` : '';
+        throw new Error(response.error + errorDetails);
+      }
+      return response.data;
     },
-    onSuccess: () => {
-      toast({ title: 'Syncing emails...' });
-      // Refetch after a delay
-      setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ['emails'] });
-        queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
-      }, 3000);
+    onSuccess: (data: any) => {
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      
+      const msg = data.message || `${data.newEmails || 0} new emails`;
+      toast({ 
+        title: '✓ Sync complete', 
+        description: msg
+      });
     },
     onError: (error: Error) => {
-      toast({ title: 'Failed to sync', description: error.message, variant: 'destructive' });
+      const errorLines = error.message.split('\n');
+      const mainError = errorLines[0];
+      const details = errorLines.slice(1).join('\n');
+      
+      toast({ 
+        title: 'Sync failed', 
+        description: (
+          <div className="space-y-2">
+            <p>{mainError}</p>
+            {details && (
+              <pre className="text-xs bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap break-all select-all">
+                {details}
+              </pre>
+            )}
+          </div>
+        ),
+        variant: 'destructive',
+        duration: 10000,
+      });
     },
   });
   
@@ -243,15 +335,37 @@ const MailPage = () => {
   const sendEmailMutation = useMutation({
     mutationFn: async (data: { account_id: string; to: string; subject: string; body: string }) => {
       const response = await api.post('/mail/send', data);
-      if (response.error) throw new Error(response.error);
+      if (response.error) {
+        const errorDetails = response.details ? `\n\nTechnical details:\n${response.details}` : '';
+        throw new Error(response.error + errorDetails);
+      }
+      return response.data;
     },
     onSuccess: () => {
-      toast({ title: 'Email sent successfully' });
+      toast({ title: '✓ Email sent successfully' });
       setIsComposeOpen(false);
       setComposeForm({ to: '', subject: '', body: '' });
     },
     onError: (error: Error) => {
-      toast({ title: 'Failed to send email', description: error.message, variant: 'destructive' });
+      const errorLines = error.message.split('\n');
+      const mainError = errorLines[0];
+      const details = errorLines.slice(1).join('\n');
+      
+      toast({ 
+        title: 'Failed to send email', 
+        description: (
+          <div className="space-y-2">
+            <p>{mainError}</p>
+            {details && (
+              <pre className="text-xs bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap break-all select-all">
+                {details}
+              </pre>
+            )}
+          </div>
+        ),
+        variant: 'destructive',
+        duration: 10000,
+      });
     },
   });
 
@@ -269,7 +383,27 @@ const MailPage = () => {
 
   const handleAddAccount = (e: React.FormEvent) => {
     e.preventDefault();
-    addAccount.mutate(accountForm);
+    if (editingAccount) {
+      updateAccount.mutate({ id: editingAccount.id, ...accountForm });
+    } else {
+      addAccount.mutate(accountForm);
+    }
+  };
+  
+  const handleEditAccount = (account: MailAccount) => {
+    setEditingAccount(account);
+    setAccountForm({
+      email_address: account.email_address,
+      display_name: account.display_name || '',
+      provider: account.provider,
+      username: '', // Don't pre-fill for security
+      password: '',
+      imap_host: '', // Would need to fetch from backend or store in state
+      smtp_host: '',
+      imap_port: 993,
+      smtp_port: 587,
+    });
+    setIsAddAccountOpen(true);
   };
   
   const handleSendEmail = (e: React.FormEvent) => {
@@ -322,7 +456,23 @@ const MailPage = () => {
             <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
               Accounts
             </span>
-            <Dialog open={isAddAccountOpen} onOpenChange={setIsAddAccountOpen}>
+            <Dialog open={isAddAccountOpen} onOpenChange={(open) => {
+              setIsAddAccountOpen(open);
+              if (!open) {
+                setEditingAccount(null);
+                setAccountForm({
+                  email_address: '',
+                  display_name: '',
+                  provider: '',
+                  username: '',
+                  password: '',
+                  imap_host: '',
+                  smtp_host: '',
+                  imap_port: 993,
+                  smtp_port: 587,
+                });
+              }
+            }}>
               <DialogTrigger asChild>
                 <Button variant="ghost" size="icon" className="h-6 w-6">
                   <Plus className="h-4 w-4" />
@@ -330,7 +480,7 @@ const MailPage = () => {
               </DialogTrigger>
               <DialogContent>
                 <DialogHeader>
-                  <DialogTitle>Add Mail Account</DialogTitle>
+                  <DialogTitle>{editingAccount ? 'Edit Mail Account' : 'Add Mail Account'}</DialogTitle>
                   <DialogDescription>
                     Connect an email account to view and manage your mail.
                   </DialogDescription>
@@ -390,14 +540,14 @@ const MailPage = () => {
                     )}
                   </div>
                   <div className="space-y-2">
-                    <Label htmlFor="password">Password</Label>
+                    <Label htmlFor="password">Password {editingAccount && '(leave blank to keep current)'}</Label>
                     <Input
                       id="password"
                       type="password"
                       value={accountForm.password}
                       onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })}
                       placeholder="Password or App Password"
-                      required
+                      required={!editingAccount}
                     />
                   </div>
                   {(accountForm.provider === 'custom' || accountForm.provider === 'exchange') && (
@@ -455,9 +605,9 @@ const MailPage = () => {
                     <Button type="button" variant="outline" onClick={() => setIsAddAccountOpen(false)}>
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={addAccount.isPending}>
-                      {addAccount.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                      Add Account
+                    <Button type="submit" disabled={addAccount.isPending || updateAccount.isPending}>
+                      {(addAccount.isPending || updateAccount.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      {editingAccount ? 'Save Changes' : 'Add Account'}
                     </Button>
                   </div>
                 </form>
@@ -489,22 +639,35 @@ const MailPage = () => {
                     <div className="w-8 h-8 rounded-full bg-mail/10 flex items-center justify-center text-mail text-xs font-medium">
                       {account.email_address[0].toUpperCase()}
                     </div>
-                    <div className="flex-1 min-w-0 text-left">
-                      <p className="truncate">{account.display_name || account.email_address}</p>
-                      <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
-                    </div>
+                  <div className="flex-1 min-w-0 text-left">
+                    <p className="truncate">{account.display_name || account.email_address}</p>
+                    <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
+                  </div>
                   </button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setAccountToDelete(account.id);
-                    }}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
+                  <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleEditAccount(account);
+                      }}
+                    >
+                      <Edit className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-destructive hover:text-destructive"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setAccountToDelete(account.id);
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
                 </div>
               ))
             )}
