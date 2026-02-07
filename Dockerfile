@@ -46,4 +46,3 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
   CMD wget -q -O /dev/null http://localhost/health || exit 1
 
 CMD ["/app/start.sh"]
-zuhh gezo xnci uphn
