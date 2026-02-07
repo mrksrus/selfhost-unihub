@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   AlertDialog,
@@ -21,7 +22,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { Shield, Key, Trash2, Loader2 } from 'lucide-react';
+import { Shield, Key, Trash2, Loader2, UserCheck, UserX, Settings } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 interface UserRow {
@@ -50,6 +51,16 @@ const AdminUsers = () => {
     },
     enabled: user?.role === 'admin',
   });
+  
+  const { data: signupModeData } = useQuery({
+    queryKey: ['admin', 'signup-mode'],
+    queryFn: async () => {
+      const response = await api.get<{ signup_mode: string }>('/admin/settings/signup-mode');
+      if (response.error) throw new Error(response.error);
+      return response.data!.signup_mode;
+    },
+    enabled: user?.role === 'admin',
+  });
 
   const deleteUser = useMutation({
     mutationFn: async (userId: string) => {
@@ -62,6 +73,34 @@ const AdminUsers = () => {
     },
     onError: (err: Error) => {
       toast({ title: 'Failed to delete user', description: err.message, variant: 'destructive' });
+    },
+  });
+  
+  const toggleUserActive = useMutation({
+    mutationFn: async ({ userId, is_active }: { userId: string; is_active: boolean }) => {
+      const response = await api.put(`/admin/users/${userId}/activate`, { is_active });
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+      toast({ title: variables.is_active ? 'User activated' : 'User deactivated' });
+    },
+    onError: (err: Error) => {
+      toast({ title: 'Failed to update user status', description: err.message, variant: 'destructive' });
+    },
+  });
+  
+  const updateSignupMode = useMutation({
+    mutationFn: async (mode: string) => {
+      const response = await api.put('/admin/settings/signup-mode', { signup_mode: mode });
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'signup-mode'] });
+      toast({ title: 'Signup settings updated' });
+    },
+    onError: (err: Error) => {
+      toast({ title: 'Failed to update settings', description: err.message, variant: 'destructive' });
     },
   });
 
@@ -113,10 +152,55 @@ const AdminUsers = () => {
         <p className="text-muted-foreground">Manage accounts and reset passwords</p>
       </motion.div>
 
+      {/* Signup Settings */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.4, delay: 0.1 }}
+        className="mb-6"
+      >
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-info/10">
+                  <Settings className="h-5 w-5 text-info" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">Signup Settings</CardTitle>
+                  <CardDescription>Control who can create accounts</CardDescription>
+                </div>
+              </div>
+              <div className="w-64">
+                <Select 
+                  value={signupModeData || 'open'} 
+                  onValueChange={(mode) => updateSignupMode.mutate(mode)}
+                  disabled={updateSignupMode.isPending}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="open">Open (anyone can sign up)</SelectItem>
+                    <SelectItem value="approval">Approval required (inactive until approved)</SelectItem>
+                    <SelectItem value="disabled">Disabled (no signups)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            {signupModeData === 'open' && '✓ New users can sign up and immediately access the app.'}
+            {signupModeData === 'approval' && '⏳ New users can sign up but need admin approval before accessing the app.'}
+            {signupModeData === 'disabled' && '✗ New user signups are completely disabled.'}
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.2 }}
       >
         <Card>
           <CardHeader>
@@ -144,6 +228,7 @@ const AdminUsers = () => {
                     <TableHead>Name</TableHead>
                     <TableHead>Email</TableHead>
                     <TableHead>Role</TableHead>
+                    <TableHead>Status</TableHead>
                     <TableHead>Created</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
@@ -158,10 +243,39 @@ const AdminUsers = () => {
                           {u.role}
                         </Badge>
                       </TableCell>
+                      <TableCell>
+                        <Badge variant={u.is_active ? 'default' : 'secondary'} className={u.is_active ? 'bg-success' : 'bg-muted'}>
+                          {u.is_active ? 'Active' : 'Pending'}
+                        </Badge>
+                      </TableCell>
                       <TableCell className="text-muted-foreground">
                         {new Date(u.created_at).toLocaleDateString()}
                       </TableCell>
                       <TableCell className="text-right space-x-2">
+                        {!u.is_active && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => toggleUserActive.mutate({ userId: u.id, is_active: true })}
+                            disabled={toggleUserActive.isPending}
+                            className="text-success hover:text-success"
+                          >
+                            <UserCheck className="h-3.5 w-3.5 mr-1" />
+                            Approve
+                          </Button>
+                        )}
+                        {u.is_active && u.id !== user?.id && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => toggleUserActive.mutate({ userId: u.id, is_active: false })}
+                            disabled={toggleUserActive.isPending}
+                            className="text-warning hover:text-warning"
+                          >
+                            <UserX className="h-3.5 w-3.5 mr-1" />
+                            Deactivate
+                          </Button>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"

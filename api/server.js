@@ -84,11 +84,13 @@ async function syncMailAccount(accountId) {
     // Fetch emails from last 3 months
     const threeMonthsAgo = new Date();
     threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-    const sinceDate = threeMonthsAgo.toLocaleDateString('en-US', { 
-      day: '2-digit', 
-      month: 'short', 
-      year: 'numeric' 
-    }).replace(/,/g, ''); // Format: "DD MMM YYYY"
+    
+    // Format date as DD-MMM-YYYY (IMAP RFC 3501 date format)
+    const day = String(threeMonthsAgo.getDate()).padStart(2, '0');
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const month = monthNames[threeMonthsAgo.getMonth()];
+    const year = threeMonthsAgo.getFullYear();
+    const sinceDate = `${day}-${month}-${year}`;
     
     console.log(`[SYNC] Searching for emails since ${sinceDate}...`);
     const searchCriteria = ['SINCE', sinceDate];
@@ -426,6 +428,24 @@ async function ensureSchema() {
     INDEX idx_attachments_email (email_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+  await db.execute(`CREATE TABLE IF NOT EXISTS system_settings (
+    setting_key VARCHAR(100) PRIMARY KEY,
+    setting_value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  
+  // Initialize default signup mode if not set
+  const [signupModeSetting] = await db.execute(
+    'SELECT setting_value FROM system_settings WHERE setting_key = ?',
+    ['signup_mode']
+  );
+  if (signupModeSetting.length === 0) {
+    await db.execute(
+      'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)',
+      ['signup_mode', 'open'] // Default: open signups
+    );
+  }
+
   // Seed default admin user if no users exist yet
   const [rows] = await db.execute('SELECT COUNT(*) as count FROM users');
   if (rows[0].count === 0) {
@@ -548,6 +568,19 @@ async function isAdmin(userId) {
     return users.length > 0 && users[0].role === 'admin';
   } catch {
     return false;
+  }
+}
+
+// Get signup mode (open, approval, disabled)
+async function getSignupMode() {
+  try {
+    const [rows] = await db.execute(
+      'SELECT setting_value FROM system_settings WHERE setting_key = ?',
+      ['signup_mode']
+    );
+    return rows[0]?.setting_value || 'open';
+  } catch {
+    return 'open';
   }
 }
 
@@ -685,6 +718,12 @@ const routes = {
       return { error: `Too many attempts. Try again in ${blockedMinutes} minutes.`, status: 429 };
     }
 
+    // Check signup mode
+    const signupMode = await getSignupMode();
+    if (signupMode === 'disabled') {
+      return { error: 'Signups are currently disabled', status: 403 };
+    }
+
     const { email, password, full_name } = body;
     if (!email || !password) {
       return { error: 'Email and password are required', status: 400 };
@@ -702,13 +741,22 @@ const routes = {
         return { error: 'User already exists', status: 400 };
       }
       
-      // Create user
+      // Create user (active if mode is 'open', inactive if 'approval')
+      const isActive = signupMode === 'open';
       const passwordHash = await hashPassword(password);
       const newUserId = crypto.randomUUID();
       await db.execute(
-        'INSERT INTO users (id, email, password_hash, full_name, email_verified) VALUES (?, ?, ?, ?, TRUE)',
-        [newUserId, email, passwordHash, full_name || null]
+        'INSERT INTO users (id, email, password_hash, full_name, email_verified, is_active) VALUES (?, ?, ?, ?, TRUE, ?)',
+        [newUserId, email, passwordHash, full_name || null, isActive]
       );
+      
+      // If approval required, don't create session or return token
+      if (!isActive) {
+        return { 
+          message: 'Account created. Waiting for admin approval.',
+          requiresApproval: true 
+        };
+      }
       
       const token = generateToken(newUserId);
       
@@ -742,7 +790,7 @@ const routes = {
     
     try {
       const [users] = await db.execute(
-        'SELECT id, email, password_hash, full_name, role FROM users WHERE email = ?',
+        'SELECT id, email, password_hash, full_name, role, is_active FROM users WHERE email = ?',
         [email]
       );
       
@@ -757,6 +805,10 @@ const routes = {
       if (!isValid) {
         recordFailedAttempt(ip);
         return { error: 'Invalid credentials', status: 401 };
+      }
+      
+      if (!user.is_active) {
+        return { error: 'Your account is pending admin approval', status: 403 };
       }
       
       const token = generateToken(user.id);
@@ -1447,6 +1499,53 @@ const routes = {
       return { message: 'User deleted' };
     } catch (error) {
       return { error: 'Failed to delete user', status: 500 };
+    }
+  },
+  
+  'PUT /api/admin/users/:id/activate': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+
+    const id = req.url.split('?')[0].split('/').pop();
+    const { is_active } = body;
+
+    try {
+      await db.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
+      return { message: is_active ? 'User activated' : 'User deactivated' };
+    } catch (error) {
+      return { error: 'Failed to update user status', status: 500 };
+    }
+  },
+  
+  'GET /api/admin/settings/signup-mode': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+
+    try {
+      const mode = await getSignupMode();
+      return { signup_mode: mode };
+    } catch (error) {
+      return { error: 'Failed to get settings', status: 500 };
+    }
+  },
+  
+  'PUT /api/admin/settings/signup-mode': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+
+    const { signup_mode } = body;
+    if (!['open', 'approval', 'disabled'].includes(signup_mode)) {
+      return { error: 'Invalid signup mode. Must be: open, approval, or disabled', status: 400 };
+    }
+
+    try {
+      await db.execute(
+        'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
+        ['signup_mode', signup_mode, signup_mode]
+      );
+      return { message: `Signup mode set to: ${signup_mode}` };
+    } catch (error) {
+      return { error: 'Failed to update settings', status: 500 };
     }
   },
 };

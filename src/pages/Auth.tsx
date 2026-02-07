@@ -72,12 +72,12 @@ const Auth = () => {
     if (!validateForm()) return;
     
     setLoading(true);
-    const { error } = await signUp(email, password, fullName);
+    const { error, requiresApproval } = await signUp(email, password, fullName);
     setLoading(false);
     
     if (error) {
       let message = error.message;
-      if (error.message.includes('already registered')) {
+      if (error.message.includes('already registered') || error.message.includes('already exists')) {
         message = 'This email is already registered. Please sign in instead.';
       }
       toast({
@@ -85,6 +85,16 @@ const Auth = () => {
         description: message,
         variant: 'destructive',
       });
+    } else if (requiresApproval) {
+      toast({
+        title: 'Account created',
+        description: 'Your account is pending admin approval. You will be able to sign in once an administrator activates your account.',
+        duration: 8000,
+      });
+      // Clear form
+      setEmail('');
+      setPassword('');
+      setFullName('');
     } else {
       toast({
         title: 'Account created',

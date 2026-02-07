@@ -13,7 +13,7 @@ interface AuthContextType {
   user: User | null;
   session: { token: string } | null;
   loading: boolean;
-  signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null }>;
+  signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null; requiresApproval?: boolean }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
 }
@@ -54,7 +54,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const signUp = async (email: string, password: string, fullName: string) => {
-    const response = await api.post<{ token: string; user: User }>('/auth/signup', {
+    const response = await api.post<{ token?: string; user?: User; requiresApproval?: boolean; message?: string }>('/auth/signup', {
       email,
       password,
       full_name: fullName,
@@ -62,6 +62,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     if (response.error) {
       return { error: new Error(response.error) };
+    }
+
+    // If approval is required, account created but not active
+    if (response.data?.requiresApproval) {
+      return { error: null, requiresApproval: true };
     }
 
     if (response.data?.token && response.data?.user) {
