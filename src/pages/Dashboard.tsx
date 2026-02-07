@@ -208,7 +208,7 @@ const Dashboard = () => {
                         <div className="flex items-center gap-1 text-sm text-muted-foreground">
                           <Clock className="h-3.5 w-3.5" />
                           <span>
-                            {format(new Date(event.start_time), 'MMM d, h:mm a')}
+                            {format(new Date(event.start_time), 'dd/MM/yyyy HH:mm')}
                           </span>
                         </div>
                       </div>

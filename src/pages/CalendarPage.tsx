@@ -10,7 +10,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { Plus, ChevronLeft, ChevronRight, Clock, MapPin, Trash2, Edit, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isSameMonth, addMonths, subMonths, isToday, parseISO } from 'date-fns';
+import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, isSameMonth, addMonths, subMonths, isToday, parseISO } from 'date-fns';
+import { enGB } from 'date-fns/locale';
 
 interface CalendarEvent {
   id: string;
@@ -178,10 +179,10 @@ const CalendarPage = () => {
     }
   };
 
-  const daysInMonth = eachDayOfInterval({
-    start: startOfMonth(currentMonth),
-    end: endOfMonth(currentMonth),
-  });
+  const weekStartsOnMonday = { weekStartsOn: 1 as const };
+  const calendarStart = startOfWeek(startOfMonth(currentMonth), weekStartsOnMonday);
+  const calendarEnd = endOfWeek(endOfMonth(currentMonth), weekStartsOnMonday);
+  const calendarDays = eachDayOfInterval({ start: calendarStart, end: calendarEnd });
 
   const getEventsForDay = (date: Date) => {
     return events.filter((event) => isSameDay(parseISO(event.start_time), date));
@@ -327,9 +328,9 @@ const CalendarPage = () => {
             </div>
           </CardHeader>
           <CardContent>
-            {/* Day headers */}
+            {/* Day headers (Mon–Sun) */}
             <div className="grid grid-cols-7 mb-2">
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+              {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => (
                 <div key={day} className="p-2 text-center text-sm font-medium text-muted-foreground">
                   {day}
                 </div>
@@ -338,26 +339,23 @@ const CalendarPage = () => {
             
             {/* Calendar grid */}
             <div className="grid grid-cols-7 gap-1">
-              {/* Empty cells for days before month starts */}
-              {Array.from({ length: startOfMonth(currentMonth).getDay() }).map((_, i) => (
-                <div key={`empty-${i}`} className="aspect-square p-1" />
-              ))}
-              
-              {daysInMonth.map((day) => {
+              {calendarDays.map((day) => {
                 const dayEvents = getEventsForDay(day);
                 const isSelected = selectedDate && isSameDay(day, selectedDate);
                 const today = isToday(day);
-                
+                const isOtherMonth = !isSameMonth(day, currentMonth);
                 return (
                   <button
                     key={day.toISOString()}
                     onClick={() => setSelectedDate(day)}
                     className={`aspect-square p-1 rounded-lg text-sm relative transition-colors ${
-                      isSelected 
-                        ? 'bg-primary text-primary-foreground' 
+                      isSelected
+                        ? 'bg-primary text-primary-foreground'
                         : today
-                        ? 'bg-accent/10 text-accent font-semibold'
-                        : 'hover:bg-muted'
+                          ? 'bg-accent/10 text-accent font-semibold'
+                          : isOtherMonth
+                            ? 'text-muted-foreground/60 hover:bg-muted/50'
+                            : 'hover:bg-muted'
                     }`}
                   >
                     <span className="block">{format(day, 'd')}</span>
@@ -383,7 +381,7 @@ const CalendarPage = () => {
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">
-              {selectedDate ? format(selectedDate, 'EEEE, MMM d') : 'Select a date'}
+              {selectedDate ? format(selectedDate, 'EEEE, dd/MM/yyyy', { locale: enGB }) : 'Select a date'}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -424,13 +422,21 @@ const CalendarPage = () => {
                         <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
                           <Clock className="h-3.5 w-3.5" />
                           <span>
-                            {format(parseISO(event.start_time), 'h:mm a')} - {format(parseISO(event.end_time), 'h:mm a')}
+                            {format(parseISO(event.start_time), 'HH:mm', { locale: enGB })} – {format(parseISO(event.end_time), 'HH:mm', { locale: enGB })}
                           </span>
                         </div>
                         {event.location && (
                           <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
-                            <MapPin className="h-3.5 w-3.5" />
-                            <span>{event.location}</span>
+                            <MapPin className="h-3.5 w-3.5 shrink-0" />
+                            <a
+                              href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="hover:underline focus:underline focus:outline-none text-muted-foreground hover:text-foreground truncate"
+                              aria-label={`Open ${event.location} in maps`}
+                            >
+                              {event.location}
+                            </a>
                           </div>
                         )}
                         <div className="flex items-center gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">

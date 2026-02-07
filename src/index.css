@@ -213,6 +213,11 @@
 }
 
 @layer utilities {
+  /* Mobile bottom nav clearance: bar height + safe area */
+  .pb-mobile-nav {
+    padding-bottom: max(5rem, calc(5rem + env(safe-area-inset-bottom, 0)));
+  }
+
   .text-gradient {
     @apply bg-clip-text text-transparent;
     background-image: var(--gradient-accent);

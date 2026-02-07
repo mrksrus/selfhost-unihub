@@ -885,38 +885,61 @@ const routes = {
   
   'POST /api/calendar/events': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    
+    if (!body.title?.trim()) return { error: 'Title is required', status: 400 };
+
     try {
       const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes } = body;
+      // Normalise to MySQL DATETIME format (YYYY-MM-DD HH:MM:SS)
+      const toMysqlDatetime = (v) => {
+        if (v == null || v === '') return null;
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) return null;
+        return d.toISOString().slice(0, 19).replace('T', ' ');
+      };
+      const start = toMysqlDatetime(start_time);
+      const end = toMysqlDatetime(end_time);
+      if (!start || !end) return { error: 'Valid start and end time are required', status: 400 };
+
       const eventId = crypto.randomUUID();
       await db.execute(
         'INSERT INTO calendar_events (id, user_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [eventId, userId, title, description || null, start_time, end_time, all_day || false, location || null, color || '#22c55e', recurrence || null, reminder_minutes || null]
+        [eventId, userId, title.trim(), description || null, start, end, !!all_day, location?.trim() || null, color || '#22c55e', recurrence || null, reminder_minutes ?? null]
       );
-      
+
       const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ?', [eventId]);
       return { event: events[0] };
     } catch (error) {
-      return { error: 'Failed to create event', status: 500 };
+      console.error('Create event error:', error);
+      return { error: error.message || 'Failed to create event', status: 500 };
     }
   },
   
   'PUT /api/calendar/events/:id': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    
+
     try {
       const id = req.url.split('/').pop();
       const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes } = body;
-      
+      const toMysqlDatetime = (v) => {
+        if (v == null || v === '') return null;
+        const d = new Date(v);
+        if (Number.isNaN(d.getTime())) return null;
+        return d.toISOString().slice(0, 19).replace('T', ' ');
+      };
+      const start = toMysqlDatetime(start_time);
+      const end = toMysqlDatetime(end_time);
+      if (!start || !end) return { error: 'Valid start and end time are required', status: 400 };
+
       await db.execute(
         'UPDATE calendar_events SET title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?, location = ?, color = ?, recurrence = ?, reminder_minutes = ? WHERE id = ? AND user_id = ?',
-        [title, description || null, start_time, end_time, all_day || false, location || null, color || '#22c55e', recurrence || null, reminder_minutes || null, id, userId]
+        [title?.trim() ?? '', description || null, start, end, !!all_day, location?.trim() || null, color || '#22c55e', recurrence || null, reminder_minutes ?? null, id, userId]
       );
-      
+
       const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       return { event: events[0] };
     } catch (error) {
-      return { error: 'Failed to update event', status: 500 };
+      console.error('Update event error:', error);
+      return { error: error.message || 'Failed to update event', status: 500 };
     }
   },
   

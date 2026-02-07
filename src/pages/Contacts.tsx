@@ -471,8 +471,14 @@ const Contacts = () => {
                       )}
                       {contact.phone && (
                         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                          <Phone className="h-3.5 w-3.5" />
-                          <span>{contact.phone}</span>
+                          <Phone className="h-3.5 w-3.5 shrink-0" />
+                          <a
+                            href={`tel:${contact.phone.replace(/\s/g, '')}`}
+                            className="truncate hover:underline focus:underline focus:outline-none text-muted-foreground hover:text-foreground"
+                            aria-label={`Call ${contact.phone}`}
+                          >
+                            {contact.phone}
+                          </a>
                         </div>
                       )}
                       {contact.company && (
