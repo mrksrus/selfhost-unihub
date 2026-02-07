@@ -81,29 +81,17 @@ async function syncMailAccount(accountId) {
     console.log(`[SYNC] Connected. Opening INBOX...`);
     await connection.openBox('INBOX');
 
-    // Fetch emails from last 3 months
-    const threeMonthsAgo = new Date();
-    threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
-    
-    // Format date as DD-MMM-YYYY (IMAP RFC 3501 date format)
-    const day = String(threeMonthsAgo.getDate()).padStart(2, '0');
-    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const month = monthNames[threeMonthsAgo.getMonth()];
-    const year = threeMonthsAgo.getFullYear();
-    const sinceDate = `${day}-${month}-${year}`;
-    
-    console.log(`[SYNC] Searching for emails since ${sinceDate}...`);
-    const searchCriteria = ['SINCE', sinceDate];
+    // Fetch recent emails (no date filter - avoids SINCE format issues across providers)
     const fetchOptions = {
       bodies: ['HEADER', 'TEXT'],
       markSeen: false,
       struct: true,
     };
 
-    const messages = await connection.search(searchCriteria, fetchOptions);
-    console.log(`[SYNC] Found ${messages.length} messages from last 3 months`);
+    const messages = await connection.search(['ALL'], fetchOptions);
+    console.log(`[SYNC] Found ${messages.length} messages in INBOX`);
 
-    // Limit to 500 messages max to avoid overwhelming the database
+    // Take last 500 to avoid overwhelming the database
     const messagesToSync = messages.slice(-500);
     let newEmailsCount = 0;
 
@@ -152,7 +140,7 @@ async function syncMailAccount(accountId) {
       [accountId]
     );
 
-    const resultMsg = `Synced ${account.email_address}: ${newEmailsCount} new emails (${messages.length} total in last 3 months)`;
+    const resultMsg = `Synced ${account.email_address}: ${newEmailsCount} new emails (${messages.length} total in INBOX)`;
     console.log(`[SYNC] ✓ ${resultMsg}`);
     return { success: true, newEmails: newEmailsCount, totalFound: messages.length, message: resultMsg };
   } catch (error) {
