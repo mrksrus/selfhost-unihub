@@ -45,7 +45,11 @@ import {
   ArrowLeft,
   ChevronLeft,
   ChevronRight,
-  Menu
+  Menu,
+  CheckSquare,
+  Square,
+  FolderOpen,
+  CheckCircle2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
@@ -106,6 +110,8 @@ const MailPage = () => {
   const [accountToDelete, setAccountToDelete] = useState<string | null>(null);
   const [editingAccount, setEditingAccount] = useState<MailAccount | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
+  const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [composeForm, setComposeForm] = useState({
     to: '',
     subject: '',
@@ -131,6 +137,34 @@ const MailPage = () => {
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
+
+  // Auto-select first account or remember last selected
+  useEffect(() => {
+    if (accounts.length > 0 && !selectedAccount) {
+      // Try to restore last selected account from localStorage
+      const lastAccountId = localStorage.getItem('mail_last_selected_account');
+      const lastAccount = accounts.find(a => a.id === lastAccountId);
+      
+      if (lastAccount) {
+        setSelectedAccount(lastAccount.id);
+      } else {
+        // Default to first account
+        setSelectedAccount(accounts[0].id);
+      }
+    }
+  }, [accounts, selectedAccount]);
+
+  // Remember selected account
+  useEffect(() => {
+    if (selectedAccount) {
+      localStorage.setItem('mail_last_selected_account', selectedAccount);
+    }
+  }, [selectedAccount]);
+
+  // Clear selection when folder changes
+  useEffect(() => {
+    setSelectedEmails(new Set());
+  }, [selectedFolder, selectedAccount]);
 
   // Fetch mail accounts
   const { data: accounts = [], isLoading: accountsLoading } = useQuery({
@@ -305,6 +339,135 @@ const MailPage = () => {
       queryClient.invalidateQueries({ queryKey: ['stats'] });
     },
   });
+
+  // Bulk operations mutations
+  const bulkDelete = useMutation({
+    mutationFn: async (emailIds: string[]) => {
+      const response = await api.post('/mail/emails/bulk-delete', { email_ids: emailIds });
+      if (response.error) throw new Error(response.error);
+      return emailIds.length;
+    },
+    onSuccess: (count) => {
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      setSelectedEmails(new Set());
+      toast({ title: `✓ Deleted ${count} email(s)` });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to delete emails', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const bulkMove = useMutation({
+    mutationFn: async ({ emailIds, folder }: { emailIds: string[]; folder: string }) => {
+      const response = await api.post('/mail/emails/bulk-move', { email_ids: emailIds, folder });
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      setSelectedEmails(new Set());
+      toast({ title: `✓ Moved ${variables.emailIds.length} email(s) to ${variables.folder}` });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to move emails', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const bulkMarkRead = useMutation({
+    mutationFn: async ({ emailIds, is_read }: { emailIds: string[]; is_read: boolean }) => {
+      const response = await api.post('/mail/emails/bulk-update', { email_ids: emailIds, is_read });
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      setSelectedEmails(new Set());
+    },
+  });
+
+  const bulkStar = useMutation({
+    mutationFn: async ({ emailIds, is_starred }: { emailIds: string[]; is_starred: boolean }) => {
+      const response = await api.post('/mail/emails/bulk-update', { email_ids: emailIds, is_starred });
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      setSelectedEmails(new Set());
+    },
+  });
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't handle shortcuts if user is typing in an input/textarea
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+        return;
+      }
+
+      // Delete selected emails
+      if (e.key === 'Delete' && selectedEmails.size > 0) {
+        e.preventDefault();
+        bulkDelete.mutate(Array.from(selectedEmails));
+      }
+
+      // Select all (Ctrl+A or Cmd+A)
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        e.preventDefault();
+        if (emails.length > 0) {
+          setSelectedEmails(new Set(emails.map(e => e.id)));
+        }
+      }
+
+      // Escape to deselect all
+      if (e.key === 'Escape') {
+        setSelectedEmails(new Set());
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedEmails, emails, bulkDelete]);
+
+  // Handle email selection
+  const handleEmailSelect = (emailId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newSelected = new Set(selectedEmails);
+    if (newSelected.has(emailId)) {
+      newSelected.delete(emailId);
+    } else {
+      if (e.ctrlKey || e.metaKey) {
+        // Ctrl+Click: toggle selection
+        newSelected.add(emailId);
+      } else if (e.shiftKey && selectedEmails.size > 0) {
+        // Shift+Click: select range
+        const emailIds = emails.map(e => e.id);
+        const startIdx = emailIds.findIndex(id => selectedEmails.has(id));
+        const endIdx = emailIds.findIndex(id => id === emailId);
+        if (startIdx !== -1 && endIdx !== -1) {
+          const start = Math.min(startIdx, endIdx);
+          const end = Math.max(startIdx, endIdx);
+          for (let i = start; i <= end; i++) {
+            newSelected.add(emailIds[i]);
+          }
+        } else {
+          newSelected.add(emailId);
+        }
+      } else {
+        // Regular click: single select
+        newSelected.clear();
+        newSelected.add(emailId);
+      }
+    }
+    setSelectedEmails(newSelected);
+  };
+
+  const handleSelectAll = () => {
+    if (selectedEmails.size === emails.length) {
+      setSelectedEmails(new Set());
+    } else {
+      setSelectedEmails(new Set(emails.map(e => e.id)));
+    }
+  };
   
   // Sync mail mutation
   const syncMail = useMutation({
@@ -715,8 +878,73 @@ const MailPage = () => {
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
         <div className="h-14 border-b border-border flex items-center justify-between px-4">
-          <h2 className="font-semibold capitalize">{selectedFolder}</h2>
           <div className="flex items-center gap-2">
+            {emails.length > 0 && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={handleSelectAll}
+                title={selectedEmails.size === emails.length ? 'Deselect all' : 'Select all'}
+              >
+                {selectedEmails.size === emails.length ? (
+                  <CheckSquare className="h-4 w-4" />
+                ) : (
+                  <Square className="h-4 w-4" />
+                )}
+              </Button>
+            )}
+            <h2 className="font-semibold capitalize">{selectedFolder}</h2>
+            {selectedEmails.size > 0 && (
+              <span className="text-sm text-muted-foreground">
+                ({selectedEmails.size} selected)
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {selectedEmails.size > 0 && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => bulkMarkRead.mutate({ emailIds: Array.from(selectedEmails), is_read: true })}
+                  disabled={bulkMarkRead.isPending}
+                >
+                  <CheckCircle2 className="h-4 w-4 mr-2" />
+                  Mark Read
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => bulkStar.mutate({ emailIds: Array.from(selectedEmails), is_starred: true })}
+                  disabled={bulkStar.isPending}
+                >
+                  <Star className="h-4 w-4 mr-2" />
+                  Star
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    const folder = selectedFolder === 'inbox' ? 'archive' : 'inbox';
+                    bulkMove.mutate({ emailIds: Array.from(selectedEmails), folder });
+                  }}
+                  disabled={bulkMove.isPending}
+                >
+                  <FolderOpen className="h-4 w-4 mr-2" />
+                  Move
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => bulkDelete.mutate(Array.from(selectedEmails))}
+                  disabled={bulkDelete.isPending}
+                  className="text-destructive hover:text-destructive"
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete
+                </Button>
+              </>
+            )}
             <Button 
               variant="ghost" 
               size="icon"
@@ -772,8 +1000,12 @@ const MailPage = () => {
                     exit={{ opacity: 0 }}
                     className={`flex items-start gap-4 p-4 hover:bg-muted/50 cursor-pointer transition-colors ${
                       !email.is_read ? 'bg-accent/5' : ''
-                    }`}
-                    onClick={async () => {
+                    } ${selectedEmails.has(email.id) ? 'bg-accent/10 ring-2 ring-accent' : ''}`}
+                    onClick={async (e) => {
+                      // If clicking checkbox area, don't open email
+                      if ((e.target as HTMLElement).closest('.email-checkbox')) {
+                        return;
+                      }
                       // Mark as read if unread
                       if (!email.is_read) {
                         markAsRead.mutate(email.id);
@@ -797,7 +1029,25 @@ const MailPage = () => {
                         setSelectedEmail(email);
                       }
                     }}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setContextMenuEmail({ email, x: e.clientX, y: e.clientY });
+                    }}
                   >
+                    <div className="email-checkbox shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={(e) => handleEmailSelect(email.id, e)}
+                      >
+                        {selectedEmails.has(email.id) ? (
+                          <CheckSquare className="h-4 w-4 text-accent" />
+                        ) : (
+                          <Square className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </Button>
+                    </div>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -837,6 +1087,67 @@ const MailPage = () => {
           )}
         </div>
       </div>
+
+      {/* Context Menu */}
+      {contextMenuEmail && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setContextMenuEmail(null)}
+          />
+          <div
+            className="fixed z-50 bg-popover border border-border rounded-md shadow-lg p-1 min-w-[200px]"
+            style={{ left: contextMenuEmail.x, top: contextMenuEmail.y }}
+          >
+          <button
+            className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
+            onClick={() => {
+              if (!contextMenuEmail.email.is_read) {
+                markAsRead.mutate(contextMenuEmail.email.id);
+              } else {
+                bulkMarkRead.mutate({ emailIds: [contextMenuEmail.email.id], is_read: false });
+              }
+              setContextMenuEmail(null);
+            }}
+          >
+            <CheckCircle2 className="h-4 w-4" />
+            {contextMenuEmail.email.is_read ? 'Mark as Unread' : 'Mark as Read'}
+          </button>
+          <button
+            className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
+            onClick={() => {
+              toggleStar.mutate({ id: contextMenuEmail.email.id, is_starred: !contextMenuEmail.email.is_starred });
+              setContextMenuEmail(null);
+            }}
+          >
+            <Star className={`h-4 w-4 ${contextMenuEmail.email.is_starred ? 'fill-warning text-warning' : ''}`} />
+            {contextMenuEmail.email.is_starred ? 'Unstar' : 'Star'}
+          </button>
+          <div className="border-t border-border my-1" />
+          <button
+            className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
+            onClick={() => {
+              const targetFolder = selectedFolder === 'inbox' ? 'archive' : 'inbox';
+              bulkMove.mutate({ emailIds: [contextMenuEmail.email.id], folder: targetFolder });
+              setContextMenuEmail(null);
+            }}
+          >
+            <FolderOpen className="h-4 w-4" />
+            Move to {selectedFolder === 'inbox' ? 'Archive' : 'Inbox'}
+          </button>
+          <button
+            className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2 text-destructive"
+            onClick={() => {
+              bulkDelete.mutate([contextMenuEmail.email.id]);
+              setContextMenuEmail(null);
+            }}
+          >
+            <Trash2 className="h-4 w-4" />
+            Delete
+          </button>
+        </div>
+        </>
+      )}
 
       {/* Delete Account Confirmation */}
       <AlertDialog open={!!accountToDelete} onOpenChange={(open) => !open && setAccountToDelete(null)}>

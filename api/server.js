@@ -1727,6 +1727,93 @@ const routes = {
       return { error: 'Failed to update email', status: 500 };
     }
   },
+
+  'POST /api/mail/emails/bulk-delete': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { email_ids } = body;
+      if (!Array.isArray(email_ids) || email_ids.length === 0) {
+        return { error: 'Email IDs array required', status: 400 };
+      }
+      
+      // Delete emails (they belong to user)
+      const placeholders = email_ids.map(() => '?').join(',');
+      await db.execute(
+        `DELETE FROM emails WHERE id IN (${placeholders}) AND user_id = ?`,
+        [...email_ids, userId]
+      );
+      
+      return { message: `Deleted ${email_ids.length} email(s)` };
+    } catch (error) {
+      console.error('[BULK] Delete error:', error);
+      return { error: 'Failed to delete emails', status: 500 };
+    }
+  },
+
+  'POST /api/mail/emails/bulk-move': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { email_ids, folder } = body;
+      if (!Array.isArray(email_ids) || email_ids.length === 0) {
+        return { error: 'Email IDs array required', status: 400 };
+      }
+      if (!folder || !['inbox', 'archive', 'trash', 'sent'].includes(folder)) {
+        return { error: 'Valid folder required (inbox, archive, trash, sent)', status: 400 };
+      }
+      
+      // Update folder for emails
+      const placeholders = email_ids.map(() => '?').join(',');
+      await db.execute(
+        `UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
+        [folder, ...email_ids, userId]
+      );
+      
+      return { message: `Moved ${email_ids.length} email(s) to ${folder}` };
+    } catch (error) {
+      console.error('[BULK] Move error:', error);
+      return { error: 'Failed to move emails', status: 500 };
+    }
+  },
+
+  'POST /api/mail/emails/bulk-update': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { email_ids, is_read, is_starred } = body;
+      if (!Array.isArray(email_ids) || email_ids.length === 0) {
+        return { error: 'Email IDs array required', status: 400 };
+      }
+      
+      const updates = [];
+      const values = [];
+      
+      if (typeof is_read === 'boolean') {
+        updates.push('is_read = ?');
+        values.push(is_read ? 1 : 0);
+      }
+      if (typeof is_starred === 'boolean') {
+        updates.push('is_starred = ?');
+        values.push(is_starred ? 1 : 0);
+      }
+      
+      if (updates.length === 0) {
+        return { error: 'At least one field (is_read or is_starred) required', status: 400 };
+      }
+      
+      const placeholders = email_ids.map(() => '?').join(',');
+      await db.execute(
+        `UPDATE emails SET ${updates.join(', ')} WHERE id IN (${placeholders}) AND user_id = ?`,
+        [...values, ...email_ids, userId]
+      );
+      
+      return { message: `Updated ${email_ids.length} email(s)` };
+    } catch (error) {
+      console.error('[BULK] Update error:', error);
+      return { error: 'Failed to update emails', status: 500 };
+    }
+  },
   
   'POST /api/mail/sync': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
