@@ -1,6 +1,11 @@
 import * as React from "react";
 
-const MOBILE_BREAKPOINT = 768;
+// Mobile breakpoint set to 1024px to cover all mobile devices including larger phones
+// and small tablets in portrait mode. Common mobile viewport widths:
+// - iPhone 13: 390px
+// - Pixel 8a: ~412px  
+// - Larger phones/tablets: up to ~1024px
+const MOBILE_BREAKPOINT = 1024;
 
 export function useIsMobile() {
   const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined);
