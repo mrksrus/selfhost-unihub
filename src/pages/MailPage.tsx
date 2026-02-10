@@ -138,6 +138,16 @@ const MailPage = () => {
     }
   }, []);
 
+  // Fetch mail accounts
+  const { data: accounts = [], isLoading: accountsLoading } = useQuery({
+    queryKey: ['mail-accounts'],
+    queryFn: async () => {
+      const response = await api.get<{ accounts: MailAccount[] }>('/mail/accounts');
+      if (response.error) throw new Error(response.error);
+      return response.data?.accounts || [];
+    },
+  });
+
   // Auto-select first account or remember last selected
   useEffect(() => {
     if (accounts.length > 0 && !selectedAccount) {
@@ -165,16 +175,6 @@ const MailPage = () => {
   useEffect(() => {
     setSelectedEmails(new Set());
   }, [selectedFolder, selectedAccount]);
-
-  // Fetch mail accounts
-  const { data: accounts = [], isLoading: accountsLoading } = useQuery({
-    queryKey: ['mail-accounts'],
-    queryFn: async () => {
-      const response = await api.get<{ accounts: MailAccount[] }>('/mail/accounts');
-      if (response.error) throw new Error(response.error);
-      return response.data?.accounts || [];
-    },
-  });
 
   // Fetch emails for selected account
   const { data: emails = [], isLoading: emailsLoading } = useQuery({
