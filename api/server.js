@@ -153,48 +153,68 @@ async function syncMailAccount(accountId) {
     debugLog('server.js:82', 'INBOX opened', {}, 'H1');
     // #endregion
 
-    // Fetch recent emails (no date filter - avoids SINCE format issues across providers)
-    // imap-simple's search method with fetchOptions returns messages directly
-    // Using '' in bodies gets the full message (useful for mailparser), HEADER and TEXT are alternatives
+    // Fetch recent emails - first get UIDs only (fast), then fetch only last 500 with bodies
+    // This avoids downloading 2500+ full messages which causes timeouts
+    console.log(`[SYNC] Getting message UIDs...`);
+    const uids = await connection.search(['ALL'], {});
+    console.log(`[SYNC] Found ${uids.length} messages in INBOX`);
+    // #region agent log
+    debugLog('server.js:91', 'IMAP UID search completed', { uidCount: uids.length }, 'H1');
+    // #endregion
+
+    if (uids.length === 0) {
+      if (connection) connection.end();
+      await db.execute(
+        'UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ?',
+        [accountId]
+      );
+      return { success: true, newEmails: 0, totalFound: 0, message: `Synced ${account.email_address}: 0 emails (empty inbox)` };
+    }
+
+    // Fetch emails one by one - this allows real-time progress and avoids timeout issues
+    // Take last 500 UIDs to process
+    const uidsToProcess = uids.slice(-500);
+    console.log(`[SYNC] Will fetch ${uidsToProcess.length} emails one by one (out of ${uids.length} total)...`);
+    
     const fetchOptions = {
-      bodies: ['HEADER', 'TEXT', ''], // '' gets full message, HEADER/TEXT are parsed alternatives
+      bodies: ['HEADER', 'TEXT'], // HEADER and TEXT should be sufficient
       markSeen: false,
       struct: true,
     };
     
-    // Search for all messages and fetch their content
-    // This returns messages with their bodies, not just UIDs
-    const allMessages = await connection.search(['ALL'], fetchOptions);
-    console.log(`[SYNC] Found ${allMessages.length} messages in INBOX`);
     // #region agent log
-    debugLog('server.js:91', 'IMAP search completed', { messageCount: allMessages.length }, 'H1');
-    // #endregion
-
-    // Take last 500 to avoid overwhelming the database
-    const messages = allMessages.slice(-500);
-    // #region agent log
-    debugLog('server.js:99', 'Messages sliced to last 500', { totalMessages: allMessages.length, messagesToProcess: messages.length }, 'H1');
+    debugLog('server.js:95', 'Starting one-by-one email fetch', { totalUids: uids.length, uidsToProcess: uidsToProcess.length }, 'H1');
     // #endregion
 
     let newEmailsCount = 0;
+    let processedCount = 0;
+    let failedCount = 0;
 
-    for (const item of messages) {
-      const uid = item.attributes.uid;
+    // Fetch and process emails one by one
+    for (let i = 0; i < uidsToProcess.length; i++) {
+      const uid = uidsToProcess[i];
+      processedCount++;
       
-      // According to imap-simple API: search() with fetchOptions returns messages with parts array
-      // Each part has 'which' property ('HEADER', 'TEXT', '', etc.) and 'body' property
-      // For mailparser, we can use the full message (which === '') or reconstruct from HEADER + TEXT
-      
-      // Try to get full message first (which === ''), as shown in mailparser example
-      const fullPart = item.parts.find(p => p.which === '');
-      let fullEmail = '';
-      
-      if (fullPart && fullPart.body) {
-        // Full message body - add UID header for mailparser as shown in GitHub example
-        const idHeader = `Imap-Id: ${uid}\r\n`;
-        fullEmail = idHeader + (typeof fullPart.body === 'string' ? fullPart.body : String(fullPart.body));
-      } else {
-        // Fallback: reconstruct from HEADER + TEXT parts
+      try {
+        // Fetch single email by UID
+        // Format: ['UID', uid] searches for specific UID
+        const messageResults = await connection.search([['UID', uid]], fetchOptions);
+        
+        if (!messageResults || messageResults.length === 0) {
+          console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] UID ${uid}: Not found, skipping`);
+          continue;
+        }
+        
+        const item = messageResults[0]; // Should only be one result
+        console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] ✓ Downloaded UID ${uid}`);
+        // #region agent log
+        debugLog('server.js:98', 'Email downloaded', { uid, processedCount, total: uidsToProcess.length, hasParts: !!item.parts, partsCount: item.parts?.length || 0 }, 'H1');
+        // #endregion
+        
+        // According to imap-simple API: search() with fetchOptions returns messages with parts array
+        // Each part has 'which' property ('HEADER', 'TEXT', etc.) and 'body' property
+        // We fetch HEADER and TEXT separately, then reconstruct the email for mailparser
+        
         const headerPart = item.parts.find(p => p.which === 'HEADER');
         const textPart = item.parts.find(p => p.which === 'TEXT');
         
@@ -207,10 +227,13 @@ async function syncMailAccount(accountId) {
           if (typeof headerPart.body === 'string') {
             headerContent = headerPart.body;
           } else if (typeof headerPart.body === 'object') {
+            // Reconstruct header from parsed object
             const headerLines = [];
             for (const [key, value] of Object.entries(headerPart.body)) {
               if (Array.isArray(value)) {
-                value.forEach(v => headerLines.push(`${key}: ${v}`));
+                value.forEach(v => {
+                  if (v) headerLines.push(`${key}: ${v}`);
+                });
               } else if (value) {
                 headerLines.push(`${key}: ${value}`);
               }
@@ -220,92 +243,112 @@ async function syncMailAccount(accountId) {
         }
         
         if (textPart && textPart.body) {
+          // TEXT body should be a string (imap-simple decodes it automatically)
           bodyContent = typeof textPart.body === 'string' ? textPart.body : String(textPart.body);
         }
         
-        // Combine header and body
+        // Combine header and body for mailparser (RFC822 format)
+        let fullEmail = '';
         if (headerContent) {
           fullEmail = headerContent + (bodyContent ? '\r\n\r\n' + bodyContent : '');
         } else if (bodyContent) {
+          // If no header, try parsing body alone (some servers might include headers in TEXT)
           fullEmail = bodyContent;
         }
-      }
-      
-      // #region agent log
-      debugLog('server.js:104', 'Before parsing email', { uid, hasHeader: !!headerContent, hasBody: !!bodyContent, headerLength: headerContent?.length || 0, bodyLength: bodyContent?.length || 0, fullEmailLength: fullEmail?.length || 0 }, 'H3');
-      // #endregion
+        
+        // #region agent log
+        debugLog('server.js:104', 'Before parsing email', { uid, hasHeader: !!headerContent, hasBody: !!bodyContent, headerLength: headerContent?.length || 0, bodyLength: bodyContent?.length || 0, fullEmailLength: fullEmail?.length || 0 }, 'H3');
+        // #endregion
 
-      if (!fullEmail || fullEmail.trim().length === 0) {
-        console.log(`[SYNC] Skipping message ${uid}: no content`);
-        continue;
-      }
+        if (!fullEmail || fullEmail.trim().length === 0) {
+          console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] Skipping UID ${uid}: no content`);
+          continue;
+        }
 
-      const parsed = await simpleParser(fullEmail);
-      // #region agent log
-      debugLog('server.js:105', 'After parsing email', { parsed: !!parsed, hasSubject: !!parsed?.subject, hasFrom: !!parsed?.from, hasText: !!parsed?.text, hasHtml: !!parsed?.html }, 'H3');
-      // #endregion
-      
-      // Extract message ID
-      const messageId = parsed.messageId || `${accountId}-${uid}`;
+        const parsed = await simpleParser(fullEmail);
+        // #region agent log
+        debugLog('server.js:105', 'After parsing email', { parsed: !!parsed, hasSubject: !!parsed?.subject, hasFrom: !!parsed?.from, hasText: !!parsed?.text, hasHtml: !!parsed?.html }, 'H3');
+        // #endregion
+        
+        // Extract message ID
+        const messageId = parsed.messageId || `${accountId}-${uid}`;
 
-      // Check if already synced
-      const [existing] = await db.execute(
-        'SELECT id FROM emails WHERE message_id = ? AND mail_account_id = ?',
-        [messageId, accountId]
-      );
-      if (existing.length > 0) continue;
+        // Check if already synced
+        const [existing] = await db.execute(
+          'SELECT id FROM emails WHERE message_id = ? AND mail_account_id = ?',
+          [messageId, accountId]
+        );
+        if (existing.length > 0) {
+          console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] UID ${uid}: Already synced, skipping`);
+          continue;
+        }
 
-      // Extract from address and name
-      let fromAddress = 'unknown';
-      let fromName = null;
-      if (parsed.from) {
-        if (parsed.from.value && parsed.from.value.length > 0) {
-          fromAddress = parsed.from.value[0].address || parsed.from.text || 'unknown';
-          fromName = parsed.from.value[0].name || null;
-        } else if (parsed.from.text) {
-          // Try to parse "Name <email@domain.com>" format
-          const textMatch = parsed.from.text.match(/^(.+?)\s*<(.+?)>$/);
-          if (textMatch) {
-            fromName = textMatch[1].trim();
-            fromAddress = textMatch[2].trim();
-          } else {
-            fromAddress = parsed.from.text;
+        // Extract from address and name
+        let fromAddress = 'unknown';
+        let fromName = null;
+        if (parsed.from) {
+          if (parsed.from.value && parsed.from.value.length > 0) {
+            fromAddress = parsed.from.value[0].address || parsed.from.text || 'unknown';
+            fromName = parsed.from.value[0].name || null;
+          } else if (parsed.from.text) {
+            // Try to parse "Name <email@domain.com>" format
+            const textMatch = parsed.from.text.match(/^(.+?)\s*<(.+?)>$/);
+            if (textMatch) {
+              fromName = textMatch[1].trim();
+              fromAddress = textMatch[2].trim();
+            } else {
+              fromAddress = parsed.from.text;
+            }
           }
         }
-      }
 
-      // Extract to addresses
-      const toAddresses = [];
-      if (parsed.to && parsed.to.value) {
-        toAddresses.push(...parsed.to.value.map(t => t.address).filter(Boolean));
-      }
+        // Extract to addresses
+        const toAddresses = [];
+        if (parsed.to && parsed.to.value) {
+          toAddresses.push(...parsed.to.value.map(t => t.address).filter(Boolean));
+        }
 
-      // Insert email
-      const emailId = crypto.randomUUID();
-      // #region agent log
-      debugLog('server.js:116', 'Before DB insert', { emailId, userId: account.user_id, accountId, messageId, fromAddress, fromName, subject: parsed.subject?.substring(0, 50), hasText: !!parsed.text, hasHtml: !!parsed.html }, 'H4');
-      // #endregion
-      await db.execute(
-        'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [
-          emailId,
-          account.user_id,
-          accountId,
-          messageId,
-          parsed.subject || '(No subject)',
-          fromAddress,
-          fromName,
-          JSON.stringify(toAddresses),
-          parsed.text || null,
-          parsed.html || null,
-          parsed.date || new Date(),
-        ]
-      );
-      // #region agent log
-      debugLog('server.js:131', 'DB insert success', { emailId }, 'H4');
-      // #endregion
-      newEmailsCount++;
+        // Insert email
+        const emailId = crypto.randomUUID();
+        // #region agent log
+        debugLog('server.js:116', 'Before DB insert', { emailId, userId: account.user_id, accountId, messageId, fromAddress, fromName, subject: parsed.subject?.substring(0, 50), hasText: !!parsed.text, hasHtml: !!parsed.html }, 'H4');
+        // #endregion
+        await db.execute(
+          'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html, received_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            emailId,
+            account.user_id,
+            accountId,
+            messageId,
+            parsed.subject || '(No subject)',
+            fromAddress,
+            fromName,
+            JSON.stringify(toAddresses),
+            parsed.text || null,
+            parsed.html || null,
+            parsed.date || new Date(),
+          ]
+        );
+        newEmailsCount++;
+        console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] ✓ Stored email: "${parsed.subject || '(No subject)'}" from ${fromAddress} (${newEmailsCount} new so far)`);
+        // #region agent log
+        debugLog('server.js:131', 'DB insert success', { emailId, newEmailsCount, processedCount }, 'H4');
+        // #endregion
+      } catch (emailError) {
+        failedCount++;
+        console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] ✗ Failed to process UID ${uid}:`, emailError.message);
+        // #region agent log
+        debugLog('server.js:135', 'Email processing error', { uid, errorMessage: emailError.message, errorName: emailError.name, processedCount, failedCount }, 'H1');
+        // #endregion
+        // Continue with next email instead of failing completely
+        continue;
+      }
     }
+    
+    console.log(`[SYNC] Completed: ${newEmailsCount} new emails stored, ${failedCount} failed, ${processedCount} processed`);
+    // #region agent log
+    debugLog('server.js:140', 'Sync completed', { newEmailsCount, failedCount, processedCount, totalUids: uids.length }, 'H1');
+    // #endregion
 
     if (connection) connection.end();
 
@@ -315,9 +358,9 @@ async function syncMailAccount(accountId) {
       [accountId]
     );
 
-    const resultMsg = `Synced ${account.email_address}: ${newEmailsCount} new emails (${allMessages.length} total in INBOX)`;
+    const resultMsg = `Synced ${account.email_address}: ${newEmailsCount} new emails (${uids.length} total in INBOX, ${processedCount} processed, ${failedCount} failed)`;
     console.log(`[SYNC] ✓ ${resultMsg}`);
-    return { success: true, newEmails: newEmailsCount, totalFound: allMessages.length, message: resultMsg };
+    return { success: true, newEmails: newEmailsCount, totalFound: uids.length, message: resultMsg };
   } catch (error) {
     if (connection) {
       try { connection.end(); } catch (e) { /* ignore */ }
