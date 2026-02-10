@@ -331,9 +331,10 @@ async function syncMailAccount(accountId) {
         // Initialize processedHtml - will be modified if inline attachments exist
         let processedHtml = parsed.html || null;
         
+        // Declare uploadsDir in outer scope so it's accessible in attachment processing loop
+        const uploadsDir = '/app/uploads/attachments';
         if (hasAttachments) {
           // Ensure uploads directory exists
-          const uploadsDir = '/app/uploads/attachments';
           try {
             await mkdir(uploadsDir, { recursive: true });
           } catch (err) {
@@ -2203,6 +2204,9 @@ async function handleRequest(req, res) {
       routeKey = `${req.method} /api/mail/emails/:id/read`;
     } else if (url.pathname.includes('/star')) {
       routeKey = `${req.method} /api/mail/emails/:id/star`;
+    } else {
+      // Handle GET /api/mail/emails/:id
+      routeKey = `${req.method} /api/mail/emails/:id`;
     }
   } else if (routeKey.includes('/api/admin/users/')) {
     if (url.pathname.includes('/password')) {
