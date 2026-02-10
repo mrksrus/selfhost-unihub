@@ -1070,7 +1070,7 @@ const MailPage = () => {
                           </span>
                         </div>
                         <span className="text-xs text-muted-foreground shrink-0">
-                          {format(new Date(email.received_at), 'MMM d')}
+                          {format(new Date(email.received_at), 'MMM d, yyyy')}
                         </span>
                       </div>
                       <p className={`truncate ${!email.is_read ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
