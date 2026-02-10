@@ -328,6 +328,9 @@ async function syncMailAccount(accountId) {
         let attachmentCount = 0;
         const inlineAttachments = new Map(); // Map CID to attachment ID for HTML replacement
         
+        // Initialize processedHtml - will be modified if inline attachments exist
+        let processedHtml = parsed.html || null;
+        
         if (hasAttachments) {
           // Ensure uploads directory exists
           const uploadsDir = '/app/uploads/attachments';
@@ -340,7 +343,7 @@ async function syncMailAccount(accountId) {
           }
         }
 
-        // Insert email
+        // Insert email (will be updated after attachments processed if needed)
         const emailId = crypto.randomUUID();
         // #region agent log
         debugLog('server.js:116', 'Before DB insert', { emailId, userId: account.user_id, accountId, messageId, fromAddress, fromName, subject: parsed.subject?.substring(0, 50), hasText: !!parsed.text, hasHtml: !!parsed.html, hasAttachments }, 'H4');
@@ -357,7 +360,7 @@ async function syncMailAccount(accountId) {
             fromName,
             JSON.stringify(toAddresses),
             parsed.text || null,
-            processedHtml || parsed.html || null, // Use processed HTML with replaced inline image URLs
+            processedHtml, // Will be updated below if inline attachments processed
             hasAttachments ? 1 : 0,
             parsed.date || new Date(),
             'inbox', // Default folder
@@ -365,7 +368,6 @@ async function syncMailAccount(accountId) {
         );
 
         // Save attachments and process inline images
-        let processedHtml = parsed.html || null;
         if (hasAttachments) {
           for (const attachment of parsed.attachments) {
             try {
@@ -449,6 +451,14 @@ async function syncMailAccount(accountId) {
               console.error(`[SYNC] Failed to save attachment ${attachment.filename || attachment.cid || 'unknown'}:`, attachError.message);
               // Continue with other attachments
             }
+          }
+          
+          // Update email record with processed HTML if inline attachments were processed
+          if (processedHtml !== (parsed.html || null)) {
+            await db.execute(
+              'UPDATE emails SET body_html = ? WHERE id = ?',
+              [processedHtml, emailId]
+            );
           }
         }
 
