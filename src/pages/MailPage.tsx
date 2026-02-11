@@ -130,6 +130,7 @@ const MailPage = () => {
   const [accountToDelete, setAccountToDelete] = useState<string | null>(null);
   const [editingAccount, setEditingAccount] = useState<MailAccount | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -710,12 +711,36 @@ const MailPage = () => {
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
 
   return (
-    <div className="flex h-[calc(100vh-0px)] overflow-hidden">
+    <div className="flex h-[calc(100vh-0px)] overflow-hidden relative">
+      {/* Mobile Sidebar Overlay */}
+      {isMobile && mobileSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-40"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
+      
       {/* Sidebar */}
-      <div className={`${isMobile ? 'w-64' : (sidebarCollapsed ? 'w-16' : 'w-64')} border-r border-border bg-card flex flex-col transition-all duration-200`}>
+      <div className={
+        isMobile
+          ? `fixed left-0 top-0 h-full w-56 z-50 transform transition-transform duration-200 border-r border-border bg-card flex flex-col ${
+              mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'
+            }`
+          : `${sidebarCollapsed ? 'w-16' : 'w-64'} border-r border-border bg-card flex flex-col transition-all duration-200`
+      }>
         {/* Compose Button */}
         <div className="p-4 flex items-center gap-2">
-          {!isMobile && (
+          {isMobile ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="shrink-0"
+              onClick={() => setMobileSidebarOpen(false)}
+              title="Close sidebar"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          ) : (
             <Button
               variant="ghost"
               size="icon"
@@ -741,7 +766,10 @@ const MailPage = () => {
           {folders.map((folder) => (
             <button
               key={folder.id}
-              onClick={() => setSelectedFolder(folder.id)}
+              onClick={() => {
+                setSelectedFolder(folder.id);
+                if (isMobile) setMobileSidebarOpen(false);
+              }}
               className={`w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
                 selectedFolder === folder.id
                   ? 'bg-accent/10 text-accent font-medium'
@@ -928,7 +956,10 @@ const MailPage = () => {
               accounts.map((account) => (
                 <div key={account.id} className={`relative group ${(sidebarCollapsed && !isMobile) ? 'flex justify-center' : ''}`}>
                   <button
-                    onClick={() => setSelectedAccount(account.id)}
+                    onClick={() => {
+                      setSelectedAccount(account.id);
+                      if (isMobile) setMobileSidebarOpen(false);
+                    }}
                     className={`w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
                       selectedAccount === account.id
                         ? 'bg-mail/10 text-mail font-medium'
@@ -984,6 +1015,17 @@ const MailPage = () => {
         {/* Header */}
         <div className="h-14 border-b border-border flex items-center justify-between px-4 gap-4">
           <div className="flex items-center gap-2 flex-1 min-w-0">
+            {isMobile && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setMobileSidebarOpen(true)}
+                title="Open sidebar"
+                className="shrink-0"
+              >
+                <Menu className="h-5 w-5" />
+              </Button>
+            )}
             {emails.length > 0 && (
               <Button
                 variant="ghost"
