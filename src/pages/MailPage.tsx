@@ -221,6 +221,8 @@ const MailPage = () => {
       return { emails, pagination: response.data?.pagination || null };
     },
     enabled: !!selectedAccount,
+    refetchInterval: 5000, // Auto-refresh every 5 seconds to show new emails as they sync
+    staleTime: 0, // Always consider data stale so it refetches
   });
 
   const allEmails = emailsData?.emails || [];

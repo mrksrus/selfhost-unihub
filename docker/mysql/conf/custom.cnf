@@ -15,7 +15,9 @@ innodb_log_buffer_size = 16M     # Standard size - good for email syncs
 
 # Faster startup optimizations (no performance impact)
 skip-name-resolve              # Skip DNS lookups (faster connections, no downside in Docker)
-skip-host-cache                # Skip host cache (faster startup, no downside in Docker)
+# Host cache disabled via host_cache_size = 0 (replaces deprecated --skip-host-cache)
+# Note: This must be set in config file, not command line
+host_cache_size = 0
 
 # Performance monitoring - keep enabled for diagnostics (minimal overhead)
 performance_schema = ON         # Keep ON for monitoring, but limit what's tracked

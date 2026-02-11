@@ -58,7 +58,6 @@ services:
       - --innodb-buffer-pool-size=192M
       - --innodb-log-file-size=48M
       - --skip-name-resolve
-      - --skip-host-cache
     volumes:
       - mysql_data:/var/lib/mysql
       - ./docker/mysql/conf/custom.cnf:/etc/mysql/conf.d/custom.cnf:ro

@@ -188,7 +188,12 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
           fullEmail = bodyContent;
         }
         
-        if (!fullEmail || fullEmail.trim().length === 0) continue;
+        if (!fullEmail || fullEmail.trim().length === 0) {
+          if (processedCount <= 5) {
+            console.log(`[SYNC] Skipping empty email UID ${uid}`);
+          }
+          continue;
+        }
         
         const parsed = await simpleParser(fullEmail);
         const messageId = parsed.messageId || `${accountId}-${folderName}-${uid}`;
@@ -198,7 +203,12 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
           'SELECT id FROM emails WHERE message_id = ? AND mail_account_id = ? AND folder = ?',
           [messageId, accountId, dbFolderName]
         );
-        if (existing.length > 0) continue;
+        if (existing.length > 0) {
+          if (processedCount <= 5) {
+            console.log(`[SYNC] Email already exists (UID: ${uid}, messageId: ${messageId}), skipping`);
+          }
+          continue;
+        }
         
         // Extract from address and name
         let fromAddress = 'unknown';
@@ -240,24 +250,30 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
         }
         
         const emailId = crypto.randomUUID();
-        await db.execute(
-          'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html, has_attachments, received_at, folder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [
-            emailId,
-            account.user_id,
-            accountId,
-            messageId,
-            parsed.subject || '(No subject)',
-            fromAddress,
-            fromName,
-            JSON.stringify(toAddresses),
-            parsed.text || null,
-            processedHtml,
-            hasAttachments ? 1 : 0,
-            parsed.date || new Date(),
-            dbFolderName,
-          ]
-        );
+        try {
+          await db.execute(
+            'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html, has_attachments, received_at, folder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+              emailId,
+              account.user_id,
+              accountId,
+              messageId,
+              parsed.subject || '(No subject)',
+              fromAddress,
+              fromName,
+              JSON.stringify(toAddresses),
+              parsed.text || null,
+              processedHtml,
+              hasAttachments ? 1 : 0,
+              parsed.date || new Date(),
+              dbFolderName,
+            ]
+          );
+        } catch (dbError) {
+          console.error(`[SYNC] Database error saving email UID ${uid}:`, dbError.message);
+          console.error(`[SYNC] Error details:`, dbError.code, dbError.sqlState);
+          throw dbError; // Re-throw to be caught by outer catch
+        }
         
         // Process attachments
         if (hasAttachments) {
@@ -335,9 +351,12 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
         console.log(`[SYNC] ✓ Saved email ${newEmailsCount} (UID: ${uid}) - Subject: ${parsed.subject || '(No subject)'}`);
       } catch (emailError) {
         failedCount++;
-        // Log error details for debugging (but don't spam logs)
-        if (failedCount <= 5 || failedCount % 50 === 0) {
-          console.error(`[SYNC] Error processing email UID ${uid}:`, emailError.message);
+        // Always log errors for first few and periodically, but include more details
+        if (failedCount <= 10 || failedCount % 25 === 0) {
+          console.error(`[SYNC] ✗ Error processing email UID ${uid}:`, emailError.message);
+          if (emailError.stack && failedCount <= 5) {
+            console.error(`[SYNC] Stack trace:`, emailError.stack.substring(0, 300));
+          }
         }
         continue;
       }
@@ -501,6 +520,15 @@ async function syncMailAccount(accountId) {
     const totalFailed = inboxResult.failed + sentResult.failed;
     const resultMsg = `Synced ${account.email_address}: ${totalNew} new emails (${inboxResult.total} in INBOX, ${sentResult.total} in Sent, ${totalProcessed} processed, ${totalFailed} failed)`;
     console.log(`[SYNC] ✓ ${resultMsg}`);
+    
+    // Log detailed summary for debugging
+    if (totalNew === 0 && totalProcessed > 0) {
+      console.warn(`[SYNC] ⚠ WARNING: Processed ${totalProcessed} emails but saved 0. This might indicate:`);
+      console.warn(`[SYNC]   - All emails already exist in database (duplicate detection)`);
+      console.warn(`[SYNC]   - Emails are empty or invalid`);
+      console.warn(`[SYNC]   - Database insert errors (check logs above)`);
+    }
+    
     return { success: true, newEmails: totalNew, totalFound: inboxResult.total + sentResult.total, message: resultMsg };
   } catch (error) {
     if (connection) {
