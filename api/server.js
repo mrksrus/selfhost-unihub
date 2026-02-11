@@ -749,6 +749,9 @@ async function ensureSchema() {
     color VARCHAR(20) DEFAULT '#22c55e',
     recurrence VARCHAR(100),
     reminder_minutes INT,
+    reminders JSON DEFAULT NULL COMMENT 'Array of reminder minutes before event: [0, 15, 60] for default + 15min + 1hr before',
+    todo_status VARCHAR(20) DEFAULT NULL COMMENT 'done, changed, time_moved, cancelled',
+    is_todo_only BOOLEAN DEFAULT FALSE COMMENT 'True for standalone todos without calendar dates',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -756,6 +759,36 @@ async function ensureSchema() {
     INDEX idx_events_start (start_time),
     INDEX idx_events_user_time (user_id, start_time, end_time)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  
+  // Add todo_status column if it doesn't exist (for existing installations)
+  try {
+    await db.execute(`ALTER TABLE calendar_events ADD COLUMN todo_status VARCHAR(20) DEFAULT NULL COMMENT 'done, changed, time_moved, cancelled'`);
+  } catch (error) {
+    // Column already exists, ignore error
+    if (!error.message.includes('Duplicate column name')) {
+      console.log('[DB] Note: todo_status column may already exist');
+    }
+  }
+  
+  // Add reminders JSON column if it doesn't exist (for existing installations)
+  try {
+    await db.execute(`ALTER TABLE calendar_events ADD COLUMN reminders JSON DEFAULT NULL COMMENT 'Array of reminder minutes before event: [0, 15, 60] for default + 15min + 1hr before'`);
+  } catch (error) {
+    // Column already exists, ignore error
+    if (!error.message.includes('Duplicate column name')) {
+      console.log('[DB] Note: reminders column may already exist');
+    }
+  }
+  
+  // Add is_todo_only column if it doesn't exist (for existing installations)
+  try {
+    await db.execute(`ALTER TABLE calendar_events ADD COLUMN is_todo_only BOOLEAN DEFAULT FALSE COMMENT 'True for standalone todos without calendar dates'`);
+  } catch (error) {
+    // Column already exists, ignore error
+    if (!error.message.includes('Duplicate column name')) {
+      console.log('[DB] Note: is_todo_only column may already exist');
+    }
+  }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS mail_accounts (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -1434,7 +1467,7 @@ const routes = {
         [userId]
       );
       const [events] = await db.execute(
-        'SELECT COUNT(*) as count FROM calendar_events WHERE user_id = ? AND start_time >= UTC_TIMESTAMP()',
+        'SELECT COUNT(*) as count FROM calendar_events WHERE user_id = ? AND start_time >= UTC_TIMESTAMP() AND is_todo_only = FALSE',
         [userId]
       );
       const [unread] = await db.execute(
@@ -1611,15 +1644,26 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const [rows] = await db.execute(
-        'SELECT * FROM calendar_events WHERE user_id = ? ORDER BY start_time ASC',
-        [userId]
-      );
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const includeTodos = url.searchParams.get('include_todos') === 'true';
+      
+      let query = 'SELECT * FROM calendar_events WHERE user_id = ?';
+      const params = [userId];
+      
+      // Filter out todo-only events unless explicitly requested
+      if (!includeTodos) {
+        query += ' AND is_todo_only = FALSE';
+      }
+      
+      query += ' ORDER BY start_time ASC';
+      
+      const [rows] = await db.execute(query, params);
       // Serialise dates as UTC ISO strings so the client gets correct times
       const events = rows.map((row) => ({
         ...row,
         start_time: row.start_time instanceof Date ? row.start_time.toISOString() : row.start_time,
         end_time: row.end_time instanceof Date ? row.end_time.toISOString() : row.end_time,
+        reminders: row.reminders ? (typeof row.reminders === 'string' ? JSON.parse(row.reminders) : row.reminders) : null,
       }));
       return { events };
     } catch (error) {
@@ -1632,7 +1676,7 @@ const routes = {
     if (!body.title?.trim()) return { error: 'Title is required', status: 400 };
 
     try {
-      const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes } = body;
+      const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only } = body;
       // Normalise to MySQL DATETIME format (YYYY-MM-DD HH:MM:SS)
       const toMysqlDatetime = (v) => {
         if (v == null || v === '') return null;
@@ -1646,12 +1690,18 @@ const routes = {
 
       const eventId = crypto.randomUUID();
       await db.execute(
-        'INSERT INTO calendar_events (id, user_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [eventId, userId, title.trim(), description || null, start, end, !!all_day, location?.trim() || null, color || '#22c55e', recurrence || null, reminder_minutes ?? null]
+        'INSERT INTO calendar_events (id, user_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [eventId, userId, title.trim(), description || null, start, end, !!all_day, location?.trim() || null, color || '#22c55e', recurrence || null, reminder_minutes ?? null, reminders ? JSON.stringify(reminders) : null, !!is_todo_only]
       );
 
       const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ?', [eventId]);
-      return { event: events[0] };
+      const event = events[0];
+      if (event) {
+        event.start_time = event.start_time instanceof Date ? event.start_time.toISOString() : event.start_time;
+        event.end_time = event.end_time instanceof Date ? event.end_time.toISOString() : event.end_time;
+        event.reminders = event.reminders ? (typeof event.reminders === 'string' ? JSON.parse(event.reminders) : event.reminders) : null;
+      }
+      return { event };
     } catch (error) {
       console.error('Create event error:', error);
       return { error: error.message || 'Failed to create event', status: 500 };
@@ -1663,7 +1713,7 @@ const routes = {
 
     try {
       const id = req.url.split('/').pop();
-      const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes } = body;
+      const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, todo_status } = body;
       const toMysqlDatetime = (v) => {
         if (v == null || v === '') return null;
         const d = new Date(v);
@@ -1675,8 +1725,8 @@ const routes = {
       if (!start || !end) return { error: 'Valid start and end time are required', status: 400 };
 
       await db.execute(
-        'UPDATE calendar_events SET title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?, location = ?, color = ?, recurrence = ?, reminder_minutes = ? WHERE id = ? AND user_id = ?',
-        [title?.trim() ?? '', description || null, start, end, !!all_day, location?.trim() || null, color || '#22c55e', recurrence || null, reminder_minutes ?? null, id, userId]
+        'UPDATE calendar_events SET title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?, location = ?, color = ?, recurrence = ?, reminder_minutes = ?, reminders = ?, todo_status = ?, is_todo_only = ? WHERE id = ? AND user_id = ?',
+        [title?.trim() ?? '', description || null, start, end, !!all_day, location?.trim() || null, color || '#22c55e', recurrence || null, reminder_minutes ?? null, reminders ? JSON.stringify(reminders) : null, todo_status || null, !!is_todo_only, id, userId]
       );
 
       const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
@@ -1684,6 +1734,56 @@ const routes = {
     } catch (error) {
       console.error('Update event error:', error);
       return { error: error.message || 'Failed to update event', status: 500 };
+    }
+  },
+
+  'PUT /api/calendar/events/:id/todo-status': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const id = req.url.split('/').pop();
+      const { todo_status, start_time } = body;
+      
+      if (!['done', 'changed', 'time_moved', 'cancelled', null].includes(todo_status)) {
+        return { error: 'Invalid todo_status', status: 400 };
+      }
+
+      let updateQuery = 'UPDATE calendar_events SET todo_status = ?';
+      const params = [todo_status || null];
+      
+      // If time_moved, also update start_time and end_time
+      if (todo_status === 'time_moved' && start_time) {
+        const toMysqlDatetime = (v) => {
+          if (v == null || v === '') return null;
+          const d = new Date(v);
+          if (Number.isNaN(d.getTime())) return null;
+          return d.toISOString().slice(0, 19).replace('T', ' ');
+        };
+        const newStart = toMysqlDatetime(start_time);
+        if (newStart) {
+          // Get current event to calculate duration
+          const [currentEvents] = await db.execute('SELECT start_time, end_time FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+          if (currentEvents.length > 0) {
+            const currentStart = new Date(currentEvents[0].start_time);
+            const currentEnd = new Date(currentEvents[0].end_time);
+            const duration = currentEnd.getTime() - currentStart.getTime();
+            const newEnd = new Date(new Date(newStart).getTime() + duration);
+            updateQuery += ', start_time = ?, end_time = ?';
+            params.push(newStart, newEnd.toISOString().slice(0, 19).replace('T', ' '));
+          }
+        }
+      }
+      
+      updateQuery += ' WHERE id = ? AND user_id = ?';
+      params.push(id, userId);
+      
+      await db.execute(updateQuery, params);
+
+      const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+      return { event: events[0] };
+    } catch (error) {
+      console.error('Update todo status error:', error);
+      return { error: error.message || 'Failed to update todo status', status: 500 };
     }
   },
   
@@ -2317,7 +2417,11 @@ async function handleRequest(req, res) {
       routeKey = `${req.method} /api/contacts/:id/favorite`;
     }
   } else if (routeKey.includes('/api/calendar/events/')) {
-    routeKey = `${req.method} /api/calendar/events/:id`;
+    if (url.pathname.includes('/todo-status')) {
+      routeKey = `${req.method} /api/calendar/events/:id/todo-status`;
+    } else {
+      routeKey = `${req.method} /api/calendar/events/:id`;
+    }
   } else if (routeKey.includes('/api/mail/accounts/')) {
     routeKey = `${req.method} /api/mail/accounts/:id`;
   } else if (routeKey.includes('/api/mail/emails/')) {

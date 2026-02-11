@@ -1,11 +1,12 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import { LayoutDashboard, Users, Calendar, Mail } from 'lucide-react';
+import { LayoutDashboard, Users, Calendar, Mail, CheckSquare } from 'lucide-react';
 
 const navItems = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Contacts', href: '/contacts', icon: Users },
   { name: 'Calendar', href: '/calendar', icon: Calendar },
+  { name: 'ToDo', href: '/todo', icon: CheckSquare },
   { name: 'Mail', href: '/mail', icon: Mail },
 ];
 

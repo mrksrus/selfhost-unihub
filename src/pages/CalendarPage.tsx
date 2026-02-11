@@ -7,8 +7,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, ChevronLeft, ChevronRight, Clock, MapPin, Trash2, Edit, Loader2 } from 'lucide-react';
+import { Plus, ChevronLeft, ChevronRight, Clock, MapPin, Trash2, Edit, Loader2, X } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, startOfMonth, endOfMonth, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, isSameMonth, addMonths, subMonths, isToday, parseISO } from 'date-fns';
 import { enGB } from 'date-fns/locale';
@@ -22,6 +23,9 @@ interface CalendarEvent {
   all_day: boolean;
   location: string | null;
   color: string;
+  todo_status: string | null;
+  reminders: number[] | null; // Array of minutes before event: [0, 15, 60] means at event time, 15min before, 1hr before
+  is_todo_only: boolean;
 }
 
 const colorOptions = [
@@ -48,6 +52,7 @@ const CalendarPage = () => {
     all_day: false,
     location: '',
     color: '#22c55e',
+    reminders: [0] as number[], // Default: reminder at event time
   });
 
   // Open new event dialog if linked from dashboard
@@ -137,6 +142,7 @@ const CalendarPage = () => {
       all_day: false,
       location: '',
       color: '#22c55e',
+      reminders: [0],
     });
     setEditingEvent(null);
     setIsDialogOpen(false);
@@ -163,6 +169,7 @@ const CalendarPage = () => {
       all_day: event.all_day,
       location: event.location || '',
       color: event.color,
+      reminders: event.reminders || [0],
     });
     setIsDialogOpen(true);
   };
@@ -280,6 +287,62 @@ const CalendarPage = () => {
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                   rows={3}
                 />
+              </div>
+              <div className="space-y-2">
+                <Label>Reminders (up to 3)</Label>
+                <div className="space-y-2">
+                  {formData.reminders.map((reminder, index) => (
+                    <div key={index} className="flex items-center gap-2">
+                      <Select
+                        value={reminder.toString()}
+                        onValueChange={(value) => {
+                          const newReminders = [...formData.reminders];
+                          newReminders[index] = parseInt(value);
+                          setFormData({ ...formData, reminders: newReminders });
+                        }}
+                      >
+                        <SelectTrigger className="flex-1">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="0">At event time</SelectItem>
+                          <SelectItem value="5">5 minutes before</SelectItem>
+                          <SelectItem value="15">15 minutes before</SelectItem>
+                          <SelectItem value="30">30 minutes before</SelectItem>
+                          <SelectItem value="60">1 hour before</SelectItem>
+                          <SelectItem value="120">2 hours before</SelectItem>
+                          <SelectItem value="1440">1 day before</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {formData.reminders.length > 1 && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => {
+                            const newReminders = formData.reminders.filter((_, i) => i !== index);
+                            setFormData({ ...formData, reminders: newReminders });
+                          }}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                  {formData.reminders.length < 3 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setFormData({ ...formData, reminders: [...formData.reminders, 15] });
+                      }}
+                    >
+                      <Plus className="h-4 w-4 mr-2" />
+                      Add Reminder
+                    </Button>
+                  )}
+                </div>
               </div>
               <div className="flex justify-end gap-3 pt-2">
                 <Button type="button" variant="outline" onClick={resetForm}>
@@ -421,7 +484,9 @@ const CalendarPage = () => {
                         style={{ backgroundColor: event.color }}
                       />
                       <div className="pl-3">
-                        <h4 className="font-medium text-foreground">{event.title}</h4>
+                        <h4 className="font-medium text-foreground">
+                          {event.todo_status === 'cancelled' ? 'CANCELLED: ' : ''}{event.title}
+                        </h4>
                         <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
                           <Clock className="h-3.5 w-3.5" />
                           <span>

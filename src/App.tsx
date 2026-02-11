@@ -10,6 +10,7 @@ import Dashboard from "./pages/Dashboard";
 import Contacts from "./pages/Contacts";
 import CalendarPage from "./pages/CalendarPage";
 import MailPage from "./pages/MailPage";
+import TodoPage from "./pages/TodoPage";
 import Settings from "./pages/Settings";
 import AdminUsers from "./pages/AdminUsers";
 import Install from "./pages/Install";
@@ -31,6 +32,7 @@ const App = () => (
               <Route path="/" element={<Dashboard />} />
               <Route path="/contacts" element={<Contacts />} />
               <Route path="/calendar" element={<CalendarPage />} />
+              <Route path="/todo" element={<TodoPage />} />
               <Route path="/mail" element={<MailPage />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/admin/users" element={<AdminUsers />} />

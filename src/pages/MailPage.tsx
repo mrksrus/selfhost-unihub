@@ -226,13 +226,34 @@ const MailPage = () => {
     staleTime: 0,
   });
 
-  // Track when count changes and invalidate emails query
+  // Request notification permission on mount
+  React.useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(console.error);
+    }
+  }, []);
+
+  // Track when count changes and invalidate emails query + show notification
   React.useEffect(() => {
     const currentCount = emailCountData?.total || 0;
-    if (previousEmailCount.current !== null && currentCount !== previousEmailCount.current) {
-      // Count changed - invalidate emails query to trigger refetch
+    if (previousEmailCount.current !== null && currentCount !== previousEmailCount.current && currentCount > previousEmailCount.current) {
+      // Count increased - new emails arrived
+      const newEmailCount = currentCount - previousEmailCount.current;
       console.log(`[MailPage] Email count changed: ${previousEmailCount.current} -> ${currentCount}, invalidating emails query`);
       queryClient.invalidateQueries({ queryKey: ['emails', selectedAccount, selectedFolder] });
+      
+      // Show notification if permission granted and not on Mail page or different folder
+      if ('Notification' in window && Notification.permission === 'granted') {
+        // Only notify if we're not currently viewing inbox or if we're on a different folder
+        if (selectedFolder !== 'inbox' || document.hidden) {
+          new Notification(`New Email${newEmailCount > 1 ? 's' : ''}`, {
+            body: `${newEmailCount} new email${newEmailCount > 1 ? 's' : ''} in your inbox`,
+            icon: '/favicon.ico',
+            tag: 'new-email',
+            requireInteraction: false,
+          });
+        }
+      }
     }
     previousEmailCount.current = currentCount;
   }, [emailCountData?.total, selectedAccount, selectedFolder, queryClient]);
