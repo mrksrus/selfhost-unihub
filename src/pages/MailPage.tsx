@@ -199,8 +199,44 @@ const MailPage = () => {
     setEmailPage(1);
   }, [selectedFolder, selectedAccount]);
 
-  // Fetch emails for selected account with pagination
+  // Fetch email count for smart refresh (only refetch emails when count changes)
   const emailsPerPage = 50;
+  const previousEmailCount = React.useRef<number | null>(null);
+  
+  const { data: emailCountData } = useQuery({
+    queryKey: ['email-count', selectedAccount, selectedFolder],
+    queryFn: async () => {
+      if (!selectedAccount) return { total: 0 };
+      
+      const folder = selectedFolder === 'starred' ? 'inbox' : selectedFolder;
+      const response = await api.get<{ emails: Email[]; pagination?: { total: number } }>(
+        `/mail/emails?account_id=${selectedAccount}&folder=${folder}&limit=1&offset=0`
+      );
+      if (response.error) return { total: 0 };
+      return { total: response.data?.pagination?.total || 0 };
+    },
+    enabled: !!selectedAccount,
+    refetchInterval: 5000, // Check count every 5 seconds
+    staleTime: 0,
+  });
+
+  // Track when count changes and invalidate emails query
+  React.useEffect(() => {
+    const currentCount = emailCountData?.total || 0;
+    if (previousEmailCount.current !== null && currentCount !== previousEmailCount.current) {
+      // Count changed - invalidate emails query to trigger refetch
+      console.log(`[MailPage] Email count changed: ${previousEmailCount.current} -> ${currentCount}, invalidating emails query`);
+      queryClient.invalidateQueries({ queryKey: ['emails', selectedAccount, selectedFolder] });
+    }
+    previousEmailCount.current = currentCount;
+  }, [emailCountData?.total, selectedAccount, selectedFolder, queryClient]);
+  
+  // Reset count when account or folder changes
+  React.useEffect(() => {
+    previousEmailCount.current = null;
+  }, [selectedAccount, selectedFolder]);
+
+  // Fetch emails for selected account with pagination
   const { data: emailsData, isLoading: emailsLoading } = useQuery({
     queryKey: ['emails', selectedAccount, selectedFolder, emailPage],
     queryFn: async () => {
@@ -221,12 +257,19 @@ const MailPage = () => {
       return { emails, pagination: response.data?.pagination || null };
     },
     enabled: !!selectedAccount,
-    refetchInterval: 5000, // Auto-refresh every 5 seconds to show new emails as they sync
-    staleTime: 0, // Always consider data stale so it refetches
+    staleTime: 60000, // Consider data fresh for 60 seconds (will be invalidated when count changes)
   });
 
   const allEmails = emailsData?.emails || [];
   const pagination = emailsData?.pagination;
+  
+  // Debug logging
+  React.useEffect(() => {
+    if (selectedAccount && !emailsLoading) {
+      console.log(`[MailPage] Emails loaded: ${allEmails.length} emails for account ${selectedAccount}, folder ${selectedFolder}`);
+      console.log(`[MailPage] Pagination:`, pagination);
+    }
+  }, [allEmails.length, selectedAccount, selectedFolder, emailsLoading, pagination]);
 
   // Filter emails based on search query
   const emails = React.useMemo(() => {

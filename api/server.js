@@ -1919,6 +1919,8 @@ const routes = {
       const total = countResult[0]?.total || 0;
       
       const [emails] = await db.execute(query, params);
+      console.log(`[API] GET /api/mail/emails: Found ${emails.length} emails for user ${userId}, folder ${folder}, account ${accountId || 'all'}, total ${total}`);
+      
       // Parse JSON fields
       const parsedEmails = emails.map(email => ({
         ...email,
@@ -1937,6 +1939,7 @@ const routes = {
         }
       };
     } catch (error) {
+      console.error(`[API] GET /api/mail/emails ERROR:`, error.message);
       return { error: 'Failed to get emails', status: 500 };
     }
   },
