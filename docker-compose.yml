@@ -10,6 +10,7 @@ services:
   #
   unihub:
     image: ghcr.io/mrksrus/unify-self-host:latest
+    pull_policy: always  # Always pull latest image on container start
     container_name: unihub
     restart: unless-stopped
     ports:

@@ -2372,8 +2372,19 @@ async function handleRequest(req, res) {
       return;
     }
 
-    // Allow larger bodies for vCard import
-    const maxBodySize = routeKey === 'POST /api/contacts/import' ? 500000 : 1000;
+    // Allow larger bodies for vCard import and bulk operations
+    let maxBodySize = 1000; // Default for most endpoints
+    if (routeKey === 'POST /api/contacts/import') {
+      maxBodySize = 500000; // vCard import can be large
+    } else if (
+      routeKey === 'POST /api/mail/emails/bulk-update' ||
+      routeKey === 'POST /api/mail/emails/bulk-delete' ||
+      routeKey === 'POST /api/mail/emails/bulk-move' ||
+      routeKey === 'POST /api/mail/send' ||
+      routeKey === 'POST /api/mail/sync'
+    ) {
+      maxBodySize = 50000; // Bulk operations and mail operations need more space (100 emails * ~36 chars UUID + JSON overhead)
+    }
     const body = await parseBody(req, maxBodySize);
 
     if (body === null) {

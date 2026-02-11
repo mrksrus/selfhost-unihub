@@ -64,6 +64,7 @@ networks:
 services:
   unihub:
     image: ghcr.io/mrksrus/unify-self-host:latest
+    pull_policy: always  # Always pull latest image on container start (for auto-updates)
     container_name: unihub
     restart: unless-stopped
     ports:
@@ -118,6 +119,8 @@ volumes:
 ### Step 2 — Set your passwords
 
 Replace every `CHANGE_ME_*` value and fill in `JWT_SECRET`:
+
+**Note on Auto-Updates:** The `pull_policy: always` setting ensures the latest image is pulled every time the container starts. This means you can simply restart the app in TrueNAS Scale to get updates without deleting/recreating the app. Your data (database, settings, mail accounts) persists in volumes, so you won't lose anything on restart.
 
 | Value | What to put there |
 |-------|-------------------|
