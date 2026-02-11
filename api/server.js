@@ -2107,10 +2107,25 @@ const routes = {
         const fileContent = await readFile(attachment.storage_path);
         
         // Return as raw response for download
+        // Ensure proper content type for PDFs and other common types
+        let contentType = attachment.content_type || 'application/octet-stream';
+        const filename = attachment.filename || 'download';
+        
+        // Fix common content type issues
+        if (filename.toLowerCase().endsWith('.pdf') && !contentType.includes('pdf')) {
+          contentType = 'application/pdf';
+        } else if (filename.toLowerCase().endsWith('.jpg') || filename.toLowerCase().endsWith('.jpeg')) {
+          contentType = 'image/jpeg';
+        } else if (filename.toLowerCase().endsWith('.png')) {
+          contentType = 'image/png';
+        } else if (filename.toLowerCase().endsWith('.txt')) {
+          contentType = 'text/plain';
+        }
+        
         return {
           __raw: fileContent,
-          __contentType: attachment.content_type || 'application/octet-stream',
-          __filename: attachment.filename,
+          __contentType: contentType,
+          __filename: filename,
         };
       } catch (fileError) {
         console.error(`[ATTACH] Failed to read attachment file:`, fileError.message);
@@ -2518,11 +2533,17 @@ async function handleRequest(req, res) {
 
     const result = await handler(req, userId, body, res);
 
-    // Raw response (used by vCard export)
+    // Raw response (used by vCard export and attachments)
     if (result.__raw) {
+      const filename = result.__filename || 'download';
+      // Properly encode filename for Content-Disposition header (RFC 5987)
+      const encodedFilename = encodeURIComponent(filename);
+      const contentDisposition = `attachment; filename="${filename}"; filename*=UTF-8''${encodedFilename}`;
+      
       res.writeHead(200, {
         'Content-Type': result.__contentType || 'application/octet-stream',
-        'Content-Disposition': `attachment; filename="${result.__filename || 'download'}"`,
+        'Content-Disposition': contentDisposition,
+        'Cache-Control': 'no-cache',
       });
       res.end(result.__raw);
       return;

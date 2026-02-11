@@ -135,6 +135,7 @@ const MailPage = () => {
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [emailPage, setEmailPage] = useState(1);
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [composeForm, setComposeForm] = useState({
     to: '',
     subject: '',
@@ -198,6 +199,7 @@ const MailPage = () => {
   useEffect(() => {
     setSelectedEmails(new Set());
     setEmailPage(1);
+    setShowUnreadOnly(false); // Reset unread filter when changing folder/account
   }, [selectedFolder, selectedAccount]);
 
   // Reset to page 1 when search query changes
@@ -339,12 +341,20 @@ const MailPage = () => {
     }
   }, [allEmails.length, selectedAccount, selectedFolder, emailsLoading, pagination]);
 
-  // Filter emails based on search query
+  // Filter emails based on search query and unread filter
   const emails = React.useMemo(() => {
-    if (!searchQuery.trim()) return allEmails;
+    let filteredEmails = allEmails;
+    
+    // Apply unread filter if enabled
+    if (showUnreadOnly) {
+      filteredEmails = filteredEmails.filter(email => !email.is_read);
+    }
+    
+    // Apply search filter if query exists
+    if (!searchQuery.trim()) return filteredEmails;
     
     const query = searchQuery.toLowerCase();
-    return allEmails.filter(email => {
+    return filteredEmails.filter(email => {
       const subject = (email.subject || '').toLowerCase();
       const fromName = (email.from_name || '').toLowerCase();
       const fromAddress = (email.from_address || '').toLowerCase();
@@ -355,7 +365,7 @@ const MailPage = () => {
              fromAddress.includes(query) ||
              bodyText.includes(query);
     });
-  }, [allEmails, searchQuery]);
+  }, [allEmails, searchQuery, showUnreadOnly]);
 
   // Add mail account mutation
   const addAccount = useMutation({
@@ -483,7 +493,11 @@ const MailPage = () => {
       const response = await api.put(`/mail/emails/${id}/star`, { is_starred });
       if (response.error) throw new Error(response.error);
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      // Update local selectedEmail state immediately
+      if (selectedEmail && selectedEmail.id === variables.id) {
+        setSelectedEmail({ ...selectedEmail, is_starred: variables.is_starred });
+      }
       queryClient.invalidateQueries({ queryKey: ['emails'] });
     },
   });
@@ -1112,26 +1126,38 @@ const MailPage = () => {
               </span>
             )}
             {selectedAccount && !selectedEmails.size && (
-              <div className="relative flex-1 max-w-md ml-4">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                <Input
-                  type="text"
-                  placeholder="Search emails..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9 h-9"
-                />
-                {searchQuery && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
-                    onClick={() => setSearchQuery('')}
-                  >
-                    <X className="h-3 w-3" />
-                  </Button>
-                )}
-              </div>
+              <>
+                <Button
+                  variant={showUnreadOnly ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setShowUnreadOnly(!showUnreadOnly)}
+                  className="shrink-0"
+                  title={showUnreadOnly ? "Show all emails" : "Show only unread emails"}
+                >
+                  <Mail className="h-4 w-4 mr-2" />
+                  {showUnreadOnly ? 'Unread Only' : 'All'}
+                </Button>
+                <div className="relative flex-1 max-w-md ml-4">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    type="text"
+                    placeholder="Search emails..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-9 h-9"
+                  />
+                  {searchQuery && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
+                      onClick={() => setSearchQuery('')}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  )}
+                </div>
+              </>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -1213,14 +1239,21 @@ const MailPage = () => {
             <div className="flex flex-col items-center justify-center h-full text-center p-8">
               <Inbox className="h-16 w-16 text-muted-foreground/30 mb-4" />
               <h3 className="text-lg font-medium text-foreground mb-2">
-                {searchQuery.trim() ? 'No search results' : `No emails in ${selectedFolder}`}
+                {searchQuery.trim() 
+                  ? 'No search results' 
+                  : showUnreadOnly 
+                    ? 'No unread emails' 
+                    : `No emails in ${selectedFolder}`
+                }
               </h3>
               <p className="text-muted-foreground">
                 {searchQuery.trim()
-                  ? `No emails found matching "${searchQuery}"`
-                  : selectedFolder === 'inbox' 
-                    ? 'Your inbox is empty. Sync your account to fetch emails.'
-                    : `No emails in your ${selectedFolder} folder.`
+                  ? `No emails found matching "${searchQuery}"${showUnreadOnly ? ' in unread emails' : ''}`
+                  : showUnreadOnly
+                    ? `No unread emails in ${selectedFolder === 'inbox' ? 'your inbox' : `your ${selectedFolder} folder`}.`
+                    : selectedFolder === 'inbox' 
+                      ? 'Your inbox is empty. Sync your account to fetch emails.'
+                      : `No emails in your ${selectedFolder} folder.`
                 }
               </p>
             </div>
@@ -1254,15 +1287,23 @@ const MailPage = () => {
                           return;
                         }
                         if (response.data?.email) {
-                          setSelectedEmail(response.data.email);
+                          const fetchedEmail = response.data.email;
+                          // Mark as read if it was unread (update local state)
+                          if (!fetchedEmail.is_read) {
+                            setSelectedEmail({ ...fetchedEmail, is_read: true });
+                          } else {
+                            setSelectedEmail(fetchedEmail);
+                          }
                         } else {
                           // Fallback: use the email from list if full fetch fails
-                          setSelectedEmail(email);
+                          const fallbackEmail = email.is_read ? email : { ...email, is_read: true };
+                          setSelectedEmail(fallbackEmail);
                         }
                       } catch (error) {
                         console.error('Error loading email:', error);
                         // Fallback: use the email from list
-                        setSelectedEmail(email);
+                        const fallbackEmail = email.is_read ? email : { ...email, is_read: true };
+                        setSelectedEmail(fallbackEmail);
                       }
                     }}
                     onContextMenu={(e) => {
@@ -1330,14 +1371,19 @@ const MailPage = () => {
           )}
           
           {/* Search results indicator */}
-          {searchQuery.trim() && emails.length > 0 && (
+          {(searchQuery.trim() || showUnreadOnly) && emails.length > 0 && (
             <div className="border-t border-border p-4 text-center text-sm text-muted-foreground">
-              Found {emails.length} result{emails.length !== 1 ? 's' : ''} for "{searchQuery}"
+              {searchQuery.trim() && (
+                <>Found {emails.length} result{emails.length !== 1 ? 's' : ''} for "{searchQuery}"{showUnreadOnly ? ' (unread only)' : ''}</>
+              )}
+              {!searchQuery.trim() && showUnreadOnly && (
+                <>Showing {emails.length} unread email{emails.length !== 1 ? 's' : ''}</>
+              )}
             </div>
           )}
           
-          {/* Pagination - hide when searching */}
-          {pagination && pagination.totalPages > 1 && !searchQuery.trim() && (
+          {/* Pagination - hide when searching or filtering unread */}
+          {pagination && pagination.totalPages > 1 && !searchQuery.trim() && !showUnreadOnly && (
             <div className="border-t border-border p-4">
               <Pagination>
                 <PaginationContent>
@@ -1589,12 +1635,49 @@ const MailPage = () => {
                     <div className="space-y-2">
                       {selectedEmail.attachments.map((attachment) => {
                         const sizeKB = attachment.size_bytes ? (attachment.size_bytes / 1024).toFixed(1) : '?';
+                        const handleDownload = async (e: React.MouseEvent) => {
+                          e.preventDefault();
+                          try {
+                            // Get auth token for the request
+                            const token = localStorage.getItem('auth_token');
+                            const url = `/api/mail/attachments/${attachment.id}`;
+                            
+                            // Fetch the attachment with proper headers
+                            const response = await fetch(url, {
+                              headers: {
+                                'Authorization': `Bearer ${token}`,
+                              },
+                            });
+                            
+                            if (!response.ok) {
+                              throw new Error('Failed to download attachment');
+                            }
+                            
+                            // Get blob and create download link
+                            const blob = await response.blob();
+                            const blobUrl = window.URL.createObjectURL(blob);
+                            const link = document.createElement('a');
+                            link.href = blobUrl;
+                            link.download = attachment.filename;
+                            document.body.appendChild(link);
+                            link.click();
+                            document.body.removeChild(link);
+                            window.URL.revokeObjectURL(blobUrl);
+                          } catch (error) {
+                            console.error('Download failed:', error);
+                            toast({ 
+                              title: 'Download failed', 
+                              description: 'Could not download attachment. Please try again.',
+                              variant: 'destructive' 
+                            });
+                          }
+                        };
+                        
                         return (
-                          <a
+                          <button
                             key={attachment.id}
-                            href={`/api/mail/attachments/${attachment.id}`}
-                            download={attachment.filename}
-                            className="flex items-center gap-3 p-3 border border-border rounded-lg hover:bg-muted/50 transition-colors group"
+                            onClick={handleDownload}
+                            className="w-full flex items-center gap-3 p-3 border border-border rounded-lg hover:bg-muted/50 transition-colors group text-left"
                           >
                             <Paperclip className="h-5 w-5 text-muted-foreground shrink-0" />
                             <div className="flex-1 min-w-0">
@@ -1606,7 +1689,7 @@ const MailPage = () => {
                               </p>
                             </div>
                             <Download className="h-4 w-4 text-muted-foreground group-hover:text-accent transition-colors shrink-0" />
-                          </a>
+                          </button>
                         );
                       })}
                     </div>
