@@ -338,6 +338,9 @@ async function testImapConnection(account) {
     };
     
     connection = await imaps.connect(config);
+    connection.on('error', (err) => {
+      console.error('[ACCOUNT] IMAP connection error (handled):', err.message);
+    });
     await connection.openBox('INBOX');
     
     // Connection successful
@@ -401,6 +404,9 @@ async function syncMailAccount(accountId) {
     
     console.log(`[SYNC] Connecting to ${account.email_address}...`);
     connection = await imaps.connect(config);
+    connection.on('error', (err) => {
+      console.error('[SYNC] IMAP connection error (handled, sync may fail):', err.message);
+    });
     
     // Sync INBOX
     const inboxResult = await syncMailFolder(connection, account, accountId, 'INBOX', 'inbox');
