@@ -101,6 +101,18 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
     const uidsToProcess = uids.slice(-500);
     console.log(`[SYNC] Will fetch ${uidsToProcess.length} emails from ${folderName} (out of ${uids.length} total)...`);
     
+    if (uidsToProcess.length === 0) {
+      return { newEmails: 0, processed: 0, failed: 0, total: uids.length };
+    }
+    
+    // Get the actual UID range (first and last UID)
+    const validUids = uidsToProcess.filter(uid => typeof uid === 'number');
+    if (validUids.length === 0) {
+      return { newEmails: 0, processed: 0, failed: 0, total: uids.length };
+    }
+    
+    console.log(`[SYNC] Identified ${validUids.length} UIDs to fetch (range: ${validUids[0]} to ${validUids[validUids.length - 1]})`);
+    
     const fetchOptions = {
       bodies: ['HEADER', 'TEXT'],
       markSeen: false,
@@ -112,45 +124,28 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
     let failedCount = 0;
     const uploadsDir = '/app/uploads/attachments';
     
-    for (let i = 0; i < uidsToProcess.length; i++) {
-      const uid = uidsToProcess[i];
+    // Sequentially download each email individually
+    for (let i = 0; i < validUids.length; i++) {
+      const uid = validUids[i];
       processedCount++;
       
-      // Log progress for every email
-      console.log(`[SYNC] Processing email ${processedCount}/${uidsToProcess.length} (UID: ${uid})...`);
-      
-      if (typeof uid !== 'number') {
-        console.log(`[SYNC] Skipping invalid UID: ${uid}`);
-        failedCount++;
-        continue;
-      }
+      console.log(`[SYNC] Downloading email ${processedCount}/${validUids.length} (UID: ${uid})...`);
       
       try {
-        // Fetch email by UID using UID range syntax (more reliable than UID search criteria)
+        // Fetch individual email by UID
         let messageResults;
         try {
-          // Use UID range syntax: [uid:uid] to fetch a specific UID
           const uidRange = `${uid}:${uid}`;
-          messageResults = await Promise.race([
-            connection.search([uidRange], fetchOptions),
-            new Promise((_, reject) => 
-              setTimeout(() => reject(new Error(`Email fetch timeout after 30s for UID ${uid}`)), 30000)
-            )
-          ]);
+          messageResults = await connection.search([uidRange], fetchOptions);
         } catch (fetchError) {
-          console.error(`[SYNC] Failed to fetch email UID ${uid}:`, fetchError.message);
+          console.error(`[SYNC] ✗ Failed to download UID ${uid}:`, fetchError.message);
           failedCount++;
-          // If we get multiple timeouts in a row, the connection might be broken
-          if (failedCount > 10 && failedCount % 10 === 1) {
-            console.warn(`[SYNC] Many failures (${failedCount}), connection may be unstable`);
-          }
           continue;
         }
         
         if (!messageResults || messageResults.length === 0) {
-          if (processedCount <= 5) {
-            console.log(`[SYNC] No results for UID ${uid}, skipping`);
-          }
+          console.log(`[SYNC] ✗ No data returned for UID ${uid}, skipping`);
+          failedCount++;
           continue;
         }
         
@@ -190,7 +185,7 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
         
         if (!fullEmail || fullEmail.trim().length === 0) {
           if (processedCount <= 5) {
-            console.log(`[SYNC] Skipping empty email UID ${uid}`);
+            console.log(`[SYNC] Skipping empty email (UID: ${uid})`);
           }
           continue;
         }
@@ -348,15 +343,13 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
         }
         
         newEmailsCount++;
-        console.log(`[SYNC] ✓ Saved email ${newEmailsCount} (UID: ${uid}) - Subject: ${parsed.subject || '(No subject)'}`);
+        console.log(`[SYNC] ✓ Successfully downloaded and saved email ${newEmailsCount}/${validUids.length} (UID: ${uid}) - Subject: ${parsed.subject || '(No subject)'}`);
       } catch (emailError) {
         failedCount++;
-        // Always log errors for first few and periodically, but include more details
-        if (failedCount <= 10 || failedCount % 25 === 0) {
-          console.error(`[SYNC] ✗ Error processing email UID ${uid}:`, emailError.message);
-          if (emailError.stack && failedCount <= 5) {
-            console.error(`[SYNC] Stack trace:`, emailError.stack.substring(0, 300));
-          }
+        // Log error for every email (since we're downloading individually)
+        console.error(`[SYNC] ✗ Failed to process email ${processedCount}/${validUids.length} (UID: ${uid}):`, emailError.message);
+        if (emailError.stack && failedCount <= 5) {
+          console.error(`[SYNC] Stack trace:`, emailError.stack.substring(0, 300));
         }
         continue;
       }
