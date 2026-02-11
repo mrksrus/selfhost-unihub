@@ -1,27 +1,37 @@
 #!/bin/sh
-set -e
 
-echo "⏳ Waiting for MySQL to be ready (checking health status)..."
+echo "⏳ Waiting for MySQL to be ready (checking every 5 seconds for up to 120 seconds)..."
 # Wait for MySQL healthcheck to pass (max 2 minutes with 5s intervals)
 MAX_WAIT=120
 ELAPSED=0
+MYSQL_READY=0
+
 while [ $ELAPSED -lt $MAX_WAIT ]; do
-  # Check if MySQL container is healthy via docker healthcheck
-  # This is more efficient than fixed sleep
-  if timeout 2 bash -c "echo > /dev/tcp/unihub-mysql/3306" 2>/dev/null; then
-    # Test actual MySQL connection
-    if MYSQL_PWD="${MYSQL_ROOT_PASSWORD:-CHANGE_ME_root_password}" mysqladmin ping -h unihub-mysql -u root --silent 2>/dev/null; then
-      echo "✓ MySQL is ready!"
+  # Check if MySQL port is open using nc (netcat) - more reliable than bash TCP redirection
+  if nc -z -w 2 unihub-mysql 3306 2>/dev/null; then
+    # Port is open, try to connect with mysql client (using mysql command if available)
+    # If mysql client is not available, just check port - that's usually enough
+    if command -v mysql >/dev/null 2>&1; then
+      if mysql -h unihub-mysql -u root -p"${MYSQL_ROOT_PASSWORD:-CHANGE_ME_root_password}" -e "SELECT 1" >/dev/null 2>&1; then
+        echo "✓ MySQL is ready! (connected successfully)"
+        MYSQL_READY=1
+        break
+      fi
+    else
+      # mysql client not available, but port is open - assume MySQL is ready
+      echo "✓ MySQL port is open (assuming ready)"
+      MYSQL_READY=1
       break
     fi
   fi
+  
   echo "  Still waiting... (${ELAPSED}s/${MAX_WAIT}s)"
   sleep 5
   ELAPSED=$((ELAPSED + 5))
 done
 
-if [ $ELAPSED -ge $MAX_WAIT ]; then
-  echo "⚠ MySQL took longer than expected, but continuing anyway..."
+if [ $MYSQL_READY -eq 0 ]; then
+  echo "⚠ MySQL took longer than expected (waited ${ELAPSED}s), but continuing anyway..."
 fi
 
 echo "✓ Starting Node.js API server..."

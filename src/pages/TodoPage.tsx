@@ -5,12 +5,13 @@ import { useCalendarNotifications } from '@/hooks/use-calendar-notifications';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
-import { CheckCircle2, Clock, XCircle, Edit, Loader2, Plus, X } from 'lucide-react';
+import { CheckCircle2, Clock, XCircle, Edit, Loader2, Plus, X, ChevronDown, ChevronUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, parseISO } from 'date-fns';
 
@@ -35,6 +36,8 @@ interface CalendarEvent {
   todo_status: string | null;
   reminders: number[] | null;
   is_todo_only: boolean;
+  done_at: string | null;
+  updated_at: string;
 }
 
 const TodoPage = () => {
@@ -81,6 +84,7 @@ const TodoPage = () => {
   const [timeMoveForm, setTimeMoveForm] = useState({
     start_time: '',
   });
+  const [showDoneTasks, setShowDoneTasks] = useState(false);
 
   // Fetch all calendar events including todos
   const { data: events = [], isLoading } = useQuery({
@@ -92,15 +96,8 @@ const TodoPage = () => {
     },
   });
 
-  // Filter events: show all events that are NOT done or cancelled
-  // For events with times: show all that aren't done/cancelled
-  // For standalone todos: always show
+  // Filter events: show all events that are NOT done or cancelled (including standalone todos)
   const upcomingEvents = events.filter((e) => {
-    if (e.is_todo_only) {
-      // Always show standalone todos
-      return true;
-    }
-    // For calendar events: show all that are NOT done or cancelled (regardless of date)
     return e.todo_status !== 'done' && e.todo_status !== 'cancelled';
   }).sort((a, b) => {
     // Sort standalone todos first (they have far-future dates), then by date
@@ -108,6 +105,16 @@ const TodoPage = () => {
     if (!a.is_todo_only && b.is_todo_only) return 1;
     return new Date(a.start_time).getTime() - new Date(b.start_time).getTime();
   });
+
+  // Filter and sort done tasks by completion time (newest first)
+  const doneEvents = events
+    .filter((e) => e.todo_status === 'done')
+    .sort((a, b) => {
+      // Sort by done_at (newest first), fallback to updated_at if done_at is null
+      const aTime = a.done_at ? new Date(a.done_at).getTime() : new Date(a.updated_at).getTime();
+      const bTime = b.done_at ? new Date(b.done_at).getTime() : new Date(b.updated_at).getTime();
+      return bTime - aTime;
+    });
 
   // Update todo status mutation
   const updateTodoStatus = useMutation({
@@ -436,6 +443,87 @@ const TodoPage = () => {
             ))}
           </AnimatePresence>
         </div>
+      )}
+
+      {/* Done Tasks Section */}
+      {doneEvents.length > 0 && (
+        <Collapsible open={showDoneTasks} onOpenChange={setShowDoneTasks} className="mt-6">
+          <CollapsibleTrigger asChild>
+            <Button
+              variant="outline"
+              className="w-full justify-between"
+            >
+              <span>Done Tasks ({doneEvents.length})</span>
+              {showDoneTasks ? (
+                <ChevronUp className="h-4 w-4" />
+              ) : (
+                <ChevronDown className="h-4 w-4" />
+              )}
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="mt-4 space-y-4 max-h-96 overflow-y-auto">
+              <AnimatePresence mode="popLayout">
+                {doneEvents.map((event) => (
+                  <motion.div
+                    key={event.id}
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -20 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <Card className="opacity-75">
+                      <CardContent className="p-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-2">
+                              <h3 className="font-semibold text-lg line-through">{event.title}</h3>
+                              {getStatusBadge(event.todo_status)}
+                              {event.is_todo_only && (
+                                <span className="px-2 py-1 text-xs rounded-full bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">
+                                  Standalone
+                                </span>
+                              )}
+                            </div>
+                            {event.description && (
+                              <p className="text-sm text-muted-foreground mb-2">{event.description}</p>
+                            )}
+                            {!event.is_todo_only && (
+                              <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+                                <div className="flex items-center gap-1">
+                                  <Clock className="h-4 w-4" />
+                                  <span>
+                                    {event.all_day
+                                      ? format(parseISO(event.start_time), 'MMM d, yyyy')
+                                      : format(parseISO(event.start_time), 'MMM d, yyyy h:mm a')}
+                                    {!event.all_day && (
+                                      <> - {format(parseISO(event.end_time), 'h:mm a')}</>
+                                    )}
+                                  </span>
+                                </div>
+                                {event.location && (
+                                  <div className="flex items-center gap-1">
+                                    <span>📍</span>
+                                    <span>{event.location}</span>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            {event.done_at && (
+                              <p className="text-xs text-muted-foreground mt-2">
+                                Completed: {format(parseISO(event.done_at), 'MMM d, yyyy h:mm a')}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
       )}
 
       {/* Changed Dialog */}

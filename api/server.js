@@ -766,6 +766,7 @@ async function ensureSchema() {
     reminders JSON DEFAULT NULL COMMENT 'Array of reminder minutes before event: [0, 15, 60] for default + 15min + 1hr before',
     todo_status VARCHAR(20) DEFAULT NULL COMMENT 'done, changed, time_moved, cancelled',
     is_todo_only BOOLEAN DEFAULT FALSE COMMENT 'True for standalone todos without calendar dates',
+    done_at DATETIME NULL COMMENT 'Timestamp when task was marked as done',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -801,6 +802,16 @@ async function ensureSchema() {
     // Column already exists, ignore error
     if (!error.message.includes('Duplicate column name')) {
       console.log('[DB] Note: is_todo_only column may already exist');
+    }
+  }
+  
+  // Add done_at column if it doesn't exist (for existing installations)
+  try {
+    await db.execute(`ALTER TABLE calendar_events ADD COLUMN done_at DATETIME NULL COMMENT 'Timestamp when task was marked as done'`);
+  } catch (error) {
+    // Column already exists, ignore error
+    if (!error.message.includes('Duplicate column name')) {
+      console.log('[DB] Note: done_at column may already exist');
     }
   }
 
@@ -1767,8 +1778,18 @@ const routes = {
         return { error: 'Invalid todo_status', status: 400 };
       }
 
+      // Set done_at timestamp when marking as done, clear it when unmarking
+      const doneAtValue = todo_status === 'done' ? 'NOW()' : null;
+      
       let updateQuery = 'UPDATE calendar_events SET todo_status = ?';
       const params = [todo_status || null];
+      
+      // Add done_at to update query
+      if (doneAtValue) {
+        updateQuery += ', done_at = NOW()';
+      } else {
+        updateQuery += ', done_at = NULL';
+      }
       
       // If time_moved, also update start_time and end_time
       if (todo_status === 'time_moved' && start_time) {
