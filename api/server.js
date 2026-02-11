@@ -116,14 +116,43 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
       const uid = uidsToProcess[i];
       processedCount++;
       
+      // Log progress for every email
+      console.log(`[SYNC] Processing email ${processedCount}/${uidsToProcess.length} (UID: ${uid})...`);
+      
       if (typeof uid !== 'number') {
+        console.log(`[SYNC] Skipping invalid UID: ${uid}`);
         failedCount++;
         continue;
       }
       
       try {
-        const messageResults = await connection.search([['UID', uid]], fetchOptions);
-        if (!messageResults || messageResults.length === 0) continue;
+        // Fetch email by UID using UID range syntax (more reliable than UID search criteria)
+        let messageResults;
+        try {
+          // Use UID range syntax: [uid:uid] to fetch a specific UID
+          const uidRange = `${uid}:${uid}`;
+          messageResults = await Promise.race([
+            connection.search([uidRange], fetchOptions),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error(`Email fetch timeout after 30s for UID ${uid}`)), 30000)
+            )
+          ]);
+        } catch (fetchError) {
+          console.error(`[SYNC] Failed to fetch email UID ${uid}:`, fetchError.message);
+          failedCount++;
+          // If we get multiple timeouts in a row, the connection might be broken
+          if (failedCount > 10 && failedCount % 10 === 1) {
+            console.warn(`[SYNC] Many failures (${failedCount}), connection may be unstable`);
+          }
+          continue;
+        }
+        
+        if (!messageResults || messageResults.length === 0) {
+          if (processedCount <= 5) {
+            console.log(`[SYNC] No results for UID ${uid}, skipping`);
+          }
+          continue;
+        }
         
         const item = messageResults[0];
         const headerPart = item.parts.find(p => p.which === 'HEADER');
@@ -303,12 +332,18 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
         }
         
         newEmailsCount++;
+        console.log(`[SYNC] ✓ Saved email ${newEmailsCount} (UID: ${uid}) - Subject: ${parsed.subject || '(No subject)'}`);
       } catch (emailError) {
         failedCount++;
+        // Log error details for debugging (but don't spam logs)
+        if (failedCount <= 5 || failedCount % 50 === 0) {
+          console.error(`[SYNC] Error processing email UID ${uid}:`, emailError.message);
+        }
         continue;
       }
     }
     
+    console.log(`[SYNC] Completed ${folderName}: ${newEmailsCount} new emails, ${processedCount} processed, ${failedCount} failed out of ${uids.length} total`);
     return { newEmails: newEmailsCount, processed: processedCount, failed: failedCount, total: uids.length };
   } catch (error) {
     console.error(`[SYNC] Error syncing ${folderName}:`, error.message);
