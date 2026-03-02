@@ -17,15 +17,13 @@ test('does not contain hardcoded encryption key fallback', () => {
   );
 });
 
-test('uses strict TLS certificate verification for mail transport', () => {
+test('uses strict TLS by default with explicit override', () => {
   assert.equal(
-    serverSource.includes("tlsOptions: { \n          rejectUnauthorized: true,"),
+    serverSource.includes('const allowSelfSigned = toBooleanFlag(account.allow_self_signed);'),
     true
   );
-  assert.equal(
-    serverSource.includes("tls: {\n        rejectUnauthorized: true,"),
-    true
-  );
+  const rejectUnauthorizedMatches = serverSource.match(/rejectUnauthorized: !allowSelfSigned,/g) || [];
+  assert.equal(rejectUnauthorizedMatches.length >= 3, true);
 });
 
 test('maps admin activate route explicitly', () => {

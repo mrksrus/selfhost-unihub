@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -104,20 +104,47 @@ const Contacts = () => {
     }
   }, []);
 
-  // Fetch contacts with server-side search and group filter
-  const { data: contacts = [], isLoading } = useQuery({
-    queryKey: ['contacts', debouncedSearch, group],
+  // Fetch all contacts once, then filter on the client.
+  // This avoids blank lists when server-side group filters drift from UI logic.
+  const { data: allContacts = [], isLoading, error: contactsError } = useQuery({
+    queryKey: ['contacts'],
     queryFn: async () => {
-      const params = new URLSearchParams();
-      if (debouncedSearch) params.set('q', debouncedSearch);
-      if (group !== 'all') params.set('group', group);
-      const response = await api.get<{ contacts: Contact[] }>(
-        `/contacts?${params.toString()}`
-      );
+      const response = await api.get<{ contacts: Contact[] }>('/contacts');
       if (response.error) throw new Error(response.error);
       return response.data?.contacts || [];
     },
   });
+
+  const contacts = useMemo(() => {
+    const query = debouncedSearch.trim().toLowerCase();
+
+    const inGroup = (contact: Contact) => {
+      const hasName = Boolean((contact.first_name || '').trim() || (contact.last_name || '').trim());
+      const hasEmail = Boolean((contact.email || '').trim());
+      const hasPhone = Boolean((contact.phone || '').trim());
+
+      if (group === 'name_only') return hasName && !hasEmail && !hasPhone;
+      if (group === 'number_or_email_only') return !hasName && (hasEmail || hasPhone);
+      return true;
+    };
+
+    const matchesSearch = (contact: Contact) => {
+      if (!query) return true;
+      const haystack = [
+        contact.first_name,
+        contact.last_name,
+        contact.email,
+        contact.phone,
+        contact.company,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(query);
+    };
+
+    return allContacts.filter((contact) => inGroup(contact) && matchesSearch(contact));
+  }, [allContacts, debouncedSearch, group]);
 
   // Create contact mutation
   const createContact = useMutation({
@@ -278,6 +305,8 @@ const Contacts = () => {
       const data = response.data!;
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
       queryClient.invalidateQueries({ queryKey: ['contacts-count'] });
+      setSearchQuery('');
+      setGroup('all');
 
       if (data.errors && data.errors.length > 0) {
         toast({
@@ -523,6 +552,15 @@ const Contacts = () => {
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-8 w-8 animate-spin text-accent" />
         </div>
+      ) : contactsError ? (
+        <Card>
+          <CardContent className="py-8">
+            <h3 className="text-lg font-medium text-foreground mb-2">Failed to load contacts</h3>
+            <p className="text-muted-foreground">
+              {contactsError instanceof Error ? contactsError.message : 'Unknown error'}
+            </p>
+          </CardContent>
+        </Card>
       ) : contacts.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">

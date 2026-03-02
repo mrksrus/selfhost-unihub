@@ -120,6 +120,22 @@ function hostInAllowlist(host) {
   return TRUSTED_MAIL_HOSTS.some(allowed => normalizedHost === allowed || normalizedHost.endsWith(`.${allowed}`));
 }
 
+function toBooleanFlag(value) {
+  return value === true || value === 1 || value === '1';
+}
+
+function isSelfSignedTlsError(message) {
+  const normalized = String(message || '').toUpperCase();
+  if (!normalized) return false;
+  return (
+    normalized.includes('SELF SIGNED') ||
+    normalized.includes('SELF-SIGNED') ||
+    normalized.includes('SELF_SIGNED') ||
+    normalized.includes('DEPTH_ZERO_SELF_SIGNED_CERT') ||
+    normalized.includes('SELF_SIGNED_CERT_IN_CHAIN')
+  );
+}
+
 function isPrivateIPv4(ip) {
   const parts = ip.split('.').map(Number);
   if (parts.length !== 4 || parts.some(Number.isNaN)) return false;
@@ -209,6 +225,7 @@ function fetchTlsCertificate(host, port) {
       if (settled) return;
       settled = true;
       const cert = socket.getPeerCertificate(true);
+      const authorizationError = socket.authorizationError || null;
       socket.end();
       if (!cert || Object.keys(cert).length === 0) {
         resolve({ error: 'No certificate presented' });
@@ -222,6 +239,9 @@ function fetchTlsCertificate(host, port) {
         fingerprint: cert.fingerprint || null,
         fingerprint256: cert.fingerprint256 || null,
         serialNumber: cert.serialNumber || null,
+        authorized: socket.authorized === true,
+        authorizationError,
+        selfSigned: isSelfSignedTlsError(authorizationError),
       });
     });
 
@@ -250,24 +270,39 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
   };
 
   const blocked = imapAssessment.blocked || smtpAssessment.blocked;
-  const requiresConfirmation = imapAssessment.unknownProvider || smtpAssessment.unknownProvider;
   const warnings = [];
   if (imapAssessment.unknownProvider) warnings.push(`IMAP host "${imapAssessment.host}" is not a known provider.`);
   if (smtpAssessment.unknownProvider) warnings.push(`SMTP host "${smtpAssessment.host}" is not a known provider.`);
   if (imapAssessment.blocked) warnings.push(`IMAP host "${imapAssessment.host}" resolves to a private/local address.`);
   if (smtpAssessment.blocked) warnings.push(`SMTP host "${smtpAssessment.host}" resolves to a private/local address.`);
 
-  const certificates = { imap: null, smtp: null };
-  if (imapAssessment.unknownProvider) {
-    certificates.imap = await fetchTlsCertificate(imapAssessment.host, imapAssessment.port || 993);
+  const [imapCertificate, smtpCertificate] = await Promise.all([
+    fetchTlsCertificate(imapAssessment.host, imapAssessment.port || 993),
+    fetchTlsCertificate(smtpAssessment.host, smtpAssessment.port || 587),
+  ]);
+  const certificates = {
+    imap: imapCertificate,
+    smtp: smtpCertificate,
+  };
+  const imapSelfSigned = Boolean(certificates.imap && !certificates.imap.error && certificates.imap.selfSigned);
+  const smtpSelfSigned = Boolean(certificates.smtp && !certificates.smtp.error && certificates.smtp.selfSigned);
+  const requiresInsecureTls = imapSelfSigned || smtpSelfSigned;
+  const requiresConfirmation =
+    imapAssessment.unknownProvider ||
+    smtpAssessment.unknownProvider ||
+    requiresInsecureTls;
+
+  if (imapSelfSigned) {
+    warnings.push(`IMAP certificate for "${imapAssessment.host}" is self-signed (${certificates.imap.authorizationError || 'untrusted'}).`);
   }
-  if (smtpAssessment.unknownProvider) {
-    certificates.smtp = await fetchTlsCertificate(smtpAssessment.host, smtpAssessment.port || 587);
+  if (smtpSelfSigned) {
+    warnings.push(`SMTP certificate for "${smtpAssessment.host}" is self-signed (${certificates.smtp.authorizationError || 'untrusted'}).`);
   }
 
   return {
     blocked,
     requiresConfirmation,
+    requiresInsecureTls,
     warnings,
     assessments,
     certificates,
@@ -580,6 +615,7 @@ async function testImapConnection(account) {
       return { success: false, error: 'No password configured' };
     }
     
+    const allowSelfSigned = toBooleanFlag(account.allow_self_signed);
     const imapPort = account.imap_port || 993;
     const config = {
       imap: {
@@ -589,7 +625,7 @@ async function testImapConnection(account) {
         port: imapPort,
         tls: true,
         tlsOptions: { 
-          rejectUnauthorized: true,
+          rejectUnauthorized: !allowSelfSigned,
           servername: account.imap_host,
         },
         connTimeout: 60000,
@@ -616,6 +652,8 @@ async function testImapConnection(account) {
     let friendlyError = errorMsg;
     if (errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
       friendlyError = 'Authentication failed. Check your username and password (use App Password for Gmail/Yahoo).';
+    } else if (isSelfSignedTlsError(errorMsg)) {
+      friendlyError = 'Server uses a self-signed TLS certificate. Review the certificate and confirm trust to continue.';
     } else if (errorMsg.includes('ETIMEDOUT') || errorMsg.includes('timeout')) {
       friendlyError = 'Connection timeout. Check server address and port.';
     } else if (errorMsg.includes('ENOTFOUND')) {
@@ -626,7 +664,12 @@ async function testImapConnection(account) {
       friendlyError = 'Connection closed by server. Check your credentials and server settings.';
     }
     
-    return { success: false, error: friendlyError, details: errorMsg };
+    return {
+      success: false,
+      error: friendlyError,
+      details: errorMsg,
+      isSelfSignedCertificate: isSelfSignedTlsError(errorMsg),
+    };
   }
 }
 
@@ -646,6 +689,7 @@ async function syncMailAccount(accountId) {
       return { success: false, error: 'No password configured for this account' };
     }
     
+    const allowSelfSigned = toBooleanFlag(account.allow_self_signed);
     const imapPort = account.imap_port || 993;
     const config = {
       imap: {
@@ -655,7 +699,7 @@ async function syncMailAccount(accountId) {
         port: imapPort,
         tls: true,
         tlsOptions: { 
-          rejectUnauthorized: true,
+          rejectUnauthorized: !allowSelfSigned,
           servername: account.imap_host,
         },
         connTimeout: 60000,
@@ -743,6 +787,7 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
     const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
     if (!password) throw new Error('No password configured');
 
+    const allowSelfSigned = toBooleanFlag(account.allow_self_signed);
     const smtpPort = account.smtp_port || 587;
     // Port 465 uses implicit SSL/TLS, port 587 uses STARTTLS
     const transporter = nodemailer.createTransport({
@@ -755,7 +800,7 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
         pass: password,
       },
       tls: {
-        rejectUnauthorized: true,
+        rejectUnauthorized: !allowSelfSigned,
         servername: account.smtp_host, // SNI support for proper TLS handshake
       },
       connectionTimeout: 60000, // Connection timeout: 60 seconds
@@ -1118,6 +1163,7 @@ async function ensureSchema() {
     smtp_host VARCHAR(255),
     smtp_port INT DEFAULT 587,
     encrypted_password TEXT,
+    allow_self_signed BOOLEAN DEFAULT FALSE,
     is_active BOOLEAN DEFAULT TRUE,
     last_synced_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1133,6 +1179,11 @@ async function ensureSchema() {
     await db.execute(`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS username VARCHAR(255) AFTER provider`);
   } catch (e) {
     // Column might already exist or unsupported syntax, ignore
+  }
+  try {
+    await db.execute(`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS allow_self_signed BOOLEAN DEFAULT FALSE AFTER encrypted_password`);
+  } catch (e) {
+    // Ignore when unsupported or already exists
   }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS emails (
@@ -2049,11 +2100,11 @@ const routes = {
 
       // Group filter: name_only = has name but no email/phone; number_or_email_only = has email/phone but no name
       if (group === 'name_only') {
-        query += ' AND (TRIM(COALESCE(first_name,"")) != "" OR TRIM(COALESCE(last_name,"")) != "")';
-        query += ' AND (COALESCE(email,"") = "" AND COALESCE(phone,"") = "")';
+        query += " AND (TRIM(COALESCE(first_name,'')) != '' OR TRIM(COALESCE(last_name,'')) != '')";
+        query += " AND (TRIM(COALESCE(email,'')) = '' AND TRIM(COALESCE(phone,'')) = '')";
       } else if (group === 'number_or_email_only') {
-        query += ' AND (TRIM(COALESCE(email,"")) != "" OR TRIM(COALESCE(phone,"")) != "")';
-        query += ' AND TRIM(COALESCE(first_name,"")) = "" AND TRIM(COALESCE(last_name,"")) = ""';
+        query += " AND (TRIM(COALESCE(email,'')) != '' OR TRIM(COALESCE(phone,'')) != '')";
+        query += " AND TRIM(COALESCE(first_name,'')) = '' AND TRIM(COALESCE(last_name,'')) = ''";
       }
 
       // Server-side search (indexed fields + phone/company for quick find)
@@ -2701,6 +2752,7 @@ const routes = {
 
       return {
         requires_confirmation: trust.requiresConfirmation,
+        requires_insecure_tls: trust.requiresInsecureTls,
         warnings: trust.warnings,
         host_assessments: trust.assessments,
         certificates: trust.certificates,
@@ -2725,6 +2777,7 @@ const routes = {
         smtp_port,
         encrypted_password,
         confirm_unknown_host,
+        confirm_self_signed_certificate,
       } = body;
       
       if (!email_address || !encrypted_password) {
@@ -2740,6 +2793,7 @@ const routes = {
         smtp_host,
         smtp_port: smtp_port || 587,
       });
+      const confirmTrust = Boolean(confirm_unknown_host || confirm_self_signed_certificate);
       if (trust.blocked) {
         return {
           error: 'Mail host resolves to a private/local address and is not allowlisted',
@@ -2748,11 +2802,14 @@ const routes = {
           host_assessments: trust.assessments,
         };
       }
-      if (trust.requiresConfirmation && !confirm_unknown_host) {
+      if (trust.requiresConfirmation && !confirmTrust) {
         return {
-          error: 'Mail host is unknown. Confirm trust before adding this account.',
+          error: trust.requiresInsecureTls
+            ? 'Mail server certificate is self-signed. Confirm trust before adding this account.'
+            : 'Mail host is unknown. Confirm trust before adding this account.',
           status: 409,
           requires_confirmation: true,
+          requires_insecure_tls: trust.requiresInsecureTls,
           warnings: trust.warnings,
           host_assessments: trust.assessments,
           certificates: trust.certificates,
@@ -2766,6 +2823,7 @@ const routes = {
         imap_host,
         imap_port: imap_port || 993,
         encrypted_password: encrypt(encrypted_password),
+        allow_self_signed: trust.requiresInsecureTls && confirmTrust,
       };
       
       // Test IMAP connection/auth first (fast, non-blocking)
@@ -2773,6 +2831,17 @@ const routes = {
       const testResult = await testImapConnection(tempAccount);
       
       if (!testResult.success) {
+        if (testResult.isSelfSignedCertificate && !tempAccount.allow_self_signed) {
+          return {
+            error: 'Mail server certificate is self-signed. Confirm trust before adding this account.',
+            status: 409,
+            requires_confirmation: true,
+            requires_insecure_tls: true,
+            warnings: trust.warnings,
+            host_assessments: trust.assessments,
+            certificates: trust.certificates,
+          };
+        }
         // Auth failed - return error immediately without saving account
         return { 
           error: testResult.error, 
@@ -2785,8 +2854,8 @@ const routes = {
       const accountId = crypto.randomUUID();
       const actualUsername = username || email_address;
       await db.execute(
-        'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, imap_port || 993, smtp_host || null, smtp_port || 587, tempAccount.encrypted_password]
+        'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, allow_self_signed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, imap_port || 993, smtp_host || null, smtp_port || 587, tempAccount.encrypted_password, tempAccount.allow_self_signed ? 1 : 0]
       );
       
       const [accounts] = await db.execute('SELECT id, user_id, email_address, display_name, provider, is_active FROM mail_accounts WHERE id = ?', [accountId]);
@@ -2825,6 +2894,7 @@ const routes = {
         smtp_port,
         encrypted_password,
         confirm_unknown_host,
+        confirm_self_signed_certificate,
       } = body;
       
       // Verify account belongs to user
@@ -2834,6 +2904,7 @@ const routes = {
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
 
+      let allowSelfSignedUpdate = null;
       if (imap_host || smtp_host) {
         const [existing] = await db.execute(
           'SELECT imap_host, imap_port, smtp_host, smtp_port FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
@@ -2846,6 +2917,7 @@ const routes = {
           smtp_host: smtp_host || current.smtp_host,
           smtp_port: smtp_port || current.smtp_port || 587,
         });
+        const confirmTrust = Boolean(confirm_unknown_host || confirm_self_signed_certificate);
         if (trust.blocked) {
           return {
             error: 'Mail host resolves to a private/local address and is not allowlisted',
@@ -2854,16 +2926,20 @@ const routes = {
             host_assessments: trust.assessments,
           };
         }
-        if (trust.requiresConfirmation && !confirm_unknown_host) {
+        if (trust.requiresConfirmation && !confirmTrust) {
           return {
-            error: 'Mail host is unknown. Confirm trust before updating this account.',
+            error: trust.requiresInsecureTls
+              ? 'Mail server certificate is self-signed. Confirm trust before updating this account.'
+              : 'Mail host is unknown. Confirm trust before updating this account.',
             status: 409,
             requires_confirmation: true,
+            requires_insecure_tls: trust.requiresInsecureTls,
             warnings: trust.warnings,
             host_assessments: trust.assessments,
             certificates: trust.certificates,
           };
         }
+        allowSelfSignedUpdate = trust.requiresInsecureTls ? 1 : 0;
       }
       
       // Build update query dynamically
@@ -2878,6 +2954,7 @@ const routes = {
       if (smtp_host) { updates.push('smtp_host = ?'); params.push(smtp_host); }
       if (smtp_port) { updates.push('smtp_port = ?'); params.push(smtp_port); }
       if (encrypted_password) { updates.push('encrypted_password = ?'); params.push(encrypt(encrypted_password)); }
+      if (allowSelfSignedUpdate !== null) { updates.push('allow_self_signed = ?'); params.push(allowSelfSignedUpdate); }
       
       if (updates.length === 0) return { error: 'No fields to update', status: 400 };
       
