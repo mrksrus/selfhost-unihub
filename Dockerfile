@@ -12,8 +12,8 @@ RUN npm run build
 # ── Stage 2: Production image (Nginx + Node.js API) ───────────────
 FROM node:20-alpine
 
-# Install nginx, wget (for healthcheck), netcat-openbsd (for MySQL port check), and temporary build deps for native node modules
-RUN apk add --no-cache nginx wget netcat-openbsd \
+# Install nginx, wget (for healthcheck), netcat-openbsd (for MySQL port check), mariadb-client (to verify DB user before starting API), and temporary build deps for native node modules
+RUN apk add --no-cache nginx wget netcat-openbsd mariadb-client \
     && apk add --no-cache --virtual .build-deps python3 make g++
 
 # ── Set up the API ─────────────────────────────────────────────────

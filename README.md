@@ -169,6 +169,21 @@ The server will **refuse to start** if `JWT_SECRET`, `ENCRYPTION_KEY`, or the bo
 
 Open `http://<your-host>:3000` and sign in with your bootstrap admin credentials.
 
+### Verifying environment variables
+
+The values under `environment:` in `docker-compose.yml` are passed into each container. To confirm they are set (e.g. if you see "Access denied" or missing config):
+
+- **Unihub** (DB-related and startup vars; omit `-e` to print all env):
+  ```bash
+  docker compose run --rm unihub env | grep -E '^MYSQL_|^UNIHUB_'
+  ```
+- **MySQL** (vars used to create database and user):
+  ```bash
+  docker compose run --rm unihub-mysql env | grep -E '^MYSQL_'
+  ```
+
+Ensure `MYSQL_PASSWORD` is identical in both services; the MySQL container creates the user with that password, and the unihub container must use the same one to connect.
+
 ## Environment Variables Reference
 
 ### Required (server exits if missing)
