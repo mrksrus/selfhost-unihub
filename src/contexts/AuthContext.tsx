@@ -7,12 +7,14 @@ interface User {
   full_name?: string;
   avatar_url?: string;
   role?: 'user' | 'admin';
+  timezone?: string | null;
 }
 
 interface AuthContextType {
   user: User | null;
-  session: { token: string } | null;
+  session: { authenticated: true } | null;
   loading: boolean;
+  setUser: (user: User | null) => void;
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null; requiresApproval?: boolean }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
   signOut: () => Promise<void>;
@@ -22,43 +24,31 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [session, setSession] = useState<{ token: string } | null>(null);
+  const [session, setSession] = useState<{ authenticated: true } | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check for existing session
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-      api.setToken(token);
-      // Verify token and get user info (also refreshes CSRF token)
-      api.get<{ user: User; csrfToken?: string }>('/auth/me').then((response) => {
-        if (response.data?.user) {
-          setUser(response.data.user);
-          setSession({ token });
-          // Refresh CSRF token if provided
-          if (response.data.csrfToken) {
-            api.setCsrfToken(response.data.csrfToken);
-          }
-        } else {
-          // Invalid token, clear it
-          api.setToken(null);
-          setUser(null);
-          setSession(null);
+    api.get<{ user: User; csrfToken?: string }>('/auth/me').then((response) => {
+      if (response.data?.user) {
+        setUser(response.data.user);
+        setSession({ authenticated: true });
+        if (response.data.csrfToken) {
+          api.setCsrfToken(response.data.csrfToken);
         }
-        setLoading(false);
-      }).catch(() => {
-        api.setToken(null);
+      } else {
         setUser(null);
         setSession(null);
-        setLoading(false);
-      });
-    } else {
+      }
       setLoading(false);
-    }
+    }).catch(() => {
+      setUser(null);
+      setSession(null);
+      setLoading(false);
+    });
   }, []);
 
   const signUp = async (email: string, password: string, fullName: string) => {
-    const response = await api.post<{ token?: string; csrfToken?: string; user?: User; requiresApproval?: boolean; message?: string }>('/auth/signup', {
+    const response = await api.post<{ csrfToken?: string; user?: User; requiresApproval?: boolean; message?: string }>('/auth/signup', {
       email,
       password,
       full_name: fullName,
@@ -73,13 +63,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { error: null, requiresApproval: true };
     }
 
-    if (response.data?.token && response.data?.user) {
-      api.setToken(response.data.token);
+    if (response.data?.user) {
       if (response.data.csrfToken) {
         api.setCsrfToken(response.data.csrfToken);
       }
       setUser(response.data.user);
-      setSession({ token: response.data.token });
+      setSession({ authenticated: true });
       return { error: null };
     }
 
@@ -87,7 +76,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signIn = async (email: string, password: string) => {
-    const response = await api.post<{ token: string; csrfToken?: string; user: User }>('/auth/signin', {
+    const response = await api.post<{ csrfToken?: string; user: User }>('/auth/signin', {
       email,
       password,
     });
@@ -96,13 +85,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return { error: new Error(response.error) };
     }
 
-    if (response.data?.token && response.data?.user) {
-      api.setToken(response.data.token);
+    if (response.data?.user) {
       if (response.data.csrfToken) {
         api.setCsrfToken(response.data.csrfToken);
       }
       setUser(response.data.user);
-      setSession({ token: response.data.token });
+      setSession({ authenticated: true });
       return { error: null };
     }
 
@@ -111,14 +99,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signOut = async () => {
     await api.post('/auth/signout');
-    api.setToken(null);
     api.setCsrfToken(null);
     setUser(null);
     setSession(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, signUp, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, session, loading, setUser, signUp, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );

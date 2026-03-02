@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
     role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
     is_active BOOLEAN DEFAULT TRUE,
     email_verified BOOLEAN DEFAULT FALSE,
+    timezone VARCHAR(64) NULL COMMENT 'IANA timezone e.g. Europe/Berlin; NULL = use device',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
@@ -73,6 +74,10 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     color VARCHAR(20) DEFAULT '#22c55e',
     recurrence VARCHAR(100),
     reminder_minutes INT,
+    reminders JSON DEFAULT NULL COMMENT 'Array of reminder minutes before event: [0, 15, 60] for default + 15min + 1hr before',
+    todo_status VARCHAR(20) DEFAULT NULL COMMENT 'done, changed, time_moved, cancelled',
+    is_todo_only BOOLEAN DEFAULT FALSE COMMENT 'True for standalone todos without calendar dates',
+    done_at DATETIME NULL COMMENT 'Timestamp when task was marked as done',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
@@ -80,6 +85,24 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     INDEX idx_events_user (user_id),
     INDEX idx_events_start (start_time),
     INDEX idx_events_user_time (user_id, start_time, end_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Event subtasks table (shared by Calendar + ToDo views)
+CREATE TABLE IF NOT EXISTS calendar_event_subtasks (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    event_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    is_done BOOLEAN DEFAULT FALSE,
+    position INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_subtasks_event (event_id),
+    INDEX idx_subtasks_user (user_id),
+    INDEX idx_subtasks_order (event_id, position)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Mail accounts table
@@ -142,24 +165,20 @@ CREATE TABLE IF NOT EXISTS emails (
 CREATE TABLE IF NOT EXISTS email_attachments (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     email_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
     filename VARCHAR(255) NOT NULL,
     content_type VARCHAR(100),
     size_bytes BIGINT,
     storage_path TEXT,
+    content_id VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
     FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
-    INDEX idx_attachments_email (email_id)
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_attachments_email (email_id),
+    INDEX idx_attachments_user (user_id),
+    INDEX idx_attachments_content_id (content_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Create default admin user (password: admin123 - CHANGE IN PRODUCTION!)
--- The password hash is for 'admin123' using bcrypt
-INSERT INTO users (id, email, password_hash, full_name, email_verified, role)
-VALUES (
-    UUID(),
-    'admin@unihub.local',
-    '$2a$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4gIXPq.EgG',
-    'Admin User',
-    TRUE,
-    'admin'
-) ON DUPLICATE KEY UPDATE email = email;
+-- Admin bootstrap is now handled by API startup using:
+-- BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD

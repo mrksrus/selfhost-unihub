@@ -2,178 +2,94 @@
 
 ## Overview
 
-UniHub handles both regular attachments (files to download) and inline attachments (images embedded in HTML emails) when syncing emails.
+UniHub handles two kinds of email attachments during IMAP sync: **regular attachments** (downloadable files) and **inline attachments** (images embedded in HTML email bodies).
 
-## Types of Attachments
+## Types
 
-### 1. Regular Attachments
-- Files attached to emails (PDFs, images, documents, etc.)
-- Shown in the attachments list below email content
-- Downloadable via click
-- Stored on filesystem, metadata in database
+| Type | Stored where | Shown how |
+|------|-------------|-----------|
+| Regular | Filesystem + DB metadata | Listed below the email body with download links |
+| Inline | Filesystem + DB metadata; `cid:` URLs replaced in HTML | Rendered inside the sandboxed email iframe |
 
-### 2. Inline Attachments
-- Images embedded directly in HTML email body
-- Referenced using `cid:` (Content-ID) scheme
-- Displayed inline in the email reader
-- Not shown in attachments list (already embedded)
+## Storage
 
-## Storage Architecture
+### Filesystem
 
-### Filesystem Storage
-- **Location**: `/app/uploads/attachments/`
-- **Naming**: `{emailId}-{attachmentId}-{filename}`
-- **Format**: Binary files stored as-is (no conversion)
+- Location: `/app/uploads/attachments/`
+- Naming convention: `{emailId}-{attachmentId}-{sanitised_filename}`
+- Files are written as raw binary; no transcoding.
 
-### Database Storage
-- **Table**: `email_attachments`
-- **Fields**:
-  - `id`: Unique attachment ID
-  - `email_id`: Link to email
-  - `filename`: Original filename
-  - `content_type`: MIME type (e.g., `image/png`, `application/pdf`)
-  - `size_bytes`: File size in bytes
-  - `storage_path`: Filesystem path to file
-  - `content_id`: CID for inline attachments (null for regular)
+### Database (`email_attachments` table)
 
-## Processing Flow
+| Column | Purpose |
+|--------|---------|
+| `id` | UUID primary key |
+| `email_id` | FK to `emails` |
+| `user_id` | FK to `users` (for ownership checks) |
+| `filename` | Original filename |
+| `content_type` | MIME type |
+| `size_bytes` | File size |
+| `storage_path` | Absolute filesystem path |
+| `content_id` | CID value for inline attachments (null for regular) |
 
-### During Email Sync
+## Processing During Sync
 
-1. **Parse Email**:
-   - `mailparser` extracts attachments from email
-   - Returns array of attachment objects
+For each attachment found by `mailparser`:
 
-2. **Process Each Attachment**:
-   ```
-   For each attachment:
-   a. Generate unique attachment ID
-   b. Extract filename (or use CID for inline)
-   c. Sanitize filename (remove special chars)
-   d. Determine storage path
-   e. Write file content to filesystem
-   f. Calculate file size
-   g. Insert metadata into database
-   ```
+1. Generate a UUID attachment ID.
+2. Sanitise the filename (strip non-alphanumeric characters except `.`, `-`, `_`).
+3. Write content to disk (handles Buffer, string, and stream inputs).
+4. Insert metadata row into `email_attachments`.
+5. If the attachment is inline (has a `contentId` / `cid`):
+   - Replace all `cid:{value}` references in the email's HTML body with `/api/mail/attachments/{id}`.
+   - Update the `body_html` column in `emails` with the rewritten HTML.
 
-3. **Handle Inline Attachments**:
-   - Detect inline by checking for `contentId` or `cid` property
-   - Store CID in `content_id` field
-   - Replace `cid:` references in HTML with actual URLs
-   - Example: `<img src="cid:image123">` → `<img src="/api/mail/attachments/abc-123">`
-
-### HTML Processing
-
-**Before Processing**:
-```html
-<img src="cid:image123@example.com">
-<p>Some text</p>
-```
-
-**After Processing**:
-```html
-<img src="/api/mail/attachments/550e8400-e29b-41d4-a716-446655440000">
-<p>Some text</p>
-```
-
-**Replacement Patterns**:
-- `cid:value` → `/api/mail/attachments/{id}`
-- `"cid:value"` → `/api/mail/attachments/{id}`
-- `'cid:value'` → `/api/mail/attachments/{id}`
-
-## Content Handling
-
-### Buffer Handling
-- `mailparser` provides attachments as Buffer objects
-- Buffers written directly to filesystem
-- Size calculated from buffer length
-
-### Stream Handling
-- Some attachments may be streams
-- Streams converted to buffers before writing
-- Chunks collected and concatenated
-
-### Error Handling
-- Individual attachment failures don't stop email sync
-- Errors logged but sync continues
-- Failed attachments skipped
+Individual attachment failures are logged and skipped; the rest of the email sync continues.
 
 ## Download Endpoint
 
 ### `GET /api/mail/attachments/:id`
 
-**Authentication**:
-- Requires valid JWT token
-- Verifies attachment belongs to user's email
+1. Authenticate via session cookie.
+2. Look up the attachment and verify the requesting user owns it (`user_id` check).
+3. Resolve the filesystem path and apply a **path-traversal guard**: `path.resolve(storage_path)` must start with the uploads root (`/app/uploads/attachments`). Requests that escape this root are rejected.
+4. Read the file and return it with the correct `Content-Type` and `Content-Disposition: attachment` headers.
 
-**Process**:
-1. Lookup attachment by ID
-2. Verify ownership (join with emails table)
-3. Read file from filesystem
-4. Return file with proper content-type headers
+Common MIME types (PDF, JPEG, PNG, plain text) are normalised from the filename extension if the stored `content_type` is generic.
 
-**Response**:
-- Raw file content (binary)
-- Content-Type header (from database)
-- Content-Disposition header (for download)
+## Frontend Rendering
 
-## Frontend Display
+### Email HTML (inline images)
 
-### Regular Attachments
-- Shown in attachments section below email body
-- Display filename, content type, and size
-- Download link with paperclip icon
-- Hover effects for better UX
+Email HTML is rendered inside a **sandboxed iframe** (`<iframe sandbox="" srcDoc={html}>`). The empty `sandbox` attribute blocks all script execution, form submission, and popups. Inline images load via the attachment endpoint because the `cid:` URLs were already replaced during sync.
 
-### Inline Attachments
-- Automatically displayed in HTML email body
-- Loaded via `/api/mail/attachments/{id}` URL
-- Browser handles image rendering
-- No separate UI element needed
+The `SafeEmailContent` component (`src/components/mail/SafeEmailContent.tsx`) encapsulates this:
 
-### Visual Indicators
-- Paperclip icon next to email subject if attachments exist
-- Shown in email list (all folders)
-- Helps identify emails with attachments quickly
+- If `body_html` is available: render in sandboxed iframe.
+- Otherwise: render `body_text` as preformatted plain text.
 
-## Security Considerations
+### Regular attachments
 
-### Access Control
-- Attachments only accessible to email owner
-- Download endpoint verifies user ownership
-- No direct filesystem access from frontend
+Displayed below the email body as a list showing filename, MIME type, and size. Each item is a button that triggers `api.getBlob('/mail/attachments/{id}')` and initiates a browser download.
 
-### File Validation
-- Filenames sanitized (special chars removed)
-- Content-type stored but not validated
-- No virus scanning (future improvement)
+## Compose Attachments
 
-### Storage Limits
-- No automatic cleanup
-- Attachments accumulate over time
-- Consider implementing cleanup policy
+When composing/replying/forwarding, users can attach files from their device:
+
+- Files are read client-side, base64-encoded, and sent in the `POST /api/mail/send` payload.
+- Limits: max 20 attachments, each up to 15 MB, total up to 25 MB.
+- The backend passes them to `nodemailer` for SMTP delivery.
+
+## Security
+
+- **Ownership check**: every download verifies the requesting user owns the attachment.
+- **Path-traversal guard**: resolved path must stay within `/app/uploads/attachments`.
+- **Sandboxed rendering**: inline images display inside a script-free iframe, preventing XSS from email HTML.
+- **No direct filesystem access**: attachments are only served through the authenticated API endpoint.
 
 ## Limitations
 
-1. **No Preview**: Attachments are download-only (no in-browser preview)
-2. **No Size Limits**: Large attachments may cause issues
-3. **No Compression**: Files stored as-is
-4. **No Virus Scanning**: Files not scanned for malware
-5. **No Expiration**: Attachments never deleted automatically
-
-## File Types Supported
-
-All file types are supported:
-- Images (PNG, JPG, GIF, etc.) - displayed inline if HTML email
-- Documents (PDF, DOCX, etc.) - download only
-- Archives (ZIP, RAR, etc.) - download only
-- Any other file type - download only
-
-## Future Improvements
-
-- In-browser preview for images/PDFs
-- Attachment size limits
-- Virus scanning integration
-- Automatic cleanup of old attachments
-- Attachment compression
-- Progress indicators for large downloads
+1. No in-browser file preview (download only).
+2. No virus/malware scanning.
+3. No automatic cleanup of old attachments.
+4. No server-enforced per-attachment size limit during sync (only during compose).

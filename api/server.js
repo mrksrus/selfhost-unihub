@@ -9,9 +9,13 @@ const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 const imaps = require('imap-simple');
 const { simpleParser } = require('mailparser');
+const tls = require('tls');
+const dns = require('dns').promises;
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const { promisify } = require('util');
+const { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } = require('./calendar-route-utils');
 
 const writeFile = promisify(fs.writeFile);
 const mkdir = promisify(fs.mkdir);
@@ -43,7 +47,19 @@ const debugLog = (location, message, data, hypothesisId, runId = 'run1') => {
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET;
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'unihub-encryption-key-for-email-credentials-change-me';
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+const BOOTSTRAP_ADMIN_EMAIL = (process.env.BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
+const BOOTSTRAP_ADMIN_PASSWORD = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+const TRUST_PROXY_HEADERS = process.env.TRUST_PROXY_HEADERS === 'true';
+const TRUSTED_MAIL_HOSTS = (process.env.TRUSTED_MAIL_HOSTS || '')
+  .split(',')
+  .map(host => host.trim().toLowerCase())
+  .filter(Boolean);
+const AUTH_COOKIE_NAME = 'auth-token';
 
 // ── Encryption helpers (AES-256-GCM) ─────────────────────────────
 function deriveKey(secret) {
@@ -74,6 +90,188 @@ function decrypt(encryptedText) {
   } catch {
     return null;
   }
+}
+
+const KNOWN_MAIL_HOST_SUFFIXES = [
+  'gmail.com',
+  'googlemail.com',
+  'mail.me.com',
+  'icloud.com',
+  'yahoo.com',
+  'outlook.com',
+  'office365.com',
+  'hotmail.com',
+  'live.com',
+];
+
+function normalizeHost(host) {
+  return String(host || '').trim().toLowerCase();
+}
+
+function isKnownMailProviderHost(host) {
+  const normalizedHost = normalizeHost(host);
+  if (!normalizedHost) return false;
+  return KNOWN_MAIL_HOST_SUFFIXES.some(suffix => normalizedHost === suffix || normalizedHost.endsWith(`.${suffix}`));
+}
+
+function hostInAllowlist(host) {
+  const normalizedHost = normalizeHost(host);
+  if (!normalizedHost) return false;
+  return TRUSTED_MAIL_HOSTS.some(allowed => normalizedHost === allowed || normalizedHost.endsWith(`.${allowed}`));
+}
+
+function isPrivateIPv4(ip) {
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(Number.isNaN)) return false;
+  if (parts[0] === 10) return true;
+  if (parts[0] === 127) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  if (parts[0] === 169 && parts[1] === 254) return true;
+  return false;
+}
+
+function isPrivateIPv6(ip) {
+  const normalized = ip.toLowerCase();
+  return (
+    normalized === '::1' ||
+    normalized.startsWith('fc') ||
+    normalized.startsWith('fd') ||
+    normalized.startsWith('fe80:')
+  );
+}
+
+function isPrivateOrLocalIP(ip) {
+  const version = net.isIP(ip);
+  if (version === 4) return isPrivateIPv4(ip);
+  if (version === 6) return isPrivateIPv6(ip);
+  return false;
+}
+
+async function assessMailHost(host, port) {
+  const normalizedHost = normalizeHost(host);
+  const knownProvider = isKnownMailProviderHost(normalizedHost);
+  const allowlisted = hostInAllowlist(normalizedHost);
+  const reasons = [];
+
+  if (!knownProvider && !allowlisted) {
+    reasons.push('unknown_provider');
+  }
+
+  let resolvedAddresses = [];
+  let resolveError = null;
+  try {
+    if (net.isIP(normalizedHost)) {
+      resolvedAddresses = [normalizedHost];
+    } else if (normalizedHost) {
+      const lookup = await dns.lookup(normalizedHost, { all: true, verbatim: true });
+      resolvedAddresses = lookup.map(entry => entry.address);
+    }
+  } catch (error) {
+    resolveError = error.message;
+  }
+
+  const privateAddresses = resolvedAddresses.filter(isPrivateOrLocalIP);
+  if (privateAddresses.length > 0 && !allowlisted) {
+    reasons.push('private_or_local_address');
+  }
+
+  return {
+    host: normalizedHost,
+    port: Number(port) || null,
+    knownProvider,
+    allowlisted,
+    unknownProvider: !knownProvider && !allowlisted,
+    blocked: privateAddresses.length > 0 && !allowlisted,
+    reasons,
+    resolvedAddresses,
+    privateAddresses,
+    resolveError,
+  };
+}
+
+function fetchTlsCertificate(host, port) {
+  const normalizedHost = normalizeHost(host);
+  const numericPort = Number(port);
+  if (!normalizedHost || !numericPort) {
+    return Promise.resolve({ error: 'Missing host or port' });
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const socket = tls.connect({
+      host: normalizedHost,
+      port: numericPort,
+      servername: normalizedHost,
+      rejectUnauthorized: false,
+      timeout: 7000,
+    }, () => {
+      if (settled) return;
+      settled = true;
+      const cert = socket.getPeerCertificate(true);
+      socket.end();
+      if (!cert || Object.keys(cert).length === 0) {
+        resolve({ error: 'No certificate presented' });
+        return;
+      }
+      resolve({
+        subject: cert.subject || null,
+        issuer: cert.issuer || null,
+        valid_from: cert.valid_from || null,
+        valid_to: cert.valid_to || null,
+        fingerprint: cert.fingerprint || null,
+        fingerprint256: cert.fingerprint256 || null,
+        serialNumber: cert.serialNumber || null,
+      });
+    });
+
+    socket.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      resolve({ error: error.message });
+    });
+    socket.on('timeout', () => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve({ error: 'TLS handshake timed out' });
+    });
+  });
+}
+
+async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port }) {
+  const [imapAssessment, smtpAssessment] = await Promise.all([
+    assessMailHost(imap_host, imap_port || 993),
+    assessMailHost(smtp_host, smtp_port || 587),
+  ]);
+  const assessments = {
+    imap: imapAssessment,
+    smtp: smtpAssessment,
+  };
+
+  const blocked = imapAssessment.blocked || smtpAssessment.blocked;
+  const requiresConfirmation = imapAssessment.unknownProvider || smtpAssessment.unknownProvider;
+  const warnings = [];
+  if (imapAssessment.unknownProvider) warnings.push(`IMAP host "${imapAssessment.host}" is not a known provider.`);
+  if (smtpAssessment.unknownProvider) warnings.push(`SMTP host "${smtpAssessment.host}" is not a known provider.`);
+  if (imapAssessment.blocked) warnings.push(`IMAP host "${imapAssessment.host}" resolves to a private/local address.`);
+  if (smtpAssessment.blocked) warnings.push(`SMTP host "${smtpAssessment.host}" resolves to a private/local address.`);
+
+  const certificates = { imap: null, smtp: null };
+  if (imapAssessment.unknownProvider) {
+    certificates.imap = await fetchTlsCertificate(imapAssessment.host, imapAssessment.port || 993);
+  }
+  if (smtpAssessment.unknownProvider) {
+    certificates.smtp = await fetchTlsCertificate(smtpAssessment.host, smtpAssessment.port || 587);
+  }
+
+  return {
+    blocked,
+    requiresConfirmation,
+    warnings,
+    assessments,
+    certificates,
+  };
 }
 
 // ── Mail sync and send functions ──────────────────────────────────
@@ -130,7 +328,8 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
     let newEmailsCount = 0;
     let processedCount = 0;
     let failedCount = 0;
-    const uploadsDir = '/app/uploads/attachments';
+    const uploadsRoot = '/app/uploads/attachments';
+    const uploadsDir = path.join(uploadsRoot, account.user_id);
     
     // Sequentially download each email individually using the actual UIDs
     for (let i = 0; i < uidsToProcess.length; i++) {
@@ -313,10 +512,11 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
               }
               
               await db.execute(
-                'INSERT INTO email_attachments (id, email_id, filename, content_type, size_bytes, storage_path, content_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                'INSERT INTO email_attachments (id, email_id, user_id, filename, content_type, size_bytes, storage_path, content_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                 [
                   attachmentId,
                   emailId,
+                  account.user_id,
                   filename,
                   attachment.contentType || attachment.contentDisposition?.type || 'application/octet-stream',
                   attachment.size || sizeBytes,
@@ -389,7 +589,7 @@ async function testImapConnection(account) {
         port: imapPort,
         tls: true,
         tlsOptions: { 
-          rejectUnauthorized: false,
+          rejectUnauthorized: true,
           servername: account.imap_host,
         },
         connTimeout: 60000,
@@ -455,7 +655,7 @@ async function syncMailAccount(accountId) {
         port: imapPort,
         tls: true,
         tlsOptions: { 
-          rejectUnauthorized: false,
+          rejectUnauthorized: true,
           servername: account.imap_host,
         },
         connTimeout: 60000,
@@ -525,10 +725,10 @@ async function syncMailAccount(accountId) {
   }
 }
 
-async function sendEmail(accountId, { to, subject, body, isHtml = false }) {
+async function sendEmail(accountId, { to, subject, body, isHtml = false, attachments = [] }) {
   try {
     // #region agent log
-    debugLog('server.js:169', 'sendEmail START', { accountId, to, subjectLength: subject?.length || 0, bodyLength: body?.length || 0, isHtml }, 'H5');
+    debugLog('server.js:169', 'sendEmail START', { accountId, to, subjectLength: subject?.length || 0, bodyLength: body?.length || 0, isHtml, attachmentCount: Array.isArray(attachments) ? attachments.length : 0 }, 'H5');
     // #endregion
     const [accounts] = await db.execute(
       'SELECT * FROM mail_accounts WHERE id = ?',
@@ -555,7 +755,7 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false }) {
         pass: password,
       },
       tls: {
-        rejectUnauthorized: false, // Allow self-signed certificates
+        rejectUnauthorized: true,
         servername: account.smtp_host, // SNI support for proper TLS handshake
       },
       connectionTimeout: 60000, // Connection timeout: 60 seconds
@@ -566,12 +766,47 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false }) {
     debugLog('server.js:189', 'Before SMTP sendMail', { smtpHost: account.smtp_host, smtpPort: account.smtp_port, from: account.email_address, to }, 'H5');
     // #endregion
 
+    const normalizedAttachments = Array.isArray(attachments) ? attachments : [];
+    if (normalizedAttachments.length > 20) {
+      throw new Error('Too many attachments (max 20)');
+    }
+
+    let totalAttachmentBytes = 0;
+    const smtpAttachments = normalizedAttachments.map((attachment, index) => {
+      if (!attachment || typeof attachment !== 'object') {
+        throw new Error(`Invalid attachment at index ${index}`);
+      }
+
+      const filename = String(attachment.filename || `attachment-${index + 1}`);
+      const contentType = String(attachment.contentType || 'application/octet-stream');
+      const dataBase64 = String(attachment.dataBase64 || '');
+      if (!dataBase64) {
+        throw new Error(`Attachment "${filename}" is empty`);
+      }
+      const contentBuffer = Buffer.from(dataBase64, 'base64');
+      if (contentBuffer.length > 15 * 1024 * 1024) {
+        throw new Error(`Attachment "${filename}" exceeds 15MB limit`);
+      }
+
+      totalAttachmentBytes += contentBuffer.length;
+      return {
+        filename,
+        contentType,
+        content: contentBuffer,
+      };
+    });
+
+    if (totalAttachmentBytes > 25 * 1024 * 1024) {
+      throw new Error('Total attachment size exceeds 25MB limit');
+    }
+
     const info = await transporter.sendMail({
       from: `${account.display_name || account.email_address} <${account.email_address}>`,
       to,
       subject,
       text: isHtml ? undefined : body,
       html: isHtml ? body : undefined,
+      attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
     });
     // #region agent log
     debugLog('server.js:199', 'SMTP sendMail success', { messageId: info.messageId }, 'H5');
@@ -601,11 +836,37 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false }) {
           JSON.stringify(toAddresses),
           isHtml ? null : body,
           isHtml ? body : null,
-          0, // has_attachments
+          smtpAttachments.length > 0 ? 1 : 0,
           new Date(),
           'sent',
         ]
       );
+
+      if (smtpAttachments.length > 0) {
+        const uploadsDir = path.join('/app/uploads/attachments', account.user_id);
+        await mkdir(uploadsDir, { recursive: true });
+
+        for (const attachment of smtpAttachments) {
+          const attachmentId = crypto.randomUUID();
+          const safeFilename = attachment.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+          const storagePath = path.join(uploadsDir, `${emailId}-${attachmentId}-${safeFilename}`);
+          await writeFile(storagePath, attachment.content);
+
+          await db.execute(
+            'INSERT INTO email_attachments (id, email_id, user_id, filename, content_type, size_bytes, storage_path, content_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+              attachmentId,
+              emailId,
+              account.user_id,
+              attachment.filename,
+              attachment.contentType || 'application/octet-stream',
+              attachment.content.length,
+              storagePath,
+              null,
+            ]
+          );
+        }
+      }
       console.log(`✓ Saved sent email to database: ${emailId}`);
     } catch (saveError) {
       // Log error but don't fail the send operation
@@ -647,6 +908,10 @@ function getDatabaseUrl() {
 async function initDatabase() {
   if (!JWT_SECRET) {
     console.error('✗ Missing JWT_SECRET. Set it in docker-compose.yml before starting.');
+    process.exit(1);
+  }
+  if (!ENCRYPTION_KEY) {
+    console.error('✗ Missing ENCRYPTION_KEY. Set it in docker-compose.yml before starting.');
     process.exit(1);
   }
   const databaseUrl = getDatabaseUrl();
@@ -711,11 +976,20 @@ async function ensureSchema() {
     role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
     is_active BOOLEAN DEFAULT TRUE,
     email_verified BOOLEAN DEFAULT FALSE,
+    timezone VARCHAR(64) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_users_email (email),
     INDEX idx_users_active (is_active)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  try {
+    await db.execute(`ALTER TABLE users ADD COLUMN timezone VARCHAR(64) NULL`);
+  } catch (error) {
+    if (!error.message.includes('Duplicate column name')) {
+      console.log('[DB] Note: users.timezone column may already exist');
+    }
+  }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS sessions (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -816,6 +1090,22 @@ async function ensureSchema() {
     }
   }
 
+  await db.execute(`CREATE TABLE IF NOT EXISTS calendar_event_subtasks (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    event_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    is_done BOOLEAN DEFAULT FALSE,
+    position INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_subtasks_event (event_id),
+    INDEX idx_subtasks_user (user_id),
+    INDEX idx_subtasks_order (event_id, position)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   await db.execute(`CREATE TABLE IF NOT EXISTS mail_accounts (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     user_id CHAR(36) NOT NULL,
@@ -878,6 +1168,7 @@ async function ensureSchema() {
   await db.execute(`CREATE TABLE IF NOT EXISTS email_attachments (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     email_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
     filename VARCHAR(255) NOT NULL,
     content_type VARCHAR(100),
     size_bytes BIGINT,
@@ -885,9 +1176,48 @@ async function ensureSchema() {
     content_id VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     INDEX idx_attachments_email (email_id),
+    INDEX idx_attachments_user (user_id),
     INDEX idx_attachments_content_id (content_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  // Migrations for older installs
+  try {
+    await db.execute(`ALTER TABLE email_attachments ADD COLUMN IF NOT EXISTS content_id VARCHAR(255) AFTER storage_path`);
+  } catch (e) {
+    // Ignore when unsupported or already exists
+  }
+  try {
+    await db.execute(`ALTER TABLE email_attachments ADD COLUMN IF NOT EXISTS user_id CHAR(36) NULL AFTER email_id`);
+  } catch (e) {
+    // Ignore when unsupported or already exists
+  }
+  try {
+    await db.execute(
+      `UPDATE email_attachments a
+       INNER JOIN emails e ON a.email_id = e.id
+       SET a.user_id = e.user_id
+       WHERE a.user_id IS NULL`
+    );
+  } catch (e) {
+    // Ignore migration failures and continue startup
+  }
+  try {
+    await db.execute(`ALTER TABLE email_attachments MODIFY COLUMN user_id CHAR(36) NOT NULL`);
+  } catch (e) {
+    // Ignore if already NOT NULL or unsupported
+  }
+  try {
+    await db.execute(`CREATE INDEX idx_attachments_user ON email_attachments(user_id)`);
+  } catch (e) {
+    // Ignore duplicate index errors
+  }
+  try {
+    await db.execute(`CREATE INDEX idx_attachments_content_id ON email_attachments(content_id)`);
+  } catch (e) {
+    // Ignore duplicate index errors
+  }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS system_settings (
     setting_key VARCHAR(100) PRIMARY KEY,
@@ -907,16 +1237,24 @@ async function ensureSchema() {
     );
   }
 
-  // Seed default admin user if no users exist yet
+  // Bootstrap admin user from environment if no users exist yet
   const [rows] = await db.execute('SELECT COUNT(*) as count FROM users');
   if (rows[0].count === 0) {
-    const adminHash = await hashPassword('admin123');
+    if (!BOOTSTRAP_ADMIN_EMAIL || !BOOTSTRAP_ADMIN_PASSWORD) {
+      console.error('✗ Missing BOOTSTRAP_ADMIN_EMAIL or BOOTSTRAP_ADMIN_PASSWORD for first-run setup.');
+      process.exit(1);
+    }
+    if (BOOTSTRAP_ADMIN_PASSWORD.length < 12) {
+      console.error('✗ BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters.');
+      process.exit(1);
+    }
+    const adminHash = await hashPassword(BOOTSTRAP_ADMIN_PASSWORD);
     await db.execute(
       `INSERT INTO users (id, email, password_hash, full_name, email_verified, role)
-       VALUES (UUID(), 'admin@unihub.local', ?, 'Admin User', TRUE, 'admin')`,
-      [adminHash]
+       VALUES (UUID(), ?, ?, 'Bootstrap Admin', TRUE, 'admin')`,
+      [BOOTSTRAP_ADMIN_EMAIL, adminHash]
     );
-    console.log('✓ Default admin created (admin@unihub.local / admin123)');
+    console.log(`✓ Bootstrap admin created (${BOOTSTRAP_ADMIN_EMAIL})`);
   }
 
   console.log('✓ Database schema ready');
@@ -957,10 +1295,13 @@ const RATE_LIMIT_MAX_ATTEMPTS = 5;
 const RATE_LIMIT_BLOCK_MS = 300 * 60 * 1000; // 300 minutes
 
 function getClientIP(req) {
-  return req.headers['x-real-ip'] ||
-    (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
-    req.socket?.remoteAddress ||
-    'unknown';
+  if (TRUST_PROXY_HEADERS) {
+    return req.headers['x-real-ip'] ||
+      (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+      req.socket?.remoteAddress ||
+      'unknown';
+  }
+  return req.socket?.remoteAddress || 'unknown';
 }
 
 function isRateLimited(ip) {
@@ -1028,6 +1369,40 @@ function validateCsrfToken(req, res) {
   return true;
 }
 
+function appendSetCookie(res, cookieValue) {
+  const existing = res.getHeader('Set-Cookie');
+  if (!existing) {
+    res.setHeader('Set-Cookie', [cookieValue]);
+    return;
+  }
+  if (Array.isArray(existing)) {
+    res.setHeader('Set-Cookie', [...existing, cookieValue]);
+    return;
+  }
+  res.setHeader('Set-Cookie', [existing, cookieValue]);
+}
+
+function parseCookies(req) {
+  const rawCookieHeader = req.headers.cookie || '';
+  if (!rawCookieHeader) return {};
+  return rawCookieHeader.split(';').reduce((acc, part) => {
+    const [rawKey, ...rawValue] = part.trim().split('=');
+    if (!rawKey) return acc;
+    const joinedValue = rawValue.join('=');
+    acc[rawKey] = decodeURIComponent(joinedValue || '');
+    return acc;
+  }, {});
+}
+
+function getAuthTokenFromRequest(req) {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7);
+  }
+  const cookies = parseCookies(req);
+  return cookies[AUTH_COOKIE_NAME] || null;
+}
+
 // Set CSRF token cookie
 function setCsrfCookie(res, token) {
   const expires = new Date();
@@ -1035,13 +1410,33 @@ function setCsrfCookie(res, token) {
   // Note: Secure flag requires HTTPS. For HTTP (development), remove Secure flag
   const isSecure = process.env.NODE_ENV === 'production';
   const secureFlag = isSecure ? 'Secure;' : '';
-  res.setHeader('Set-Cookie', `csrf-token=${token}; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=${expires.toUTCString()}`);
+  appendSetCookie(res, `csrf-token=${token}; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=${expires.toUTCString()}`);
+}
+
+function clearCsrfCookie(res) {
+  const isSecure = process.env.NODE_ENV === 'production';
+  const secureFlag = isSecure ? 'Secure;' : '';
+  appendSetCookie(res, `csrf-token=; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
+}
+
+function setAuthCookie(res, token) {
+  const expires = new Date();
+  expires.setDate(expires.getDate() + 21); // Match session expiry
+  const isSecure = process.env.NODE_ENV === 'production';
+  const secureFlag = isSecure ? 'Secure;' : '';
+  appendSetCookie(res, `${AUTH_COOKIE_NAME}=${token}; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=${expires.toUTCString()}`);
+}
+
+function clearAuthCookie(res) {
+  const isSecure = process.env.NODE_ENV === 'production';
+  const secureFlag = isSecure ? 'Secure;' : '';
+  appendSetCookie(res, `${AUTH_COOKIE_NAME}=; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
 }
 
 // JWT verification + session check
-async function verifyToken(authHeader) {
-  if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
-  const token = authHeader.slice(7);
+async function verifyToken(req) {
+  const token = getAuthTokenFromRequest(req);
+  if (!token) return null;
   let decoded;
   try {
     decoded = jwt.verify(token, JWT_SECRET);
@@ -1055,13 +1450,18 @@ async function verifyToken(authHeader) {
     while (retries > 0) {
       try {
         const [sessions] = await db.execute(
-          'SELECT user_id, expires_at FROM sessions WHERE token = ? LIMIT 1',
+          `SELECT s.user_id, s.expires_at, u.is_active
+           FROM sessions s
+           INNER JOIN users u ON u.id = s.user_id
+           WHERE s.token = ?
+           LIMIT 1`,
           [token]
         );
 
         if (sessions.length === 0) return null;
         const session = sessions[0];
         if (new Date(session.expires_at) < new Date()) return null;
+        if (!session.is_active) return null;
 
         return session.user_id || decoded.userId || decoded.sub;
       } catch (dbError) {
@@ -1109,8 +1509,21 @@ async function getSignupMode() {
 async function parseBody(req, maxSize = 1000) {
   return new Promise((resolve) => {
     let body = '';
-    req.on('data', chunk => body += chunk);
+    let currentSize = 0;
+    let resolved = false;
+    req.on('data', chunk => {
+      if (resolved) return;
+      currentSize += chunk.length;
+      if (currentSize > maxSize) {
+        resolved = true;
+        resolve(null);
+        req.destroy();
+        return;
+      }
+      body += chunk.toString();
+    });
     req.on('end', () => {
+      if (resolved) return;
       if (body.length > maxSize) { resolve(null); return; }
       try {
         resolve(body ? JSON.parse(body) : {});
@@ -1118,7 +1531,24 @@ async function parseBody(req, maxSize = 1000) {
         resolve({});
       }
     });
+    req.on('error', () => {
+      if (!resolved) resolve(null);
+    });
   });
+}
+
+function getAllowedOriginForRequest(req) {
+  const requestOrigin = req.headers.origin;
+  if (!requestOrigin) return null;
+
+  if (ALLOWED_ORIGINS.length > 0) {
+    return ALLOWED_ORIGINS.includes(requestOrigin) ? requestOrigin : null;
+  }
+
+  const host = req.headers.host;
+  if (!host) return null;
+  const sameHostOrigins = new Set([`http://${host}`, `https://${host}`]);
+  return sameHostOrigins.has(requestOrigin) ? requestOrigin : null;
 }
 
 // ── vCard helpers (3.0, compatible with Google & Apple) ──────────
@@ -1227,6 +1657,87 @@ function parseVCards(vcfData) {
   return contacts;
 }
 
+function parseDatetimeToMillis(value) {
+  if (value == null || value === '') return null;
+  if (value instanceof Date) return value.getTime();
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const hasTimezone = /[zZ]$|[+-]\d{2}:\d{2}$/.test(normalized);
+  const isoValue = hasTimezone ? normalized : `${normalized}Z`;
+  const timestamp = new Date(isoValue).getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function toMysqlDatetime(value) {
+  const timestamp = parseDatetimeToMillis(value);
+  if (timestamp === null) return null;
+  return new Date(timestamp).toISOString().slice(0, 19).replace('T', ' ');
+}
+
+function getCalendarEventIdFromReq(req) {
+  return getCalendarEventIdFromPath(req.url, req.headers.host);
+}
+
+function getCalendarSubtaskIdFromReq(req) {
+  return getCalendarSubtaskIdFromPath(req.url, req.headers.host);
+}
+
+function serializeCalendarSubtask(row) {
+  return {
+    ...row,
+    is_done: !!row.is_done,
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
+  };
+}
+
+function serializeCalendarEvent(row, subtasks = []) {
+  return {
+    ...row,
+    all_day: !!row.all_day,
+    is_todo_only: !!row.is_todo_only,
+    start_time: row.start_time instanceof Date ? row.start_time.toISOString() : row.start_time,
+    end_time: row.end_time instanceof Date ? row.end_time.toISOString() : row.end_time,
+    done_at: row.done_at instanceof Date ? row.done_at.toISOString() : (row.done_at || null),
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
+    reminders: row.reminders ? (typeof row.reminders === 'string' ? JSON.parse(row.reminders) : row.reminders) : null,
+    subtasks,
+  };
+}
+
+async function getCalendarSubtasksForEvents(userId, eventIds) {
+  if (!eventIds || eventIds.length === 0) return new Map();
+
+  const placeholders = eventIds.map(() => '?').join(', ');
+  const [rows] = await db.execute(
+    `SELECT * FROM calendar_event_subtasks WHERE user_id = ? AND event_id IN (${placeholders}) ORDER BY position ASC, created_at ASC`,
+    [userId, ...eventIds]
+  );
+
+  const grouped = new Map();
+  rows.forEach((row) => {
+    const eventSubtasks = grouped.get(row.event_id) || [];
+    eventSubtasks.push(serializeCalendarSubtask(row));
+    grouped.set(row.event_id, eventSubtasks);
+  });
+  return grouped;
+}
+
+async function getCalendarEventWithSubtasks(userId, eventId) {
+  const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+  if (events.length === 0) return null;
+
+  const [subtasks] = await db.execute(
+    'SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position ASC, created_at ASC',
+    [eventId, userId]
+  );
+  return serializeCalendarEvent(events[0], subtasks.map(serializeCalendarSubtask));
+}
+
 // Simple router
 const routes = {
   'GET /health': async () => ({ status: 'ok', timestamp: new Date().toISOString() }),
@@ -1290,8 +1801,8 @@ const routes = {
       );
       
       resetRateLimit(ip);
-      const result = { token, csrfToken, user: { id: newUserId, email, full_name, role: 'user' } };
-      // Set CSRF cookie in response
+      const result = { csrfToken, user: { id: newUserId, email, full_name, role: 'user', timezone: null } };
+      setAuthCookie(res, token);
       setCsrfCookie(res, csrfToken);
       return result;
     } catch (error) {
@@ -1320,7 +1831,7 @@ const routes = {
       while (retries > 0) {
         try {
           const result = await db.execute(
-            'SELECT id, email, password_hash, full_name, role, is_active FROM users WHERE email = ?',
+            'SELECT id, email, password_hash, full_name, role, is_active, timezone FROM users WHERE email = ?',
             [email]
           );
           users = result[0];
@@ -1378,8 +1889,8 @@ const routes = {
       }
       
       resetRateLimit(ip);
-      const result = { token, csrfToken, user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role } };
-      // Set CSRF cookie in response
+      const result = { csrfToken, user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role, timezone: user.timezone ?? null } };
+      setAuthCookie(res, token);
       setCsrfCookie(res, csrfToken);
       return result;
     } catch (error) {
@@ -1393,11 +1904,12 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const authHeader = req.headers.authorization;
-      if (authHeader && authHeader.startsWith('Bearer ')) {
-        const token = authHeader.slice(7);
+      const token = getAuthTokenFromRequest(req);
+      if (token) {
         await db.execute('DELETE FROM sessions WHERE token = ?', [token]);
       }
+      clearAuthCookie(res);
+      clearCsrfCookie(res);
       return { message: 'Signed out successfully' };
     } catch (error) {
       return { error: 'Failed to sign out', status: 500 };
@@ -1409,7 +1921,7 @@ const routes = {
     
     try {
       const [users] = await db.execute(
-        'SELECT id, email, full_name, avatar_url, role FROM users WHERE id = ?',
+        'SELECT id, email, full_name, avatar_url, role, timezone FROM users WHERE id = ?',
         [userId]
       );
       
@@ -1465,15 +1977,21 @@ const routes = {
   'PUT /api/auth/profile': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
-    const { full_name } = body;
+    const { full_name, timezone } = body;
     if (full_name === undefined || full_name === null) {
       return { error: 'Full name is required', status: 400 };
     }
+    const tzValue = timezone === undefined || timezone === null || (typeof timezone === 'string' && timezone.trim() === '')
+      ? null
+      : (typeof timezone === 'string' && timezone.length <= 64 ? timezone.trim() : null);
+    if (timezone !== undefined && timezone !== null && typeof timezone === 'string' && timezone.trim() !== '' && tzValue === null) {
+      return { error: 'Timezone must be at most 64 characters', status: 400 };
+    }
 
     try {
-      await db.execute('UPDATE users SET full_name = ? WHERE id = ?', [full_name.trim() || null, userId]);
+      await db.execute('UPDATE users SET full_name = ?, timezone = ? WHERE id = ?', [full_name.trim() || null, tzValue, userId]);
       const [users] = await db.execute(
-        'SELECT id, email, full_name, avatar_url, role FROM users WHERE id = ?',
+        'SELECT id, email, full_name, avatar_url, role, timezone FROM users WHERE id = ?',
         [userId]
       );
       return { user: users[0] };
@@ -1493,7 +2011,12 @@ const routes = {
         [userId]
       );
       const [events] = await db.execute(
-        'SELECT COUNT(*) as count FROM calendar_events WHERE user_id = ? AND start_time >= UTC_TIMESTAMP() AND is_todo_only = FALSE',
+        `SELECT COUNT(*) as count
+         FROM calendar_events
+         WHERE user_id = ?
+           AND start_time >= UTC_TIMESTAMP()
+           AND is_todo_only = FALSE
+           AND (todo_status IS NULL OR todo_status NOT IN ('done', 'cancelled'))`,
         [userId]
       );
       const [unread] = await db.execute(
@@ -1514,12 +2037,36 @@ const routes = {
   // Contacts endpoints
   'GET /api/contacts': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    
+
     try {
-      const [contacts] = await db.execute(
-        'SELECT * FROM contacts WHERE user_id = ? ORDER BY is_favorite DESC, first_name ASC',
-        [userId]
-      );
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const q = (url.searchParams.get('q') || '').trim();
+      const group = url.searchParams.get('group') || 'all';
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '2000', 10), 2000);
+
+      let query = 'SELECT * FROM contacts WHERE user_id = ?';
+      const params = [userId];
+
+      // Group filter: name_only = has name but no email/phone; number_or_email_only = has email/phone but no name
+      if (group === 'name_only') {
+        query += ' AND (TRIM(COALESCE(first_name,"")) != "" OR TRIM(COALESCE(last_name,"")) != "")';
+        query += ' AND (COALESCE(email,"") = "" AND COALESCE(phone,"") = "")';
+      } else if (group === 'number_or_email_only') {
+        query += ' AND (TRIM(COALESCE(email,"")) != "" OR TRIM(COALESCE(phone,"")) != "")';
+        query += ' AND TRIM(COALESCE(first_name,"")) = "" AND TRIM(COALESCE(last_name,"")) = ""';
+      }
+
+      // Server-side search (indexed fields + phone/company for quick find)
+      if (q.length > 0) {
+        const like = `%${q.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+        query += ' AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ? OR company LIKE ?)';
+        params.push(like, like, like, like, like);
+      }
+
+      query += ' ORDER BY is_favorite DESC, first_name ASC, last_name ASC LIMIT ?';
+      params.push(limit);
+
+      const [contacts] = await db.execute(query, params);
       return { contacts };
     } catch (error) {
       return { error: 'Failed to get contacts', status: 500 };
@@ -1552,16 +2099,14 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     const { first_name, last_name, email, phone, company, job_title, notes } = body;
-    if (!first_name || !first_name.trim()) {
-      return { error: 'First name is required', status: 400 };
-    }
+    const firstName = first_name != null ? String(first_name).trim() : '';
 
     try {
       const id = req.url.split('/').pop();
       
       await db.execute(
         'UPDATE contacts SET first_name = ?, last_name = ?, email = ?, phone = ?, company = ?, job_title = ?, notes = ? WHERE id = ? AND user_id = ?',
-        [first_name.trim(), last_name || null, email || null, phone || null, company || null, job_title || null, notes || null, id, userId]
+        [firstName, last_name || null, email || null, phone || null, company || null, job_title || null, notes || null, id, userId]
       );
       
       const [contacts] = await db.execute('SELECT * FROM contacts WHERE id = ? AND user_id = ?', [id, userId]);
@@ -1573,7 +2118,7 @@ const routes = {
   
   'DELETE /api/contacts/:id': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    
+
     try {
       const id = req.url.split('/').pop();
       await db.execute('DELETE FROM contacts WHERE id = ? AND user_id = ?', [id, userId]);
@@ -1582,7 +2127,28 @@ const routes = {
       return { error: 'Failed to delete contact', status: 500 };
     }
   },
-  
+
+  'POST /api/contacts/bulk-delete': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    const { ids } = body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return { error: 'ids array is required', status: 400 };
+    }
+
+    try {
+      const placeholders = ids.map(() => '?').join(',');
+      const [result] = await db.execute(
+        `DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders})`,
+        [userId, ...ids]
+      );
+      const deleted = result.affectedRows || 0;
+      return { message: `${deleted} contact(s) deleted`, deleted };
+    } catch (error) {
+      return { error: 'Failed to delete contacts', status: 500 };
+    }
+  },
+
   'GET /api/contacts/export': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
@@ -1684,17 +2250,11 @@ const routes = {
       query += ' ORDER BY start_time ASC';
       
       const [rows] = await db.execute(query, params);
-      // Serialise dates as UTC ISO strings so the client gets correct times
-      const events = rows.map((row) => ({
-        ...row,
-        start_time: row.start_time instanceof Date ? row.start_time.toISOString() : row.start_time,
-        end_time: row.end_time instanceof Date ? row.end_time.toISOString() : row.end_time,
-        done_at: row.done_at instanceof Date ? row.done_at.toISOString() : (row.done_at || null),
-        updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
-        reminders: row.reminders ? (typeof row.reminders === 'string' ? JSON.parse(row.reminders) : row.reminders) : null,
-      }));
+      const subtasksByEventId = await getCalendarSubtasksForEvents(userId, rows.map((row) => row.id));
+      const events = rows.map((row) => serializeCalendarEvent(row, subtasksByEventId.get(row.id) || []));
       return { events };
     } catch (error) {
+      console.error('Get events error:', error);
       return { error: 'Failed to get events', status: 500 };
     }
   },
@@ -1705,16 +2265,20 @@ const routes = {
 
     try {
       const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only } = body;
-      // Normalise to MySQL DATETIME format (YYYY-MM-DD HH:MM:SS)
-      const toMysqlDatetime = (v) => {
-        if (v == null || v === '') return null;
-        const d = new Date(v);
-        if (Number.isNaN(d.getTime())) return null;
-        return d.toISOString().slice(0, 19).replace('T', ' ');
-      };
-      const start = toMysqlDatetime(start_time);
-      const end = toMysqlDatetime(end_time);
+      let start = toMysqlDatetime(start_time);
+      let end = toMysqlDatetime(end_time);
+
+      // For unscheduled todo-only tasks we persist a default 30-minute window at "now".
+      if (!!is_todo_only && (!start || !end)) {
+        const now = Date.now();
+        start = toMysqlDatetime(new Date(now).toISOString());
+        end = toMysqlDatetime(new Date(now + 30 * 60 * 1000).toISOString());
+      }
+
       if (!start || !end) return { error: 'Valid start and end time are required', status: 400 };
+      if (parseDatetimeToMillis(end) < parseDatetimeToMillis(start)) {
+        return { error: 'End time must be after start time', status: 400 };
+      }
 
       const eventId = crypto.randomUUID();
       await db.execute(
@@ -1722,13 +2286,7 @@ const routes = {
         [eventId, userId, title.trim(), description || null, start, end, !!all_day, location?.trim() || null, color || '#22c55e', recurrence || null, reminder_minutes ?? null, reminders ? JSON.stringify(reminders) : null, !!is_todo_only]
       );
 
-      const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ?', [eventId]);
-      const event = events[0];
-      if (event) {
-        event.start_time = event.start_time instanceof Date ? event.start_time.toISOString() : event.start_time;
-        event.end_time = event.end_time instanceof Date ? event.end_time.toISOString() : event.end_time;
-        event.reminders = event.reminders ? (typeof event.reminders === 'string' ? JSON.parse(event.reminders) : event.reminders) : null;
-      }
+      const event = await getCalendarEventWithSubtasks(userId, eventId);
       return { event };
     } catch (error) {
       console.error('Create event error:', error);
@@ -1740,30 +2298,96 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const id = req.url.split('/').pop();
-      const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, todo_status, is_todo_only } = body;
-      const toMysqlDatetime = (v) => {
-        if (v == null || v === '') return null;
-        const d = new Date(v);
-        if (Number.isNaN(d.getTime())) return null;
-        return d.toISOString().slice(0, 19).replace('T', ' ');
-      };
-      const start = toMysqlDatetime(start_time);
-      const end = toMysqlDatetime(end_time);
-      if (!start || !end) return { error: 'Valid start and end time are required', status: 400 };
-
-      // Handle reminders - ensure it's properly formatted
-      const remindersValue = reminders !== undefined && reminders !== null 
-        ? (Array.isArray(reminders) ? JSON.stringify(reminders) : reminders)
-        : null;
-      
-      await db.execute(
-        'UPDATE calendar_events SET title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?, location = ?, color = ?, recurrence = ?, reminder_minutes = ?, reminders = ?, todo_status = ?, is_todo_only = ? WHERE id = ? AND user_id = ?',
-        [title?.trim() ?? '', description || null, start, end, !!all_day, location?.trim() || null, color || '#22c55e', recurrence || null, reminder_minutes ?? null, remindersValue, todo_status || null, !!is_todo_only, id, userId]
-      );
+      const id = getCalendarEventIdFromReq(req);
+      if (!id) return { error: 'Invalid event id', status: 400 };
 
       const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
-      return { event: events[0] };
+      if (events.length === 0) return { error: 'Event not found', status: 404 };
+
+      const currentEvent = events[0];
+      const updates = [];
+      const params = [];
+
+      if (Object.prototype.hasOwnProperty.call(body, 'title')) {
+        if (!body.title?.trim()) return { error: 'Title is required', status: 400 };
+        updates.push('title = ?');
+        params.push(body.title.trim());
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'description')) {
+        updates.push('description = ?');
+        params.push(body.description || null);
+      }
+
+      const startProvided = Object.prototype.hasOwnProperty.call(body, 'start_time');
+      const endProvided = Object.prototype.hasOwnProperty.call(body, 'end_time');
+      const resolvedStart = startProvided ? toMysqlDatetime(body.start_time) : toMysqlDatetime(currentEvent.start_time);
+      const resolvedEnd = endProvided ? toMysqlDatetime(body.end_time) : toMysqlDatetime(currentEvent.end_time);
+
+      if (startProvided && !resolvedStart) return { error: 'Valid start time is required', status: 400 };
+      if (endProvided && !resolvedEnd) return { error: 'Valid end time is required', status: 400 };
+      if (!resolvedStart || !resolvedEnd) return { error: 'Valid start and end time are required', status: 400 };
+      if (parseDatetimeToMillis(resolvedEnd) < parseDatetimeToMillis(resolvedStart)) {
+        return { error: 'End time must be after start time', status: 400 };
+      }
+
+      if (startProvided) {
+        updates.push('start_time = ?');
+        params.push(resolvedStart);
+      }
+      if (endProvided) {
+        updates.push('end_time = ?');
+        params.push(resolvedEnd);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'all_day')) {
+        updates.push('all_day = ?');
+        params.push(!!body.all_day);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'location')) {
+        updates.push('location = ?');
+        params.push(body.location?.trim() || null);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'color')) {
+        updates.push('color = ?');
+        params.push(body.color || '#22c55e');
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'recurrence')) {
+        updates.push('recurrence = ?');
+        params.push(body.recurrence || null);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'reminder_minutes')) {
+        updates.push('reminder_minutes = ?');
+        params.push(body.reminder_minutes ?? null);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'reminders')) {
+        if (body.reminders !== null && body.reminders !== undefined && !Array.isArray(body.reminders)) {
+          return { error: 'Reminders must be an array or null', status: 400 };
+        }
+        updates.push('reminders = ?');
+        params.push(body.reminders ? JSON.stringify(body.reminders) : null);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'is_todo_only')) {
+        updates.push('is_todo_only = ?');
+        params.push(!!body.is_todo_only);
+      }
+
+      if (updates.length > 0) {
+        params.push(id, userId);
+        await db.execute(
+          `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+          params
+        );
+      }
+
+      const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
+      return { event: updatedEvent };
     } catch (error) {
       console.error('Update event error:', error);
       return { error: error.message || 'Failed to update event', status: 500 };
@@ -1774,68 +2398,251 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const id = req.url.split('/').pop();
-      const { todo_status, start_time } = body;
-      
+      const id = getCalendarEventIdFromReq(req);
+      if (!id) return { error: 'Invalid event id', status: 400 };
+
+      if (!Object.prototype.hasOwnProperty.call(body, 'todo_status')) {
+        return { error: 'todo_status is required', status: 400 };
+      }
+
+      const { todo_status, start_time, end_time } = body;
       if (!['done', 'changed', 'time_moved', 'cancelled', null].includes(todo_status)) {
         return { error: 'Invalid todo_status', status: 400 };
       }
 
-      // Set done_at timestamp when marking as done, clear it when unmarking
-      let updateQuery = 'UPDATE calendar_events SET todo_status = ?';
+      const [currentEvents] = await db.execute(
+        'SELECT start_time, end_time FROM calendar_events WHERE id = ? AND user_id = ?',
+        [id, userId]
+      );
+      if (currentEvents.length === 0) return { error: 'Event not found', status: 404 };
+
+      const updates = ['todo_status = ?'];
       const params = [todo_status || null];
-      
-      // Add done_at to update query
+
       if (todo_status === 'done') {
-        updateQuery += ', done_at = NOW()';
+        updates.push('done_at = NOW()');
       } else {
-        updateQuery += ', done_at = NULL';
+        updates.push('done_at = NULL');
       }
-      
-      // If time_moved, also update start_time and end_time
-      if (todo_status === 'time_moved' && start_time) {
-        const toMysqlDatetime = (v) => {
-          if (v == null || v === '') return null;
-          const d = new Date(v);
-          if (Number.isNaN(d.getTime())) return null;
-          return d.toISOString().slice(0, 19).replace('T', ' ');
-        };
-        const newStart = toMysqlDatetime(start_time);
-        if (newStart) {
-          // Get current event to calculate duration
-          const [currentEvents] = await db.execute('SELECT start_time, end_time FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
-          if (currentEvents.length > 0) {
-            const currentStart = new Date(currentEvents[0].start_time);
-            const currentEnd = new Date(currentEvents[0].end_time);
-            const duration = currentEnd.getTime() - currentStart.getTime();
-            const newEnd = new Date(new Date(newStart).getTime() + duration);
-            updateQuery += ', start_time = ?, end_time = ?';
-            params.push(newStart, newEnd.toISOString().slice(0, 19).replace('T', ' '));
-          }
+
+      if (todo_status === 'time_moved' && (start_time || end_time)) {
+        const currentStartMs = parseDatetimeToMillis(currentEvents[0].start_time);
+        const currentEndMs = parseDatetimeToMillis(currentEvents[0].end_time);
+        const durationMs = currentStartMs !== null && currentEndMs !== null ? Math.max(0, currentEndMs - currentStartMs) : 0;
+
+        const parsedStart = start_time ? toMysqlDatetime(start_time) : null;
+        const parsedEnd = end_time ? toMysqlDatetime(end_time) : null;
+        if (start_time && !parsedStart) return { error: 'Invalid start_time for time move', status: 400 };
+        if (end_time && !parsedEnd) return { error: 'Invalid end_time for time move', status: 400 };
+
+        let movedStart = parsedStart;
+        let movedEnd = parsedEnd;
+
+        if (movedStart && !movedEnd) {
+          const computedEndMs = (parseDatetimeToMillis(movedStart) || 0) + durationMs;
+          movedEnd = toMysqlDatetime(new Date(computedEndMs).toISOString());
+        } else if (!movedStart && movedEnd) {
+          const computedStartMs = (parseDatetimeToMillis(movedEnd) || 0) - durationMs;
+          movedStart = toMysqlDatetime(new Date(computedStartMs).toISOString());
+        }
+
+        if (movedStart && movedEnd && parseDatetimeToMillis(movedEnd) < parseDatetimeToMillis(movedStart)) {
+          return { error: 'End time must be after start time', status: 400 };
+        }
+
+        if (movedStart && movedEnd) {
+          updates.push('start_time = ?', 'end_time = ?');
+          params.push(movedStart, movedEnd);
         }
       }
-      
-      updateQuery += ' WHERE id = ? AND user_id = ?';
-      params.push(id, userId);
-      
-      await db.execute(updateQuery, params);
-      
-      // Debug: log the update
-      console.log(`[API] Updated todo_status for event ${id}: ${todo_status}, done_at ${todo_status === 'done' ? 'set' : 'cleared'}`);
 
-      const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
-      const updatedEvent = events[0];
-      // Serialize dates for response
-      if (updatedEvent) {
-        updatedEvent.start_time = updatedEvent.start_time instanceof Date ? updatedEvent.start_time.toISOString() : updatedEvent.start_time;
-        updatedEvent.end_time = updatedEvent.end_time instanceof Date ? updatedEvent.end_time.toISOString() : updatedEvent.end_time;
-        updatedEvent.done_at = updatedEvent.done_at instanceof Date ? updatedEvent.done_at.toISOString() : (updatedEvent.done_at || null);
-        updatedEvent.updated_at = updatedEvent.updated_at instanceof Date ? updatedEvent.updated_at.toISOString() : updatedEvent.updated_at;
-      }
+      const updateQuery = `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`;
+      params.push(id, userId);
+      await db.execute(updateQuery, params);
+
+      const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
       return { event: updatedEvent };
     } catch (error) {
       console.error('Update todo status error:', error);
       return { error: error.message || 'Failed to update todo status', status: 500 };
+    }
+  },
+
+  'GET /api/calendar/events/:id/subtasks': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const eventId = getCalendarEventIdFromReq(req);
+      if (!eventId) return { error: 'Invalid event id', status: 400 };
+
+      const [events] = await db.execute('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+      if (events.length === 0) return { error: 'Event not found', status: 404 };
+
+      const [subtasks] = await db.execute(
+        'SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position ASC, created_at ASC',
+        [eventId, userId]
+      );
+      return { subtasks: subtasks.map(serializeCalendarSubtask) };
+    } catch (error) {
+      console.error('Get subtasks error:', error);
+      return { error: error.message || 'Failed to fetch subtasks', status: 500 };
+    }
+  },
+
+  'POST /api/calendar/events/:id/subtasks': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!body.title?.trim()) return { error: 'Subtask title is required', status: 400 };
+
+    try {
+      const eventId = getCalendarEventIdFromReq(req);
+      if (!eventId) return { error: 'Invalid event id', status: 400 };
+
+      const [events] = await db.execute('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+      if (events.length === 0) return { error: 'Event not found', status: 404 };
+
+      let position = Number.isInteger(body.position) && body.position >= 0 ? body.position : null;
+      if (position === null) {
+        const [maxRows] = await db.execute(
+          'SELECT COALESCE(MAX(position), -1) AS max_position FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ?',
+          [eventId, userId]
+        );
+        position = Number(maxRows[0]?.max_position ?? -1) + 1;
+      } else {
+        await db.execute(
+          'UPDATE calendar_event_subtasks SET position = position + 1 WHERE event_id = ? AND user_id = ? AND position >= ?',
+          [eventId, userId, position]
+        );
+      }
+
+      const subtaskId = crypto.randomUUID();
+      await db.execute(
+        'INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, ?, ?, ?)',
+        [subtaskId, eventId, userId, body.title.trim(), !!body.is_done, position]
+      );
+
+      const [subtasks] = await db.execute(
+        'SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
+        [subtaskId, eventId, userId]
+      );
+      return { subtask: subtasks[0] ? serializeCalendarSubtask(subtasks[0]) : null };
+    } catch (error) {
+      console.error('Create subtask error:', error);
+      return { error: error.message || 'Failed to create subtask', status: 500 };
+    }
+  },
+
+  'PUT /api/calendar/events/:id/subtasks/:subtaskId': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const eventId = getCalendarEventIdFromReq(req);
+      const subtaskId = getCalendarSubtaskIdFromReq(req);
+      if (!eventId || !subtaskId) return { error: 'Invalid subtask route', status: 400 };
+
+      const [existing] = await db.execute(
+        'SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
+        [subtaskId, eventId, userId]
+      );
+      if (existing.length === 0) return { error: 'Subtask not found', status: 404 };
+
+      const updates = [];
+      const params = [];
+
+      if (Object.prototype.hasOwnProperty.call(body, 'title')) {
+        if (!body.title?.trim()) return { error: 'Subtask title is required', status: 400 };
+        updates.push('title = ?');
+        params.push(body.title.trim());
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'is_done')) {
+        updates.push('is_done = ?');
+        params.push(!!body.is_done);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, 'position')) {
+        if (!Number.isInteger(body.position) || body.position < 0) {
+          return { error: 'position must be a non-negative integer', status: 400 };
+        }
+        updates.push('position = ?');
+        params.push(body.position);
+      }
+
+      if (updates.length > 0) {
+        params.push(subtaskId, eventId, userId);
+        await db.execute(
+          `UPDATE calendar_event_subtasks SET ${updates.join(', ')} WHERE id = ? AND event_id = ? AND user_id = ?`,
+          params
+        );
+      }
+
+      const [subtasks] = await db.execute(
+        'SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
+        [subtaskId, eventId, userId]
+      );
+      return { subtask: subtasks[0] ? serializeCalendarSubtask(subtasks[0]) : null };
+    } catch (error) {
+      console.error('Update subtask error:', error);
+      return { error: error.message || 'Failed to update subtask', status: 500 };
+    }
+  },
+
+  'DELETE /api/calendar/events/:id/subtasks/:subtaskId': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const eventId = getCalendarEventIdFromReq(req);
+      const subtaskId = getCalendarSubtaskIdFromReq(req);
+      if (!eventId || !subtaskId) return { error: 'Invalid subtask route', status: 400 };
+
+      const [result] = await db.execute(
+        'DELETE FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
+        [subtaskId, eventId, userId]
+      );
+      if (result.affectedRows === 0) return { error: 'Subtask not found', status: 404 };
+
+      return { message: 'Subtask deleted' };
+    } catch (error) {
+      console.error('Delete subtask error:', error);
+      return { error: error.message || 'Failed to delete subtask', status: 500 };
+    }
+  },
+
+  'POST /api/calendar/events/:id/subtasks/reorder': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const eventId = getCalendarEventIdFromReq(req);
+      if (!eventId) return { error: 'Invalid event id', status: 400 };
+
+      const subtaskIds = Array.isArray(body.subtask_ids) ? body.subtask_ids : null;
+      if (!subtaskIds || subtaskIds.length === 0) {
+        return { error: 'subtask_ids must be a non-empty array', status: 400 };
+      }
+
+      const [existingRows] = await db.execute(
+        'SELECT id FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ?',
+        [eventId, userId]
+      );
+      const existingIds = new Set(existingRows.map((row) => row.id));
+      if (existingIds.size !== subtaskIds.length || subtaskIds.some((id) => !existingIds.has(id))) {
+        return { error: 'subtask_ids must include all subtasks for the event', status: 400 };
+      }
+
+      for (let index = 0; index < subtaskIds.length; index += 1) {
+        await db.execute(
+          'UPDATE calendar_event_subtasks SET position = ? WHERE id = ? AND event_id = ? AND user_id = ?',
+          [index, subtaskIds[index], eventId, userId]
+        );
+      }
+
+      const [subtasks] = await db.execute(
+        'SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position ASC, created_at ASC',
+        [eventId, userId]
+      );
+      return { subtasks: subtasks.map(serializeCalendarSubtask) };
+    } catch (error) {
+      console.error('Reorder subtasks error:', error);
+      return { error: error.message || 'Failed to reorder subtasks', status: 500 };
     }
   },
   
@@ -1843,7 +2650,8 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const id = req.url.split('/').pop();
+      const id = getCalendarEventIdFromReq(req);
+      if (!id) return { error: 'Invalid event id', status: 400 };
       await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       return { message: 'Event deleted' };
     } catch (error) {
@@ -1865,18 +2673,90 @@ const routes = {
       return { error: 'Failed to get mail accounts', status: 500 };
     }
   },
+
+  'POST /api/mail/accounts/preflight': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    const { imap_host, imap_port, smtp_host, smtp_port } = body || {};
+    if (!imap_host || !smtp_host) {
+      return { error: 'IMAP and SMTP server addresses are required', status: 400 };
+    }
+
+    try {
+      const trust = await buildMailHostTrustResult({
+        imap_host,
+        imap_port: imap_port || 993,
+        smtp_host,
+        smtp_port: smtp_port || 587,
+      });
+
+      if (trust.blocked) {
+        return {
+          error: 'Mail host resolves to a private/local address and is not allowlisted',
+          status: 400,
+          host_assessments: trust.assessments,
+          warnings: trust.warnings,
+        };
+      }
+
+      return {
+        requires_confirmation: trust.requiresConfirmation,
+        warnings: trust.warnings,
+        host_assessments: trust.assessments,
+        certificates: trust.certificates,
+      };
+    } catch (error) {
+      return { error: 'Failed to run mail host preflight', status: 500 };
+    }
+  },
   
   'POST /api/mail/accounts': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const { email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password } = body;
+      const {
+        email_address,
+        display_name,
+        provider,
+        username,
+        imap_host,
+        imap_port,
+        smtp_host,
+        smtp_port,
+        encrypted_password,
+        confirm_unknown_host,
+      } = body;
       
       if (!email_address || !encrypted_password) {
         return { error: 'Email address and password are required', status: 400 };
       }
       if (!imap_host || !smtp_host) {
         return { error: 'IMAP and SMTP server addresses are required', status: 400 };
+      }
+
+      const trust = await buildMailHostTrustResult({
+        imap_host,
+        imap_port: imap_port || 993,
+        smtp_host,
+        smtp_port: smtp_port || 587,
+      });
+      if (trust.blocked) {
+        return {
+          error: 'Mail host resolves to a private/local address and is not allowlisted',
+          status: 400,
+          warnings: trust.warnings,
+          host_assessments: trust.assessments,
+        };
+      }
+      if (trust.requiresConfirmation && !confirm_unknown_host) {
+        return {
+          error: 'Mail host is unknown. Confirm trust before adding this account.',
+          status: 409,
+          requires_confirmation: true,
+          warnings: trust.warnings,
+          host_assessments: trust.assessments,
+          certificates: trust.certificates,
+        };
       }
       
       // Create temporary account object for testing
@@ -1935,7 +2815,17 @@ const routes = {
     
     try {
       const id = req.url.split('/').pop();
-      const { email_address, display_name, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password } = body;
+      const {
+        email_address,
+        display_name,
+        username,
+        imap_host,
+        imap_port,
+        smtp_host,
+        smtp_port,
+        encrypted_password,
+        confirm_unknown_host,
+      } = body;
       
       // Verify account belongs to user
       const [accounts] = await db.execute(
@@ -1943,6 +2833,38 @@ const routes = {
         [id, userId]
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+
+      if (imap_host || smtp_host) {
+        const [existing] = await db.execute(
+          'SELECT imap_host, imap_port, smtp_host, smtp_port FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
+          [id, userId]
+        );
+        const current = existing[0] || {};
+        const trust = await buildMailHostTrustResult({
+          imap_host: imap_host || current.imap_host,
+          imap_port: imap_port || current.imap_port || 993,
+          smtp_host: smtp_host || current.smtp_host,
+          smtp_port: smtp_port || current.smtp_port || 587,
+        });
+        if (trust.blocked) {
+          return {
+            error: 'Mail host resolves to a private/local address and is not allowlisted',
+            status: 400,
+            warnings: trust.warnings,
+            host_assessments: trust.assessments,
+          };
+        }
+        if (trust.requiresConfirmation && !confirm_unknown_host) {
+          return {
+            error: 'Mail host is unknown. Confirm trust before updating this account.',
+            status: 409,
+            requires_confirmation: true,
+            warnings: trust.warnings,
+            host_assessments: trust.assessments,
+            certificates: trust.certificates,
+          };
+        }
+      }
       
       // Build update query dynamically
       const updates = [];
@@ -2013,8 +2935,10 @@ const routes = {
       }
       
       // Pagination
-      const limit = parseInt(url.searchParams.get('limit') || '50', 10);
-      const offset = parseInt(url.searchParams.get('offset') || '0', 10);
+      const requestedLimit = parseInt(url.searchParams.get('limit') || '50', 10);
+      const requestedOffset = parseInt(url.searchParams.get('offset') || '0', 10);
+      const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
+      const offset = Number.isFinite(requestedOffset) ? Math.max(requestedOffset, 0) : 0;
       const page = Math.max(1, Math.floor(offset / limit) + 1);
       
       // Use template literals for LIMIT/OFFSET since they're already sanitized integers
@@ -2090,8 +3014,8 @@ const routes = {
       
       // Fetch attachments (exclude inline attachments from list - they're embedded in HTML)
       const [attachments] = await db.execute(
-        'SELECT id, filename, content_type, size_bytes, content_id FROM email_attachments WHERE email_id = ? ORDER BY filename',
-        [id]
+        'SELECT id, filename, content_type, size_bytes, content_id FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
+        [id, userId]
       );
       
       // Separate inline and regular attachments
@@ -2122,10 +3046,9 @@ const routes = {
       
       // Get attachment info and verify it belongs to user's email
       const [attachments] = await db.execute(
-        `SELECT a.id, a.filename, a.content_type, a.storage_path, e.user_id 
+        `SELECT a.id, a.filename, a.content_type, a.storage_path, a.user_id
          FROM email_attachments a
-         INNER JOIN emails e ON a.email_id = e.id
-         WHERE a.id = ? AND e.user_id = ?`,
+         WHERE a.id = ? AND a.user_id = ?`,
         [attachmentId, userId]
       );
       
@@ -2135,9 +3058,16 @@ const routes = {
       
       const attachment = attachments[0];
       
-      // Read file from storage
+      // Read file from storage (must stay under attachments root)
       try {
-        const fileContent = await readFile(attachment.storage_path);
+        const uploadsRoot = path.resolve('/app/uploads/attachments');
+        const resolvedPath = path.resolve(attachment.storage_path || '');
+        if (!resolvedPath.startsWith(`${uploadsRoot}${path.sep}`) && resolvedPath !== uploadsRoot) {
+          console.error('[ATTACH] Rejected attachment path outside uploads root:', resolvedPath);
+          return { error: 'Invalid attachment path', status: 400 };
+        }
+
+        const fileContent = await readFile(resolvedPath);
         
         // Return as raw response for download
         // Ensure proper content type for PDFs and other common types
@@ -2339,9 +3269,12 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const { account_id, to, subject, body: emailBody, isHtml } = body;
+      const { account_id, to, subject, body: emailBody, isHtml, attachments } = body;
       if (!account_id || !to || !subject || !emailBody) {
         return { error: 'Missing required fields', status: 400 };
+      }
+      if (attachments !== undefined && !Array.isArray(attachments)) {
+        return { error: 'attachments must be an array', status: 400 };
       }
       
       // Verify account belongs to user
@@ -2354,7 +3287,7 @@ const routes = {
       // #region agent log
       debugLog('server.js:1440', 'POST /mail/send START', { account_id, to, subject, userId }, 'H5');
       // #endregion
-      const result = await sendEmail(account_id, { to, subject, body: emailBody, isHtml });
+      const result = await sendEmail(account_id, { to, subject, body: emailBody, isHtml, attachments: attachments || [] });
       // #region agent log
       debugLog('server.js:1441', 'POST /mail/send SUCCESS', { messageId: result.messageId }, 'H5');
       // #endregion
@@ -2428,11 +3361,15 @@ const routes = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
 
-    const id = req.url.split('?')[0].split('/').pop();
+    const parts = req.url.split('?')[0].split('/');
+    const id = parts[parts.length - 2];
     const { is_active } = body;
 
     try {
       await db.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
+      if (!is_active) {
+        await db.execute('DELETE FROM sessions WHERE user_id = ?', [id]);
+      }
       return { message: is_active ? 'User activated' : 'User deactivated' };
     } catch (error) {
       return { error: 'Failed to update user status', status: 500 };
@@ -2486,11 +3423,23 @@ async function handleRequest(req, res) {
   } else if (routeKey.includes('/api/calendar/events/')) {
     if (url.pathname.includes('/todo-status')) {
       routeKey = `${req.method} /api/calendar/events/:id/todo-status`;
+    } else if (url.pathname.includes('/subtasks/reorder')) {
+      routeKey = `${req.method} /api/calendar/events/:id/subtasks/reorder`;
+    } else if (url.pathname.endsWith('/subtasks')) {
+      routeKey = `${req.method} /api/calendar/events/:id/subtasks`;
+    } else if (url.pathname.includes('/subtasks/')) {
+      routeKey = `${req.method} /api/calendar/events/:id/subtasks/:subtaskId`;
     } else {
       routeKey = `${req.method} /api/calendar/events/:id`;
     }
   } else if (routeKey.includes('/api/mail/accounts/')) {
-    routeKey = `${req.method} /api/mail/accounts/:id`;
+    if (url.pathname.endsWith('/preflight')) {
+      routeKey = `${req.method} /api/mail/accounts/preflight`;
+    } else {
+      routeKey = `${req.method} /api/mail/accounts/:id`;
+    }
+  } else if (routeKey.includes('/api/mail/attachments/')) {
+    routeKey = `${req.method} /api/mail/attachments/:id`;
   } else if (routeKey.includes('/api/mail/emails/')) {
     if (url.pathname.includes('/bulk-delete')) {
       routeKey = `${req.method} /api/mail/emails/bulk-delete`;
@@ -2509,20 +3458,37 @@ async function handleRequest(req, res) {
   } else if (routeKey.includes('/api/admin/users/')) {
     if (url.pathname.includes('/password')) {
       routeKey = `${req.method} /api/admin/users/:id/password`;
+    } else if (url.pathname.includes('/activate')) {
+      routeKey = `${req.method} /api/admin/users/:id/activate`;
     } else {
       routeKey = `${req.method} /api/admin/users/:id`;
     }
   }
   
   // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const allowedOrigin = getAllowedOriginForRequest(req);
+  if (allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
   
   if (req.method === 'OPTIONS') {
+    if (req.headers.origin && !allowedOrigin) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Origin not allowed' }));
+      return;
+    }
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  if (req.headers.origin && !allowedOrigin) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Origin not allowed' }));
     return;
   }
   
@@ -2534,7 +3500,7 @@ async function handleRequest(req, res) {
   }
   
   try {
-    const userId = await verifyToken(req.headers.authorization);
+    const userId = await verifyToken(req);
 
     // Validate CSRF token for authenticated state-changing requests
     if (userId && !validateCsrfToken(req, res)) {
@@ -2547,14 +3513,15 @@ async function handleRequest(req, res) {
     let maxBodySize = 1000; // Default for most endpoints
     if (routeKey === 'POST /api/contacts/import') {
       maxBodySize = 500000; // vCard import can be large
+    } else if (routeKey === 'POST /api/mail/send') {
+      maxBodySize = 30 * 1024 * 1024; // Allow attachments in compose (base64 JSON payload)
     } else if (
       routeKey === 'POST /api/mail/emails/bulk-update' ||
       routeKey === 'POST /api/mail/emails/bulk-delete' ||
       routeKey === 'POST /api/mail/emails/bulk-move' ||
-      routeKey === 'POST /api/mail/send' ||
       routeKey === 'POST /api/mail/sync'
     ) {
-      maxBodySize = 50000; // Bulk operations and mail operations need more space (100 emails * ~36 chars UUID + JSON overhead)
+      maxBodySize = 50000; // Bulk operations and sync need more space (100 emails * ~36 chars UUID + JSON overhead)
     }
     const body = await parseBody(req, maxBodySize);
 

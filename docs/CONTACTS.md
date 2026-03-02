@@ -2,220 +2,104 @@
 
 ## Overview
 
-UniHub implements contact management with vCard (vcf) import/export support, allowing users to manage contacts and sync with external services.
+UniHub provides contact management with vCard 3.0 import/export, search, group filtering, favorites, and bulk operations.
 
-## Architecture
+## Database Schema (`contacts` table)
 
-### Components
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID | Primary key |
+| `user_id` | UUID | FK to `users` |
+| `first_name` | VARCHAR(255) | Required |
+| `last_name` | VARCHAR(255) | Nullable |
+| `email` | VARCHAR(255) | Nullable |
+| `phone` | VARCHAR(50) | Nullable |
+| `company` | VARCHAR(255) | Nullable |
+| `job_title` | VARCHAR(255) | Nullable |
+| `notes` | TEXT | Nullable |
+| `is_favorite` | BOOLEAN | Default false |
+| `created_at` | TIMESTAMP | Auto-set |
+| `updated_at` | TIMESTAMP | Auto-updated |
 
-- **Database**: MySQL `contacts` table
-- **vCard Parser**: Custom parser for vCard 3.0 format
-- **Export**: vCard generator for contact export
-- **Frontend**: React components for contact management
-
-## Database Schema
-
-### `contacts` Table
-
-```sql
-- id: UUID (primary key)
-- user_id: UUID (foreign key to users)
-- first_name: VARCHAR(255)
-- last_name: VARCHAR(255) NULL
-- email: VARCHAR(255) NULL
-- phone: VARCHAR(50) NULL
-- company: VARCHAR(255) NULL
-- job_title: VARCHAR(255) NULL
-- notes: TEXT NULL
-- is_favorite: BOOLEAN DEFAULT FALSE
-- created_at: TIMESTAMP
-- updated_at: TIMESTAMP
-```
-
-**Indexes**:
-- `idx_contacts_user`: For user-specific queries
-- `idx_contacts_email`: For email lookups
-- `idx_contacts_favorite`: For favorite filtering
-
-## vCard Format
-
-### Standard vCard 3.0
-
-vCard is a standard format (RFC 2425, RFC 2426) used by:
-- Google Contacts
-- Apple Contacts
-- Microsoft Outlook
-- Most contact management systems
-
-### Structure
-
-```
-BEGIN:VCARD
-VERSION:3.0
-N:Lastname;Firstname;;;
-FN:Full Name
-EMAIL;TYPE=INTERNET:email@example.com
-TEL;TYPE=CELL:+1234567890
-ORG:Company Name
-TITLE:Job Title
-NOTE:Notes
-END:VCARD
-```
-
-## Import Process
-
-### 1. File Upload
-- User uploads `.vcf` file via web interface
-- File parsed on server side
-- Maximum file size: 500KB (configurable)
-
-### 2. Parsing
-
-**Steps**:
-1. Read vCard file content
-2. Split into individual vCard blocks
-3. For each vCard:
-   - Parse properties (N, FN, EMAIL, TEL, etc.)
-   - Handle encoding (quoted-printable, UTF-8)
-   - Extract contact data
-   - Validate required fields (at least name required)
-4. Insert contacts into database
-
-### 3. Encoding Handling
-
-**Quoted-Printable**:
-- Some exports use quoted-printable encoding
-- Decoded automatically: `=3D` → `=`, `=0A` → newline
-- Handles Apple Contacts exports
-
-**Character Escaping**:
-- vCard uses `\;` for semicolons, `\,` for commas
-- `\\` for backslashes
-- Unescaped during parsing
-
-### 4. Property Mapping
-
-| vCard Property | Database Field | Notes |
-|----------------|----------------|-------|
-| `N` (Name) | `first_name`, `last_name` | Format: `Lastname;Firstname` |
-| `FN` (Full Name) | `first_name`, `last_name` | Fallback if N not present |
-| `EMAIL` | `email` | First email used |
-| `TEL` | `phone` | First phone used |
-| `ORG` | `company` | First organization |
-| `TITLE` | `job_title` | Job title |
-| `NOTE` | `notes` | Notes/description |
-
-### 5. Duplicate Handling
-
-- No automatic duplicate detection
-- All contacts from import are added
-- User must manually manage duplicates
-
-## Export Process
-
-### 1. Contact Selection
-- User selects contacts to export (or all)
-- Contacts fetched from database
-
-### 2. vCard Generation
-
-**For each contact**:
-1. Escape special characters
-2. Format name: `N:{last_name};{first_name};;;`
-3. Format full name: `FN:{first_name} {last_name}`
-4. Add email, phone, company, title, notes
-5. Wrap in `BEGIN:VCARD` / `END:VCARD`
-
-### 3. File Download
-- All vCards concatenated into single file
-- Content-Type: `text/vcard`
-- Filename: `contacts.vcf`
-- Browser downloads file
-
-## Frontend Features
-
-### Contact Management
-- **Create**: Add new contacts manually
-- **Edit**: Update contact information
-- **Delete**: Remove contacts
-- **Search**: Filter contacts by name/email/phone
-- **Favorite**: Mark contacts as favorites
-- **Phone Links**: Clickable `tel:` links for mobile
-
-### UI Components
-- Contact list with search
-- Contact cards with hover actions
-- Edit/delete buttons
-- Favorite toggle
-- Import/export buttons
+Indexes: `idx_contacts_user`, `idx_contacts_email`, `idx_contacts_favorite`.
 
 ## API Endpoints
 
-### `GET /api/contacts`
-- Returns all contacts for authenticated user
-- Supports search query parameter
-- Returns JSON array
+All endpoints require authentication via session cookie. State-changing requests require a valid `X-CSRF-Token` header.
 
-### `POST /api/contacts`
-- Creates new contact
-- Validates required fields
-- Returns created contact
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/contacts` | List contacts (supports `?q=` search and `?group=` filter) |
+| POST | `/api/contacts` | Create a contact |
+| PUT | `/api/contacts/:id` | Update a contact (ownership enforced) |
+| DELETE | `/api/contacts/:id` | Delete a contact (ownership enforced) |
+| PUT | `/api/contacts/:id/favorite` | Toggle favorite status |
+| POST | `/api/contacts/import` | Import contacts from vCard file |
+| GET | `/api/contacts/export` | Export all contacts as a `.vcf` download |
+| POST | `/api/contacts/bulk-delete` | Delete multiple contacts by ID |
 
-### `PUT /api/contacts/:id`
-- Updates existing contact
-- Validates ownership (user_id check)
-- Returns updated contact
+### Search and group filtering
 
-### `DELETE /api/contacts/:id`
-- Deletes contact
-- Validates ownership
-- Cascade deletes (if any related data)
+`GET /api/contacts?q=alice&group=name_only`
 
-### `POST /api/contacts/import`
-- Accepts vCard file upload
-- Parses and imports contacts
-- Returns import statistics
+- `q`: full-text search across first name, last name, email, phone, company.
+- `group`: `all` (default), `name_only` (contacts with only a name), `number_or_email_only` (contacts that have a phone or email).
 
-### `GET /api/contacts/export`
-- Generates vCard file
-- Returns file download
-- Includes all user's contacts
+## vCard Import
 
-## Compatibility
+### Process
 
-### Supported Exports
-- ✅ Google Contacts (vCard 3.0)
-- ✅ Apple Contacts (vCard 3.0 with quoted-printable)
-- ✅ Microsoft Outlook (vCard 3.0)
-- ✅ Most standard vCard implementations
+1. User uploads a `.vcf` file via the frontend file picker.
+2. File content is sent as a JSON string to `POST /api/contacts/import` (max 500 KB).
+3. The backend splits the file into individual `BEGIN:VCARD` ... `END:VCARD` blocks.
+4. Each block is parsed: `N`, `FN`, `EMAIL`, `TEL`, `ORG`, `TITLE`, `NOTE` properties are extracted.
+5. Encoding is handled automatically (quoted-printable decoding, vCard character escaping).
+6. Contacts are inserted into the database; the response reports how many were imported.
 
-### Limitations
-- Only supports vCard 3.0 (not 2.1 or 4.0)
-- Single email/phone per contact (first one used)
-- No photo support (vCard PHOTO property not parsed)
-- No address fields (ADR property not parsed)
-- No custom fields support
+### Property mapping
+
+| vCard property | Database field | Notes |
+|----------------|---------------|-------|
+| `N` | `first_name`, `last_name` | Format: `Last;First` |
+| `FN` | `first_name`, `last_name` | Fallback when `N` is absent |
+| `EMAIL` | `email` | First email used |
+| `TEL` | `phone` | First phone used |
+| `ORG` | `company` | |
+| `TITLE` | `job_title` | |
+| `NOTE` | `notes` | |
+
+### Compatibility
+
+Tested with exports from Google Contacts, Apple Contacts, and Microsoft Outlook (vCard 3.0). Quoted-printable encoding from Apple is handled automatically.
+
+## vCard Export
+
+1. User clicks Export in the UI.
+2. Frontend calls `api.getBlob('/contacts/export')` -- this uses the cookie-based session (no manual bearer token needed).
+3. The backend generates a vCard 3.0 string for each contact, concatenates them, and returns the file with `Content-Type: text/vcard` and `Content-Disposition: attachment; filename="contacts.vcf"`.
+
+## Frontend Features
+
+- Contact list with real-time debounced search (300 ms)
+- Group tabs: All, Name only, Number/email only
+- Create/edit dialog with form validation
+- Favorite toggle (star icon)
+- Bulk selection with checkboxes and bulk delete
+- Import (file picker for `.vcf` files)
+- Export (downloads `contacts.vcf`)
+- Clickable `mailto:` and `tel:` links on contact cards
 
 ## Security
 
-### Access Control
-- All endpoints require authentication
-- User can only access their own contacts
-- Database queries filtered by `user_id`
+- All endpoints enforce `user_id` ownership via parameterised SQL queries.
+- CSRF token required on all state-changing operations.
+- Export uses cookie auth (`credentials: 'include'`) -- no token in localStorage or URL.
+- Import body size capped at 500 KB.
 
-### Data Validation
-- Email format validation
-- Phone number sanitization
-- Name length limits
-- SQL injection prevention (parameterized queries)
+## Limitations
 
-## Future Improvements
-
-- Photo support (avatar images)
-- Multiple emails/phones per contact
-- Address fields (street, city, state, zip)
-- Contact groups/categories
-- Duplicate detection and merging
-- vCard 4.0 support
-- CSV import/export
-- Contact sharing between users
+- Only vCard 3.0 supported (not 2.1 or 4.0).
+- Single email and phone per contact (first value used on import).
+- No photo/avatar support.
+- No address fields.
+- No automatic duplicate detection on import.

@@ -1,18 +1,17 @@
 services:
   # ── UniHub Application (Frontend + API) ─────────────────────────
   #
-  # Default admin account (created automatically on first start):
-  #   Email:    admin@unihub.local
-  #   Password: admin123
-  #
-  # ⚠  Change the admin password immediately after first login:
-  #    Settings → Security → Change Password
+  # Bootstrap admin account (required on first start):
+  #   BOOTSTRAP_ADMIN_EMAIL + BOOTSTRAP_ADMIN_PASSWORD
+  # Password must be at least 12 characters.
   #
   unihub:
     image: ghcr.io/mrksrus/selfhost-unihub:latest
     pull_policy: always  # Always pull latest image on container start
     container_name: unihub
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "3000:80"
     environment:
@@ -27,6 +26,15 @@ services:
       JWT_SECRET: ""                               # ← REQUIRED – fill this in
       # ── Encryption key for stored email passwords ──────────────────
       ENCRYPTION_KEY: CHANGE_ME_encryption_key     # ← CHANGE THIS
+      # ── First-run admin bootstrap (required when users table is empty) ──
+      BOOTSTRAP_ADMIN_EMAIL: admin@example.com      # ← CHANGE THIS
+      BOOTSTRAP_ADMIN_PASSWORD: CHANGE_ME_admin_password # ← CHANGE THIS (min 12 chars)
+      # ── CORS allowlist (comma-separated origins) ───────────────────
+      ALLOWED_ORIGINS: http://localhost:3000
+      # ── Trust proxy headers only when behind a trusted reverse proxy ──
+      TRUST_PROXY_HEADERS: "true"
+      # ── Optional allowlist for self-hosted mail domains/IP hostnames ──
+      TRUSTED_MAIL_HOSTS: mail.example.com
     depends_on:
       - unihub-mysql
     healthcheck:
@@ -45,13 +53,13 @@ services:
     image: mysql:8.0
     container_name: unihub-mysql
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     environment:
       MYSQL_DATABASE: unihub
       MYSQL_USER: unihub
       MYSQL_PASSWORD: CHANGE_ME_db_password         # ← MUST match above
       MYSQL_ROOT_PASSWORD: CHANGE_ME_root_password  # ← CHANGE THIS
-      # Allow root access from other containers on the network
-      MYSQL_ROOT_HOST: "%"
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci

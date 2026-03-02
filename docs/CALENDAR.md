@@ -1,211 +1,139 @@
-# Calendar - Technical Documentation
+# Calendar & To-Do - Technical Documentation
 
 ## Overview
 
-UniHub implements a calendar system for scheduling events with support for recurring events, all-day events, locations, and color coding.
-
-## Architecture
-
-### Components
-
-- **Database**: MySQL `calendar_events` table
-- **Frontend**: React calendar component with date-fns
-- **Date Handling**: UTC timestamps, 24-hour format, DD/MM/YYYY display
+UniHub provides a calendar for scheduling events and a to-do system built on top of the same event model. Events can optionally carry a `todo_status` and nested subtasks, enabling both calendar scheduling and task management in one unified view.
 
 ## Database Schema
 
-### `calendar_events` Table
+### `calendar_events` table
 
-```sql
-- id: UUID (primary key)
-- user_id: UUID (foreign key to users)
-- title: VARCHAR(255) NOT NULL
-- description: TEXT NULL
-- start_time: DATETIME NOT NULL
-- end_time: DATETIME NOT NULL
-- all_day: BOOLEAN DEFAULT FALSE
-- location: VARCHAR(500) NULL
-- color: VARCHAR(20) DEFAULT '#22c55e'
-- recurrence: VARCHAR(100) NULL
-- created_at: TIMESTAMP
-- updated_at: TIMESTAMP
-```
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID | Primary key |
+| `user_id` | UUID | FK to `users` |
+| `title` | VARCHAR(255) | Required |
+| `description` | TEXT | Nullable |
+| `start_time` | DATETIME | Required (UTC) |
+| `end_time` | DATETIME | Required (UTC) |
+| `all_day` | BOOLEAN | Default false |
+| `location` | VARCHAR(500) | Nullable |
+| `color` | VARCHAR(20) | Default `#22c55e` |
+| `recurrence` | VARCHAR(100) | Reserved for future use |
+| `is_todo` | BOOLEAN | Default false |
+| `todo_status` | VARCHAR(20) | `done`, `changed`, `time_moved`, `cancelled`, or null |
+| `done_at` | DATETIME | Set when status becomes `done` |
+| `created_at` | TIMESTAMP | Auto-set |
+| `updated_at` | TIMESTAMP | Auto-updated |
 
-**Indexes**:
-- `idx_events_user`: For user-specific queries
-- `idx_events_date`: For date range queries
+Indexes: `idx_events_user`, `idx_events_date`.
+
+### `calendar_event_subtasks` table
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | UUID | Primary key |
+| `event_id` | UUID | FK to `calendar_events` (CASCADE delete) |
+| `user_id` | UUID | FK to `users` (CASCADE delete) |
+| `title` | VARCHAR(500) | Required |
+| `is_done` | BOOLEAN | Default false |
+| `position` | INT | Sort order |
+| `created_at` | TIMESTAMP | Auto-set |
+
+Indexes: `idx_subtasks_event`, `idx_subtasks_user`, `idx_subtasks_order`.
 
 ## Date/Time Handling
 
-### Storage Format
-- **Database**: `DATETIME` column type
-- **Format**: `YYYY-MM-DD HH:MM:SS` (UTC)
-- **Timezone**: All times stored in UTC
-- **Conversion**: Frontend converts to local time for display
-
-### Display Format
-- **Date**: DD/MM/YYYY (European format)
-- **Time**: 24-hour format (HH:MM)
-- **Week Start**: Monday (European standard)
-
-### Date Conversion
-
-**Backend (server.js)**:
-- Receives `datetime-local` input format from frontend
-- Converts to UTC: `YYYY-MM-DD HH:MM:SS`
-- Stores in database
-
-**Frontend (CalendarPage.tsx)**:
-- Uses `date-fns` for formatting
-- Converts UTC to local time for display
-- Formats dates: `format(date, 'dd/MM/yyyy')`
-- Formats times: `format(date, 'HH:mm')`
-
-## Event Management
-
-### Creating Events
-
-**Process**:
-1. User fills form (title, start, end, location, color)
-2. Frontend sends to `POST /api/calendar/events`
-3. Backend validates and converts dates to UTC
-4. Event inserted into database
-5. Frontend refreshes calendar view
-
-**Validation**:
-- Title required
-- Start time must be before end time
-- Dates must be valid
-
-### Updating Events
-
-- Same process as create
-- Validates event ownership (user_id check)
-- Updates existing record
-
-### Deleting Events
-
-- Validates ownership
-- Deletes from database
-- Frontend refreshes view
-
-## Calendar Display
-
-### Month View
-- Shows current month
-- Displays events on their start date
-- Color-coded by event color
-- Click to view/edit event
-
-### Event Cards
-- Shows title, time, location
-- Color indicator
-- Hover to see details
-- Click to edit/delete
-
-### Navigation
-- Previous/Next month buttons
-- Today button (jump to current month)
-- Month/year selector
-
-## Features
-
-### All-Day Events
-- `all_day` flag set to true
-- Start/end times set to 00:00:00
-- Displayed differently (no time shown)
-- Spans full day in calendar
-
-### Location Support
-- Stored as text string
-- Displayed in event details
-- Clickable link (opens maps app on mobile)
-- Format: `geo:` or `maps:` URL scheme
-
-### Color Coding
-- User-selectable colors
-- Predefined palette (green, blue, purple, orange, red, cyan)
-- Stored as hex color code
-- Visual distinction in calendar
-
-### Recurrence
-- Field exists in database
-- Not yet implemented in UI
-- Future feature for repeating events
+- **Storage**: all times in UTC as MySQL `DATETIME`.
+- **Frontend input**: `<input type="datetime-local">` in local time, converted to ISO 8601 before sending.
+- **Backend conversion**: parsed to `YYYY-MM-DD HH:MM:SS` UTC via helper functions (`toMysqlDatetime`, `parseDatetimeToMillis`).
+- **Display**: frontend uses `date-fns` to format in the user's local timezone.
+- **All-day events**: start and end times set to midnight UTC; displayed without a time component.
 
 ## API Endpoints
 
-### `GET /api/calendar/events`
-- Returns all events for authenticated user
-- Ordered by start_time ASC
-- Filtered by user_id
+All endpoints require authentication via session cookie. State-changing requests require `X-CSRF-Token`.
 
-### `POST /api/calendar/events`
-- Creates new event
-- Validates dates and required fields
-- Returns created event
+### Events
 
-### `PUT /api/calendar/events/:id`
-- Updates existing event
-- Validates ownership
-- Returns updated event
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/calendar/events` | List events; supports `?includeTodos=true` to include to-do items |
+| POST | `/api/calendar/events` | Create event or to-do |
+| PUT | `/api/calendar/events/:id` | Update event fields |
+| DELETE | `/api/calendar/events/:id` | Delete event |
+| PUT | `/api/calendar/events/:id/todo-status` | Update to-do status (`done`, `changed`, `time_moved`, `cancelled`, null) |
 
-### `DELETE /api/calendar/events/:id`
-- Deletes event
-- Validates ownership
-- Returns success message
+### Subtasks
 
-### `GET /api/stats`
-- Returns upcoming events count
-- Used for dashboard display
-- Filters: `start_time >= UTC_TIMESTAMP()`
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/calendar/events/:id/subtasks` | List subtasks for an event |
+| POST | `/api/calendar/events/:id/subtasks` | Create subtask (supports `position` for insertion order) |
+| PUT | `/api/calendar/events/:id/subtasks/:subtaskId` | Update subtask title, done state, or position |
+| DELETE | `/api/calendar/events/:id/subtasks/:subtaskId` | Delete subtask |
+| POST | `/api/calendar/events/:id/subtasks/reorder` | Bulk reorder subtasks by position |
 
-## Dashboard Integration
+### Dashboard stats
 
-### Upcoming Events
-- Shows count of upcoming events
-- Queries events with `start_time >= UTC_TIMESTAMP()`
-- Displays on dashboard card
-- Links to calendar page
+`GET /api/stats` returns an `upcomingEvents` count (events with `start_time >= UTC_TIMESTAMP()` that are not done or cancelled).
 
-### Date Formatting
-- Uses `date-fns` for consistent formatting
-- Displays in DD/MM/YYYY format
-- 24-hour time format
+## To-Do Status Flow
 
-## Frontend Components
+Events with `is_todo = true` can carry a `todo_status`:
 
-### CalendarPage.tsx
-- Main calendar component
-- Month view with event display
-- Event creation/edit dialogs
-- Date navigation
+| Status | Meaning | Side effects |
+|--------|---------|-------------|
+| `null` | Pending / open | `done_at` cleared |
+| `done` | Completed | `done_at` set to `NOW()` |
+| `changed` | Modified after scheduling | `done_at` cleared |
+| `time_moved` | Rescheduled | Accepts new `start_time`/`end_time`; preserves event duration if only one end is provided |
+| `cancelled` | Abandoned | `done_at` cleared |
 
-### Event Dialog
-- Form for creating/editing events
-- Date/time pickers (datetime-local input)
-- Color selector
-- Location input
-- All-day toggle
+When setting `time_moved`, the backend auto-computes the missing end (or start) based on the original event duration.
+
+## Subtask Ordering
+
+- Each subtask has a `position` integer.
+- On create, if no position is given, the subtask is appended (max position + 1).
+- If a specific position is given, existing subtasks at that position and below are shifted down.
+- The reorder endpoint accepts an array of `{ id, position }` pairs and batch-updates all positions in a single query.
+
+## Event Serialisation
+
+The backend serialises event rows with:
+
+- `start_time` and `end_time` as ISO 8601 strings.
+- `done_at` as ISO 8601 or null.
+- `is_todo`, `all_day` as booleans.
+- `subtasks` array (populated when fetching a single event or when the list query requests it).
+
+## Frontend
+
+### Calendar page
+
+- Month view showing events on their start date, color-coded.
+- Navigation: previous/next month, today button.
+- Click to create or edit; color picker and location input.
+- All-day toggle.
+
+### To-do page
+
+- List of to-do events with subtask progress.
+- Status controls: mark done, reschedule, cancel.
+- Inline subtask management: add, toggle, reorder (drag), delete.
+
+## Security
+
+- All queries filter by `user_id` using parameterised SQL.
+- Route parameters are extracted via dedicated helper functions (`getCalendarEventIdFromPath`, `getCalendarSubtaskIdFromPath`).
+- CSRF protection on all write operations.
 
 ## Limitations
 
-1. **No Recurrence UI**: Recurrence field exists but not implemented
-2. **No Timezone Support**: All times in UTC (no timezone selection)
-3. **No Event Reminders**: No notification/alarm system
-4. **No Event Sharing**: Events are user-specific only
-5. **No Calendar Views**: Only month view (no week/day view)
-6. **No Event Search**: No search/filter functionality
-
-## Future Improvements
-
-- Recurring events (daily, weekly, monthly, yearly)
-- Timezone support
-- Event reminders/notifications
-- Week and day views
-- Event search and filtering
-- Event sharing between users
-- Calendar import/export (iCal format)
-- Integration with external calendars
-- Event attachments
-- Event categories/tags
+1. No recurrence support in the UI (database field exists).
+2. No timezone selector (UTC storage, local display).
+3. No week/day calendar views.
+4. No event reminders or notifications.
+5. No event sharing between users.
+6. No calendar import/export (iCal).

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,12 +11,29 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { User, Shield, Download, Loader2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
+const DEVICE_TZ_VALUE = '';
+const timezoneOptions = (() => {
+  try {
+    const zones = Intl.supportedValuesOf ? Intl.supportedValuesOf('timeZone') : [];
+    return [DEVICE_TZ_VALUE, ...zones.sort()];
+  } catch {
+    return [DEVICE_TZ_VALUE];
+  }
+})();
+
 const Settings = () => {
-  const { user, signOut } = useAuth();
+  const { user, setUser, signOut } = useAuth();
   const { toast } = useToast();
   const [loading, setLoading] = useState(false);
   const [fullName, setFullName] = useState(user?.full_name || '');
+  const [timezone, setTimezone] = useState(user?.timezone ?? DEVICE_TZ_VALUE);
   const [isPasswordOpen, setIsPasswordOpen] = useState(false);
+
+  useEffect(() => {
+    setFullName(user?.full_name || '');
+    setTimezone(user?.timezone ?? DEVICE_TZ_VALUE);
+  }, [user?.full_name, user?.timezone]);
+
   const [passwordForm, setPasswordForm] = useState({
     current_password: '',
     new_password: '',
@@ -56,10 +73,14 @@ const Settings = () => {
   const handleUpdateProfile = async () => {
     setLoading(true);
     try {
-      const response = await api.put('/auth/profile', { full_name: fullName.trim() });
+      const response = await api.put<{ user: { id: string; email: string; full_name?: string; avatar_url?: string; role?: string; timezone?: string | null } }>('/auth/profile', {
+        full_name: fullName.trim(),
+        timezone: timezone === DEVICE_TZ_VALUE ? null : timezone,
+      });
       if (response.error) {
         toast({ title: 'Failed to update profile', description: response.error, variant: 'destructive' });
       } else {
+        if (response.data?.user) setUser(response.data.user);
         toast({ title: 'Profile updated successfully' });
       }
     } catch (error: any) {
@@ -116,6 +137,25 @@ const Settings = () => {
                   onChange={(e) => setFullName(e.target.value)}
                   placeholder="Enter your name"
                 />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="timezone">Time zone</Label>
+                <select
+                  id="timezone"
+                  value={timezone}
+                  onChange={(e) => setTimezone(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value={DEVICE_TZ_VALUE}>Use device time zone</option>
+                  {timezoneOptions.filter((z) => z !== DEVICE_TZ_VALUE).map((tz) => (
+                    <option key={tz} value={tz}>
+                      {tz}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Used for calendar and to-do dates and times
+                </p>
               </div>
               <Button onClick={handleUpdateProfile} disabled={loading}>
                 {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}

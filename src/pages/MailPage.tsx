@@ -65,6 +65,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { SafeEmailContent } from '@/components/mail/SafeEmailContent';
 
 interface MailAccount {
   id: string;
@@ -97,6 +98,37 @@ interface Email {
   received_at: string;
   has_attachments?: boolean;
   attachments?: EmailAttachment[];
+}
+
+interface ComposeAttachment {
+  id: string;
+  file: File;
+}
+
+interface MailHostAssessment {
+  host: string;
+  port: number | null;
+  knownProvider: boolean;
+  allowlisted: boolean;
+  unknownProvider: boolean;
+  blocked: boolean;
+  reasons: string[];
+  resolvedAddresses: string[];
+  privateAddresses: string[];
+  resolveError: string | null;
+}
+
+interface MailPreflightResult {
+  requires_confirmation: boolean;
+  warnings: string[];
+  host_assessments: {
+    imap: MailHostAssessment;
+    smtp: MailHostAssessment;
+  };
+  certificates: {
+    imap: Record<string, unknown> | null;
+    smtp: Record<string, unknown> | null;
+  };
 }
 
 const mailProviders = [
@@ -141,6 +173,10 @@ const MailPage = () => {
     subject: '',
     body: '',
   });
+  const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
+  const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
+  const [pendingAccountConfirmation, setPendingAccountConfirmation] = useState<(typeof accountForm) | null>(null);
+  const [unknownHostPrompt, setUnknownHostPrompt] = useState<MailPreflightResult | null>(null);
   const [accountForm, setAccountForm] = useState({
     email_address: '',
     display_name: '',
@@ -369,14 +405,13 @@ const MailPage = () => {
 
   // Add mail account mutation
   const addAccount = useMutation({
-    mutationFn: async (account: typeof accountForm) => {
+    mutationFn: async (account: (typeof accountForm) & { confirm_unknown_host?: boolean }) => {
       const response = await api.post('/mail/accounts', {
         ...account,
         encrypted_password: account.password, // Will be encrypted on server
       });
       if (response.error) {
-        const errorDetails = response.details ? `\n\nTechnical details:\n${response.details}` : '';
-        throw new Error(response.error + errorDetails);
+        throw new Error(response.error);
       }
       return response.data;
     },
@@ -410,24 +445,11 @@ const MailPage = () => {
       });
     },
     onError: (error: Error) => {
-      const errorLines = error.message.split('\n');
-      const mainError = errorLines[0];
-      const details = errorLines.slice(1).join('\n');
-      
       toast({ 
         title: 'Failed to add mail account', 
-        description: (
-          <div className="space-y-2">
-            <p>{mainError}</p>
-            {details && (
-              <pre className="text-xs bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap break-all select-all">
-                {details}
-              </pre>
-            )}
-          </div>
-        ),
+        description: error.message,
         variant: 'destructive',
-        duration: 10000,
+        duration: 8000,
       });
     },
   });
@@ -658,8 +680,7 @@ const MailPage = () => {
     mutationFn: async (account_id: string) => {
       const response = await api.post('/mail/sync', { account_id });
       if (response.error) {
-        const errorDetails = response.details ? `\n\nTechnical details:\n${response.details}` : '';
-        throw new Error(response.error + errorDetails);
+        throw new Error(response.error);
       }
       return response.data;
     },
@@ -675,35 +696,32 @@ const MailPage = () => {
       });
     },
     onError: (error: Error) => {
-      const errorLines = error.message.split('\n');
-      const mainError = errorLines[0];
-      const details = errorLines.slice(1).join('\n');
-      
       toast({ 
         title: 'Sync failed', 
-        description: (
-          <div className="space-y-2">
-            <p>{mainError}</p>
-            {details && (
-              <pre className="text-xs bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap break-all select-all">
-                {details}
-              </pre>
-            )}
-          </div>
-        ),
+        description: error.message,
         variant: 'destructive',
-        duration: 10000,
+        duration: 8000,
       });
     },
   });
   
   // Send email mutation
   const sendEmailMutation = useMutation({
-    mutationFn: async (data: { account_id: string; to: string; subject: string; body: string }) => {
+    mutationFn: async (data: {
+      account_id: string;
+      to: string;
+      subject: string;
+      body: string;
+      attachments?: Array<{
+        filename: string;
+        contentType: string;
+        size: number;
+        dataBase64: string;
+      }>;
+    }) => {
       const response = await api.post('/mail/send', data);
       if (response.error) {
-        const errorDetails = response.details ? `\n\nTechnical details:\n${response.details}` : '';
-        throw new Error(response.error + errorDetails);
+        throw new Error(response.error);
       }
       return response.data;
     },
@@ -711,28 +729,14 @@ const MailPage = () => {
       toast({ title: '✓ Email sent successfully' });
       setIsComposeOpen(false);
       setIsReplying(false);
-      setComposeMode('new');
-      setComposeForm({ to: '', subject: '', body: '' });
+      resetComposeState();
     },
     onError: (error: Error) => {
-      const errorLines = error.message.split('\n');
-      const mainError = errorLines[0];
-      const details = errorLines.slice(1).join('\n');
-      
       toast({ 
         title: 'Failed to send email', 
-        description: (
-          <div className="space-y-2">
-            <p>{mainError}</p>
-            {details && (
-              <pre className="text-xs bg-muted p-2 rounded overflow-x-auto whitespace-pre-wrap break-all select-all">
-                {details}
-              </pre>
-            )}
-          </div>
-        ),
+        description: error.message,
         variant: 'destructive',
-        duration: 10000,
+        duration: 8000,
       });
     },
   });
@@ -749,11 +753,33 @@ const MailPage = () => {
     });
   };
 
-  const handleAddAccount = (e: React.FormEvent) => {
+  const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (editingAccount) {
       updateAccount.mutate({ id: editingAccount.id, ...accountForm });
     } else {
+      const preflight = await api.post<MailPreflightResult>('/mail/accounts/preflight', {
+        imap_host: accountForm.imap_host,
+        imap_port: accountForm.imap_port,
+        smtp_host: accountForm.smtp_host,
+        smtp_port: accountForm.smtp_port,
+      });
+
+      if (preflight.error) {
+        toast({
+          title: 'Mail host check failed',
+          description: preflight.error,
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      if (preflight.data?.requires_confirmation) {
+        setPendingAccountConfirmation(accountForm);
+        setUnknownHostPrompt(preflight.data);
+        return;
+      }
+
       addAccount.mutate(accountForm);
     }
   };
@@ -774,16 +800,168 @@ const MailPage = () => {
     setIsAddAccountOpen(true);
   };
   
-  const handleSendEmail = (e: React.FormEvent) => {
+  const addComposeFiles = (files: FileList | File[]) => {
+    const incomingFiles = Array.from(files || []);
+    if (incomingFiles.length === 0) return;
+
+    setComposeAttachments(prev => {
+      const existingKeys = new Set(prev.map(a => `${a.file.name}:${a.file.size}:${a.file.lastModified}`));
+      const next = [...prev];
+
+      for (const file of incomingFiles) {
+        const key = `${file.name}:${file.size}:${file.lastModified}`;
+        if (existingKeys.has(key)) continue;
+        next.push({ id: crypto.randomUUID(), file });
+        existingKeys.add(key);
+      }
+
+      return next;
+    });
+  };
+
+  const removeComposeAttachment = (attachmentId: string) => {
+    setComposeAttachments(prev => prev.filter(att => att.id !== attachmentId));
+  };
+
+  const resetComposeState = () => {
+    setComposeMode('new');
+    setComposeForm({ to: '', subject: '', body: '' });
+    setComposeAttachments([]);
+    setIsAttachmentDragOver(false);
+    setIsReplying(false);
+  };
+
+  const fileToBase64 = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result !== 'string') {
+          reject(new Error('Failed to read attachment'));
+          return;
+        }
+        const base64 = reader.result.split(',')[1] || '';
+        resolve(base64);
+      };
+      reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+
+  const handleComposeAttachmentInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      addComposeFiles(e.target.files);
+    }
+    // Allow re-selecting the same file later
+    e.target.value = '';
+  };
+
+  const formatAttachmentSize = (bytes: number) => {
+    if (!bytes || bytes < 1024) return `${bytes || 0} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const renderComposeAttachmentsSection = (inputId: string) => (
+    <div className="space-y-2">
+      <Label>Attachments</Label>
+      <input
+        id={inputId}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleComposeAttachmentInput}
+      />
+
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setIsAttachmentDragOver(true);
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          setIsAttachmentDragOver(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setIsAttachmentDragOver(false);
+          if (e.dataTransfer?.files?.length) {
+            addComposeFiles(e.dataTransfer.files);
+          }
+        }}
+        className={`rounded-lg border border-dashed p-3 transition-colors ${
+          isAttachmentDragOver ? 'border-accent bg-accent/5' : 'border-border'
+        }`}
+      >
+        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+          <span>Drag and drop files here, or</span>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              const input = document.getElementById(inputId) as HTMLInputElement | null;
+              input?.click();
+            }}
+          >
+            <Paperclip className="h-4 w-4 mr-2" />
+            Add attachments
+          </Button>
+        </div>
+      </div>
+
+      {composeAttachments.length > 0 && (
+        <div className="space-y-2">
+          {composeAttachments.map(({ id, file }) => (
+            <div key={id} className="flex items-center justify-between gap-2 rounded border border-border px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{file.name}</p>
+                <p className="text-xs text-muted-foreground">{formatAttachmentSize(file.size)}</p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={() => removeComposeAttachment(id)}
+                title="Remove attachment"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+
+  const handleSendEmail = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedAccount) {
       toast({ title: 'Please select an account', variant: 'destructive' });
       return;
     }
-    sendEmailMutation.mutate({
-      account_id: selectedAccount,
-      ...composeForm,
-    });
+
+    try {
+      const attachmentPayload = await Promise.all(
+        composeAttachments.map(async ({ file }) => ({
+          filename: file.name,
+          contentType: file.type || 'application/octet-stream',
+          size: file.size,
+          dataBase64: await fileToBase64(file),
+        }))
+      );
+
+      sendEmailMutation.mutate({
+        account_id: selectedAccount,
+        ...composeForm,
+        attachments: attachmentPayload,
+      });
+    } catch (error) {
+      toast({
+        title: 'Attachment error',
+        description: error instanceof Error ? error.message : 'Failed to prepare attachments',
+        variant: 'destructive',
+      });
+    }
   };
 
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
@@ -1540,9 +1718,7 @@ const MailPage = () => {
                   size="icon"
                   onClick={() => {
                     setSelectedEmail(null);
-                    setIsReplying(false);
-                    setComposeForm({ to: '', subject: '', body: '' });
-                    setComposeMode('new');
+                    resetComposeState();
                   }}
                 >
                   <ArrowLeft className="h-5 w-5" />
@@ -1553,6 +1729,7 @@ const MailPage = () => {
                     size="sm"
                     onClick={() => {
                       setComposeMode('reply');
+                      setComposeAttachments([]);
                       if (!selectedAccount) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
@@ -1576,6 +1753,7 @@ const MailPage = () => {
                     size="sm"
                     onClick={() => {
                       setComposeMode('forward');
+                      setComposeAttachments([]);
                       if (!selectedAccount) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
@@ -1638,36 +1816,33 @@ const MailPage = () => {
                         const handleDownload = async (e: React.MouseEvent) => {
                           e.preventDefault();
                           try {
-                            // Get auth token for the request
-                            const token = localStorage.getItem('auth_token');
-                            const url = `/api/mail/attachments/${attachment.id}`;
-                            
-                            // Fetch the attachment with proper headers
-                            const response = await fetch(url, {
-                              headers: {
-                                'Authorization': `Bearer ${token}`,
-                              },
-                            });
-                            
-                            if (!response.ok) {
-                              throw new Error('Failed to download attachment');
-                            }
-                            
-                            // Get blob and create download link
-                            const blob = await response.blob();
+                            const { blob, filename } = await api.getBlob(`/mail/attachments/${attachment.id}`);
                             const blobUrl = window.URL.createObjectURL(blob);
                             const link = document.createElement('a');
                             link.href = blobUrl;
-                            link.download = attachment.filename;
+                            link.download = filename || attachment.filename || 'attachment';
                             document.body.appendChild(link);
                             link.click();
                             document.body.removeChild(link);
                             window.URL.revokeObjectURL(blobUrl);
                           } catch (error) {
                             console.error('Download failed:', error);
+                            const errorWithStatus = error as Error & { status?: number };
+                            let description = 'Could not download attachment. Please try again.';
+
+                            if (errorWithStatus.status === 401) {
+                              description = 'Session expired. Please sign in again and retry.';
+                            } else if (errorWithStatus.status === 404) {
+                              description = 'Attachment not found (it may not be available on disk).';
+                            } else if (errorWithStatus.status && errorWithStatus.status >= 500) {
+                              description = 'Server error while downloading attachment.';
+                            } else if (errorWithStatus.message) {
+                              description = errorWithStatus.message;
+                            }
+
                             toast({ 
                               title: 'Download failed', 
-                              description: 'Could not download attachment. Please try again.',
+                              description,
                               variant: 'destructive' 
                             });
                           }
@@ -1697,20 +1872,11 @@ const MailPage = () => {
                 )}
                 
                 <div className="border-t border-border pt-4">
-                  {selectedEmail.body_html ? (
-                    <div 
-                      className="prose prose-sm max-w-none dark:prose-invert prose-headings:text-foreground prose-p:text-foreground prose-a:text-accent prose-strong:text-foreground prose-code:text-foreground"
-                      style={{
-                        maxWidth: '100%',
-                        wordBreak: 'break-word',
-                      }}
-                      dangerouslySetInnerHTML={{ __html: selectedEmail.body_html }}
-                    />
-                  ) : (
-                    <div className="whitespace-pre-wrap text-foreground break-words">
-                      {selectedEmail.body_text || '(No content)'}
-                    </div>
-                  )}
+                  <SafeEmailContent
+                    emailId={selectedEmail.id}
+                    bodyHtml={selectedEmail.body_html}
+                    bodyText={selectedEmail.body_text}
+                  />
                 </div>
               </div>
             </div>
@@ -1727,9 +1893,7 @@ const MailPage = () => {
                       variant="ghost"
                       size="sm"
                       onClick={() => {
-                        setIsReplying(false);
-                        setComposeForm({ to: '', subject: '', body: '' });
-                        setComposeMode('new');
+                        resetComposeState();
                       }}
                     >
                       <X className="h-4 w-4" />
@@ -1768,14 +1932,13 @@ const MailPage = () => {
                         required
                       />
                     </div>
+                    {renderComposeAttachmentsSection('compose-attachments-inline')}
                     <div className="flex justify-end gap-3">
                       <Button 
                         type="button" 
                         variant="outline" 
                         onClick={() => {
-                          setIsReplying(false);
-                          setComposeForm({ to: '', subject: '', body: '' });
-                          setComposeMode('new');
+                          resetComposeState();
                         }}
                       >
                         Cancel
@@ -1806,9 +1969,7 @@ const MailPage = () => {
       <Dialog open={isComposeOpen} onOpenChange={(open) => {
         setIsComposeOpen(open);
         if (!open) {
-          setComposeMode('new');
-          setComposeForm({ to: '', subject: '', body: '' });
-          setIsReplying(false);
+          resetComposeState();
         }
       }}>
         <DialogContent className={`${isMobile ? 'max-w-full h-[95vh] max-h-[95vh] flex flex-col p-4 translate-y-[-47.5%] top-[47.5%] rounded-t-lg rounded-b-none' : 'sm:max-w-2xl'}`}>
@@ -1867,12 +2028,11 @@ const MailPage = () => {
                 required
               />
             </div>
+            {renderComposeAttachmentsSection('compose-attachments-dialog')}
             <div className={`flex justify-end gap-3 ${isMobile ? 'shrink-0 pt-4 border-t border-border' : ''}`}>
               <Button type="button" variant="outline" onClick={() => {
                 setIsComposeOpen(false);
-                setComposeMode('new');
-                setComposeForm({ to: '', subject: '', body: '' });
-                setIsReplying(false);
+                resetComposeState();
               }}>
                 Cancel
               </Button>
@@ -1893,6 +2053,58 @@ const MailPage = () => {
           </form>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={!!unknownHostPrompt}
+        onOpenChange={(open) => {
+          if (!open) {
+            setUnknownHostPrompt(null);
+            setPendingAccountConfirmation(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unknown mail host</AlertDialogTitle>
+            <AlertDialogDescription>
+              These server hosts are not recognized providers. Verify certificate details before trusting them.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3 text-sm">
+            {unknownHostPrompt?.warnings?.map((warning) => (
+              <p key={warning} className="text-warning">{warning}</p>
+            ))}
+            {unknownHostPrompt?.host_assessments?.imap && (
+              <div className="rounded border p-2">
+                <p><strong>IMAP:</strong> {unknownHostPrompt.host_assessments.imap.host}:{unknownHostPrompt.host_assessments.imap.port}</p>
+                <p className="text-muted-foreground">Resolved: {unknownHostPrompt.host_assessments.imap.resolvedAddresses.join(', ') || 'N/A'}</p>
+                <p className="text-muted-foreground">Fingerprint: {String(unknownHostPrompt.certificates?.imap?.fingerprint256 || 'N/A')}</p>
+              </div>
+            )}
+            {unknownHostPrompt?.host_assessments?.smtp && (
+              <div className="rounded border p-2">
+                <p><strong>SMTP:</strong> {unknownHostPrompt.host_assessments.smtp.host}:{unknownHostPrompt.host_assessments.smtp.port}</p>
+                <p className="text-muted-foreground">Resolved: {unknownHostPrompt.host_assessments.smtp.resolvedAddresses.join(', ') || 'N/A'}</p>
+                <p className="text-muted-foreground">Fingerprint: {String(unknownHostPrompt.certificates?.smtp?.fingerprint256 || 'N/A')}</p>
+              </div>
+            )}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (pendingAccountConfirmation) {
+                  addAccount.mutate({ ...pendingAccountConfirmation, confirm_unknown_host: true });
+                }
+                setUnknownHostPrompt(null);
+                setPendingAccountConfirmation(null);
+              }}
+            >
+              Trust and Continue
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

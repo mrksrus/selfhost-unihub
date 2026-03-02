@@ -1,41 +1,14 @@
 # UniHub - Self-Hosted Productivity Suite
 
-> **Disclaimer:** This project was entirely AI-generated and built by someone with zero coding experience. It is a learning/hobby project and **must not be used in production without thorough security review and testing**. There will be bugs, security vulnerabilities, incomplete features, and rough edges throughout the codebase. Use at your own risk.
+> **Disclaimer:** This project was entirely AI-generated and built by someone with zero coding experience. It is a learning/hobby project and **must not be used in production without thorough security review and testing**. There will be bugs, incomplete features, and rough edges throughout the codebase. Use at your own risk.
 
 ## What is UniHub?
 
-UniHub is a self-hosted, all-in-one productivity hub that combines contacts management, calendar scheduling, and email account management into a single web application. It is designed to be deployed on your own infrastructure via a Docker Compose YAML file — paste the YAML, set your passwords, and it runs.
+UniHub is a self-hosted, all-in-one productivity hub that combines contacts management, calendar scheduling, to-do lists, and email account management into a single web application. Deploy it on your own infrastructure via a Docker Compose YAML file -- paste the YAML, set your passwords, and it runs.
 
-Basically: You sign in inside the webpage, import contacts, set calendar events and sign into your mail accounts. Those get stored on the server. 
-Then on your phone or PC you sign in with your UniHub Account and have access to all of those. 
-Intention then is it be able to install the app as a PWA and implement more features like local Notifications, etc. 
-So indead of having to setup your phone or PC very time for your Accounts, you can just set them up once, and access via one login. 
-Security vulnerabilty given one Account accesses potentially multiple ones... should be clear. Set a fricking good password!
+You sign in inside the web app, import contacts, set calendar events, manage to-do items, and sign into your mail accounts. Everything is stored on your server. Then on your phone or PC you sign in with your UniHub account and have access to all of it. The app can be installed as a PWA for a native-like experience.
 
-## Mail Sync Details
-
-UniHub supports email account management with full IMAP/SMTP sync functionality:
-
-- **Supported Providers**: Gmail, Apple/iCloud, Yahoo, and any standard IMAP/SMTP provider
-- **Sync Behavior**: 
-  - Automatically syncs every 10 minutes in the background
-  - Manual sync available via UI button
-  - Fetches last 500 emails per account (most recent first)
-  - One-by-one email fetching for reliability and real-time progress
-- **Email Features**:
-  - Read emails with HTML/plain text rendering
-  - Reply and forward functionality
-  - Mark as read/unread
-  - Star/unstar emails
-  - Responsive compose UI (popup on mobile, inline on desktop)
-- **Security**: 
-  - Email passwords encrypted with AES-256-GCM
-  - CSRF protection implemented
-  - Requires App Passwords for Gmail/Yahoo/iCloud (2FA accounts)
-- **Limitations**:
-  - Syncs last 500 emails only (older emails not automatically synced)
-  - One-by-one fetching may be slow for accounts with many emails
-  - Exchange/Office365 may work but EWS or Microsoft Graph API preferred
+Since one UniHub account potentially accesses multiple email accounts, **set a strong password**.
 
 ## Architecture
 
@@ -46,15 +19,50 @@ UniHub runs as **two containers**:
 | `unihub` | `ghcr.io/mrksrus/selfhost-unihub:latest` | Frontend (Nginx) + Backend API (Node.js) |
 | `unihub-mysql` | `mysql:8.0` | Database |
 
-The application container bundles the React frontend (served by Nginx) and the Node.js API into a single image. Nginx reverse-proxies `/api/*` requests to the API running inside the same container. The database schema and default admin user are created automatically on first startup — no init scripts or file mounts are needed.
+The application container bundles the React frontend (served by Nginx) and the Node.js API into a single image. Nginx reverse-proxies `/api/*` requests to the Node.js backend running inside the same container. The database schema is created automatically on first startup.
+
+### Request flow
+
+```
+Browser --> Nginx (port 80) --> Node.js API (port 4000) --> MySQL
+                                      |
+                                      +--> IMAP/SMTP (external mail servers)
+```
+
+### Authentication
+
+- Sessions are managed via **HttpOnly, SameSite=Strict** cookies (not localStorage).
+- A JWT is signed with `JWT_SECRET` and stored in a server-set cookie alongside a CSRF token cookie.
+- Every state-changing request (POST/PUT/DELETE) must include the `X-CSRF-Token` header matching the CSRF cookie.
+- Session validity is verified against the database on every request, including an active-user check -- deactivated users are immediately locked out.
+- Sessions expire after 21 days; expired sessions are cleaned up automatically every hour.
+
+### Email HTML rendering
+
+Untrusted email HTML is rendered inside a **sandboxed iframe** (`sandbox=""`) with no script execution privileges. This isolates email content from the app origin. Plain-text fallback is used when HTML is not available.
+
+### Mail transport security
+
+- All IMAP and SMTP connections use **strict TLS certificate verification** by default (`rejectUnauthorized: true`).
+- When adding a mail account with an unknown/custom host, a **preflight check** runs that classifies the host (known provider vs unknown) and resolves DNS to detect private/local addresses.
+- Unknown hosts trigger a confirmation dialog showing certificate details (subject, issuer, fingerprint) so you can verify before trusting.
+- Private/local IP hosts are blocked unless explicitly allowlisted via `TRUSTED_MAIL_HOSTS`.
+
+## Features
+
+- **Contacts** -- create, edit, search, favorite, bulk delete, vCard import/export
+- **Calendar** -- events with color coding, location links, all-day support
+- **To-Do** -- task management with subtasks, reordering, status tracking
+- **Mail** -- full IMAP/SMTP email with sync, compose, reply, forward, attachments, bulk operations
+- **Admin Panel** -- user management, signup mode control (open/approval/disabled), password resets
+- **PWA Support** -- installable as a native-like app on mobile and desktop
+- **Security** -- HttpOnly cookie auth, CSRF protection, rate limiting, strict TLS for mail, sandboxed email rendering
 
 ## Deployment (TrueNAS Scale / Portainer / any Docker host)
 
-This project is intended to be deployed by pasting a YAML file into your container platform. No cloning, no building, no extra files required.
+Deploy by pasting a YAML file into your container platform. No cloning or building required.
 
-### Step 1 — Copy the YAML
-
-TrueNAS (and some UIs) do not support YAML anchors or `build:`. Use the fully expanded YAML below (no anchors), which is known to work with TrueNAS:
+### Step 1 -- Copy the YAML
 
 ```yaml
 networks:
@@ -64,9 +72,11 @@ networks:
 services:
   unihub:
     image: ghcr.io/mrksrus/selfhost-unihub:latest
-    pull_policy: always  # Always pull latest image on container start (for auto-updates)
+    pull_policy: always
     container_name: unihub
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "3000:80"
     environment:
@@ -76,8 +86,13 @@ services:
       MYSQL_PASSWORD: CHANGE_ME_db_password
       MYSQL_HOST: unihub-mysql
       MYSQL_PORT: "3306"
-      JWT_SECRET: ""                               # ← REQUIRED – generate with: openssl rand -base64 48
-      ENCRYPTION_KEY: CHANGE_ME_encryption_key
+      JWT_SECRET: ""                                  # REQUIRED -- openssl rand -base64 48
+      ENCRYPTION_KEY: CHANGE_ME_encryption_key        # REQUIRED
+      BOOTSTRAP_ADMIN_EMAIL: admin@example.com        # REQUIRED on first start
+      BOOTSTRAP_ADMIN_PASSWORD: CHANGE_ME_admin_pw    # REQUIRED on first start (min 12 chars)
+      ALLOWED_ORIGINS: http://localhost:3000           # Your frontend origin
+      TRUST_PROXY_HEADERS: "true"                     # Set true when behind reverse proxy
+      TRUSTED_MAIL_HOSTS: ""                          # Optional: mail.example.com
     depends_on:
       - unihub-mysql
     networks:
@@ -89,6 +104,8 @@ services:
     image: mysql:8.0
     container_name: unihub-mysql
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     environment:
       MYSQL_DATABASE: unihub
       MYSQL_USER: unihub
@@ -116,77 +133,96 @@ volumes:
     driver: local
 ```
 
-### Step 2 — Set your passwords
+### Step 2 -- Set your passwords
 
-Replace every `CHANGE_ME_*` value and fill in `JWT_SECRET`:
-
-**Note on Auto-Updates:** The `pull_policy: always` setting ensures the latest image is pulled every time the container starts. This means you can simply restart the app in TrueNAS Scale to get updates without deleting/recreating the app. Your data (database, settings, mail accounts) persists in volumes, so you won't lose anything on restart.
+Replace every `CHANGE_ME_*` value and fill in required secrets:
 
 | Value | What to put there |
 |-------|-------------------|
 | `MYSQL_PASSWORD` | A strong password (must match in both services) |
 | `MYSQL_ROOT_PASSWORD` | A different strong password for the MySQL root user |
-| `JWT_SECRET` | A long random string — generate with `openssl rand -base64 48` |
-| `ENCRYPTION_KEY` | Another random string — used to encrypt stored mail credentials |
+| `JWT_SECRET` | A long random string -- generate with `openssl rand -base64 48` |
+| `ENCRYPTION_KEY` | Another random string -- used to encrypt stored mail credentials |
+| `BOOTSTRAP_ADMIN_EMAIL` | Email for the first admin account (used only when DB has no users) |
+| `BOOTSTRAP_ADMIN_PASSWORD` | Bootstrap admin password (minimum 12 characters) |
+| `ALLOWED_ORIGINS` | Comma-separated browser origins allowed for API calls (e.g. `https://hub.example.com`) |
+| `TRUST_PROXY_HEADERS` | Set to `true` when running behind a reverse proxy (Nginx, Caddy, Traefik) |
+| `TRUSTED_MAIL_HOSTS` | Optional comma-separated custom mail host domains/IPs to trust (e.g. `mail.example.com`) |
 
-### Step 3 — Start it
+**Note on auto-updates:** `pull_policy: always` pulls the latest image on every container start. Restart to update; data persists in volumes.
 
-Deploy / start the stack. On first launch:
+### Step 3 -- Start it
+
+On first launch:
 
 1. MySQL creates the `unihub` database and user automatically
-2. The API waits for MySQL to be ready (retries up to 45 seconds)
+2. The API waits for MySQL readiness (retries up to 120 seconds)
 3. The API creates all database tables automatically
-4. A default admin user is seeded: `admin@unihub.local` / `admin123`
+4. If no users exist, the API creates the first admin from `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD`
 
-### Step 4 — Log in
+The server will **refuse to start** if `JWT_SECRET`, `ENCRYPTION_KEY`, or the bootstrap admin env vars (when no users exist) are missing.
 
-Open `http://<your-host>:3000` and sign in with the default admin credentials. **Change the admin password immediately** under Settings -> Security -> Change Password.
+### Step 4 -- Log in
+
+Open `http://<your-host>:3000` and sign in with your bootstrap admin credentials.
+
+## Environment Variables Reference
+
+### Required (server exits if missing)
+
+| Variable | Purpose |
+|----------|---------|
+| `JWT_SECRET` | Signs JWT auth tokens |
+| `ENCRYPTION_KEY` | AES-256-GCM key for stored mail passwords |
+| `BOOTSTRAP_ADMIN_EMAIL` | First admin email (only used when users table is empty) |
+| `BOOTSTRAP_ADMIN_PASSWORD` | First admin password (min 12 characters, only used when users table is empty) |
+| `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD` | Database connection |
+
+### Optional
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PORT` | `4000` | API listen port inside the container |
+| `NODE_ENV` | -- | Set to `production` to enable Secure cookie flag |
+| `ALLOWED_ORIGINS` | same-host | Comma-separated CORS origin allowlist |
+| `TRUST_PROXY_HEADERS` | `false` | Trust `X-Real-IP` / `X-Forwarded-For` for rate limiting |
+| `TRUSTED_MAIL_HOSTS` | -- | Comma-separated custom mail hosts to trust without confirmation |
+
+## Mail Sync Details
+
+- **Supported providers**: Gmail, Apple/iCloud, Yahoo, Outlook, and any standard IMAP/SMTP provider (including self-hosted)
+- **Sync behavior**: automatic every 10 minutes; manual sync via UI; fetches last 500 emails per account
+- **Compose**: new messages, reply, forward with attachment support (up to 20 attachments, 25 MB total)
+- **Security**: mail passwords encrypted with AES-256-GCM; strict TLS verification; unknown-host preflight with certificate inspection; SSRF protection (private IP blocking)
+- **Limitations**: syncs last 500 emails only; one-by-one fetching may be slow for large mailboxes; INBOX only (no sent folder sync yet)
+
+## Known Limitations
+
+- **No HTTPS by default** -- place a TLS-terminating reverse proxy in front for production
+- **In-memory rate limiting** -- state lost on container restart
+- **Single-server only** -- no clustering or horizontal scaling
+- **No automated backups** -- back up your MySQL data volume manually
+- **No email verification** -- user email addresses are not verified on signup
+- **No audit logging** -- user actions are not logged for security auditing
+- **INBOX-only sync** -- sent/archive/draft folder sync not yet implemented
 
 ## Tech Stack
 
-**Frontend:** React 18, TypeScript, Vite, Tailwind CSS, shadcn/ui, TanStack React Query, Framer Motion, PWA
+**Frontend:** React 18, TypeScript, Vite 7, Tailwind CSS, shadcn/ui, TanStack React Query, Framer Motion, PWA
 
 **Backend:** Node.js (vanilla HTTP server), MySQL 8.0
 
-**Infrastructure:** Docker + Docker Compose, Nginx
+**Infrastructure:** Docker, Docker Compose, Nginx
 
-## Features
-
-- **Contacts** — create, edit, search, and favorite contacts
-- **Calendar** — schedule events with color coding and location support
-- **Mail** — full email account management with IMAP/SMTP sync, email reading, reply/forward functionality
-- **Admin Panel** — user management for administrators
-- **PWA Support** — installable as a native-like app on mobile and desktop
-- **Authentication** — JWT-based auth with session management, CSRF protection, and rate limiting
-
-## Known Limitations & Security Warnings
-
-> **This is an AI-generated project. Read the following carefully before deploying.**
-
-- **No HTTPS by default** — Nginx serves over plain HTTP; place a TLS-terminating reverse proxy (Caddy, Traefik, etc.) in front for production use
-- **Mail sync limitations** — syncs last 500 emails per account; one-by-one fetching may be slow for large mailboxes; automatic sync runs every 10 minutes
-- **Basic input validation** — common cases are handled but edge cases may slip through
-- **No email verification** — user email addresses are not verified on signup
-- **In-memory rate limiting** — rate-limit state is lost when the container restarts
-- **Single-server only** — no clustering or horizontal scaling support
-- **No automated backups** — you must back up your MySQL data volume manually
-- **Limited error handling** — some error scenarios may return generic 500 errors
-- **No audit logging** — user actions are not logged for security auditing
-- **Default admin password** — ships with a well-known default; change it immediately
-
-## Building from Source (Development)
-
-If you want to build the image yourself instead of pulling from GHCR:
+## Building from Source
 
 ```bash
 git clone https://github.com/mrksrus/selfhost-unihub.git
 cd selfhost-unihub
-
-# Build and start (the docker-compose.yml includes a build: directive for this)
 docker compose up -d --build
 ```
 
-To work on the frontend locally:
+For local frontend development:
 
 ```bash
 npm install
@@ -198,34 +234,37 @@ The Vite dev server proxies API requests to `localhost:4000`.
 ## Project Structure
 
 ```
-├── api/
-│   ├── server.js          # Backend API server (Node.js)
-│   └── package.json       # Backend dependencies
-├── src/                   # Frontend React application
-├── docker/
-│   ├── nginx/             # Nginx configuration
-│   ├── mysql/             # Reference SQL schema (not required at runtime)
-│   └── start.sh           # Container startup script
-├── docs/                   # Technical documentation
-│   ├── MAIL_SYNC.md       # Email sync implementation details
-│   ├── ATTACHMENTS.md     # Attachment handling documentation
-│   ├── CONTACTS.md        # Contacts and vCard import/export
-│   └── CALENDAR.md        # Calendar events and date handling
-├── docker-compose.yml     # Docker Compose YAML (paste-and-deploy ready)
-├── Dockerfile             # Combined image (Nginx + Node.js API)
-└── package.json           # Frontend dependencies
+api/
+  server.js               Backend API server (Node.js)
+  calendar-route-utils.js Route parsing helpers
+  package.json            Backend dependencies
+  tests/                  Backend tests (node:test)
+src/                      Frontend React application
+  components/mail/        SafeEmailContent (sandboxed iframe renderer)
+  contexts/               AuthContext (cookie-based session)
+  lib/api.ts              API client (cookie credentials, CSRF)
+  pages/                  Page components
+  test/                   Frontend tests (vitest)
+docker/
+  nginx/                  Nginx configuration
+  mysql/                  Reference SQL schema
+  start.sh                Container startup script
+docs/
+  MAIL_SYNC.md            Email sync technical details
+  ATTACHMENTS.md          Attachment handling documentation
+  CONTACTS.md             Contacts and vCard import/export
+  CALENDAR.md             Calendar events and date handling
+docker-compose.yml        Paste-and-deploy YAML
+Dockerfile                Combined image (Nginx + Node.js API)
+package.json              Frontend dependencies
 ```
 
 ## Technical Documentation
 
-For detailed explanations of how different features work, see the documentation in the `docs/` folder:
-
-- **[Mail Sync](docs/MAIL_SYNC.md)** - How email synchronization works, IMAP protocol usage, one-by-one fetching strategy, and sync process details
-- **[Attachments](docs/ATTACHMENTS.md)** - Email attachment handling, inline images, storage architecture, and download endpoints
-- **[Contacts](docs/CONTACTS.md)** - Contact management, vCard import/export, parsing logic, and compatibility notes
-- **[Calendar](docs/CALENDAR.md)** - Calendar events, date/time handling, UTC storage, and event management
-
-These documents are learning resources explaining the implementation details, design decisions, and how the system works internally.
+- **[Mail Sync](docs/MAIL_SYNC.md)** -- IMAP sync process, TLS verification, host trust preflight, encryption
+- **[Attachments](docs/ATTACHMENTS.md)** -- Attachment storage, inline images, sandboxed rendering, download security
+- **[Contacts](docs/CONTACTS.md)** -- Contact management, vCard import/export, API endpoints
+- **[Calendar](docs/CALENDAR.md)** -- Calendar events, to-do/subtask system, date handling, API endpoints
 
 ## License
 

@@ -1,14 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { calendarApi, calendarQueryKeys, type CalendarEvent } from '@/lib/calendar-api';
 import { showNotification, registerPeriodicSync, initServiceWorker } from '@/utils/service-worker';
-
-interface CalendarEvent {
-  id: string;
-  title: string;
-  start_time: string;
-  reminders: number[] | null;
-}
 
 export const useCalendarNotifications = () => {
   const notificationTimeoutsRef = useRef<Map<string, NodeJS.Timeout[]>>(new Map());
@@ -30,21 +23,19 @@ export const useCalendarNotifications = () => {
 
   // Fetch calendar events
   const { data: events = [] } = useQuery({
-    queryKey: ['calendar-events'],
-    queryFn: async () => {
-      const response = await api.get<{ events: CalendarEvent[] }>('/calendar/events');
-      if (response.error) throw new Error(response.error);
-      return response.data?.events || [];
-    },
+    queryKey: calendarQueryKeys.list({ includeTodos: true }),
+    queryFn: () => calendarApi.fetchEvents({ includeTodos: true }),
     refetchInterval: 60000, // Refetch every minute to check for new events
   });
 
   useEffect(() => {
+    const timeoutRegistry = notificationTimeoutsRef.current;
+
     // Clear all existing timeouts
-    notificationTimeoutsRef.current.forEach((timeouts) => {
+    timeoutRegistry.forEach((timeouts) => {
       timeouts.forEach((timeout) => clearTimeout(timeout));
     });
-    notificationTimeoutsRef.current.clear();
+    timeoutRegistry.clear();
 
     if (!('Notification' in window) || Notification.permission !== 'granted') {
       return;
@@ -54,6 +45,7 @@ export const useCalendarNotifications = () => {
     const scheduledNotifications = new Set<string>();
 
     events.forEach((event) => {
+      if (event.todo_status === 'done' || event.todo_status === 'cancelled') return;
       if (!event.reminders || event.reminders.length === 0) return;
 
       const eventStart = new Date(event.start_time).getTime();
@@ -86,16 +78,16 @@ export const useCalendarNotifications = () => {
       });
 
       if (timeouts.length > 0) {
-        notificationTimeoutsRef.current.set(event.id, timeouts);
+        timeoutRegistry.set(event.id, timeouts);
       }
     });
 
     // Cleanup function
     return () => {
-      notificationTimeoutsRef.current.forEach((timeouts) => {
+      timeoutRegistry.forEach((timeouts) => {
         timeouts.forEach((timeout) => clearTimeout(timeout));
       });
-      notificationTimeoutsRef.current.clear();
+      timeoutRegistry.clear();
     };
   }, [events]);
 };

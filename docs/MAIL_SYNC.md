@@ -2,163 +2,116 @@
 
 ## Overview
 
-UniHub implements email synchronization using the IMAP protocol to fetch emails from external email providers (Gmail, Apple/iCloud, Yahoo, etc.) and store them locally in the database.
+UniHub synchronises email using the IMAP protocol to fetch messages from external providers (Gmail, iCloud, Yahoo, Outlook, or any standard IMAP server) and stores them locally in MySQL. Outbound mail is sent via SMTP.
 
-## Architecture
+## Components
 
-### Components
+| Component | Library / Module | Role |
+|-----------|-----------------|------|
+| IMAP client | `imap-simple` | Connect, authenticate, search, fetch |
+| Email parser | `mailparser` | Parse RFC 822 messages into structured data |
+| SMTP sender | `nodemailer` | Send composed/reply/forwarded emails |
+| Encryption | Node.js `crypto` (AES-256-GCM) | Encrypt/decrypt stored mail account passwords |
+| TLS inspector | Node.js `tls` | Fetch certificate metadata during host preflight |
+| DNS resolver | Node.js `dns.promises` | Resolve mail hosts to detect private/local addresses |
 
-- **IMAP Client**: `imap-simple` library for connecting to IMAP servers
-- **Email Parser**: `mailparser` library for parsing RFC822 email format
-- **Database**: MySQL tables (`mail_accounts`, `emails`, `email_attachments`)
-- **Encryption**: AES-256-GCM for storing email account passwords
+## Database Tables
+
+- `mail_accounts` -- credentials (encrypted), IMAP/SMTP settings, last-sync timestamp, user association
+- `emails` -- message metadata, plain-text body, HTML body, folder, read/starred status
+- `email_attachments` -- attachment metadata, filesystem path, Content-ID for inline images
+
+## Account Creation Flow
+
+### 1. Preflight host assessment
+
+Before an account is saved, the frontend calls `POST /api/mail/accounts/preflight` with the IMAP and SMTP host/port. The backend:
+
+1. Classifies each host as **known provider** (Gmail, iCloud, Yahoo, Outlook, Hotmail, Live) or **unknown**.
+2. Checks whether the host appears in the `TRUSTED_MAIL_HOSTS` env allowlist.
+3. Resolves the hostname via DNS and checks whether any resolved address is private or local (RFC 1918, loopback, link-local, IPv6 ULA/link-local).
+4. If the host resolves to a private/local address and is not allowlisted, the request is **blocked** (HTTP 400).
+5. If the host is unknown (not a known provider and not allowlisted), the backend fetches the TLS certificate from each host and returns warnings plus certificate metadata (subject, issuer, validity, fingerprint).
+
+The frontend displays an "Unknown mail host" confirmation dialog with the warnings and certificate details. The user must explicitly click "Trust and Continue" before the account is created.
+
+### 2. Connection test
+
+After preflight passes (or the user confirms), the backend:
+
+1. Encrypts the password with AES-256-GCM and creates a temporary account object.
+2. Opens a test IMAP connection to verify credentials (`testImapConnection`).
+3. If authentication fails, returns an error immediately without saving.
+
+### 3. Account persistence and initial sync
+
+On success:
+
+1. The account is inserted into `mail_accounts`.
+2. A background sync (`syncMailAccount`) is started immediately (non-blocking).
+3. The API returns `{ authSuccess: true, syncInProgress: true }`.
 
 ## Sync Process
 
-### 1. Account Setup
+### Trigger points
 
-When a user adds a mail account:
-- Credentials are encrypted using AES-256-GCM before storage
-- IMAP/SMTP settings are auto-filled based on provider (Gmail, Yahoo, etc.)
-- Initial sync is triggered immediately after account creation
+- **Automatic**: every 10 minutes for all active accounts
+- **Manual**: user clicks Sync in the UI (`POST /api/mail/sync`)
+- **Initial**: immediately after account creation
 
-### 2. Email Fetching Strategy
+### Fetch strategy
 
-**One-by-One Fetching**:
-- Fetches emails individually by UID (not in batches)
-- Processes last 500 emails (most recent first)
-- No timeout limits - sync continues until complete
-- Real-time progress logging for debugging
+1. Connect to IMAP server (TLS on port 993, STARTTLS on port 143).
+2. Open INBOX.
+3. If last-sync timestamp exists, search with `SINCE` (minus 1-day safety margin). Otherwise search `ALL` and take the last 500 UIDs.
+4. For each UID, fetch HEADER + TEXT individually.
+5. Reconstruct RFC 822 message and parse with `mailparser`.
+6. Check for duplicates by `message_id`.
+7. Insert into `emails`; process attachments; replace inline `cid:` references with `/api/mail/attachments/{id}` URLs.
+8. Update `last_synced_at` on the account.
 
-**Why One-by-One?**
-- More reliable for large mailboxes
-- Better error handling (one bad email doesn't break entire sync)
-- Real-time progress visibility
-- Avoids timeout issues with batch operations
+### Why one-by-one fetching?
 
-### 3. Sync Flow
+- A single malformed email does not break the entire sync.
+- Progress is visible in real time via server logs.
+- Memory usage stays bounded (no large batch buffers).
 
-```
-1. Connect to IMAP server (port 993 for TLS, 143 for STARTTLS)
-2. Authenticate with username/password (App Password for Gmail/Yahoo)
-3. Open INBOX folder
-4. Search for all message UIDs (fast operation)
-5. Extract last 500 UIDs
-6. For each UID:
-   a. Fetch email with HEADER and TEXT parts
-   b. Reconstruct full email (RFC822 format)
-   c. Parse with mailparser
-   d. Extract metadata (subject, from, to, date, body)
-   e. Check for duplicates (by message_id)
-   f. Save to database
-   g. Process attachments (if any)
-7. Update last_synced_at timestamp
-8. Close connection
-```
+## TLS and Transport Security
 
-### 4. Email Parsing
+All IMAP and SMTP connections use **strict TLS certificate verification** (`rejectUnauthorized: true`). This means:
 
-**Reconstruction Process**:
-- IMAP returns HEADER and TEXT parts separately
-- Headers are parsed into objects by `imap-simple`
-- Headers are reconstructed into RFC822 format for `mailparser`
-- Full email string is created: `headerContent + '\r\n\r\n' + bodyContent`
+- Self-signed certificates are rejected by default.
+- The `servername` option is set for proper SNI.
+- To use a self-hosted mail server with a custom/self-signed certificate, add its hostname to the `TRUSTED_MAIL_HOSTS` env var. The user will still see the preflight confirmation dialog with certificate details.
 
-**Parsed Data**:
-- Subject, From (name + address), To addresses
-- Body text (plain text)
-- Body HTML (if available)
-- Attachments (regular and inline)
-- Message ID (for duplicate detection)
-- Date received
+Connection timeouts: 60 s connect, 30 s auth, 60 s socket.
 
-### 5. Duplicate Detection
+## SMTP Sending
 
-- Uses `message_id` field (unique per email)
-- Checks if email already exists before inserting
-- Prevents re-syncing the same email multiple times
-- Works across syncs (10-minute automatic syncs)
+`POST /api/mail/send` accepts to, subject, body, and optional attachments (base64-encoded, max 20 files, 25 MB total). The backend:
 
-### 6. Automatic Sync
+1. Loads the sender's account and decrypts the password.
+2. Creates a `nodemailer` transport with strict TLS.
+3. Sends the message.
+4. Saves a copy in the `emails` table with `folder = 'sent'`.
 
-- Runs every 10 minutes in the background
-- Only syncs accounts that belong to the current user
-- Each account syncs independently
-- Syncs are separated by user and by account
+## Password Encryption
 
-## Database Schema
-
-### `mail_accounts` Table
-- Stores email account credentials (encrypted)
-- IMAP/SMTP server settings
-- Last sync timestamp
-- User association
-
-### `emails` Table
-- Stores email metadata and content
-- Links to `mail_accounts` via `mail_account_id`
-- Links to `users` via `user_id`
-- Folder support (inbox, sent, archive, trash)
-- Read/unread and starred status
-
-### `email_attachments` Table
-- Stores attachment metadata
-- File path to actual attachment file
-- Links to `emails` via `email_id`
-- Content-ID for inline attachments
-
-## Security
-
-### Password Encryption
-- Uses AES-256-GCM encryption
-- Encryption key stored in environment variable
-- Passwords never stored in plain text
-- Decrypted only when needed for IMAP/SMTP connections
-
-### App Passwords
-- Gmail/Yahoo/iCloud require App Passwords (not regular passwords)
-- Users must generate App Passwords in their account settings
-- App Passwords are used for IMAP/SMTP authentication
+- Algorithm: AES-256-GCM
+- Key derivation: SHA-256 hash of `ENCRYPTION_KEY` env var
+- Format stored in DB: `iv_hex:auth_tag_hex:ciphertext_hex`
+- Passwords are decrypted only at the moment of IMAP/SMTP connection.
 
 ## Error Handling
 
-### Connection Errors
-- Timeout handling (60s connection, 30s auth)
-- TLS certificate validation (can be disabled for debugging)
-- SNI (Server Name Indication) support
-- Detailed error messages for troubleshooting
-
-### Sync Errors
-- Individual email failures don't stop entire sync
-- Errors logged with detailed debug information
-- Failed emails are skipped, sync continues
-- Error count tracked and reported
-
-## Performance Considerations
-
-### Fetching Strategy
-- Only fetches last 500 emails (not all emails)
-- Uses HEADER + TEXT parts (not full message) for performance
-- One-by-one fetching prevents memory issues
-- No timeout limits (sync can take hours for large mailboxes)
-
-### Storage
-- Emails stored in database (text/HTML in LONGTEXT columns)
-- Attachments stored on filesystem (`/app/uploads/attachments/`)
-- No automatic cleanup (emails accumulate over time)
+- Individual email failures during sync are logged and skipped; the sync continues.
+- Connection errors (timeout, auth failure, DNS) return user-friendly messages.
+- SMTP errors during send return the error to the client (without internal stack traces).
 
 ## Limitations
 
-1. **Email Limit**: Only syncs last 500 emails per account
-2. **No Incremental Sync**: Always checks last 500 (not just new emails)
-3. **No Folder Sync**: Only syncs INBOX (other folders not supported)
-4. **No Server Deletion**: Deletes are local-only (not synced to server)
-5. **Slow for Large Mailboxes**: One-by-one fetching can be slow (10+ seconds per email)
-
-## Future Improvements
-
-- Incremental sync (only fetch new emails since last sync)
-- Folder support (sync Sent, Archive, etc.)
-- Server-side deletion sync
-- Batch fetching optimization
-- Email search/filtering improvements
+1. Only syncs INBOX (no sent/archive/draft folder sync yet).
+2. Fetches at most 500 emails per account on initial sync.
+3. No server-side deletion sync (deletes are local only).
+4. One-by-one fetching can be slow for large mailboxes.
+5. No incremental UID tracking yet (uses date-based `SINCE` after first sync).

@@ -6,10 +6,11 @@ import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { format } from 'date-fns';
+import { calendarApi, calendarQueryKeys, formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
 
 const Dashboard = () => {
   const { user } = useAuth();
+  const timezone = user?.timezone ?? null;
   const firstName = user?.full_name?.split(' ')[0] || 'there';
 
   // Fetch stats
@@ -24,14 +25,12 @@ const Dashboard = () => {
 
   // Fetch upcoming events
   const { data: upcomingEvents = [] } = useQuery({
-    queryKey: ['upcoming-events'],
+    queryKey: calendarQueryKeys.upcomingEvents,
     queryFn: async () => {
-      const response = await api.get<{ events: any[] }>('/calendar/events');
-      if (response.error) throw new Error(response.error);
-      const events = response.data?.events || [];
+      const events = await calendarApi.fetchEvents({ includeTodos: false });
       return events
-        .filter((e: any) => new Date(e.start_time) >= new Date())
-        .sort((a: any, b: any) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())
+        .filter((event) => event.todo_status !== 'done' && event.todo_status !== 'cancelled' && new Date(event.start_time) >= new Date())
+        .sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime())
         .slice(0, 3);
     },
   });
@@ -40,7 +39,7 @@ const Dashboard = () => {
   const { data: mailAccountsCount = 0 } = useQuery({
     queryKey: ['mail-accounts-count'],
     queryFn: async () => {
-      const response = await api.get<{ accounts: any[] }>('/mail/accounts');
+      const response = await api.get<{ accounts: { id: string }[] }>('/mail/accounts');
       if (response.error) throw new Error(response.error);
       return response.data?.accounts?.length || 0;
     },
@@ -198,7 +197,7 @@ const Dashboard = () => {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {upcomingEvents.map((event: any) => (
+                  {upcomingEvents.map((event: CalendarEvent) => (
                     <div key={event.id} className="flex items-start gap-3">
                       <div 
                         className="w-1 h-12 rounded-full" 
@@ -209,7 +208,7 @@ const Dashboard = () => {
                         <div className="flex items-center gap-1 text-sm text-muted-foreground">
                           <Clock className="h-3.5 w-3.5" />
                           <span>
-                            {format(new Date(event.start_time), 'dd/MM/yyyy HH:mm')}
+                            {formatEventTime(event.start_time, 'dd/MM/yyyy HH:mm', timezone)}
                           </span>
                         </div>
                       </div>
