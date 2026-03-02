@@ -86,6 +86,9 @@ services:
       MYSQL_PASSWORD: CHANGE_ME_db_password
       MYSQL_HOST: unihub-mysql
       MYSQL_PORT: "3306"
+      MYSQL_STARTUP_MAX_WAIT_SECONDS: "120"
+      MYSQL_STARTUP_CHECK_INTERVAL_SECONDS: "5"
+      UNIHUB_API_START_DELAY_SECONDS: "2"
       JWT_SECRET: ""                                  # REQUIRED -- openssl rand -base64 48
       ENCRYPTION_KEY: CHANGE_ME_encryption_key        # REQUIRED
       BOOTSTRAP_ADMIN_EMAIL: admin@example.com        # REQUIRED on first start
@@ -156,7 +159,7 @@ Replace every `CHANGE_ME_*` value and fill in required secrets:
 On first launch:
 
 1. MySQL creates the `unihub` database and user automatically
-2. The API waits for MySQL readiness (retries up to 120 seconds)
+2. The API waits for MySQL readiness (up to `MYSQL_STARTUP_MAX_WAIT_SECONDS`, default 120 seconds)
 3. The API creates all database tables automatically
 4. If no users exist, the API creates the first admin from `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD`
 
@@ -187,6 +190,9 @@ Open `http://<your-host>:3000` and sign in with your bootstrap admin credentials
 | `ALLOWED_ORIGINS` | same-host | Comma-separated CORS origin allowlist |
 | `TRUST_PROXY_HEADERS` | `false` | Trust `X-Real-IP` / `X-Forwarded-For` for rate limiting |
 | `TRUSTED_MAIL_HOSTS` | -- | Comma-separated custom mail hosts to trust without confirmation |
+| `MYSQL_STARTUP_MAX_WAIT_SECONDS` | `120` | Max seconds `start.sh` waits for MySQL before continuing |
+| `MYSQL_STARTUP_CHECK_INTERVAL_SECONDS` | `5` | Seconds between MySQL readiness checks in `start.sh` |
+| `UNIHUB_API_START_DELAY_SECONDS` | `2` | Delay after API start before Nginx startup check |
 
 ## Mail Sync Details
 

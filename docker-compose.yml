@@ -21,6 +21,10 @@ services:
       MYSQL_PASSWORD: CHANGE_ME_db_password          # ← CHANGE THIS
       MYSQL_HOST: unihub-mysql
       MYSQL_PORT: "3306"
+      # ── Startup timing controls used by docker/start.sh ───────────────
+      MYSQL_STARTUP_MAX_WAIT_SECONDS: "120"
+      MYSQL_STARTUP_CHECK_INTERVAL_SECONDS: "5"
+      UNIHUB_API_START_DELAY_SECONDS: "2"
       # ── Required: set a strong, random secret ──────────────────────
       # Generate one with:  openssl rand -base64 48
       JWT_SECRET: ""                               # ← REQUIRED – fill this in
