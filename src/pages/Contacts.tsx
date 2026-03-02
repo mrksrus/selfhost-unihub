@@ -113,6 +113,10 @@ const Contacts = () => {
       if (response.error) throw new Error(response.error);
       return response.data?.contacts || [];
     },
+    // Cache contacts for a while and avoid refetching on every tab focus/reconnect.
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   const contacts = useMemo(() => {

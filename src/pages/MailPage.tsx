@@ -74,6 +74,7 @@ interface MailAccount {
   provider: string;
   is_active: boolean;
   last_synced_at: string | null;
+  unread_count?: number;
 }
 
 interface EmailAttachment {
@@ -253,10 +254,10 @@ const MailPage = () => {
     setShowUnreadOnly(false); // Reset unread filter when changing folder/account
   }, [selectedFolder, selectedAccount]);
 
-  // Reset to page 1 when search query changes
+  // Reset to page 1 when search query or unread filter changes
   useEffect(() => {
     setEmailPage(1);
-  }, [searchQuery]);
+  }, [searchQuery, showUnreadOnly]);
 
   // Fetch email count for smart refresh (only refetch emails when count changes)
   const emailsPerPage = 50;
@@ -345,20 +346,17 @@ const MailPage = () => {
     previousEmailCount.current = null;
   }, [selectedAccount, selectedFolder]);
 
-  // Fetch emails for selected account with pagination
-  // When searching, fetch all emails (large limit) to search across all pages
+  // Fetch emails for selected account
+  // Always fetch the latest batch for the folder/account, then paginate & filter client-side
   const { data: emailsData, isLoading: emailsLoading } = useQuery({
-    queryKey: ['emails', selectedAccount, selectedFolder, emailPage, searchQuery],
+    queryKey: ['emails', selectedAccount, selectedFolder],
     queryFn: async () => {
-      if (!selectedAccount) return { emails: [], pagination: null };
+      if (!selectedAccount) return { emails: [] };
       
       const folder = selectedFolder === 'starred' ? 'inbox' : selectedFolder;
-      const isSearching = !!searchQuery.trim();
-      
-      // When searching, fetch all emails (use large limit) to search across all pages
-      // When not searching, use normal pagination
-      const limit = isSearching ? 10000 : emailsPerPage;
-      const offset = isSearching ? 0 : (emailPage - 1) * emailsPerPage;
+      // Fetch up to 100 most recent emails for this folder/account
+      const limit = 100;
+      const offset = 0;
       
       const response = await api.get<{ emails: Email[]; pagination?: { total: number; limit: number; offset: number; page: number; totalPages: number } }>(
         `/mail/emails?account_id=${selectedAccount}&folder=${folder}&limit=${limit}&offset=${offset}`
@@ -369,28 +367,21 @@ const MailPage = () => {
       if (selectedFolder === 'starred') {
         emails = emails.filter(e => e.is_starred);
       }
-      
-      // When searching, return all emails without pagination info (pagination will be hidden)
-      if (isSearching) {
-        return { emails, pagination: null };
-      }
-      
-      return { emails, pagination: response.data?.pagination || null };
+
+      return { emails };
     },
     enabled: !!selectedAccount,
     staleTime: 60000, // Consider data fresh for 60 seconds (will be invalidated when count changes)
   });
 
   const allEmails = emailsData?.emails || [];
-  const pagination = emailsData?.pagination;
   
   // Debug logging
   React.useEffect(() => {
     if (selectedAccount && !emailsLoading) {
       console.log(`[MailPage] Emails loaded: ${allEmails.length} emails for account ${selectedAccount}, folder ${selectedFolder}`);
-      console.log(`[MailPage] Pagination:`, pagination);
     }
-  }, [allEmails.length, selectedAccount, selectedFolder, emailsLoading, pagination]);
+  }, [allEmails.length, selectedAccount, selectedFolder, emailsLoading]);
 
   // Filter emails based on search query and unread filter
   const emails = React.useMemo(() => {
@@ -417,6 +408,26 @@ const MailPage = () => {
              bodyText.includes(query);
     });
   }, [allEmails, searchQuery, showUnreadOnly]);
+
+  const totalPages = React.useMemo(() => {
+    if (emails.length === 0) return 1;
+    return Math.max(1, Math.ceil(emails.length / emailsPerPage));
+  }, [emails.length, emailsPerPage]);
+
+  const paginatedEmails = React.useMemo(() => {
+    if (emails.length === 0) return [];
+    const currentPage = Math.min(emailPage, totalPages);
+    const start = (currentPage - 1) * emailsPerPage;
+    return emails.slice(start, start + emailsPerPage);
+  }, [emails, emailPage, totalPages, emailsPerPage]);
+
+  // Keep current page in range when filters change
+  useEffect(() => {
+    setEmailPage(prev => {
+      const maxPage = Math.max(1, Math.ceil(emails.length / emailsPerPage));
+      return Math.min(prev, maxPage);
+    });
+  }, [emails.length, emailsPerPage]);
 
   // Add mail account mutation
   const addAccount = useMutation({
@@ -573,6 +584,7 @@ const MailPage = () => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
       queryClient.invalidateQueries({ queryKey: ['unread-emails-count'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
     },
   });
 
@@ -618,6 +630,8 @@ const MailPage = () => {
     onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
+      queryClient.invalidateQueries({ queryKey: ['unread-emails-count'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       setSelectedEmails(new Set());
       toast({ 
         title: `✓ Marked ${variables.emailIds.length} email(s) as ${variables.is_read ? 'read' : 'unread'}`,
@@ -661,8 +675,8 @@ const MailPage = () => {
       // Select all (Ctrl+A or Cmd+A)
       if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
         e.preventDefault();
-        if (emails.length > 0) {
-          setSelectedEmails(new Set(emails.map(e => e.id)));
+        if (paginatedEmails.length > 0) {
+          setSelectedEmails(new Set(paginatedEmails.map(e => e.id)));
         }
       }
 
@@ -674,7 +688,7 @@ const MailPage = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedEmails, emails, bulkDelete]);
+  }, [selectedEmails, paginatedEmails, bulkDelete]);
 
   // Handle email selection
   const handleEmailSelect = (emailId: string, e: React.MouseEvent) => {
@@ -707,10 +721,10 @@ const MailPage = () => {
   };
 
   const handleSelectAll = () => {
-    if (selectedEmails.size === emails.length) {
+    if (selectedEmails.size === paginatedEmails.length) {
       setSelectedEmails(new Set());
     } else {
-      setSelectedEmails(new Set(emails.map(e => e.id)));
+      setSelectedEmails(new Set(paginatedEmails.map(e => e.id)));
     }
   };
   
@@ -1287,6 +1301,13 @@ const MailPage = () => {
                     title={(sidebarCollapsed && !isMobile) ? (account.display_name || account.email_address) : undefined}
                   >
                     <div className="w-8 h-8 rounded-full bg-mail/10 flex items-center justify-center text-mail text-xs font-medium shrink-0">
+                      {account.unread_count && account.unread_count > 0 && (
+                        <motion.span
+                          className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-mail"
+                          animate={{ opacity: [0.4, 1, 0.4], scale: [0.9, 1.2, 0.9] }}
+                          transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                        />
+                      )}
                       {account.email_address[0].toUpperCase()}
                     </div>
                     {(!sidebarCollapsed || isMobile) && (
@@ -1345,15 +1366,15 @@ const MailPage = () => {
                 <Menu className="h-5 w-5" />
               </Button>
             )}
-            {emails.length > 0 && (
+            {paginatedEmails.length > 0 && (
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={handleSelectAll}
-                title={selectedEmails.size === emails.length ? 'Deselect all' : 'Select all'}
+                title={selectedEmails.size === paginatedEmails.length ? 'Deselect all' : 'Select all'}
                 className="shrink-0"
               >
-                {selectedEmails.size === emails.length ? (
+                {selectedEmails.size === paginatedEmails.length ? (
                   <CheckSquare className="h-4 w-4" />
                 ) : (
                   <Square className="h-4 w-4" />
@@ -1501,7 +1522,7 @@ const MailPage = () => {
           ) : (
             <div className="divide-y divide-border">
               <AnimatePresence mode="popLayout">
-                {emails.map((email) => (
+                {paginatedEmails.map((email) => (
                   <motion.div
                     key={email.id}
                     layout
@@ -1611,7 +1632,7 @@ const MailPage = () => {
             </div>
           )}
           
-          {/* Search results indicator */}
+          {/* Search / filter results indicator */}
           {(searchQuery.trim() || showUnreadOnly) && emails.length > 0 && (
             <div className="border-t border-border p-4 text-center text-sm text-muted-foreground">
               {searchQuery.trim() && (
@@ -1623,8 +1644,8 @@ const MailPage = () => {
             </div>
           )}
           
-          {/* Pagination - hide when searching or filtering unread */}
-          {pagination && pagination.totalPages > 1 && !searchQuery.trim() && !showUnreadOnly && (
+          {/* Pagination */}
+          {totalPages > 1 && (
             <div className="border-t border-border p-4">
               <Pagination>
                 <PaginationContent>
@@ -1640,14 +1661,14 @@ const MailPage = () => {
                       Previous
                     </Button>
                   </PaginationItem>
-                  {Array.from({ length: Math.min(5, pagination.totalPages) }, (_, i) => {
+                  {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
                     let pageNum;
-                    if (pagination.totalPages <= 5) {
+                    if (totalPages <= 5) {
                       pageNum = i + 1;
                     } else if (emailPage <= 3) {
                       pageNum = i + 1;
-                    } else if (emailPage >= pagination.totalPages - 2) {
-                      pageNum = pagination.totalPages - 4 + i;
+                    } else if (emailPage >= totalPages - 2) {
+                      pageNum = totalPages - 4 + i;
                     } else {
                       pageNum = emailPage - 2 + i;
                     }
@@ -1668,8 +1689,8 @@ const MailPage = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setEmailPage(p => Math.min(pagination.totalPages, p + 1))}
-                      disabled={emailPage === pagination.totalPages}
+                      onClick={() => setEmailPage(p => Math.min(totalPages, p + 1))}
+                      disabled={emailPage === totalPages}
                       className="gap-1"
                     >
                       Next
@@ -1679,7 +1700,7 @@ const MailPage = () => {
                 </PaginationContent>
               </Pagination>
               <div className="text-center text-sm text-muted-foreground mt-2">
-                Page {pagination.page} of {pagination.totalPages} ({pagination.total} emails)
+                Page {emailPage} of {totalPages} ({emails.length} email{emails.length !== 1 ? 's' : ''})
               </div>
             </div>
           )}

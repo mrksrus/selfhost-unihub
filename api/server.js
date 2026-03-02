@@ -1068,8 +1068,18 @@ async function ensureSchema() {
     INDEX idx_contacts_user (user_id),
     INDEX idx_contacts_name (first_name, last_name),
     INDEX idx_contacts_email (email),
-    INDEX idx_contacts_favorite (user_id, is_favorite)
+    INDEX idx_contacts_favorite (user_id, is_favorite),
+    INDEX idx_contacts_user_fav_name (user_id, is_favorite, first_name, last_name)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  // Backfill composite index for faster sorted contact lists on existing installs
+  try {
+    await db.execute(
+      'ALTER TABLE contacts ADD INDEX idx_contacts_user_fav_name (user_id, is_favorite, first_name, last_name)'
+    );
+  } catch (e) {
+    // Ignore if index already exists or ALTER not supported
+  }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS calendar_events (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -2095,7 +2105,8 @@ const routes = {
       const group = url.searchParams.get('group') || 'all';
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '2000', 10), 2000);
 
-      let query = 'SELECT * FROM contacts WHERE user_id = ?';
+      // Only select fields needed on the contacts screen to reduce payload size.
+      let query = 'SELECT id, user_id, first_name, last_name, email, phone, company, job_title, notes, avatar_url, is_favorite FROM contacts WHERE user_id = ?';
       const params = [userId];
 
       // Group filter: name_only = has name but no email/phone; number_or_email_only = has email/phone but no name
@@ -2719,7 +2730,24 @@ const routes = {
         'SELECT id, user_id, email_address, display_name, provider, is_active, last_synced_at, created_at FROM mail_accounts WHERE user_id = ?',
         [userId]
       );
-      return { accounts };
+
+      // Fetch unread email counts per account
+      const [unreadRows] = await db.execute(
+        'SELECT mail_account_id, COUNT(*) as unread_count FROM emails WHERE user_id = ? AND is_read = 0 GROUP BY mail_account_id',
+        [userId]
+      );
+
+      const unreadByAccount = {};
+      for (const row of unreadRows) {
+        unreadByAccount[row.mail_account_id] = row.unread_count;
+      }
+
+      const accountsWithUnread = accounts.map((account) => ({
+        ...account,
+        unread_count: unreadByAccount[account.id] || 0,
+      }));
+
+      return { accounts: accountsWithUnread };
     } catch (error) {
       return { error: 'Failed to get mail accounts', status: 500 };
     }
