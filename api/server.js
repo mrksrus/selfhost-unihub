@@ -2128,13 +2128,14 @@ const routes = {
       query += ' ORDER BY is_favorite DESC, first_name ASC, last_name ASC LIMIT ?';
       params.push(limit);
 
-      const [contacts] = await db.execute(query, params);
+      const [rows] = await db.execute(query, params);
+      const contacts = Array.isArray(rows) ? rows : [];
       return { contacts };
     } catch (error) {
       return { error: 'Failed to get contacts', status: 500 };
     }
   },
-  
+
   'POST /api/contacts': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
@@ -2292,7 +2293,44 @@ const routes = {
       return { error: 'Failed to update favorite', status: 500 };
     }
   },
-  
+
+  // User data management: clear all for current user
+  'POST /api/settings/clear-contacts': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const [result] = await db.execute('DELETE FROM contacts WHERE user_id = ?', [userId]);
+      const deleted = result.affectedRows || 0;
+      return { message: `Deleted ${deleted} contact(s)`, deleted };
+    } catch (error) {
+      console.error('Clear contacts error:', error);
+      return { error: 'Failed to delete contacts', status: 500 };
+    }
+  },
+  'POST /api/settings/clear-calendar': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const [subtasksResult] = await db.execute('DELETE FROM calendar_event_subtasks WHERE user_id = ?', [userId]);
+      const [eventsResult] = await db.execute('DELETE FROM calendar_events WHERE user_id = ?', [userId]);
+      const deletedSubtasks = subtasksResult.affectedRows || 0;
+      const deletedEvents = eventsResult.affectedRows || 0;
+      return { message: `Deleted ${deletedEvents} event(s) and ${deletedSubtasks} subtask(s)`, deleted: deletedEvents + deletedSubtasks };
+    } catch (error) {
+      console.error('Clear calendar error:', error);
+      return { error: 'Failed to delete calendar and todo data', status: 500 };
+    }
+  },
+  'POST /api/settings/clear-mail-accounts': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const [result] = await db.execute('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
+      const deleted = result.affectedRows || 0;
+      return { message: `Deleted ${deleted} mail account(s). Emails and attachments were removed.`, deleted };
+    } catch (error) {
+      console.error('Clear mail accounts error:', error);
+      return { error: 'Failed to delete mail accounts', status: 500 };
+    }
+  },
+
   // Calendar events endpoints
   'GET /api/calendar/events': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };

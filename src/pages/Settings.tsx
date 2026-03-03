@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,8 +8,19 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Separator } from '@/components/ui/separator';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/lib/api';
+import { calendarQueryKeys } from '@/lib/calendar-api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { User, Shield, Download, Loader2 } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { User, Shield, Download, Loader2, Database } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const DEVICE_TZ_VALUE = '';
@@ -24,10 +36,17 @@ const timezoneOptions = (() => {
 const Settings = () => {
   const { user, setUser, signOut } = useAuth();
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const [loading, setLoading] = useState(false);
   const [fullName, setFullName] = useState(user?.full_name || '');
   const [timezone, setTimezone] = useState(user?.timezone ?? DEVICE_TZ_VALUE);
   const [isPasswordOpen, setIsPasswordOpen] = useState(false);
+  const [clearContactsOpen, setClearContactsOpen] = useState(false);
+  const [clearCalendarOpen, setClearCalendarOpen] = useState(false);
+  const [clearMailOpen, setClearMailOpen] = useState(false);
+  const [clearContactsLoading, setClearContactsLoading] = useState(false);
+  const [clearCalendarLoading, setClearCalendarLoading] = useState(false);
+  const [clearMailLoading, setClearMailLoading] = useState(false);
 
   useEffect(() => {
     setFullName(user?.full_name || '');
@@ -87,6 +106,66 @@ const Settings = () => {
       toast({ title: 'Failed to update profile', description: error.message, variant: 'destructive' });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleClearContacts = async () => {
+    setClearContactsLoading(true);
+    try {
+      const response = await api.post<{ message?: string; error?: string; deleted?: number }>('/settings/clear-contacts');
+      if (response.error) {
+        toast({ title: 'Failed to delete contacts', description: response.error, variant: 'destructive' });
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
+      queryClient.invalidateQueries({ queryKey: ['contacts-count'] });
+      toast({ title: response.data?.message || 'All contacts deleted' });
+      setClearContactsOpen(false);
+    } catch (error: any) {
+      toast({ title: 'Failed to delete contacts', description: error.message, variant: 'destructive' });
+    } finally {
+      setClearContactsLoading(false);
+    }
+  };
+
+  const handleClearCalendar = async () => {
+    setClearCalendarLoading(true);
+    try {
+      const response = await api.post<{ message?: string; error?: string; deleted?: number }>('/settings/clear-calendar');
+      if (response.error) {
+        toast({ title: 'Failed to delete calendar and todo data', description: response.error, variant: 'destructive' });
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: calendarQueryKeys.all });
+      queryClient.invalidateQueries({ queryKey: calendarQueryKeys.upcomingEvents });
+      queryClient.invalidateQueries({ queryKey: calendarQueryKeys.stats });
+      toast({ title: response.data?.message || 'All calendar and todo entries deleted' });
+      setClearCalendarOpen(false);
+    } catch (error: any) {
+      toast({ title: 'Failed to delete calendar and todo data', description: error.message, variant: 'destructive' });
+    } finally {
+      setClearCalendarLoading(false);
+    }
+  };
+
+  const handleClearMail = async () => {
+    setClearMailLoading(true);
+    try {
+      const response = await api.post<{ message?: string; error?: string; deleted?: number }>('/settings/clear-mail-accounts');
+      if (response.error) {
+        toast({ title: 'Failed to delete mail accounts', description: response.error, variant: 'destructive' });
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      toast({ title: response.data?.message || 'All mail accounts deleted' });
+      setClearMailOpen(false);
+    } catch (error: any) {
+      toast({ title: 'Failed to delete mail accounts', description: error.message, variant: 'destructive' });
+    } finally {
+      setClearMailLoading(false);
     }
   };
 
@@ -282,6 +361,140 @@ const Settings = () => {
             </CardContent>
           </Card>
         </motion.div>
+
+        {/* Data management */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.35 }}
+        >
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-accent/10">
+                  <Database className="h-5 w-5 text-accent" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">Data management</CardTitle>
+                  <CardDescription>Permanently clear your data. These actions cannot be undone.</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Delete all Contacts</p>
+                  <p className="text-sm text-muted-foreground">Remove every contact from your account</p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setClearContactsOpen(true)}
+                >
+                  Delete all Contacts
+                </Button>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Delete all Calendar & ToDo</p>
+                  <p className="text-sm text-muted-foreground">Remove all events and todo entries</p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setClearCalendarOpen(true)}
+                >
+                  Delete all Calendar/ToDo
+                </Button>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Delete all Mail Accounts</p>
+                  <p className="text-sm text-muted-foreground">Remove all mail accounts and their emails</p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setClearMailOpen(true)}
+                >
+                  Delete all Mail Accounts
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <AlertDialog open={clearContactsOpen} onOpenChange={setClearContactsOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete all contacts?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete all your contacts and cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleClearContacts();
+                }}
+                disabled={clearContactsLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {clearContactsLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete all
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <AlertDialog open={clearCalendarOpen} onOpenChange={setClearCalendarOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete all calendar and todo entries?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete all your calendar events and todo items and cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleClearCalendar();
+                }}
+                disabled={clearCalendarLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {clearCalendarLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete all
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <AlertDialog open={clearMailOpen} onOpenChange={setClearMailOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete all mail accounts?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete all your mail accounts and their emails and cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleClearMail();
+                }}
+                disabled={clearMailLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {clearMailLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete all
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {/* Danger Zone */}
         <motion.div

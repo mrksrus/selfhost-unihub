@@ -111,7 +111,8 @@ const Contacts = () => {
     queryFn: async () => {
       const response = await api.get<{ contacts: Contact[] }>('/contacts');
       if (response.error) throw new Error(response.error);
-      return response.data?.contacts || [];
+      const list = response.data?.contacts;
+      return Array.isArray(list) ? list : [];
     },
     // Cache contacts for a while and avoid refetching on every tab focus/reconnect.
     staleTime: 5 * 60 * 1000,
