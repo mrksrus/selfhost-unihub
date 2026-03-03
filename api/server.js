@@ -9,6 +9,7 @@ const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 // Patch underlying 'imap' so connection errors never crash the process (e.g. ECONNRESET during TLS).
 // imap-simple can emit 'error' on the connection before connect() promise resolves, causing unhandled crash.
+// We must copy static methods (e.g. parseHeader) from OriginalImap so imap-simple's getMessage() works.
 try {
   const imapPath = require.resolve('imap');
   require(imapPath);
@@ -21,6 +22,12 @@ try {
   };
   PatchedImap.prototype = Object.create(OriginalImap.prototype);
   PatchedImap.prototype.constructor = PatchedImap;
+  // Copy static methods (e.g. parseHeader) so imap-simple's getMessage.js can call Imap.parseHeader()
+  Object.getOwnPropertyNames(OriginalImap).forEach((key) => {
+    if (key !== 'prototype' && key !== 'length' && key !== 'name' && typeof OriginalImap[key] === 'function') {
+      PatchedImap[key] = OriginalImap[key];
+    }
+  });
   require.cache[imapPath].exports = PatchedImap;
 } catch (e) {
   console.warn('[IMAP] Could not patch imap module:', e.message);
@@ -666,7 +673,8 @@ async function testImapConnection(account) {
       try { connection.end(); } catch (e) { /* ignore */ }
     }
     const errorMsg = error.message || String(error);
-    
+    const errorCode = error.code || '';
+
     let friendlyError = errorMsg;
     if (errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
       friendlyError = 'Authentication failed. Check your username and password (use App Password for Gmail/Yahoo).';
@@ -678,8 +686,13 @@ async function testImapConnection(account) {
       friendlyError = 'Server not found. Check the IMAP host address.';
     } else if (errorMsg.includes('ECONNREFUSED')) {
       friendlyError = 'Connection refused. Check the IMAP port and server settings.';
-    } else if (errorMsg.includes('Connection ended unexpectedly') || errorMsg.includes('ECONNRESET')) {
-      friendlyError = 'Connection closed by server. Check your credentials and server settings.';
+    } else if (
+      errorCode === 'ECONNRESET' ||
+      errorMsg.includes('ECONNRESET') ||
+      errorMsg.includes('socket disconnected before secure TLS connection was established') ||
+      errorMsg.includes('Connection ended unexpectedly')
+    ) {
+      friendlyError = 'Connection was closed during the TLS handshake (before login). This is usually not a credentials problem. Check: IMAP port (e.g. 993 for TLS), firewall, and that the server accepts TLS on that port.';
     }
     
     return {
@@ -767,9 +780,10 @@ async function syncMailAccount(accountId) {
       try { connection.end(); } catch (e) { /* ignore */ }
     }
     const errorMsg = error.message || String(error);
+    const errorCode = error.code || '';
     debugLog('server.js:146', 'syncMailAccount ERROR', { accountId, errorMessage: errorMsg, errorName: error.name }, 'H1,H2,H3,H4');
     console.error(`[SYNC] ✗ Error syncing account ${accountId}:`, errorMsg);
-    
+
     let friendlyError = errorMsg;
     if (errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
       friendlyError = 'Authentication failed. Check your username and password (use App Password for Gmail/Yahoo).';
@@ -779,8 +793,13 @@ async function syncMailAccount(accountId) {
       friendlyError = 'Server not found. Check the IMAP host address.';
     } else if (errorMsg.includes('ECONNREFUSED')) {
       friendlyError = 'Connection refused. Check the IMAP port and server settings.';
-    } else if (errorMsg.includes('Connection ended unexpectedly') || errorMsg.includes('ECONNRESET')) {
-      friendlyError = 'Connection closed by server. This may indicate:\n1. Gmail requires an App Password (not your regular password)\n2. "Less secure app access" needs to be enabled\n3. Network/firewall blocking port 993\n4. Account security settings blocking the connection';
+    } else if (
+      errorCode === 'ECONNRESET' ||
+      errorMsg.includes('ECONNRESET') ||
+      errorMsg.includes('socket disconnected before secure TLS connection was established') ||
+      errorMsg.includes('Connection ended unexpectedly')
+    ) {
+      friendlyError = 'Connection closed during TLS or by server. Check port (e.g. 993), firewall, and server TLS settings.';
     }
     
     return { success: false, error: friendlyError, details: errorMsg };
