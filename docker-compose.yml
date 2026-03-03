@@ -34,7 +34,7 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: admin@example.com      # ← CHANGE THIS
       BOOTSTRAP_ADMIN_PASSWORD: CHANGE_ME_admin_password # ← CHANGE THIS (min 12 chars)
       # ── CORS allowlist (comma-separated origins) ───────────────────
-      ALLOWED_ORIGINS: http://localhost:3000
+      ALLOWED_ORIGINS: "http://localhost:3000,https://mydomain.domain.com"
       # ── Trust proxy headers only when behind a trusted reverse proxy ──
       TRUST_PROXY_HEADERS: "true"
       # ── Optional allowlist for self-hosted mail domains/IP hostnames ──

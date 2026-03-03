@@ -2147,6 +2147,7 @@ const routes = {
       const contacts = Array.isArray(rows) ? rows : [];
       return { contacts };
     } catch (error) {
+      console.error('[GET /api/contacts] Error:', error.message || error);
       return { error: 'Failed to get contacts', status: 500 };
     }
   },
