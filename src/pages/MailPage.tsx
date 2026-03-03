@@ -346,88 +346,60 @@ const MailPage = () => {
     previousEmailCount.current = null;
   }, [selectedAccount, selectedFolder]);
 
-  // Fetch emails for selected account
-  // Always fetch the latest batch for the folder/account, then paginate & filter client-side
+  // Fetch paginated emails with server-side filters
   const { data: emailsData, isLoading: emailsLoading } = useQuery({
-    queryKey: ['emails', selectedAccount, selectedFolder],
+    queryKey: ['emails', selectedAccount, selectedFolder, emailPage, searchQuery, showUnreadOnly],
     queryFn: async () => {
-      if (!selectedAccount) return { emails: [] };
+      if (!selectedAccount) return { emails: [], pagination: null };
       
       const folder = selectedFolder === 'starred' ? 'inbox' : selectedFolder;
-      // Fetch up to 100 most recent emails for this folder/account
-      const limit = 100;
-      const offset = 0;
-      
-      const response = await api.get<{ emails: Email[]; pagination?: { total: number; limit: number; offset: number; page: number; totalPages: number } }>(
-        `/mail/emails?account_id=${selectedAccount}&folder=${folder}&limit=${limit}&offset=${offset}`
-      );
-      if (response.error) throw new Error(response.error);
-      let emails = response.data?.emails || [];
-      
-      if (selectedFolder === 'starred') {
-        emails = emails.filter(e => e.is_starred);
+      const offset = (emailPage - 1) * emailsPerPage;
+      const params = new URLSearchParams({
+        account_id: selectedAccount,
+        folder,
+        limit: String(emailsPerPage),
+        offset: String(offset),
+      });
+
+      if (showUnreadOnly) {
+        params.set('is_read', 'false');
       }
 
-      return { emails };
+      if (selectedFolder === 'starred') {
+        params.set('is_starred', 'true');
+      }
+
+      const trimmedSearch = searchQuery.trim();
+      if (trimmedSearch) {
+        params.set('search', trimmedSearch);
+      }
+      
+      const response = await api.get<{ emails: Email[]; pagination?: { total: number; limit: number; offset: number; page: number; totalPages: number } }>(
+        `/mail/emails?${params.toString()}`
+      );
+      if (response.error) throw new Error(response.error);
+
+      return {
+        emails: response.data?.emails || [],
+        pagination: response.data?.pagination || null,
+      };
     },
     enabled: !!selectedAccount,
     staleTime: 60000, // Consider data fresh for 60 seconds (will be invalidated when count changes)
   });
 
-  const allEmails = emailsData?.emails || [];
+  const emails = emailsData?.emails || [];
+  const pagination = emailsData?.pagination;
+  const totalMatchingEmails = pagination?.total ?? emails.length;
+  const totalPages = pagination?.totalPages ?? 1;
   
   // Debug logging
   React.useEffect(() => {
     if (selectedAccount && !emailsLoading) {
-      console.log(`[MailPage] Emails loaded: ${allEmails.length} emails for account ${selectedAccount}, folder ${selectedFolder}`);
+      console.log(`[MailPage] Emails loaded: ${emails.length} emails for account ${selectedAccount}, folder ${selectedFolder}`);
+      console.log(`[MailPage] Pagination:`, pagination);
     }
-  }, [allEmails.length, selectedAccount, selectedFolder, emailsLoading]);
-
-  // Filter emails based on search query and unread filter
-  const emails = React.useMemo(() => {
-    let filteredEmails = allEmails;
-    
-    // Apply unread filter if enabled
-    if (showUnreadOnly) {
-      filteredEmails = filteredEmails.filter(email => !email.is_read);
-    }
-    
-    // Apply search filter if query exists
-    if (!searchQuery.trim()) return filteredEmails;
-    
-    const query = searchQuery.toLowerCase();
-    return filteredEmails.filter(email => {
-      const subject = (email.subject || '').toLowerCase();
-      const fromName = (email.from_name || '').toLowerCase();
-      const fromAddress = (email.from_address || '').toLowerCase();
-      const bodyText = (email.body_text || '').toLowerCase();
-      
-      return subject.includes(query) || 
-             fromName.includes(query) || 
-             fromAddress.includes(query) ||
-             bodyText.includes(query);
-    });
-  }, [allEmails, searchQuery, showUnreadOnly]);
-
-  const totalPages = React.useMemo(() => {
-    if (emails.length === 0) return 1;
-    return Math.max(1, Math.ceil(emails.length / emailsPerPage));
-  }, [emails.length, emailsPerPage]);
-
-  const paginatedEmails = React.useMemo(() => {
-    if (emails.length === 0) return [];
-    const currentPage = Math.min(emailPage, totalPages);
-    const start = (currentPage - 1) * emailsPerPage;
-    return emails.slice(start, start + emailsPerPage);
-  }, [emails, emailPage, totalPages, emailsPerPage]);
-
-  // Keep current page in range when filters change
-  useEffect(() => {
-    setEmailPage(prev => {
-      const maxPage = Math.max(1, Math.ceil(emails.length / emailsPerPage));
-      return Math.min(prev, maxPage);
-    });
-  }, [emails.length, emailsPerPage]);
+  }, [emails.length, selectedAccount, selectedFolder, emailsLoading, pagination]);
 
   // Add mail account mutation
   const addAccount = useMutation({
@@ -675,8 +647,8 @@ const MailPage = () => {
       // Select all (Ctrl+A or Cmd+A)
       if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
         e.preventDefault();
-        if (paginatedEmails.length > 0) {
-          setSelectedEmails(new Set(paginatedEmails.map(e => e.id)));
+        if (emails.length > 0) {
+          setSelectedEmails(new Set(emails.map(e => e.id)));
         }
       }
 
@@ -688,7 +660,7 @@ const MailPage = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedEmails, paginatedEmails, bulkDelete]);
+  }, [selectedEmails, emails, bulkDelete]);
 
   // Handle email selection
   const handleEmailSelect = (emailId: string, e: React.MouseEvent) => {
@@ -721,10 +693,10 @@ const MailPage = () => {
   };
 
   const handleSelectAll = () => {
-    if (selectedEmails.size === paginatedEmails.length) {
+    if (selectedEmails.size === emails.length) {
       setSelectedEmails(new Set());
     } else {
-      setSelectedEmails(new Set(paginatedEmails.map(e => e.id)));
+      setSelectedEmails(new Set(emails.map(e => e.id)));
     }
   };
   
@@ -1366,15 +1338,15 @@ const MailPage = () => {
                 <Menu className="h-5 w-5" />
               </Button>
             )}
-            {paginatedEmails.length > 0 && (
+            {emails.length > 0 && (
               <Button
                 variant="ghost"
                 size="icon"
                 onClick={handleSelectAll}
-                title={selectedEmails.size === paginatedEmails.length ? 'Deselect all' : 'Select all'}
+                title={selectedEmails.size === emails.length ? 'Deselect all' : 'Select all'}
                 className="shrink-0"
               >
-                {selectedEmails.size === paginatedEmails.length ? (
+                {selectedEmails.size === emails.length ? (
                   <CheckSquare className="h-4 w-4" />
                 ) : (
                   <Square className="h-4 w-4" />
@@ -1522,7 +1494,7 @@ const MailPage = () => {
           ) : (
             <div className="divide-y divide-border">
               <AnimatePresence mode="popLayout">
-                {paginatedEmails.map((email) => (
+                {emails.map((email) => (
                   <motion.div
                     key={email.id}
                     layout
@@ -1636,10 +1608,10 @@ const MailPage = () => {
           {(searchQuery.trim() || showUnreadOnly) && emails.length > 0 && (
             <div className="border-t border-border p-4 text-center text-sm text-muted-foreground">
               {searchQuery.trim() && (
-                <>Found {emails.length} result{emails.length !== 1 ? 's' : ''} for "{searchQuery}"{showUnreadOnly ? ' (unread only)' : ''}</>
+                <>Found {totalMatchingEmails} result{totalMatchingEmails !== 1 ? 's' : ''} for "{searchQuery}"{showUnreadOnly ? ' (unread only)' : ''}</>
               )}
               {!searchQuery.trim() && showUnreadOnly && (
-                <>Showing {emails.length} unread email{emails.length !== 1 ? 's' : ''}</>
+                <>Showing {totalMatchingEmails} unread email{totalMatchingEmails !== 1 ? 's' : ''}</>
               )}
             </div>
           )}
@@ -1700,7 +1672,7 @@ const MailPage = () => {
                 </PaginationContent>
               </Pagination>
               <div className="text-center text-sm text-muted-foreground mt-2">
-                Page {emailPage} of {totalPages} ({emails.length} email{emails.length !== 1 ? 's' : ''})
+                Page {pagination?.page || emailPage} of {totalPages} ({totalMatchingEmails} email{totalMatchingEmails !== 1 ? 's' : ''})
               </div>
             </div>
           )}

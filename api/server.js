@@ -3025,6 +3025,9 @@ const routes = {
       const url = new URL(req.url, `http://${req.headers.host}`);
       folder = url.searchParams.get('folder') || 'inbox';
       accountId = url.searchParams.get('account_id');
+      const isReadParam = url.searchParams.get('is_read');
+      const isStarredParam = url.searchParams.get('is_starred');
+      const searchParam = (url.searchParams.get('search') || '').trim();
       
       query = 'SELECT * FROM emails WHERE user_id = ?';
       params = [userId];
@@ -3037,6 +3040,27 @@ const routes = {
       if (accountId) {
         query += ' AND mail_account_id = ?';
         params.push(accountId);
+      }
+
+      if (isReadParam === 'true' || isReadParam === 'false') {
+        query += ' AND is_read = ?';
+        params.push(isReadParam === 'true' ? 1 : 0);
+      }
+
+      if (isStarredParam === 'true' || isStarredParam === 'false') {
+        query += ' AND is_starred = ?';
+        params.push(isStarredParam === 'true' ? 1 : 0);
+      }
+
+      if (searchParam) {
+        const searchValue = `%${searchParam.toLowerCase()}%`;
+        query += ` AND (
+          LOWER(COALESCE(subject, '')) LIKE ? OR
+          LOWER(COALESCE(from_name, '')) LIKE ? OR
+          LOWER(COALESCE(from_address, '')) LIKE ? OR
+          LOWER(COALESCE(body_text, '')) LIKE ?
+        )`;
+        params.push(searchValue, searchValue, searchValue, searchValue);
       }
       
       // Pagination
@@ -3060,6 +3084,24 @@ const routes = {
       if (accountId) {
         countQuery += ' AND mail_account_id = ?';
         countParams.push(accountId);
+      }
+      if (isReadParam === 'true' || isReadParam === 'false') {
+        countQuery += ' AND is_read = ?';
+        countParams.push(isReadParam === 'true' ? 1 : 0);
+      }
+      if (isStarredParam === 'true' || isStarredParam === 'false') {
+        countQuery += ' AND is_starred = ?';
+        countParams.push(isStarredParam === 'true' ? 1 : 0);
+      }
+      if (searchParam) {
+        const searchValue = `%${searchParam.toLowerCase()}%`;
+        countQuery += ` AND (
+          LOWER(COALESCE(subject, '')) LIKE ? OR
+          LOWER(COALESCE(from_name, '')) LIKE ? OR
+          LOWER(COALESCE(from_address, '')) LIKE ? OR
+          LOWER(COALESCE(body_text, '')) LIKE ?
+        )`;
+        countParams.push(searchValue, searchValue, searchValue, searchValue);
       }
       const [countResult] = await db.execute(countQuery, countParams);
       const total = countResult[0]?.total || 0;
