@@ -106,47 +106,6 @@ interface ComposeAttachment {
   file: File;
 }
 
-interface MailHostAssessment {
-  host: string;
-  port: number | null;
-  knownProvider: boolean;
-  allowlisted: boolean;
-  unknownProvider: boolean;
-  blocked: boolean;
-  reasons: string[];
-  resolvedAddresses: string[];
-  privateAddresses: string[];
-  resolveError: string | null;
-}
-
-interface MailCertificateInfo {
-  subject: Record<string, unknown> | null;
-  issuer: Record<string, unknown> | null;
-  valid_from: string | null;
-  valid_to: string | null;
-  fingerprint: string | null;
-  fingerprint256: string | null;
-  serialNumber: string | null;
-  authorized?: boolean;
-  authorizationError?: string | null;
-  selfSigned?: boolean;
-  error?: string;
-}
-
-interface MailPreflightResult {
-  requires_confirmation: boolean;
-  requires_insecure_tls?: boolean;
-  warnings: string[];
-  host_assessments: {
-    imap: MailHostAssessment;
-    smtp: MailHostAssessment;
-  };
-  certificates: {
-    imap: MailCertificateInfo | null;
-    smtp: MailCertificateInfo | null;
-  };
-}
-
 const mailProviders = [
   { value: 'gmail', label: 'Gmail', imapHost: 'imap.gmail.com', smtpHost: 'smtp.gmail.com', imapPort: 993, smtpPort: 587 },
   { value: 'yahoo', label: 'Yahoo Mail', imapHost: 'imap.mail.yahoo.com', smtpHost: 'smtp.mail.yahoo.com', imapPort: 993, smtpPort: 587 },
@@ -191,8 +150,6 @@ const MailPage = () => {
   });
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
   const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
-  const [pendingAccountConfirmation, setPendingAccountConfirmation] = useState<(typeof accountForm) | null>(null);
-  const [unknownHostPrompt, setUnknownHostPrompt] = useState<MailPreflightResult | null>(null);
   const [accountForm, setAccountForm] = useState({
     email_address: '',
     display_name: '',
@@ -401,31 +358,14 @@ const MailPage = () => {
     }
   }, [emails.length, selectedAccount, selectedFolder, emailsLoading, pagination]);
 
-  // Add mail account mutation
+  // Add mail account mutation (connection verified by backend via testImapConnection; no cert/host verification)
   const addAccount = useMutation({
-    mutationFn: async (account: (typeof accountForm) & { confirm_unknown_host?: boolean }) => {
+    mutationFn: async (account: typeof accountForm) => {
       const response = await api.post('/mail/accounts', {
         ...account,
         encrypted_password: account.password, // Will be encrypted on server
       });
-      if (response.error) {
-        if (response.requires_confirmation) {
-          const confirmationError = new Error(response.error) as Error & {
-            requiresConfirmation?: boolean;
-            confirmationData?: MailPreflightResult;
-          };
-          confirmationError.requiresConfirmation = true;
-          confirmationError.confirmationData = {
-            requires_confirmation: true,
-            requires_insecure_tls: Boolean(response.requires_insecure_tls),
-            warnings: Array.isArray(response.warnings) ? response.warnings : [],
-            host_assessments: response.host_assessments as MailPreflightResult['host_assessments'],
-            certificates: (response.certificates as MailPreflightResult['certificates']) || { imap: null, smtp: null },
-          };
-          throw confirmationError;
-        }
-        throw new Error(response.error);
-      }
+      if (response.error) throw new Error(response.error);
       return response.data;
     },
     onSuccess: (data: any) => {
@@ -457,16 +397,7 @@ const MailPage = () => {
         smtp_port: 587,
       });
     },
-    onError: (error: Error, variables) => {
-      const confirmationError = error as Error & {
-        requiresConfirmation?: boolean;
-        confirmationData?: MailPreflightResult;
-      };
-      if (confirmationError.requiresConfirmation && confirmationError.confirmationData) {
-        setPendingAccountConfirmation(variables);
-        setUnknownHostPrompt(confirmationError.confirmationData);
-        return;
-      }
+    onError: (error: Error) => {
       toast({ 
         title: 'Failed to add mail account', 
         description: error.message,
@@ -783,28 +714,6 @@ const MailPage = () => {
     if (editingAccount) {
       updateAccount.mutate({ id: editingAccount.id, ...accountForm });
     } else {
-      const preflight = await api.post<MailPreflightResult>('/mail/accounts/preflight', {
-        imap_host: accountForm.imap_host,
-        imap_port: accountForm.imap_port,
-        smtp_host: accountForm.smtp_host,
-        smtp_port: accountForm.smtp_port,
-      });
-
-      if (preflight.error) {
-        toast({
-          title: 'Mail host check failed',
-          description: preflight.error,
-          variant: 'destructive',
-        });
-        return;
-      }
-
-      if (preflight.data?.requires_confirmation) {
-        setPendingAccountConfirmation(accountForm);
-        setUnknownHostPrompt(preflight.data);
-        return;
-      }
-
       addAccount.mutate(accountForm);
     }
   };
@@ -990,30 +899,6 @@ const MailPage = () => {
   };
 
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
-  const hasSelfSignedCertificate = Boolean(
-    unknownHostPrompt?.requires_insecure_tls ||
-    unknownHostPrompt?.certificates?.imap?.selfSigned ||
-    unknownHostPrompt?.certificates?.smtp?.selfSigned
-  );
-
-  const formatCertificateParty = (party: Record<string, unknown> | null | undefined) => {
-    if (!party) return 'N/A';
-    const cn = typeof party.CN === 'string' ? party.CN : '';
-    const org = typeof party.O === 'string' ? party.O : '';
-    const ou = typeof party.OU === 'string' ? party.OU : '';
-    const summary = [cn, org, ou].filter(Boolean).join(' / ');
-    return summary || JSON.stringify(party);
-  };
-
-  const getCertificateTrustLabel = (certificate: MailCertificateInfo | null | undefined) => {
-    if (!certificate) return 'No certificate details';
-    if (certificate.error) return `Certificate lookup failed: ${certificate.error}`;
-    if (certificate.selfSigned || certificate.authorizationError) {
-      return `Untrusted: ${certificate.authorizationError || 'Self-signed certificate'}`;
-    }
-    if (certificate.authorized === true) return 'Trusted by system CA';
-    return 'Trust status unavailable';
-  };
 
   return (
     <div className="flex h-[calc(100vh-0px)] overflow-hidden relative">
@@ -2110,67 +1995,6 @@ const MailPage = () => {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog
-        open={!!unknownHostPrompt}
-        onOpenChange={(open) => {
-          if (!open) {
-            setUnknownHostPrompt(null);
-            setPendingAccountConfirmation(null);
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{hasSelfSignedCertificate ? 'Untrusted TLS certificate' : 'Unknown mail host'}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {hasSelfSignedCertificate
-                ? 'One or more mail servers present a self-signed or untrusted certificate. Review details before trusting.'
-                : 'These server hosts are not recognized providers. Verify certificate details before trusting them.'}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <div className="space-y-3 text-sm">
-            {unknownHostPrompt?.warnings?.map((warning) => (
-              <p key={warning} className="text-warning">{warning}</p>
-            ))}
-            {unknownHostPrompt?.host_assessments?.imap && (
-              <div className="rounded border p-2">
-                <p><strong>IMAP:</strong> {unknownHostPrompt.host_assessments.imap.host}:{unknownHostPrompt.host_assessments.imap.port}</p>
-                <p className="text-muted-foreground">Resolved: {unknownHostPrompt.host_assessments.imap.resolvedAddresses.join(', ') || 'N/A'}</p>
-                <p className="text-muted-foreground">Trust: {getCertificateTrustLabel(unknownHostPrompt.certificates?.imap)}</p>
-                <p className="text-muted-foreground">Subject: {formatCertificateParty(unknownHostPrompt.certificates?.imap?.subject)}</p>
-                <p className="text-muted-foreground">Issuer: {formatCertificateParty(unknownHostPrompt.certificates?.imap?.issuer)}</p>
-                <p className="text-muted-foreground">Valid: {unknownHostPrompt.certificates?.imap?.valid_from || 'N/A'} to {unknownHostPrompt.certificates?.imap?.valid_to || 'N/A'}</p>
-                <p className="text-muted-foreground">Fingerprint (SHA-256): {String(unknownHostPrompt.certificates?.imap?.fingerprint256 || 'N/A')}</p>
-              </div>
-            )}
-            {unknownHostPrompt?.host_assessments?.smtp && (
-              <div className="rounded border p-2">
-                <p><strong>SMTP:</strong> {unknownHostPrompt.host_assessments.smtp.host}:{unknownHostPrompt.host_assessments.smtp.port}</p>
-                <p className="text-muted-foreground">Resolved: {unknownHostPrompt.host_assessments.smtp.resolvedAddresses.join(', ') || 'N/A'}</p>
-                <p className="text-muted-foreground">Trust: {getCertificateTrustLabel(unknownHostPrompt.certificates?.smtp)}</p>
-                <p className="text-muted-foreground">Subject: {formatCertificateParty(unknownHostPrompt.certificates?.smtp?.subject)}</p>
-                <p className="text-muted-foreground">Issuer: {formatCertificateParty(unknownHostPrompt.certificates?.smtp?.issuer)}</p>
-                <p className="text-muted-foreground">Valid: {unknownHostPrompt.certificates?.smtp?.valid_from || 'N/A'} to {unknownHostPrompt.certificates?.smtp?.valid_to || 'N/A'}</p>
-                <p className="text-muted-foreground">Fingerprint (SHA-256): {String(unknownHostPrompt.certificates?.smtp?.fingerprint256 || 'N/A')}</p>
-              </div>
-            )}
-          </div>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                if (pendingAccountConfirmation) {
-                  addAccount.mutate({ ...pendingAccountConfirmation, confirm_unknown_host: true });
-                }
-                setUnknownHostPrompt(null);
-                setPendingAccountConfirmation(null);
-              }}
-            >
-              Trust and Continue
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 };
