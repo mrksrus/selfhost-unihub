@@ -7,6 +7,24 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
+// Patch underlying 'imap' so connection errors never crash the process (e.g. ECONNRESET during TLS).
+// imap-simple can emit 'error' on the connection before connect() promise resolves, causing unhandled crash.
+try {
+  const imapPath = require.resolve('imap');
+  require(imapPath);
+  const OriginalImap = require.cache[imapPath].exports;
+  const PatchedImap = function (config) {
+    OriginalImap.apply(this, arguments);
+    this.on('error', (err) => {
+      console.error('[IMAP] Connection error (caught):', err.message);
+    });
+  };
+  PatchedImap.prototype = Object.create(OriginalImap.prototype);
+  PatchedImap.prototype.constructor = PatchedImap;
+  require.cache[imapPath].exports = PatchedImap;
+} catch (e) {
+  console.warn('[IMAP] Could not patch imap module:', e.message);
+}
 const imaps = require('imap-simple');
 const { simpleParser } = require('mailparser');
 const tls = require('tls');
