@@ -2118,7 +2118,8 @@ const routes = {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const q = (url.searchParams.get('q') || '').trim();
       const group = url.searchParams.get('group') || 'all';
-      const limit = Math.min(parseInt(url.searchParams.get('limit') || '2000', 10), 2000);
+      const limitNum = parseInt(url.searchParams.get('limit') || '2000', 10);
+      const limit = Number.isInteger(limitNum) && limitNum >= 1 ? Math.min(limitNum, 2000) : 2000;
 
       // Only select fields needed on the contacts screen to reduce payload size.
       let query = 'SELECT id, user_id, first_name, last_name, email, phone, company, job_title, notes, avatar_url, is_favorite FROM contacts WHERE user_id = ?';
@@ -2140,8 +2141,8 @@ const routes = {
         params.push(like, like, like, like, like);
       }
 
-      query += ' ORDER BY is_favorite DESC, first_name ASC, last_name ASC LIMIT ?';
-      params.push(limit);
+      // LIMIT as literal (mysql2 stmt_execute rejects placeholder for LIMIT); value validated 1–2000
+      query += ` ORDER BY is_favorite DESC, first_name ASC, last_name ASC LIMIT ${limit}`;
 
       const [rows] = await db.execute(query, params);
       const contacts = Array.isArray(rows) ? rows : [];
