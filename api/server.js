@@ -2229,6 +2229,240 @@ const routes = {
     }
   },
 
+  'POST /api/contacts/merge-duplicates': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    const normalizeEmail = (value) => (value || '').trim().toLowerCase();
+    const normalizePhone = (value) => (value || '').replace(/[^\d+]/g, '');
+    const normalizeName = (value) => (value || '').trim().toLowerCase();
+    const getDedupeKey = (contact) => {
+      const email = normalizeEmail(contact.email);
+      if (email) return `e:${email}`;
+      const phone = normalizePhone(contact.phone);
+      if (phone) return `p:${phone}`;
+      const first = normalizeName(contact.first_name);
+      const last = normalizeName(contact.last_name);
+      if (first || last) return `n:${first}|${last}`;
+      return null;
+    };
+    const firstNonEmpty = (...values) => {
+      for (const v of values) {
+        if (v != null && String(v).trim() !== '') return v;
+      }
+      return null;
+    };
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT id, first_name, last_name, email, phone, company, job_title, notes, is_favorite, created_at
+         FROM contacts
+         WHERE user_id = ?`,
+        [userId]
+      );
+
+      const groups = new Map();
+      for (const row of rows || []) {
+        const key = getDedupeKey(row);
+        if (!key) continue;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(row);
+      }
+
+      let merged = 0;
+      let removed = 0;
+      let groupsCount = 0;
+
+      for (const [, members] of groups.entries()) {
+        if (members.length < 2) continue;
+        groupsCount++;
+
+        const ranked = [...members].sort((a, b) => {
+          const score = (c) => {
+            let s = 0;
+            if ((c.first_name || '').trim()) s++;
+            if ((c.last_name || '').trim()) s++;
+            if ((c.email || '').trim()) s += 2;
+            if ((c.phone || '').trim()) s += 2;
+            if ((c.company || '').trim()) s++;
+            if ((c.job_title || '').trim()) s++;
+            if ((c.notes || '').trim()) s++;
+            if (c.is_favorite) s += 2;
+            return s;
+          };
+
+          const scoreDiff = score(b) - score(a);
+          if (scoreDiff !== 0) return scoreDiff;
+          return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+        });
+
+        const primary = ranked[0];
+        const others = ranked.slice(1);
+
+        const mergedNotes = Array.from(
+          new Set(
+            [primary.notes, ...others.map((o) => o.notes)]
+              .filter((n) => n != null && String(n).trim() !== '')
+              .map((n) => String(n).trim())
+          )
+        ).join('\n\n');
+
+        const mergedContact = {
+          first_name: firstNonEmpty(primary.first_name, ...others.map((o) => o.first_name), ''),
+          last_name: firstNonEmpty(primary.last_name, ...others.map((o) => o.last_name)),
+          email: firstNonEmpty(primary.email, ...others.map((o) => o.email)),
+          phone: firstNonEmpty(primary.phone, ...others.map((o) => o.phone)),
+          company: firstNonEmpty(primary.company, ...others.map((o) => o.company)),
+          job_title: firstNonEmpty(primary.job_title, ...others.map((o) => o.job_title)),
+          notes: mergedNotes || null,
+          is_favorite: members.some((m) => Boolean(m.is_favorite)),
+        };
+
+        await db.execute(
+          `UPDATE contacts
+           SET first_name = ?, last_name = ?, email = ?, phone = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?
+           WHERE id = ? AND user_id = ?`,
+          [
+            mergedContact.first_name || '',
+            mergedContact.last_name,
+            mergedContact.email,
+            mergedContact.phone,
+            mergedContact.company,
+            mergedContact.job_title,
+            mergedContact.notes,
+            mergedContact.is_favorite ? 1 : 0,
+            primary.id,
+            userId,
+          ]
+        );
+
+        const deleteIds = others.map((o) => o.id);
+        if (deleteIds.length > 0) {
+          const placeholders = deleteIds.map(() => '?').join(',');
+          const [result] = await db.execute(
+            `DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders})`,
+            [userId, ...deleteIds]
+          );
+          removed += result.affectedRows || 0;
+          merged++;
+        }
+      }
+
+      if (groupsCount === 0) {
+        return { merged: 0, removed: 0, groups: 0, message: 'No duplicates detected.' };
+      }
+
+      return {
+        merged,
+        removed,
+        groups: groupsCount,
+        message: `Merged ${merged} duplicate group(s), removed ${removed} duplicate contact(s).`,
+      };
+    } catch (error) {
+      console.error('Merge duplicates error:', error);
+      return { error: 'Failed to merge duplicates', status: 500 };
+    }
+  },
+
+  'POST /api/contacts/merge-duplicates/preview': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    const normalizeEmail = (value) => (value || '').trim().toLowerCase();
+    const normalizePhone = (value) => (value || '').replace(/[^\d+]/g, '');
+    const normalizeName = (value) => (value || '').trim().toLowerCase();
+    const getDedupeKey = (contact) => {
+      const email = normalizeEmail(contact.email);
+      if (email) return `e:${email}`;
+      const phone = normalizePhone(contact.phone);
+      if (phone) return `p:${phone}`;
+      const first = normalizeName(contact.first_name);
+      const last = normalizeName(contact.last_name);
+      if (first || last) return `n:${first}|${last}`;
+      return null;
+    };
+    const displayName = (c) => {
+      const first = (c.first_name || '').trim();
+      const last = (c.last_name || '').trim();
+      if (first || last) return [first, last].filter(Boolean).join(' ');
+      return c.email || c.phone || 'No name';
+    };
+
+    try {
+      const [rows] = await db.execute(
+        `SELECT id, first_name, last_name, email, phone, company, job_title, notes, is_favorite, created_at
+         FROM contacts
+         WHERE user_id = ?`,
+        [userId]
+      );
+
+      const groups = new Map();
+      for (const row of rows || []) {
+        const key = getDedupeKey(row);
+        if (!key) continue;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(row);
+      }
+
+      const previewGroups = [];
+      let groupsCount = 0;
+      let toRemove = 0;
+
+      for (const [key, members] of groups.entries()) {
+        if (members.length < 2) continue;
+        groupsCount++;
+        toRemove += members.length - 1;
+
+        const ranked = [...members].sort((a, b) => {
+          const score = (c) => {
+            let s = 0;
+            if ((c.first_name || '').trim()) s++;
+            if ((c.last_name || '').trim()) s++;
+            if ((c.email || '').trim()) s += 2;
+            if ((c.phone || '').trim()) s += 2;
+            if ((c.company || '').trim()) s++;
+            if ((c.job_title || '').trim()) s++;
+            if ((c.notes || '').trim()) s++;
+            if (c.is_favorite) s += 2;
+            return s;
+          };
+
+          const scoreDiff = score(b) - score(a);
+          if (scoreDiff !== 0) return scoreDiff;
+          return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+        });
+
+        const primary = ranked[0];
+        const others = ranked.slice(1);
+        previewGroups.push({
+          key,
+          size: members.length,
+          keep: {
+            id: primary.id,
+            name: displayName(primary),
+            email: primary.email || null,
+            phone: primary.phone || null,
+          },
+          remove: others.map((c) => ({
+            id: c.id,
+            name: displayName(c),
+            email: c.email || null,
+            phone: c.phone || null,
+          })),
+        });
+      }
+
+      previewGroups.sort((a, b) => b.size - a.size || a.key.localeCompare(b.key));
+      return {
+        groups: groupsCount,
+        to_remove: toRemove,
+        merge_target_count: groupsCount,
+        preview: previewGroups,
+      };
+    } catch (error) {
+      console.error('Merge duplicates preview error:', error);
+      return { error: 'Failed to preview duplicate merge', status: 500 };
+    }
+  },
+
   'GET /api/contacts/export': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 

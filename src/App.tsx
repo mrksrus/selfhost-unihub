@@ -15,6 +15,7 @@ import Settings from "./pages/Settings";
 import AdminUsers from "./pages/AdminUsers";
 import Install from "./pages/Install";
 import NotFound from "./pages/NotFound";
+import Games from "./pages/Games";
 
 const queryClient = new QueryClient();
 
@@ -34,6 +35,7 @@ const App = () => (
               <Route path="/calendar" element={<CalendarPage />} />
               <Route path="/todo" element={<TodoPage />} />
               <Route path="/mail" element={<MailPage />} />
+              <Route path="/games" element={<Games />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/admin/users" element={<AdminUsers />} />
             </Route>

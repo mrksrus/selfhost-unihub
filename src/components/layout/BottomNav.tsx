@@ -1,6 +1,6 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import { LayoutDashboard, Users, Calendar, Mail, CheckSquare } from 'lucide-react';
+import { LayoutDashboard, Users, Calendar, Mail, CheckSquare, Gamepad2 } from 'lucide-react';
 
 const navItems = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
@@ -8,6 +8,7 @@ const navItems = [
   { name: 'Calendar', href: '/calendar', icon: Calendar },
   { name: 'ToDo', href: '/todo', icon: CheckSquare },
   { name: 'Mail', href: '/mail', icon: Mail },
+  { name: 'Games', href: '/games', icon: Gamepad2 },
 ];
 
 const BottomNav = () => {

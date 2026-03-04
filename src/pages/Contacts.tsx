@@ -8,7 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Table,
   TableBody,
@@ -45,7 +45,7 @@ import {
   Download,
 } from 'lucide-react';
 
-type ContactGroup = 'all' | 'name_only' | 'number_or_email_only';
+type ContactGroup = 'all' | 'name_only' | 'number_or_email_only' | 'duplicates';
 
 interface Contact {
   id: string;
@@ -58,6 +58,27 @@ interface Contact {
   notes: string | null;
   avatar_url: string | null;
   is_favorite: boolean;
+}
+
+interface MergeDuplicatesResult {
+  merged: number;
+  removed: number;
+  groups: number;
+  message: string;
+}
+
+interface MergePreviewGroup {
+  key: string;
+  size: number;
+  keep: { id: string; name: string; email: string | null; phone: string | null };
+  remove: Array<{ id: string; name: string; email: string | null; phone: string | null }>;
+}
+
+interface MergePreviewResult {
+  groups: number;
+  to_remove: number;
+  merge_target_count: number;
+  preview: MergePreviewGroup[];
 }
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -82,6 +103,7 @@ const Contacts = () => {
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
+  const [mergePreview, setMergePreview] = useState<MergePreviewResult | null>(null);
   const [formData, setFormData] = useState({
     first_name: '',
     last_name: '',
@@ -94,6 +116,20 @@ const Contacts = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const debouncedSearch = useDebouncedValue(searchQuery, SEARCH_DEBOUNCE_MS);
+
+  const normalizeEmail = (value: string | null | undefined) => (value || '').trim().toLowerCase();
+  const normalizePhone = (value: string | null | undefined) => (value || '').replace(/[^\d+]/g, '');
+  const normalizeName = (value: string | null | undefined) => (value || '').trim().toLowerCase();
+  const getDuplicateKey = (contact: Contact) => {
+    const email = normalizeEmail(contact.email);
+    if (email) return `e:${email}`;
+    const phone = normalizePhone(contact.phone);
+    if (phone) return `p:${phone}`;
+    const first = normalizeName(contact.first_name);
+    const last = normalizeName(contact.last_name);
+    if (first || last) return `n:${first}|${last}`;
+    return null;
+  };
 
   // Open new contact dialog if linked from dashboard
   useEffect(() => {
@@ -120,6 +156,31 @@ const Contacts = () => {
     refetchOnReconnect: false,
   });
 
+  const duplicateMeta = useMemo(() => {
+    const groups = new Map<string, Contact[]>();
+    for (const contact of allContacts) {
+      const key = getDuplicateKey(contact);
+      if (!key) continue;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(contact);
+    }
+
+    const duplicateIds = new Set<string>();
+    const duplicateGroupKeyById = new Map<string, string>();
+    const duplicateGroupSizeById = new Map<string, number>();
+
+    for (const [key, members] of groups.entries()) {
+      if (members.length < 2) continue;
+      for (const member of members) {
+        duplicateIds.add(member.id);
+        duplicateGroupKeyById.set(member.id, key);
+        duplicateGroupSizeById.set(member.id, members.length);
+      }
+    }
+
+    return { duplicateIds, duplicateGroupKeyById, duplicateGroupSizeById };
+  }, [allContacts]);
+
   const contacts = useMemo(() => {
     const query = debouncedSearch.trim().toLowerCase();
 
@@ -130,6 +191,7 @@ const Contacts = () => {
 
       if (group === 'name_only') return hasName && !hasEmail && !hasPhone;
       if (group === 'number_or_email_only') return !hasName && (hasEmail || hasPhone);
+      if (group === 'duplicates') return duplicateMeta.duplicateIds.has(contact.id);
       return true;
     };
 
@@ -148,8 +210,22 @@ const Contacts = () => {
       return haystack.includes(query);
     };
 
-    return allContacts.filter((contact) => inGroup(contact) && matchesSearch(contact));
-  }, [allContacts, debouncedSearch, group]);
+    const filtered = allContacts.filter((contact) => inGroup(contact) && matchesSearch(contact));
+
+    if (group === 'duplicates') {
+      return [...filtered].sort((a, b) => {
+        const keyA = duplicateMeta.duplicateGroupKeyById.get(a.id) || '';
+        const keyB = duplicateMeta.duplicateGroupKeyById.get(b.id) || '';
+        if (keyA !== keyB) return keyA.localeCompare(keyB);
+
+        const nameA = `${a.first_name || ''} ${a.last_name || ''}`.trim().toLowerCase();
+        const nameB = `${b.first_name || ''} ${b.last_name || ''}`.trim().toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+    }
+
+    return filtered;
+  }, [allContacts, debouncedSearch, group, duplicateMeta]);
 
   // Create contact mutation
   const createContact = useMutation({
@@ -227,6 +303,44 @@ const Contacts = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contacts'] });
+    },
+  });
+
+  const mergeDuplicates = useMutation({
+    mutationFn: async () => {
+      const response = await api.post<MergeDuplicatesResult>('/contacts/merge-duplicates', {});
+      if (response.error) throw new Error(response.error);
+      return response.data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
+      queryClient.invalidateQueries({ queryKey: ['contacts-count'] });
+      setSelectedIds(new Set());
+      toast({
+        title: 'Duplicate merge finished (Alpha)',
+        description: data?.message || 'Done.',
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Duplicate merge failed (Alpha)', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const previewMergeDuplicates = useMutation({
+    mutationFn: async () => {
+      const response = await api.post<MergePreviewResult>('/contacts/merge-duplicates/preview', {});
+      if (response.error) throw new Error(response.error);
+      return response.data;
+    },
+    onSuccess: (data) => {
+      setMergePreview(data || null);
+      toast({
+        title: 'Duplicate merge preview ready (Alpha)',
+        description: data?.groups ? `${data.groups} group(s) would be merged.` : 'No duplicates detected.',
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Preview failed (Alpha)', description: error.message, variant: 'destructive' });
     },
   });
 
@@ -312,6 +426,7 @@ const Contacts = () => {
       queryClient.invalidateQueries({ queryKey: ['contacts-count'] });
       setSearchQuery('');
       setGroup('all');
+      setMergePreview(null);
 
       if (data.errors && data.errors.length > 0) {
         toast({
@@ -498,10 +613,12 @@ const Contacts = () => {
           <TabsTrigger value="all">All</TabsTrigger>
           <TabsTrigger value="name_only">Name only</TabsTrigger>
           <TabsTrigger value="number_or_email_only">Number or email only</TabsTrigger>
+          <TabsTrigger value="duplicates">Duplicates</TabsTrigger>
         </TabsList>
         <p className="text-xs text-muted-foreground mt-1">
           {group === 'name_only' && 'Contacts with a name but no email or phone — add details or delete.'}
           {group === 'number_or_email_only' && 'Contacts with only email/phone — add a name.'}
+          {group === 'duplicates' && 'Possible duplicates grouped together for review. Auto Merge is alpha.'}
           {group === 'all' && 'All contacts.'}
         </p>
       </Tabs>
@@ -533,7 +650,54 @@ const Contacts = () => {
             </Button>
           </>
         )}
+        {group === 'duplicates' && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => previewMergeDuplicates.mutate()}
+              disabled={previewMergeDuplicates.isPending}
+            >
+              {previewMergeDuplicates.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+              Preview Auto Merge (Alpha)
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => mergeDuplicates.mutate()}
+              disabled={mergeDuplicates.isPending}
+            >
+              {mergeDuplicates.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+              Run Auto Merge (Alpha)
+            </Button>
+          </>
+        )}
       </div>
+
+      {group === 'duplicates' && mergePreview && (
+        <Card className="mb-4">
+          <CardContent className="py-4 space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Alpha preview: {mergePreview.groups} group(s) detected, {mergePreview.to_remove} contact(s) would be removed.
+            </p>
+            {mergePreview.preview.slice(0, 8).map((item) => (
+              <div key={item.key} className="text-sm border rounded-md p-3">
+                <p className="font-medium mb-1">
+                  Group of {item.size}: keep <span className="text-foreground">{item.keep.name}</span>
+                </p>
+                <p className="text-muted-foreground">
+                  Remove: {item.remove.map((r) => r.name).join(', ') || 'none'}
+                </p>
+              </div>
+            ))}
+            {mergePreview.preview.length > 8 && (
+              <p className="text-xs text-muted-foreground">
+                Showing first 8 groups. Run the merge to process all {mergePreview.preview.length}.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
         <AlertDialogContent>
@@ -645,6 +809,11 @@ const Contacts = () => {
                       </Avatar>
                       <div>
                         <span className="font-medium">{getDisplayName(contact)}</span>
+                        {group === 'duplicates' && duplicateMeta.duplicateGroupSizeById.get(contact.id) && (
+                          <p className="text-xs text-warning">
+                            Possible duplicate group ({duplicateMeta.duplicateGroupSizeById.get(contact.id)})
+                          </p>
+                        )}
                         {contact.job_title && (
                           <p className="text-xs text-muted-foreground">{contact.job_title}</p>
                         )}

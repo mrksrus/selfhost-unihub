@@ -1,17 +1,18 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { cn } from '@/lib/utils';
-import { 
-  LayoutDashboard, 
-  Users, 
-  Calendar, 
+import {
+  LayoutDashboard,
+  Users,
+  Calendar,
   Mail,
   CheckSquare,
-  Settings, 
+  Settings,
   Shield,
   LogOut,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  Gamepad2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -25,6 +26,7 @@ const navigation = [
   { name: 'Calendar', href: '/calendar', icon: Calendar },
   { name: 'ToDo', href: '/todo', icon: CheckSquare },
   { name: 'Mail', href: '/mail', icon: Mail },
+  { name: 'Games', href: '/games', icon: Gamepad2 },
 ];
 
 const AppSidebar = () => {
