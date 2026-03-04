@@ -159,10 +159,12 @@ export const TestGame = () => {
         }
       }
 
-      ctx.fillStyle = 'hsl(var(--background))';
+      // Background
+      ctx.fillStyle = '#f9fafb';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      ctx.strokeStyle = 'hsl(var(--border))';
+      // Ground line
+      ctx.strokeStyle = '#d4d4d8';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(0, groundY);
@@ -171,20 +173,22 @@ export const TestGame = () => {
 
       const dinoX = 60;
       const dinoDrawY = groundY - DINO_HEIGHT - state.dinoY;
-      ctx.fillStyle = 'hsl(var(--foreground) / 0.9)';
+      // Dino body
+      ctx.fillStyle = '#111827';
       ctx.fillRect(dinoX, dinoDrawY, DINO_WIDTH, DINO_HEIGHT);
       ctx.fillRect(dinoX + DINO_WIDTH - 6, dinoDrawY + DINO_HEIGHT - 8, 8, 10);
 
       state.obstacles.forEach((obs) => {
         const obsY = groundY - obs.height;
-        ctx.fillStyle = 'hsl(var(--muted-foreground))';
+        // Cactus
+        ctx.fillStyle = '#6b7280';
         ctx.fillRect(obs.x, obsY, obs.width, obs.height);
         ctx.fillRect(obs.x + 4, obsY + obs.height - 10, 6, 10);
         ctx.fillRect(obs.x + obs.width - 8, obsY + obs.height - 10, 6, 10);
       });
 
       if (state.status === 'idle') {
-        ctx.fillStyle = 'hsl(var(--muted-foreground))';
+        ctx.fillStyle = '#4b5563';
         ctx.font = '14px system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText('Press Space, ↑ or controller A to start', canvas.width / 2, canvas.height / 2 - 10);
@@ -192,17 +196,17 @@ export const TestGame = () => {
       }
 
       if (state.status === 'gameover') {
-        ctx.fillStyle = 'hsl(var(--foreground))';
+        ctx.fillStyle = '#111827';
         ctx.font = 'bold 18px system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText('Game Over', canvas.width / 2, canvas.height / 2 - 20);
         ctx.font = '14px system-ui, sans-serif';
-        ctx.fillStyle = 'hsl(var(--muted-foreground))';
+        ctx.fillStyle = '#4b5563';
         ctx.fillText(`Score: ${Math.floor(state.score)}`, canvas.width / 2, canvas.height / 2 + 5);
       }
 
       if (state.status === 'playing') {
-        ctx.fillStyle = 'hsl(var(--muted-foreground))';
+        ctx.fillStyle = '#4b5563';
         ctx.font = '14px system-ui, sans-serif';
         ctx.textAlign = 'left';
         ctx.fillText(`Score: ${Math.floor(state.score)}`, 10, 22);

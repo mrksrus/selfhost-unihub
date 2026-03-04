@@ -52,7 +52,11 @@ interface Contact {
   first_name: string;
   last_name: string | null;
   email: string | null;
+  email2: string | null;
+  email3: string | null;
   phone: string | null;
+  phone2: string | null;
+  phone3: string | null;
   company: string | null;
   job_title: string | null;
   notes: string | null;
@@ -108,7 +112,11 @@ const Contacts = () => {
     first_name: '',
     last_name: '',
     email: '',
+    email2: '',
+    email3: '',
     phone: '',
+    phone2: '',
+    phone3: '',
     company: '',
     job_title: '',
     notes: '',
@@ -121,9 +129,9 @@ const Contacts = () => {
   const normalizePhone = (value: string | null | undefined) => (value || '').replace(/[^\d+]/g, '');
   const normalizeName = (value: string | null | undefined) => (value || '').trim().toLowerCase();
   const getDuplicateKey = (contact: Contact) => {
-    const email = normalizeEmail(contact.email);
+    const email = [contact.email, contact.email2, contact.email3].map(normalizeEmail).find(Boolean);
     if (email) return `e:${email}`;
-    const phone = normalizePhone(contact.phone);
+    const phone = [contact.phone, contact.phone2, contact.phone3].map(normalizePhone).find(Boolean);
     if (phone) return `p:${phone}`;
     const first = normalizeName(contact.first_name);
     const last = normalizeName(contact.last_name);
@@ -187,10 +195,16 @@ const Contacts = () => {
     const inGroup = (contact: Contact) => {
       const hasName = Boolean((contact.first_name || '').trim() || (contact.last_name || '').trim());
       const hasEmail = Boolean((contact.email || '').trim());
+      const hasEmail2 = Boolean((contact.email2 || '').trim());
+      const hasEmail3 = Boolean((contact.email3 || '').trim());
       const hasPhone = Boolean((contact.phone || '').trim());
+      const hasPhone2 = Boolean((contact.phone2 || '').trim());
+      const hasPhone3 = Boolean((contact.phone3 || '').trim());
+      const hasAnyEmail = hasEmail || hasEmail2 || hasEmail3;
+      const hasAnyPhone = hasPhone || hasPhone2 || hasPhone3;
 
-      if (group === 'name_only') return hasName && !hasEmail && !hasPhone;
-      if (group === 'number_or_email_only') return !hasName && (hasEmail || hasPhone);
+      if (group === 'name_only') return hasName && !hasAnyEmail && !hasAnyPhone;
+      if (group === 'number_or_email_only') return !hasName && (hasAnyEmail || hasAnyPhone);
       if (group === 'duplicates') return duplicateMeta.duplicateIds.has(contact.id);
       return true;
     };
@@ -201,7 +215,11 @@ const Contacts = () => {
         contact.first_name,
         contact.last_name,
         contact.email,
+        contact.email2,
+        contact.email3,
         contact.phone,
+        contact.phone2,
+        contact.phone3,
         contact.company,
       ]
         .filter(Boolean)
@@ -349,7 +367,11 @@ const Contacts = () => {
       first_name: '',
       last_name: '',
       email: '',
+      email2: '',
+      email3: '',
       phone: '',
+      phone2: '',
+      phone3: '',
       company: '',
       job_title: '',
       notes: '',
@@ -364,7 +386,11 @@ const Contacts = () => {
       first_name: contact.first_name || '',
       last_name: contact.last_name || '',
       email: contact.email || '',
+      email2: contact.email2 || '',
+      email3: contact.email3 || '',
       phone: contact.phone || '',
+      phone2: contact.phone2 || '',
+      phone3: contact.phone3 || '',
       company: contact.company || '',
       job_title: contact.job_title || '',
       notes: contact.notes || '',
@@ -468,8 +494,8 @@ const Contacts = () => {
     const first = (contact.first_name || '').trim();
     const last = (contact.last_name || '').trim();
     if (first || last) return [first, last].filter(Boolean).join(' ');
-    if (contact.email) return contact.email;
-    if (contact.phone) return contact.phone;
+    if (contact.email || contact.email2 || contact.email3) return contact.email || contact.email2 || contact.email3 || 'No name';
+    if (contact.phone || contact.phone2 || contact.phone3) return contact.phone || contact.phone2 || contact.phone3 || 'No name';
     return 'No name';
   };
 
@@ -477,8 +503,8 @@ const Contacts = () => {
     const first = (contact.first_name || '')[0] || '';
     const last = (contact.last_name || '')[0] || '';
     if (first || last) return (first + last).toUpperCase();
-    if (contact.email) return contact.email[0].toUpperCase();
-    if (contact.phone) return '#';
+    if (contact.email || contact.email2 || contact.email3) return (contact.email || contact.email2 || contact.email3 || '?')[0].toUpperCase();
+    if (contact.phone || contact.phone2 || contact.phone3) return '#';
     return '?';
   };
 
@@ -547,7 +573,7 @@ const Contacts = () => {
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
+                  <Label htmlFor="email">Email 1</Label>
                   <Input
                     id="email"
                     type="email"
@@ -556,11 +582,45 @@ const Contacts = () => {
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Phone</Label>
+                  <Label htmlFor="email2">Email 2</Label>
+                  <Input
+                    id="email2"
+                    type="email"
+                    value={formData.email2}
+                    onChange={(e) => setFormData({ ...formData, email2: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="email3">Email 3</Label>
+                  <Input
+                    id="email3"
+                    type="email"
+                    value={formData.email3}
+                    onChange={(e) => setFormData({ ...formData, email3: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="phone">Phone 1</Label>
                   <Input
                     id="phone"
                     value={formData.phone}
                     onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="phone2">Phone 2</Label>
+                  <Input
+                    id="phone2"
+                    value={formData.phone2}
+                    onChange={(e) => setFormData({ ...formData, phone2: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="phone3">Phone 3</Label>
+                  <Input
+                    id="phone3"
+                    value={formData.phone3}
+                    onChange={(e) => setFormData({ ...formData, phone3: e.target.value })}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -821,27 +881,37 @@ const Contacts = () => {
                     </div>
                   </TableCell>
                   <TableCell>
-                    {contact.email ? (
-                      <a
-                        href={`mailto:${contact.email}`}
-                        className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 truncate max-w-[200px]"
-                      >
-                        <Mail className="h-3.5 w-3.5 shrink-0" />
-                        {contact.email}
-                      </a>
+                    {[contact.email, contact.email2, contact.email3].filter(Boolean).length > 0 ? (
+                      <div className="space-y-1">
+                        {[contact.email, contact.email2, contact.email3].filter(Boolean).map((email, idx) => (
+                          <a
+                            key={`${email}-${idx}`}
+                            href={`mailto:${email}`}
+                            className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 truncate max-w-[220px] text-xs"
+                          >
+                            <Mail className="h-3.5 w-3.5 shrink-0" />
+                            {email}
+                          </a>
+                        ))}
+                      </div>
                     ) : (
                       <span className="text-muted-foreground/50">—</span>
                     )}
                   </TableCell>
                   <TableCell>
-                    {contact.phone ? (
-                      <a
-                        href={`tel:${contact.phone.replace(/\s/g, '')}`}
-                        className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
-                      >
-                        <Phone className="h-3.5 w-3.5 shrink-0" />
-                        {contact.phone}
-                      </a>
+                    {[contact.phone, contact.phone2, contact.phone3].filter(Boolean).length > 0 ? (
+                      <div className="space-y-1">
+                        {[contact.phone, contact.phone2, contact.phone3].filter(Boolean).map((phone, idx) => (
+                          <a
+                            key={`${phone}-${idx}`}
+                            href={`tel:${String(phone).replace(/\s/g, '')}`}
+                            className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs"
+                          >
+                            <Phone className="h-3.5 w-3.5 shrink-0" />
+                            {phone}
+                          </a>
+                        ))}
+                      </div>
                     ) : (
                       <span className="text-muted-foreground/50">—</span>
                     )}

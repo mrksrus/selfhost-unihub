@@ -1071,7 +1071,11 @@ async function ensureSchema() {
     first_name VARCHAR(100) NOT NULL,
     last_name VARCHAR(100),
     email VARCHAR(255),
+    email2 VARCHAR(255),
+    email3 VARCHAR(255),
     phone VARCHAR(50),
+    phone2 VARCHAR(50),
+    phone3 VARCHAR(50),
     company VARCHAR(255),
     job_title VARCHAR(255),
     notes TEXT,
@@ -1095,6 +1099,20 @@ async function ensureSchema() {
   } catch (e) {
     // Ignore if index already exists or ALTER not supported
   }
+
+  // Backfill extra email/phone slots for existing installs
+  try {
+    await db.execute('ALTER TABLE contacts ADD COLUMN email2 VARCHAR(255)');
+  } catch (e) {}
+  try {
+    await db.execute('ALTER TABLE contacts ADD COLUMN email3 VARCHAR(255)');
+  } catch (e) {}
+  try {
+    await db.execute('ALTER TABLE contacts ADD COLUMN phone2 VARCHAR(50)');
+  } catch (e) {}
+  try {
+    await db.execute('ALTER TABLE contacts ADD COLUMN phone3 VARCHAR(50)');
+  } catch (e) {}
 
   await db.execute(`CREATE TABLE IF NOT EXISTS calendar_events (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -1648,8 +1666,10 @@ function contactToVCard(c) {
   const fn = escapeVCard(c.first_name || '');
   lines.push(`N:${ln};${fn};;;`);
   lines.push(`FN:${escapeVCard([c.first_name, c.last_name].filter(Boolean).join(' '))}`);
-  if (c.email)     lines.push(`EMAIL;TYPE=INTERNET:${escapeVCard(c.email)}`);
-  if (c.phone)     lines.push(`TEL;TYPE=CELL:${escapeVCard(c.phone)}`);
+  const emails = [c.email, c.email2, c.email3].filter((v) => v && String(v).trim() !== '');
+  const phones = [c.phone, c.phone2, c.phone3].filter((v) => v && String(v).trim() !== '');
+  for (const email of emails) lines.push(`EMAIL;TYPE=INTERNET:${escapeVCard(email)}`);
+  for (const phone of phones) lines.push(`TEL;TYPE=CELL:${escapeVCard(phone)}`);
   if (c.company)   lines.push(`ORG:${escapeVCard(c.company)}`);
   if (c.job_title) lines.push(`TITLE:${escapeVCard(c.job_title)}`);
   if (c.notes)     lines.push(`NOTE:${escapeVCard(c.notes)}`);
@@ -1668,9 +1688,13 @@ function parseVCards(vcfData) {
     if (!block.match(/END:VCARD/i)) continue;
 
     const contact = {
-      first_name: '', last_name: null, email: null,
-      phone: null, company: null, job_title: null, notes: null,
+      first_name: '', last_name: null,
+      email: null, email2: null, email3: null,
+      phone: null, phone2: null, phone3: null,
+      company: null, job_title: null, notes: null,
     };
+    const emailValues = [];
+    const phoneValues = [];
 
     for (const line of block.split('\n')) {
       const colonIdx = line.indexOf(':');
@@ -1703,10 +1727,10 @@ function parseVCards(vcfData) {
           }
           break;
         case 'EMAIL':
-          if (!contact.email) contact.email = value;
+          if (value) emailValues.push(value);
           break;
         case 'TEL':
-          if (!contact.phone) contact.phone = value;
+          if (value) phoneValues.push(value);
           break;
         case 'ORG':
           contact.company = value.split(';')[0] || null;
@@ -1719,6 +1743,11 @@ function parseVCards(vcfData) {
           break;
       }
     }
+
+    const uniqueEmails = Array.from(new Set(emailValues.map((v) => String(v).trim()).filter(Boolean))).slice(0, 3);
+    const uniquePhones = Array.from(new Set(phoneValues.map((v) => String(v).trim()).filter(Boolean))).slice(0, 3);
+    [contact.email, contact.email2, contact.email3] = [uniqueEmails[0] || null, uniqueEmails[1] || null, uniqueEmails[2] || null];
+    [contact.phone, contact.phone2, contact.phone3] = [uniquePhones[0] || null, uniquePhones[1] || null, uniquePhones[2] || null];
 
     // Must have at least a name
     if (contact.first_name || contact.last_name) {
@@ -2122,23 +2151,23 @@ const routes = {
       const limit = Number.isInteger(limitNum) && limitNum >= 1 ? Math.min(limitNum, 2000) : 2000;
 
       // Only select fields needed on the contacts screen to reduce payload size.
-      let query = 'SELECT id, user_id, first_name, last_name, email, phone, company, job_title, notes, avatar_url, is_favorite FROM contacts WHERE user_id = ?';
+      let query = 'SELECT id, user_id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes, avatar_url, is_favorite FROM contacts WHERE user_id = ?';
       const params = [userId];
 
       // Group filter: name_only = has name but no email/phone; number_or_email_only = has email/phone but no name
       if (group === 'name_only') {
         query += " AND (TRIM(COALESCE(first_name,'')) != '' OR TRIM(COALESCE(last_name,'')) != '')";
-        query += " AND (TRIM(COALESCE(email,'')) = '' AND TRIM(COALESCE(phone,'')) = '')";
+        query += " AND (TRIM(COALESCE(email,'')) = '' AND TRIM(COALESCE(email2,'')) = '' AND TRIM(COALESCE(email3,'')) = '' AND TRIM(COALESCE(phone,'')) = '' AND TRIM(COALESCE(phone2,'')) = '' AND TRIM(COALESCE(phone3,'')) = '')";
       } else if (group === 'number_or_email_only') {
-        query += " AND (TRIM(COALESCE(email,'')) != '' OR TRIM(COALESCE(phone,'')) != '')";
+        query += " AND (TRIM(COALESCE(email,'')) != '' OR TRIM(COALESCE(email2,'')) != '' OR TRIM(COALESCE(email3,'')) != '' OR TRIM(COALESCE(phone,'')) != '' OR TRIM(COALESCE(phone2,'')) != '' OR TRIM(COALESCE(phone3,'')) != '')";
         query += " AND TRIM(COALESCE(first_name,'')) = '' AND TRIM(COALESCE(last_name,'')) = ''";
       }
 
       // Server-side search (indexed fields + phone/company for quick find)
       if (q.length > 0) {
         const like = `%${q.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
-        query += ' AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR phone LIKE ? OR company LIKE ?)';
-        params.push(like, like, like, like, like);
+        query += ' AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR email2 LIKE ? OR email3 LIKE ? OR phone LIKE ? OR phone2 LIKE ? OR phone3 LIKE ? OR company LIKE ?)';
+        params.push(like, like, like, like, like, like, like, like, like);
       }
 
       // LIMIT as literal (mysql2 stmt_execute rejects placeholder for LIMIT); value validated 1–2000
@@ -2156,7 +2185,7 @@ const routes = {
   'POST /api/contacts': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
-    const { first_name, last_name, email, phone, company, job_title, notes } = body;
+    const { first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes } = body;
     if (!first_name || !first_name.trim()) {
       return { error: 'First name is required', status: 400 };
     }
@@ -2164,8 +2193,22 @@ const routes = {
     try {
       const contactId = crypto.randomUUID();
       await db.execute(
-        'INSERT INTO contacts (id, user_id, first_name, last_name, email, phone, company, job_title, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [contactId, userId, first_name.trim(), last_name || null, email || null, phone || null, company || null, job_title || null, notes || null]
+        'INSERT INTO contacts (id, user_id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          contactId,
+          userId,
+          first_name.trim(),
+          last_name || null,
+          email || null,
+          email2 || null,
+          email3 || null,
+          phone || null,
+          phone2 || null,
+          phone3 || null,
+          company || null,
+          job_title || null,
+          notes || null,
+        ]
       );
       
       const [contacts] = await db.execute('SELECT * FROM contacts WHERE id = ?', [contactId]);
@@ -2178,15 +2221,29 @@ const routes = {
   'PUT /api/contacts/:id': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
-    const { first_name, last_name, email, phone, company, job_title, notes } = body;
+    const { first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes } = body;
     const firstName = first_name != null ? String(first_name).trim() : '';
 
     try {
       const id = req.url.split('/').pop();
       
       await db.execute(
-        'UPDATE contacts SET first_name = ?, last_name = ?, email = ?, phone = ?, company = ?, job_title = ?, notes = ? WHERE id = ? AND user_id = ?',
-        [firstName, last_name || null, email || null, phone || null, company || null, job_title || null, notes || null, id, userId]
+        'UPDATE contacts SET first_name = ?, last_name = ?, email = ?, email2 = ?, email3 = ?, phone = ?, phone2 = ?, phone3 = ?, company = ?, job_title = ?, notes = ? WHERE id = ? AND user_id = ?',
+        [
+          firstName,
+          last_name || null,
+          email || null,
+          email2 || null,
+          email3 || null,
+          phone || null,
+          phone2 || null,
+          phone3 || null,
+          company || null,
+          job_title || null,
+          notes || null,
+          id,
+          userId,
+        ]
       );
       
       const [contacts] = await db.execute('SELECT * FROM contacts WHERE id = ? AND user_id = ?', [id, userId]);
@@ -2235,10 +2292,12 @@ const routes = {
     const normalizeEmail = (value) => (value || '').trim().toLowerCase();
     const normalizePhone = (value) => (value || '').replace(/[^\d+]/g, '');
     const normalizeName = (value) => (value || '').trim().toLowerCase();
+    const getEmails = (contact) => [contact.email, contact.email2, contact.email3].map(normalizeEmail).filter(Boolean);
+    const getPhones = (contact) => [contact.phone, contact.phone2, contact.phone3].map(normalizePhone).filter(Boolean);
     const getDedupeKey = (contact) => {
-      const email = normalizeEmail(contact.email);
+      const email = getEmails(contact)[0];
       if (email) return `e:${email}`;
-      const phone = normalizePhone(contact.phone);
+      const phone = getPhones(contact)[0];
       if (phone) return `p:${phone}`;
       const first = normalizeName(contact.first_name);
       const last = normalizeName(contact.last_name);
@@ -2254,7 +2313,7 @@ const routes = {
 
     try {
       const [rows] = await db.execute(
-        `SELECT id, first_name, last_name, email, phone, company, job_title, notes, is_favorite, created_at
+        `SELECT id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes, is_favorite, created_at
          FROM contacts
          WHERE user_id = ?`,
         [userId]
@@ -2281,8 +2340,8 @@ const routes = {
             let s = 0;
             if ((c.first_name || '').trim()) s++;
             if ((c.last_name || '').trim()) s++;
-            if ((c.email || '').trim()) s += 2;
-            if ((c.phone || '').trim()) s += 2;
+            s += getEmails(c).length * 2;
+            s += getPhones(c).length * 2;
             if ((c.company || '').trim()) s++;
             if ((c.job_title || '').trim()) s++;
             if ((c.notes || '').trim()) s++;
@@ -2306,11 +2365,17 @@ const routes = {
           )
         ).join('\n\n');
 
+        const mergedEmails = Array.from(new Set([primary, ...others].flatMap((c) => [c.email, c.email2, c.email3].map((v) => (v || '').trim()).filter(Boolean)))).slice(0, 3);
+        const mergedPhones = Array.from(new Set([primary, ...others].flatMap((c) => [c.phone, c.phone2, c.phone3].map((v) => (v || '').trim()).filter(Boolean)))).slice(0, 3);
         const mergedContact = {
           first_name: firstNonEmpty(primary.first_name, ...others.map((o) => o.first_name), ''),
           last_name: firstNonEmpty(primary.last_name, ...others.map((o) => o.last_name)),
-          email: firstNonEmpty(primary.email, ...others.map((o) => o.email)),
-          phone: firstNonEmpty(primary.phone, ...others.map((o) => o.phone)),
+          email: mergedEmails[0] || null,
+          email2: mergedEmails[1] || null,
+          email3: mergedEmails[2] || null,
+          phone: mergedPhones[0] || null,
+          phone2: mergedPhones[1] || null,
+          phone3: mergedPhones[2] || null,
           company: firstNonEmpty(primary.company, ...others.map((o) => o.company)),
           job_title: firstNonEmpty(primary.job_title, ...others.map((o) => o.job_title)),
           notes: mergedNotes || null,
@@ -2319,13 +2384,17 @@ const routes = {
 
         await db.execute(
           `UPDATE contacts
-           SET first_name = ?, last_name = ?, email = ?, phone = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?
+           SET first_name = ?, last_name = ?, email = ?, email2 = ?, email3 = ?, phone = ?, phone2 = ?, phone3 = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?
            WHERE id = ? AND user_id = ?`,
           [
             mergedContact.first_name || '',
             mergedContact.last_name,
             mergedContact.email,
+            mergedContact.email2,
+            mergedContact.email3,
             mergedContact.phone,
+            mergedContact.phone2,
+            mergedContact.phone3,
             mergedContact.company,
             mergedContact.job_title,
             mergedContact.notes,
@@ -2369,10 +2438,12 @@ const routes = {
     const normalizeEmail = (value) => (value || '').trim().toLowerCase();
     const normalizePhone = (value) => (value || '').replace(/[^\d+]/g, '');
     const normalizeName = (value) => (value || '').trim().toLowerCase();
+    const getEmails = (contact) => [contact.email, contact.email2, contact.email3].map(normalizeEmail).filter(Boolean);
+    const getPhones = (contact) => [contact.phone, contact.phone2, contact.phone3].map(normalizePhone).filter(Boolean);
     const getDedupeKey = (contact) => {
-      const email = normalizeEmail(contact.email);
+      const email = getEmails(contact)[0];
       if (email) return `e:${email}`;
-      const phone = normalizePhone(contact.phone);
+      const phone = getPhones(contact)[0];
       if (phone) return `p:${phone}`;
       const first = normalizeName(contact.first_name);
       const last = normalizeName(contact.last_name);
@@ -2383,12 +2454,12 @@ const routes = {
       const first = (c.first_name || '').trim();
       const last = (c.last_name || '').trim();
       if (first || last) return [first, last].filter(Boolean).join(' ');
-      return c.email || c.phone || 'No name';
+      return c.email || c.email2 || c.email3 || c.phone || c.phone2 || c.phone3 || 'No name';
     };
 
     try {
       const [rows] = await db.execute(
-        `SELECT id, first_name, last_name, email, phone, company, job_title, notes, is_favorite, created_at
+        `SELECT id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes, is_favorite, created_at
          FROM contacts
          WHERE user_id = ?`,
         [userId]
@@ -2416,8 +2487,8 @@ const routes = {
             let s = 0;
             if ((c.first_name || '').trim()) s++;
             if ((c.last_name || '').trim()) s++;
-            if ((c.email || '').trim()) s += 2;
-            if ((c.phone || '').trim()) s += 2;
+            s += getEmails(c).length * 2;
+            s += getPhones(c).length * 2;
             if ((c.company || '').trim()) s++;
             if ((c.job_title || '').trim()) s++;
             if ((c.notes || '').trim()) s++;
@@ -2438,14 +2509,14 @@ const routes = {
           keep: {
             id: primary.id,
             name: displayName(primary),
-            email: primary.email || null,
-            phone: primary.phone || null,
+            email: primary.email || primary.email2 || primary.email3 || null,
+            phone: primary.phone || primary.phone2 || primary.phone3 || null,
           },
           remove: others.map((c) => ({
             id: c.id,
             name: displayName(c),
-            email: c.email || null,
-            phone: c.phone || null,
+            email: c.email || c.email2 || c.email3 || null,
+            phone: c.phone || c.phone2 || c.phone3 || null,
           })),
         });
       }
@@ -2499,12 +2570,14 @@ const routes = {
         return { error: 'No valid contacts found in the file. Make sure it is a .vcf (vCard) file.', status: 400 };
       }
 
-      // Dedupe key: same email = same contact; if no email, same first+last name = same contact
+      // Dedupe key: same first available email/phone = same contact; else same first+last name
       function contactDedupeKey(c) {
-        const email = (c.email || '').toLowerCase().trim();
+        const email = (c.email || c.email2 || c.email3 || '').toLowerCase().trim();
+        const phone = (c.phone || c.phone2 || c.phone3 || '').replace(/[^\d+]/g, '');
         const first = (c.first_name || '').trim().toLowerCase();
         const last = (c.last_name || '').trim().toLowerCase();
         if (email) return 'e:' + email;
+        if (phone) return 'p:' + phone;
         return 'n:' + first + '|' + last;
       }
 
@@ -2520,7 +2593,7 @@ const routes = {
 
       // 2) Load existing contact keys for this user so we don’t re-import duplicates
       const [existingRows] = await db.execute(
-        'SELECT email, first_name, last_name FROM contacts WHERE user_id = ?',
+        'SELECT email, email2, email3, phone, phone2, phone3, first_name, last_name FROM contacts WHERE user_id = ?',
         [userId]
       );
       const existingKeys = new Set(
@@ -2539,8 +2612,22 @@ const routes = {
         try {
           const contactId = crypto.randomUUID();
           await db.execute(
-            'INSERT INTO contacts (id, user_id, first_name, last_name, email, phone, company, job_title, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            [contactId, userId, c.first_name, c.last_name, c.email, c.phone, c.company, c.job_title, c.notes]
+            'INSERT INTO contacts (id, user_id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+              contactId,
+              userId,
+              c.first_name,
+              c.last_name,
+              c.email,
+              c.email2,
+              c.email3,
+              c.phone,
+              c.phone2,
+              c.phone3,
+              c.company,
+              c.job_title,
+              c.notes,
+            ]
           );
           imported++;
           existingKeys.add(key); // avoid inserting twice if file has same key again

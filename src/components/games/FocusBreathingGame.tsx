@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -14,6 +14,19 @@ export const FocusBreathingGame = () => {
   const [isRunning, setIsRunning] = useState(false);
   const [completedCycles, setCompletedCycles] = useState(0);
 
+  // Scale classic 4–4–8 timing (inhale-hold-exhale) to the selected cycle length
+  const { inhaleSeconds, holdSeconds, exhaleSeconds } = useMemo(() => {
+    const baseTotal = 16; // 4 + 4 + 8
+    const factor = cycleSeconds / baseTotal;
+    const inhale = Math.max(2, Math.round(4 * factor));
+    const hold = Math.max(2, Math.round(4 * factor));
+    let exhale = cycleSeconds - inhale - hold;
+    if (exhale < 4) {
+      exhale = 4;
+    }
+    return { inhaleSeconds: inhale, holdSeconds: hold, exhaleSeconds: exhale };
+  }, [cycleSeconds]);
+
   useEffect(() => {
     if (!isRunning) return;
 
@@ -23,14 +36,14 @@ export const FocusBreathingGame = () => {
 
         setPhase((current) => {
           if (current === 'inhale') {
-            setSecondsRemaining(4);
+            setSecondsRemaining(holdSeconds);
             return 'hold';
           }
           if (current === 'hold') {
-            setSecondsRemaining(8);
+            setSecondsRemaining(exhaleSeconds);
             return 'exhale';
           }
-          setSecondsRemaining(4);
+          setSecondsRemaining(inhaleSeconds);
           setCompletedCycles((c) => c + 1);
           return 'inhale';
         });
@@ -40,7 +53,7 @@ export const FocusBreathingGame = () => {
     }, 1000);
 
     return () => window.clearInterval(interval);
-  }, [isRunning]);
+  }, [isRunning, inhaleSeconds, holdSeconds, exhaleSeconds]);
 
   const handleStartStop = () => {
     setIsRunning((running) => !running);
@@ -49,11 +62,19 @@ export const FocusBreathingGame = () => {
   const handleReset = () => {
     setIsRunning(false);
     setPhase('inhale');
-    setSecondsRemaining(4);
+    setSecondsRemaining(inhaleSeconds);
     setCompletedCycles(0);
   };
 
-  const totalSecondsForPhase = phase === 'inhale' ? 4 : phase === 'hold' ? 4 : 8;
+  // Keep the countdown display in sync when the cycle length changes but the timer is stopped
+  useEffect(() => {
+    if (!isRunning && phase === 'inhale') {
+      setSecondsRemaining(inhaleSeconds);
+    }
+  }, [inhaleSeconds, isRunning, phase]);
+
+  const totalSecondsForPhase =
+    phase === 'inhale' ? inhaleSeconds : phase === 'hold' ? holdSeconds : exhaleSeconds;
   const progress =
     totalSecondsForPhase === 0
       ? 0
@@ -61,6 +82,9 @@ export const FocusBreathingGame = () => {
 
   const phaseLabel =
     phase === 'inhale' ? 'Inhale gently' : phase === 'hold' ? 'Hold' : 'Exhale slowly';
+
+  const circleScale =
+    phase === 'inhale' ? 1.15 : phase === 'hold' ? 1.25 : 0.9;
 
   return (
     <Card className="border bg-gradient-to-br from-sky-500/5 via-background to-violet-500/5">
@@ -75,7 +99,10 @@ export const FocusBreathingGame = () => {
         <div className="flex flex-col items-center gap-4 py-2">
           <div className="relative flex items-center justify-center">
             <div className="h-32 w-32 rounded-full border border-border/60 flex items-center justify-center">
-              <div className="h-24 w-24 rounded-full bg-accent/10 flex items-center justify-center">
+              <div
+                className="h-24 w-24 rounded-full bg-accent/10 flex items-center justify-center transition-transform duration-700 ease-out"
+                style={{ transform: `scale(${circleScale})` }}
+              >
                 <span className="text-sm font-medium text-foreground">{phaseLabel}</span>
               </div>
             </div>

@@ -69,7 +69,7 @@ const Games = () => {
         </p>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1.2fr)] gap-6 lg:gap-8 items-start">
+      <div className="space-y-8">
         <section className="space-y-4">
           <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
             Games catalog
@@ -134,7 +134,11 @@ const Games = () => {
             </div>
           </div>
 
-          <Tabs value={activeGameId} onValueChange={(value) => setActiveGameId(value as GameId)}>
+          <Tabs
+            value={activeGameId}
+            onValueChange={(value) => setActiveGameId(value as GameId)}
+            className="w-full"
+          >
             <TabsList className="grid w-full grid-cols-4 mb-3">
               <TabsTrigger value="reaction-timer">Reaction Timer</TabsTrigger>
               <TabsTrigger value="focus-breathing">Focus Breathing</TabsTrigger>
