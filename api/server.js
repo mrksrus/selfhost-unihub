@@ -2265,10 +2265,43 @@ const routes = {
         return { error: 'No valid contacts found in the file. Make sure it is a .vcf (vCard) file.', status: 400 };
       }
 
+      // Dedupe key: same email = same contact; if no email, same first+last name = same contact
+      function contactDedupeKey(c) {
+        const email = (c.email || '').toLowerCase().trim();
+        const first = (c.first_name || '').trim().toLowerCase();
+        const last = (c.last_name || '').trim().toLowerCase();
+        if (email) return 'e:' + email;
+        return 'n:' + first + '|' + last;
+      }
+
+      // 1) Within-file dedupe: keep first occurrence of each key (file often has same card 2–3x)
+      const seenInFile = new Set();
+      const dedupedFromFile = [];
+      for (const c of parsed) {
+        const key = contactDedupeKey(c);
+        if (seenInFile.has(key)) continue;
+        seenInFile.add(key);
+        dedupedFromFile.push(c);
+      }
+
+      // 2) Load existing contact keys for this user so we don’t re-import duplicates
+      const [existingRows] = await db.execute(
+        'SELECT email, first_name, last_name FROM contacts WHERE user_id = ?',
+        [userId]
+      );
+      const existingKeys = new Set(
+        (existingRows || []).map((r) => {
+          const c = { email: r.email, first_name: r.first_name, last_name: r.last_name };
+          return contactDedupeKey(c);
+        })
+      );
+
       let imported = 0;
       const errors = [];
 
-      for (const c of parsed) {
+      for (const c of dedupedFromFile) {
+        const key = contactDedupeKey(c);
+        if (existingKeys.has(key)) continue; // already in DB, skip
         try {
           const contactId = crypto.randomUUID();
           await db.execute(
@@ -2276,16 +2309,19 @@ const routes = {
             [contactId, userId, c.first_name, c.last_name, c.email, c.phone, c.company, c.job_title, c.notes]
           );
           imported++;
+          existingKeys.add(key); // avoid inserting twice if file has same key again
         } catch (err) {
           const name = [c.first_name, c.last_name].filter(Boolean).join(' ');
           errors.push(`Failed to import "${name}": ${err.message}`);
         }
       }
 
+      const skipped = dedupedFromFile.length - imported - errors.length;
       return {
-        message: `Imported ${imported} of ${parsed.length} contacts`,
+        message: `Imported ${imported} of ${parsed.length} contacts${skipped > 0 ? ` (${skipped} skipped as duplicates)` : ''}`,
         imported,
         total: parsed.length,
+        skipped: skipped > 0 ? skipped : undefined,
         errors: errors.length > 0 ? errors : undefined,
       };
     } catch (error) {
