@@ -292,10 +292,9 @@ export const TestGame = () => {
         <div className="rounded-lg border bg-muted/30 overflow-hidden">
           <canvas
             ref={canvasRef}
-            width={600}
-            height={120}
-            className="w-full h-auto block cursor-pointer"
-            style={{ maxHeight: '140px' }}
+            width={1200}
+            height={320}
+            className="w-full h-[240px] md:h-[320px] block cursor-pointer"
             onClick={handleCanvasClick}
             tabIndex={0}
             aria-label="Test Game canvas - click or press Space to jump"

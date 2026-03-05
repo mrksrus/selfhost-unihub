@@ -9,10 +9,10 @@ const DEFAULT_CYCLE_SECONDS = 16;
 
 export const FocusBreathingGame = () => {
   const [phase, setPhase] = useState<Phase>('inhale');
-  const [secondsRemaining, setSecondsRemaining] = useState(4);
   const [cycleSeconds, setCycleSeconds] = useState(DEFAULT_CYCLE_SECONDS);
   const [isRunning, setIsRunning] = useState(false);
   const [completedCycles, setCompletedCycles] = useState(0);
+  const [phaseElapsedMs, setPhaseElapsedMs] = useState(0);
 
   // Scale classic 4–4–8 timing (inhale-hold-exhale) to the selected cycle length
   const { inhaleSeconds, holdSeconds, exhaleSeconds } = useMemo(() => {
@@ -27,33 +27,33 @@ export const FocusBreathingGame = () => {
     return { inhaleSeconds: inhale, holdSeconds: hold, exhaleSeconds: exhale };
   }, [cycleSeconds]);
 
+  const phaseSeconds = phase === 'inhale' ? inhaleSeconds : phase === 'hold' ? holdSeconds : exhaleSeconds;
+  const phaseDurationMs = phaseSeconds * 1000;
+
   useEffect(() => {
     if (!isRunning) return;
 
+    const tickMs = 100;
     const interval = window.setInterval(() => {
-      setSecondsRemaining((prev) => {
-        if (prev > 1) return prev - 1;
+      setPhaseElapsedMs((prev) => {
+        const next = prev + tickMs;
+        if (next < phaseDurationMs) {
+          return next;
+        }
 
         setPhase((current) => {
-          if (current === 'inhale') {
-            setSecondsRemaining(holdSeconds);
-            return 'hold';
-          }
-          if (current === 'hold') {
-            setSecondsRemaining(exhaleSeconds);
-            return 'exhale';
-          }
-          setSecondsRemaining(inhaleSeconds);
+          if (current === 'inhale') return 'hold';
+          if (current === 'hold') return 'exhale';
           setCompletedCycles((c) => c + 1);
           return 'inhale';
         });
 
         return 0;
       });
-    }, 1000);
+    }, tickMs);
 
     return () => window.clearInterval(interval);
-  }, [isRunning, inhaleSeconds, holdSeconds, exhaleSeconds]);
+  }, [isRunning, phaseDurationMs]);
 
   const handleStartStop = () => {
     setIsRunning((running) => !running);
@@ -62,29 +62,25 @@ export const FocusBreathingGame = () => {
   const handleReset = () => {
     setIsRunning(false);
     setPhase('inhale');
-    setSecondsRemaining(inhaleSeconds);
+    setPhaseElapsedMs(0);
     setCompletedCycles(0);
   };
 
-  // Keep the countdown display in sync when the cycle length changes but the timer is stopped
+  // Keep timer alignment when cycle length changes while paused.
   useEffect(() => {
-    if (!isRunning && phase === 'inhale') {
-      setSecondsRemaining(inhaleSeconds);
+    if (!isRunning) {
+      setPhaseElapsedMs(0);
+      if (phase !== 'inhale') setPhase('inhale');
     }
-  }, [inhaleSeconds, isRunning, phase]);
+  }, [cycleSeconds, isRunning, phase]);
 
-  const totalSecondsForPhase =
-    phase === 'inhale' ? inhaleSeconds : phase === 'hold' ? holdSeconds : exhaleSeconds;
-  const progress =
-    totalSecondsForPhase === 0
-      ? 0
-      : ((totalSecondsForPhase - secondsRemaining) / totalSecondsForPhase) * 100;
+  const progress = phaseDurationMs === 0 ? 0 : Math.min(100, (phaseElapsedMs / phaseDurationMs) * 100);
+  const secondsRemaining = Math.max(0, Math.ceil((phaseDurationMs - phaseElapsedMs) / 1000));
 
   const phaseLabel =
     phase === 'inhale' ? 'Inhale gently' : phase === 'hold' ? 'Hold' : 'Exhale slowly';
 
-  const circleScale =
-    phase === 'inhale' ? 1.15 : phase === 'hold' ? 1.25 : 0.9;
+  const circleScale = phase === 'inhale' ? 1.2 : phase === 'hold' ? 1.2 : 0.85;
 
   return (
     <Card className="border bg-gradient-to-br from-sky-500/5 via-background to-violet-500/5">
@@ -100,8 +96,8 @@ export const FocusBreathingGame = () => {
           <div className="relative flex items-center justify-center">
             <div className="h-32 w-32 rounded-full border border-border/60 flex items-center justify-center">
               <div
-                className="h-24 w-24 rounded-full bg-accent/10 flex items-center justify-center transition-transform duration-700 ease-out"
-                style={{ transform: `scale(${circleScale})` }}
+                className="h-24 w-24 rounded-full bg-accent/10 flex items-center justify-center ease-linear"
+                style={{ transform: `scale(${circleScale})`, transition: `transform ${phaseSeconds}s linear` }}
               >
                 <span className="text-sm font-medium text-foreground">{phaseLabel}</span>
               </div>

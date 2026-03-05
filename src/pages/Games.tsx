@@ -3,7 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Bot, Gamepad2, Timer, Wind, Zap } from 'lucide-react';
+import { Bot, Gamepad2, Timer, Wind, Zap, X } from 'lucide-react';
 import ReactionTimerGame from '@/components/games/ReactionTimerGame';
 import FocusBreathingGame from '@/components/games/FocusBreathingGame';
 import TestGame from '@/components/games/TestGame';
@@ -52,8 +52,13 @@ const GAMES: GameDefinition[] = [
 
 const Games = () => {
   const [activeGameId, setActiveGameId] = useState<GameId>('reaction-timer');
+  const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
 
   const activeGame = GAMES.find((game) => game.id === activeGameId) ?? GAMES[0];
+  const openGameFullscreen = (gameId: GameId) => {
+    setActiveGameId(gameId);
+    setIsFullscreenOpen(true);
+  };
 
   return (
     <div className="p-6 lg:p-8 max-w-6xl mx-auto space-y-8">
@@ -113,9 +118,9 @@ const Games = () => {
                       size="sm"
                       className="mt-1"
                       variant={isActive ? 'default' : 'outline'}
-                      onClick={() => setActiveGameId(game.id)}
+                      onClick={() => openGameFullscreen(game.id)}
                     >
-                      {isActive ? 'Playing' : 'Play'}
+                      {isActive ? 'Play Fullscreen' : 'Play'}
                     </Button>
                   </CardContent>
                 </Card>
@@ -123,43 +128,49 @@ const Games = () => {
             })}
           </div>
         </section>
-
-        <section className="space-y-4">
-          <div className="flex items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-                Now playing
-              </h2>
-              <p className="text-sm text-muted-foreground">{activeGame.description}</p>
-            </div>
-          </div>
-
-          <Tabs
-            value={activeGameId}
-            onValueChange={(value) => setActiveGameId(value as GameId)}
-            className="w-full"
-          >
-            <TabsList className="grid w-full grid-cols-4 mb-3">
-              <TabsTrigger value="reaction-timer">Reaction Timer</TabsTrigger>
-              <TabsTrigger value="focus-breathing">Focus Breathing</TabsTrigger>
-              <TabsTrigger value="test-game">Test Game</TabsTrigger>
-              <TabsTrigger value="ai-game">AI Game</TabsTrigger>
-            </TabsList>
-            <TabsContent value="reaction-timer">
-              <ReactionTimerGame />
-            </TabsContent>
-            <TabsContent value="focus-breathing">
-              <FocusBreathingGame />
-            </TabsContent>
-            <TabsContent value="test-game">
-              <TestGame />
-            </TabsContent>
-            <TabsContent value="ai-game">
-              <AIGame />
-            </TabsContent>
-          </Tabs>
-        </section>
       </div>
+
+      {isFullscreenOpen && (
+        <div className="fixed inset-0 z-50 bg-background/95 backdrop-blur-sm p-4 md:p-8 overflow-auto">
+          <div className="max-w-7xl mx-auto space-y-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl md:text-2xl font-bold text-foreground">{activeGame.name}</h2>
+                <p className="text-sm text-muted-foreground mt-1">{activeGame.description}</p>
+              </div>
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setIsFullscreenOpen(false)}
+                aria-label="Close fullscreen game"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <Tabs value={activeGameId} onValueChange={(value) => setActiveGameId(value as GameId)} className="w-full">
+              <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 mb-4">
+                <TabsTrigger value="reaction-timer">Reaction Timer</TabsTrigger>
+                <TabsTrigger value="focus-breathing">Focus Breathing</TabsTrigger>
+                <TabsTrigger value="test-game">Test Game</TabsTrigger>
+                <TabsTrigger value="ai-game">AI Game</TabsTrigger>
+              </TabsList>
+              <TabsContent value="reaction-timer">
+                <ReactionTimerGame />
+              </TabsContent>
+              <TabsContent value="focus-breathing">
+                <FocusBreathingGame />
+              </TabsContent>
+              <TabsContent value="test-game">
+                <TestGame />
+              </TabsContent>
+              <TabsContent value="ai-game">
+                <AIGame />
+              </TabsContent>
+            </Tabs>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
