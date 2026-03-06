@@ -14,6 +14,7 @@ const OBSTACLE_MIN_GAP = 280;
 const OBSTACLE_MAX_GAP = 420;
 const GAME_SPEED = 8;
 const SCORE_PER_FRAME = 0.5;
+const CONTROLLER_DEADZONE = 0.45;
 
 type GameStatus = 'idle' | 'playing' | 'gameover';
 
@@ -23,11 +24,12 @@ interface GameState {
   dinoVy: number;
   obstacles: { x: number; width: number; height: number }[];
   score: number;
-  lastSpawn: number;
+  gapCounter: number;
+  nextGap: number;
   speed: number;
 }
 
-export const TestGame = () => {
+export const JumpGame = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const gameStateRef = useRef<GameState>({
     status: 'idle',
@@ -35,12 +37,12 @@ export const TestGame = () => {
     dinoVy: 0,
     obstacles: [],
     score: 0,
-    lastSpawn: 0,
+    gapCounter: 0,
+    nextGap: (OBSTACLE_MIN_GAP + OBSTACLE_MAX_GAP) / 2,
     speed: GAME_SPEED,
   });
   const rafRef = useRef<number>(0);
   const prevJumpRef = useRef<boolean>(false);
-  const prevStartRef = useRef<boolean>(false);
   const [score, setScore] = useState(0);
   const [status, setStatus] = useState<GameStatus>('idle');
   const [gamepadConnected, setGamepadConnected] = useState(false);
@@ -52,28 +54,42 @@ export const TestGame = () => {
   const jump = useCallback(() => {
     const state = gameStateRef.current;
     if (state.status !== 'playing') return;
-    const groundY = canvasRef.current ? getGroundY(canvasRef.current) : 0;
-    const dinoBottom = groundY - state.dinoY - DINO_HEIGHT;
-    if (dinoBottom <= 0) {
+    const isOnGround = state.dinoY >= -0.5 && Math.abs(state.dinoVy) < 0.2;
+    if (isOnGround) {
       state.dinoVy = JUMP_VELOCITY;
     }
-  }, [getGroundY]);
+  }, []);
 
   const startGame = useCallback(() => {
     const state = gameStateRef.current;
     if (state.status !== 'idle' && state.status !== 'gameover') return;
     state.status = 'playing';
     state.dinoY = 0;
-    state.dinoVy = JUMP_VELOCITY;
+    state.dinoVy = 0;
     state.obstacles = [];
     state.score = 0;
-    state.lastSpawn = 0;
+    state.gapCounter = 0;
+    state.nextGap = OBSTACLE_MIN_GAP + Math.random() * (OBSTACLE_MAX_GAP - OBSTACLE_MIN_GAP);
     setStatus('playing');
     setScore(0);
   }, []);
 
+  const handleGameInput = useCallback(
+    (code: string) => {
+      const isJumpCode = code === 'Space' || code === 'ArrowUp' || code === 'KeyW' || code === 'Enter';
+      if (!isJumpCode) return;
+      const state = gameStateRef.current;
+      if (state.status === 'idle' || state.status === 'gameover') {
+        startGame();
+      } else if (state.status === 'playing') {
+        jump();
+      }
+    },
+    [jump, startGame]
+  );
+
   const gameLoop = useCallback(
-    (timestamp: number) => {
+    () => {
       const canvas = canvasRef.current;
       if (!canvas) {
         rafRef.current = requestAnimationFrame(gameLoop);
@@ -105,13 +121,25 @@ export const TestGame = () => {
         });
         state.obstacles = state.obstacles.filter((obs) => obs.x + obs.width > 0);
 
-        if (timestamp - state.lastSpawn > (OBSTACLE_MIN_GAP + Math.random() * (OBSTACLE_MAX_GAP - OBSTACLE_MIN_GAP))) {
+        // Advance gap counter in pixels and spawn obstacles when threshold reached.
+        state.gapCounter += state.speed;
+        if (state.gapCounter >= state.nextGap) {
+          const variant = Math.random();
+          let width = CACTUS_WIDTH;
+          const height = CACTUS_HEIGHT;
+          if (variant > 0.66) {
+            width = CACTUS_WIDTH * 2; // double cactus
+          } else if (variant > 0.33) {
+            width = CACTUS_WIDTH * 1.5;
+          }
+
           state.obstacles.push({
             x: canvas.width,
-            width: CACTUS_WIDTH,
-            height: CACTUS_HEIGHT,
+            width,
+            height,
           });
-          state.lastSpawn = timestamp;
+          state.gapCounter = 0;
+          state.nextGap = OBSTACLE_MIN_GAP + Math.random() * (OBSTACLE_MAX_GAP - OBSTACLE_MIN_GAP);
         }
 
         const dinoLeft = 60;
@@ -129,33 +157,6 @@ export const TestGame = () => {
             setStatus('gameover');
             break;
           }
-        }
-
-        const gamepads = navigator.getGamepads?.();
-        if (gamepads) {
-          let anyJump = false;
-          for (let i = 0; i < gamepads.length; i++) {
-            const gp = gamepads[i];
-            if (!gp) continue;
-            const jumpPressed = gp.buttons[0]?.pressed || gp.buttons[12]?.pressed;
-            anyJump = anyJump || jumpPressed;
-            if (jumpPressed && !prevJumpRef.current) jump();
-          }
-          prevJumpRef.current = anyJump;
-        }
-      }
-
-      if (state.status === 'idle' || state.status === 'gameover') {
-        const gamepads = navigator.getGamepads?.();
-        if (gamepads) {
-          let anyStart = false;
-          for (let i = 0; i < gamepads.length; i++) {
-            const gp = gamepads[i];
-            if (!gp) continue;
-            anyStart = anyStart || gp.buttons[0]?.pressed || gp.buttons[12]?.pressed;
-          }
-          if (anyStart && !prevStartRef.current) startGame();
-          prevStartRef.current = anyStart;
         }
       }
 
@@ -191,7 +192,7 @@ export const TestGame = () => {
         ctx.fillStyle = '#4b5563';
         ctx.font = '14px system-ui, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('Press Space, ↑ or controller A to start', canvas.width / 2, canvas.height / 2 - 10);
+        ctx.fillText('Press Space, W, ↑ or controller A to start', canvas.width / 2, canvas.height / 2 - 10);
         ctx.fillText('Jump over the cacti!', canvas.width / 2, canvas.height / 2 + 10);
       }
 
@@ -214,7 +215,7 @@ export const TestGame = () => {
 
       rafRef.current = requestAnimationFrame(gameLoop);
     },
-    [getGroundY, jump, startGame]
+    [getGroundY]
   );
 
   useEffect(() => {
@@ -224,15 +225,9 @@ export const TestGame = () => {
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.code !== 'Space' && e.code !== 'ArrowUp') return;
-      e.preventDefault();
-      if (gameStateRef.current.status === 'idle' || gameStateRef.current.status === 'gameover') {
-        startGame();
-      } else if (gameStateRef.current.status === 'playing') {
-        jump();
-      }
+      handleGameInput(e.code);
     },
-    [jump, startGame]
+    [handleGameInput]
   );
 
   useEffect(() => {
@@ -240,7 +235,47 @@ export const TestGame = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleKeyDown]);
 
+  useEffect(() => {
+    let frame = 0;
+
+    const pollGamepads = () => {
+      const gamepads = navigator.getGamepads?.();
+      let anyJumpPressed = false;
+
+      if (gamepads) {
+        for (let i = 0; i < gamepads.length; i += 1) {
+          const gp = gamepads[i];
+          if (!gp) continue;
+
+          const jumpPressed =
+            gp.buttons[0]?.pressed ||
+            gp.buttons[1]?.pressed ||
+            gp.buttons[9]?.pressed ||
+            gp.buttons[12]?.pressed ||
+            gp.axes[1] < -CONTROLLER_DEADZONE;
+          anyJumpPressed = anyJumpPressed || Boolean(jumpPressed);
+        }
+      }
+
+      if (anyJumpPressed && !prevJumpRef.current) {
+        const state = gameStateRef.current;
+        if (state.status === 'idle' || state.status === 'gameover') {
+          startGame();
+        } else {
+          jump();
+        }
+      }
+
+      prevJumpRef.current = anyJumpPressed;
+      frame = requestAnimationFrame(pollGamepads);
+    };
+
+    frame = requestAnimationFrame(pollGamepads);
+    return () => cancelAnimationFrame(frame);
+  }, [jump, startGame]);
+
   const handleCanvasClick = useCallback(() => {
+    canvasRef.current?.focus();
     const state = gameStateRef.current;
     if (state.status === 'idle' || state.status === 'gameover') {
       startGame();
@@ -276,7 +311,7 @@ export const TestGame = () => {
     <Card className="border overflow-hidden">
       <CardHeader className="pb-2">
         <CardTitle className="text-lg flex items-center gap-2">
-          Test Game
+          Jump Game
           {gamepadConnected && (
             <span className="text-xs font-normal text-muted-foreground flex items-center gap-1">
               <Gamepad2 className="h-3.5 w-3.5" />
@@ -287,7 +322,7 @@ export const TestGame = () => {
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">
-          Like Chrome’s offline dino: run, jump over cacti. Use Space / ↑ or controller A (or D-pad up).
+          Like Chrome’s offline dino: run, jump over cacti. Use Space / W / ↑, click/tap, or controller A.
         </p>
         <div className="rounded-lg border bg-muted/30 overflow-hidden">
           <canvas
@@ -296,8 +331,10 @@ export const TestGame = () => {
             height={320}
             className="w-full h-[240px] md:h-[320px] block cursor-pointer"
             onClick={handleCanvasClick}
+            onPointerDown={handleCanvasClick}
             tabIndex={0}
-            aria-label="Test Game canvas - click or press Space to jump"
+            onKeyDown={(e) => handleGameInput(e.code)}
+            aria-label="Jump Game canvas - click, tap, or press Space to jump"
           />
         </div>
         {status === 'gameover' && (
@@ -310,4 +347,4 @@ export const TestGame = () => {
   );
 };
 
-export default TestGame;
+export default JumpGame;

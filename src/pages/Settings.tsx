@@ -82,8 +82,9 @@ const Settings = () => {
         setIsPasswordOpen(false);
         setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
       }
-    } catch (error: any) {
-      toast({ title: 'Failed to change password', description: error.message, variant: 'destructive' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to change password', description: message, variant: 'destructive' });
     } finally {
       setPasswordLoading(false);
     }
@@ -102,8 +103,9 @@ const Settings = () => {
         if (response.data?.user) setUser(response.data.user);
         toast({ title: 'Profile updated successfully' });
       }
-    } catch (error: any) {
-      toast({ title: 'Failed to update profile', description: error.message, variant: 'destructive' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to update profile', description: message, variant: 'destructive' });
     } finally {
       setLoading(false);
     }
@@ -121,8 +123,9 @@ const Settings = () => {
       queryClient.invalidateQueries({ queryKey: ['contacts-count'] });
       toast({ title: response.data?.message || 'All contacts deleted' });
       setClearContactsOpen(false);
-    } catch (error: any) {
-      toast({ title: 'Failed to delete contacts', description: error.message, variant: 'destructive' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete contacts', description: message, variant: 'destructive' });
     } finally {
       setClearContactsLoading(false);
     }
@@ -141,8 +144,9 @@ const Settings = () => {
       queryClient.invalidateQueries({ queryKey: calendarQueryKeys.stats });
       toast({ title: response.data?.message || 'All calendar and todo entries deleted' });
       setClearCalendarOpen(false);
-    } catch (error: any) {
-      toast({ title: 'Failed to delete calendar and todo data', description: error.message, variant: 'destructive' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete calendar and todo data', description: message, variant: 'destructive' });
     } finally {
       setClearCalendarLoading(false);
     }
@@ -162,8 +166,9 @@ const Settings = () => {
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       toast({ title: response.data?.message || 'All mail accounts deleted' });
       setClearMailOpen(false);
-    } catch (error: any) {
-      toast({ title: 'Failed to delete mail accounts', description: error.message, variant: 'destructive' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete mail accounts', description: message, variant: 'destructive' });
     } finally {
       setClearMailLoading(false);
     }

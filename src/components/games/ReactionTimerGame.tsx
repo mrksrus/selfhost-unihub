@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Gamepad2 } from 'lucide-react';
 
 type Phase = 'idle' | 'waiting' | 'ready' | 'result';
 
 const MIN_DELAY_MS = 1000;
 const MAX_DELAY_MS = 4000;
+const CONTROLLER_DEADZONE = 0.45;
 
 export const ReactionTimerGame = () => {
   const [phase, setPhase] = useState<Phase>('idle');
@@ -13,7 +15,9 @@ export const ReactionTimerGame = () => {
   const [startTime, setStartTime] = useState<number | null>(null);
   const [currentTime, setCurrentTime] = useState<number | null>(null);
   const [bestTime, setBestTime] = useState<number | null>(null);
+  const [gamepadConnected, setGamepadConnected] = useState(false);
   const timeoutRef = useRef<number | null>(null);
+  const prevActionRef = useRef(false);
 
   const resetTimeout = () => {
     if (timeoutRef.current !== null) {
@@ -43,7 +47,7 @@ export const ReactionTimerGame = () => {
     }, delay);
   }, []);
 
-  const handleTap = () => {
+  const handleTap = useCallback(() => {
     if (phase === 'waiting') {
       resetTimeout();
       setPhase('result');
@@ -69,7 +73,66 @@ export const ReactionTimerGame = () => {
     if (phase === 'result' || phase === 'idle') {
       startRound();
     }
-  };
+  }, [phase, startRound, startTime]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.code === 'Space' || event.code === 'Enter') {
+        event.preventDefault();
+        handleTap();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleTap]);
+
+  useEffect(() => {
+    const onConnectChange = () => {
+      setGamepadConnected(navigator.getGamepads?.().some((gamepad) => gamepad !== null) ?? false);
+    };
+
+    window.addEventListener('gamepadconnected', onConnectChange);
+    window.addEventListener('gamepaddisconnected', onConnectChange);
+    onConnectChange();
+
+    return () => {
+      window.removeEventListener('gamepadconnected', onConnectChange);
+      window.removeEventListener('gamepaddisconnected', onConnectChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    let frame = 0;
+
+    const pollGamepads = () => {
+      const gamepads = navigator.getGamepads?.();
+      let actionPressed = false;
+
+      if (gamepads) {
+        for (let i = 0; i < gamepads.length; i += 1) {
+          const gp = gamepads[i];
+          if (!gp) continue;
+          const buttonTap =
+            gp.buttons[0]?.pressed ||
+            gp.buttons[9]?.pressed ||
+            gp.buttons[7]?.pressed ||
+            gp.buttons[12]?.pressed ||
+            gp.axes[1] < -CONTROLLER_DEADZONE;
+          actionPressed = actionPressed || Boolean(buttonTap);
+        }
+      }
+
+      if (actionPressed && !prevActionRef.current) {
+        handleTap();
+      }
+      prevActionRef.current = actionPressed;
+      frame = requestAnimationFrame(pollGamepads);
+    };
+
+    frame = requestAnimationFrame(pollGamepads);
+    return () => cancelAnimationFrame(frame);
+  }, [handleTap]);
 
   const getBackgroundClass = () => {
     if (phase === 'ready') return 'bg-emerald-500/10 border-emerald-500/40';
@@ -86,7 +149,15 @@ export const ReactionTimerGame = () => {
   return (
     <Card className={`border transition-colors duration-200 ${getBackgroundClass()}`}>
       <CardHeader>
-        <CardTitle className="text-lg">Reaction Timer</CardTitle>
+        <CardTitle className="text-lg flex items-center justify-between gap-2">
+          <span>Reaction Timer</span>
+          {gamepadConnected && (
+            <span className="text-xs font-normal text-muted-foreground flex items-center gap-1">
+              <Gamepad2 className="h-3.5 w-3.5" />
+              Controller
+            </span>
+          )}
+        </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">{message}</p>

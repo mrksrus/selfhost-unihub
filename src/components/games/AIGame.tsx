@@ -103,6 +103,47 @@ const generateWalls = () => {
 
 const getAIInterval = (score: number) => Math.max(MIN_AI_INTERVAL, INITIAL_AI_INTERVAL - score * 44);
 
+const getDirectionFromGamepad = (gp: Gamepad): Direction | null => {
+  const dpadUp = gp.buttons[12]?.pressed;
+  const dpadDown = gp.buttons[13]?.pressed;
+  const dpadLeft = gp.buttons[14]?.pressed;
+  const dpadRight = gp.buttons[15]?.pressed;
+
+  if (dpadUp) return 'up';
+  if (dpadDown) return 'down';
+  if (dpadLeft) return 'left';
+  if (dpadRight) return 'right';
+
+  const hat = gp.axes[9];
+  if (typeof hat === 'number') {
+    if (hat <= -0.9) return 'up';
+    if (hat <= -0.4) return 'right';
+    if (hat <= 0.1) return 'down';
+    if (hat <= 0.6) return 'left';
+  }
+
+  const primaryX = gp.axes[0] ?? 0;
+  const primaryY = gp.axes[1] ?? 0;
+  const altX = gp.axes[2] ?? 0;
+  const altY = gp.axes[3] ?? 0;
+  const x = Math.abs(primaryX) > Math.abs(altX) ? primaryX : altX;
+  const y = Math.abs(primaryY) > Math.abs(altY) ? primaryY : altY;
+
+  const useRotatedAxes = gp.mapping !== 'standard';
+  const horizontal = useRotatedAxes ? y : x;
+  const vertical = useRotatedAxes ? x : y;
+
+  if (Math.abs(horizontal) > Math.abs(vertical)) {
+    if (horizontal < -CONTROLLER_DEADZONE) return useRotatedAxes ? 'up' : 'left';
+    if (horizontal > CONTROLLER_DEADZONE) return useRotatedAxes ? 'down' : 'right';
+    return null;
+  }
+
+  if (vertical < -CONTROLLER_DEADZONE) return useRotatedAxes ? 'left' : 'up';
+  if (vertical > CONTROLLER_DEADZONE) return useRotatedAxes ? 'right' : 'down';
+  return null;
+};
+
 const createGameState = (): GameState => {
   const walls = generateWalls();
   const player = { x: 0, y: 0 };
@@ -276,6 +317,23 @@ const AIGame = () => {
     dispatch({ type: 'MOVE_PLAYER', direction });
   }, []);
 
+  const handleGridCellClick = useCallback(
+    (x: number, y: number) => {
+      const current = stateRef.current;
+      if (current.status !== 'playing') return;
+
+      const dx = x - current.player.x;
+      const dy = y - current.player.y;
+      if (Math.abs(dx) + Math.abs(dy) !== 1) return;
+
+      if (dx === 1) handleDirection('right');
+      if (dx === -1) handleDirection('left');
+      if (dy === 1) handleDirection('down');
+      if (dy === -1) handleDirection('up');
+    },
+    [handleDirection]
+  );
+
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
@@ -341,16 +399,10 @@ const AIGame = () => {
         for (let i = 0; i < gamepads.length; i += 1) {
           const gp = gamepads[i];
           if (!gp) continue;
-
-          const up = gp.buttons[12]?.pressed || gp.axes[1] < -CONTROLLER_DEADZONE;
-          const down = gp.buttons[13]?.pressed || gp.axes[1] > CONTROLLER_DEADZONE;
-          const left = gp.buttons[14]?.pressed || gp.axes[0] < -CONTROLLER_DEADZONE;
-          const right = gp.buttons[15]?.pressed || gp.axes[0] > CONTROLLER_DEADZONE;
-
-          if (up) direction = 'up';
-          else if (down) direction = 'down';
-          else if (left) direction = 'left';
-          else if (right) direction = 'right';
+          const nextDirection = getDirectionFromGamepad(gp);
+          if (nextDirection && !direction) {
+            direction = nextDirection;
+          }
 
           aPressed = aPressed || gp.buttons[0]?.pressed || gp.buttons[9]?.pressed;
         }
@@ -470,6 +522,8 @@ const AIGame = () => {
                 <div
                   key={key}
                   className={`relative aspect-square rounded-[4px] border border-border/40 ${cellClass}`}
+                  onClick={() => handleGridCellClick(x, y)}
+                  onPointerDown={() => handleGridCellClick(x, y)}
                 >
                   {isTarget && !isPlayer && (
                     <span className="absolute inset-0 flex items-center justify-center text-[10px] text-cyan-900 dark:text-cyan-200">

@@ -2,6 +2,11 @@
 
 let swRegistration: ServiceWorkerRegistration | null = null;
 
+interface PeriodicSyncManagerLike {
+  getTags(): Promise<string[]>;
+  register(tag: string, options: { minInterval: number }): Promise<void>;
+}
+
 // Initialize service worker registration
 export async function initServiceWorker(): Promise<ServiceWorkerRegistration | null> {
   if (!('serviceWorker' in navigator)) {
@@ -119,17 +124,18 @@ export async function registerPeriodicSync(tag: string, minInterval: number = 15
 
   try {
     const registration = await navigator.serviceWorker.ready;
-    // @ts-ignore - periodicSync might not be in types
-    if ('periodicSync' in registration) {
-      // @ts-ignore
-      const status = await registration.periodicSync.getTags();
-      if (!status.includes(tag)) {
-        // @ts-ignore
-        await registration.periodicSync.register(tag, { minInterval });
-        console.log(`[SW] Registered periodic sync: ${tag} (every ${minInterval} minutes)`);
-      }
-      return true;
+    const maybePeriodic = registration as ServiceWorkerRegistration & {
+      periodicSync?: PeriodicSyncManagerLike;
+    };
+    const periodicSync = maybePeriodic.periodicSync;
+    if (!periodicSync) return false;
+
+    const tags = await periodicSync.getTags();
+    if (!tags.includes(tag)) {
+      await periodicSync.register(tag, { minInterval });
+      console.log(`[SW] Registered periodic sync: ${tag} (every ${minInterval} minutes)`);
     }
+    return true;
   } catch (error) {
     console.error(`[SW] Failed to register periodic sync ${tag}:`, error);
   }

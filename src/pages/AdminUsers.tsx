@@ -121,8 +121,9 @@ const AdminUsers = () => {
         setPasswordDialogUser(null);
         setNewPassword('');
       }
-    } catch (err: any) {
-      toast({ title: 'Failed to change password', description: err.message, variant: 'destructive' });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      toast({ title: 'Failed to change password', description: message, variant: 'destructive' });
     } finally {
       setPasswordLoading(false);
     }

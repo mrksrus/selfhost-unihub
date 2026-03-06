@@ -106,6 +106,16 @@ interface ComposeAttachment {
   file: File;
 }
 
+interface AddMailAccountResponse {
+  syncInProgress?: boolean;
+  message?: string;
+}
+
+interface MailSyncResponse {
+  message?: string;
+  newEmails?: number;
+}
+
 const mailProviders = [
   { value: 'gmail', label: 'Gmail', imapHost: 'imap.gmail.com', smtpHost: 'smtp.gmail.com', imapPort: 993, smtpPort: 587 },
   { value: 'yahoo', label: 'Yahoo Mail', imapHost: 'imap.mail.yahoo.com', smtpHost: 'smtp.mail.yahoo.com', imapPort: 993, smtpPort: 587 },
@@ -345,7 +355,7 @@ const MailPage = () => {
     staleTime: 60000, // Consider data fresh for 60 seconds (will be invalidated when count changes)
   });
 
-  const emails = emailsData?.emails || [];
+  const emails = React.useMemo(() => emailsData?.emails ?? [], [emailsData?.emails]);
   const pagination = emailsData?.pagination;
   const totalMatchingEmails = pagination?.total ?? emails.length;
   const totalPages = pagination?.totalPages ?? 1;
@@ -361,14 +371,14 @@ const MailPage = () => {
   // Add mail account mutation (connection verified by backend via testImapConnection; no cert/host verification)
   const addAccount = useMutation({
     mutationFn: async (account: typeof accountForm) => {
-      const response = await api.post('/mail/accounts', {
+      const response = await api.post<AddMailAccountResponse>('/mail/accounts', {
         ...account,
         encrypted_password: account.password, // Will be encrypted on server
       });
       if (response.error) throw new Error(response.error);
-      return response.data;
+      return response.data ?? {};
     },
-    onSuccess: (data: any) => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
@@ -634,13 +644,13 @@ const MailPage = () => {
   // Sync mail mutation
   const syncMail = useMutation({
     mutationFn: async (account_id: string) => {
-      const response = await api.post('/mail/sync', { account_id });
+      const response = await api.post<MailSyncResponse>('/mail/sync', { account_id });
       if (response.error) {
         throw new Error(response.error);
       }
-      return response.data;
+      return response.data ?? {};
     },
-    onSuccess: (data: any) => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });

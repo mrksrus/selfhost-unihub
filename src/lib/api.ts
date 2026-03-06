@@ -5,7 +5,7 @@ const API_URL = import.meta.env.VITE_API_URL || '/api';
 interface ApiResponse<T> {
   data?: T;
   error?: string;
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface BlobResponse {
@@ -173,14 +173,14 @@ class ApiClient {
     };
   }
 
-  async post<T>(endpoint: string, body?: any): Promise<ApiResponse<T>> {
+  async post<T>(endpoint: string, body?: unknown): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, {
       method: 'POST',
       body: JSON.stringify(body),
     });
   }
 
-  async put<T>(endpoint: string, body?: any): Promise<ApiResponse<T>> {
+  async put<T>(endpoint: string, body?: unknown): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, {
       method: 'PUT',
       body: JSON.stringify(body),

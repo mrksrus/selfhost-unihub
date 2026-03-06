@@ -125,20 +125,6 @@ const Contacts = () => {
 
   const debouncedSearch = useDebouncedValue(searchQuery, SEARCH_DEBOUNCE_MS);
 
-  const normalizeEmail = (value: string | null | undefined) => (value || '').trim().toLowerCase();
-  const normalizePhone = (value: string | null | undefined) => (value || '').replace(/[^\d+]/g, '');
-  const normalizeName = (value: string | null | undefined) => (value || '').trim().toLowerCase();
-  const getDuplicateKey = (contact: Contact) => {
-    const email = [contact.email, contact.email2, contact.email3].map(normalizeEmail).find(Boolean);
-    if (email) return `e:${email}`;
-    const phone = [contact.phone, contact.phone2, contact.phone3].map(normalizePhone).find(Boolean);
-    if (phone) return `p:${phone}`;
-    const first = normalizeName(contact.first_name);
-    const last = normalizeName(contact.last_name);
-    if (first || last) return `n:${first}|${last}`;
-    return null;
-  };
-
   // Open new contact dialog if linked from dashboard
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -165,6 +151,20 @@ const Contacts = () => {
   });
 
   const duplicateMeta = useMemo(() => {
+    const normalizeEmail = (value: string | null | undefined) => (value || '').trim().toLowerCase();
+    const normalizePhone = (value: string | null | undefined) => (value || '').replace(/[^\d+]/g, '');
+    const normalizeName = (value: string | null | undefined) => (value || '').trim().toLowerCase();
+    const getDuplicateKey = (contact: Contact) => {
+      const email = [contact.email, contact.email2, contact.email3].map(normalizeEmail).find(Boolean);
+      if (email) return `e:${email}`;
+      const phone = [contact.phone, contact.phone2, contact.phone3].map(normalizePhone).find(Boolean);
+      if (phone) return `p:${phone}`;
+      const first = normalizeName(contact.first_name);
+      const last = normalizeName(contact.last_name);
+      if (first || last) return `n:${first}|${last}`;
+      return null;
+    };
+
     const groups = new Map<string, Contact[]>();
     for (const contact of allContacts) {
       const key = getDuplicateKey(contact);
