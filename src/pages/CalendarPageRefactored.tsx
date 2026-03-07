@@ -1,12 +1,13 @@
 import { useMemo, useState, useEffect, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { addDays, addMonths, eachDayOfInterval, endOfDay, endOfMonth, endOfWeek, format, isSameDay, isSameMonth, isToday, parseISO, startOfDay, startOfMonth, startOfWeek, subDays, subMonths } from 'date-fns';
-import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Edit, Loader2, MapPin, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Edit, Info, Loader2, MapPin, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -32,8 +33,7 @@ const reminderOptions = [
 
 const providerOptions: { value: CalendarProvider; label: string }[] = [
   { value: 'local', label: 'Local' },
-  { value: 'google', label: 'Google Calendar' },
-  { value: 'microsoft', label: 'Microsoft 365' },
+  { value: 'ical', label: 'Web calendar (iCal URL)' },
   { value: 'icloud', label: 'iCloud / CalDAV' },
 ];
 
@@ -107,7 +107,6 @@ const CalendarPage = () => {
     caldav_event_base_url: '',
     provider_config_json: '',
   });
-  const [oauthPopupLoading, setOauthPopupLoading] = useState<CalendarProvider | null>(null);
 
   const [calendarForm, setCalendarForm] = useState({
     account_id: '',
@@ -288,6 +287,12 @@ const CalendarPage = () => {
           ...(accountForm.caldav_event_base_url.trim() ? { caldav_event_base_url: accountForm.caldav_event_base_url.trim() } : {}),
         };
       }
+      if (accountForm.provider === 'ical') {
+        providerConfig = {
+          ...providerConfig,
+          ...(accountForm.ics_url.trim() ? { ics_url: accountForm.ics_url.trim() } : {}),
+        };
+      }
       return calendarApi.createAccount({
         provider: accountForm.provider,
         account_email: accountForm.account_email || null,
@@ -295,7 +300,10 @@ const CalendarPage = () => {
         access_token: accountForm.access_token || undefined,
         refresh_token: accountForm.refresh_token || undefined,
         provider_config: providerConfig,
-        default_calendar_name: accountForm.provider === 'icloud' ? 'iCloud Calendar' : undefined,
+        default_calendar_name:
+          accountForm.provider === 'icloud' ? 'iCloud Calendar'
+          : accountForm.provider === 'ical' ? 'Web calendar'
+          : undefined,
       });
     },
     onSuccess: () => {
@@ -317,57 +325,6 @@ const CalendarPage = () => {
       toast({ title: 'Failed to create calendar account', description: error.message, variant: 'destructive' });
     },
   });
-
-  useEffect(() => {
-    const onOAuthMessage = (event: MessageEvent) => {
-      if (!event.data || event.data.type !== 'calendar-oauth-result') return;
-      const success = !!event.data.success;
-      const message = String(event.data.message || (success ? 'Connected' : 'Connection failed'));
-      setOauthPopupLoading(null);
-      if (success) {
-        invalidateCalendarQueries();
-        toast({ title: message });
-        setIsAccountDialogOpen(false);
-      } else {
-        toast({ title: 'OAuth failed', description: message, variant: 'destructive' });
-      }
-    };
-    window.addEventListener('message', onOAuthMessage);
-    return () => window.removeEventListener('message', onOAuthMessage);
-  }, []);
-
-  const startOAuthConnect = (provider: 'google' | 'microsoft') => {
-    setOauthPopupLoading(provider);
-    const width = 560;
-    const height = 720;
-    const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
-    const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
-    const popup = window.open(
-      `/api/calendar/oauth/${provider}/start`,
-      `calendar-oauth-${provider}`,
-      `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-    );
-    if (!popup) {
-      setOauthPopupLoading(null);
-      toast({
-        title: 'Popup blocked',
-        description: 'Allow popups for this site to connect calendar via OAuth.',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const startedAt = Date.now();
-    const interval = window.setInterval(() => {
-      if (popup.closed) {
-        window.clearInterval(interval);
-        // If closed quickly and no message arrived, reset loading.
-        if (Date.now() - startedAt < 2 * 60 * 1000) {
-          setOauthPopupLoading((current) => (current === provider ? null : current));
-        }
-      }
-    }, 500);
-  };
 
   const syncAccountMutation = useMutation({
     mutationFn: (id: string) => calendarApi.syncAccount(id),
@@ -602,16 +559,56 @@ const CalendarPage = () => {
                 </DialogTrigger>
                 <DialogContent>
                   <DialogHeader>
-                    <DialogTitle>Add Calendar Account</DialogTitle>
+                    <div className="flex items-center gap-2">
+                      <DialogTitle>Add Calendar Account</DialogTitle>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label="How to get calendar URL">
+                            <Info className="h-4 w-4" />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-[340px] max-h-[70vh] overflow-y-auto" align="start">
+                          <div className="space-y-3 text-sm">
+                            <p className="font-medium">How to get calendar data (URL + password)</p>
+                            <p className="text-muted-foreground text-xs">Use <strong>Web calendar (iCal URL)</strong> for Google or Outlook. Use <strong>iCloud / CalDAV</strong> for Apple.</p>
+                            <div className="space-y-2">
+                              <p className="font-medium">Google Calendar</p>
+                              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                                <li>Open calendar.google.com → left panel: your calendar name</li>
+                                <li>Settings (gear) → under &quot;Integrate calendar&quot; copy <strong>Secret address in iCal format</strong></li>
+                                <li>Paste that URL in &quot;Web calendar&quot; account (no password unless the link is protected)</li>
+                              </ol>
+                            </div>
+                            <div className="space-y-2">
+                              <p className="font-medium">Microsoft / Outlook</p>
+                              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                                <li>Outlook on the web → Settings → View all → Calendar → Shared calendars</li>
+                                <li>Under &quot;Publish a calendar&quot; select your calendar → Publish</li>
+                                <li>Copy the <strong>ICS link</strong> and paste it in a Web calendar account</li>
+                              </ol>
+                            </div>
+                            <div className="space-y-2">
+                              <p className="font-medium">Apple / iCloud</p>
+                              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                                <li>Choose <strong>iCloud / CalDAV</strong>, enter your Apple ID (email)</li>
+                                <li>Create an app-specific password: appleid.apple.com → Sign-In and Security → App-Specific Passwords</li>
+                                <li>Paste that password and your iCalendar or CalDAV URL (from iCloud calendar settings or a supported app)</li>
+                              </ol>
+                            </div>
+                            <p className="text-xs text-muted-foreground border-t pt-2 mt-2">Sending/accepting/declining invitations is not supported with URL-based sync; use the provider app for that.</p>
+                          </div>
+                        </PopoverContent>
+                      </Popover>
+                    </div>
                   </DialogHeader>
                   <form
                     className="space-y-3"
                     onSubmit={(event) => {
                       event.preventDefault();
-                      if (accountForm.provider === 'icloud' && !accountForm.ics_url.trim() && !accountForm.provider_config_json.trim()) {
+                      if ((accountForm.provider === 'icloud' || accountForm.provider === 'ical') && !accountForm.ics_url.trim() && !accountForm.provider_config_json.trim()) {
                         toast({
-                          title: 'iCloud sync URL missing',
-                          description: 'Add an iCalendar URL or provider config JSON before creating the iCloud account.',
+                          title: 'iCalendar URL required',
+                          description: 'Add an iCalendar URL (or provider config JSON) before creating this account.',
                           variant: 'destructive',
                         });
                         return;
@@ -633,23 +630,14 @@ const CalendarPage = () => {
                         </SelectContent>
                       </Select>
                     </div>
-                    {(accountForm.provider === 'google' || accountForm.provider === 'microsoft') && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="w-full"
-                        onClick={() => startOAuthConnect(accountForm.provider)}
-                        disabled={oauthPopupLoading === accountForm.provider}
-                      >
-                        {oauthPopupLoading === accountForm.provider && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                        Connect with {accountForm.provider === 'google' ? 'Google OAuth' : 'Microsoft OAuth'}
-                      </Button>
-                    )}
                     <div className="space-y-2">
-                      <Label>Email</Label>
+                      <Label>
+                        {accountForm.provider === 'icloud' ? 'Apple ID (email)' : accountForm.provider === 'ical' ? 'Email / username (optional)' : 'Email'}
+                      </Label>
                       <Input
                         value={accountForm.account_email}
                         onChange={(event) => setAccountForm((prev) => ({ ...prev, account_email: event.target.value }))}
+                        placeholder={accountForm.provider === 'icloud' ? 'you@icloud.com' : accountForm.provider === 'ical' ? 'For password-protected URLs' : undefined}
                       />
                     </div>
                     <div className="space-y-2">
@@ -659,21 +647,43 @@ const CalendarPage = () => {
                         onChange={(event) => setAccountForm((prev) => ({ ...prev, display_name: event.target.value }))}
                       />
                     </div>
-                    {accountForm.provider === 'icloud' && (
+                    {accountForm.provider === 'ical' && (
                       <>
                         <div className="space-y-2">
-                          <Label>Access token / app password</Label>
+                          <Label>Password (optional)</Label>
                           <Input
+                            type="password"
+                            autoComplete="off"
                             value={accountForm.access_token}
                             onChange={(event) => setAccountForm((prev) => ({ ...prev, access_token: event.target.value }))}
+                            placeholder="For password-protected calendar URLs"
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label>Refresh token (optional)</Label>
+                          <Label>iCalendar URL (required)</Label>
                           <Input
-                            value={accountForm.refresh_token}
-                            onChange={(event) => setAccountForm((prev) => ({ ...prev, refresh_token: event.target.value }))}
+                            value={accountForm.ics_url}
+                            onChange={(event) => setAccountForm((prev) => ({ ...prev, ics_url: event.target.value }))}
+                            placeholder="https://calendar.google.com/.../basic.ics or Outlook/other iCal feed"
                           />
+                          <p className="text-xs text-muted-foreground">
+                            No OAuth or server config needed. Google Calendar: Settings → your calendar → Integrate calendar → Secret address. Outlook: Calendar → Share → ICS link.
+                          </p>
+                        </div>
+                      </>
+                    )}
+                    {accountForm.provider === 'icloud' && (
+                      <>
+                        <div className="space-y-2">
+                          <Label>App-specific password</Label>
+                          <Input
+                            type="password"
+                            autoComplete="off"
+                            value={accountForm.access_token}
+                            onChange={(event) => setAccountForm((prev) => ({ ...prev, access_token: event.target.value }))}
+                            placeholder="From appleid.apple.com → Sign-In and Security → App-Specific Passwords"
+                          />
+                          <p className="text-xs text-muted-foreground">Stored encrypted. Used for authenticated calendar access.</p>
                         </div>
                         <div className="space-y-2">
                           <Label>iCalendar URL (required for sync)</Label>
@@ -682,9 +692,10 @@ const CalendarPage = () => {
                             onChange={(event) => setAccountForm((prev) => ({ ...prev, ics_url: event.target.value }))}
                             placeholder="https://.../calendar.ics"
                           />
+                          <p className="text-xs text-muted-foreground">Prefer a private/authenticated URL when possible; public URLs can be seen by anyone with the link.</p>
                         </div>
                         <div className="space-y-2">
-                          <Label>CalDAV event base URL (optional, write/delete)</Label>
+                          <Label>CalDAV event base URL (optional, for write/delete)</Label>
                           <Input
                             value={accountForm.caldav_event_base_url}
                             onChange={(event) => setAccountForm((prev) => ({ ...prev, caldav_event_base_url: event.target.value }))}

@@ -210,11 +210,6 @@ Ensure `MYSQL_PASSWORD` is identical in both services; the MySQL container creat
 | `CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED` | `true` | Enable Google calendar sync provider |
 | `CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED` | `true` | Enable Microsoft calendar sync provider |
 | `CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED` | `true` | Enable iCloud/CalDAV calendar sync provider |
-| `GOOGLE_CALENDAR_CLIENT_ID` | -- | Google OAuth client ID for calendar connect flow |
-| `GOOGLE_CALENDAR_CLIENT_SECRET` | -- | Google OAuth client secret |
-| `MICROSOFT_CALENDAR_CLIENT_ID` | -- | Microsoft OAuth app client ID |
-| `MICROSOFT_CALENDAR_CLIENT_SECRET` | -- | Microsoft OAuth app client secret |
-| `CALENDAR_OAUTH_REDIRECT_BASE_URL` | first allowed origin | Public base URL used for OAuth callback redirect URI construction |
 | `MYSQL_STARTUP_MAX_WAIT_SECONDS` | `120` | Max seconds `start.sh` waits for MySQL before continuing |
 | `MYSQL_STARTUP_CHECK_INTERVAL_SECONDS` | `5` | Seconds between MySQL readiness checks in `start.sh` |
 | `UNIHUB_API_START_DELAY_SECONDS` | `2` | Delay after API start before Nginx startup check |
@@ -229,14 +224,13 @@ Ensure `MYSQL_PASSWORD` is identical in both services; the MySQL container creat
 
 ## Calendar Sync Details
 
-- **Providers**: Local, Google Calendar, Microsoft 365, iCloud/CalDAV
+- **Providers**: Local, Web calendar (iCal URL), iCloud/CalDAV. Connect Google, Microsoft, or Apple by adding a **Web calendar** with the provider’s iCal/ICS URL (see in-app (i) guide).
 - **Capabilities**:
   - Multiple calendars per account with per-calendar visibility and auto-ToDo toggle
-  - Manual and periodic provider sync
-  - Local event create/update/delete propagation to provider for mapped external events
-  - RSVP API endpoint for attendee status updates
-- **OAuth connect UI**: Google and Microsoft can be connected from Calendar settings via popup OAuth flow (`/api/calendar/oauth/:provider/start` + callback)
-- **iCloud note**: invitation behavior is limited by CalDAV/provider constraints
+  - Manual and periodic provider sync (read-only for URL-based feeds)
+  - Local event create/update/delete where the provider supports it (e.g. iCloud CalDAV)
+- **No OAuth**: Calendar connection is URL + optional password per account; no server-side OAuth env vars required.
+- **Invitations**: Sending, accepting, or declining invitations natively is not supported with URL-based sync; use the provider’s app or OAuth-based integration elsewhere for that.
 
 ## Known Limitations
 

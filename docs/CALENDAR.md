@@ -115,20 +115,9 @@ All endpoints require auth cookie; write routes require `X-CSRF-Token`.
 - `CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED` (default enabled)
 - `CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED` (default enabled)
 
-## OAuth setup
+## Connecting external calendars
 
-Set these environment variables to use popup OAuth account connect for Google/Microsoft:
-
-- `GOOGLE_CALENDAR_CLIENT_ID`
-- `GOOGLE_CALENDAR_CLIENT_SECRET`
-- `MICROSOFT_CALENDAR_CLIENT_ID`
-- `MICROSOFT_CALENDAR_CLIENT_SECRET`
-- `CALENDAR_OAUTH_REDIRECT_BASE_URL` (recommended when reverse-proxied)
-
-OAuth redirect URIs must point to:
-
-- `{base}/api/calendar/oauth/google/callback`
-- `{base}/api/calendar/oauth/microsoft/callback`
+Calendar connection uses **URL + optional password** per account (no OAuth or server env vars). Use **Web calendar (iCal URL)** for Google or Microsoft: get the private iCal/ICS link from the provider and paste it when adding an account. Use **iCloud / CalDAV** for Apple with Apple ID + app-specific password and iCal/CalDAV URL. See the in-app (i) guide next to “Add Calendar Account” for step-by-step instructions per provider.
 
 ## Security notes
 
@@ -138,6 +127,6 @@ OAuth redirect URIs must point to:
 
 ## Known limitations
 
-1. OAuth authorization flow UI is not bundled; account creation expects tokens/config supplied by client.
+1. **Invitations**: Sending, accepting, or declining invitations natively is not supported with URL-based sync; use the provider’s app for that.
 2. Recurrence expansion is still limited (field exists but no full recurrence engine in UI).
 3. iCloud invitation semantics are constrained by CalDAV/server behavior.

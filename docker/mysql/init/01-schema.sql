@@ -93,11 +93,11 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     INDEX idx_events_calendar (calendar_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Calendar provider accounts (local, google, microsoft, icloud/caldav)
+-- Calendar provider accounts (local, google, microsoft, icloud/caldav, ical)
 CREATE TABLE IF NOT EXISTS calendar_accounts (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     user_id CHAR(36) NOT NULL,
-    provider VARCHAR(32) NOT NULL COMMENT 'local, google, microsoft, icloud',
+    provider VARCHAR(32) NOT NULL COMMENT 'local, google, microsoft, icloud, ical',
     account_email VARCHAR(255),
     display_name VARCHAR(255),
     encrypted_access_token TEXT,

@@ -89,11 +89,6 @@ const CALENDAR_SYNC_ENABLED = process.env.CALENDAR_SYNC_ENABLED !== 'false';
 const CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED = process.env.CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED !== 'false';
 const CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED = process.env.CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED !== 'false';
 const CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED = process.env.CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED !== 'false';
-const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
-const GOOGLE_CALENDAR_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || '';
-const MICROSOFT_CALENDAR_CLIENT_ID = process.env.MICROSOFT_CALENDAR_CLIENT_ID || '';
-const MICROSOFT_CALENDAR_CLIENT_SECRET = process.env.MICROSOFT_CALENDAR_CLIENT_SECRET || '';
-const CALENDAR_OAUTH_REDIRECT_BASE_URL = process.env.CALENDAR_OAUTH_REDIRECT_BASE_URL || '';
 const AUTH_COOKIE_NAME = 'auth-token';
 
 // ── Encryption helpers (AES-256-GCM) ─────────────────────────────
@@ -1227,7 +1222,7 @@ async function ensureSchema() {
   await db.execute(`CREATE TABLE IF NOT EXISTS calendar_accounts (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     user_id CHAR(36) NOT NULL,
-    provider VARCHAR(32) NOT NULL COMMENT 'local, google, microsoft, icloud',
+    provider VARCHAR(32) NOT NULL COMMENT 'local, google, microsoft, icloud, ical',
     account_email VARCHAR(255),
     display_name VARCHAR(255),
     encrypted_access_token TEXT,
@@ -2121,54 +2116,19 @@ const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
     rsvp: 'limited',
     deletePropagation: true,
   },
+  ical: {
+    sync: true,
+    invites: false,
+    rsvp: false,
+    deletePropagation: false,
+  },
 };
 
 function normalizeCalendarAccountProvider(provider) {
   const normalized = String(provider || '').trim().toLowerCase();
   if (!normalized) return null;
-  if (['local', 'google', 'microsoft', 'icloud'].includes(normalized)) return normalized;
+  if (['local', 'google', 'microsoft', 'icloud', 'ical'].includes(normalized)) return normalized;
   return null;
-}
-
-const calendarOauthStates = new Map();
-
-function getCalendarOAuthProviderFromReq(req) {
-  const parts = new URL(req.url, `http://${req.headers.host}`).pathname.split('/').filter(Boolean);
-  const oauthIdx = parts.indexOf('oauth');
-  if (oauthIdx === -1) return null;
-  return normalizeCalendarAccountProvider(parts[oauthIdx + 1]);
-}
-
-function resolvePublicBaseUrl(req) {
-  if (CALENDAR_OAUTH_REDIRECT_BASE_URL) return CALENDAR_OAUTH_REDIRECT_BASE_URL.replace(/\/$/, '');
-  const allowedHttpsOrigin = ALLOWED_ORIGINS.find((origin) => origin.startsWith('https://'));
-  if (allowedHttpsOrigin) return allowedHttpsOrigin.replace(/\/$/, '');
-  if (ALLOWED_ORIGINS[0]) return ALLOWED_ORIGINS[0].replace(/\/$/, '');
-  const host = req.headers.host;
-  const proto = req.headers['x-forwarded-proto'] || 'http';
-  return `${proto}://${host}`;
-}
-
-function buildCalendarOAuthRedirectUri(req, provider) {
-  return `${resolvePublicBaseUrl(req)}/api/calendar/oauth/${provider}/callback`;
-}
-
-function createCalendarOAuthState(userId, provider) {
-  const state = crypto.randomBytes(24).toString('hex');
-  calendarOauthStates.set(state, {
-    userId,
-    provider,
-    createdAt: Date.now(),
-  });
-  return state;
-}
-
-function consumeCalendarOAuthState(state) {
-  const item = calendarOauthStates.get(state);
-  calendarOauthStates.delete(state);
-  if (!item) return null;
-  if (Date.now() - item.createdAt > 10 * 60 * 1000) return null;
-  return item;
 }
 
 function serializeCalendarAccount(row) {
@@ -2547,6 +2507,7 @@ function providerSyncEnabled(provider) {
   if (provider === 'google') return CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED;
   if (provider === 'microsoft') return CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED;
   if (provider === 'icloud') return CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED;
+  if (provider === 'ical') return true; // no OAuth or env required
   return false;
 }
 
@@ -2714,7 +2675,7 @@ async function providerRequest(accountRow, options) {
       return { ok: false, status: 400, error: `Missing access token for ${provider} account` };
     }
     headers.Authorization = `Bearer ${accessToken}`;
-  } else if (provider === 'icloud') {
+  } else if (provider === 'icloud' || provider === 'ical') {
     const config = safeJsonParse(accountRow.provider_config, {}) || {};
     const username = config.username || accountRow.account_email || null;
     const password = accountRow.encrypted_access_token ? decrypt(accountRow.encrypted_access_token) : null;
@@ -3208,6 +3169,62 @@ async function syncIcloudCalendarAccount(userId, accountRow) {
   };
 }
 
+async function syncIcalCalendarAccount(userId, accountRow) {
+  const account = serializeCalendarAccount(accountRow);
+  const config = safeJsonParse(accountRow.provider_config, {}) || {};
+  const configuredCalendars = Array.isArray(config.calendars) ? config.calendars : [];
+  const feeds = configuredCalendars.length > 0
+    ? configuredCalendars
+    : (config.ics_url ? [{
+      external_id: config.external_id || 'ical-default',
+      name: config.calendar_name || 'Web calendar',
+      color: config.color || '#22c55e',
+      ics_url: config.ics_url,
+    }] : []);
+
+  let upsertedEvents = 0;
+  for (const feed of feeds) {
+    if (!feed?.ics_url) continue;
+    const localCalendar = await upsertCalendarFromProvider(userId, account, {
+      external_id: feed.external_id || feed.ics_url,
+      name: feed.name || 'Web calendar',
+      color: feed.color || '#22c55e',
+      read_only: true,
+      is_primary: !!feed.is_primary,
+    });
+    if (!localCalendar) continue;
+
+    const response = await providerRequest(accountRow, {
+      url: feed.ics_url,
+      headers: { Accept: 'text/calendar' },
+    });
+    if (!response.ok) continue;
+    const events = parseIcsEvents(response.text || '');
+    for (const providerEvent of events) {
+      await upsertProviderEventIntoLocal({
+        userId,
+        accountRow,
+        calendarRow: localCalendar,
+        provider: 'ical',
+        providerEvent: {
+          external_event_id: providerEvent.uid,
+          title: providerEvent.title || 'Untitled Event',
+          description: providerEvent.description || null,
+          location: providerEvent.location || null,
+          start_time: providerEvent.start,
+          end_time: providerEvent.end,
+          all_day: !!providerEvent.all_day,
+          attendees: providerEvent.attendees || [],
+          deleted: providerEvent.status === 'CANCELLED',
+        },
+      });
+      upsertedEvents += 1;
+    }
+  }
+  await db.execute('UPDATE calendar_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?', [account.id, userId]);
+  return { success: true, provider: 'ical', syncedEvents: upsertedEvents };
+}
+
 async function syncCalendarAccount(accountId, userId) {
   const [rows] = await db.execute(
     'SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE LIMIT 1',
@@ -3229,165 +3246,12 @@ async function syncCalendarAccount(accountId, userId) {
     if (provider === 'google') return await syncGoogleCalendarAccount(userId, accountRow);
     if (provider === 'microsoft') return await syncMicrosoftCalendarAccount(userId, accountRow);
     if (provider === 'icloud') return await syncIcloudCalendarAccount(userId, accountRow);
+    if (provider === 'ical') return await syncIcalCalendarAccount(userId, accountRow);
   } catch (error) {
     console.error('[CALENDAR SYNC] Sync error:', error);
     return { success: false, status: 500, error: error.message || 'Calendar sync failed' };
   }
   return { success: false, status: 400, error: `Unsupported provider: ${provider}` };
-}
-
-async function upsertCalendarOAuthAccount({
-  userId,
-  provider,
-  accountEmail,
-  displayName,
-  accessToken,
-  refreshToken,
-  tokenExpiresAt,
-}) {
-  const [existingRows] = await db.execute(
-    `SELECT * FROM calendar_accounts
-     WHERE user_id = ? AND provider = ? AND (
-       (account_email IS NOT NULL AND account_email = ?)
-       OR (account_email IS NULL AND ? IS NULL)
-     )
-     LIMIT 1`,
-    [userId, provider, accountEmail || null, accountEmail || null]
-  );
-
-  const encryptedAccessToken = accessToken ? encrypt(accessToken) : null;
-  const encryptedRefreshToken = refreshToken ? encrypt(refreshToken) : null;
-  const expires = tokenExpiresAt ? toMysqlDatetime(tokenExpiresAt) : null;
-  const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
-
-  let accountId;
-  if (existingRows.length > 0) {
-    accountId = existingRows[0].id;
-    await db.execute(
-      `UPDATE calendar_accounts
-       SET account_email = ?, display_name = ?, encrypted_access_token = ?, encrypted_refresh_token = ?, token_expires_at = ?,
-           capabilities = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND user_id = ?`,
-      [
-        accountEmail || null,
-        displayName || null,
-        encryptedAccessToken,
-        encryptedRefreshToken,
-        expires,
-        JSON.stringify(capabilities),
-        accountId,
-        userId,
-      ]
-    );
-  } else {
-    accountId = crypto.randomUUID();
-    await db.execute(
-      `INSERT INTO calendar_accounts
-        (id, user_id, provider, account_email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, capabilities, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
-      [
-        accountId,
-        userId,
-        provider,
-        accountEmail || null,
-        displayName || null,
-        encryptedAccessToken,
-        encryptedRefreshToken,
-        expires,
-        JSON.stringify(capabilities),
-      ]
-    );
-  }
-
-  const [calendarRows] = await db.execute('SELECT id FROM calendar_calendars WHERE account_id = ? LIMIT 1', [accountId]);
-  if (calendarRows.length === 0) {
-    await db.execute(
-      `INSERT INTO calendar_calendars
-        (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
-       VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
-      [
-        crypto.randomUUID(),
-        userId,
-        accountId,
-        `${provider === 'google' ? 'Google' : 'Microsoft'} Primary`,
-        'primary',
-        '#22c55e',
-      ]
-    );
-  }
-
-  return accountId;
-}
-
-async function exchangeGoogleOAuthCode(req, code) {
-  const redirectUri = buildCalendarOAuthRedirectUri(req, 'google');
-  const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      code,
-      client_id: GOOGLE_CALENDAR_CLIENT_ID,
-      client_secret: GOOGLE_CALENDAR_CLIENT_SECRET,
-      redirect_uri: redirectUri,
-      grant_type: 'authorization_code',
-    }),
-  });
-  const tokenData = await tokenResponse.json();
-  if (!tokenResponse.ok) {
-    throw new Error(tokenData.error_description || tokenData.error || 'Google token exchange failed');
-  }
-  const profileResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-    headers: { Authorization: `Bearer ${tokenData.access_token}` },
-  });
-  const profileData = await profileResponse.json();
-  if (!profileResponse.ok) {
-    throw new Error(profileData.error?.message || 'Failed to fetch Google profile');
-  }
-  const expiresAt = tokenData.expires_in ? new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString() : null;
-  return {
-    provider: 'google',
-    accountEmail: profileData.email || null,
-    displayName: profileData.name || profileData.email || 'Google Account',
-    accessToken: tokenData.access_token,
-    refreshToken: tokenData.refresh_token || null,
-    tokenExpiresAt: expiresAt,
-  };
-}
-
-async function exchangeMicrosoftOAuthCode(req, code) {
-  const redirectUri = buildCalendarOAuthRedirectUri(req, 'microsoft');
-  const tokenResponse = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: MICROSOFT_CALENDAR_CLIENT_ID,
-      client_secret: MICROSOFT_CALENDAR_CLIENT_SECRET,
-      code,
-      redirect_uri: redirectUri,
-      grant_type: 'authorization_code',
-      scope: 'offline_access User.Read Calendars.ReadWrite',
-    }),
-  });
-  const tokenData = await tokenResponse.json();
-  if (!tokenResponse.ok) {
-    throw new Error(tokenData.error_description || tokenData.error || 'Microsoft token exchange failed');
-  }
-  const profileResponse = await fetch('https://graph.microsoft.com/v1.0/me', {
-    headers: { Authorization: `Bearer ${tokenData.access_token}` },
-  });
-  const profileData = await profileResponse.json();
-  if (!profileResponse.ok) {
-    throw new Error(profileData.error?.message || 'Failed to fetch Microsoft profile');
-  }
-  const expiresAt = tokenData.expires_in ? new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString() : null;
-  return {
-    provider: 'microsoft',
-    accountEmail: profileData.mail || profileData.userPrincipalName || null,
-    displayName: profileData.displayName || profileData.mail || 'Microsoft Account',
-    accessToken: tokenData.access_token,
-    refreshToken: tokenData.refresh_token || null,
-    tokenExpiresAt: expiresAt,
-  };
 }
 
 // Simple router
@@ -4336,117 +4200,6 @@ const routes = {
     }
   },
 
-  'GET /api/calendar/oauth/:provider/start': async (req, userId) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!CALENDAR_SYNC_ENABLED) return { error: 'Calendar sync feature disabled', status: 503 };
-    const provider = getCalendarOAuthProviderFromReq(req);
-    if (!provider || !['google', 'microsoft'].includes(provider)) {
-      return { error: 'OAuth provider must be google or microsoft', status: 400 };
-    }
-
-    if (provider === 'google' && (!GOOGLE_CALENDAR_CLIENT_ID || !GOOGLE_CALENDAR_CLIENT_SECRET)) {
-      return { error: 'Missing Google OAuth environment configuration', status: 500 };
-    }
-    if (provider === 'microsoft' && (!MICROSOFT_CALENDAR_CLIENT_ID || !MICROSOFT_CALENDAR_CLIENT_SECRET)) {
-      return { error: 'Missing Microsoft OAuth environment configuration', status: 500 };
-    }
-
-    const state = createCalendarOAuthState(userId, provider);
-    const redirectUri = buildCalendarOAuthRedirectUri(req, provider);
-
-    if (provider === 'google') {
-      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-      authUrl.searchParams.set('client_id', GOOGLE_CALENDAR_CLIENT_ID);
-      authUrl.searchParams.set('redirect_uri', redirectUri);
-      authUrl.searchParams.set('response_type', 'code');
-      authUrl.searchParams.set('scope', 'openid email profile https://www.googleapis.com/auth/calendar');
-      authUrl.searchParams.set('access_type', 'offline');
-      authUrl.searchParams.set('prompt', 'consent');
-      authUrl.searchParams.set('state', state);
-      return { __redirect: authUrl.toString() };
-    }
-
-    const authUrl = new URL('https://login.microsoftonline.com/common/oauth2/v2.0/authorize');
-    authUrl.searchParams.set('client_id', MICROSOFT_CALENDAR_CLIENT_ID);
-    authUrl.searchParams.set('redirect_uri', redirectUri);
-    authUrl.searchParams.set('response_type', 'code');
-    authUrl.searchParams.set('response_mode', 'query');
-    authUrl.searchParams.set('scope', 'offline_access User.Read Calendars.ReadWrite');
-    authUrl.searchParams.set('state', state);
-    return { __redirect: authUrl.toString() };
-  },
-
-  'GET /api/calendar/oauth/:provider/callback': async (req, userId) => {
-    if (!CALENDAR_SYNC_ENABLED) return { error: 'Calendar sync feature disabled', status: 503 };
-
-    const provider = getCalendarOAuthProviderFromReq(req);
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const code = url.searchParams.get('code');
-    const state = url.searchParams.get('state');
-    const oauthError = url.searchParams.get('error');
-    const oauthErrorDescription = url.searchParams.get('error_description');
-
-    const sendOAuthPopupHtml = (success, message) => ({
-      __html: `<!doctype html><html><body><script>
-        (function() {
-          try {
-            if (window.opener) {
-              window.opener.postMessage({
-                type: 'calendar-oauth-result',
-                success: ${success ? 'true' : 'false'},
-                provider: ${JSON.stringify(provider || 'unknown')},
-                message: ${JSON.stringify(message)}
-              }, '*');
-            }
-          } catch (e) {}
-          window.close();
-        })();
-      </script><p>${success ? 'Connected' : 'Failed'}: ${message}</p></body></html>`,
-    });
-
-    if (oauthError) {
-      return sendOAuthPopupHtml(false, oauthErrorDescription || oauthError);
-    }
-    if (!provider || !code || !state) {
-      return sendOAuthPopupHtml(false, 'Invalid OAuth callback payload');
-    }
-    const stateData = consumeCalendarOAuthState(state);
-    if (!stateData || stateData.provider !== provider) {
-      return sendOAuthPopupHtml(false, 'Invalid or expired OAuth state');
-    }
-    const targetUserId = stateData.userId;
-
-    try {
-      let oauthResult;
-      if (provider === 'google') {
-        oauthResult = await exchangeGoogleOAuthCode(req, code);
-      } else if (provider === 'microsoft') {
-        oauthResult = await exchangeMicrosoftOAuthCode(req, code);
-      } else {
-        return sendOAuthPopupHtml(false, 'Unsupported OAuth provider');
-      }
-
-      const accountId = await upsertCalendarOAuthAccount({
-        userId: targetUserId,
-        provider: oauthResult.provider,
-        accountEmail: oauthResult.accountEmail,
-        displayName: oauthResult.displayName,
-        accessToken: oauthResult.accessToken,
-        refreshToken: oauthResult.refreshToken,
-        tokenExpiresAt: oauthResult.tokenExpiresAt,
-      });
-
-      const syncResult = await syncCalendarAccount(accountId, targetUserId);
-      if (!syncResult.success) {
-        return sendOAuthPopupHtml(false, `Connected but initial sync failed: ${syncResult.error || 'unknown error'}`);
-      }
-      return sendOAuthPopupHtml(true, 'Calendar account connected successfully');
-    } catch (error) {
-      console.error('OAuth callback error:', error);
-      return sendOAuthPopupHtml(false, error.message || 'OAuth callback failed');
-    }
-  },
-
   // Calendar accounts + calendars + events
   'GET /api/calendar/accounts': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
@@ -4469,7 +4222,7 @@ const routes = {
     if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
     try {
       const provider = normalizeCalendarAccountProvider(body.provider);
-      if (!provider) return { error: 'provider must be one of: local, google, microsoft, icloud', status: 400 };
+      if (!provider) return { error: 'provider must be one of: local, google, microsoft, icloud, ical', status: 400 };
       if (provider !== 'local' && !CALENDAR_SYNC_ENABLED) {
         return { error: 'Calendar sync feature disabled', status: 503 };
       }
@@ -4500,21 +4253,23 @@ const routes = {
         ]
       );
 
-      // Create a default calendar immediately for local accounts and iCloud/manual setups
+      // Create a default calendar immediately for local, iCloud, and ical accounts
       // so the UI always has at least one selectable calendar.
-      if (provider === 'local' || provider === 'icloud') {
+      if (provider === 'local' || provider === 'icloud' || provider === 'ical') {
         const defaultExternalId = provider === 'local' ? 'local-default' : (body.default_external_id || null);
+        const defaultName = provider === 'local' ? 'Default' : (provider === 'ical' ? 'Web calendar' : 'iCloud Calendar');
         await db.execute(
           `INSERT INTO calendar_calendars
             (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
-           VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
+           VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, ?, TRUE)`,
           [
             crypto.randomUUID(),
             userId,
             accountId,
-            body.default_calendar_name?.trim() || (provider === 'icloud' ? 'iCloud Calendar' : 'Default'),
+            body.default_calendar_name?.trim() || defaultName,
             defaultExternalId,
             body.default_calendar_color || '#22c55e',
+            provider === 'ical' ? 1 : 0,
           ]
         );
       }
@@ -6106,12 +5861,6 @@ async function handleRequest(req, res) {
     if (url.pathname.includes('/favorite')) {
       routeKey = `${req.method} /api/contacts/:id/favorite`;
     }
-  } else if (routeKey.includes('/api/calendar/oauth/')) {
-    if (url.pathname.endsWith('/start')) {
-      routeKey = `${req.method} /api/calendar/oauth/:provider/start`;
-    } else if (url.pathname.endsWith('/callback')) {
-      routeKey = `${req.method} /api/calendar/oauth/:provider/callback`;
-    }
   } else if (routeKey.includes('/api/calendar/accounts/')) {
     if (url.pathname.endsWith('/sync')) {
       routeKey = `${req.method} /api/calendar/accounts/:id/sync`;
@@ -6311,7 +6060,7 @@ async function start() {
       const [accounts] = await db.execute(
         `SELECT id, user_id, provider
          FROM calendar_accounts
-         WHERE is_active = TRUE AND provider IN ('google', 'microsoft', 'icloud')`
+         WHERE is_active = TRUE AND provider IN ('google', 'microsoft', 'icloud', 'ical')`
       );
       for (const account of accounts) {
         syncCalendarAccount(account.id, account.user_id).catch((err) => {

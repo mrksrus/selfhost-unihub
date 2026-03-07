@@ -4,7 +4,7 @@ import { api } from '@/lib/api';
 
 export type TodoStatus = 'done' | 'changed' | 'time_moved' | 'cancelled' | null;
 export type CalendarRsvpStatus = 'needsAction' | 'accepted' | 'tentative' | 'declined';
-export type CalendarProvider = 'local' | 'google' | 'microsoft' | 'icloud';
+export type CalendarProvider = 'local' | 'google' | 'microsoft' | 'icloud' | 'ical';
 
 export interface CalendarSubtask {
   id: string;
