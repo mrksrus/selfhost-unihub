@@ -60,7 +60,11 @@ import {
   CheckCircle2,
   Paperclip,
   Download,
-  Search
+  Search,
+  ShieldAlert,
+  Bell,
+  CircleHelp,
+  Megaphone
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
@@ -74,6 +78,7 @@ interface MailAccount {
   provider: string;
   is_active: boolean;
   last_synced_at: string | null;
+  sync_fetch_limit?: string;
   unread_count?: number;
 }
 
@@ -131,7 +136,24 @@ const folders = [
   { id: 'starred', label: 'Starred', icon: Star },
   { id: 'archive', label: 'Archive', icon: Archive },
   { id: 'trash', label: 'Trash', icon: Trash2 },
+  { id: 'important', label: 'Important', icon: CheckCircle2 },
+  { id: 'marketing', label: 'Marketing', icon: Megaphone },
+  { id: 'scam', label: 'Scam', icon: ShieldAlert },
+  { id: 'unknown', label: 'Unknown', icon: CircleHelp },
+  { id: 'twofactor_notifications', label: '2FA / Notifications', icon: Bell },
 ];
+
+const syncFetchLimitOptions = [
+  { value: '100', label: 'Last 100 emails' },
+  { value: '500', label: 'Last 500 emails (default)' },
+  { value: '1000', label: 'Last 1000 emails' },
+  { value: '2000', label: 'Last 2000 emails' },
+  { value: 'all', label: 'All emails' },
+] as const;
+
+const movableFolderIds = folders
+  .map(folder => folder.id)
+  .filter(folderId => folderId !== 'starred');
 
 const MailPage = () => {
   const { toast } = useToast();
@@ -170,6 +192,7 @@ const MailPage = () => {
     smtp_host: '',
     imap_port: 993,
     smtp_port: 587,
+    sync_fetch_limit: '500',
   });
 
   // Open compose dialog if linked from dashboard
@@ -405,6 +428,7 @@ const MailPage = () => {
         smtp_host: '',
         imap_port: 993,
         smtp_port: 587,
+        sync_fetch_limit: '500',
       });
     },
     onError: (error: Error) => {
@@ -442,6 +466,7 @@ const MailPage = () => {
         smtp_host: '',
         imap_port: 993,
         smtp_port: 587,
+        sync_fetch_limit: '500',
       });
     },
     onError: (error: Error) => {
@@ -740,6 +765,7 @@ const MailPage = () => {
       smtp_host: '',
       imap_port: 993,
       smtp_port: 587,
+      sync_fetch_limit: account.sync_fetch_limit || '500',
     });
     setIsAddAccountOpen(true);
   };
@@ -1005,6 +1031,7 @@ const MailPage = () => {
                   smtp_host: '',
                   imap_port: 993,
                   smtp_port: 587,
+                  sync_fetch_limit: '500',
                 });
               }
             }}>
@@ -1127,6 +1154,27 @@ const MailPage = () => {
                       onChange={(e) => setAccountForm({ ...accountForm, smtp_port: parseInt(e.target.value) || 587 })}
                       placeholder="587"
                     />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="sync_fetch_limit">Initial Sync Limit</Label>
+                    <Select
+                      value={accountForm.sync_fetch_limit}
+                      onValueChange={(value) => setAccountForm({ ...accountForm, sync_fetch_limit: value })}
+                    >
+                      <SelectTrigger id="sync_fetch_limit">
+                        <SelectValue placeholder="Select sync limit" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {syncFetchLimitOptions.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Applies to first full import for this account. Later syncs fetch only new messages.
+                    </p>
                   </div>
                   <div className="flex justify-end gap-3 pt-2">
                     <Button type="button" variant="outline" onClick={() => setIsAddAccountOpen(false)}>
@@ -1310,18 +1358,31 @@ const MailPage = () => {
                   <Star className="h-4 w-4 mr-2" />
                   Star
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    const folder = selectedFolder === 'inbox' ? 'archive' : 'inbox';
-                    bulkMove.mutate({ emailIds: Array.from(selectedEmails), folder });
-                  }}
-                  disabled={bulkMove.isPending}
-                >
-                  <FolderOpen className="h-4 w-4 mr-2" />
-                  Move
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={bulkMove.isPending}
+                    >
+                      <FolderOpen className="h-4 w-4 mr-2" />
+                      Move
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {folders
+                      .filter((folder) => movableFolderIds.includes(folder.id) && folder.id !== selectedFolder)
+                      .map((folder) => (
+                        <DropdownMenuItem
+                          key={folder.id}
+                          onClick={() => bulkMove.mutate({ emailIds: Array.from(selectedEmails), folder: folder.id })}
+                        >
+                          <folder.icon className="h-4 w-4 mr-2" />
+                          Move to {folder.label}
+                        </DropdownMenuItem>
+                      ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <Button
                   variant="outline"
                   size="sm"
@@ -1610,17 +1671,21 @@ const MailPage = () => {
             {contextMenuEmail.email.is_starred ? 'Unstar' : 'Star'}
           </button>
           <div className="border-t border-border my-1" />
-          <button
-            className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
-            onClick={() => {
-              const targetFolder = selectedFolder === 'inbox' ? 'archive' : 'inbox';
-              bulkMove.mutate({ emailIds: [contextMenuEmail.email.id], folder: targetFolder });
-              setContextMenuEmail(null);
-            }}
-          >
-            <FolderOpen className="h-4 w-4" />
-            Move to {selectedFolder === 'inbox' ? 'Archive' : 'Inbox'}
-          </button>
+          {folders
+            .filter((folder) => movableFolderIds.includes(folder.id) && folder.id !== contextMenuEmail.email.folder)
+            .map((folder) => (
+              <button
+                key={`context-move-${folder.id}`}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
+                onClick={() => {
+                  bulkMove.mutate({ emailIds: [contextMenuEmail.email.id], folder: folder.id });
+                  setContextMenuEmail(null);
+                }}
+              >
+                <folder.icon className="h-4 w-4" />
+                Move to {folder.label}
+              </button>
+            ))}
           <button
             className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2 text-destructive"
             onClick={() => {

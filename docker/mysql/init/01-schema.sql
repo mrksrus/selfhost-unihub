@@ -215,6 +215,7 @@ CREATE TABLE IF NOT EXISTS mail_accounts (
     smtp_port INT DEFAULT 587,
     -- Encrypted credentials
     encrypted_password TEXT,
+    sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT '500' COMMENT '100, 500, 1000, 2000, all',
     is_active BOOLEAN DEFAULT TRUE,
     last_synced_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -224,6 +225,45 @@ CREATE TABLE IF NOT EXISTS mail_accounts (
     INDEX idx_mail_accounts_user (user_id),
     INDEX idx_mail_accounts_email (email_address),
     UNIQUE KEY unique_user_email (user_id, email_address)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- App-owned mail folders (system + future custom user folders)
+CREATE TABLE IF NOT EXISTS mail_folders (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    slug VARCHAR(64) NOT NULL,
+    display_name VARCHAR(128) NOT NULL,
+    is_system BOOLEAN DEFAULT TRUE,
+    position INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_mail_folder_user_slug (user_id, slug),
+    INDEX idx_mail_folders_user (user_id),
+    INDEX idx_mail_folders_order (user_id, position)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Sender/domain categorization rules for future automatic routing
+CREATE TABLE IF NOT EXISTS mail_sender_rules (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    mail_account_id CHAR(36) NULL,
+    match_type ENUM('domain', 'email') NOT NULL,
+    match_value VARCHAR(255) NOT NULL,
+    target_folder VARCHAR(64) NOT NULL,
+    priority INT NOT NULL DEFAULT 100,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE,
+    INDEX idx_mail_sender_rules_user (user_id, is_active),
+    INDEX idx_mail_sender_rules_account (mail_account_id, is_active),
+    INDEX idx_mail_sender_rules_match (match_type, match_value),
+    INDEX idx_mail_sender_rules_target (target_folder),
+    INDEX idx_mail_sender_rules_priority (priority)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Emails table
@@ -275,6 +315,35 @@ CREATE TABLE IF NOT EXISTS email_attachments (
     INDEX idx_attachments_email (email_id),
     INDEX idx_attachments_user (user_id),
     INDEX idx_attachments_content_id (content_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Future scoring storage for spam/scam detection pipeline outputs
+CREATE TABLE IF NOT EXISTS mail_email_scores (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    email_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    score_version VARCHAR(32) NOT NULL DEFAULT 'v1',
+    total_score DECIMAL(6,2) NOT NULL DEFAULT 0,
+    risk_level VARCHAR(32) NULL,
+    spf_result VARCHAR(64) NULL,
+    dkim_result VARCHAR(64) NULL,
+    dmarc_result VARCHAR(64) NULL,
+    language_risk_score DECIMAL(6,2) NULL,
+    sender_reputation_score DECIMAL(6,2) NULL,
+    source_risk_score DECIMAL(6,2) NULL,
+    classifier_confidence DECIMAL(6,2) NULL,
+    reasons JSON NULL,
+    metadata JSON NULL,
+    scored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_mail_email_score (email_id, score_version),
+    INDEX idx_mail_email_scores_user (user_id, scored_at DESC),
+    INDEX idx_mail_email_scores_risk (risk_level),
+    INDEX idx_mail_email_scores_total (total_score DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Admin bootstrap is now handled by API startup using:

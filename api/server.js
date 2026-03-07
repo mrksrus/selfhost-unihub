@@ -139,8 +139,45 @@ const KNOWN_MAIL_HOST_SUFFIXES = [
   'live.com',
 ];
 
+const DEFAULT_MAIL_SYNC_FETCH_LIMIT = '500';
+const MAIL_SYNC_FETCH_LIMITS = new Set(['100', '500', '1000', '2000', 'all']);
+const MAIL_FOLDER_DEFINITIONS = [
+  { slug: 'inbox', displayName: 'Inbox', position: 10 },
+  { slug: 'sent', displayName: 'Sent', position: 20 },
+  { slug: 'archive', displayName: 'Archive', position: 30 },
+  { slug: 'trash', displayName: 'Trash', position: 40 },
+  { slug: 'important', displayName: 'Important', position: 50 },
+  { slug: 'marketing', displayName: 'Marketing', position: 60 },
+  { slug: 'scam', displayName: 'Scam', position: 70 },
+  { slug: 'unknown', displayName: 'Unknown', position: 80 },
+  { slug: 'twofactor_notifications', displayName: '2FA / Notifications', position: 90 },
+];
+const ALLOWED_MAIL_FOLDER_SET = new Set(MAIL_FOLDER_DEFINITIONS.map(folder => folder.slug));
+
 function normalizeHost(host) {
   return String(host || '').trim().toLowerCase();
+}
+
+function normalizeSyncFetchLimit(value, fallbackValue = DEFAULT_MAIL_SYNC_FETCH_LIMIT) {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (!normalized) return fallbackValue;
+  if (!MAIL_SYNC_FETCH_LIMITS.has(normalized)) return null;
+  return normalized;
+}
+
+async function ensureDefaultMailFoldersForUser(userId) {
+  if (!userId) return;
+  for (const folder of MAIL_FOLDER_DEFINITIONS) {
+    await db.execute(
+      `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
+       VALUES (?, ?, ?, ?, TRUE, ?)
+       ON DUPLICATE KEY UPDATE
+         display_name = VALUES(display_name),
+         is_system = TRUE,
+         position = VALUES(position)`,
+      [crypto.randomUUID(), userId, folder.slug, folder.displayName, folder.position]
+    );
+  }
 }
 
 function isKnownMailProviderHost(host) {
@@ -347,7 +384,7 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
 // ── Mail sync and send functions ──────────────────────────────────
 
 // Helper function to sync a specific folder
-async function syncMailFolder(connection, account, accountId, folderName, dbFolderName, lastSyncedAt = null) {
+async function syncMailFolder(connection, account, accountId, folderName, dbFolderName, lastSyncedAt = null, syncFetchLimit = DEFAULT_MAIL_SYNC_FETCH_LIMIT) {
   try {
     console.log(`[SYNC] Opening ${folderName}...`);
     try {
@@ -369,24 +406,69 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
       searchCriteria = [['SINCE', sinceDateStr]];
       console.log(`[SYNC] Using optimized search: emails since ${sinceDateStr} (last sync: ${lastSyncedAt})`);
     } else {
-      console.log(`[SYNC] First sync - fetching last 500 emails`);
+      if (syncFetchLimit === 'all') {
+        console.log('[SYNC] First sync - fetching full mailbox history');
+      } else {
+        console.log(`[SYNC] First sync - fetching last ${syncFetchLimit} emails`);
+      }
     }
     
     // Search for emails (either all or since last sync)
-    const searchResults = await connection.search(searchCriteria, {});
-    const allUids = searchResults.map(msg => msg.attributes?.uid).filter(uid => typeof uid === 'number');
+    let searchResults;
+    try {
+      searchResults = await connection.search(searchCriteria, {});
+    } catch (searchError) {
+      const errorPrefix = syncFetchLimit === 'all' ? 'Unable to resolve full mailbox history' : 'Unable to search mailbox';
+      return { newEmails: 0, processed: 0, failed: 0, total: 0, error: `${errorPrefix}: ${searchError.message}` };
+    }
+
+    if (!Array.isArray(searchResults)) {
+      return {
+        newEmails: 0,
+        processed: 0,
+        failed: 0,
+        total: 0,
+        error: 'Mail provider returned unexpected search results while listing message IDs.',
+      };
+    }
+
+    const allUids = searchResults
+      .map(msg => msg && msg.attributes ? msg.attributes.uid : null)
+      .filter(uid => typeof uid === 'number' && Number.isFinite(uid));
     console.log(`[SYNC] Found ${allUids.length} messages in ${folderName}${lastSyncedAt ? ' since last sync' : ''}`);
     
+    if (searchResults.length > 0 && allUids.length === 0) {
+      return {
+        newEmails: 0,
+        processed: 0,
+        failed: 0,
+        total: 0,
+        error: 'Mail provider returned malformed message IDs; sync stopped to avoid inconsistent imports.',
+      };
+    }
+
     if (allUids.length === 0) {
       return { newEmails: 0, processed: 0, failed: 0, total: 0 };
     }
     
-    // If no lastSyncedAt, limit to last 500 for first sync. Otherwise process all found UIDs (should be new ones)
-    const uidsToProcess = lastSyncedAt ? allUids : allUids.slice(-500);
-    console.log(`[SYNC] Will fetch ${uidsToProcess.length} emails from ${folderName}${lastSyncedAt ? ' (new since last sync)' : ' (last 500 for initial sync)'}...`);
+    // For incremental syncs, process all found UIDs. For first sync, apply account sync limit.
+    let uidsToProcess = allUids;
+    const requestedCount = lastSyncedAt ? 'incremental' : syncFetchLimit;
+    if (!lastSyncedAt && syncFetchLimit !== 'all') {
+      const limitNumber = Number.parseInt(syncFetchLimit, 10);
+      const safeLimit = Number.isFinite(limitNumber) && limitNumber > 0
+        ? limitNumber
+        : Number.parseInt(DEFAULT_MAIL_SYNC_FETCH_LIMIT, 10);
+      uidsToProcess = allUids.slice(-safeLimit);
+      console.log(`[SYNC] First sync limit requested: ${safeLimit}, available: ${allUids.length}, selected: ${uidsToProcess.length}`);
+    } else if (!lastSyncedAt && syncFetchLimit === 'all') {
+      console.log(`[SYNC] First sync limit requested: all, available: ${allUids.length}, selected: ${uidsToProcess.length}`);
+    }
+
+    console.log(`[SYNC] Will fetch ${uidsToProcess.length} emails from ${folderName}${lastSyncedAt ? ' (new since last sync)' : ''}...`);
     
     if (uidsToProcess.length === 0) {
-      return { newEmails: 0, processed: 0, failed: 0, total: allUids.length };
+      return { newEmails: 0, processed: 0, failed: 0, total: allUids.length, requestedCount, selectedCount: 0 };
     }
     
     const fetchOptions = {
@@ -634,7 +716,14 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
     }
     
     console.log(`[SYNC] Completed: ${newEmailsCount} new emails stored, ${failedCount} failed, ${processedCount} processed`);
-    return { newEmails: newEmailsCount, processed: processedCount, failed: failedCount, total: allUids.length };
+    return {
+      newEmails: newEmailsCount,
+      processed: processedCount,
+      failed: failedCount,
+      total: allUids.length,
+      requestedCount,
+      selectedCount: uidsToProcess.length,
+    };
   } catch (error) {
     console.error(`[SYNC] Error syncing ${folderName}:`, error.message);
     return { newEmails: 0, processed: 0, failed: 0, total: 0, error: error.message };
@@ -711,6 +800,7 @@ async function syncMailAccount(accountId) {
     
     const account = accounts[0];
     const lastSyncedAt = account.last_synced_at;
+    const syncFetchLimit = normalizeSyncFetchLimit(account.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT;
     const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
     if (!password) {
       return { success: false, error: 'No password configured for this account' };
@@ -741,7 +831,7 @@ async function syncMailAccount(accountId) {
     });
     
     // Sync INBOX only (pass lastSyncedAt to optimize sync)
-    const inboxResult = await syncMailFolder(connection, account, accountId, 'INBOX', 'inbox', lastSyncedAt);
+    const inboxResult = await syncMailFolder(connection, account, accountId, 'INBOX', 'inbox', lastSyncedAt, syncFetchLimit);
     
     // Clean up connection
     if (connection) {
@@ -752,13 +842,23 @@ async function syncMailAccount(accountId) {
       }
     }
     
+    if (inboxResult.error) {
+      return {
+        success: false,
+        error: inboxResult.error,
+        details: `Processed ${inboxResult.processed || 0} of ${inboxResult.selectedCount || 0} selected emails before stopping.`,
+        newEmails: inboxResult.newEmails || 0,
+        totalFound: inboxResult.total || 0,
+      };
+    }
+
     // Update last synced
     await db.execute(
       'UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ?',
       [accountId]
     );
     
-    const resultMsg = `Synced ${account.email_address}: ${inboxResult.newEmails} new emails (${inboxResult.total} in INBOX, ${inboxResult.processed} processed, ${inboxResult.failed} failed)`;
+    const resultMsg = `Synced ${account.email_address}: ${inboxResult.newEmails} new emails (${inboxResult.total} available, ${inboxResult.selectedCount ?? inboxResult.processed} selected, ${inboxResult.processed} processed, ${inboxResult.failed} failed; limit=${inboxResult.requestedCount || syncFetchLimit})`;
     console.log(`[SYNC] ✓ ${resultMsg}`);
     
     // Log detailed summary for debugging
@@ -1325,6 +1425,7 @@ async function ensureSchema() {
     smtp_host VARCHAR(255),
     smtp_port INT DEFAULT 587,
     encrypted_password TEXT,
+    sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT '500',
     allow_self_signed BOOLEAN DEFAULT FALSE,
     is_active BOOLEAN DEFAULT TRUE,
     last_synced_at TIMESTAMP NULL,
@@ -1347,6 +1448,56 @@ async function ensureSchema() {
   } catch (e) {
     // Ignore when unsupported or already exists
   }
+  try {
+    await db.execute(`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT '500' AFTER encrypted_password`);
+  } catch (e) {
+    // Ignore when unsupported or already exists
+  }
+  try {
+    await db.execute(
+      `UPDATE mail_accounts
+       SET sync_fetch_limit = '500'
+       WHERE sync_fetch_limit IS NULL
+          OR sync_fetch_limit NOT IN ('100', '500', '1000', '2000', 'all')`
+    );
+  } catch (e) {
+    // Ignore migration failures and continue startup
+  }
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS mail_folders (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    slug VARCHAR(64) NOT NULL,
+    display_name VARCHAR(128) NOT NULL,
+    is_system BOOLEAN DEFAULT TRUE,
+    position INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_mail_folder_user_slug (user_id, slug),
+    INDEX idx_mail_folders_user (user_id),
+    INDEX idx_mail_folders_order (user_id, position)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS mail_sender_rules (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    mail_account_id CHAR(36) NULL,
+    match_type ENUM('domain', 'email') NOT NULL,
+    match_value VARCHAR(255) NOT NULL,
+    target_folder VARCHAR(64) NOT NULL,
+    priority INT NOT NULL DEFAULT 100,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE,
+    INDEX idx_mail_sender_rules_user (user_id, is_active),
+    INDEX idx_mail_sender_rules_account (mail_account_id, is_active),
+    INDEX idx_mail_sender_rules_match (match_type, match_value),
+    INDEX idx_mail_sender_rules_target (target_folder),
+    INDEX idx_mail_sender_rules_priority (priority)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   await db.execute(`CREATE TABLE IF NOT EXISTS emails (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -1393,6 +1544,33 @@ async function ensureSchema() {
     INDEX idx_attachments_email (email_id),
     INDEX idx_attachments_user (user_id),
     INDEX idx_attachments_content_id (content_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS mail_email_scores (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    email_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    score_version VARCHAR(32) NOT NULL DEFAULT 'v1',
+    total_score DECIMAL(6,2) NOT NULL DEFAULT 0,
+    risk_level VARCHAR(32) NULL,
+    spf_result VARCHAR(64) NULL,
+    dkim_result VARCHAR(64) NULL,
+    dmarc_result VARCHAR(64) NULL,
+    language_risk_score DECIMAL(6,2) NULL,
+    sender_reputation_score DECIMAL(6,2) NULL,
+    source_risk_score DECIMAL(6,2) NULL,
+    classifier_confidence DECIMAL(6,2) NULL,
+    reasons JSON NULL,
+    metadata JSON NULL,
+    scored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_mail_email_score (email_id, score_version),
+    INDEX idx_mail_email_scores_user (user_id, scored_at DESC),
+    INDEX idx_mail_email_scores_risk (risk_level),
+    INDEX idx_mail_email_scores_total (total_score DESC)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // Migrations for older installs
@@ -4072,6 +4250,87 @@ const routes = {
       return { error: 'Failed to delete mail accounts', status: 500 };
     }
   },
+  'GET /api/settings/mail-sender-candidates': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const requestedDomainLimit = Number.parseInt(url.searchParams.get('domain_limit') || '20', 10);
+      const requestedSenderLimit = Number.parseInt(url.searchParams.get('sender_limit') || '20', 10);
+      const domainLimit = Number.isFinite(requestedDomainLimit) ? Math.min(Math.max(requestedDomainLimit, 1), 200) : 20;
+      const senderLimit = Number.isFinite(requestedSenderLimit) ? Math.min(Math.max(requestedSenderLimit, 1), 200) : 20;
+      const accountId = (url.searchParams.get('account_id') || '').trim();
+
+      const domainWhere = ['user_id = ?', "from_address IS NOT NULL", "TRIM(from_address) <> ''", "from_address LIKE '%@%'"];
+      const domainParams = [userId];
+      if (accountId) {
+        domainWhere.push('mail_account_id = ?');
+        domainParams.push(accountId);
+      }
+
+      const senderWhere = ['user_id = ?', "from_address IS NOT NULL", "TRIM(from_address) <> ''"];
+      const senderParams = [userId];
+      if (accountId) {
+        senderWhere.push('mail_account_id = ?');
+        senderParams.push(accountId);
+      }
+
+      const [domains] = await db.execute(
+        `SELECT
+           LOWER(TRIM(SUBSTRING_INDEX(from_address, '@', -1))) AS domain,
+           COUNT(*) AS email_count,
+           MAX(received_at) AS last_received_at,
+           EXISTS(
+             SELECT 1
+             FROM mail_sender_rules r
+             WHERE r.user_id = ?
+               AND r.is_active = TRUE
+               AND r.match_type = 'domain'
+               AND LOWER(r.match_value) = LOWER(TRIM(SUBSTRING_INDEX(emails.from_address, '@', -1)))
+           ) AS has_rule
+         FROM emails
+         WHERE ${domainWhere.join(' AND ')}
+         GROUP BY domain
+         ORDER BY email_count DESC, last_received_at DESC
+         LIMIT ${domainLimit}`,
+        [userId, ...domainParams]
+      );
+
+      const [senders] = await db.execute(
+        `SELECT
+           LOWER(TRIM(from_address)) AS sender_email,
+           MAX(NULLIF(TRIM(from_name), '')) AS sender_name,
+           COUNT(*) AS email_count,
+           MAX(received_at) AS last_received_at,
+           EXISTS(
+             SELECT 1
+             FROM mail_sender_rules r
+             WHERE r.user_id = ?
+               AND r.is_active = TRUE
+               AND r.match_type = 'email'
+               AND LOWER(r.match_value) = LOWER(TRIM(emails.from_address))
+           ) AS has_rule
+         FROM emails
+         WHERE ${senderWhere.join(' AND ')}
+         GROUP BY sender_email
+         ORDER BY email_count DESC, last_received_at DESC
+         LIMIT ${senderLimit}`,
+        [userId, ...senderParams]
+      );
+
+      return {
+        domains,
+        senders,
+        meta: {
+          domain_limit: domainLimit,
+          sender_limit: senderLimit,
+          account_id: accountId || null,
+        },
+      };
+    } catch (error) {
+      console.error('Mail sender candidate query error:', error);
+      return { error: 'Failed to load sender/domain candidates', status: 500 };
+    }
+  },
 
   'GET /api/calendar/oauth/:provider/start': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
@@ -4114,7 +4373,6 @@ const routes = {
   },
 
   'GET /api/calendar/oauth/:provider/callback': async (req, userId) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
     if (!CALENDAR_SYNC_ENABLED) return { error: 'Calendar sync feature disabled', status: 503 };
 
     const provider = getCalendarOAuthProviderFromReq(req);
@@ -4149,9 +4407,10 @@ const routes = {
       return sendOAuthPopupHtml(false, 'Invalid OAuth callback payload');
     }
     const stateData = consumeCalendarOAuthState(state);
-    if (!stateData || stateData.userId !== userId || stateData.provider !== provider) {
+    if (!stateData || stateData.provider !== provider) {
       return sendOAuthPopupHtml(false, 'Invalid or expired OAuth state');
     }
+    const targetUserId = stateData.userId;
 
     try {
       let oauthResult;
@@ -4164,7 +4423,7 @@ const routes = {
       }
 
       const accountId = await upsertCalendarOAuthAccount({
-        userId,
+        userId: targetUserId,
         provider: oauthResult.provider,
         accountEmail: oauthResult.accountEmail,
         displayName: oauthResult.displayName,
@@ -4173,7 +4432,7 @@ const routes = {
         tokenExpiresAt: oauthResult.tokenExpiresAt,
       });
 
-      const syncResult = await syncCalendarAccount(accountId, userId);
+      const syncResult = await syncCalendarAccount(accountId, targetUserId);
       if (!syncResult.success) {
         return sendOAuthPopupHtml(false, `Connected but initial sync failed: ${syncResult.error || 'unknown error'}`);
       }
@@ -4237,8 +4496,10 @@ const routes = {
         ]
       );
 
-      // Create a default calendar for local accounts immediately.
-      if (provider === 'local') {
+      // Create a default calendar immediately for local accounts and iCloud/manual setups
+      // so the UI always has at least one selectable calendar.
+      if (provider === 'local' || provider === 'icloud') {
+        const defaultExternalId = provider === 'local' ? 'local-default' : (body.default_external_id || null);
         await db.execute(
           `INSERT INTO calendar_calendars
             (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
@@ -4247,8 +4508,8 @@ const routes = {
             crypto.randomUUID(),
             userId,
             accountId,
-            body.default_calendar_name?.trim() || 'Default',
-            'local-default',
+            body.default_calendar_name?.trim() || (provider === 'icloud' ? 'iCloud Calendar' : 'Default'),
+            defaultExternalId,
             body.default_calendar_color || '#22c55e',
           ]
         );
@@ -5066,9 +5327,10 @@ const routes = {
     
     try {
       const [accounts] = await db.execute(
-        'SELECT id, user_id, email_address, display_name, provider, is_active, last_synced_at, created_at FROM mail_accounts WHERE user_id = ?',
+        'SELECT id, user_id, email_address, display_name, provider, sync_fetch_limit, is_active, last_synced_at, created_at FROM mail_accounts WHERE user_id = ?',
         [userId]
       );
+      await ensureDefaultMailFoldersForUser(userId);
 
       // Fetch unread email counts per account
       const [unreadRows] = await db.execute(
@@ -5083,6 +5345,7 @@ const routes = {
 
       const accountsWithUnread = accounts.map((account) => ({
         ...account,
+        sync_fetch_limit: normalizeSyncFetchLimit(account.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT,
         unread_count: unreadByAccount[account.id] || 0,
       }));
 
@@ -5106,6 +5369,7 @@ const routes = {
         smtp_host,
         smtp_port,
         encrypted_password,
+        sync_fetch_limit,
       } = body;
       
       if (!email_address || !encrypted_password) {
@@ -5113,6 +5377,10 @@ const routes = {
       }
       if (!imap_host || !smtp_host) {
         return { error: 'IMAP and SMTP server addresses are required', status: 400 };
+      }
+      const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);
+      if (!normalizedSyncFetchLimit) {
+        return { error: 'Invalid sync fetch limit. Allowed values: 100, 500, 1000, 2000, all', status: 400 };
       }
 
       // Only verify authentication; no TLS/cert verification.
@@ -5140,11 +5408,12 @@ const routes = {
       const accountId = crypto.randomUUID();
       const actualUsername = username || email_address;
       await db.execute(
-        'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, imap_port || 993, smtp_host || null, smtp_port || 587, tempAccount.encrypted_password]
+        'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, sync_fetch_limit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, imap_port || 993, smtp_host || null, smtp_port || 587, tempAccount.encrypted_password, normalizedSyncFetchLimit]
       );
+      await ensureDefaultMailFoldersForUser(userId);
       
-      const [accounts] = await db.execute('SELECT id, user_id, email_address, display_name, provider, is_active FROM mail_accounts WHERE id = ?', [accountId]);
+      const [accounts] = await db.execute('SELECT id, user_id, email_address, display_name, provider, sync_fetch_limit, is_active FROM mail_accounts WHERE id = ?', [accountId]);
       
       // Start sync in background (non-blocking)
       console.log(`[ACCOUNT] Starting background sync for ${email_address}...`);
@@ -5179,6 +5448,7 @@ const routes = {
         smtp_host,
         smtp_port,
         encrypted_password,
+        sync_fetch_limit,
       } = body;
       
       // Verify account belongs to user
@@ -5200,6 +5470,14 @@ const routes = {
       if (smtp_host) { updates.push('smtp_host = ?'); params.push(smtp_host); }
       if (smtp_port) { updates.push('smtp_port = ?'); params.push(smtp_port); }
       if (encrypted_password) { updates.push('encrypted_password = ?'); params.push(encrypt(encrypted_password)); }
+      if (sync_fetch_limit !== undefined) {
+        const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);
+        if (!normalizedSyncFetchLimit) {
+          return { error: 'Invalid sync fetch limit. Allowed values: 100, 500, 1000, 2000, all', status: 400 };
+        }
+        updates.push('sync_fetch_limit = ?');
+        params.push(normalizedSyncFetchLimit);
+      }
       
       if (updates.length === 0) return { error: 'No fields to update', status: 400 };
       
@@ -5210,7 +5488,7 @@ const routes = {
       );
       
       const [updated] = await db.execute(
-        'SELECT id, user_id, email_address, display_name, provider, is_active FROM mail_accounts WHERE id = ?',
+        'SELECT id, user_id, email_address, display_name, provider, sync_fetch_limit, is_active FROM mail_accounts WHERE id = ?',
         [id]
       );
       
@@ -5529,8 +5807,8 @@ const routes = {
       if (!Array.isArray(email_ids) || email_ids.length === 0) {
         return { error: 'Email IDs array required', status: 400 };
       }
-      if (!folder || !['inbox', 'archive', 'trash', 'sent'].includes(folder)) {
-        return { error: 'Valid folder required (inbox, archive, trash, sent)', status: 400 };
+      if (!folder || !ALLOWED_MAIL_FOLDER_SET.has(folder)) {
+        return { error: `Valid folder required (${Array.from(ALLOWED_MAIL_FOLDER_SET).join(', ')})`, status: 400 };
       }
       
       // Update folder for emails

@@ -172,6 +172,9 @@ export const calendarApi = {
     provider_config?: Record<string, unknown>;
     is_active?: boolean;
     sync_on_create?: boolean;
+    default_calendar_name?: string;
+    default_calendar_color?: string;
+    default_external_id?: string | null;
   }): Promise<{ account: CalendarAccount; sync?: unknown }> {
     const response = await api.post<{ account: CalendarAccount; sync?: unknown }>('/calendar/accounts', payload);
     if (response.error) throw new Error(response.error);

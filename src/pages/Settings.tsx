@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,7 +20,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Shield, Download, Loader2, Database } from 'lucide-react';
+import { User, Shield, Download, Loader2, Database, Globe, AtSign } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const DEVICE_TZ_VALUE = '';
@@ -47,6 +47,18 @@ const Settings = () => {
   const [clearContactsLoading, setClearContactsLoading] = useState(false);
   const [clearCalendarLoading, setClearCalendarLoading] = useState(false);
   const [clearMailLoading, setClearMailLoading] = useState(false);
+
+  const { data: mailSenderCandidates, isLoading: mailSenderCandidatesLoading, refetch: refetchMailSenderCandidates } = useQuery({
+    queryKey: ['mail-sender-candidates'],
+    queryFn: async () => {
+      const response = await api.get<{
+        domains: Array<{ domain: string; email_count: number; last_received_at: string | null; has_rule: number }>;
+        senders: Array<{ sender_email: string; sender_name: string | null; email_count: number; last_received_at: string | null; has_rule: number }>;
+      }>('/settings/mail-sender-candidates?domain_limit=20&sender_limit=20');
+      if (response.error) throw new Error(response.error);
+      return response.data ?? { domains: [], senders: [] };
+    },
+  });
 
   useEffect(() => {
     setFullName(user?.full_name || '');
@@ -164,6 +176,7 @@ const Settings = () => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
       queryClient.invalidateQueries({ queryKey: ['emails'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-sender-candidates'] });
       toast({ title: response.data?.message || 'All mail accounts deleted' });
       setClearMailOpen(false);
     } catch (error: unknown) {
@@ -172,6 +185,13 @@ const Settings = () => {
     } finally {
       setClearMailLoading(false);
     }
+  };
+
+  const formatCandidateDate = (value: string | null) => {
+    if (!value) return 'Never';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Unknown';
+    return date.toLocaleDateString();
   };
 
   return (
@@ -423,6 +443,90 @@ const Settings = () => {
                 >
                   Delete all Mail Accounts
                 </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        {/* Mail categorization foundation */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.38 }}
+        >
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-accent/10">
+                    <AtSign className="h-5 w-5 text-accent" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-lg">Mail categorization foundation</CardTitle>
+                    <CardDescription>
+                      Read-only sender/domain candidates for future category rules.
+                    </CardDescription>
+                  </div>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => refetchMailSenderCandidates()} disabled={mailSenderCandidatesLoading}>
+                  {mailSenderCandidatesLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  Refresh
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Globe className="h-4 w-4 text-muted-foreground" />
+                  <p className="font-medium text-foreground">Top domains</p>
+                </div>
+                {mailSenderCandidatesLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading domains...</p>
+                ) : (mailSenderCandidates?.domains?.length ?? 0) === 0 ? (
+                  <p className="text-sm text-muted-foreground">No domains found yet. Sync some emails first.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {mailSenderCandidates?.domains.map((domain) => (
+                      <div key={domain.domain} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                        <div>
+                          <p className="font-medium text-foreground">{domain.domain}</p>
+                          <p className="text-xs text-muted-foreground">Last seen: {formatCandidateDate(domain.last_received_at)}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm text-foreground">{domain.email_count} emails</p>
+                          <p className="text-xs text-muted-foreground">{domain.has_rule ? 'Rule exists' : 'No rule yet'}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <Separator />
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <AtSign className="h-4 w-4 text-muted-foreground" />
+                  <p className="font-medium text-foreground">Top senders</p>
+                </div>
+                {mailSenderCandidatesLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading senders...</p>
+                ) : (mailSenderCandidates?.senders?.length ?? 0) === 0 ? (
+                  <p className="text-sm text-muted-foreground">No senders found yet. Sync some emails first.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {mailSenderCandidates?.senders.map((sender) => (
+                      <div key={sender.sender_email} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                        <div>
+                          <p className="font-medium text-foreground">{sender.sender_name || sender.sender_email}</p>
+                          <p className="text-xs text-muted-foreground">{sender.sender_email}</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm text-foreground">{sender.email_count} emails</p>
+                          <p className="text-xs text-muted-foreground">{sender.has_rule ? 'Rule exists' : 'No rule yet'}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

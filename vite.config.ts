@@ -18,6 +18,9 @@ export default defineConfig(() => ({
       registerType: "autoUpdate",
       includeAssets: ["favicon.ico", "favicon.svg", "robots.txt"],
       workbox: {
+        navigateFallbackDenylist: [
+          /^\/api\//,
+        ],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/api\./,

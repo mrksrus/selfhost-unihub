@@ -15,6 +15,10 @@ import { Textarea } from '@/components/ui/textarea';
 import { calendarApi, calendarQueryKeys, formatEventTime, localDatetimeToIso, toDatetimeLocalValue, type CalendarAccount, type CalendarCalendar, type CalendarEvent, type CalendarProvider, type CalendarRsvpStatus } from '@/lib/calendar-api';
 
 type CalendarViewMode = 'day' | 'week' | 'month';
+const STORAGE_VIEW_KEY = 'calendar_view_mode';
+const STORAGE_CURRENT_DATE_KEY = 'calendar_current_date';
+const STORAGE_SELECTED_DATE_KEY = 'calendar_selected_date';
+const STORAGE_SELECTED_CALENDAR_IDS_KEY = 'calendar_selected_ids';
 
 const reminderOptions = [
   { value: 0, label: 'At event time' },
@@ -53,10 +57,28 @@ const CalendarPage = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const [viewMode, setViewMode] = useState<CalendarViewMode>('month');
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [selectedDate, setSelectedDate] = useState(new Date());
-  const [selectedCalendarIds, setSelectedCalendarIds] = useState<string[]>([]);
+  const [viewMode, setViewMode] = useState<CalendarViewMode>(() => {
+    const raw = localStorage.getItem(STORAGE_VIEW_KEY);
+    return raw === 'day' || raw === 'week' || raw === 'month' ? raw : 'month';
+  });
+  const [currentDate, setCurrentDate] = useState(() => {
+    const raw = localStorage.getItem(STORAGE_CURRENT_DATE_KEY);
+    return raw ? new Date(raw) : new Date();
+  });
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const raw = localStorage.getItem(STORAGE_SELECTED_DATE_KEY);
+    return raw ? new Date(raw) : new Date();
+  });
+  const [selectedCalendarIds, setSelectedCalendarIds] = useState<string[]>(() => {
+    const raw = localStorage.getItem(STORAGE_SELECTED_CALENDAR_IDS_KEY);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
   const [isEventDialogOpen, setIsEventDialogOpen] = useState(false);
   const [isAccountDialogOpen, setIsAccountDialogOpen] = useState(false);
   const [isCalendarDialogOpen, setIsCalendarDialogOpen] = useState(false);
@@ -81,6 +103,8 @@ const CalendarPage = () => {
     display_name: '',
     access_token: '',
     refresh_token: '',
+    ics_url: '',
+    caldav_event_base_url: '',
     provider_config_json: '',
   });
   const [oauthPopupLoading, setOauthPopupLoading] = useState<CalendarProvider | null>(null);
@@ -117,6 +141,22 @@ const CalendarPage = () => {
     const visible = calendars.filter((calendar) => calendar.is_visible).map((calendar) => calendar.id);
     setSelectedCalendarIds(visible.length > 0 ? visible : calendars.map((calendar) => calendar.id));
   }, [calendars, selectedCalendarIds.length]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_VIEW_KEY, viewMode);
+  }, [viewMode]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_CURRENT_DATE_KEY, currentDate.toISOString());
+  }, [currentDate]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_SELECTED_DATE_KEY, selectedDate.toISOString());
+  }, [selectedDate]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_SELECTED_CALENDAR_IDS_KEY, JSON.stringify(selectedCalendarIds));
+  }, [selectedCalendarIds]);
 
   const { data: events = [], isLoading } = useQuery({
     queryKey: calendarQueryKeys.list({
@@ -241,6 +281,13 @@ const CalendarPage = () => {
       if (accountForm.provider_config_json.trim()) {
         providerConfig = JSON.parse(accountForm.provider_config_json);
       }
+      if (accountForm.provider === 'icloud') {
+        providerConfig = {
+          ...providerConfig,
+          ...(accountForm.ics_url.trim() ? { ics_url: accountForm.ics_url.trim() } : {}),
+          ...(accountForm.caldav_event_base_url.trim() ? { caldav_event_base_url: accountForm.caldav_event_base_url.trim() } : {}),
+        };
+      }
       return calendarApi.createAccount({
         provider: accountForm.provider,
         account_email: accountForm.account_email || null,
@@ -248,6 +295,7 @@ const CalendarPage = () => {
         access_token: accountForm.access_token || undefined,
         refresh_token: accountForm.refresh_token || undefined,
         provider_config: providerConfig,
+        default_calendar_name: accountForm.provider === 'icloud' ? 'iCloud Calendar' : undefined,
       });
     },
     onSuccess: () => {
@@ -259,6 +307,8 @@ const CalendarPage = () => {
         display_name: '',
         access_token: '',
         refresh_token: '',
+        ics_url: '',
+        caldav_event_base_url: '',
         provider_config_json: '',
       });
       toast({ title: 'Calendar account created' });
@@ -444,10 +494,18 @@ const CalendarPage = () => {
     }
     if (viewMode === 'week') {
       setCurrentDate((prev) => (direction > 0 ? addDays(prev, 7) : subDays(prev, 7)));
+      setSelectedDate((prev) => (direction > 0 ? addDays(prev, 7) : subDays(prev, 7)));
       return;
     }
     setCurrentDate((prev) => (direction > 0 ? addDays(prev, 1) : subDays(prev, 1)));
+    setSelectedDate((prev) => (direction > 0 ? addDays(prev, 1) : subDays(prev, 1)));
   };
+
+  useEffect(() => {
+    if (viewMode === 'day') {
+      setCurrentDate(selectedDate);
+    }
+  }, [viewMode, selectedDate]);
 
   const submitEventForm = (formEvent: FormEvent) => {
     formEvent.preventDefault();
@@ -528,6 +586,14 @@ const CalendarPage = () => {
                     className="space-y-3"
                     onSubmit={(event) => {
                       event.preventDefault();
+                      if (accountForm.provider === 'icloud' && !accountForm.ics_url.trim() && !accountForm.provider_config_json.trim()) {
+                        toast({
+                          title: 'iCloud sync URL missing',
+                          description: 'Add an iCalendar URL or provider config JSON before creating the iCloud account.',
+                          variant: 'destructive',
+                        });
+                        return;
+                      }
                       createAccountMutation.mutate();
                     }}
                   >
@@ -585,6 +651,22 @@ const CalendarPage = () => {
                           <Input
                             value={accountForm.refresh_token}
                             onChange={(event) => setAccountForm((prev) => ({ ...prev, refresh_token: event.target.value }))}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>iCalendar URL (required for sync)</Label>
+                          <Input
+                            value={accountForm.ics_url}
+                            onChange={(event) => setAccountForm((prev) => ({ ...prev, ics_url: event.target.value }))}
+                            placeholder="https://.../calendar.ics"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>CalDAV event base URL (optional, write/delete)</Label>
+                          <Input
+                            value={accountForm.caldav_event_base_url}
+                            onChange={(event) => setAccountForm((prev) => ({ ...prev, caldav_event_base_url: event.target.value }))}
+                            placeholder="https://caldav.icloud.com/.../events"
                           />
                         </div>
                       </>
@@ -905,6 +987,7 @@ const CalendarPage = () => {
                       const key = format(day, 'yyyy-MM-dd');
                       const dayEvents = (eventsByDay.get(key) || []).slice(0, 3);
                       const isOtherMonth = !isSameMonth(day, currentDate);
+                      const isSelectedDay = isSameDay(day, selectedDate);
                       return (
                         <button
                           key={key}
@@ -914,7 +997,7 @@ const CalendarPage = () => {
                           }}
                           className={`min-h-[108px] rounded border text-left p-1.5 align-top ${
                             isOtherMonth ? 'opacity-60' : ''
-                          } ${isToday(day) ? 'border-accent' : 'border-border'}`}
+                          } ${isToday(day) ? 'border-accent' : 'border-border'} ${isSelectedDay ? 'ring-2 ring-primary border-primary' : ''}`}
                         >
                           <div className="text-xs font-medium mb-1">{format(day, 'd')}</div>
                           <div className="space-y-1">
@@ -939,8 +1022,17 @@ const CalendarPage = () => {
                     const dayEvents = (eventsByDay.get(key) || []).sort((a, b) => (
                       new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
                     ));
+                    const isSelectedDay = isSameDay(day, selectedDate);
                     return (
-                      <div key={key} className={`rounded border p-2 ${isToday(day) ? 'border-accent' : 'border-border'}`}>
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => {
+                          setSelectedDate(day);
+                          setCurrentDate(day);
+                        }}
+                        className={`rounded border p-2 text-left ${isToday(day) ? 'border-accent' : 'border-border'} ${isSelectedDay ? 'ring-2 ring-primary border-primary' : ''}`}
+                      >
                         <div className="text-sm font-medium mb-2">{format(day, 'EEE dd')}</div>
                         <div className="space-y-2">
                           {dayEvents.length === 0 ? (
@@ -949,7 +1041,7 @@ const CalendarPage = () => {
                             dayEvents.map(renderEventCompact)
                           )}
                         </div>
-                      </div>
+                      </button>
                     );
                   })}
                 </div>

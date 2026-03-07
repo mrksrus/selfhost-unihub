@@ -18,8 +18,12 @@ UniHub synchronises email using the IMAP protocol to fetch messages from externa
 ## Database Tables
 
 - `mail_accounts` -- credentials (encrypted), IMAP/SMTP settings, last-sync timestamp, user association
+- `mail_accounts.sync_fetch_limit` -- per-account initial import size (`100`, `500`, `1000`, `2000`, `all`)
 - `emails` -- message metadata, plain-text body, HTML body, folder, read/starred status
 - `email_attachments` -- attachment metadata, filesystem path, Content-ID for inline images
+- `mail_folders` -- app-owned folder catalog per user (system folders + future custom folders)
+- `mail_sender_rules` -- future sender/domain-to-folder routing rules (schema ready, logic not active yet)
+- `mail_email_scores` -- future scam/spam scoring snapshots per email (schema ready, logic not active yet)
 
 ## Account Creation Flow
 
@@ -63,12 +67,33 @@ On success:
 
 1. Connect to IMAP server (TLS on port 993, STARTTLS on port 143).
 2. Open INBOX.
-3. If last-sync timestamp exists, search with `SINCE` (minus 1-day safety margin). Otherwise search `ALL` and take the last 500 UIDs.
+3. If last-sync timestamp exists, search with `SINCE` (minus 1-day safety margin). Otherwise search `ALL` and apply the account's configured `sync_fetch_limit`.
 4. For each UID, fetch HEADER + TEXT individually.
 5. Reconstruct RFC 822 message and parse with `mailparser`.
 6. Check for duplicates by `message_id`.
 7. Insert into `emails`; process attachments; replace inline `cid:` references with `/api/mail/attachments/{id}` URLs.
 8. Update `last_synced_at` on the account.
+
+### Sync limit behavior
+
+- The user selects sync limit per mail account: `100`, `500` (default), `1000`, `2000`, `all`.
+- This limit applies to the first full import for that account.
+- If the user requests more emails than exist (e.g. `2000` requested, `1000` available), sync safely imports only available emails and reports counts.
+- `all` requests full mailbox history. If the provider returns malformed or inconsistent UID search results, sync aborts with a clear error instead of importing partial/corrupt placeholders.
+- No dummy/empty emails are created when counts mismatch.
+
+### App-owned folders
+
+System folders currently available in UI/API:
+
+- `inbox`, `sent`, `archive`, `trash`
+- `important`, `marketing`, `scam`, `unknown`, `twofactor_notifications`
+
+Current default behavior:
+
+- New incoming synced emails are stored in `inbox` by default.
+- Additional folders are manual-move targets for now.
+- Future automatic sender/domain categorization and scam scoring will build on `mail_sender_rules` and `mail_email_scores`.
 
 ### Why one-by-one fetching?
 
@@ -111,7 +136,7 @@ Connection timeouts: 60 s connect, 30 s auth, 60 s socket.
 ## Limitations
 
 1. Only syncs INBOX (no sent/archive/draft folder sync yet).
-2. Fetches at most 500 emails per account on initial sync.
+2. Initial sync is configurable per account (`100/500/1000/2000/all`; default `500`).
 3. No server-side deletion sync (deletes are local only).
 4. One-by-one fetching can be slow for large mailboxes.
 5. No incremental UID tracking yet (uses date-based `SINCE` after first sync).
