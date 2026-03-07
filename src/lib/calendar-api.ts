@@ -240,6 +240,11 @@ export const calendarApi = {
     return response.data.calendar;
   },
 
+  async deleteCalendar(id: string): Promise<void> {
+    const response = await api.delete(`/calendar/calendars/${id}`);
+    if (response.error) throw new Error(response.error);
+  },
+
   async updateRsvp(id: string, payload: { response_status: CalendarRsvpStatus; email?: string }): Promise<CalendarEvent> {
     const response = await api.put<{ event: CalendarEvent }>(`/calendar/events/${id}/rsvp`, payload);
     if (response.error) throw new Error(response.error);

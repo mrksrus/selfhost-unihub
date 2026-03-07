@@ -4756,6 +4756,46 @@ const routes = {
     }
   },
 
+  'DELETE /api/calendar/calendars/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
+    try {
+      const id = getCalendarCalendarIdFromReq(req);
+      if (!id) return { error: 'Invalid calendar id', status: 400 };
+
+      const [rows] = await db.execute(
+        'SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1',
+        [id, userId]
+      );
+      if (rows.length === 0) return { error: 'Calendar not found', status: 404 };
+      const calendar = rows[0];
+
+      const [accountCalendarCountRows] = await db.execute(
+        'SELECT COUNT(*) AS count FROM calendar_calendars WHERE account_id = ? AND user_id = ?',
+        [calendar.account_id, userId]
+      );
+      const accountCalendarCount = Number(accountCalendarCountRows[0]?.count || 0);
+      if (accountCalendarCount <= 1) {
+        return { error: 'Cannot delete the last calendar in this account. Delete the account instead.', status: 400 };
+      }
+
+      const [eventsCountRows] = await db.execute(
+        'SELECT COUNT(*) AS count FROM calendar_events WHERE user_id = ? AND calendar_id = ?',
+        [userId, id]
+      );
+      const eventsCount = Number(eventsCountRows[0]?.count || 0);
+      await db.execute('DELETE FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
+
+      return {
+        message: `Calendar deleted. ${eventsCount} linked event(s) were removed.`,
+        deleted_events: eventsCount,
+      };
+    } catch (error) {
+      console.error('Delete calendar error:', error);
+      return { error: error.message || 'Failed to delete calendar', status: 500 };
+    }
+  },
+
   'GET /api/calendar/events': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {

@@ -380,6 +380,28 @@ const CalendarPage = () => {
     },
   });
 
+  const deleteAccountMutation = useMutation({
+    mutationFn: (id: string) => calendarApi.deleteAccount(id),
+    onSuccess: () => {
+      invalidateCalendarQueries();
+      toast({ title: 'Account deleted' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to delete account', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const deleteCalendarMutation = useMutation({
+    mutationFn: (id: string) => calendarApi.deleteCalendar(id),
+    onSuccess: () => {
+      invalidateCalendarQueries();
+      toast({ title: 'Calendar deleted' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to delete calendar', description: error.message, variant: 'destructive' });
+    },
+  });
+
   const rsvpMutation = useMutation({
     mutationFn: ({ id, status }: { id: string; status: CalendarRsvpStatus }) => (
       calendarApi.updateRsvp(id, { response_status: status })
@@ -764,16 +786,35 @@ const CalendarPage = () => {
                       <p className="text-sm font-semibold">{account?.display_name || account?.account_email || account?.provider || 'Account'}</p>
                       <p className="text-xs text-muted-foreground">{account?.provider || 'unknown'}</p>
                     </div>
-                    {account && account.provider !== 'local' && (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => syncAccountMutation.mutate(account.id)}
-                        title="Sync now"
-                      >
-                        <RefreshCw className="h-4 w-4" />
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {account && account.provider !== 'local' && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => syncAccountMutation.mutate(account.id)}
+                          title="Sync now"
+                        >
+                          <RefreshCw className="h-4 w-4" />
+                        </Button>
+                      )}
+                      {account && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="text-destructive hover:text-destructive"
+                          title="Delete account"
+                          onClick={() => {
+                            const accepted = window.confirm(
+                              'Delete this calendar account? All calendars and linked events in this account will be removed.'
+                            );
+                            if (!accepted) return;
+                            deleteAccountMutation.mutate(account.id);
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -789,6 +830,24 @@ const CalendarPage = () => {
                             />
                             <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: calendar.color }} />
                             <span className="flex-1 truncate">{calendar.name}</span>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6 text-destructive hover:text-destructive"
+                              title="Delete calendar"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                const accepted = window.confirm(
+                                  'Delete this calendar? All events in this calendar will be removed.'
+                                );
+                                if (!accepted) return;
+                                deleteCalendarMutation.mutate(calendar.id);
+                              }}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
                           </label>
                           <div className="flex items-center gap-2">
                             <Input
