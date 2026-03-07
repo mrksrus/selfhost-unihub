@@ -1449,7 +1449,11 @@ async function ensureSchema() {
     // Ignore when unsupported or already exists
   }
   try {
-    await db.execute(`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT '500' AFTER encrypted_password`);
+    // Version-safe migration (MySQL variants may not support ADD COLUMN IF NOT EXISTS)
+    const [syncFetchLimitCols] = await db.execute(`SHOW COLUMNS FROM mail_accounts LIKE 'sync_fetch_limit'`);
+    if (!Array.isArray(syncFetchLimitCols) || syncFetchLimitCols.length === 0) {
+      await db.execute(`ALTER TABLE mail_accounts ADD COLUMN sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT '500' AFTER encrypted_password`);
+    }
   } catch (e) {
     // Ignore when unsupported or already exists
   }
