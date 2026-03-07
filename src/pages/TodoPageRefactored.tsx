@@ -102,8 +102,8 @@ const TodoPage = () => {
   }, [queryClient]);
 
   const { data: events = [], isLoading } = useQuery({
-    queryKey: calendarQueryKeys.list({ includeTodos: true }),
-    queryFn: () => calendarApi.fetchEvents({ includeTodos: true }),
+    queryKey: calendarQueryKeys.list({ includeTodos: true, respectAutoTodo: true }),
+    queryFn: () => calendarApi.fetchEvents({ includeTodos: true, respectAutoTodo: true }),
   });
 
   const createTodo = useMutation({

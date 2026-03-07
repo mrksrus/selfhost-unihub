@@ -1,29 +1,20 @@
 import { useMemo, useState, useEffect, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { addDays, addMonths, eachDayOfInterval, endOfDay, endOfMonth, endOfWeek, format, isSameDay, isSameMonth, isToday, parseISO, startOfDay, startOfMonth, startOfWeek, subDays, subMonths } from 'date-fns';
+import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Edit, Loader2, MapPin, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { useToast } from '@/hooks/use-toast';
-import { Plus, ChevronLeft, ChevronRight, Clock, MapPin, Trash2, Edit, Loader2, X } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { addMonths, eachDayOfInterval, endOfMonth, endOfWeek, format, isSameDay, isSameMonth, isToday, parseISO, startOfMonth, startOfWeek, subMonths } from 'date-fns';
-import { enGB } from 'date-fns/locale';
-import { useAuth } from '@/contexts/AuthContext';
-import { calendarApi, calendarQueryKeys, formatEventTime, localDatetimeToIso, toDatetimeLocalValue, type CalendarEvent } from '@/lib/calendar-api';
+import { Textarea } from '@/components/ui/textarea';
+import { calendarApi, calendarQueryKeys, formatEventTime, localDatetimeToIso, toDatetimeLocalValue, type CalendarAccount, type CalendarCalendar, type CalendarEvent, type CalendarProvider, type CalendarRsvpStatus } from '@/lib/calendar-api';
 
-const colorOptions = [
-  { value: '#22c55e', label: 'Green' },
-  { value: '#3b82f6', label: 'Blue' },
-  { value: '#8b5cf6', label: 'Purple' },
-  { value: '#f59e0b', label: 'Orange' },
-  { value: '#ef4444', label: 'Red' },
-  { value: '#06b6d4', label: 'Cyan' },
-];
+type CalendarViewMode = 'day' | 'week' | 'month';
 
 const reminderOptions = [
   { value: 0, label: 'At event time' },
@@ -35,16 +26,44 @@ const reminderOptions = [
   { value: 1440, label: '1 day before' },
 ];
 
+const providerOptions: { value: CalendarProvider; label: string }[] = [
+  { value: 'local', label: 'Local' },
+  { value: 'google', label: 'Google Calendar' },
+  { value: 'microsoft', label: 'Microsoft 365' },
+  { value: 'icloud', label: 'iCloud / CalDAV' },
+];
+
+function viewDateRange(viewMode: CalendarViewMode, baseDate: Date) {
+  const weekOpts = { weekStartsOn: 1 as const };
+  if (viewMode === 'day') {
+    return { start: startOfDay(baseDate), end: endOfDay(baseDate) };
+  }
+  if (viewMode === 'week') {
+    return { start: startOfWeek(baseDate, weekOpts), end: endOfWeek(baseDate, weekOpts) };
+  }
+  return {
+    start: startOfWeek(startOfMonth(baseDate), weekOpts),
+    end: endOfWeek(endOfMonth(baseDate), weekOpts),
+  };
+}
+
 const CalendarPage = () => {
   const { user } = useAuth();
   const timezone = user?.timezone ?? null;
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [currentMonth, setCurrentMonth] = useState(new Date());
-  const [selectedDate, setSelectedDate] = useState<Date | null>(new Date());
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
+
+  const [viewMode, setViewMode] = useState<CalendarViewMode>('month');
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [selectedCalendarIds, setSelectedCalendarIds] = useState<string[]>([]);
+  const [isEventDialogOpen, setIsEventDialogOpen] = useState(false);
+  const [isAccountDialogOpen, setIsAccountDialogOpen] = useState(false);
+  const [isCalendarDialogOpen, setIsCalendarDialogOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<CalendarEvent | null>(null);
-  const [formData, setFormData] = useState({
+
+  const [eventForm, setEventForm] = useState({
+    calendar_id: '',
     title: '',
     description: '',
     start_time: '',
@@ -53,95 +72,359 @@ const CalendarPage = () => {
     location: '',
     color: '#22c55e',
     reminders: [0] as number[],
+    attendee_emails: '',
   });
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('action') === 'new') {
-      setIsDialogOpen(true);
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-  }, []);
+  const [accountForm, setAccountForm] = useState({
+    provider: 'local' as CalendarProvider,
+    account_email: '',
+    display_name: '',
+    access_token: '',
+    refresh_token: '',
+    provider_config_json: '',
+  });
+  const [oauthPopupLoading, setOauthPopupLoading] = useState<CalendarProvider | null>(null);
+
+  const [calendarForm, setCalendarForm] = useState({
+    account_id: '',
+    name: '',
+    color: '#22c55e',
+    auto_todo_enabled: true,
+  });
+
+  const range = useMemo(() => viewDateRange(viewMode, currentDate), [viewMode, currentDate]);
 
   const invalidateCalendarQueries = () => {
     queryClient.invalidateQueries({ queryKey: calendarQueryKeys.all });
+    queryClient.invalidateQueries({ queryKey: calendarQueryKeys.accounts });
+    queryClient.invalidateQueries({ queryKey: calendarQueryKeys.calendars });
     queryClient.invalidateQueries({ queryKey: calendarQueryKeys.upcomingEvents });
     queryClient.invalidateQueries({ queryKey: calendarQueryKeys.stats });
   };
 
-  const { data: events = [], isLoading } = useQuery({
-    queryKey: calendarQueryKeys.list({ includeTodos: false }),
-    queryFn: () => calendarApi.fetchEvents({ includeTodos: false }),
+  const { data: accounts = [] } = useQuery({
+    queryKey: calendarQueryKeys.accounts,
+    queryFn: () => calendarApi.fetchAccounts(),
   });
 
-  const monthEvents = useMemo(() => {
-    const monthStart = startOfMonth(currentMonth);
-    const monthEnd = endOfMonth(currentMonth);
-    return events.filter((event) => {
-      const eventDate = parseISO(event.start_time);
-      return eventDate >= monthStart && eventDate <= monthEnd;
-    });
-  }, [events, currentMonth]);
+  const { data: calendars = [] } = useQuery({
+    queryKey: calendarQueryKeys.calendars,
+    queryFn: () => calendarApi.fetchCalendars(),
+  });
 
-  const createEvent = useMutation({
-    mutationFn: () => calendarApi.createEvent({
-      title: formData.title,
-      description: formData.description || null,
-      start_time: localDatetimeToIso(formData.start_time, timezone),
-      end_time: localDatetimeToIso(formData.end_time, timezone),
-      all_day: formData.all_day,
-      location: formData.location || null,
-      color: formData.color,
-      reminders: formData.reminders,
-      is_todo_only: false,
+  useEffect(() => {
+    if (selectedCalendarIds.length > 0 || calendars.length === 0) return;
+    const visible = calendars.filter((calendar) => calendar.is_visible).map((calendar) => calendar.id);
+    setSelectedCalendarIds(visible.length > 0 ? visible : calendars.map((calendar) => calendar.id));
+  }, [calendars, selectedCalendarIds.length]);
+
+  const { data: events = [], isLoading } = useQuery({
+    queryKey: calendarQueryKeys.list({
+      includeTodos: false,
+      includeDone: true,
+      rangeStart: range.start.toISOString(),
+      rangeEnd: range.end.toISOString(),
+      calendarIds: selectedCalendarIds,
     }),
+    queryFn: () => calendarApi.fetchEvents({
+      includeTodos: false,
+      includeDone: true,
+      rangeStart: range.start.toISOString(),
+      rangeEnd: range.end.toISOString(),
+      calendarIds: selectedCalendarIds,
+    }),
+  });
+
+  const createEventMutation = useMutation({
+    mutationFn: async () => {
+      const attendees = eventForm.attendee_emails
+        .split(',')
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean)
+        .map((email) => ({ email, response_status: 'needsAction' as const }));
+      return calendarApi.createEvent({
+        calendar_id: eventForm.calendar_id || undefined,
+        title: eventForm.title.trim(),
+        description: eventForm.description || null,
+        start_time: localDatetimeToIso(eventForm.start_time, timezone),
+        end_time: localDatetimeToIso(eventForm.end_time, timezone),
+        all_day: eventForm.all_day,
+        location: eventForm.location || null,
+        color: eventForm.color,
+        reminders: eventForm.reminders,
+        attendees,
+      });
+    },
     onSuccess: () => {
       invalidateCalendarQueries();
-      toast({ title: 'Event created successfully' });
-      resetForm();
+      toast({ title: 'Event created' });
+      resetEventForm();
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to create event', description: error.message, variant: 'destructive' });
     },
   });
 
-  const updateEvent = useMutation({
-    mutationFn: () => {
+  const updateEventMutation = useMutation({
+    mutationFn: async () => {
       if (!editingEvent) throw new Error('No event selected');
+      const attendees = eventForm.attendee_emails
+        .split(',')
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean)
+        .map((email) => ({ email, response_status: 'needsAction' as const }));
       return calendarApi.updateEvent(editingEvent.id, {
-        title: formData.title,
-        description: formData.description || null,
-        start_time: localDatetimeToIso(formData.start_time, timezone),
-        end_time: localDatetimeToIso(formData.end_time, timezone),
-        all_day: formData.all_day,
-        location: formData.location || null,
-        color: formData.color,
-        reminders: formData.reminders,
+        calendar_id: eventForm.calendar_id || undefined,
+        title: eventForm.title.trim(),
+        description: eventForm.description || null,
+        start_time: localDatetimeToIso(eventForm.start_time, timezone),
+        end_time: localDatetimeToIso(eventForm.end_time, timezone),
+        all_day: eventForm.all_day,
+        location: eventForm.location || null,
+        color: eventForm.color,
+        reminders: eventForm.reminders,
+        attendees,
       });
     },
     onSuccess: () => {
       invalidateCalendarQueries();
-      toast({ title: 'Event updated successfully' });
-      resetForm();
+      toast({ title: 'Event updated' });
+      resetEventForm();
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to update event', description: error.message, variant: 'destructive' });
     },
   });
 
-  const deleteEvent = useMutation({
+  const deleteEventMutation = useMutation({
     mutationFn: (id: string) => calendarApi.deleteEvent(id),
     onSuccess: () => {
       invalidateCalendarQueries();
-      toast({ title: 'Event deleted successfully' });
+      toast({ title: 'Event deleted' });
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to delete event', description: error.message, variant: 'destructive' });
     },
   });
 
-  const resetForm = () => {
-    setFormData({
+  const updateCalendarMutation = useMutation({
+    mutationFn: (payload: { id: string; data: Partial<Pick<CalendarCalendar, 'is_visible' | 'auto_todo_enabled' | 'color'>> }) => (
+      calendarApi.updateCalendar(payload.id, payload.data)
+    ),
+    onSuccess: () => invalidateCalendarQueries(),
+    onError: (error: Error) => {
+      toast({ title: 'Failed to update calendar', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const createCalendarMutation = useMutation({
+    mutationFn: () => calendarApi.createCalendar({
+      account_id: calendarForm.account_id,
+      name: calendarForm.name.trim(),
+      color: calendarForm.color,
+      auto_todo_enabled: calendarForm.auto_todo_enabled,
+    }),
+    onSuccess: () => {
+      invalidateCalendarQueries();
+      setIsCalendarDialogOpen(false);
+      setCalendarForm((prev) => ({ ...prev, name: '' }));
+      toast({ title: 'Calendar created' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to create calendar', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const createAccountMutation = useMutation({
+    mutationFn: async () => {
+      let providerConfig: Record<string, unknown> = {};
+      if (accountForm.provider_config_json.trim()) {
+        providerConfig = JSON.parse(accountForm.provider_config_json);
+      }
+      return calendarApi.createAccount({
+        provider: accountForm.provider,
+        account_email: accountForm.account_email || null,
+        display_name: accountForm.display_name || null,
+        access_token: accountForm.access_token || undefined,
+        refresh_token: accountForm.refresh_token || undefined,
+        provider_config: providerConfig,
+      });
+    },
+    onSuccess: () => {
+      invalidateCalendarQueries();
+      setIsAccountDialogOpen(false);
+      setAccountForm({
+        provider: 'local',
+        account_email: '',
+        display_name: '',
+        access_token: '',
+        refresh_token: '',
+        provider_config_json: '',
+      });
+      toast({ title: 'Calendar account created' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to create calendar account', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  useEffect(() => {
+    const onOAuthMessage = (event: MessageEvent) => {
+      if (!event.data || event.data.type !== 'calendar-oauth-result') return;
+      const success = !!event.data.success;
+      const message = String(event.data.message || (success ? 'Connected' : 'Connection failed'));
+      setOauthPopupLoading(null);
+      if (success) {
+        invalidateCalendarQueries();
+        toast({ title: message });
+        setIsAccountDialogOpen(false);
+      } else {
+        toast({ title: 'OAuth failed', description: message, variant: 'destructive' });
+      }
+    };
+    window.addEventListener('message', onOAuthMessage);
+    return () => window.removeEventListener('message', onOAuthMessage);
+  }, []);
+
+  const startOAuthConnect = (provider: 'google' | 'microsoft') => {
+    setOauthPopupLoading(provider);
+    const width = 560;
+    const height = 720;
+    const left = window.screenX + Math.max(0, (window.outerWidth - width) / 2);
+    const top = window.screenY + Math.max(0, (window.outerHeight - height) / 2);
+    const popup = window.open(
+      `/api/calendar/oauth/${provider}/start`,
+      `calendar-oauth-${provider}`,
+      `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+    );
+    if (!popup) {
+      setOauthPopupLoading(null);
+      toast({
+        title: 'Popup blocked',
+        description: 'Allow popups for this site to connect calendar via OAuth.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    const startedAt = Date.now();
+    const interval = window.setInterval(() => {
+      if (popup.closed) {
+        window.clearInterval(interval);
+        // If closed quickly and no message arrived, reset loading.
+        if (Date.now() - startedAt < 2 * 60 * 1000) {
+          setOauthPopupLoading((current) => (current === provider ? null : current));
+        }
+      }
+    }, 500);
+  };
+
+  const syncAccountMutation = useMutation({
+    mutationFn: (id: string) => calendarApi.syncAccount(id),
+    onSuccess: () => {
+      invalidateCalendarQueries();
+      toast({ title: 'Sync completed' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Sync failed', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const rsvpMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: CalendarRsvpStatus }) => (
+      calendarApi.updateRsvp(id, { response_status: status })
+    ),
+    onSuccess: () => {
+      invalidateCalendarQueries();
+      toast({ title: 'RSVP updated' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to update RSVP', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const groupedCalendars = useMemo(() => {
+    const grouped = new Map<string, { account: CalendarAccount | null; calendars: CalendarCalendar[] }>();
+    for (const account of accounts) {
+      grouped.set(account.id, { account, calendars: [] });
+    }
+    for (const calendar of calendars) {
+      const entry = grouped.get(calendar.account_id) || { account: null, calendars: [] };
+      entry.calendars.push(calendar);
+      grouped.set(calendar.account_id, entry);
+    }
+    return Array.from(grouped.entries()).map(([, value]) => value);
+  }, [accounts, calendars]);
+
+  const eventsByDay = useMemo(() => {
+    const map = new Map<string, CalendarEvent[]>();
+    for (const event of events) {
+      const key = format(parseISO(event.start_time), 'yyyy-MM-dd');
+      const list = map.get(key) || [];
+      list.push(event);
+      map.set(key, list);
+    }
+    return map;
+  }, [events]);
+
+  const weekDays = useMemo(
+    () => eachDayOfInterval({ start: startOfWeek(currentDate, { weekStartsOn: 1 }), end: endOfWeek(currentDate, { weekStartsOn: 1 }) }),
+    [currentDate]
+  );
+
+  const monthDays = useMemo(
+    () => eachDayOfInterval({ start: startOfWeek(startOfMonth(currentDate), { weekStartsOn: 1 }), end: endOfWeek(endOfMonth(currentDate), { weekStartsOn: 1 }) }),
+    [currentDate]
+  );
+
+  const selectedDateEvents = useMemo(() => {
+    const key = format(selectedDate, 'yyyy-MM-dd');
+    return (eventsByDay.get(key) || []).sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+  }, [eventsByDay, selectedDate]);
+
+  const openEventDialog = (event?: CalendarEvent, date?: Date) => {
+    if (event) {
+      setEditingEvent(event);
+      setEventForm({
+        calendar_id: event.calendar_id || '',
+        title: event.title,
+        description: event.description || '',
+        start_time: toDatetimeLocalValue(event.start_time, timezone),
+        end_time: toDatetimeLocalValue(event.end_time, timezone),
+        all_day: event.all_day,
+        location: event.location || '',
+        color: event.color,
+        reminders: event.reminders || [0],
+        attendee_emails: (event.attendees || []).map((attendee) => attendee.email).join(', '),
+      });
+    } else {
+      const targetDate = date || selectedDate || new Date();
+      const start = new Date(targetDate);
+      start.setHours(9, 0, 0, 0);
+      const end = new Date(targetDate);
+      end.setHours(10, 0, 0, 0);
+      setEditingEvent(null);
+      setEventForm({
+        calendar_id: calendars[0]?.id || '',
+        title: '',
+        description: '',
+        start_time: format(start, "yyyy-MM-dd'T'HH:mm"),
+        end_time: format(end, "yyyy-MM-dd'T'HH:mm"),
+        all_day: false,
+        location: '',
+        color: '#22c55e',
+        reminders: [0],
+        attendee_emails: '',
+      });
+    }
+    setIsEventDialogOpen(true);
+  };
+
+  const resetEventForm = () => {
+    setIsEventDialogOpen(false);
+    setEditingEvent(null);
+    setEventForm({
+      calendar_id: calendars[0]?.id || '',
       title: '',
       description: '',
       start_time: '',
@@ -150,77 +433,71 @@ const CalendarPage = () => {
       location: '',
       color: '#22c55e',
       reminders: [0],
+      attendee_emails: '',
     });
-    setEditingEvent(null);
-    setIsDialogOpen(false);
   };
 
-  const handleNewEvent = (date?: Date) => {
-    const targetDate = date || selectedDate || new Date();
-    const start = new Date(targetDate);
-    start.setHours(9, 0, 0, 0);
-    const end = new Date(targetDate);
-    end.setHours(10, 0, 0, 0);
-    setFormData((prev) => ({
-      ...prev,
-      start_time: format(start, "yyyy-MM-dd'T'HH:mm"),
-      end_time: format(end, "yyyy-MM-dd'T'HH:mm"),
-    }));
-    setIsDialogOpen(true);
+  const shiftPeriod = (direction: -1 | 1) => {
+    if (viewMode === 'month') {
+      setCurrentDate((prev) => (direction > 0 ? addMonths(prev, 1) : subMonths(prev, 1)));
+      return;
+    }
+    if (viewMode === 'week') {
+      setCurrentDate((prev) => (direction > 0 ? addDays(prev, 7) : subDays(prev, 7)));
+      return;
+    }
+    setCurrentDate((prev) => (direction > 0 ? addDays(prev, 1) : subDays(prev, 1)));
   };
 
-  const handleEdit = (event: CalendarEvent) => {
-    setEditingEvent(event);
-    setFormData({
-      title: event.title,
-      description: event.description || '',
-      start_time: toDatetimeLocalValue(event.start_time, timezone),
-      end_time: toDatetimeLocalValue(event.end_time, timezone),
-      all_day: event.all_day,
-      location: event.location || '',
-      color: event.color,
-      reminders: event.reminders || [0],
-    });
-    setIsDialogOpen(true);
-  };
-
-  const handleSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    if (!formData.title.trim()) {
+  const submitEventForm = (formEvent: FormEvent) => {
+    formEvent.preventDefault();
+    if (!eventForm.title.trim()) {
       toast({ title: 'Title is required', variant: 'destructive' });
       return;
     }
-    if (!formData.start_time || !formData.end_time) {
+    if (!eventForm.start_time || !eventForm.end_time) {
       toast({ title: 'Start and end times are required', variant: 'destructive' });
       return;
     }
-    if (new Date(formData.end_time).getTime() < new Date(formData.start_time).getTime()) {
+    if (!eventForm.calendar_id) {
+      toast({ title: 'Select a calendar', variant: 'destructive' });
+      return;
+    }
+    if (new Date(eventForm.end_time).getTime() < new Date(eventForm.start_time).getTime()) {
       toast({ title: 'End time must be after start time', variant: 'destructive' });
       return;
     }
     if (editingEvent) {
-      updateEvent.mutate();
+      updateEventMutation.mutate();
     } else {
-      createEvent.mutate();
+      createEventMutation.mutate();
     }
   };
 
-  const weekStartsOnMonday = { weekStartsOn: 1 as const };
-  const calendarStart = startOfWeek(startOfMonth(currentMonth), weekStartsOnMonday);
-  const calendarEnd = endOfWeek(endOfMonth(currentMonth), weekStartsOnMonday);
-  const calendarDays = eachDayOfInterval({ start: calendarStart, end: calendarEnd });
-
-  const getEventsForDay = (date: Date) => {
-    return monthEvents.filter((event) => isSameDay(parseISO(event.start_time), date));
+  const toggleCalendarVisibility = (calendarId: string, checked: boolean) => {
+    setSelectedCalendarIds((prev) => {
+      if (checked) return Array.from(new Set([...prev, calendarId]));
+      return prev.filter((id) => id !== calendarId);
+    });
+    updateCalendarMutation.mutate({ id: calendarId, data: { is_visible: checked } });
   };
 
-  const selectedDateEvents = selectedDate ? getEventsForDay(selectedDate) : [];
-
-  const getStatusPrefix = (status: CalendarEvent['todo_status']) => {
-    if (status === 'cancelled') return 'CANCELLED: ';
-    if (status === 'done') return 'DONE: ';
-    return '';
-  };
+  const renderEventCompact = (event: CalendarEvent) => (
+    <div
+      key={event.id}
+      className="relative rounded-md border border-border p-2 text-xs cursor-pointer hover:border-accent/50 transition-colors"
+      style={{ borderLeftColor: event.color, borderLeftWidth: 4 }}
+      onClick={() => openEventDialog(event)}
+    >
+      {event.todo_status === 'done' && <CheckCircle2 className="h-4 w-4 text-green-600 absolute right-1 top-1" />}
+      <div className="font-medium truncate pr-5">{event.title}</div>
+      <div className="text-muted-foreground mt-0.5">
+        {event.all_day
+          ? 'All day'
+          : `${formatEventTime(event.start_time, 'HH:mm', timezone)} - ${formatEventTime(event.end_time, 'HH:mm', timezone)}`}
+      </div>
+    </div>
+  );
 
   if (isLoading) {
     return (
@@ -231,324 +508,543 @@ const CalendarPage = () => {
   }
 
   return (
-    <div className="p-6 lg:p-8 max-w-7xl mx-auto">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Calendar</h1>
-          <p className="text-muted-foreground">Planning mode for all scheduled work.</p>
-        </div>
-        <Dialog open={isDialogOpen} onOpenChange={(open) => {
-          setIsDialogOpen(open);
-          if (!open) resetForm();
-        }}>
-          <DialogTrigger asChild>
-            <Button onClick={() => handleNewEvent()}>
-              <Plus className="h-4 w-4 mr-2" />
-              New Event
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader>
-              <DialogTitle>{editingEvent ? 'Edit Event' : 'Create New Event'}</DialogTitle>
-            </DialogHeader>
-            <form onSubmit={handleSubmit} className="space-y-4 mt-4">
-              <div className="space-y-2">
-                <Label htmlFor="title">Title *</Label>
-                <Input
-                  id="title"
-                  value={formData.title}
-                  onChange={(event) => setFormData((prev) => ({ ...prev, title: event.target.value }))}
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="start_time">Start Time *</Label>
-                  <Input
-                    id="start_time"
-                    type="datetime-local"
-                    value={formData.start_time}
-                    onChange={(event) => setFormData((prev) => ({ ...prev, start_time: event.target.value }))}
-                    required
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="end_time">End Time *</Label>
-                  <Input
-                    id="end_time"
-                    type="datetime-local"
-                    value={formData.end_time}
-                    onChange={(event) => setFormData((prev) => ({ ...prev, end_time: event.target.value }))}
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between rounded-md border p-3">
-                <Label htmlFor="all-day-toggle">All day</Label>
-                <Switch
-                  id="all-day-toggle"
-                  checked={formData.all_day}
-                  onCheckedChange={(checked) => setFormData((prev) => ({ ...prev, all_day: checked }))}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="location">Location</Label>
-                <Input
-                  id="location"
-                  value={formData.location}
-                  onChange={(event) => setFormData((prev) => ({ ...prev, location: event.target.value }))}
-                  placeholder="Add location"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label>Color</Label>
-                <div className="flex gap-2">
-                  {colorOptions.map((color) => (
-                    <button
-                      key={color.value}
-                      type="button"
-                      onClick={() => setFormData((prev) => ({ ...prev, color: color.value }))}
-                      className={`w-8 h-8 rounded-full border-2 transition-all ${
-                        formData.color === color.value ? 'border-foreground scale-110' : 'border-transparent'
-                      }`}
-                      style={{ backgroundColor: color.value }}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
-                <Textarea
-                  id="description"
-                  value={formData.description}
-                  onChange={(event) => setFormData((prev) => ({ ...prev, description: event.target.value }))}
-                  rows={3}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label>Reminders (up to 3)</Label>
-                <div className="space-y-2">
-                  {formData.reminders.map((reminder, index) => (
-                    <div key={index} className="flex items-center gap-2">
+    <div className="p-6 lg:p-8 max-w-[1400px] mx-auto">
+      <div className="flex flex-col lg:flex-row gap-6">
+        <Card className="w-full lg:w-[340px] shrink-0">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-lg">Calendars</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex gap-2">
+              <Dialog open={isAccountDialogOpen} onOpenChange={setIsAccountDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button size="sm" variant="outline" className="flex-1">Add Account</Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Add Calendar Account</DialogTitle>
+                  </DialogHeader>
+                  <form
+                    className="space-y-3"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      createAccountMutation.mutate();
+                    }}
+                  >
+                    <div className="space-y-2">
+                      <Label>Provider</Label>
                       <Select
-                        value={String(reminder)}
-                        onValueChange={(value) => {
-                          const nextReminders = [...formData.reminders];
-                          nextReminders[index] = Number(value);
-                          setFormData((prev) => ({ ...prev, reminders: nextReminders }));
-                        }}
+                        value={accountForm.provider}
+                        onValueChange={(value) => setAccountForm((prev) => ({ ...prev, provider: value as CalendarProvider }))}
                       >
-                        <SelectTrigger className="flex-1">
-                          <SelectValue />
-                        </SelectTrigger>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
                         <SelectContent>
-                          {reminderOptions.map((option) => (
-                            <SelectItem key={option.value} value={String(option.value)}>
-                              {option.label}
+                          {providerOptions.map((provider) => (
+                            <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {(accountForm.provider === 'google' || accountForm.provider === 'microsoft') && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => startOAuthConnect(accountForm.provider)}
+                        disabled={oauthPopupLoading === accountForm.provider}
+                      >
+                        {oauthPopupLoading === accountForm.provider && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        Connect with {accountForm.provider === 'google' ? 'Google OAuth' : 'Microsoft OAuth'}
+                      </Button>
+                    )}
+                    <div className="space-y-2">
+                      <Label>Email</Label>
+                      <Input
+                        value={accountForm.account_email}
+                        onChange={(event) => setAccountForm((prev) => ({ ...prev, account_email: event.target.value }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Display name</Label>
+                      <Input
+                        value={accountForm.display_name}
+                        onChange={(event) => setAccountForm((prev) => ({ ...prev, display_name: event.target.value }))}
+                      />
+                    </div>
+                    {accountForm.provider === 'icloud' && (
+                      <>
+                        <div className="space-y-2">
+                          <Label>Access token / app password</Label>
+                          <Input
+                            value={accountForm.access_token}
+                            onChange={(event) => setAccountForm((prev) => ({ ...prev, access_token: event.target.value }))}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Refresh token (optional)</Label>
+                          <Input
+                            value={accountForm.refresh_token}
+                            onChange={(event) => setAccountForm((prev) => ({ ...prev, refresh_token: event.target.value }))}
+                          />
+                        </div>
+                      </>
+                    )}
+                    {accountForm.provider !== 'local' && (
+                      <div className="space-y-2">
+                        <Label>Provider config JSON (optional)</Label>
+                        <Textarea
+                          rows={4}
+                          placeholder='{"ics_url":"https://..."}'
+                          value={accountForm.provider_config_json}
+                          onChange={(event) => setAccountForm((prev) => ({ ...prev, provider_config_json: event.target.value }))}
+                        />
+                      </div>
+                    )}
+                    <Button type="submit" className="w-full" disabled={createAccountMutation.isPending}>
+                      {createAccountMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Create Account
+                    </Button>
+                  </form>
+                </DialogContent>
+              </Dialog>
+
+              <Dialog open={isCalendarDialogOpen} onOpenChange={setIsCalendarDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button size="sm" variant="outline" className="flex-1">Add Calendar</Button>
+                </DialogTrigger>
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Add Calendar</DialogTitle>
+                  </DialogHeader>
+                  <form
+                    className="space-y-3"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!calendarForm.account_id) {
+                        toast({ title: 'Select an account', variant: 'destructive' });
+                        return;
+                      }
+                      createCalendarMutation.mutate();
+                    }}
+                  >
+                    <div className="space-y-2">
+                      <Label>Account</Label>
+                      <Select
+                        value={calendarForm.account_id}
+                        onValueChange={(value) => setCalendarForm((prev) => ({ ...prev, account_id: value }))}
+                      >
+                        <SelectTrigger><SelectValue placeholder="Select account" /></SelectTrigger>
+                        <SelectContent>
+                          {accounts.map((account) => (
+                            <SelectItem key={account.id} value={account.id}>
+                              {account.display_name || account.account_email || account.provider}
                             </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      {formData.reminders.length > 1 && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => {
-                            const nextReminders = formData.reminders.filter((_, reminderIndex) => reminderIndex !== index);
-                            setFormData((prev) => ({ ...prev, reminders: nextReminders }));
-                          }}
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      )}
                     </div>
-                  ))}
-                  {formData.reminders.length < 3 && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setFormData((prev) => ({ ...prev, reminders: [...prev.reminders, 15] }))}
-                    >
-                      <Plus className="h-4 w-4 mr-2" />
-                      Add Reminder
+                    <div className="space-y-2">
+                      <Label>Name</Label>
+                      <Input
+                        value={calendarForm.name}
+                        onChange={(event) => setCalendarForm((prev) => ({ ...prev, name: event.target.value }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Color</Label>
+                      <Input
+                        type="color"
+                        value={calendarForm.color}
+                        onChange={(event) => setCalendarForm((prev) => ({ ...prev, color: event.target.value }))}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between rounded border p-2">
+                      <Label>Auto-create ToDo</Label>
+                      <Switch
+                        checked={calendarForm.auto_todo_enabled}
+                        onCheckedChange={(checked) => setCalendarForm((prev) => ({ ...prev, auto_todo_enabled: checked }))}
+                      />
+                    </div>
+                    <Button type="submit" className="w-full" disabled={createCalendarMutation.isPending}>
+                      {createCalendarMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Create Calendar
                     </Button>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-3 pt-2">
-                <Button type="button" variant="outline" onClick={resetForm}>
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={createEvent.isPending || updateEvent.isPending}>
-                  {(createEvent.isPending || updateEvent.isPending) && (
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  )}
-                  {editingEvent ? 'Save Changes' : 'Create Event'}
-                </Button>
-              </div>
-            </form>
-          </DialogContent>
-        </Dialog>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-2">
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-xl">{format(currentMonth, 'MMMM yyyy')}</CardTitle>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="icon" onClick={() => setCurrentMonth(subMonths(currentMonth, 1))}>
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setCurrentMonth(new Date())}>
-                  Today
-                </Button>
-                <Button variant="outline" size="icon" onClick={() => setCurrentMonth(addMonths(currentMonth, 1))}>
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
             </div>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-7 mb-2">
-              {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => (
-                <div key={day} className="p-2 text-center text-sm font-medium text-muted-foreground">
-                  {day}
+
+            <div className="space-y-3 max-h-[65vh] overflow-y-auto pr-1">
+              {groupedCalendars.map(({ account, calendars: accountCalendars }) => (
+                <div key={account?.id || `unknown-${accountCalendars[0]?.account_id}`} className="rounded-md border p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <p className="text-sm font-semibold">{account?.display_name || account?.account_email || account?.provider || 'Account'}</p>
+                      <p className="text-xs text-muted-foreground">{account?.provider || 'unknown'}</p>
+                    </div>
+                    {account && account.provider !== 'local' && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => syncAccountMutation.mutate(account.id)}
+                        title="Sync now"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                      </Button>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    {accountCalendars.map((calendar) => {
+                      const checked = selectedCalendarIds.includes(calendar.id);
+                      return (
+                        <div key={calendar.id} className="rounded border p-2 space-y-2">
+                          <label className="flex items-center gap-2 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) => toggleCalendarVisibility(calendar.id, event.target.checked)}
+                            />
+                            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: calendar.color }} />
+                            <span className="flex-1 truncate">{calendar.name}</span>
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="color"
+                              className="h-8 w-16 p-1"
+                              value={calendar.color}
+                              onChange={(event) => updateCalendarMutation.mutate({
+                                id: calendar.id,
+                                data: { color: event.target.value },
+                              })}
+                            />
+                            <div className="flex items-center justify-between flex-1 rounded border px-2 py-1">
+                              <span className="text-xs">Auto-ToDo</span>
+                              <Switch
+                                checked={calendar.auto_todo_enabled}
+                                onCheckedChange={(value) => updateCalendarMutation.mutate({
+                                  id: calendar.id,
+                                  data: { auto_todo_enabled: value },
+                                })}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
             </div>
-            <div className="grid grid-cols-7 gap-1">
-              {calendarDays.map((day) => {
-                const dayEvents = getEventsForDay(day);
-                const isSelected = selectedDate && isSameDay(day, selectedDate);
-                const today = isToday(day);
-                const isOtherMonth = !isSameMonth(day, currentMonth);
-                return (
-                  <button
-                    key={day.toISOString()}
-                    onClick={() => setSelectedDate(day)}
-                    className={`aspect-square p-1 rounded-lg text-sm relative transition-colors ${
-                      isSelected
-                        ? 'bg-primary text-primary-foreground'
-                        : today
-                          ? 'bg-accent/10 text-accent font-semibold'
-                          : isOtherMonth
-                            ? 'text-muted-foreground/60 hover:bg-muted/50'
-                            : 'hover:bg-muted'
-                    }`}
-                  >
-                    <span className="block">{format(day, 'd')}</span>
-                    {dayEvents.length > 0 && (
-                      <div className="flex justify-center gap-0.5 mt-0.5">
-                        {dayEvents.slice(0, 3).map((event) => (
-                          <div key={event.id} className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: event.color }} />
-                        ))}
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">
-              {selectedDate ? format(selectedDate, 'EEEE, dd/MM/yyyy', { locale: enGB }) : 'Select a date'}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {selectedDate && (
-              <Button variant="outline" size="sm" className="w-full mb-4" onClick={() => handleNewEvent(selectedDate)}>
-                <Plus className="h-4 w-4 mr-2" />
-                Add Event
+        <div className="flex-1 min-w-0 space-y-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold text-foreground">Calendar</h1>
+              <p className="text-muted-foreground">Multiple calendars, multiple views, and completed work history.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Select value={viewMode} onValueChange={(value) => setViewMode(value as CalendarViewMode)}>
+                <SelectTrigger className="w-[130px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="day">Day</SelectItem>
+                  <SelectItem value="week">Week</SelectItem>
+                  <SelectItem value="month">Month</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="icon" onClick={() => shiftPeriod(-1)}>
+                <ChevronLeft className="h-4 w-4" />
               </Button>
-            )}
-
-            {selectedDateEvents.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <p>No events scheduled</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <AnimatePresence mode="popLayout">
-                  {selectedDateEvents.map((event) => {
-                    const completedSubtasks = event.subtasks.filter((subtask) => subtask.is_done).length;
-                    return (
-                      <motion.div
-                        key={event.id}
-                        layout
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        className="group relative p-3 rounded-lg border border-border hover:border-accent/30 transition-colors"
+              <Button variant="outline" size="sm" onClick={() => setCurrentDate(new Date())}>Today</Button>
+              <Button variant="outline" size="icon" onClick={() => shiftPeriod(1)}>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+              <Dialog open={isEventDialogOpen} onOpenChange={(open) => { setIsEventDialogOpen(open); if (!open) resetEventForm(); }}>
+                <DialogTrigger asChild>
+                  <Button onClick={() => openEventDialog()}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    New Event
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="sm:max-w-[560px]">
+                  <DialogHeader>
+                    <DialogTitle>{editingEvent ? 'Edit Event' : 'Create Event'}</DialogTitle>
+                  </DialogHeader>
+                  <form onSubmit={submitEventForm} className="space-y-3">
+                    <div className="space-y-2">
+                      <Label>Calendar</Label>
+                      <Select
+                        value={eventForm.calendar_id}
+                        onValueChange={(value) => setEventForm((prev) => ({ ...prev, calendar_id: value }))}
                       >
-                        <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-lg" style={{ backgroundColor: event.color }} />
-                        <div className="pl-3">
-                          <h4 className="font-medium text-foreground">
-                            {getStatusPrefix(event.todo_status)}
-                            {event.title}
-                          </h4>
-                          <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
-                            <Clock className="h-3.5 w-3.5" />
-                            <span>
-                              {event.all_day
-                                ? formatEventTime(event.start_time, 'dd/MM/yyyy', timezone, { locale: enGB })
-                                : `${formatEventTime(event.start_time, 'HH:mm', timezone, { locale: enGB })} - ${formatEventTime(event.end_time, 'HH:mm', timezone, { locale: enGB })}`}
-                            </span>
+                        <SelectTrigger><SelectValue placeholder="Select calendar" /></SelectTrigger>
+                        <SelectContent>
+                          {calendars.map((calendar) => (
+                            <SelectItem key={calendar.id} value={calendar.id}>
+                              {calendar.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Title</Label>
+                      <Input
+                        value={eventForm.title}
+                        onChange={(event) => setEventForm((prev) => ({ ...prev, title: event.target.value }))}
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-2">
+                        <Label>Start</Label>
+                        <Input
+                          type="datetime-local"
+                          value={eventForm.start_time}
+                          onChange={(event) => setEventForm((prev) => ({ ...prev, start_time: event.target.value }))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>End</Label>
+                        <Input
+                          type="datetime-local"
+                          value={eventForm.end_time}
+                          onChange={(event) => setEventForm((prev) => ({ ...prev, end_time: event.target.value }))}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between rounded border p-2">
+                      <Label>All day</Label>
+                      <Switch
+                        checked={eventForm.all_day}
+                        onCheckedChange={(checked) => setEventForm((prev) => ({ ...prev, all_day: checked }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Location</Label>
+                      <Input
+                        value={eventForm.location}
+                        onChange={(event) => setEventForm((prev) => ({ ...prev, location: event.target.value }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Description</Label>
+                      <Textarea
+                        rows={3}
+                        value={eventForm.description}
+                        onChange={(event) => setEventForm((prev) => ({ ...prev, description: event.target.value }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Attendees (comma-separated emails)</Label>
+                      <Input
+                        value={eventForm.attendee_emails}
+                        onChange={(event) => setEventForm((prev) => ({ ...prev, attendee_emails: event.target.value }))}
+                        placeholder="alice@example.com, bob@example.com"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Reminders</Label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {reminderOptions.map((option) => {
+                          const checked = eventForm.reminders.includes(option.value);
+                          return (
+                            <label key={option.value} className="flex items-center gap-2 text-sm rounded border px-2 py-1">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) => {
+                                  setEventForm((prev) => {
+                                    if (event.target.checked) {
+                                      return { ...prev, reminders: Array.from(new Set([...prev.reminders, option.value])).slice(0, 3) };
+                                    }
+                                    return { ...prev, reminders: prev.reminders.filter((value) => value !== option.value) };
+                                  });
+                                }}
+                              />
+                              {option.label}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2">
+                      <Button type="button" variant="outline" onClick={resetEventForm}>Cancel</Button>
+                      <Button type="submit" disabled={createEventMutation.isPending || updateEventMutation.isPending}>
+                        {(createEventMutation.isPending || updateEventMutation.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        {editingEvent ? 'Save' : 'Create'}
+                      </Button>
+                    </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
+            </div>
+          </div>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle>
+                {viewMode === 'month' && format(currentDate, 'MMMM yyyy')}
+                {viewMode === 'week' && `${format(weekDays[0], 'dd MMM')} - ${format(weekDays[6], 'dd MMM yyyy')}`}
+                {viewMode === 'day' && format(currentDate, 'EEEE, dd MMM yyyy')}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {viewMode === 'month' && (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-7 text-sm text-muted-foreground">
+                    {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => (
+                      <div key={day} className="p-2 text-center">{day}</div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-7 gap-1">
+                    {monthDays.map((day) => {
+                      const key = format(day, 'yyyy-MM-dd');
+                      const dayEvents = (eventsByDay.get(key) || []).slice(0, 3);
+                      const isOtherMonth = !isSameMonth(day, currentDate);
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => {
+                            setSelectedDate(day);
+                            setCurrentDate(day);
+                          }}
+                          className={`min-h-[108px] rounded border text-left p-1.5 align-top ${
+                            isOtherMonth ? 'opacity-60' : ''
+                          } ${isToday(day) ? 'border-accent' : 'border-border'}`}
+                        >
+                          <div className="text-xs font-medium mb-1">{format(day, 'd')}</div>
+                          <div className="space-y-1">
+                            {dayEvents.map((event) => (
+                              <div key={event.id} className="relative rounded px-1 py-0.5 text-[11px] truncate" style={{ backgroundColor: `${event.color}20`, borderLeft: `3px solid ${event.color}` }}>
+                                {event.todo_status === 'done' && <CheckCircle2 className="h-3 w-3 text-green-600 absolute right-1 top-0.5" />}
+                                <span className="pr-4">{event.title}</span>
+                              </div>
+                            ))}
                           </div>
-                          {event.location && (
-                            <div className="flex items-center gap-1 text-sm text-muted-foreground mt-1">
-                              <MapPin className="h-3.5 w-3.5 shrink-0" />
-                              <a
-                                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location)}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="hover:underline focus:underline focus:outline-none text-muted-foreground hover:text-foreground truncate"
-                              >
-                                {event.location}
-                              </a>
-                            </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {viewMode === 'week' && (
+                <div className="grid grid-cols-1 md:grid-cols-7 gap-2">
+                  {weekDays.map((day) => {
+                    const key = format(day, 'yyyy-MM-dd');
+                    const dayEvents = (eventsByDay.get(key) || []).sort((a, b) => (
+                      new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
+                    ));
+                    return (
+                      <div key={key} className={`rounded border p-2 ${isToday(day) ? 'border-accent' : 'border-border'}`}>
+                        <div className="text-sm font-medium mb-2">{format(day, 'EEE dd')}</div>
+                        <div className="space-y-2">
+                          {dayEvents.length === 0 ? (
+                            <p className="text-xs text-muted-foreground">No events</p>
+                          ) : (
+                            dayEvents.map(renderEventCompact)
                           )}
-                          {event.subtasks.length > 0 && (
-                            <p className="text-xs text-muted-foreground mt-2">
-                              Subtasks: {completedSubtasks}/{event.subtasks.length} done
-                            </p>
-                          )}
-                          <div className="flex items-center gap-2 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            <Button variant="ghost" size="sm" onClick={() => handleEdit(event)}>
-                              <Edit className="h-3.5 w-3.5 mr-1" />
-                              Edit
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive hover:text-destructive"
-                              onClick={() => deleteEvent.mutate(event.id)}
-                            >
-                              <Trash2 className="h-3.5 w-3.5 mr-1" />
-                              Delete
-                            </Button>
-                          </div>
                         </div>
-                      </motion.div>
+                      </div>
                     );
                   })}
-                </AnimatePresence>
+                </div>
+              )}
+
+              {viewMode === 'day' && (
+                <div className="space-y-2">
+                  {selectedDateEvents.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">No events for this day.</p>
+                  ) : (
+                    selectedDateEvents.map((event) => (
+                      <div key={event.id} className="relative rounded border p-3" style={{ borderLeft: `4px solid ${event.color}` }}>
+                        {event.todo_status === 'done' && <CheckCircle2 className="h-5 w-5 text-green-600 absolute right-2 top-2" />}
+                        <h4 className="font-semibold pr-7">{event.title}</h4>
+                        <div className="mt-1 text-sm text-muted-foreground flex items-center gap-2">
+                          <Clock className="h-4 w-4" />
+                          {event.all_day
+                            ? 'All day'
+                            : `${formatEventTime(event.start_time, 'HH:mm', timezone)} - ${formatEventTime(event.end_time, 'HH:mm', timezone)}`}
+                        </div>
+                        {event.location && (
+                          <div className="mt-1 text-sm text-muted-foreground flex items-center gap-2">
+                            <MapPin className="h-4 w-4" />
+                            {event.location}
+                          </div>
+                        )}
+                        <div className="mt-3 flex gap-2">
+                          <Button size="sm" variant="outline" onClick={() => openEventDialog(event)}>
+                            <Edit className="h-3.5 w-3.5 mr-1" />
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => deleteEventMutation.mutate(event.id)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 mr-1" />
+                            Delete
+                          </Button>
+                        </div>
+                        {event.attendees.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-green-700"
+                              onClick={() => rsvpMutation.mutate({ id: event.id, status: 'accepted' })}
+                            >
+                              Accept
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => rsvpMutation.mutate({ id: event.id, status: 'tentative' })}
+                            >
+                              Maybe
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-destructive"
+                              onClick={() => rsvpMutation.mutate({ id: event.id, status: 'declined' })}
+                            >
+                              Decline
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">{format(selectedDate, 'EEEE, dd MMM yyyy')}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                {selectedDateEvents.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No events scheduled.</p>
+                ) : (
+                  selectedDateEvents.map(renderEventCompact)
+                )}
+                <Button variant="outline" size="sm" onClick={() => openEventDialog(undefined, selectedDate)}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Event For Date
+                </Button>
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );

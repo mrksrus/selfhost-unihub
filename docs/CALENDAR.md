@@ -1,139 +1,143 @@
-# Calendar & To-Do - Technical Documentation
+# Calendar & ToDo Technical Documentation
 
 ## Overview
 
-UniHub provides a calendar for scheduling events and a to-do system built on top of the same event model. Events can optionally carry a `todo_status` and nested subtasks, enabling both calendar scheduling and task management in one unified view.
+Calendar and ToDo still share one underlying event model, but the calendar subsystem now supports:
 
-## Database Schema
+- Multiple calendar accounts per user (`local`, `google`, `microsoft`, `icloud`)
+- Multiple calendars per account with per-calendar visibility/color/auto-ToDo settings
+- Day/Week/Month rendering support in frontend
+- Persistent completed items in calendar views (done items are marked, not removed)
+- Provider sync/account APIs and RSVP endpoint
 
-### `calendar_events` table
+## Data Model
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | UUID | Primary key |
-| `user_id` | UUID | FK to `users` |
-| `title` | VARCHAR(255) | Required |
-| `description` | TEXT | Nullable |
-| `start_time` | DATETIME | Required (UTC) |
-| `end_time` | DATETIME | Required (UTC) |
-| `all_day` | BOOLEAN | Default false |
-| `location` | VARCHAR(500) | Nullable |
-| `color` | VARCHAR(20) | Default `#22c55e` |
-| `recurrence` | VARCHAR(100) | Reserved for future use |
-| `is_todo` | BOOLEAN | Default false |
-| `todo_status` | VARCHAR(20) | `done`, `changed`, `time_moved`, `cancelled`, or null |
-| `done_at` | DATETIME | Set when status becomes `done` |
-| `created_at` | TIMESTAMP | Auto-set |
-| `updated_at` | TIMESTAMP | Auto-updated |
+### Core event tables
 
-Indexes: `idx_events_user`, `idx_events_date`.
+- `calendar_events` (now includes `calendar_id`)
+- `calendar_event_subtasks`
+- `calendar_event_attendees`
+- `calendar_event_external_refs`
 
-### `calendar_event_subtasks` table
+### Account/calendar tables
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | UUID | Primary key |
-| `event_id` | UUID | FK to `calendar_events` (CASCADE delete) |
-| `user_id` | UUID | FK to `users` (CASCADE delete) |
-| `title` | VARCHAR(500) | Required |
-| `is_done` | BOOLEAN | Default false |
-| `position` | INT | Sort order |
-| `created_at` | TIMESTAMP | Auto-set |
+- `calendar_accounts`
+- `calendar_calendars`
 
-Indexes: `idx_subtasks_event`, `idx_subtasks_user`, `idx_subtasks_order`.
+### Backfill behavior
 
-## Date/Time Handling
+At startup, the backend ensures every user has at least one local account + default calendar and backfills legacy events with `calendar_id` when missing.
 
-- **Storage**: all times in UTC as MySQL `DATETIME`.
-- **Frontend input**: `<input type="datetime-local">` in local time, converted to ISO 8601 before sending.
-- **Backend conversion**: parsed to `YYYY-MM-DD HH:MM:SS` UTC via helper functions (`toMysqlDatetime`, `parseDatetimeToMillis`).
-- **Display**: frontend uses `date-fns` to format in the user's local timezone.
-- **All-day events**: start and end times set to midnight UTC; displayed without a time component.
+## Calendar-to-ToDo projection rule
 
-## API Endpoints
+ToDo visibility is projection-based (non-destructive):
 
-All endpoints require authentication via session cookie. State-changing requests require `X-CSRF-Token`.
+- Event appears in ToDo execution flow only if:
+  - Its calendar has `auto_todo_enabled = true`
+  - Event is not cancelled
+- Turning `auto_todo_enabled` off works retroactively via query semantics (existing events are hidden from ToDo view without deleting data).
+
+## Date/Time handling
+
+- Storage: UTC in MySQL `DATETIME`
+- Input: local datetime from UI converted to UTC ISO before API calls
+- Backend: normalizes incoming datetime via `toMysqlDatetime`
+- Display: `date-fns` + optional user timezone
+- All-day: represented with date-like semantics but stored as datetime
+
+## API endpoints
+
+All endpoints require auth cookie; write routes require `X-CSRF-Token`.
+
+### Accounts
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/calendar/oauth/:provider/start` | Start OAuth redirect flow (`google`, `microsoft`) |
+| GET | `/api/calendar/oauth/:provider/callback` | OAuth callback handler (stores tokens/account and triggers initial sync) |
+| GET | `/api/calendar/accounts` | List calendar accounts |
+| POST | `/api/calendar/accounts` | Create account (local/google/microsoft/icloud) |
+| PUT | `/api/calendar/accounts/:id` | Update account metadata/tokens/config |
+| DELETE | `/api/calendar/accounts/:id` | Delete account and account calendars/events |
+| POST | `/api/calendar/accounts/:id/sync` | Trigger provider sync now |
+
+### Calendars
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/calendar/calendars` | List calendars across accounts |
+| POST | `/api/calendar/calendars` | Create calendar |
+| PUT | `/api/calendar/calendars/:id` | Update name/color/visibility/auto-ToDo/read-only/primary |
 
 ### Events
 
 | Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/calendar/events` | List events; supports `?includeTodos=true` to include to-do items |
-| POST | `/api/calendar/events` | Create event or to-do |
+|---|---|---|
+| GET | `/api/calendar/events` | List events with filters (`include_todos`, `include_done`, `range_start`, `range_end`, `calendar_ids`, `respect_auto_todo`, `visible_only`) |
+| POST | `/api/calendar/events` | Create event (supports `calendar_id`, `attendees`) |
 | PUT | `/api/calendar/events/:id` | Update event fields |
-| DELETE | `/api/calendar/events/:id` | Delete event |
-| PUT | `/api/calendar/events/:id/todo-status` | Update to-do status (`done`, `changed`, `time_moved`, `cancelled`, null) |
+| PUT | `/api/calendar/events/:id/todo-status` | Update todo status |
+| PUT | `/api/calendar/events/:id/rsvp` | RSVP status update (`accepted`, `tentative`, `declined`, `needsAction`) |
+| DELETE | `/api/calendar/events/:id` | Delete event (with provider delete propagation when mapped) |
 
 ### Subtasks
 
 | Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/calendar/events/:id/subtasks` | List subtasks for an event |
-| POST | `/api/calendar/events/:id/subtasks` | Create subtask (supports `position` for insertion order) |
-| PUT | `/api/calendar/events/:id/subtasks/:subtaskId` | Update subtask title, done state, or position |
+|---|---|---|
+| GET | `/api/calendar/events/:id/subtasks` | List subtasks |
+| POST | `/api/calendar/events/:id/subtasks` | Create subtask |
+| PUT | `/api/calendar/events/:id/subtasks/:subtaskId` | Update subtask |
 | DELETE | `/api/calendar/events/:id/subtasks/:subtaskId` | Delete subtask |
-| POST | `/api/calendar/events/:id/subtasks/reorder` | Bulk reorder subtasks by position |
+| POST | `/api/calendar/events/:id/subtasks/reorder` | Reorder subtasks |
 
-### Dashboard stats
+## Sync behavior
 
-`GET /api/stats` returns an `upcomingEvents` count (events with `start_time >= UTC_TIMESTAMP()` that are not done or cancelled).
+### Google / Microsoft
 
-## To-Do Status Flow
+- Supports account-level sync trigger
+- OAuth connect flow in backend routes (`start`/`callback`) exchanges auth code for tokens
+- Pulls calendars and events into local model
+- Stores provider mappings in `calendar_event_external_refs`
+- Pushes local create/update/delete for mapped provider calendars
+- Carries attendee data into local attendee table
 
-Events with `is_todo = true` can carry a `todo_status`:
+### iCloud / CalDAV (limited invitations)
 
-| Status | Meaning | Side effects |
-|--------|---------|-------------|
-| `null` | Pending / open | `done_at` cleared |
-| `done` | Completed | `done_at` set to `NOW()` |
-| `changed` | Modified after scheduling | `done_at` cleared |
-| `time_moved` | Rescheduled | Accepts new `start_time`/`end_time`; preserves event duration if only one end is provided |
-| `cancelled` | Abandoned | `done_at` cleared |
+- Supports sync from configured iCal feeds (`provider_config.ics_url` or configured feeds)
+- Supports limited write path when CalDAV event base URL is configured
+- Invitation handling remains limited by provider/protocol behavior
 
-When setting `time_moved`, the backend auto-computes the missing end (or start) based on the original event duration.
+## Feature flags
 
-## Subtask Ordering
+- `CALENDAR_MULTI_ENABLED` (default enabled)
+- `CALENDAR_SYNC_ENABLED` (default enabled)
+- `CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED` (default enabled)
+- `CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED` (default enabled)
+- `CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED` (default enabled)
 
-- Each subtask has a `position` integer.
-- On create, if no position is given, the subtask is appended (max position + 1).
-- If a specific position is given, existing subtasks at that position and below are shifted down.
-- The reorder endpoint accepts an array of `{ id, position }` pairs and batch-updates all positions in a single query.
+## OAuth setup
 
-## Event Serialisation
+Set these environment variables to use popup OAuth account connect for Google/Microsoft:
 
-The backend serialises event rows with:
+- `GOOGLE_CALENDAR_CLIENT_ID`
+- `GOOGLE_CALENDAR_CLIENT_SECRET`
+- `MICROSOFT_CALENDAR_CLIENT_ID`
+- `MICROSOFT_CALENDAR_CLIENT_SECRET`
+- `CALENDAR_OAUTH_REDIRECT_BASE_URL` (recommended when reverse-proxied)
 
-- `start_time` and `end_time` as ISO 8601 strings.
-- `done_at` as ISO 8601 or null.
-- `is_todo`, `all_day` as booleans.
-- `subtasks` array (populated when fetching a single event or when the list query requests it).
+OAuth redirect URIs must point to:
 
-## Frontend
+- `{base}/api/calendar/oauth/google/callback`
+- `{base}/api/calendar/oauth/microsoft/callback`
 
-### Calendar page
+## Security notes
 
-- Month view showing events on their start date, color-coded.
-- Navigation: previous/next month, today button.
-- Click to create or edit; color picker and location input.
-- All-day toggle.
+- All calendar queries scoped by `user_id`
+- Provider tokens are stored encrypted (`encrypted_access_token`, `encrypted_refresh_token`)
+- Write APIs are CSRF-protected
 
-### To-do page
+## Known limitations
 
-- List of to-do events with subtask progress.
-- Status controls: mark done, reschedule, cancel.
-- Inline subtask management: add, toggle, reorder (drag), delete.
-
-## Security
-
-- All queries filter by `user_id` using parameterised SQL.
-- Route parameters are extracted via dedicated helper functions (`getCalendarEventIdFromPath`, `getCalendarSubtaskIdFromPath`).
-- CSRF protection on all write operations.
-
-## Limitations
-
-1. No recurrence support in the UI (database field exists).
-2. No timezone selector (UTC storage, local display).
-3. No week/day calendar views.
-4. No event reminders or notifications.
-5. No event sharing between users.
-6. No calendar import/export (iCal).
+1. OAuth authorization flow UI is not bundled; account creation expects tokens/config supplied by client.
+2. Recurrence expansion is still limited (field exists but no full recurrence engine in UI).
+3. iCloud invitation semantics are constrained by CalDAV/server behavior.

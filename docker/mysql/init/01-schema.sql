@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS contacts (
 CREATE TABLE IF NOT EXISTS calendar_events (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     user_id CHAR(36) NOT NULL,
+    calendar_id CHAR(36) NULL,
     title VARCHAR(255) NOT NULL,
     description TEXT,
     start_time DATETIME NOT NULL,
@@ -88,7 +89,99 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     INDEX idx_events_user (user_id),
     INDEX idx_events_start (start_time),
-    INDEX idx_events_user_time (user_id, start_time, end_time)
+    INDEX idx_events_user_time (user_id, start_time, end_time),
+    INDEX idx_events_calendar (calendar_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Calendar provider accounts (local, google, microsoft, icloud/caldav)
+CREATE TABLE IF NOT EXISTS calendar_accounts (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    provider VARCHAR(32) NOT NULL COMMENT 'local, google, microsoft, icloud',
+    account_email VARCHAR(255),
+    display_name VARCHAR(255),
+    encrypted_access_token TEXT,
+    encrypted_refresh_token TEXT,
+    token_expires_at DATETIME NULL,
+    provider_config JSON DEFAULT NULL COMMENT 'provider-specific configuration',
+    capabilities JSON DEFAULT NULL COMMENT 'feature flags/capabilities for this account',
+    is_active BOOLEAN DEFAULT TRUE,
+    last_synced_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_calendar_accounts_user (user_id),
+    INDEX idx_calendar_accounts_provider (provider),
+    INDEX idx_calendar_accounts_active (user_id, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Calendars inside an account
+CREATE TABLE IF NOT EXISTS calendar_calendars (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    account_id CHAR(36) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    external_id VARCHAR(500) NULL,
+    color VARCHAR(20) DEFAULT '#22c55e',
+    is_visible BOOLEAN DEFAULT TRUE,
+    auto_todo_enabled BOOLEAN DEFAULT TRUE,
+    read_only BOOLEAN DEFAULT FALSE,
+    is_primary BOOLEAN DEFAULT FALSE,
+    sync_token TEXT NULL COMMENT 'provider incremental sync token',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE,
+    INDEX idx_calendar_calendars_user (user_id),
+    INDEX idx_calendar_calendars_account (account_id),
+    UNIQUE KEY unique_calendar_external (account_id, external_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Mapping between local events and provider events
+CREATE TABLE IF NOT EXISTS calendar_event_external_refs (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    event_id CHAR(36) NOT NULL,
+    calendar_id CHAR(36) NOT NULL,
+    account_id CHAR(36) NOT NULL,
+    provider VARCHAR(32) NOT NULL,
+    external_event_id VARCHAR(500) NOT NULL,
+    external_etag VARCHAR(255) NULL,
+    external_updated_at DATETIME NULL,
+    last_synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
+    FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE,
+    INDEX idx_event_refs_user (user_id),
+    INDEX idx_event_refs_event (event_id),
+    UNIQUE KEY unique_provider_event (account_id, external_event_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Event attendees with RSVP state
+CREATE TABLE IF NOT EXISTS calendar_event_attendees (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    event_id CHAR(36) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255) NULL,
+    response_status VARCHAR(32) DEFAULT 'needsAction' COMMENT 'needsAction, accepted, tentative, declined',
+    is_organizer BOOLEAN DEFAULT FALSE,
+    optional_attendee BOOLEAN DEFAULT FALSE,
+    comment TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
+    INDEX idx_event_attendees_user (user_id),
+    INDEX idx_event_attendees_event (event_id),
+    UNIQUE KEY unique_event_attendee_email (event_id, email)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Event subtasks table (shared by Calendar + ToDo views)

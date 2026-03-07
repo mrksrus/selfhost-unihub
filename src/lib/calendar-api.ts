@@ -3,6 +3,8 @@ import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
 import { api } from '@/lib/api';
 
 export type TodoStatus = 'done' | 'changed' | 'time_moved' | 'cancelled' | null;
+export type CalendarRsvpStatus = 'needsAction' | 'accepted' | 'tentative' | 'declined';
+export type CalendarProvider = 'local' | 'google' | 'microsoft' | 'icloud';
 
 export interface CalendarSubtask {
   id: string;
@@ -15,8 +17,57 @@ export interface CalendarSubtask {
   updated_at: string;
 }
 
+export interface CalendarAttendee {
+  id?: string;
+  event_id?: string;
+  user_id?: string;
+  email: string;
+  display_name?: string | null;
+  response_status?: CalendarRsvpStatus;
+  is_organizer?: boolean;
+  optional_attendee?: boolean;
+  comment?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface CalendarAccount {
+  id: string;
+  user_id: string;
+  provider: CalendarProvider;
+  account_email: string | null;
+  display_name: string | null;
+  token_expires_at: string | null;
+  provider_config: Record<string, unknown>;
+  capabilities: Record<string, unknown>;
+  is_active: boolean;
+  last_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CalendarCalendar {
+  id: string;
+  user_id: string;
+  account_id: string;
+  name: string;
+  external_id: string | null;
+  color: string;
+  is_visible: boolean;
+  auto_todo_enabled: boolean;
+  read_only: boolean;
+  is_primary: boolean;
+  sync_token: string | null;
+  account_provider?: CalendarProvider;
+  account_display_name?: string | null;
+  account_email?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface CalendarEvent {
   id: string;
+  calendar_id: string | null;
   title: string;
   description: string | null;
   start_time: string;
@@ -33,31 +84,57 @@ export interface CalendarEvent {
   created_at: string;
   updated_at: string;
   subtasks: CalendarSubtask[];
+  attendees: CalendarAttendee[];
 }
 
 export interface CalendarEventFilters {
   includeTodos?: boolean;
+  includeDone?: boolean;
+  respectAutoTodo?: boolean;
+  visibleOnly?: boolean;
+  rangeStart?: string;
+  rangeEnd?: string;
+  calendarIds?: string[];
 }
 
 const normalizeEvent = (event: CalendarEvent): CalendarEvent => ({
   ...event,
   subtasks: Array.isArray(event.subtasks) ? event.subtasks : [],
+  attendees: Array.isArray(event.attendees) ? event.attendees : [],
   reminders: Array.isArray(event.reminders) ? event.reminders : (event.reminders ?? null),
 });
 
 const buildEventsQuery = (filters: CalendarEventFilters = {}) => {
   const params = new URLSearchParams();
   if (filters.includeTodos) params.set('include_todos', 'true');
+  if (filters.includeDone !== undefined) params.set('include_done', filters.includeDone ? 'true' : 'false');
+  if (filters.respectAutoTodo) params.set('respect_auto_todo', 'true');
+  if (filters.visibleOnly) params.set('visible_only', 'true');
+  if (filters.rangeStart) params.set('range_start', filters.rangeStart);
+  if (filters.rangeEnd) params.set('range_end', filters.rangeEnd);
+  if (filters.calendarIds && filters.calendarIds.length > 0) {
+    params.set('calendar_ids', filters.calendarIds.join(','));
+  }
   return params.toString();
 };
 
 const stableFilterKey = (filters: CalendarEventFilters = {}) => (
-  `includeTodos=${filters.includeTodos ? '1' : '0'}`
+  [
+    `includeTodos=${filters.includeTodos ? '1' : '0'}`,
+    `includeDone=${filters.includeDone === undefined ? 'x' : (filters.includeDone ? '1' : '0')}`,
+    `respectAutoTodo=${filters.respectAutoTodo ? '1' : '0'}`,
+    `visibleOnly=${filters.visibleOnly ? '1' : '0'}`,
+    `rangeStart=${filters.rangeStart || ''}`,
+    `rangeEnd=${filters.rangeEnd || ''}`,
+    `calendarIds=${(filters.calendarIds || []).join('|')}`,
+  ].join(';')
 );
 
 export const calendarQueryKeys = {
   all: ['calendar-events'] as const,
   list: (filters: CalendarEventFilters = {}) => ['calendar-events', stableFilterKey(filters)] as const,
+  accounts: ['calendar-accounts'] as const,
+  calendars: ['calendar-calendars'] as const,
   upcomingEvents: ['upcoming-events'] as const,
   stats: ['stats'] as const,
 };
@@ -73,6 +150,95 @@ export const calendarApi = {
 
   async createEvent(payload: Partial<CalendarEvent> & { title: string }): Promise<CalendarEvent> {
     const response = await api.post<{ event: CalendarEvent }>('/calendar/events', payload);
+    if (response.error) throw new Error(response.error);
+    const event = response.data?.event;
+    if (!event) throw new Error('Event response missing');
+    return normalizeEvent(event);
+  },
+
+  async fetchAccounts(): Promise<CalendarAccount[]> {
+    const response = await api.get<{ accounts: CalendarAccount[] }>('/calendar/accounts');
+    if (response.error) throw new Error(response.error);
+    return response.data?.accounts || [];
+  },
+
+  async createAccount(payload: {
+    provider: CalendarProvider;
+    account_email?: string | null;
+    display_name?: string | null;
+    access_token?: string;
+    refresh_token?: string;
+    token_expires_at?: string | null;
+    provider_config?: Record<string, unknown>;
+    is_active?: boolean;
+    sync_on_create?: boolean;
+  }): Promise<{ account: CalendarAccount; sync?: unknown }> {
+    const response = await api.post<{ account: CalendarAccount; sync?: unknown }>('/calendar/accounts', payload);
+    if (response.error) throw new Error(response.error);
+    if (!response.data?.account) throw new Error('Calendar account response missing');
+    return response.data;
+  },
+
+  async updateAccount(id: string, payload: Partial<{
+    account_email: string | null;
+    display_name: string | null;
+    access_token: string;
+    refresh_token: string;
+    token_expires_at: string | null;
+    provider_config: Record<string, unknown>;
+    is_active: boolean;
+  }>): Promise<CalendarAccount> {
+    const response = await api.put<{ account: CalendarAccount }>(`/calendar/accounts/${id}`, payload);
+    if (response.error) throw new Error(response.error);
+    if (!response.data?.account) throw new Error('Calendar account response missing');
+    return response.data.account;
+  },
+
+  async deleteAccount(id: string): Promise<void> {
+    const response = await api.delete(`/calendar/accounts/${id}`);
+    if (response.error) throw new Error(response.error);
+  },
+
+  async syncAccount(id: string): Promise<unknown> {
+    const response = await api.post<{ sync: unknown }>(`/calendar/accounts/${id}/sync`);
+    if (response.error) throw new Error(response.error);
+    return response.data?.sync;
+  },
+
+  async fetchCalendars(): Promise<CalendarCalendar[]> {
+    const response = await api.get<{ calendars: CalendarCalendar[] }>('/calendar/calendars');
+    if (response.error) throw new Error(response.error);
+    return response.data?.calendars || [];
+  },
+
+  async createCalendar(payload: {
+    account_id: string;
+    name: string;
+    color?: string;
+    external_id?: string | null;
+    is_visible?: boolean;
+    auto_todo_enabled?: boolean;
+    read_only?: boolean;
+    is_primary?: boolean;
+  }): Promise<CalendarCalendar> {
+    const response = await api.post<{ calendar: CalendarCalendar }>('/calendar/calendars', payload);
+    if (response.error) throw new Error(response.error);
+    if (!response.data?.calendar) throw new Error('Calendar response missing');
+    return response.data.calendar;
+  },
+
+  async updateCalendar(
+    id: string,
+    payload: Partial<Pick<CalendarCalendar, 'name' | 'color' | 'is_visible' | 'auto_todo_enabled' | 'read_only' | 'is_primary'>>
+  ): Promise<CalendarCalendar> {
+    const response = await api.put<{ calendar: CalendarCalendar }>(`/calendar/calendars/${id}`, payload);
+    if (response.error) throw new Error(response.error);
+    if (!response.data?.calendar) throw new Error('Calendar response missing');
+    return response.data.calendar;
+  },
+
+  async updateRsvp(id: string, payload: { response_status: CalendarRsvpStatus; email?: string }): Promise<CalendarEvent> {
+    const response = await api.put<{ event: CalendarEvent }>(`/calendar/events/${id}/rsvp`, payload);
     if (response.error) throw new Error(response.error);
     const event = response.data?.event;
     if (!event) throw new Error('Event response missing');

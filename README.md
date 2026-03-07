@@ -51,7 +51,7 @@ Untrusted email HTML is rendered inside a **sandboxed iframe** (`sandbox=""`) wi
 ## Features
 
 - **Contacts** -- create, edit, search, favorite, bulk delete, vCard import/export
-- **Calendar** -- events with color coding, location links, all-day support
+- **Calendar** -- multi-account/multi-calendar support, day/week/month views, per-calendar visibility + color + auto-ToDo settings
 - **To-Do** -- task management with subtasks, reordering, status tracking
 - **Mail** -- full IMAP/SMTP email with sync, compose, reply, forward, attachments, bulk operations
 - **Admin Panel** -- user management, signup mode control (open/approval/disabled), password resets
@@ -205,6 +205,16 @@ Ensure `MYSQL_PASSWORD` is identical in both services; the MySQL container creat
 | `ALLOWED_ORIGINS` | same-host | Comma-separated CORS origin allowlist |
 | `TRUST_PROXY_HEADERS` | `false` | Trust `X-Real-IP` / `X-Forwarded-For` for rate limiting |
 | `TRUSTED_MAIL_HOSTS` | -- | Comma-separated custom mail hosts to trust without confirmation |
+| `CALENDAR_MULTI_ENABLED` | `true` | Enable multi-account and multi-calendar features |
+| `CALENDAR_SYNC_ENABLED` | `true` | Enable external calendar sync/account APIs |
+| `CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED` | `true` | Enable Google calendar sync provider |
+| `CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED` | `true` | Enable Microsoft calendar sync provider |
+| `CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED` | `true` | Enable iCloud/CalDAV calendar sync provider |
+| `GOOGLE_CALENDAR_CLIENT_ID` | -- | Google OAuth client ID for calendar connect flow |
+| `GOOGLE_CALENDAR_CLIENT_SECRET` | -- | Google OAuth client secret |
+| `MICROSOFT_CALENDAR_CLIENT_ID` | -- | Microsoft OAuth app client ID |
+| `MICROSOFT_CALENDAR_CLIENT_SECRET` | -- | Microsoft OAuth app client secret |
+| `CALENDAR_OAUTH_REDIRECT_BASE_URL` | first allowed origin | Public base URL used for OAuth callback redirect URI construction |
 | `MYSQL_STARTUP_MAX_WAIT_SECONDS` | `120` | Max seconds `start.sh` waits for MySQL before continuing |
 | `MYSQL_STARTUP_CHECK_INTERVAL_SECONDS` | `5` | Seconds between MySQL readiness checks in `start.sh` |
 | `UNIHUB_API_START_DELAY_SECONDS` | `2` | Delay after API start before Nginx startup check |
@@ -216,6 +226,17 @@ Ensure `MYSQL_PASSWORD` is identical in both services; the MySQL container creat
 - **Compose**: new messages, reply, forward with attachment support (up to 20 attachments, 25 MB total)
 - **Security**: mail passwords encrypted with AES-256-GCM; strict TLS verification; unknown-host preflight with certificate inspection; SSRF protection (private IP blocking)
 - **Limitations**: syncs last 500 emails only; one-by-one fetching may be slow for large mailboxes; INBOX only (no sent folder sync yet)
+
+## Calendar Sync Details
+
+- **Providers**: Local, Google Calendar, Microsoft 365, iCloud/CalDAV
+- **Capabilities**:
+  - Multiple calendars per account with per-calendar visibility and auto-ToDo toggle
+  - Manual and periodic provider sync
+  - Local event create/update/delete propagation to provider for mapped external events
+  - RSVP API endpoint for attendee status updates
+- **OAuth connect UI**: Google and Microsoft can be connected from Calendar settings via popup OAuth flow (`/api/calendar/oauth/:provider/start` + callback)
+- **iCloud note**: invitation behavior is limited by CalDAV/provider constraints
 
 ## Known Limitations
 

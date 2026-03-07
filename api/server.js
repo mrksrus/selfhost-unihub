@@ -84,6 +84,16 @@ const TRUSTED_MAIL_HOSTS = (process.env.TRUSTED_MAIL_HOSTS || '')
   .split(',')
   .map(host => host.trim().toLowerCase())
   .filter(Boolean);
+const CALENDAR_MULTI_ENABLED = process.env.CALENDAR_MULTI_ENABLED !== 'false';
+const CALENDAR_SYNC_ENABLED = process.env.CALENDAR_SYNC_ENABLED !== 'false';
+const CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED = process.env.CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED !== 'false';
+const CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED = process.env.CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED !== 'false';
+const CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED = process.env.CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED !== 'false';
+const GOOGLE_CALENDAR_CLIENT_ID = process.env.GOOGLE_CALENDAR_CLIENT_ID || '';
+const GOOGLE_CALENDAR_CLIENT_SECRET = process.env.GOOGLE_CALENDAR_CLIENT_SECRET || '';
+const MICROSOFT_CALENDAR_CLIENT_ID = process.env.MICROSOFT_CALENDAR_CLIENT_ID || '';
+const MICROSOFT_CALENDAR_CLIENT_SECRET = process.env.MICROSOFT_CALENDAR_CLIENT_SECRET || '';
+const CALENDAR_OAUTH_REDIRECT_BASE_URL = process.env.CALENDAR_OAUTH_REDIRECT_BASE_URL || '';
 const AUTH_COOKIE_NAME = 'auth-token';
 
 // ── Encryption helpers (AES-256-GCM) ─────────────────────────────
@@ -1114,9 +1124,52 @@ async function ensureSchema() {
     await db.execute('ALTER TABLE contacts ADD COLUMN phone3 VARCHAR(50)');
   } catch (e) {}
 
+  await db.execute(`CREATE TABLE IF NOT EXISTS calendar_accounts (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    provider VARCHAR(32) NOT NULL COMMENT 'local, google, microsoft, icloud',
+    account_email VARCHAR(255),
+    display_name VARCHAR(255),
+    encrypted_access_token TEXT,
+    encrypted_refresh_token TEXT,
+    token_expires_at DATETIME NULL,
+    provider_config JSON DEFAULT NULL COMMENT 'provider-specific configuration',
+    capabilities JSON DEFAULT NULL COMMENT 'feature flags/capabilities for this account',
+    is_active BOOLEAN DEFAULT TRUE,
+    last_synced_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_calendar_accounts_user (user_id),
+    INDEX idx_calendar_accounts_provider (provider),
+    INDEX idx_calendar_accounts_active (user_id, is_active)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS calendar_calendars (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    account_id CHAR(36) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    external_id VARCHAR(500) NULL,
+    color VARCHAR(20) DEFAULT '#22c55e',
+    is_visible BOOLEAN DEFAULT TRUE,
+    auto_todo_enabled BOOLEAN DEFAULT TRUE,
+    read_only BOOLEAN DEFAULT FALSE,
+    is_primary BOOLEAN DEFAULT FALSE,
+    sync_token TEXT NULL COMMENT 'provider incremental sync token',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE,
+    INDEX idx_calendar_calendars_user (user_id),
+    INDEX idx_calendar_calendars_account (account_id),
+    UNIQUE KEY unique_calendar_external (account_id, external_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   await db.execute(`CREATE TABLE IF NOT EXISTS calendar_events (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     user_id CHAR(36) NOT NULL,
+    calendar_id CHAR(36) NULL,
     title VARCHAR(255) NOT NULL,
     description TEXT,
     start_time DATETIME NOT NULL,
@@ -1135,9 +1188,24 @@ async function ensureSchema() {
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     INDEX idx_events_user (user_id),
     INDEX idx_events_start (start_time),
-    INDEX idx_events_user_time (user_id, start_time, end_time)
+    INDEX idx_events_user_time (user_id, start_time, end_time),
+    INDEX idx_events_calendar (calendar_id)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   
+  // Add calendar_id column if it doesn't exist
+  try {
+    await db.execute('ALTER TABLE calendar_events ADD COLUMN calendar_id CHAR(36) NULL AFTER user_id');
+  } catch (error) {
+    if (!error.message.includes('Duplicate column name')) {
+      console.log('[DB] Note: calendar_id column may already exist');
+    }
+  }
+
+  // Add index for calendar_id if it doesn't exist
+  try {
+    await db.execute('CREATE INDEX idx_events_calendar ON calendar_events(calendar_id)');
+  } catch (error) {}
+
   // Add todo_status column if it doesn't exist (for existing installations)
   try {
     await db.execute(`ALTER TABLE calendar_events ADD COLUMN todo_status VARCHAR(20) DEFAULT NULL COMMENT 'done, changed, time_moved, cancelled'`);
@@ -1178,6 +1246,16 @@ async function ensureSchema() {
     }
   }
 
+  // Add FK after both tables are ensured to exist.
+  try {
+    await db.execute(`
+      ALTER TABLE calendar_events
+      ADD CONSTRAINT fk_calendar_events_calendar_id
+      FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id)
+      ON DELETE SET NULL
+    `);
+  } catch (error) {}
+
   await db.execute(`CREATE TABLE IF NOT EXISTS calendar_event_subtasks (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     event_id CHAR(36) NOT NULL,
@@ -1192,6 +1270,47 @@ async function ensureSchema() {
     INDEX idx_subtasks_event (event_id),
     INDEX idx_subtasks_user (user_id),
     INDEX idx_subtasks_order (event_id, position)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS calendar_event_external_refs (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    event_id CHAR(36) NOT NULL,
+    calendar_id CHAR(36) NOT NULL,
+    account_id CHAR(36) NOT NULL,
+    provider VARCHAR(32) NOT NULL,
+    external_event_id VARCHAR(500) NOT NULL,
+    external_etag VARCHAR(255) NULL,
+    external_updated_at DATETIME NULL,
+    last_synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
+    FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
+    FOREIGN KEY (account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE,
+    INDEX idx_event_refs_user (user_id),
+    INDEX idx_event_refs_event (event_id),
+    UNIQUE KEY unique_provider_event (account_id, external_event_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS calendar_event_attendees (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    event_id CHAR(36) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255) NULL,
+    response_status VARCHAR(32) DEFAULT 'needsAction' COMMENT 'needsAction, accepted, tentative, declined',
+    is_organizer BOOLEAN DEFAULT FALSE,
+    optional_attendee BOOLEAN DEFAULT FALSE,
+    comment TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
+    INDEX idx_event_attendees_user (user_id),
+    INDEX idx_event_attendees_event (event_id),
+    UNIQUE KEY unique_event_attendee_email (event_id, email)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   await db.execute(`CREATE TABLE IF NOT EXISTS mail_accounts (
@@ -1350,6 +1469,8 @@ async function ensureSchema() {
     );
     console.log(`✓ Bootstrap admin created (${BOOTSTRAP_ADMIN_EMAIL})`);
   }
+
+  await backfillCalendarOwnership(db);
 
   console.log('✓ Database schema ready');
 }
@@ -1782,12 +1903,197 @@ function toMysqlDatetime(value) {
   return new Date(timestamp).toISOString().slice(0, 19).replace('T', ' ');
 }
 
+function safeJsonParse(value, fallback = null) {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
+  local: {
+    sync: false,
+    invites: false,
+    rsvp: false,
+    deletePropagation: false,
+  },
+  google: {
+    sync: true,
+    invites: true,
+    rsvp: true,
+    deletePropagation: true,
+  },
+  microsoft: {
+    sync: true,
+    invites: true,
+    rsvp: true,
+    deletePropagation: true,
+  },
+  icloud: {
+    sync: true,
+    invites: 'limited',
+    rsvp: 'limited',
+    deletePropagation: true,
+  },
+};
+
+function normalizeCalendarAccountProvider(provider) {
+  const normalized = String(provider || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (['local', 'google', 'microsoft', 'icloud'].includes(normalized)) return normalized;
+  return null;
+}
+
+const calendarOauthStates = new Map();
+
+function getCalendarOAuthProviderFromReq(req) {
+  const parts = new URL(req.url, `http://${req.headers.host}`).pathname.split('/').filter(Boolean);
+  const oauthIdx = parts.indexOf('oauth');
+  if (oauthIdx === -1) return null;
+  return normalizeCalendarAccountProvider(parts[oauthIdx + 1]);
+}
+
+function resolvePublicBaseUrl(req) {
+  if (CALENDAR_OAUTH_REDIRECT_BASE_URL) return CALENDAR_OAUTH_REDIRECT_BASE_URL.replace(/\/$/, '');
+  const allowedHttpsOrigin = ALLOWED_ORIGINS.find((origin) => origin.startsWith('https://'));
+  if (allowedHttpsOrigin) return allowedHttpsOrigin.replace(/\/$/, '');
+  if (ALLOWED_ORIGINS[0]) return ALLOWED_ORIGINS[0].replace(/\/$/, '');
+  const host = req.headers.host;
+  const proto = req.headers['x-forwarded-proto'] || 'http';
+  return `${proto}://${host}`;
+}
+
+function buildCalendarOAuthRedirectUri(req, provider) {
+  return `${resolvePublicBaseUrl(req)}/api/calendar/oauth/${provider}/callback`;
+}
+
+function createCalendarOAuthState(userId, provider) {
+  const state = crypto.randomBytes(24).toString('hex');
+  calendarOauthStates.set(state, {
+    userId,
+    provider,
+    createdAt: Date.now(),
+  });
+  return state;
+}
+
+function consumeCalendarOAuthState(state) {
+  const item = calendarOauthStates.get(state);
+  calendarOauthStates.delete(state);
+  if (!item) return null;
+  if (Date.now() - item.createdAt > 10 * 60 * 1000) return null;
+  return item;
+}
+
+function serializeCalendarAccount(row) {
+  const provider = normalizeCalendarAccountProvider(row.provider) || 'local';
+  const capabilities = safeJsonParse(row.capabilities, null) || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
+  const providerConfig = safeJsonParse(row.provider_config, {});
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    provider,
+    account_email: row.account_email || null,
+    display_name: row.display_name || null,
+    token_expires_at: row.token_expires_at instanceof Date ? row.token_expires_at.toISOString() : (row.token_expires_at || null),
+    provider_config: providerConfig || {},
+    capabilities,
+    is_active: !!row.is_active,
+    last_synced_at: row.last_synced_at instanceof Date ? row.last_synced_at.toISOString() : (row.last_synced_at || null),
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
+  };
+}
+
+function serializeCalendarCalendar(row) {
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    account_id: row.account_id,
+    name: row.name,
+    external_id: row.external_id || null,
+    color: row.color || '#22c55e',
+    is_visible: !!row.is_visible,
+    auto_todo_enabled: !!row.auto_todo_enabled,
+    read_only: !!row.read_only,
+    is_primary: !!row.is_primary,
+    sync_token: row.sync_token || null,
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
+  };
+}
+
+async function ensureDefaultLocalCalendarForUser(userId, connection = db) {
+  const [existingCalendars] = await connection.execute(
+    `SELECT c.id AS calendar_id, a.id AS account_id
+     FROM calendar_calendars c
+     INNER JOIN calendar_accounts a ON a.id = c.account_id
+     WHERE c.user_id = ? AND a.user_id = ? AND a.provider = 'local'
+     ORDER BY c.created_at ASC
+     LIMIT 1`,
+    [userId, userId]
+  );
+  if (existingCalendars.length > 0) {
+    return {
+      accountId: existingCalendars[0].account_id,
+      calendarId: existingCalendars[0].calendar_id,
+    };
+  }
+
+  const accountId = crypto.randomUUID();
+  await connection.execute(
+    `INSERT INTO calendar_accounts
+      (id, user_id, provider, account_email, display_name, capabilities, is_active)
+     VALUES (?, ?, 'local', NULL, 'Local Calendar', ?, TRUE)`,
+    [accountId, userId, JSON.stringify(CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local)]
+  );
+
+  const calendarId = crypto.randomUUID();
+  await connection.execute(
+    `INSERT INTO calendar_calendars
+      (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+     VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
+    [calendarId, userId, accountId, 'Default', 'local-default', '#22c55e']
+  );
+
+  return { accountId, calendarId };
+}
+
+async function backfillCalendarOwnership(connection = db) {
+  const [users] = await connection.execute('SELECT id FROM users');
+  for (const user of users) {
+    const { calendarId } = await ensureDefaultLocalCalendarForUser(user.id, connection);
+    await connection.execute(
+      'UPDATE calendar_events SET calendar_id = ? WHERE user_id = ? AND calendar_id IS NULL',
+      [calendarId, user.id]
+    );
+  }
+}
+
 function getCalendarEventIdFromReq(req) {
   return getCalendarEventIdFromPath(req.url, req.headers.host);
 }
 
 function getCalendarSubtaskIdFromReq(req) {
   return getCalendarSubtaskIdFromPath(req.url, req.headers.host);
+}
+
+function getCalendarAccountIdFromReq(req) {
+  const parts = new URL(req.url, `http://${req.headers.host}`).pathname.split('/').filter(Boolean);
+  const accountIdx = parts.indexOf('accounts');
+  if (accountIdx === -1) return null;
+  return parts[accountIdx + 1] || null;
+}
+
+function getCalendarCalendarIdFromReq(req) {
+  const parts = new URL(req.url, `http://${req.headers.host}`).pathname.split('/').filter(Boolean);
+  const calendarIdx = parts.indexOf('calendars');
+  if (calendarIdx === -1) return null;
+  return parts[calendarIdx + 1] || null;
 }
 
 function serializeCalendarSubtask(row) {
@@ -1799,11 +2105,28 @@ function serializeCalendarSubtask(row) {
   };
 }
 
-function serializeCalendarEvent(row, subtasks = []) {
+function serializeCalendarAttendee(row) {
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    event_id: row.event_id,
+    email: row.email,
+    display_name: row.display_name || null,
+    response_status: row.response_status || 'needsAction',
+    is_organizer: !!row.is_organizer,
+    optional_attendee: !!row.optional_attendee,
+    comment: row.comment || null,
+    created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
+  };
+}
+
+function serializeCalendarEvent(row, subtasks = [], attendees = []) {
   return {
     ...row,
     all_day: !!row.all_day,
     is_todo_only: !!row.is_todo_only,
+    calendar_id: row.calendar_id || null,
     start_time: row.start_time instanceof Date ? row.start_time.toISOString() : row.start_time,
     end_time: row.end_time instanceof Date ? row.end_time.toISOString() : row.end_time,
     done_at: row.done_at instanceof Date ? row.done_at.toISOString() : (row.done_at || null),
@@ -1811,6 +2134,7 @@ function serializeCalendarEvent(row, subtasks = []) {
     updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
     reminders: row.reminders ? (typeof row.reminders === 'string' ? JSON.parse(row.reminders) : row.reminders) : null,
     subtasks,
+    attendees,
   };
 }
 
@@ -1832,6 +2156,24 @@ async function getCalendarSubtasksForEvents(userId, eventIds) {
   return grouped;
 }
 
+async function getCalendarAttendeesForEvents(userId, eventIds) {
+  if (!eventIds || eventIds.length === 0) return new Map();
+
+  const placeholders = eventIds.map(() => '?').join(', ');
+  const [rows] = await db.execute(
+    `SELECT * FROM calendar_event_attendees WHERE user_id = ? AND event_id IN (${placeholders}) ORDER BY created_at ASC`,
+    [userId, ...eventIds]
+  );
+
+  const grouped = new Map();
+  rows.forEach((row) => {
+    const eventAttendees = grouped.get(row.event_id) || [];
+    eventAttendees.push(serializeCalendarAttendee(row));
+    grouped.set(row.event_id, eventAttendees);
+  });
+  return grouped;
+}
+
 async function getCalendarEventWithSubtasks(userId, eventId) {
   const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
   if (events.length === 0) return null;
@@ -1840,7 +2182,1030 @@ async function getCalendarEventWithSubtasks(userId, eventId) {
     'SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position ASC, created_at ASC',
     [eventId, userId]
   );
-  return serializeCalendarEvent(events[0], subtasks.map(serializeCalendarSubtask));
+  const [attendees] = await db.execute(
+    'SELECT * FROM calendar_event_attendees WHERE event_id = ? AND user_id = ? ORDER BY created_at ASC',
+    [eventId, userId]
+  );
+  return serializeCalendarEvent(
+    events[0],
+    subtasks.map(serializeCalendarSubtask),
+    attendees.map(serializeCalendarAttendee)
+  );
+}
+
+function normalizeResponseStatus(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['accepted', 'tentative', 'declined', 'needsaction'].includes(normalized)) {
+    return normalized === 'needsaction' ? 'needsAction' : normalized;
+  }
+  return 'needsAction';
+}
+
+function normalizeAttendeesPayload(attendees) {
+  if (!Array.isArray(attendees)) return [];
+  const seen = new Set();
+  const normalized = [];
+  for (const attendee of attendees) {
+    const email = String(attendee?.email || '').trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    normalized.push({
+      email,
+      display_name: attendee?.display_name ? String(attendee.display_name).trim() : null,
+      response_status: normalizeResponseStatus(attendee?.response_status),
+      is_organizer: !!attendee?.is_organizer,
+      optional_attendee: !!attendee?.optional_attendee,
+      comment: attendee?.comment ? String(attendee.comment) : null,
+    });
+  }
+  return normalized;
+}
+
+async function replaceEventAttendees(userId, eventId, attendees, connection = db) {
+  const normalized = normalizeAttendeesPayload(attendees);
+  await connection.execute('DELETE FROM calendar_event_attendees WHERE user_id = ? AND event_id = ?', [userId, eventId]);
+  for (const attendee of normalized) {
+    await connection.execute(
+      `INSERT INTO calendar_event_attendees
+        (id, user_id, event_id, email, display_name, response_status, is_organizer, optional_attendee, comment)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        crypto.randomUUID(),
+        userId,
+        eventId,
+        attendee.email,
+        attendee.display_name,
+        attendee.response_status,
+        attendee.is_organizer,
+        attendee.optional_attendee,
+        attendee.comment,
+      ]
+    );
+  }
+}
+
+async function loadCalendarWithAccount(userId, calendarId) {
+  const [rows] = await db.execute(
+    `SELECT c.*, a.provider, a.account_email, a.encrypted_access_token, a.encrypted_refresh_token,
+            a.provider_config, a.capabilities, a.token_expires_at, a.id AS account_id, a.is_active AS account_is_active
+     FROM calendar_calendars c
+     INNER JOIN calendar_accounts a ON a.id = c.account_id
+     WHERE c.id = ? AND c.user_id = ? AND a.user_id = ?
+     LIMIT 1`,
+    [calendarId, userId, userId]
+  );
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  const accountRow = {
+    ...row,
+    id: row.account_id,
+  };
+  return {
+    calendar: serializeCalendarCalendar(row),
+    account: serializeCalendarAccount(accountRow),
+    rawAccount: row,
+  };
+}
+
+async function getExternalRefForEvent(userId, eventId, connection = db) {
+  const [rows] = await connection.execute(
+    'SELECT * FROM calendar_event_external_refs WHERE user_id = ? AND event_id = ? LIMIT 1',
+    [userId, eventId]
+  );
+  return rows[0] || null;
+}
+
+async function upsertExternalRef(
+  userId,
+  eventId,
+  calendarId,
+  accountId,
+  provider,
+  externalEventId,
+  externalEtag = null,
+  externalUpdatedAt = null,
+  connection = db
+) {
+  const [existingRows] = await connection.execute(
+    'SELECT id FROM calendar_event_external_refs WHERE account_id = ? AND external_event_id = ? LIMIT 1',
+    [accountId, externalEventId]
+  );
+  if (existingRows.length > 0) {
+    await connection.execute(
+      `UPDATE calendar_event_external_refs
+       SET user_id = ?, event_id = ?, calendar_id = ?, provider = ?, external_etag = ?, external_updated_at = ?, last_synced_at = UTC_TIMESTAMP()
+       WHERE id = ?`,
+      [userId, eventId, calendarId, provider, externalEtag, externalUpdatedAt, existingRows[0].id]
+    );
+    return existingRows[0].id;
+  }
+
+  const refId = crypto.randomUUID();
+  await connection.execute(
+    `INSERT INTO calendar_event_external_refs
+      (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, external_updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [refId, userId, eventId, calendarId, accountId, provider, externalEventId, externalEtag, externalUpdatedAt]
+  );
+  return refId;
+}
+
+async function findCalendarByExternalId(accountId, externalId) {
+  const [rows] = await db.execute(
+    'SELECT * FROM calendar_calendars WHERE account_id = ? AND external_id = ? LIMIT 1',
+    [accountId, externalId]
+  );
+  return rows[0] || null;
+}
+
+async function upsertCalendarFromProvider(userId, account, providerCalendar) {
+  const externalId = String(providerCalendar.external_id || '').trim();
+  if (!externalId) return null;
+  const existing = await findCalendarByExternalId(account.id, externalId);
+  if (existing) {
+    await db.execute(
+      `UPDATE calendar_calendars
+       SET name = ?, color = ?, read_only = ?, is_primary = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+      [
+        providerCalendar.name || existing.name,
+        providerCalendar.color || existing.color || '#22c55e',
+        !!providerCalendar.read_only,
+        !!providerCalendar.is_primary,
+        existing.id,
+        userId,
+      ]
+    );
+    const [rows] = await db.execute('SELECT * FROM calendar_calendars WHERE id = ? LIMIT 1', [existing.id]);
+    return rows[0] || null;
+  }
+
+  const calendarId = crypto.randomUUID();
+  await db.execute(
+    `INSERT INTO calendar_calendars
+      (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+     VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, ?, ?)`,
+    [
+      calendarId,
+      userId,
+      account.id,
+      providerCalendar.name || 'Imported Calendar',
+      externalId,
+      providerCalendar.color || '#22c55e',
+      !!providerCalendar.read_only,
+      !!providerCalendar.is_primary,
+    ]
+  );
+  const [rows] = await db.execute('SELECT * FROM calendar_calendars WHERE id = ? LIMIT 1', [calendarId]);
+  return rows[0] || null;
+}
+
+function providerSyncEnabled(provider) {
+  if (!CALENDAR_SYNC_ENABLED) return false;
+  if (provider === 'google') return CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED;
+  if (provider === 'microsoft') return CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED;
+  if (provider === 'icloud') return CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED;
+  return false;
+}
+
+function formatProviderDateRange(value) {
+  const parsed = parseDatetimeToMillis(value);
+  if (parsed === null) return null;
+  return new Date(parsed).toISOString();
+}
+
+function eventTimeToProviderPayload(startTime, endTime, allDay) {
+  if (allDay) {
+    const startDate = formatEventDateOnly(startTime);
+    const endDate = formatEventDateOnly(endTime);
+    return {
+      startDate,
+      endDate,
+    };
+  }
+  return {
+    startDateTime: new Date(startTime).toISOString(),
+    endDateTime: new Date(endTime).toISOString(),
+  };
+}
+
+function formatEventDateOnly(isoOrDatetime) {
+  const timestamp = parseDatetimeToMillis(isoOrDatetime);
+  if (timestamp === null) return null;
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+function parseGoogleEventDate(event, fieldName) {
+  const dateValue = event?.[fieldName];
+  if (!dateValue) return null;
+  if (dateValue.dateTime) return toMysqlDatetime(dateValue.dateTime);
+  if (dateValue.date) {
+    return toMysqlDatetime(`${dateValue.date}T00:00:00Z`);
+  }
+  return null;
+}
+
+function parseMicrosoftEventDate(event, fieldName) {
+  const dateValue = event?.[fieldName];
+  if (!dateValue?.dateTime) return null;
+  if (dateValue.timeZone && dateValue.timeZone.toUpperCase() !== 'UTC') {
+    const maybeIso = `${dateValue.dateTime}${dateValue.dateTime.endsWith('Z') ? '' : 'Z'}`;
+    return toMysqlDatetime(maybeIso);
+  }
+  return toMysqlDatetime(dateValue.dateTime);
+}
+
+function parseIcsDateValue(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return null;
+  // YYYYMMDD
+  if (/^\d{8}$/.test(value)) {
+    const yyyy = value.slice(0, 4);
+    const mm = value.slice(4, 6);
+    const dd = value.slice(6, 8);
+    return toMysqlDatetime(`${yyyy}-${mm}-${dd}T00:00:00Z`);
+  }
+  // YYYYMMDDTHHmmssZ or without Z
+  const match = value.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z?)$/);
+  if (match) {
+    const [, y, m, d, hh, mm, ss, z] = match;
+    return toMysqlDatetime(`${y}-${m}-${d}T${hh}:${mm}:${ss}${z || 'Z'}`);
+  }
+  return toMysqlDatetime(value);
+}
+
+function parseIcsEvents(icsText) {
+  const blocks = String(icsText || '').split('BEGIN:VEVENT').slice(1).map((chunk) => chunk.split('END:VEVENT')[0]);
+  const events = [];
+  for (const block of blocks) {
+    const lines = block.split(/\r?\n/);
+    const event = {
+      uid: null,
+      title: null,
+      description: null,
+      location: null,
+      start: null,
+      end: null,
+      status: null,
+      all_day: false,
+      attendees: [],
+    };
+    for (const line of lines) {
+      if (line.startsWith('UID:')) {
+        event.uid = line.slice(4).trim();
+      } else if (line.startsWith('SUMMARY:')) {
+        event.title = line.slice(8).trim();
+      } else if (line.startsWith('DESCRIPTION:')) {
+        event.description = line.slice(12).trim();
+      } else if (line.startsWith('LOCATION:')) {
+        event.location = line.slice(9).trim();
+      } else if (line.startsWith('STATUS:')) {
+        event.status = line.slice(7).trim().toUpperCase();
+      } else if (line.startsWith('DTSTART')) {
+        const value = line.split(':').slice(1).join(':');
+        event.start = parseIcsDateValue(value);
+        event.all_day = /VALUE=DATE/.test(line);
+      } else if (line.startsWith('DTEND')) {
+        const value = line.split(':').slice(1).join(':');
+        event.end = parseIcsDateValue(value);
+      } else if (line.startsWith('ATTENDEE')) {
+        const emailMatch = line.match(/mailto:([^;:\s]+)/i);
+        if (emailMatch?.[1]) {
+          event.attendees.push({
+            email: emailMatch[1].trim().toLowerCase(),
+            response_status: 'needsAction',
+          });
+        }
+      }
+    }
+    if (!event.uid || !event.start) continue;
+    if (!event.end) {
+      const startMs = parseDatetimeToMillis(event.start);
+      event.end = startMs ? toMysqlDatetime(new Date(startMs + 60 * 60 * 1000).toISOString()) : event.start;
+    }
+    events.push(event);
+  }
+  return events;
+}
+
+function googleAttendeesToLocal(attendees) {
+  if (!Array.isArray(attendees)) return [];
+  return attendees
+    .filter((attendee) => attendee?.email)
+    .map((attendee) => ({
+      email: String(attendee.email).trim().toLowerCase(),
+      display_name: attendee.displayName || null,
+      response_status: normalizeResponseStatus(attendee.responseStatus),
+      is_organizer: !!attendee.organizer,
+      optional_attendee: !!attendee.optional,
+    }));
+}
+
+function microsoftAttendeesToLocal(attendees) {
+  if (!Array.isArray(attendees)) return [];
+  return attendees
+    .filter((attendee) => attendee?.emailAddress?.address)
+    .map((attendee) => ({
+      email: String(attendee.emailAddress.address).trim().toLowerCase(),
+      display_name: attendee.emailAddress.name || null,
+      response_status: normalizeResponseStatus(attendee?.status?.response),
+      is_organizer: false,
+      optional_attendee: attendee?.type === 'optional',
+    }));
+}
+
+async function providerRequest(accountRow, options) {
+  const provider = normalizeCalendarAccountProvider(accountRow.provider);
+  if (!providerSyncEnabled(provider)) {
+    return { ok: false, status: 503, error: `Calendar sync provider disabled: ${provider}` };
+  }
+
+  const headers = {
+    Accept: 'application/json',
+    ...(options.headers || {}),
+  };
+  let body = options.body;
+
+  if (provider === 'google' || provider === 'microsoft') {
+    const accessToken = accountRow.encrypted_access_token ? decrypt(accountRow.encrypted_access_token) : null;
+    if (!accessToken) {
+      return { ok: false, status: 400, error: `Missing access token for ${provider} account` };
+    }
+    headers.Authorization = `Bearer ${accessToken}`;
+  } else if (provider === 'icloud') {
+    const config = safeJsonParse(accountRow.provider_config, {}) || {};
+    const username = config.username || accountRow.account_email || null;
+    const password = accountRow.encrypted_access_token ? decrypt(accountRow.encrypted_access_token) : null;
+    if (username && password) {
+      headers.Authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+    }
+  }
+
+  if (body && typeof body === 'object' && !Buffer.isBuffer(body) && !(body instanceof String)) {
+    headers['Content-Type'] = headers['Content-Type'] || 'application/json';
+    body = headers['Content-Type'].includes('application/json') ? JSON.stringify(body) : body;
+  }
+
+  const response = await fetch(options.url, {
+    method: options.method || 'GET',
+    headers,
+    body,
+  });
+  const text = await response.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {}
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: json?.error?.message || json?.error_description || json?.error || text || `HTTP ${response.status}`,
+      data: json,
+      text,
+    };
+  }
+  return {
+    ok: true,
+    status: response.status,
+    data: json,
+    text,
+  };
+}
+
+async function upsertProviderEventIntoLocal({
+  userId,
+  accountRow,
+  calendarRow,
+  providerEvent,
+  provider,
+}) {
+  const externalEventId = String(providerEvent.external_event_id || '').trim();
+  if (!externalEventId) return null;
+  const deleted = !!providerEvent.deleted;
+
+  const [existingRefRows] = await db.execute(
+    'SELECT * FROM calendar_event_external_refs WHERE account_id = ? AND external_event_id = ? LIMIT 1',
+    [accountRow.id, externalEventId]
+  );
+  const existingRef = existingRefRows[0] || null;
+
+  if (deleted) {
+    if (existingRef) {
+      await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [existingRef.event_id, userId]);
+    }
+    return null;
+  }
+
+  const title = providerEvent.title?.trim() || 'Untitled Event';
+  const start = toMysqlDatetime(providerEvent.start_time);
+  const end = toMysqlDatetime(providerEvent.end_time);
+  if (!start || !end) return null;
+
+  let eventId = existingRef?.event_id || null;
+  if (eventId) {
+    await db.execute(
+      `UPDATE calendar_events
+       SET calendar_id = ?, title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?, location = ?, color = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+      [
+        calendarRow.id,
+        title,
+        providerEvent.description || null,
+        start,
+        end,
+        !!providerEvent.all_day,
+        providerEvent.location || null,
+        calendarRow.color || '#22c55e',
+        eventId,
+        userId,
+      ]
+    );
+  } else {
+    eventId = crypto.randomUUID();
+    await db.execute(
+      `INSERT INTO calendar_events
+        (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, FALSE)`,
+      [
+        eventId,
+        userId,
+        calendarRow.id,
+        title,
+        providerEvent.description || null,
+        start,
+        end,
+        !!providerEvent.all_day,
+        providerEvent.location || null,
+        calendarRow.color || '#22c55e',
+      ]
+    );
+  }
+
+  await upsertExternalRef(
+    userId,
+    eventId,
+    calendarRow.id,
+    accountRow.id,
+    provider,
+    externalEventId,
+    providerEvent.external_etag || null,
+    providerEvent.external_updated_at ? toMysqlDatetime(providerEvent.external_updated_at) : null
+  );
+  await replaceEventAttendees(userId, eventId, providerEvent.attendees || []);
+  return eventId;
+}
+
+function localEventToGooglePayload(event) {
+  const attendees = (event.attendees || []).map((attendee) => ({
+    email: attendee.email,
+    displayName: attendee.display_name || undefined,
+    responseStatus: attendee.response_status || 'needsAction',
+    optional: !!attendee.optional_attendee,
+  }));
+  if (event.all_day) {
+    return {
+      summary: event.title,
+      description: event.description || undefined,
+      location: event.location || undefined,
+      start: { date: formatEventDateOnly(event.start_time) },
+      end: { date: formatEventDateOnly(event.end_time) },
+      attendees,
+    };
+  }
+  return {
+    summary: event.title,
+    description: event.description || undefined,
+    location: event.location || undefined,
+    start: { dateTime: new Date(event.start_time).toISOString() },
+    end: { dateTime: new Date(event.end_time).toISOString() },
+    attendees,
+  };
+}
+
+function localEventToMicrosoftPayload(event) {
+  const attendees = (event.attendees || []).map((attendee) => ({
+    emailAddress: {
+      address: attendee.email,
+      name: attendee.display_name || attendee.email,
+    },
+    type: attendee.optional_attendee ? 'optional' : 'required',
+  }));
+  return {
+    subject: event.title,
+    body: {
+      contentType: 'text',
+      content: event.description || '',
+    },
+    start: {
+      dateTime: new Date(event.start_time).toISOString(),
+      timeZone: 'UTC',
+    },
+    end: {
+      dateTime: new Date(event.end_time).toISOString(),
+      timeZone: 'UTC',
+    },
+    location: event.location ? { displayName: event.location } : undefined,
+    isAllDay: !!event.all_day,
+    attendees,
+  };
+}
+
+async function pushLocalEventToProvider(userId, eventId) {
+  if (!CALENDAR_SYNC_ENABLED) return { skipped: true };
+  const event = await getCalendarEventWithSubtasks(userId, eventId);
+  if (!event?.calendar_id) return { skipped: true };
+  const context = await loadCalendarWithAccount(userId, event.calendar_id);
+  if (!context) return { skipped: true };
+  const { calendar, account, rawAccount } = context;
+  if (!providerSyncEnabled(account.provider) || account.provider === 'local') return { skipped: true };
+  if (calendar.read_only) return { skipped: true, reason: 'calendar_read_only' };
+
+  const existingRef = await getExternalRefForEvent(userId, eventId);
+  if (account.provider === 'google') {
+    const payload = localEventToGooglePayload(event);
+    const base = `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendar.external_id || 'primary')}/events`;
+    const url = existingRef ? `${base}/${encodeURIComponent(existingRef.external_event_id)}?sendUpdates=all` : `${base}?sendUpdates=all`;
+    const response = await providerRequest(rawAccount, {
+      url,
+      method: existingRef ? 'PATCH' : 'POST',
+      body: payload,
+    });
+    if (!response.ok) return { error: response.error, status: response.status || 500 };
+    const eventData = response.data || {};
+    await upsertExternalRef(
+      userId,
+      eventId,
+      calendar.id,
+      account.id,
+      account.provider,
+      eventData.id,
+      eventData.etag || null,
+      eventData.updated || null
+    );
+    return { success: true };
+  }
+
+  if (account.provider === 'microsoft') {
+    const payload = localEventToMicrosoftPayload(event);
+    const base = `https://graph.microsoft.com/v1.0/me/calendars/${encodeURIComponent(calendar.external_id || '')}/events`;
+    const url = existingRef ? `${base}/${encodeURIComponent(existingRef.external_event_id)}` : base;
+    const response = await providerRequest(rawAccount, {
+      url,
+      method: existingRef ? 'PATCH' : 'POST',
+      body: payload,
+    });
+    if (!response.ok) return { error: response.error, status: response.status || 500 };
+    const eventData = response.data || {};
+    const externalId = existingRef ? existingRef.external_event_id : eventData.id;
+    await upsertExternalRef(
+      userId,
+      eventId,
+      calendar.id,
+      account.id,
+      account.provider,
+      externalId,
+      eventData['@odata.etag'] || null,
+      eventData.lastModifiedDateTime || null
+    );
+    return { success: true };
+  }
+
+  // Limited iCloud write support (requires explicit writable event URL template in provider_config).
+  if (account.provider === 'icloud') {
+    const config = safeJsonParse(rawAccount.provider_config, {}) || {};
+    const eventBaseUrl = config?.caldav_event_base_url;
+    if (!eventBaseUrl) return { skipped: true, reason: 'icloud_write_not_configured' };
+    const refId = existingRef?.external_event_id || `${event.id}.ics`;
+    const targetUrl = `${String(eventBaseUrl).replace(/\/$/, '')}/${encodeURIComponent(refId)}`;
+    const icsBody = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//UniHub//Calendar//EN',
+      'BEGIN:VEVENT',
+      `UID:${existingRef?.external_event_id || event.id}`,
+      `SUMMARY:${event.title || ''}`,
+      event.description ? `DESCRIPTION:${event.description}` : '',
+      event.location ? `LOCATION:${event.location}` : '',
+      `DTSTART:${new Date(event.start_time).toISOString().replace(/[-:]/g, '').replace('.000', '')}`,
+      `DTEND:${new Date(event.end_time).toISOString().replace(/[-:]/g, '').replace('.000', '')}`,
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].filter(Boolean).join('\r\n');
+    const response = await providerRequest(rawAccount, {
+      url: targetUrl,
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/calendar; charset=utf-8' },
+      body: icsBody,
+    });
+    if (!response.ok) return { error: response.error, status: response.status || 500 };
+    await upsertExternalRef(
+      userId,
+      eventId,
+      calendar.id,
+      account.id,
+      account.provider,
+      existingRef?.external_event_id || event.id
+    );
+    return { success: true, limited: true };
+  }
+
+  return { skipped: true };
+}
+
+async function deleteLocalEventOnProvider(userId, eventId) {
+  if (!CALENDAR_SYNC_ENABLED) return { skipped: true };
+  const ref = await getExternalRefForEvent(userId, eventId);
+  if (!ref) return { skipped: true };
+  const [rows] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [ref.account_id, userId]);
+  if (rows.length === 0) return { skipped: true };
+  const accountRow = rows[0];
+  const account = serializeCalendarAccount(accountRow);
+  if (!providerSyncEnabled(account.provider) || account.provider === 'local') return { skipped: true };
+
+  if (account.provider === 'google') {
+    const [calRows] = await db.execute('SELECT external_id FROM calendar_calendars WHERE id = ? LIMIT 1', [ref.calendar_id]);
+    const externalCalendarId = calRows[0]?.external_id || 'primary';
+    const response = await providerRequest(accountRow, {
+      url: `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(externalCalendarId)}/events/${encodeURIComponent(ref.external_event_id)}?sendUpdates=all`,
+      method: 'DELETE',
+    });
+    if (!response.ok && response.status !== 404) return { error: response.error, status: response.status || 500 };
+  } else if (account.provider === 'microsoft') {
+    const [calRows] = await db.execute('SELECT external_id FROM calendar_calendars WHERE id = ? LIMIT 1', [ref.calendar_id]);
+    const externalCalendarId = calRows[0]?.external_id;
+    if (externalCalendarId) {
+      const response = await providerRequest(accountRow, {
+        url: `https://graph.microsoft.com/v1.0/me/calendars/${encodeURIComponent(externalCalendarId)}/events/${encodeURIComponent(ref.external_event_id)}`,
+        method: 'DELETE',
+      });
+      if (!response.ok && response.status !== 404) return { error: response.error, status: response.status || 500 };
+    }
+  } else if (account.provider === 'icloud') {
+    const config = safeJsonParse(accountRow.provider_config, {}) || {};
+    const eventBaseUrl = config?.caldav_event_base_url;
+    if (eventBaseUrl) {
+      const response = await providerRequest(accountRow, {
+        url: `${String(eventBaseUrl).replace(/\/$/, '')}/${encodeURIComponent(ref.external_event_id)}`,
+        method: 'DELETE',
+      });
+      if (!response.ok && response.status !== 404) return { error: response.error, status: response.status || 500 };
+    }
+  }
+
+  return { success: true };
+}
+
+async function syncGoogleCalendarAccount(userId, accountRow) {
+  const account = serializeCalendarAccount(accountRow);
+  const calendarListResponse = await providerRequest(accountRow, {
+    url: 'https://www.googleapis.com/calendar/v3/users/me/calendarList',
+  });
+  if (!calendarListResponse.ok) {
+    return { success: false, error: calendarListResponse.error, status: calendarListResponse.status || 500 };
+  }
+
+  const calendars = Array.isArray(calendarListResponse.data?.items) ? calendarListResponse.data.items : [];
+  let upsertedEvents = 0;
+  for (const providerCalendar of calendars) {
+    const localCalendar = await upsertCalendarFromProvider(userId, account, {
+      external_id: providerCalendar.id,
+      name: providerCalendar.summary || providerCalendar.id,
+      color: providerCalendar.backgroundColor || '#22c55e',
+      read_only: providerCalendar.accessRole === 'reader' || providerCalendar.accessRole === 'freeBusyReader',
+      is_primary: !!providerCalendar.primary,
+    });
+    if (!localCalendar) continue;
+
+    const eventListResponse = await providerRequest(accountRow, {
+      url: `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(providerCalendar.id)}/events?singleEvents=true&showDeleted=true&maxResults=2500`,
+    });
+    if (!eventListResponse.ok) continue;
+    const events = Array.isArray(eventListResponse.data?.items) ? eventListResponse.data.items : [];
+    for (const providerEvent of events) {
+      const start = parseGoogleEventDate(providerEvent, 'start');
+      const end = parseGoogleEventDate(providerEvent, 'end') || start;
+      await upsertProviderEventIntoLocal({
+        userId,
+        accountRow,
+        calendarRow: localCalendar,
+        provider: 'google',
+        providerEvent: {
+          external_event_id: providerEvent.id,
+          external_etag: providerEvent.etag || null,
+          external_updated_at: providerEvent.updated || null,
+          title: providerEvent.summary || 'Untitled Event',
+          description: providerEvent.description || null,
+          location: providerEvent.location || null,
+          start_time: start,
+          end_time: end,
+          all_day: !!providerEvent.start?.date && !providerEvent.start?.dateTime,
+          attendees: googleAttendeesToLocal(providerEvent.attendees),
+          deleted: providerEvent.status === 'cancelled',
+        },
+      });
+      upsertedEvents += 1;
+    }
+  }
+  await db.execute('UPDATE calendar_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?', [account.id, userId]);
+  return { success: true, provider: 'google', syncedEvents: upsertedEvents };
+}
+
+async function syncMicrosoftCalendarAccount(userId, accountRow) {
+  const account = serializeCalendarAccount(accountRow);
+  const calendarResponse = await providerRequest(accountRow, {
+    url: 'https://graph.microsoft.com/v1.0/me/calendars?$top=200',
+  });
+  if (!calendarResponse.ok) {
+    return { success: false, error: calendarResponse.error, status: calendarResponse.status || 500 };
+  }
+  const calendars = Array.isArray(calendarResponse.data?.value) ? calendarResponse.data.value : [];
+  let upsertedEvents = 0;
+  for (const providerCalendar of calendars) {
+    const localCalendar = await upsertCalendarFromProvider(userId, account, {
+      external_id: providerCalendar.id,
+      name: providerCalendar.name || 'Calendar',
+      color: providerCalendar.hexColor || '#22c55e',
+      read_only: !providerCalendar.canEdit,
+      is_primary: !!providerCalendar.isDefaultCalendar,
+    });
+    if (!localCalendar) continue;
+
+    const eventsResponse = await providerRequest(accountRow, {
+      url: `https://graph.microsoft.com/v1.0/me/calendars/${encodeURIComponent(providerCalendar.id)}/events?$top=200`,
+    });
+    if (!eventsResponse.ok) continue;
+    const events = Array.isArray(eventsResponse.data?.value) ? eventsResponse.data.value : [];
+    for (const providerEvent of events) {
+      const start = parseMicrosoftEventDate(providerEvent, 'start');
+      const end = parseMicrosoftEventDate(providerEvent, 'end') || start;
+      await upsertProviderEventIntoLocal({
+        userId,
+        accountRow,
+        calendarRow: localCalendar,
+        provider: 'microsoft',
+        providerEvent: {
+          external_event_id: providerEvent.id,
+          external_etag: providerEvent['@odata.etag'] || null,
+          external_updated_at: providerEvent.lastModifiedDateTime || null,
+          title: providerEvent.subject || 'Untitled Event',
+          description: providerEvent.bodyPreview || null,
+          location: providerEvent.location?.displayName || null,
+          start_time: start,
+          end_time: end,
+          all_day: !!providerEvent.isAllDay,
+          attendees: microsoftAttendeesToLocal(providerEvent.attendees),
+          deleted: !!providerEvent.isCancelled,
+        },
+      });
+      upsertedEvents += 1;
+    }
+  }
+  await db.execute('UPDATE calendar_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?', [account.id, userId]);
+  return { success: true, provider: 'microsoft', syncedEvents: upsertedEvents };
+}
+
+async function syncIcloudCalendarAccount(userId, accountRow) {
+  const account = serializeCalendarAccount(accountRow);
+  const config = safeJsonParse(accountRow.provider_config, {}) || {};
+  const configuredCalendars = Array.isArray(config.calendars) ? config.calendars : [];
+  const feeds = configuredCalendars.length > 0
+    ? configuredCalendars
+    : (config.ics_url ? [{
+      external_id: config.external_id || 'icloud-default',
+      name: config.calendar_name || 'iCloud',
+      color: config.color || '#22c55e',
+      ics_url: config.ics_url,
+    }] : []);
+
+  let upsertedEvents = 0;
+  for (const feed of feeds) {
+    if (!feed?.ics_url) continue;
+    const localCalendar = await upsertCalendarFromProvider(userId, account, {
+      external_id: feed.external_id || feed.ics_url,
+      name: feed.name || 'iCloud',
+      color: feed.color || '#22c55e',
+      read_only: false,
+      is_primary: !!feed.is_primary,
+    });
+    if (!localCalendar) continue;
+
+    const response = await providerRequest(accountRow, {
+      url: feed.ics_url,
+      headers: { Accept: 'text/calendar' },
+    });
+    if (!response.ok) continue;
+    const events = parseIcsEvents(response.text || '');
+    for (const providerEvent of events) {
+      await upsertProviderEventIntoLocal({
+        userId,
+        accountRow,
+        calendarRow: localCalendar,
+        provider: 'icloud',
+        providerEvent: {
+          external_event_id: providerEvent.uid,
+          title: providerEvent.title || 'Untitled Event',
+          description: providerEvent.description || null,
+          location: providerEvent.location || null,
+          start_time: providerEvent.start,
+          end_time: providerEvent.end,
+          all_day: !!providerEvent.all_day,
+          attendees: providerEvent.attendees || [],
+          deleted: providerEvent.status === 'CANCELLED',
+        },
+      });
+      upsertedEvents += 1;
+    }
+  }
+  await db.execute('UPDATE calendar_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?', [account.id, userId]);
+  return {
+    success: true,
+    provider: 'icloud',
+    syncedEvents: upsertedEvents,
+    note: 'iCloud invitation behavior is limited in V1 due CalDAV/provider constraints.',
+  };
+}
+
+async function syncCalendarAccount(accountId, userId) {
+  const [rows] = await db.execute(
+    'SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE LIMIT 1',
+    [accountId, userId]
+  );
+  if (rows.length === 0) {
+    return { success: false, status: 404, error: 'Calendar account not found' };
+  }
+  const accountRow = rows[0];
+  const provider = normalizeCalendarAccountProvider(accountRow.provider);
+  if (!provider || provider === 'local') {
+    return { success: true, provider: 'local', syncedEvents: 0 };
+  }
+  if (!providerSyncEnabled(provider)) {
+    return { success: false, status: 503, error: `Calendar sync provider disabled: ${provider}` };
+  }
+
+  try {
+    if (provider === 'google') return await syncGoogleCalendarAccount(userId, accountRow);
+    if (provider === 'microsoft') return await syncMicrosoftCalendarAccount(userId, accountRow);
+    if (provider === 'icloud') return await syncIcloudCalendarAccount(userId, accountRow);
+  } catch (error) {
+    console.error('[CALENDAR SYNC] Sync error:', error);
+    return { success: false, status: 500, error: error.message || 'Calendar sync failed' };
+  }
+  return { success: false, status: 400, error: `Unsupported provider: ${provider}` };
+}
+
+async function upsertCalendarOAuthAccount({
+  userId,
+  provider,
+  accountEmail,
+  displayName,
+  accessToken,
+  refreshToken,
+  tokenExpiresAt,
+}) {
+  const [existingRows] = await db.execute(
+    `SELECT * FROM calendar_accounts
+     WHERE user_id = ? AND provider = ? AND (
+       (account_email IS NOT NULL AND account_email = ?)
+       OR (account_email IS NULL AND ? IS NULL)
+     )
+     LIMIT 1`,
+    [userId, provider, accountEmail || null, accountEmail || null]
+  );
+
+  const encryptedAccessToken = accessToken ? encrypt(accessToken) : null;
+  const encryptedRefreshToken = refreshToken ? encrypt(refreshToken) : null;
+  const expires = tokenExpiresAt ? toMysqlDatetime(tokenExpiresAt) : null;
+  const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
+
+  let accountId;
+  if (existingRows.length > 0) {
+    accountId = existingRows[0].id;
+    await db.execute(
+      `UPDATE calendar_accounts
+       SET account_email = ?, display_name = ?, encrypted_access_token = ?, encrypted_refresh_token = ?, token_expires_at = ?,
+           capabilities = ?, is_active = TRUE, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND user_id = ?`,
+      [
+        accountEmail || null,
+        displayName || null,
+        encryptedAccessToken,
+        encryptedRefreshToken,
+        expires,
+        JSON.stringify(capabilities),
+        accountId,
+        userId,
+      ]
+    );
+  } else {
+    accountId = crypto.randomUUID();
+    await db.execute(
+      `INSERT INTO calendar_accounts
+        (id, user_id, provider, account_email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, capabilities, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
+      [
+        accountId,
+        userId,
+        provider,
+        accountEmail || null,
+        displayName || null,
+        encryptedAccessToken,
+        encryptedRefreshToken,
+        expires,
+        JSON.stringify(capabilities),
+      ]
+    );
+  }
+
+  const [calendarRows] = await db.execute('SELECT id FROM calendar_calendars WHERE account_id = ? LIMIT 1', [accountId]);
+  if (calendarRows.length === 0) {
+    await db.execute(
+      `INSERT INTO calendar_calendars
+        (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+       VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
+      [
+        crypto.randomUUID(),
+        userId,
+        accountId,
+        `${provider === 'google' ? 'Google' : 'Microsoft'} Primary`,
+        'primary',
+        '#22c55e',
+      ]
+    );
+  }
+
+  return accountId;
+}
+
+async function exchangeGoogleOAuthCode(req, code) {
+  const redirectUri = buildCalendarOAuthRedirectUri(req, 'google');
+  const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      code,
+      client_id: GOOGLE_CALENDAR_CLIENT_ID,
+      client_secret: GOOGLE_CALENDAR_CLIENT_SECRET,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+    }),
+  });
+  const tokenData = await tokenResponse.json();
+  if (!tokenResponse.ok) {
+    throw new Error(tokenData.error_description || tokenData.error || 'Google token exchange failed');
+  }
+  const profileResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+    headers: { Authorization: `Bearer ${tokenData.access_token}` },
+  });
+  const profileData = await profileResponse.json();
+  if (!profileResponse.ok) {
+    throw new Error(profileData.error?.message || 'Failed to fetch Google profile');
+  }
+  const expiresAt = tokenData.expires_in ? new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString() : null;
+  return {
+    provider: 'google',
+    accountEmail: profileData.email || null,
+    displayName: profileData.name || profileData.email || 'Google Account',
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token || null,
+    tokenExpiresAt: expiresAt,
+  };
+}
+
+async function exchangeMicrosoftOAuthCode(req, code) {
+  const redirectUri = buildCalendarOAuthRedirectUri(req, 'microsoft');
+  const tokenResponse = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: MICROSOFT_CALENDAR_CLIENT_ID,
+      client_secret: MICROSOFT_CALENDAR_CLIENT_SECRET,
+      code,
+      redirect_uri: redirectUri,
+      grant_type: 'authorization_code',
+      scope: 'offline_access User.Read Calendars.ReadWrite',
+    }),
+  });
+  const tokenData = await tokenResponse.json();
+  if (!tokenResponse.ok) {
+    throw new Error(tokenData.error_description || tokenData.error || 'Microsoft token exchange failed');
+  }
+  const profileResponse = await fetch('https://graph.microsoft.com/v1.0/me', {
+    headers: { Authorization: `Bearer ${tokenData.access_token}` },
+  });
+  const profileData = await profileResponse.json();
+  if (!profileResponse.ok) {
+    throw new Error(profileData.error?.message || 'Failed to fetch Microsoft profile');
+  }
+  const expiresAt = tokenData.expires_in ? new Date(Date.now() + Number(tokenData.expires_in) * 1000).toISOString() : null;
+  return {
+    provider: 'microsoft',
+    accountEmail: profileData.mail || profileData.userPrincipalName || null,
+    displayName: profileData.displayName || profileData.mail || 'Microsoft Account',
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token || null,
+    tokenExpiresAt: expiresAt,
+  };
 }
 
 // Simple router
@@ -2685,6 +4050,9 @@ const routes = {
     try {
       const [subtasksResult] = await db.execute('DELETE FROM calendar_event_subtasks WHERE user_id = ?', [userId]);
       const [eventsResult] = await db.execute('DELETE FROM calendar_events WHERE user_id = ?', [userId]);
+      await db.execute('DELETE FROM calendar_calendars WHERE user_id = ?', [userId]);
+      await db.execute('DELETE FROM calendar_accounts WHERE user_id = ?', [userId]);
+      await ensureDefaultLocalCalendarForUser(userId);
       const deletedSubtasks = subtasksResult.affectedRows || 0;
       const deletedEvents = eventsResult.affectedRows || 0;
       return { message: `Deleted ${deletedEvents} event(s) and ${deletedSubtasks} subtask(s)`, deleted: deletedEvents + deletedSubtasks };
@@ -2705,34 +4073,495 @@ const routes = {
     }
   },
 
-  // Calendar events endpoints
+  'GET /api/calendar/oauth/:provider/start': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_SYNC_ENABLED) return { error: 'Calendar sync feature disabled', status: 503 };
+    const provider = getCalendarOAuthProviderFromReq(req);
+    if (!provider || !['google', 'microsoft'].includes(provider)) {
+      return { error: 'OAuth provider must be google or microsoft', status: 400 };
+    }
+
+    if (provider === 'google' && (!GOOGLE_CALENDAR_CLIENT_ID || !GOOGLE_CALENDAR_CLIENT_SECRET)) {
+      return { error: 'Missing Google OAuth environment configuration', status: 500 };
+    }
+    if (provider === 'microsoft' && (!MICROSOFT_CALENDAR_CLIENT_ID || !MICROSOFT_CALENDAR_CLIENT_SECRET)) {
+      return { error: 'Missing Microsoft OAuth environment configuration', status: 500 };
+    }
+
+    const state = createCalendarOAuthState(userId, provider);
+    const redirectUri = buildCalendarOAuthRedirectUri(req, provider);
+
+    if (provider === 'google') {
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', GOOGLE_CALENDAR_CLIENT_ID);
+      authUrl.searchParams.set('redirect_uri', redirectUri);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', 'openid email profile https://www.googleapis.com/auth/calendar');
+      authUrl.searchParams.set('access_type', 'offline');
+      authUrl.searchParams.set('prompt', 'consent');
+      authUrl.searchParams.set('state', state);
+      return { __redirect: authUrl.toString() };
+    }
+
+    const authUrl = new URL('https://login.microsoftonline.com/common/oauth2/v2.0/authorize');
+    authUrl.searchParams.set('client_id', MICROSOFT_CALENDAR_CLIENT_ID);
+    authUrl.searchParams.set('redirect_uri', redirectUri);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('response_mode', 'query');
+    authUrl.searchParams.set('scope', 'offline_access User.Read Calendars.ReadWrite');
+    authUrl.searchParams.set('state', state);
+    return { __redirect: authUrl.toString() };
+  },
+
+  'GET /api/calendar/oauth/:provider/callback': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_SYNC_ENABLED) return { error: 'Calendar sync feature disabled', status: 503 };
+
+    const provider = getCalendarOAuthProviderFromReq(req);
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    const oauthError = url.searchParams.get('error');
+    const oauthErrorDescription = url.searchParams.get('error_description');
+
+    const sendOAuthPopupHtml = (success, message) => ({
+      __html: `<!doctype html><html><body><script>
+        (function() {
+          try {
+            if (window.opener) {
+              window.opener.postMessage({
+                type: 'calendar-oauth-result',
+                success: ${success ? 'true' : 'false'},
+                provider: ${JSON.stringify(provider || 'unknown')},
+                message: ${JSON.stringify(message)}
+              }, '*');
+            }
+          } catch (e) {}
+          window.close();
+        })();
+      </script><p>${success ? 'Connected' : 'Failed'}: ${message}</p></body></html>`,
+    });
+
+    if (oauthError) {
+      return sendOAuthPopupHtml(false, oauthErrorDescription || oauthError);
+    }
+    if (!provider || !code || !state) {
+      return sendOAuthPopupHtml(false, 'Invalid OAuth callback payload');
+    }
+    const stateData = consumeCalendarOAuthState(state);
+    if (!stateData || stateData.userId !== userId || stateData.provider !== provider) {
+      return sendOAuthPopupHtml(false, 'Invalid or expired OAuth state');
+    }
+
+    try {
+      let oauthResult;
+      if (provider === 'google') {
+        oauthResult = await exchangeGoogleOAuthCode(req, code);
+      } else if (provider === 'microsoft') {
+        oauthResult = await exchangeMicrosoftOAuthCode(req, code);
+      } else {
+        return sendOAuthPopupHtml(false, 'Unsupported OAuth provider');
+      }
+
+      const accountId = await upsertCalendarOAuthAccount({
+        userId,
+        provider: oauthResult.provider,
+        accountEmail: oauthResult.accountEmail,
+        displayName: oauthResult.displayName,
+        accessToken: oauthResult.accessToken,
+        refreshToken: oauthResult.refreshToken,
+        tokenExpiresAt: oauthResult.tokenExpiresAt,
+      });
+
+      const syncResult = await syncCalendarAccount(accountId, userId);
+      if (!syncResult.success) {
+        return sendOAuthPopupHtml(false, `Connected but initial sync failed: ${syncResult.error || 'unknown error'}`);
+      }
+      return sendOAuthPopupHtml(true, 'Calendar account connected successfully');
+    } catch (error) {
+      console.error('OAuth callback error:', error);
+      return sendOAuthPopupHtml(false, error.message || 'OAuth callback failed');
+    }
+  },
+
+  // Calendar accounts + calendars + events
+  'GET /api/calendar/accounts': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
+    try {
+      await ensureDefaultLocalCalendarForUser(userId);
+      const [rows] = await db.execute(
+        'SELECT * FROM calendar_accounts WHERE user_id = ? ORDER BY created_at ASC',
+        [userId]
+      );
+      return { accounts: rows.map((row) => serializeCalendarAccount(row)) };
+    } catch (error) {
+      console.error('Get calendar accounts error:', error);
+      return { error: 'Failed to get calendar accounts', status: 500 };
+    }
+  },
+
+  'POST /api/calendar/accounts': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
+    try {
+      const provider = normalizeCalendarAccountProvider(body.provider);
+      if (!provider) return { error: 'provider must be one of: local, google, microsoft, icloud', status: 400 };
+      if (provider !== 'local' && !CALENDAR_SYNC_ENABLED) {
+        return { error: 'Calendar sync feature disabled', status: 503 };
+      }
+
+      const accountId = crypto.randomUUID();
+      const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
+      const encryptedAccessToken = body.access_token ? encrypt(String(body.access_token)) : null;
+      const encryptedRefreshToken = body.refresh_token ? encrypt(String(body.refresh_token)) : null;
+      const providerConfig = body.provider_config && typeof body.provider_config === 'object' ? body.provider_config : {};
+      const tokenExpiresAt = body.token_expires_at ? toMysqlDatetime(body.token_expires_at) : null;
+
+      await db.execute(
+        `INSERT INTO calendar_accounts
+          (id, user_id, provider, account_email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, provider_config, capabilities, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          accountId,
+          userId,
+          provider,
+          body.account_email?.trim() || null,
+          body.display_name?.trim() || null,
+          encryptedAccessToken,
+          encryptedRefreshToken,
+          tokenExpiresAt,
+          JSON.stringify(providerConfig || {}),
+          JSON.stringify(capabilities),
+          body.is_active === false ? 0 : 1,
+        ]
+      );
+
+      // Create a default calendar for local accounts immediately.
+      if (provider === 'local') {
+        await db.execute(
+          `INSERT INTO calendar_calendars
+            (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+           VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
+          [
+            crypto.randomUUID(),
+            userId,
+            accountId,
+            body.default_calendar_name?.trim() || 'Default',
+            'local-default',
+            body.default_calendar_color || '#22c55e',
+          ]
+        );
+      }
+
+      const [rows] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
+      const created = rows[0];
+      const account = serializeCalendarAccount(created);
+
+      let syncResult = null;
+      if (provider !== 'local' && body.sync_on_create !== false) {
+        syncResult = await syncCalendarAccount(accountId, userId);
+      }
+
+      return { account, sync: syncResult };
+    } catch (error) {
+      console.error('Create calendar account error:', error);
+      return { error: error.message || 'Failed to create calendar account', status: 500 };
+    }
+  },
+
+  'PUT /api/calendar/accounts/:id': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
+    try {
+      const id = getCalendarAccountIdFromReq(req);
+      if (!id) return { error: 'Invalid account id', status: 400 };
+      const [existing] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      if (existing.length === 0) return { error: 'Calendar account not found', status: 404 };
+
+      const updates = [];
+      const params = [];
+      if (Object.prototype.hasOwnProperty.call(body, 'account_email')) {
+        updates.push('account_email = ?');
+        params.push(body.account_email?.trim() || null);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'display_name')) {
+        updates.push('display_name = ?');
+        params.push(body.display_name?.trim() || null);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'is_active')) {
+        updates.push('is_active = ?');
+        params.push(body.is_active === false ? 0 : 1);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'access_token')) {
+        updates.push('encrypted_access_token = ?');
+        params.push(body.access_token ? encrypt(String(body.access_token)) : null);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'refresh_token')) {
+        updates.push('encrypted_refresh_token = ?');
+        params.push(body.refresh_token ? encrypt(String(body.refresh_token)) : null);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'token_expires_at')) {
+        updates.push('token_expires_at = ?');
+        params.push(body.token_expires_at ? toMysqlDatetime(body.token_expires_at) : null);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'provider_config')) {
+        if (body.provider_config !== null && typeof body.provider_config !== 'object') {
+          return { error: 'provider_config must be an object or null', status: 400 };
+        }
+        updates.push('provider_config = ?');
+        params.push(JSON.stringify(body.provider_config || {}));
+      }
+      if (updates.length === 0) return { error: 'No fields to update', status: 400 };
+
+      params.push(id, userId);
+      await db.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      const [rows] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
+      return { account: serializeCalendarAccount(rows[0]) };
+    } catch (error) {
+      console.error('Update calendar account error:', error);
+      return { error: error.message || 'Failed to update calendar account', status: 500 };
+    }
+  },
+
+  'DELETE /api/calendar/accounts/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
+    try {
+      const id = getCalendarAccountIdFromReq(req);
+      if (!id) return { error: 'Invalid account id', status: 400 };
+      const [accounts] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      if (accounts.length === 0) return { error: 'Calendar account not found', status: 404 };
+
+      const account = accounts[0];
+      if (account.provider === 'local') {
+        const [localCountRows] = await db.execute(
+          `SELECT COUNT(*) AS count FROM calendar_accounts WHERE user_id = ? AND provider = 'local'`,
+          [userId]
+        );
+        if (Number(localCountRows[0]?.count || 0) <= 1) {
+          return { error: 'Cannot delete the last local calendar account', status: 400 };
+        }
+      }
+
+      const [calendarRows] = await db.execute('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [id, userId]);
+      const calendarIds = calendarRows.map((row) => row.id);
+      if (calendarIds.length > 0) {
+        const placeholders = calendarIds.map(() => '?').join(', ');
+        await db.execute(
+          `DELETE FROM calendar_events WHERE user_id = ? AND calendar_id IN (${placeholders})`,
+          [userId, ...calendarIds]
+        );
+      }
+      await db.execute('DELETE FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      return { message: 'Calendar account deleted' };
+    } catch (error) {
+      console.error('Delete calendar account error:', error);
+      return { error: error.message || 'Failed to delete calendar account', status: 500 };
+    }
+  },
+
+  'POST /api/calendar/accounts/:id/sync': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_SYNC_ENABLED) return { error: 'Calendar sync feature disabled', status: 503 };
+    try {
+      const accountId = getCalendarAccountIdFromReq(req);
+      if (!accountId) return { error: 'Invalid account id', status: 400 };
+      const result = await syncCalendarAccount(accountId, userId);
+      if (!result.success) {
+        return { error: result.error || 'Sync failed', status: result.status || 500, details: result };
+      }
+      return { sync: result };
+    } catch (error) {
+      console.error('Calendar sync error:', error);
+      return { error: error.message || 'Calendar sync failed', status: 500 };
+    }
+  },
+
+  'GET /api/calendar/calendars': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
+    try {
+      await ensureDefaultLocalCalendarForUser(userId);
+      const [rows] = await db.execute(
+        `SELECT c.*, a.provider, a.display_name AS account_display_name, a.account_email
+         FROM calendar_calendars c
+         INNER JOIN calendar_accounts a ON a.id = c.account_id
+         WHERE c.user_id = ? AND a.user_id = ?
+         ORDER BY a.created_at ASC, c.created_at ASC`,
+        [userId, userId]
+      );
+      const calendars = rows.map((row) => ({
+        ...serializeCalendarCalendar(row),
+        account_provider: row.provider,
+        account_display_name: row.account_display_name || null,
+        account_email: row.account_email || null,
+      }));
+      return { calendars };
+    } catch (error) {
+      console.error('Get calendars error:', error);
+      return { error: error.message || 'Failed to get calendars', status: 500 };
+    }
+  },
+
+  'POST /api/calendar/calendars': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
+    try {
+      const accountId = body.account_id;
+      if (!accountId) return { error: 'account_id is required', status: 400 };
+      if (!body.name?.trim()) return { error: 'name is required', status: 400 };
+      const [accounts] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+      if (accounts.length === 0) return { error: 'Calendar account not found', status: 404 };
+      const account = accounts[0];
+
+      const calendarId = crypto.randomUUID();
+      await db.execute(
+        `INSERT INTO calendar_calendars
+          (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          calendarId,
+          userId,
+          accountId,
+          body.name.trim(),
+          body.external_id || null,
+          body.color || '#22c55e',
+          body.is_visible === false ? 0 : 1,
+          body.auto_todo_enabled === false ? 0 : 1,
+          account.provider === 'local' ? !!body.read_only : !!body.read_only,
+          !!body.is_primary,
+        ]
+      );
+      const [rows] = await db.execute('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1', [calendarId, userId]);
+      return { calendar: serializeCalendarCalendar(rows[0]) };
+    } catch (error) {
+      console.error('Create calendar error:', error);
+      return { error: error.message || 'Failed to create calendar', status: 500 };
+    }
+  },
+
+  'PUT /api/calendar/calendars/:id': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
+    try {
+      const id = getCalendarCalendarIdFromReq(req);
+      if (!id) return { error: 'Invalid calendar id', status: 400 };
+      const [existingRows] = await db.execute('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
+      if (existingRows.length === 0) return { error: 'Calendar not found', status: 404 };
+      const existing = existingRows[0];
+
+      const updates = [];
+      const params = [];
+      if (Object.prototype.hasOwnProperty.call(body, 'name')) {
+        if (!body.name?.trim()) return { error: 'name cannot be empty', status: 400 };
+        updates.push('name = ?');
+        params.push(body.name.trim());
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'color')) {
+        updates.push('color = ?');
+        params.push(body.color || '#22c55e');
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'is_visible')) {
+        updates.push('is_visible = ?');
+        params.push(body.is_visible === false ? 0 : 1);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'auto_todo_enabled')) {
+        updates.push('auto_todo_enabled = ?');
+        params.push(body.auto_todo_enabled === false ? 0 : 1);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'read_only')) {
+        updates.push('read_only = ?');
+        params.push(body.read_only === true ? 1 : 0);
+      }
+      if (Object.prototype.hasOwnProperty.call(body, 'is_primary')) {
+        updates.push('is_primary = ?');
+        params.push(body.is_primary === true ? 1 : 0);
+      }
+      if (updates.length === 0) return { error: 'No fields to update', status: 400 };
+
+      // Keep only one primary calendar per account when requested.
+      if (body.is_primary === true) {
+        await db.execute('UPDATE calendar_calendars SET is_primary = FALSE WHERE account_id = ? AND user_id = ?', [existing.account_id, userId]);
+      }
+
+      params.push(id, userId);
+      await db.execute(`UPDATE calendar_calendars SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      const [rows] = await db.execute('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
+      return { calendar: serializeCalendarCalendar(rows[0]) };
+    } catch (error) {
+      console.error('Update calendar error:', error);
+      return { error: error.message || 'Failed to update calendar', status: 500 };
+    }
+  },
+
   'GET /api/calendar/events': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    
     try {
+      await ensureDefaultLocalCalendarForUser(userId);
       const url = new URL(req.url, `http://${req.headers.host}`);
       const includeTodos = url.searchParams.get('include_todos') === 'true';
-      
-      let query = 'SELECT * FROM calendar_events WHERE user_id = ?';
+      const includeDoneParam = url.searchParams.get('include_done');
+      const includeDone = includeDoneParam === null ? true : includeDoneParam === 'true';
+      const respectAutoTodo = url.searchParams.get('respect_auto_todo') === 'true';
+      const visibleOnly = url.searchParams.get('visible_only') === 'true';
+      const rangeStart = formatProviderDateRange(url.searchParams.get('range_start'));
+      const rangeEnd = formatProviderDateRange(url.searchParams.get('range_end'));
+      const calendarIds = (url.searchParams.get('calendar_ids') || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+
+      let query = `
+        SELECT e.*, c.auto_todo_enabled, c.is_visible
+        FROM calendar_events e
+        LEFT JOIN calendar_calendars c ON c.id = e.calendar_id
+        WHERE e.user_id = ?`;
       const params = [userId];
-      
-      // Filter out todo-only events unless explicitly requested
+
       if (!includeTodos) {
-        query += ' AND is_todo_only = FALSE';
+        query += ' AND e.is_todo_only = FALSE';
       }
-      
-      query += ' ORDER BY start_time ASC';
-      
+      if (!includeDone) {
+        query += ` AND (e.todo_status IS NULL OR e.todo_status NOT IN ('done', 'cancelled'))`;
+      }
+      if (respectAutoTodo) {
+        query += ' AND (c.auto_todo_enabled = TRUE OR c.auto_todo_enabled IS NULL)';
+      }
+      if (visibleOnly) {
+        query += ' AND (c.is_visible = TRUE OR c.is_visible IS NULL)';
+      }
+      if (rangeStart) {
+        query += ' AND e.end_time >= ?';
+        params.push(toMysqlDatetime(rangeStart));
+      }
+      if (rangeEnd) {
+        query += ' AND e.start_time <= ?';
+        params.push(toMysqlDatetime(rangeEnd));
+      }
+      if (calendarIds.length > 0) {
+        const placeholders = calendarIds.map(() => '?').join(', ');
+        query += ` AND e.calendar_id IN (${placeholders})`;
+        params.push(...calendarIds);
+      }
+      query += ' ORDER BY e.start_time ASC';
+
       const [rows] = await db.execute(query, params);
-      const subtasksByEventId = await getCalendarSubtasksForEvents(userId, rows.map((row) => row.id));
-      const events = rows.map((row) => serializeCalendarEvent(row, subtasksByEventId.get(row.id) || []));
+      const eventIds = rows.map((row) => row.id);
+      const subtasksByEventId = await getCalendarSubtasksForEvents(userId, eventIds);
+      const attendeesByEventId = await getCalendarAttendeesForEvents(userId, eventIds);
+      const events = rows.map((row) => serializeCalendarEvent(
+        row,
+        subtasksByEventId.get(row.id) || [],
+        attendeesByEventId.get(row.id) || []
+      ));
       return { events };
     } catch (error) {
       console.error('Get events error:', error);
       return { error: 'Failed to get events', status: 500 };
     }
   },
-  
+
   'POST /api/calendar/events': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     if (!body.title?.trim()) return { error: 'Title is required', status: 400 };
@@ -2742,32 +4571,67 @@ const routes = {
       let start = toMysqlDatetime(start_time);
       let end = toMysqlDatetime(end_time);
 
-      // For unscheduled todo-only tasks we persist a default 30-minute window at "now".
       if (!!is_todo_only && (!start || !end)) {
         const now = Date.now();
         start = toMysqlDatetime(new Date(now).toISOString());
         end = toMysqlDatetime(new Date(now + 30 * 60 * 1000).toISOString());
       }
-
       if (!start || !end) return { error: 'Valid start and end time are required', status: 400 };
       if (parseDatetimeToMillis(end) < parseDatetimeToMillis(start)) {
         return { error: 'End time must be after start time', status: 400 };
       }
 
+      let calendarId = body.calendar_id || null;
+      if (calendarId) {
+        const [calRows] = await db.execute('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ?', [calendarId, userId]);
+        if (calRows.length === 0) return { error: 'Invalid calendar_id', status: 400 };
+      } else {
+        const ensured = await ensureDefaultLocalCalendarForUser(userId);
+        calendarId = ensured.calendarId;
+      }
+
       const eventId = crypto.randomUUID();
       await db.execute(
-        'INSERT INTO calendar_events (id, user_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [eventId, userId, title.trim(), description || null, start, end, !!all_day, location?.trim() || null, color || '#22c55e', recurrence || null, reminder_minutes ?? null, reminders ? JSON.stringify(reminders) : null, !!is_todo_only]
+        `INSERT INTO calendar_events
+          (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          eventId,
+          userId,
+          calendarId,
+          title.trim(),
+          description || null,
+          start,
+          end,
+          !!all_day,
+          location?.trim() || null,
+          color || '#22c55e',
+          recurrence || null,
+          reminder_minutes ?? null,
+          reminders ? JSON.stringify(reminders) : null,
+          !!is_todo_only,
+        ]
       );
+      if (Array.isArray(body.attendees)) {
+        await replaceEventAttendees(userId, eventId, body.attendees);
+      }
 
+      const pushResult = await pushLocalEventToProvider(userId, eventId);
       const event = await getCalendarEventWithSubtasks(userId, eventId);
+      if (pushResult?.error) {
+        return {
+          event,
+          warning: `Event saved locally but provider sync failed: ${pushResult.error}`,
+          provider_sync_error: pushResult.error,
+        };
+      }
       return { event };
     } catch (error) {
       console.error('Create event error:', error);
       return { error: error.message || 'Failed to create event', status: 500 };
     }
   },
-  
+
   'PUT /api/calendar/events/:id': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
@@ -2777,7 +4641,6 @@ const routes = {
 
       const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       if (events.length === 0) return { error: 'Event not found', status: 404 };
-
       const currentEvent = events[0];
       const updates = [];
       const params = [];
@@ -2787,7 +4650,6 @@ const routes = {
         updates.push('title = ?');
         params.push(body.title.trim());
       }
-
       if (Object.prototype.hasOwnProperty.call(body, 'description')) {
         updates.push('description = ?');
         params.push(body.description || null);
@@ -2797,14 +4659,12 @@ const routes = {
       const endProvided = Object.prototype.hasOwnProperty.call(body, 'end_time');
       const resolvedStart = startProvided ? toMysqlDatetime(body.start_time) : toMysqlDatetime(currentEvent.start_time);
       const resolvedEnd = endProvided ? toMysqlDatetime(body.end_time) : toMysqlDatetime(currentEvent.end_time);
-
       if (startProvided && !resolvedStart) return { error: 'Valid start time is required', status: 400 };
       if (endProvided && !resolvedEnd) return { error: 'Valid end time is required', status: 400 };
       if (!resolvedStart || !resolvedEnd) return { error: 'Valid start and end time are required', status: 400 };
       if (parseDatetimeToMillis(resolvedEnd) < parseDatetimeToMillis(resolvedStart)) {
         return { error: 'End time must be after start time', status: 400 };
       }
-
       if (startProvided) {
         updates.push('start_time = ?');
         params.push(resolvedStart);
@@ -2818,27 +4678,22 @@ const routes = {
         updates.push('all_day = ?');
         params.push(!!body.all_day);
       }
-
       if (Object.prototype.hasOwnProperty.call(body, 'location')) {
         updates.push('location = ?');
         params.push(body.location?.trim() || null);
       }
-
       if (Object.prototype.hasOwnProperty.call(body, 'color')) {
         updates.push('color = ?');
         params.push(body.color || '#22c55e');
       }
-
       if (Object.prototype.hasOwnProperty.call(body, 'recurrence')) {
         updates.push('recurrence = ?');
         params.push(body.recurrence || null);
       }
-
       if (Object.prototype.hasOwnProperty.call(body, 'reminder_minutes')) {
         updates.push('reminder_minutes = ?');
         params.push(body.reminder_minutes ?? null);
       }
-
       if (Object.prototype.hasOwnProperty.call(body, 'reminders')) {
         if (body.reminders !== null && body.reminders !== undefined && !Array.isArray(body.reminders)) {
           return { error: 'Reminders must be an array or null', status: 400 };
@@ -2846,21 +4701,38 @@ const routes = {
         updates.push('reminders = ?');
         params.push(body.reminders ? JSON.stringify(body.reminders) : null);
       }
-
       if (Object.prototype.hasOwnProperty.call(body, 'is_todo_only')) {
         updates.push('is_todo_only = ?');
         params.push(!!body.is_todo_only);
       }
+      if (Object.prototype.hasOwnProperty.call(body, 'calendar_id')) {
+        if (!body.calendar_id) {
+          updates.push('calendar_id = NULL');
+        } else {
+          const [calRows] = await db.execute('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ?', [body.calendar_id, userId]);
+          if (calRows.length === 0) return { error: 'Invalid calendar_id', status: 400 };
+          updates.push('calendar_id = ?');
+          params.push(body.calendar_id);
+        }
+      }
 
       if (updates.length > 0) {
         params.push(id, userId);
-        await db.execute(
-          `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
-          params
-        );
+        await db.execute(`UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      }
+      if (Array.isArray(body.attendees)) {
+        await replaceEventAttendees(userId, id, body.attendees);
       }
 
+      const pushResult = await pushLocalEventToProvider(userId, id);
       const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
+      if (pushResult?.error) {
+        return {
+          event: updatedEvent,
+          warning: `Event updated locally but provider sync failed: ${pushResult.error}`,
+          provider_sync_error: pushResult.error,
+        };
+      }
       return { event: updatedEvent };
     } catch (error) {
       console.error('Update event error:', error);
@@ -2939,6 +4811,57 @@ const routes = {
     } catch (error) {
       console.error('Update todo status error:', error);
       return { error: error.message || 'Failed to update todo status', status: 500 };
+    }
+  },
+
+  'PUT /api/calendar/events/:id/rsvp': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const id = getCalendarEventIdFromReq(req);
+      if (!id) return { error: 'Invalid event id', status: 400 };
+      const responseStatus = normalizeResponseStatus(body?.response_status);
+      const attendeeEmail = body?.email ? String(body.email).trim().toLowerCase() : null;
+
+      const event = await getCalendarEventWithSubtasks(userId, id);
+      if (!event) return { error: 'Event not found', status: 404 };
+      const context = event.calendar_id ? await loadCalendarWithAccount(userId, event.calendar_id) : null;
+      const accountEmail = context?.account?.account_email?.toLowerCase() || null;
+      const effectiveEmail = attendeeEmail || accountEmail;
+      if (!effectiveEmail) {
+        return { error: 'No attendee email available for RSVP update', status: 400 };
+      }
+
+      const nextAttendees = [...(event.attendees || [])];
+      const existingIdx = nextAttendees.findIndex((attendee) => attendee.email === effectiveEmail);
+      if (existingIdx >= 0) {
+        nextAttendees[existingIdx] = {
+          ...nextAttendees[existingIdx],
+          response_status: responseStatus,
+        };
+      } else {
+        nextAttendees.push({
+          email: effectiveEmail,
+          display_name: null,
+          response_status: responseStatus,
+          optional_attendee: false,
+          is_organizer: false,
+          comment: null,
+        });
+      }
+      await replaceEventAttendees(userId, id, nextAttendees);
+      const providerPush = await pushLocalEventToProvider(userId, id);
+      const updated = await getCalendarEventWithSubtasks(userId, id);
+      if (providerPush?.error) {
+        return {
+          event: updated,
+          warning: `RSVP updated locally but provider sync failed: ${providerPush.error}`,
+          provider_sync_error: providerPush.error,
+        };
+      }
+      return { event: updated };
+    } catch (error) {
+      console.error('RSVP update error:', error);
+      return { error: error.message || 'Failed to update RSVP', status: 500 };
     }
   },
 
@@ -3126,6 +5049,10 @@ const routes = {
     try {
       const id = getCalendarEventIdFromReq(req);
       if (!id) return { error: 'Invalid event id', status: 400 };
+      const providerDeleteResult = await deleteLocalEventOnProvider(userId, id);
+      if (providerDeleteResult?.error) {
+        return { error: `Failed to delete provider event: ${providerDeleteResult.error}`, status: providerDeleteResult.status || 502 };
+      }
       await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       return { message: 'Event deleted' };
     } catch (error) {
@@ -3857,9 +5784,25 @@ async function handleRequest(req, res) {
     if (url.pathname.includes('/favorite')) {
       routeKey = `${req.method} /api/contacts/:id/favorite`;
     }
+  } else if (routeKey.includes('/api/calendar/oauth/')) {
+    if (url.pathname.endsWith('/start')) {
+      routeKey = `${req.method} /api/calendar/oauth/:provider/start`;
+    } else if (url.pathname.endsWith('/callback')) {
+      routeKey = `${req.method} /api/calendar/oauth/:provider/callback`;
+    }
+  } else if (routeKey.includes('/api/calendar/accounts/')) {
+    if (url.pathname.endsWith('/sync')) {
+      routeKey = `${req.method} /api/calendar/accounts/:id/sync`;
+    } else {
+      routeKey = `${req.method} /api/calendar/accounts/:id`;
+    }
+  } else if (routeKey.includes('/api/calendar/calendars/')) {
+    routeKey = `${req.method} /api/calendar/calendars/:id`;
   } else if (routeKey.includes('/api/calendar/events/')) {
     if (url.pathname.includes('/todo-status')) {
       routeKey = `${req.method} /api/calendar/events/:id/todo-status`;
+    } else if (url.pathname.includes('/rsvp')) {
+      routeKey = `${req.method} /api/calendar/events/:id/rsvp`;
     } else if (url.pathname.includes('/subtasks/reorder')) {
       routeKey = `${req.method} /api/calendar/events/:id/subtasks/reorder`;
     } else if (url.pathname.endsWith('/subtasks')) {
@@ -3949,6 +5892,12 @@ async function handleRequest(req, res) {
     } else if (routeKey === 'POST /api/mail/send') {
       maxBodySize = 30 * 1024 * 1024; // Allow attachments in compose (base64 JSON payload)
     } else if (
+      routeKey === 'POST /api/calendar/accounts' ||
+      routeKey === 'PUT /api/calendar/accounts/:id' ||
+      routeKey === 'POST /api/calendar/accounts/:id/sync'
+    ) {
+      maxBodySize = 50000; // OAuth tokens/provider config payloads
+    } else if (
       routeKey === 'POST /api/mail/emails/bulk-update' ||
       routeKey === 'POST /api/mail/emails/bulk-delete' ||
       routeKey === 'POST /api/mail/emails/bulk-move' ||
@@ -3965,6 +5914,18 @@ async function handleRequest(req, res) {
     }
 
     const result = await handler(req, userId, body, res);
+
+    if (result.__redirect) {
+      res.writeHead(302, { Location: result.__redirect });
+      res.end();
+      return;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(result, '__html')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(result.__html);
+      return;
+    }
 
     // Raw response (used by vCard export and attachments)
     if (result.__raw) {
@@ -4020,6 +5981,25 @@ async function start() {
       console.error('Periodic sync error:', error);
     }
   }, 10 * 60 * 1000); // 10 minutes
+
+  // Periodic external calendar sync every 10 minutes
+  setInterval(async () => {
+    if (!CALENDAR_SYNC_ENABLED) return;
+    try {
+      const [accounts] = await db.execute(
+        `SELECT id, user_id, provider
+         FROM calendar_accounts
+         WHERE is_active = TRUE AND provider IN ('google', 'microsoft', 'icloud')`
+      );
+      for (const account of accounts) {
+        syncCalendarAccount(account.id, account.user_id).catch((err) => {
+          console.error(`[CALENDAR SYNC] Failed for account ${account.id}:`, err.message);
+        });
+      }
+    } catch (error) {
+      console.error('[CALENDAR SYNC] Periodic sync error:', error.message);
+    }
+  }, 10 * 60 * 1000);
   
   // Clean up expired sessions every hour to prevent table bloat
   setInterval(async () => {
@@ -4074,6 +6054,7 @@ async function start() {
   }, 15 * 60 * 1000); // 15 minutes
   
   console.log('✓ Periodic mail sync enabled (every 10 minutes)');
+  console.log('✓ Periodic calendar sync enabled (every 10 minutes)');
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Database connection pool health check enabled (every 15 minutes)');
 }
