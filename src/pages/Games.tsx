@@ -89,14 +89,14 @@ const Games = () => {
 
   const activeGame = useMemo(() => GAMES.find((game) => game.id === activeGameId) ?? GAMES[0], [activeGameId]);
 
-  const lockLandscape = useCallback(async () => {
+  const enableAnyOrientation = useCallback(async () => {
     try {
       const orientation = (screen as Screen & { orientation?: { lock?: (value: string) => Promise<void> } }).orientation;
       if (!orientation?.lock) {
         setOrientationLockSupported(false);
         return;
       }
-      await orientation.lock('landscape');
+      await orientation.lock('any');
       setOrientationLockSupported(true);
     } catch {
       setOrientationLockSupported(false);
@@ -144,7 +144,7 @@ const Games = () => {
         // Keep overlay fallback even if fullscreen API is blocked.
       }
       if (!cancelled) {
-        await lockLandscape();
+        await enableAnyOrientation();
       }
     };
 
@@ -152,7 +152,7 @@ const Games = () => {
     return () => {
       cancelled = true;
     };
-  }, [isFullscreenOpen, lockLandscape]);
+  }, [enableAnyOrientation, isFullscreenOpen]);
 
   useEffect(() => {
     const onFullscreenChange = () => {
@@ -251,7 +251,8 @@ const Games = () => {
                 <p className="text-sm text-muted-foreground mt-1">{activeGame.description}</p>
                 {!orientationLockSupported && (
                   <p className="text-xs text-muted-foreground mt-2">
-                    Landscape lock is not available in this browser. Rotate your phone manually for the best gameplay.
+                    Orientation controls are not available in this browser. You can still rotate your phone manually in
+                    any direction.
                   </p>
                 )}
               </div>
@@ -305,4 +306,3 @@ const Games = () => {
 };
 
 export default Games;
-
