@@ -22,6 +22,15 @@ import {
   type DeviceClass,
   type EnemyArchetype,
 } from './ai-game/progression';
+import {
+  buildDailySeed,
+  createSessionSeed,
+  getUTCDateString,
+  nextRandom,
+  nextRandomInt,
+  type GameMode,
+  type RNGSnapshot,
+} from './ai-game/rng';
 
 const CONTROLLER_DEADZONE = 0.45;
 const CONTROLLER_REPEAT_MS = 155;
@@ -55,6 +64,10 @@ interface HazardTile {
 interface GameState {
   status: GameStatus;
   phase: GamePhase;
+  mode: GameMode;
+  dailySeedLabel: string | null;
+  rngSeed: string;
+  rngCursor: number;
   player: Point;
   enemies: Enemy[];
   target: Point;
@@ -78,7 +91,7 @@ interface GameState {
 }
 
 type Action =
-  | { type: 'START'; deviceClass: DeviceClass }
+  | { type: 'START'; deviceClass: DeviceClass; mode: GameMode }
   | { type: 'MOVE_PLAYER'; direction: Direction }
   | { type: 'AI_TICK' }
   | { type: 'PICK_UPGRADE'; upgradeId: string }
@@ -100,15 +113,38 @@ const fromKey = (value: string): Point => {
 
 const inBounds = ({ x, y }: Point, gridSize: number) => x >= 0 && x < gridSize && y >= 0 && y < gridSize;
 
-const randomInt = (maxExclusive: number) => Math.floor(Math.random() * maxExclusive);
+const DAILY_VERSION_SALT = 'v1';
 
-const getFloorEvents = (floor: number): FloorEventModifier[] => {
+interface RandomSource {
+  next: () => number;
+  nextInt: (maxExclusive: number) => number;
+  snapshot: () => RNGSnapshot;
+}
+
+const createRandomSource = (seed: string, cursor = 0): RandomSource => {
+  let state: RNGSnapshot = { seed, cursor };
+  return {
+    next: () => {
+      const next = nextRandom(state);
+      state = next.snapshot;
+      return next.value;
+    },
+    nextInt: (maxExclusive: number) => {
+      const next = nextRandomInt(state, maxExclusive);
+      state = next.snapshot;
+      return next.value;
+    },
+    snapshot: () => state,
+  };
+};
+
+const getFloorEvents = (floor: number, random: RandomSource): FloorEventModifier[] => {
   const chances = getEventChances(floor);
   const events: FloorEventModifier[] = [];
-  if (Math.random() < chances.dense_walls) events.push('dense_walls');
-  if (Math.random() < chances.double_target) events.push('double_target');
-  if (Math.random() < chances.storm_cycle) events.push('storm_cycle');
-  if (Math.random() < chances.shield_bonus) events.push('shield_bonus');
+  if (random.next() < chances.dense_walls) events.push('dense_walls');
+  if (random.next() < chances.double_target) events.push('double_target');
+  if (random.next() < chances.storm_cycle) events.push('storm_cycle');
+  if (random.next() < chances.shield_bonus) events.push('shield_bonus');
   return events;
 };
 
@@ -132,7 +168,14 @@ const getThreatLevel = (floor: number, mapTier: number, events: FloorEventModifi
 
 const manhattan = (a: Point, b: Point) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
 
-const randomOpenCell = (walls: Set<string>, excluded: Set<string>, gridSize: number, minDistanceFromPlayer = 0, player: Point = { x: 0, y: 0 }) => {
+const randomOpenCell = (
+  walls: Set<string>,
+  excluded: Set<string>,
+  gridSize: number,
+  random: RandomSource,
+  minDistanceFromPlayer = 0,
+  player: Point = { x: 0, y: 0 }
+) => {
   const options: Point[] = [];
   for (let y = 0; y < gridSize; y += 1) {
     for (let x = 0; x < gridSize; x += 1) {
@@ -144,15 +187,15 @@ const randomOpenCell = (walls: Set<string>, excluded: Set<string>, gridSize: num
     }
   }
   if (options.length === 0) return { x: 1, y: 1 };
-  return options[randomInt(options.length)];
+  return options[random.nextInt(options.length)];
 };
 
-const chooseEnemyStart = (walls: Set<string>, gridSize: number, excluded: Set<string>, player: Point) => {
+const chooseEnemyStart = (walls: Set<string>, gridSize: number, excluded: Set<string>, player: Point, random: RandomSource) => {
   const minSpawnDistance = gridSize >= 13 ? 7 : gridSize >= 11 ? 6 : 4;
-  return randomOpenCell(walls, excluded, gridSize, minSpawnDistance, player);
+  return randomOpenCell(walls, excluded, gridSize, random, minSpawnDistance, player);
 };
 
-const generateWalls = (gridSize: number, floor: number, events: FloorEventModifier[]) => {
+const generateWalls = (gridSize: number, floor: number, events: FloorEventModifier[], random: RandomSource) => {
   const walls = new Set<string>();
   const wallCount = getWallCount(gridSize, floor, events);
   const protectedCells = new Set<string>([
@@ -165,7 +208,7 @@ const generateWalls = (gridSize: number, floor: number, events: FloorEventModifi
   ]);
 
   while (walls.size < wallCount) {
-    const candidate = { x: randomInt(gridSize), y: randomInt(gridSize) };
+    const candidate = { x: random.nextInt(gridSize), y: random.nextInt(gridSize) };
     const key = toKey(candidate);
     if (protectedCells.has(key)) continue;
     walls.add(key);
@@ -174,11 +217,11 @@ const generateWalls = (gridSize: number, floor: number, events: FloorEventModifi
   return walls;
 };
 
-const chooseWeightedArchetype = (weights: Record<EnemyArchetype, number>) => {
+const chooseWeightedArchetype = (weights: Record<EnemyArchetype, number>, random: RandomSource) => {
   const total = Object.values(weights).reduce((sum, weight) => sum + weight, 0);
   if (total <= 0) return 'hunter';
 
-  let roll = Math.random() * total;
+  let roll = random.next() * total;
   const entries = Object.entries(weights) as Array<[EnemyArchetype, number]>;
   for (const [archetype, weight] of entries) {
     roll -= weight;
@@ -188,27 +231,34 @@ const chooseWeightedArchetype = (weights: Record<EnemyArchetype, number>) => {
   return entries[entries.length - 1]?.[0] ?? 'hunter';
 };
 
-const generateEnemyComposition = (floor: number): EnemyArchetype[] => {
+const generateEnemyComposition = (floor: number, random: RandomSource): EnemyArchetype[] => {
   const enemy = getBandProgression(floor).enemy;
   const countRange = enemy.maxCount - enemy.minCount + 1;
-  const enemyCount = enemy.minCount + randomInt(Math.max(1, countRange));
-  return Array.from({ length: enemyCount }, () => chooseWeightedArchetype(enemy.archetypeWeights));
+  const enemyCount = enemy.minCount + random.nextInt(Math.max(1, countRange));
+  return Array.from({ length: enemyCount }, () => chooseWeightedArchetype(enemy.archetypeWeights, random));
 };
 
-const generateHazards = (floor: number, walls: Set<string>, gridSize: number, blocked: Set<string>, events: FloorEventModifier[]) => {
+const generateHazards = (
+  floor: number,
+  walls: Set<string>,
+  gridSize: number,
+  blocked: Set<string>,
+  events: FloorEventModifier[],
+  random: RandomSource
+) => {
   const hazardConfig = getBandProgression(floor).hazard;
   const range = hazardConfig.max - hazardConfig.min + 1;
-  const baseCount = hazardConfig.min + randomInt(Math.max(1, range));
+  const baseCount = hazardConfig.min + random.nextInt(Math.max(1, range));
   const stormBonus = events.includes('storm_cycle') ? 1 : 0;
-  const rolledCount = Array.from({ length: baseCount }).filter(() => Math.random() < hazardConfig.spawnChance).length;
+  const rolledCount = Array.from({ length: baseCount }).filter(() => random.next() < hazardConfig.spawnChance).length;
   const hazardCount = Math.min(hazardConfig.max, Math.max(hazardConfig.min, rolledCount + stormBonus));
   const hazards: HazardTile[] = [];
 
   for (let i = 0; i < hazardCount; i += 1) {
-    const point = randomOpenCell(walls, blocked, gridSize, 2, { x: 0, y: 0 });
+    const point = randomOpenCell(walls, blocked, gridSize, random, 2, { x: 0, y: 0 });
     const key = toKey(point);
     blocked.add(key);
-    const pattern: HazardTile['pattern'] = events.includes('storm_cycle') && Math.random() < hazardConfig.stormPatternChance
+    const pattern: HazardTile['pattern'] = events.includes('storm_cycle') && random.next() < hazardConfig.stormPatternChance
       ? 'storm'
       : i % 2 === 0
         ? 'pulse'
@@ -218,21 +268,21 @@ const generateHazards = (floor: number, walls: Set<string>, gridSize: number, bl
       id: `hazard-${i}`,
       position: point,
       pattern,
-      offset: randomInt(4),
+      offset: random.nextInt(4),
     });
   }
 
   return hazards;
 };
 
-const generateFloorLayout = (floor: number, gridSize: number, events: FloorEventModifier[]) => {
-  const walls = generateWalls(gridSize, floor, events);
+const generateFloorLayout = (floor: number, gridSize: number, events: FloorEventModifier[], random: RandomSource) => {
+  const walls = generateWalls(gridSize, floor, events, random);
   const player = { x: 0, y: 0 };
 
-  const composition = generateEnemyComposition(floor);
+  const composition = generateEnemyComposition(floor, random);
   const blocked = new Set<string>([toKey(player)]);
   const enemies = composition.map((archetype, index) => {
-    const position = chooseEnemyStart(walls, gridSize, blocked, player);
+    const position = chooseEnemyStart(walls, gridSize, blocked, player, random);
     blocked.add(toKey(position));
     return {
       id: `enemy-${index}`,
@@ -242,9 +292,9 @@ const generateFloorLayout = (floor: number, gridSize: number, events: FloorEvent
     } as Enemy;
   });
 
-  const target = randomOpenCell(walls, blocked, gridSize, 3, player);
+  const target = randomOpenCell(walls, blocked, gridSize, random, 3, player);
   blocked.add(toKey(target));
-  const hazards = generateHazards(floor, walls, gridSize, blocked, events);
+  const hazards = generateHazards(floor, walls, gridSize, blocked, events, random);
 
   return {
     player,
@@ -316,7 +366,7 @@ const isUpgradeCompatible = (upgradeId: string, ownedSet: Set<string>) => {
   return true;
 };
 
-const rollWeightedUpgrades = (candidates: string[], count: number, floor: number) => {
+const rollWeightedUpgrades = (candidates: string[], count: number, floor: number, random: RandomSource) => {
   const selected: string[] = [];
   const available = [...candidates];
   const rarityWeights = getBandProgression(floor).upgradeRarityWeights;
@@ -331,7 +381,7 @@ const rollWeightedUpgrades = (candidates: string[], count: number, floor: number
     });
 
     const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0);
-    let roll = Math.random() * totalWeight;
+    let roll = random.next() * totalWeight;
     let picked = weighted[weighted.length - 1]?.id;
 
     for (const item of weighted) {
@@ -352,7 +402,10 @@ const rollWeightedUpgrades = (candidates: string[], count: number, floor: number
   return selected;
 };
 
-const buildUpgradeChoices = (state: Pick<GameState, 'ownedUpgrades' | 'floor' | 'score' | 'shields' | 'threatLevel' | 'floorTarget'>) => {
+const buildUpgradeChoices = (
+  state: Pick<GameState, 'ownedUpgrades' | 'floor' | 'score' | 'shields' | 'threatLevel' | 'floorTarget'>,
+  random: RandomSource
+) => {
   const ownedSet = new Set(state.ownedUpgrades);
   const snapshot = {
     floor: state.floor,
@@ -370,23 +423,34 @@ const buildUpgradeChoices = (state: Pick<GameState, 'ownedUpgrades' | 'floor' | 
 
   if (filtered.length === 0) return [];
 
-  const primary = rollWeightedUpgrades(filtered, UPGRADE_DRAFT_SIZE, state.floor);
+  const primary = rollWeightedUpgrades(filtered, UPGRADE_DRAFT_SIZE, state.floor, random);
   if (primary.length >= UPGRADE_DRAFT_SIZE || filtered.length <= UPGRADE_DRAFT_SIZE) return primary;
 
   const remainder = filtered.filter((id) => !primary.includes(id));
   return [...primary, ...remainder.slice(0, UPGRADE_DRAFT_SIZE - primary.length)];
 };
 
-const createGameState = (deviceClass: DeviceClass = 'standard'): GameState => {
+const createGameState = (
+  deviceClass: DeviceClass = 'standard',
+  mode: GameMode = 'normal',
+  seed = createSessionSeed(mode, getUTCDateString(), DAILY_VERSION_SALT),
+  dailySeedLabel: string | null = mode === 'daily' ? buildDailySeed(getUTCDateString(), DAILY_VERSION_SALT) : null
+): GameState => {
+  const random = createRandomSource(seed);
   const floor = 1;
   const mapTier = getMapTierForFloor(floor);
   const gridSize = getGridSizeForFloor(floor, deviceClass);
-  const floorEvents = getFloorEvents(floor);
-  const layout = generateFloorLayout(floor, gridSize, floorEvents);
+  const floorEvents = getFloorEvents(floor, random);
+  const layout = generateFloorLayout(floor, gridSize, floorEvents, random);
+  const randomSnapshot = random.snapshot();
 
   return {
     status: 'idle',
     phase: 'combat',
+    mode,
+    dailySeedLabel,
+    rngSeed: randomSnapshot.seed,
+    rngCursor: randomSnapshot.cursor,
     ...layout,
     floorEvents,
     tickCount: 0,
@@ -466,7 +530,7 @@ const rotatePatrolDirection = (direction: Direction): Direction => {
   }
 };
 
-const moveEnemy = (enemy: Enemy, state: GameState, wallsSet: Set<string>) => {
+const moveEnemy = (enemy: Enemy, state: GameState, wallsSet: Set<string>, random: RandomSource) => {
   if (enemy.archetype === 'hunter') {
     const next = findPathStep(enemy.position, state.player, wallsSet, state.gridSize);
     if (toKey(next) === toKey(enemy.position)) {
@@ -474,7 +538,8 @@ const moveEnemy = (enemy: Enemy, state: GameState, wallsSet: Set<string>) => {
       const options = directions
         .map((direction) => tryMove(enemy.position, direction, wallsSet, state.gridSize))
         .filter((candidate) => toKey(candidate) !== toKey(enemy.position));
-      return { ...enemy, position: options.length > 0 ? options[randomInt(options.length)] : enemy.position };
+      const fallbackIndex = random.nextInt(options.length);
+      return { ...enemy, position: options.length > 0 ? options[fallbackIndex] : enemy.position };
     }
     return { ...enemy, position: next };
   }
@@ -497,7 +562,7 @@ const moveEnemy = (enemy: Enemy, state: GameState, wallsSet: Set<string>) => {
     next = tryMove(enemy.position, patrolDirection, wallsSet, state.gridSize);
   }
 
-  if (toKey(next) === toKey(enemy.position) || Math.random() < 0.2) {
+  if (toKey(next) === toKey(enemy.position) || random.next() < 0.2) {
     patrolDirection = rotatePatrolDirection(patrolDirection);
     next = tryMove(enemy.position, patrolDirection, wallsSet, state.gridSize);
   }
@@ -505,10 +570,10 @@ const moveEnemy = (enemy: Enemy, state: GameState, wallsSet: Set<string>) => {
   return { ...enemy, position: next, patrolDirection };
 };
 
-const respawnEnemies = (state: GameState, wallsSet: Set<string>) => {
+const respawnEnemies = (state: GameState, wallsSet: Set<string>, random: RandomSource) => {
   const blocked = new Set<string>([toKey(state.player), toKey(state.target), ...state.hazards.map((hazard) => toKey(hazard.position))]);
   return state.enemies.map((enemy) => {
-    const position = chooseEnemyStart(wallsSet, state.gridSize, blocked, state.player);
+    const position = chooseEnemyStart(wallsSet, state.gridSize, blocked, state.player, random);
     blocked.add(toKey(position));
     return { ...enemy, position };
   });
@@ -522,12 +587,12 @@ const isHazardActive = (hazard: HazardTile, tickCount: number, stormCycle: boole
   return cycleTick % 3 === 0;
 };
 
-const resolveCollision = (state: GameState, wallsSet: Set<string>) => {
+const resolveCollision = (state: GameState, wallsSet: Set<string>, random: RandomSource) => {
   const collided = state.enemies.some((enemy) => toKey(enemy.position) === toKey(state.player));
   if (!collided) return state;
 
   const collisionEvent: CollisionEffectEvent = {
-    random: Math.random,
+    random: random.next,
     hadShield: state.shields > 0,
     consumeShield: state.shields > 0,
     preventLoss: false,
@@ -540,7 +605,7 @@ const resolveCollision = (state: GameState, wallsSet: Set<string>) => {
     return {
       ...state,
       shields: state.shields - 1,
-      enemies: respawnEnemies(state, wallsSet),
+      enemies: respawnEnemies(state, wallsSet, random),
       aiStunTicks: Math.max(state.aiStunTicks, collisionEvent.stunAiTicks),
     };
   }
@@ -548,7 +613,7 @@ const resolveCollision = (state: GameState, wallsSet: Set<string>) => {
   if (collisionEvent.preventLoss) {
     return {
       ...state,
-      enemies: respawnEnemies(state, wallsSet),
+      enemies: respawnEnemies(state, wallsSet, random),
       aiStunTicks: Math.max(state.aiStunTicks, collisionEvent.stunAiTicks),
     };
   }
@@ -556,7 +621,7 @@ const resolveCollision = (state: GameState, wallsSet: Set<string>) => {
   return { ...state, status: 'lost' };
 };
 
-const resolveHazardDamage = (state: GameState, wallsSet: Set<string>) => {
+const resolveHazardDamage = (state: GameState, wallsSet: Set<string>, random: RandomSource) => {
   const stormCycle = state.floorEvents.includes('storm_cycle');
   const playerOnActiveHazard = state.hazards.some(
     (hazard) => toKey(hazard.position) === toKey(state.player) && isHazardActive(hazard, state.tickCount, stormCycle)
@@ -567,17 +632,24 @@ const resolveHazardDamage = (state: GameState, wallsSet: Set<string>) => {
     return {
       ...state,
       shields: state.shields - 1,
-      enemies: respawnEnemies(state, wallsSet),
+      enemies: respawnEnemies(state, wallsSet, random),
     };
   }
 
   return { ...state, status: 'lost' };
 };
 
-const resolveTargetCollection = (state: GameState, wallsSet: Set<string>, direction: Direction, moved: boolean, blocked: boolean) => {
+const resolveTargetCollection = (
+  state: GameState,
+  wallsSet: Set<string>,
+  direction: Direction,
+  moved: boolean,
+  blocked: boolean,
+  random: RandomSource
+) => {
   const collectedTarget = toKey(state.player) === toKey(state.target);
   const moveEvent: MoveEffectEvent = {
-    random: Math.random,
+    random: random.next,
     direction,
     moved,
     blocked,
@@ -633,7 +705,7 @@ const resolveTargetCollection = (state: GameState, wallsSet: Set<string>, direct
         shields: upgradedState.shields + shieldBonus,
         threatLevel: upgradedState.threatLevel,
         floorTarget: upgradedState.floorTarget,
-      }),
+      }, random),
     };
   }
 
@@ -643,6 +715,7 @@ const resolveTargetCollection = (state: GameState, wallsSet: Set<string>, direct
     wallsSet,
     new Set([toKey(upgradedState.player), ...enemyKeys, ...hazardKeys]),
     upgradedState.gridSize,
+    random,
     2,
     upgradedState.player
   );
@@ -657,14 +730,32 @@ const resolveTargetCollection = (state: GameState, wallsSet: Set<string>, direct
 };
 
 const gameReducer = (state: GameState, action: Action): GameState => {
-  if (action.type === 'START' || action.type === 'RESTART') {
-    const fresh = createGameState(action.deviceClass);
+  if (action.type === 'START') {
+    const utcDate = getUTCDateString();
+    const dailySeed = buildDailySeed(utcDate, DAILY_VERSION_SALT);
+    const seed = createSessionSeed(action.mode, utcDate, DAILY_VERSION_SALT);
+    const fresh = createGameState(action.deviceClass, action.mode, seed, action.mode === 'daily' ? dailySeed : null);
     return {
       ...fresh,
       status: 'playing',
       startedAt: Date.now(),
     };
   }
+
+  if (action.type === 'RESTART') {
+    const mode = state.mode;
+    const utcDate = getUTCDateString();
+    const dailySeed = mode === 'daily' ? buildDailySeed(utcDate, DAILY_VERSION_SALT) : null;
+    const seed = mode === 'daily' ? state.rngSeed : createSessionSeed('normal', utcDate, DAILY_VERSION_SALT);
+    const fresh = createGameState(action.deviceClass, mode, seed, dailySeed);
+    return {
+      ...fresh,
+      status: 'playing',
+      startedAt: Date.now(),
+    };
+  }
+
+  const random = createRandomSource(state.rngSeed, state.rngCursor);
 
   if (action.type === 'PICK_UPGRADE') {
     if (state.status !== 'playing' || state.phase !== 'upgrade_draft') return state;
@@ -673,12 +764,12 @@ const gameReducer = (state: GameState, action: Action): GameState => {
     const nextFloor = state.floor + 1;
     const nextMapTier = getMapTierForFloor(nextFloor);
     const nextGridSize = getGridSizeForFloor(nextFloor, state.deviceClass);
-    const nextFloorEvents = getFloorEvents(nextFloor);
-    const nextLayout = generateFloorLayout(nextFloor, nextGridSize, nextFloorEvents);
+    const nextFloorEvents = getFloorEvents(nextFloor, random);
+    const nextLayout = generateFloorLayout(nextFloor, nextGridSize, nextFloorEvents, random);
     const nextOwnedUpgrades = [...state.ownedUpgrades, action.upgradeId];
 
     const floorEvent: FloorStartEffectEvent = {
-      random: Math.random,
+      random: random.next,
       floor: nextFloor,
       bonusShields: 0,
       threatDelta: 0,
@@ -707,6 +798,7 @@ const gameReducer = (state: GameState, action: Action): GameState => {
       mapTier: nextMapTier,
       ownedUpgrades: nextOwnedUpgrades,
       upgradeChoices: [],
+      rngCursor: random.snapshot().cursor,
     };
   }
 
@@ -718,17 +810,25 @@ const gameReducer = (state: GameState, action: Action): GameState => {
     const moved = toKey(movedPlayer) !== toKey(state.player);
     const blocked = !moved;
 
-    const afterMove = resolveTargetCollection({ ...state, player: movedPlayer }, wallsSet, action.direction, moved, blocked);
-    return resolveCollision(resolveHazardDamage(afterMove, wallsSet), wallsSet);
+    const afterMove = resolveTargetCollection({ ...state, player: movedPlayer }, wallsSet, action.direction, moved, blocked, random);
+    const resolved = resolveCollision(resolveHazardDamage(afterMove, wallsSet, random), wallsSet, random);
+    return {
+      ...resolved,
+      rngCursor: random.snapshot().cursor,
+    };
   }
 
   if (action.type === 'AI_TICK') {
     if (state.aiStunTicks > 0) {
-      return resolveHazardDamage({ ...state, aiStunTicks: state.aiStunTicks - 1, tickCount: state.tickCount + 1 }, wallsSet);
+      const resolved = resolveHazardDamage({ ...state, aiStunTicks: state.aiStunTicks - 1, tickCount: state.tickCount + 1 }, wallsSet, random);
+      return {
+        ...resolved,
+        rngCursor: random.snapshot().cursor,
+      };
     }
 
     const aiEvent: AITickEffectEvent = {
-      random: Math.random,
+      random: random.next,
       skipMove: false,
       bonusScore: 0,
     };
@@ -737,14 +837,18 @@ const gameReducer = (state: GameState, action: Action): GameState => {
 
     const movedEnemies = aiEvent.skipMove
       ? state.enemies
-      : state.enemies.map((enemy) => moveEnemy(enemy, state, wallsSet));
+      : state.enemies.map((enemy) => moveEnemy(enemy, state, wallsSet, random));
     const nextState = {
       ...state,
       enemies: movedEnemies,
       tickCount: state.tickCount + 1,
       score: state.score + aiEvent.bonusScore,
     };
-    return resolveCollision(resolveHazardDamage(nextState, wallsSet), wallsSet);
+    const resolved = resolveCollision(resolveHazardDamage(nextState, wallsSet, random), wallsSet, random);
+    return {
+      ...resolved,
+      rngCursor: random.snapshot().cursor,
+    };
   }
 
   return state;
@@ -796,9 +900,17 @@ const AIGame = () => {
     []
   );
 
-  const startOrRestart = useCallback(() => {
-    dispatch({ type: state.status === 'idle' ? 'START' : 'RESTART', deviceClass: getDeviceClass() });
-  }, [getDeviceClass, state.status]);
+  const startNormal = useCallback(() => {
+    dispatch({ type: 'START', deviceClass: getDeviceClass(), mode: 'normal' });
+  }, [getDeviceClass]);
+
+  const restartCurrent = useCallback(() => {
+    dispatch({ type: 'RESTART', deviceClass: getDeviceClass() });
+  }, [getDeviceClass]);
+
+  const startDaily = useCallback(() => {
+    dispatch({ type: 'START', deviceClass: getDeviceClass(), mode: 'daily' });
+  }, [getDeviceClass]);
 
   const handleDirection = useCallback((direction: Direction) => {
     if (stateRef.current.status !== 'playing' || stateRef.current.phase !== 'combat') return;
@@ -829,7 +941,7 @@ const AIGame = () => {
       if (key === ' ' || key === 'enter' || key === 'r') {
         event.preventDefault();
         if (stateRef.current.status !== 'playing') {
-          startOrRestart();
+          startNormal();
         }
         return;
       }
@@ -850,7 +962,7 @@ const AIGame = () => {
       event.preventDefault();
       handleDirection(direction);
     },
-    [handleDirection, startOrRestart]
+    [handleDirection, startNormal]
   );
 
   useEffect(() => {
@@ -897,7 +1009,7 @@ const AIGame = () => {
       }
 
       if (aPressed && !prevARef.current && stateRef.current.status !== 'playing') {
-        startOrRestart();
+        startNormal();
       }
       prevARef.current = aPressed;
 
@@ -918,7 +1030,7 @@ const AIGame = () => {
 
     frame = requestAnimationFrame(pollGamepads);
     return () => cancelAnimationFrame(frame);
-  }, [handleDirection, startOrRestart]);
+  }, [handleDirection, startNormal]);
 
   const elapsedSeconds = useMemo(() => {
     if (!state.startedAt) return 0;
@@ -978,6 +1090,11 @@ const AIGame = () => {
           <Badge variant="outline" className="text-[11px]">
             Touch pad on mobile
           </Badge>
+          {state.mode === 'daily' && state.dailySeedLabel && (
+            <Badge variant="outline" className="text-[11px] border-cyan-500/40 text-cyan-700 dark:text-cyan-200">
+              Daily · {state.dailySeedLabel}
+            </Badge>
+          )}
         </div>
 
         {state.floorEvents.length > 0 && (
@@ -1122,13 +1239,18 @@ const AIGame = () => {
 
         <div className="flex gap-2">
           {state.status === 'playing' ? (
-            <Button variant="outline" className="w-full" onClick={() => dispatch({ type: 'RESTART' })}>
+            <Button variant="outline" className="w-full" onClick={restartCurrent}>
               New Run
             </Button>
           ) : (
-            <Button className="w-full" onClick={startOrRestart}>
-              {state.status === 'idle' ? 'Start Run' : 'Play Again'}
-            </Button>
+            <>
+              <Button className="w-full" onClick={startNormal}>
+                {state.status === 'idle' ? 'Start Normal' : 'Play Normal'}
+              </Button>
+              <Button variant="outline" className="w-full" onClick={startDaily}>
+                {state.status === 'idle' ? 'Start Daily' : 'Play Daily'}
+              </Button>
+            </>
           )}
         </div>
 
