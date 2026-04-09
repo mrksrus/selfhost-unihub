@@ -701,20 +701,30 @@ const resolveTargetCollection = (
   const nextScore = upgradedState.score + totalScoreGain;
 
   if (nextProgress >= upgradedState.floorTarget) {
-    return {
+    const upgradeChoices = buildUpgradeChoices({
+      ownedUpgrades: upgradedState.ownedUpgrades,
+      floor: upgradedState.floor,
+      score: nextScore,
+      shields: upgradedState.shields + shieldBonus,
+      threatLevel: upgradedState.threatLevel,
+      floorTarget: upgradedState.floorTarget,
+    }, random);
+
+    const floorClearedState = {
       ...upgradedState,
       score: nextScore,
       shields: upgradedState.shields + shieldBonus,
       floorProgress: nextProgress,
+    };
+
+    if (upgradeChoices.length === 0) {
+      return prepareNextFloorState(floorClearedState, random);
+    }
+
+    return {
+      ...floorClearedState,
       phase: 'upgrade_draft',
-      upgradeChoices: buildUpgradeChoices({
-        ownedUpgrades: upgradedState.ownedUpgrades,
-        floor: upgradedState.floor,
-        score: nextScore,
-        shields: upgradedState.shields + shieldBonus,
-        threatLevel: upgradedState.threatLevel,
-        floorTarget: upgradedState.floorTarget,
-      }, random),
+      upgradeChoices,
     };
   }
 
@@ -735,6 +745,51 @@ const resolveTargetCollection = (
     shields: upgradedState.shields + shieldBonus,
     floorProgress: nextProgress,
     target: nextTarget,
+  };
+};
+
+const prepareNextFloorState = (
+  state: GameState,
+  random: RandomSource,
+  pickedUpgradeId?: string
+): GameState => {
+  const nextFloor = state.floor + 1;
+  const nextMapTier = getMapTierForFloor(nextFloor);
+  const nextGridSize = getGridSizeForFloor(nextFloor, state.deviceClass);
+  const nextFloorEvents = getFloorEvents(nextFloor, random);
+  const nextLayout = generateFloorLayout(nextFloor, nextGridSize, nextFloorEvents, random);
+  const nextOwnedUpgrades = pickedUpgradeId ? [...state.ownedUpgrades, pickedUpgradeId] : state.ownedUpgrades;
+
+  const floorEvent: FloorStartEffectEvent = {
+    random: random.next,
+    floor: nextFloor,
+    bonusShields: 0,
+    threatDelta: 0,
+    floorTargetDelta: 0,
+    bonusScore: 0,
+  };
+
+  runUpgradeHook(nextOwnedUpgrades, 'on_floor_start', floorEvent);
+
+  const baseThreat = getThreatLevel(nextFloor, nextMapTier, nextFloorEvents);
+  const baseTarget = getFloorTarget(nextFloor, nextMapTier, nextFloorEvents);
+
+  return {
+    ...state,
+    ...nextLayout,
+    phase: 'combat',
+    floor: nextFloor,
+    floorProgress: 0,
+    floorEvents: nextFloorEvents,
+    tickCount: 0,
+    floorTarget: Math.max(3, baseTarget + floorEvent.floorTargetDelta),
+    threatLevel: Math.max(1, baseThreat + floorEvent.threatDelta),
+    shields: Math.max(0, state.shields + floorEvent.bonusShields + (nextFloorEvents.includes('shield_bonus') ? 1 : 0)),
+    score: state.score + floorEvent.bonusScore,
+    gridSize: nextGridSize,
+    mapTier: nextMapTier,
+    ownedUpgrades: nextOwnedUpgrades,
+    upgradeChoices: [],
   };
 };
 
@@ -770,43 +825,9 @@ const gameReducer = (state: GameState, action: Action): GameState => {
     if (state.status !== 'playing' || state.phase !== 'upgrade_draft') return state;
     if (!state.upgradeChoices.includes(action.upgradeId)) return state;
 
-    const nextFloor = state.floor + 1;
-    const nextMapTier = getMapTierForFloor(nextFloor);
-    const nextGridSize = getGridSizeForFloor(nextFloor, state.deviceClass);
-    const nextFloorEvents = getFloorEvents(nextFloor, random);
-    const nextLayout = generateFloorLayout(nextFloor, nextGridSize, nextFloorEvents, random);
-    const nextOwnedUpgrades = [...state.ownedUpgrades, action.upgradeId];
-
-    const floorEvent: FloorStartEffectEvent = {
-      random: random.next,
-      floor: nextFloor,
-      bonusShields: 0,
-      threatDelta: 0,
-      floorTargetDelta: 0,
-      bonusScore: 0,
-    };
-
-    runUpgradeHook(nextOwnedUpgrades, 'on_floor_start', floorEvent);
-
-    const baseThreat = getThreatLevel(nextFloor, nextMapTier, nextFloorEvents);
-    const baseTarget = getFloorTarget(nextFloor, nextMapTier, nextFloorEvents);
-
+    const nextState = prepareNextFloorState(state, random, action.upgradeId);
     return {
-      ...state,
-      ...nextLayout,
-      phase: 'combat',
-      floor: nextFloor,
-      floorProgress: 0,
-      floorEvents: nextFloorEvents,
-      tickCount: 0,
-      floorTarget: Math.max(3, baseTarget + floorEvent.floorTargetDelta),
-      threatLevel: Math.max(1, baseThreat + floorEvent.threatDelta),
-      shields: Math.max(0, state.shields + floorEvent.bonusShields + (nextFloorEvents.includes('shield_bonus') ? 1 : 0)),
-      score: state.score + floorEvent.bonusScore,
-      gridSize: nextGridSize,
-      mapTier: nextMapTier,
-      ownedUpgrades: nextOwnedUpgrades,
-      upgradeChoices: [],
+      ...nextState,
       rngCursor: random.snapshot().cursor,
     };
   }
