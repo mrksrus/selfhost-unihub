@@ -5154,6 +5154,67 @@ const routes = {
     }
   },
 
+  'GET /api/mail/unread-counts': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const accountId = url.searchParams.get('account_id');
+      const includeByAccount = url.searchParams.get('include_by_account') === 'true';
+      const hasAccountFilter = !!accountId && accountId !== 'all';
+
+      let folderQuery = `
+        SELECT folder, COUNT(*) AS unread_count
+        FROM emails
+        WHERE user_id = ? AND is_read = 0
+      `;
+      const folderParams = [userId];
+
+      if (hasAccountFilter) {
+        folderQuery += ' AND mail_account_id = ?';
+        folderParams.push(accountId);
+      }
+      folderQuery += ' GROUP BY folder';
+
+      const [folderRows] = await db.execute(folderQuery, folderParams);
+      const unreadByFolder = {};
+      for (const row of folderRows) {
+        unreadByFolder[row.folder] = Number(row.unread_count) || 0;
+      }
+
+      const response = { unreadByFolder };
+
+      if (includeByAccount) {
+        let accountBreakdownQuery = `
+          SELECT folder, mail_account_id, COUNT(*) AS unread_count
+          FROM emails
+          WHERE user_id = ? AND is_read = 0
+        `;
+        const accountBreakdownParams = [userId];
+        if (hasAccountFilter) {
+          accountBreakdownQuery += ' AND mail_account_id = ?';
+          accountBreakdownParams.push(accountId);
+        }
+        accountBreakdownQuery += ' GROUP BY folder, mail_account_id';
+
+        const [folderAccountRows] = await db.execute(accountBreakdownQuery, accountBreakdownParams);
+        const unreadByFolderAccount = {};
+        for (const row of folderAccountRows) {
+          if (!unreadByFolderAccount[row.folder]) {
+            unreadByFolderAccount[row.folder] = {};
+          }
+          unreadByFolderAccount[row.folder][row.mail_account_id] = Number(row.unread_count) || 0;
+        }
+        response.unreadByFolderAccount = unreadByFolderAccount;
+      }
+
+      return response;
+    } catch (error) {
+      console.error('[MAIL] Failed to get unread counts:', error);
+      return { error: 'Failed to get unread counts', status: 500 };
+    }
+  },
+
   'POST /api/mail/accounts': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     

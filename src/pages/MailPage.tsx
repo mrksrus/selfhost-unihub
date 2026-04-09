@@ -121,6 +121,11 @@ interface MailSyncResponse {
   newEmails?: number;
 }
 
+interface MailUnreadCountsResponse {
+  unreadByFolder?: Record<string, number>;
+  unreadByFolderAccount?: Record<string, Record<string, number>>;
+}
+
 const mailProviders = [
   { value: 'gmail', label: 'Gmail', imapHost: 'imap.gmail.com', smtpHost: 'smtp.gmail.com', imapPort: 993, smtpPort: 587 },
   { value: 'yahoo', label: 'Yahoo Mail', imapHost: 'imap.mail.yahoo.com', smtpHost: 'smtp.mail.yahoo.com', imapPort: 993, smtpPort: 587 },
@@ -224,6 +229,29 @@ const MailPage = () => {
       return response.data?.accounts || [];
     },
   });
+
+  const { data: unreadCountsData } = useQuery({
+    queryKey: ['mail-unread-counts', selectedAccount],
+    queryFn: async () => {
+      if (!selectedAccount) return { unreadByFolder: {} } as MailUnreadCountsResponse;
+
+      const params = new URLSearchParams();
+      if (selectedAccount !== ALL_ACCOUNTS) {
+        params.set('account_id', selectedAccount);
+      }
+      params.set('include_by_account', 'true');
+
+      const query = params.toString();
+      const response = await api.get<MailUnreadCountsResponse>(
+        `/mail/unread-counts${query ? `?${query}` : ''}`
+      );
+      if (response.error) throw new Error(response.error);
+      return response.data || { unreadByFolder: {} };
+    },
+    enabled: !!selectedAccount,
+  });
+
+  const unreadByFolder = unreadCountsData?.unreadByFolder || {};
 
   // Auto-select first account or remember last selected
   useEffect(() => {
@@ -553,7 +581,7 @@ const MailPage = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
-      queryClient.invalidateQueries({ queryKey: ['unread-emails-count'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
     },
@@ -568,6 +596,8 @@ const MailPage = () => {
     },
     onSuccess: (count) => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       setSelectedEmails(new Set());
       toast({ title: `✓ Moved ${count} email(s) to trash` });
@@ -584,6 +614,8 @@ const MailPage = () => {
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       setSelectedEmails(new Set());
       toast({ title: `✓ Moved ${variables.emailIds.length} email(s) to ${variables.folder}` });
     },
@@ -601,7 +633,7 @@ const MailPage = () => {
     onSuccess: (data, variables) => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
-      queryClient.invalidateQueries({ queryKey: ['unread-emails-count'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       setSelectedEmails(new Set());
       toast({ 
@@ -1034,7 +1066,7 @@ const MailPage = () => {
                 setSelectedFolder(folder.id);
                 if (isMobile) setMobileSidebarOpen(false);
               }}
-              className={`w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
+              className={`relative w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
                 selectedFolder === folder.id
                   ? 'bg-accent/10 text-accent font-medium'
                   : 'text-muted-foreground hover:bg-muted'
@@ -1042,7 +1074,19 @@ const MailPage = () => {
               title={(sidebarCollapsed && !isMobile) ? folder.label : undefined}
             >
               <folder.icon className="h-4 w-4 shrink-0" />
-              {(!sidebarCollapsed || isMobile) && <span>{folder.label}</span>}
+              {(!sidebarCollapsed || isMobile) && (
+                <>
+                  <span className="flex-1 text-left">{folder.label}</span>
+                  {folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
+                    <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent/10 px-1.5 py-0.5 text-xs font-semibold text-accent">
+                      {unreadByFolder[folder.id]}
+                    </span>
+                  )}
+                </>
+              )}
+              {(sidebarCollapsed && !isMobile) && folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
+                <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-accent" />
+              )}
             </button>
           ))}
         </nav>
