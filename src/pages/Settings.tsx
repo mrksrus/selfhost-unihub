@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from '@/hooks/use-toast';
@@ -33,6 +34,39 @@ const timezoneOptions = (() => {
   }
 })();
 
+type MailSenderRule = {
+  id: string;
+  user_id: string;
+  mail_account_id: string | null;
+  match_type: 'domain' | 'email';
+  match_value: string;
+  target_folder: string;
+  priority: number;
+  is_active: number | boolean;
+  created_at?: string;
+  updated_at?: string;
+  account_email?: string | null;
+};
+
+type MailCandidateDomain = {
+  domain: string;
+  email_count: number;
+  last_received_at: string | null;
+  has_rule: number;
+  matching_rule?: MailSenderRule | null;
+};
+
+type MailCandidateSender = {
+  sender_email: string;
+  sender_name: string | null;
+  email_count: number;
+  last_received_at: string | null;
+  has_rule: number;
+  matching_rule?: MailSenderRule | null;
+};
+
+const MAIL_FOLDER_OPTIONS = ['inbox', 'important', 'marketing', 'twofactor_notifications', 'archive', 'unknown', 'scam', 'trash'];
+
 const Settings = () => {
   const { user, setUser, signOut } = useAuth();
   const { toast } = useToast();
@@ -47,16 +81,43 @@ const Settings = () => {
   const [clearContactsLoading, setClearContactsLoading] = useState(false);
   const [clearCalendarLoading, setClearCalendarLoading] = useState(false);
   const [clearMailLoading, setClearMailLoading] = useState(false);
+  const [ruleSaving, setRuleSaving] = useState(false);
+  const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
+  const [ruleEditor, setRuleEditor] = useState<{
+    id?: string;
+    match_type: 'domain' | 'email';
+    match_value: string;
+    target_folder: string;
+    mail_account_id: string;
+    priority: number;
+    is_active: boolean;
+  }>({
+    match_type: 'domain',
+    match_value: '',
+    target_folder: 'marketing',
+    mail_account_id: '',
+    priority: 100,
+    is_active: true,
+  });
 
   const { data: mailSenderCandidates, isLoading: mailSenderCandidatesLoading, refetch: refetchMailSenderCandidates } = useQuery({
     queryKey: ['mail-sender-candidates'],
     queryFn: async () => {
       const response = await api.get<{
-        domains: Array<{ domain: string; email_count: number; last_received_at: string | null; has_rule: number }>;
-        senders: Array<{ sender_email: string; sender_name: string | null; email_count: number; last_received_at: string | null; has_rule: number }>;
+        domains: MailCandidateDomain[];
+        senders: MailCandidateSender[];
       }>('/settings/mail-sender-candidates?domain_limit=20&sender_limit=20');
       if (response.error) throw new Error(response.error);
       return response.data ?? { domains: [], senders: [] };
+    },
+  });
+
+  const { data: mailAccounts } = useQuery({
+    queryKey: ['mail-accounts'],
+    queryFn: async () => {
+      const response = await api.get<{ accounts: Array<{ id: string; email_address: string; display_name?: string | null }> }>('/mail/accounts');
+      if (response.error) throw new Error(response.error);
+      return response.data?.accounts ?? [];
     },
   });
 
@@ -192,6 +253,75 @@ const Settings = () => {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return 'Unknown';
     return date.toLocaleDateString();
+  };
+
+  const formatRuleDetails = (rule?: MailSenderRule | null) => {
+    if (!rule) return 'No rule yet';
+    const scope = rule.mail_account_id ? `Account: ${rule.account_email || rule.mail_account_id}` : 'All accounts';
+    return `Folder: ${rule.target_folder} • ${scope} • Priority: ${rule.priority} • ${rule.is_active ? 'Active' : 'Inactive'}`;
+  };
+
+  const openCreateRuleEditor = (candidate: { match_type: 'domain' | 'email'; match_value: string; matching_rule?: MailSenderRule | null }) => {
+    const existing = candidate.matching_rule || null;
+    setRuleEditor({
+      id: existing?.id,
+      match_type: candidate.match_type,
+      match_value: candidate.match_value,
+      target_folder: existing?.target_folder || 'marketing',
+      mail_account_id: existing?.mail_account_id || '',
+      priority: typeof existing?.priority === 'number' ? existing.priority : 100,
+      is_active: existing ? !!existing.is_active : true,
+    });
+    setRuleEditorOpen(true);
+  };
+
+  const saveRule = async () => {
+    setRuleSaving(true);
+    try {
+      const payload = {
+        match_type: ruleEditor.match_type,
+        match_value: ruleEditor.match_value,
+        target_folder: ruleEditor.target_folder,
+        mail_account_id: ruleEditor.mail_account_id || null,
+        priority: Number(ruleEditor.priority),
+        is_active: ruleEditor.is_active,
+      };
+      const response = ruleEditor.id
+        ? await api.put(`/mail/sender-rules/${ruleEditor.id}`, payload)
+        : await api.post('/mail/sender-rules', payload);
+      if (response.error) {
+        toast({ title: 'Failed to save rule', description: response.error, variant: 'destructive' });
+        return;
+      }
+      toast({ title: ruleEditor.id ? 'Rule updated' : 'Rule created' });
+      setRuleEditorOpen(false);
+      await refetchMailSenderCandidates();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to save rule', description: message, variant: 'destructive' });
+    } finally {
+      setRuleSaving(false);
+    }
+  };
+
+  const deleteRule = async () => {
+    if (!ruleEditor.id) return;
+    setRuleSaving(true);
+    try {
+      const response = await api.delete(`/mail/sender-rules/${ruleEditor.id}`);
+      if (response.error) {
+        toast({ title: 'Failed to delete rule', description: response.error, variant: 'destructive' });
+        return;
+      }
+      toast({ title: 'Rule deleted' });
+      setRuleEditorOpen(false);
+      await refetchMailSenderCandidates();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete rule', description: message, variant: 'destructive' });
+    } finally {
+      setRuleSaving(false);
+    }
   };
 
   return (
@@ -464,7 +594,7 @@ const Settings = () => {
                   <div>
                     <CardTitle className="text-lg">Mail categorization foundation</CardTitle>
                     <CardDescription>
-                      Read-only sender/domain candidates for future category rules.
+                      Create and manage sender/domain routing rules used by inbound mail sync.
                     </CardDescription>
                   </div>
                 </div>
@@ -491,10 +621,20 @@ const Settings = () => {
                         <div>
                           <p className="font-medium text-foreground">{domain.domain}</p>
                           <p className="text-xs text-muted-foreground">Last seen: {formatCandidateDate(domain.last_received_at)}</p>
+                          <p className="text-xs text-muted-foreground">{formatRuleDetails(domain.matching_rule)}</p>
                         </div>
-                        <div className="text-right">
+                        <div className="text-right flex items-center gap-3">
+                          <div>
                           <p className="text-sm text-foreground">{domain.email_count} emails</p>
-                          <p className="text-xs text-muted-foreground">{domain.has_rule ? 'Rule exists' : 'No rule yet'}</p>
+                            <p className="text-xs text-muted-foreground">{domain.has_rule ? 'Rule configured' : 'No rule yet'}</p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant={domain.matching_rule ? 'secondary' : 'outline'}
+                            onClick={() => openCreateRuleEditor({ match_type: 'domain', match_value: domain.domain, matching_rule: domain.matching_rule })}
+                          >
+                            Create rule
+                          </Button>
                         </div>
                       </div>
                     ))}
@@ -518,16 +658,100 @@ const Settings = () => {
                         <div>
                           <p className="font-medium text-foreground">{sender.sender_name || sender.sender_email}</p>
                           <p className="text-xs text-muted-foreground">{sender.sender_email}</p>
+                          <p className="text-xs text-muted-foreground">{formatRuleDetails(sender.matching_rule)}</p>
                         </div>
-                        <div className="text-right">
+                        <div className="text-right flex items-center gap-3">
+                          <div>
                           <p className="text-sm text-foreground">{sender.email_count} emails</p>
-                          <p className="text-xs text-muted-foreground">{sender.has_rule ? 'Rule exists' : 'No rule yet'}</p>
+                            <p className="text-xs text-muted-foreground">{sender.has_rule ? 'Rule configured' : 'No rule yet'}</p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant={sender.matching_rule ? 'secondary' : 'outline'}
+                            onClick={() => openCreateRuleEditor({ match_type: 'email', match_value: sender.sender_email, matching_rule: sender.matching_rule })}
+                          >
+                            Create rule
+                          </Button>
                         </div>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
+              {ruleEditorOpen && (
+                <>
+                  <Separator />
+                  <div className="rounded-md border border-border p-4 space-y-3">
+                    <p className="font-medium text-foreground">{ruleEditor.id ? 'Edit sender rule' : 'Create sender rule'}</p>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <Label>Match type</Label>
+                        <Input value={ruleEditor.match_type} disabled />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Match value</Label>
+                        <Input value={ruleEditor.match_value} disabled />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Target folder</Label>
+                        <select
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          value={ruleEditor.target_folder}
+                          onChange={(e) => setRuleEditor((prev) => ({ ...prev, target_folder: e.target.value }))}
+                        >
+                          {MAIL_FOLDER_OPTIONS.map((folder) => (
+                            <option key={folder} value={folder}>{folder}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Account scope (optional)</Label>
+                        <select
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          value={ruleEditor.mail_account_id}
+                          onChange={(e) => setRuleEditor((prev) => ({ ...prev, mail_account_id: e.target.value }))}
+                        >
+                          <option value="">All accounts</option>
+                          {(mailAccounts || []).map((account) => (
+                            <option key={account.id} value={account.id}>{account.display_name || account.email_address}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Priority (lower wins)</Label>
+                        <Input
+                          type="number"
+                          value={ruleEditor.priority}
+                          onChange={(e) => setRuleEditor((prev) => ({ ...prev, priority: Number.parseInt(e.target.value || '100', 10) || 100 }))}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Active</Label>
+                        <div className="h-10 flex items-center">
+                          <Switch
+                            checked={ruleEditor.is_active}
+                            onCheckedChange={(checked) => setRuleEditor((prev) => ({ ...prev, is_active: !!checked }))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {ruleEditor.id && (
+                        <Button variant="destructive" onClick={deleteRule} disabled={ruleSaving}>
+                          Delete
+                        </Button>
+                      )}
+                      <Button variant="outline" onClick={() => setRuleEditorOpen(false)} disabled={ruleSaving}>
+                        Cancel
+                      </Button>
+                      <Button onClick={saveRule} disabled={ruleSaving}>
+                        {ruleSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        {ruleEditor.id ? 'Update rule' : 'Create rule'}
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
             </CardContent>
           </Card>
         </motion.div>

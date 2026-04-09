@@ -148,6 +148,7 @@ const MAIL_FOLDER_DEFINITIONS = [
   { slug: 'twofactor_notifications', displayName: '2FA / Notifications', position: 90 },
 ];
 const ALLOWED_MAIL_FOLDER_SET = new Set(MAIL_FOLDER_DEFINITIONS.map(folder => folder.slug));
+const MAIL_SENDER_RULE_MATCH_TYPES = new Set(['domain', 'email']);
 
 function normalizeHost(host) {
   return String(host || '').trim().toLowerCase();
@@ -158,6 +159,84 @@ function normalizeSyncFetchLimit(value, fallbackValue = DEFAULT_MAIL_SYNC_FETCH_
   if (!normalized) return fallbackValue;
   if (!MAIL_SYNC_FETCH_LIMITS.has(normalized)) return null;
   return normalized;
+}
+
+function normalizeSenderEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeSenderDomain(value) {
+  const normalizedEmail = normalizeSenderEmail(value);
+  if (!normalizedEmail || !normalizedEmail.includes('@')) return '';
+  const domain = normalizedEmail.split('@').pop() || '';
+  return domain.trim().toLowerCase();
+}
+
+function normalizeMailSenderRuleInput(matchType, matchValue) {
+  const normalizedMatchType = String(matchType || '').trim().toLowerCase();
+  if (!MAIL_SENDER_RULE_MATCH_TYPES.has(normalizedMatchType)) return { error: 'Invalid match_type. Allowed values: domain, email' };
+  const normalizedValue = normalizedMatchType === 'domain'
+    ? String(matchValue || '').trim().toLowerCase().replace(/^@+/, '')
+    : normalizeSenderEmail(matchValue);
+  if (!normalizedValue) return { error: 'match_value is required' };
+  if (normalizedMatchType === 'email' && !normalizedValue.includes('@')) return { error: 'Email match_value must be a valid email address' };
+  if (normalizedMatchType === 'domain' && normalizedValue.includes('@')) return { error: 'Domain match_value must not include @' };
+  return { matchType: normalizedMatchType, matchValue: normalizedValue };
+}
+
+async function loadActiveMailSenderRules(userId, mailAccountId = null, connection = db) {
+  const accountId = String(mailAccountId || '').trim() || null;
+  const [rules] = await connection.execute(
+    `SELECT id, user_id, mail_account_id, match_type, LOWER(TRIM(match_value)) AS match_value, target_folder, priority, is_active, created_at, updated_at
+     FROM mail_sender_rules
+     WHERE user_id = ?
+       AND is_active = TRUE
+       AND (mail_account_id IS NULL OR mail_account_id = ?)`,
+    [userId, accountId]
+  );
+  return Array.isArray(rules) ? rules : [];
+}
+
+function pickBestMailSenderRuleMatch(rules, mailAccountId, senderEmail, senderDomain) {
+  const accountId = String(mailAccountId || '').trim() || null;
+  const sortedRules = [...(rules || [])].sort((a, b) => {
+    const aAccountScore = a.mail_account_id && accountId && a.mail_account_id === accountId ? 0 : 1;
+    const bAccountScore = b.mail_account_id && accountId && b.mail_account_id === accountId ? 0 : 1;
+    if (aAccountScore !== bAccountScore) return aAccountScore - bAccountScore;
+    const aTypeScore = a.match_type === 'email' ? 0 : 1;
+    const bTypeScore = b.match_type === 'email' ? 0 : 1;
+    if (aTypeScore !== bTypeScore) return aTypeScore - bTypeScore;
+    const aPriority = Number.isFinite(Number(a.priority)) ? Number(a.priority) : 100;
+    const bPriority = Number.isFinite(Number(b.priority)) ? Number(b.priority) : 100;
+    if (aPriority !== bPriority) return aPriority - bPriority;
+    const aCreated = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const bCreated = b.created_at ? new Date(b.created_at).getTime() : 0;
+    if (aCreated !== bCreated) return aCreated - bCreated;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+
+  for (const rule of sortedRules) {
+    const isEmailMatch = rule.match_type === 'email' && senderEmail && rule.match_value === senderEmail;
+    const isDomainMatch = rule.match_type === 'domain' && senderDomain && rule.match_value === senderDomain;
+    if (isEmailMatch || isDomainMatch) return rule;
+  }
+  return null;
+}
+
+async function resolveMailSenderTargetFolder({ userId, mailAccountId = null, fromAddress = '', fallbackFolder = 'inbox', rules = null, connection = db }) {
+  const senderEmail = normalizeSenderEmail(fromAddress);
+  const senderDomain = normalizeSenderDomain(fromAddress);
+  const activeRules = Array.isArray(rules) ? rules : await loadActiveMailSenderRules(userId, mailAccountId, connection);
+  const winningRule = pickBestMailSenderRuleMatch(activeRules, mailAccountId, senderEmail, senderDomain);
+  const resolvedFolder = winningRule?.target_folder && ALLOWED_MAIL_FOLDER_SET.has(winningRule.target_folder)
+    ? winningRule.target_folder
+    : fallbackFolder;
+  return {
+    folder: resolvedFolder || 'inbox',
+    rule: winningRule,
+    sender_email: senderEmail || null,
+    sender_domain: senderDomain || null,
+  };
 }
 
 async function ensureDefaultMailFoldersForUser(userId) {
@@ -475,6 +554,7 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
     let newEmailsCount = 0;
     let processedCount = 0;
     let failedCount = 0;
+    const routingRules = await loadActiveMailSenderRules(account.user_id, accountId, db);
     const uploadsRoot = '/app/uploads/attachments';
     const uploadsDir = path.join(uploadsRoot, account.user_id);
     
@@ -598,6 +678,14 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
         }
         
         const emailId = crypto.randomUUID();
+        const routeResult = await resolveMailSenderTargetFolder({
+          userId: account.user_id,
+          mailAccountId: accountId,
+          fromAddress,
+          fallbackFolder: dbFolderName || 'inbox',
+          rules: routingRules,
+          connection: db,
+        });
         try {
           await db.execute(
             'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html, has_attachments, received_at, folder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -614,7 +702,7 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
               processedHtml,
               hasAttachments ? 1 : 0,
               parsed.date || new Date(),
-              dbFolderName,
+              routeResult.folder || 'inbox',
             ]
           );
         } catch (dbError) {
@@ -4146,21 +4234,13 @@ const routes = {
         `SELECT
            LOWER(TRIM(SUBSTRING_INDEX(from_address, '@', -1))) AS domain,
            COUNT(*) AS email_count,
-           MAX(received_at) AS last_received_at,
-           EXISTS(
-             SELECT 1
-             FROM mail_sender_rules r
-             WHERE r.user_id = ?
-               AND r.is_active = TRUE
-               AND r.match_type = 'domain'
-               AND LOWER(r.match_value) = LOWER(TRIM(SUBSTRING_INDEX(emails.from_address, '@', -1)))
-           ) AS has_rule
+           MAX(received_at) AS last_received_at
          FROM emails
          WHERE ${domainWhere.join(' AND ')}
          GROUP BY domain
          ORDER BY email_count DESC, last_received_at DESC
          LIMIT ${domainLimit}`,
-        [userId, ...domainParams]
+        domainParams
       );
 
       const [senders] = await db.execute(
@@ -4168,26 +4248,39 @@ const routes = {
            LOWER(TRIM(from_address)) AS sender_email,
            MAX(NULLIF(TRIM(from_name), '')) AS sender_name,
            COUNT(*) AS email_count,
-           MAX(received_at) AS last_received_at,
-           EXISTS(
-             SELECT 1
-             FROM mail_sender_rules r
-             WHERE r.user_id = ?
-               AND r.is_active = TRUE
-               AND r.match_type = 'email'
-               AND LOWER(r.match_value) = LOWER(TRIM(emails.from_address))
-           ) AS has_rule
+           MAX(received_at) AS last_received_at
          FROM emails
          WHERE ${senderWhere.join(' AND ')}
          GROUP BY sender_email
          ORDER BY email_count DESC, last_received_at DESC
          LIMIT ${senderLimit}`,
-        [userId, ...senderParams]
+        senderParams
       );
 
+      const activeRules = await loadActiveMailSenderRules(userId, accountId || null, db);
+      const domainRows = (domains || []).map((domainRow) => {
+        const normalizedDomain = String(domainRow.domain || '').trim().toLowerCase();
+        const rule = pickBestMailSenderRuleMatch(activeRules, accountId || null, '', normalizedDomain);
+        return {
+          ...domainRow,
+          has_rule: rule ? 1 : 0,
+          matching_rule: rule || null,
+        };
+      });
+      const senderRows = (senders || []).map((senderRow) => {
+        const normalizedSenderEmail = String(senderRow.sender_email || '').trim().toLowerCase();
+        const normalizedSenderDomain = normalizeSenderDomain(normalizedSenderEmail);
+        const rule = pickBestMailSenderRuleMatch(activeRules, accountId || null, normalizedSenderEmail, normalizedSenderDomain);
+        return {
+          ...senderRow,
+          has_rule: rule ? 1 : 0,
+          matching_rule: rule || null,
+        };
+      });
+
       return {
-        domains,
-        senders,
+        domains: domainRows,
+        senders: senderRows,
         meta: {
           domain_limit: domainLimit,
           sender_limit: senderLimit,
@@ -5121,6 +5214,195 @@ const routes = {
   },
   
   // Mail accounts endpoints
+  'GET /api/mail/sender-rules': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const accountId = String(url.searchParams.get('account_id') || '').trim();
+      const matchType = String(url.searchParams.get('match_type') || '').trim().toLowerCase();
+      const where = ['r.user_id = ?'];
+      const params = [userId];
+      if (accountId) {
+        where.push('(r.mail_account_id IS NULL OR r.mail_account_id = ?)');
+        params.push(accountId);
+      }
+      if (matchType) {
+        if (!MAIL_SENDER_RULE_MATCH_TYPES.has(matchType)) return { error: 'Invalid match_type filter', status: 400 };
+        where.push('r.match_type = ?');
+        params.push(matchType);
+      }
+      const [rules] = await db.execute(
+        `SELECT r.id, r.user_id, r.mail_account_id, r.match_type, LOWER(TRIM(r.match_value)) AS match_value, r.target_folder, r.priority, r.is_active, r.created_at, r.updated_at,
+                a.email_address AS account_email
+         FROM mail_sender_rules r
+         LEFT JOIN mail_accounts a ON a.id = r.mail_account_id
+         WHERE ${where.join(' AND ')}
+         ORDER BY r.is_active DESC, r.priority ASC, r.match_type ASC, r.created_at ASC`,
+        params
+      );
+      return { rules: rules || [] };
+    } catch (error) {
+      console.error('List mail sender rules error:', error);
+      return { error: 'Failed to load sender rules', status: 500 };
+    }
+  },
+  'POST /api/mail/sender-rules': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const parsed = normalizeMailSenderRuleInput(body?.match_type, body?.match_value);
+      if (parsed.error) return { error: parsed.error, status: 400 };
+      const targetFolder = String(body?.target_folder || '').trim().toLowerCase();
+      if (!targetFolder || !ALLOWED_MAIL_FOLDER_SET.has(targetFolder)) {
+        return { error: `Invalid target_folder. Allowed values: ${Array.from(ALLOWED_MAIL_FOLDER_SET).join(', ')}`, status: 400 };
+      }
+      const accountId = String(body?.mail_account_id || '').trim() || null;
+      if (accountId) {
+        const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
+        if (!accounts.length) return { error: 'Invalid mail_account_id', status: 400 };
+      }
+      const priorityNumber = Number.parseInt(String(body?.priority ?? '100'), 10);
+      const priority = Number.isFinite(priorityNumber) ? priorityNumber : 100;
+      const isActive = body?.is_active === undefined ? true : !!body.is_active;
+      const ruleId = crypto.randomUUID();
+      await db.execute(
+        `INSERT INTO mail_sender_rules (id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [ruleId, userId, accountId, parsed.matchType, parsed.matchValue, targetFolder, priority, isActive ? 1 : 0]
+      );
+      const [rows] = await db.execute(
+        'SELECT id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active, created_at, updated_at FROM mail_sender_rules WHERE id = ? LIMIT 1',
+        [ruleId]
+      );
+      return { rule: rows[0] || null };
+    } catch (error) {
+      console.error('Create mail sender rule error:', error);
+      return { error: 'Failed to create sender rule', status: 500 };
+    }
+  },
+  'PUT /api/mail/sender-rules/:id': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const ruleId = req.params.id;
+    if (!ruleId) return { error: 'Rule id is required', status: 400 };
+    try {
+      const [existingRows] = await db.execute('SELECT * FROM mail_sender_rules WHERE id = ? AND user_id = ? LIMIT 1', [ruleId, userId]);
+      if (!existingRows.length) return { error: 'Rule not found', status: 404 };
+      const existing = existingRows[0];
+      const nextMatchType = body?.match_type !== undefined ? body.match_type : existing.match_type;
+      const nextMatchValue = body?.match_value !== undefined ? body.match_value : existing.match_value;
+      const parsed = normalizeMailSenderRuleInput(nextMatchType, nextMatchValue);
+      if (parsed.error) return { error: parsed.error, status: 400 };
+      const nextTargetFolder = body?.target_folder !== undefined ? String(body.target_folder || '').trim().toLowerCase() : existing.target_folder;
+      if (!nextTargetFolder || !ALLOWED_MAIL_FOLDER_SET.has(nextTargetFolder)) {
+        return { error: `Invalid target_folder. Allowed values: ${Array.from(ALLOWED_MAIL_FOLDER_SET).join(', ')}`, status: 400 };
+      }
+      const accountId = body?.mail_account_id !== undefined
+        ? (String(body.mail_account_id || '').trim() || null)
+        : (existing.mail_account_id || null);
+      if (accountId) {
+        const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
+        if (!accounts.length) return { error: 'Invalid mail_account_id', status: 400 };
+      }
+      const priorityCandidate = body?.priority !== undefined ? body.priority : existing.priority;
+      const parsedPriority = Number.parseInt(String(priorityCandidate), 10);
+      const priority = Number.isFinite(parsedPriority) ? parsedPriority : 100;
+      const isActive = body?.is_active !== undefined ? !!body.is_active : toBooleanFlag(existing.is_active);
+      await db.execute(
+        `UPDATE mail_sender_rules
+         SET mail_account_id = ?, match_type = ?, match_value = ?, target_folder = ?, priority = ?, is_active = ?
+         WHERE id = ? AND user_id = ?`,
+        [accountId, parsed.matchType, parsed.matchValue, nextTargetFolder, priority, isActive ? 1 : 0, ruleId, userId]
+      );
+      const [rows] = await db.execute(
+        'SELECT id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active, created_at, updated_at FROM mail_sender_rules WHERE id = ? LIMIT 1',
+        [ruleId]
+      );
+      return { rule: rows[0] || null };
+    } catch (error) {
+      console.error('Update mail sender rule error:', error);
+      return { error: 'Failed to update sender rule', status: 500 };
+    }
+  },
+  'DELETE /api/mail/sender-rules/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const ruleId = req.params.id;
+    if (!ruleId) return { error: 'Rule id is required', status: 400 };
+    try {
+      const [result] = await db.execute('DELETE FROM mail_sender_rules WHERE id = ? AND user_id = ? LIMIT 1', [ruleId, userId]);
+      if (!result.affectedRows) return { error: 'Rule not found', status: 404 };
+      return { deleted: true };
+    } catch (error) {
+      console.error('Delete mail sender rule error:', error);
+      return { error: 'Failed to delete sender rule', status: 500 };
+    }
+  },
+  'POST /api/mail/sender-rules/backfill': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const accountId = String(body?.account_id || '').trim() || null;
+      const applyChanges = body?.mode === 'apply' || body?.apply === true;
+      const requestedLimit = Number.parseInt(String(body?.limit ?? '1000'), 10);
+      const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 5000) : 1000;
+      if (accountId) {
+        const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
+        if (!accounts.length) return { error: 'Invalid account_id', status: 400 };
+      }
+      const where = ['e.user_id = ?', "e.folder = 'inbox'", 'e.from_address IS NOT NULL', "TRIM(e.from_address) <> ''"];
+      const params = [userId];
+      if (accountId) {
+        where.push('e.mail_account_id = ?');
+        params.push(accountId);
+      }
+      const [emails] = await db.execute(
+        `SELECT e.id, e.mail_account_id, e.from_address, e.folder
+         FROM emails e
+         WHERE ${where.join(' AND ')}
+         ORDER BY e.received_at DESC
+         LIMIT ${limit}`,
+        params
+      );
+      const perAccountRules = new Map();
+      const updates = [];
+      for (const email of emails || []) {
+        const ruleCacheKey = String(email.mail_account_id || '');
+        if (!perAccountRules.has(ruleCacheKey)) {
+          const rules = await loadActiveMailSenderRules(userId, email.mail_account_id || null, db);
+          perAccountRules.set(ruleCacheKey, rules);
+        }
+        const resolved = await resolveMailSenderTargetFolder({
+          userId,
+          mailAccountId: email.mail_account_id || null,
+          fromAddress: email.from_address || '',
+          fallbackFolder: 'inbox',
+          rules: perAccountRules.get(ruleCacheKey),
+          connection: db,
+        });
+        if (resolved.folder !== 'inbox') {
+          updates.push({
+            email_id: email.id,
+            from_address: email.from_address,
+            current_folder: email.folder,
+            next_folder: resolved.folder,
+            rule_id: resolved.rule?.id || null,
+          });
+        }
+      }
+      if (applyChanges && updates.length > 0) {
+        for (const item of updates) {
+          await db.execute('UPDATE emails SET folder = ? WHERE id = ? AND user_id = ?', [item.next_folder, item.email_id, userId]);
+        }
+      }
+      return {
+        dry_run: !applyChanges,
+        scanned: (emails || []).length,
+        matched: updates.length,
+        applied: applyChanges ? updates.length : 0,
+        updates: updates.slice(0, 200),
+      };
+    } catch (error) {
+      console.error('Mail sender rule backfill error:', error);
+      return { error: 'Failed to backfill mail routing', status: 500 };
+    }
+  },
   'GET /api/mail/accounts': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
