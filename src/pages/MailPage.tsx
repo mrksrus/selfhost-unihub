@@ -143,6 +143,17 @@ const folders = [
   { id: 'twofactor_notifications', label: '2FA / Notifications', icon: Bell },
 ];
 
+type AccountMode = MailAccount['id'] | 'all';
+type FolderMode = (typeof folders)[number]['id'] | 'all';
+
+const ALL_ACCOUNTS: AccountMode = 'all';
+const ALL_MAIL: FolderMode = 'all';
+
+const folderFilters: Array<{ id: FolderMode; label: string; icon: React.ComponentType<{ className?: string }> }> = [
+  { id: ALL_MAIL, label: 'All mail', icon: Mail },
+  ...folders,
+];
+
 const syncFetchLimitOptions = [
   { value: '100', label: 'Last 100 emails' },
   { value: '500', label: 'Last 500 emails (default)' },
@@ -159,8 +170,8 @@ const MailPage = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isMobile = useIsMobile();
-  const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
-  const [selectedFolder, setSelectedFolder] = useState('inbox');
+  const [selectedAccount, setSelectedAccount] = useState<AccountMode | null>(null);
+  const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
   const [isComposeOpen, setIsComposeOpen] = useState(false);
@@ -221,11 +232,13 @@ const MailPage = () => {
       const lastAccountId = localStorage.getItem('mail_last_selected_account');
       const lastAccount = accounts.find(a => a.id === lastAccountId);
       
-      if (lastAccount) {
+      if (lastAccountId === ALL_ACCOUNTS) {
+        setSelectedAccount(ALL_ACCOUNTS);
+      } else if (lastAccount) {
         setSelectedAccount(lastAccount.id);
       } else {
-        // Default to first account
-        setSelectedAccount(accounts[0].id);
+        // Default to all accounts
+        setSelectedAccount(ALL_ACCOUNTS);
       }
     }
   }, [accounts, selectedAccount]);
@@ -257,10 +270,25 @@ const MailPage = () => {
     queryKey: ['email-count', selectedAccount, selectedFolder],
     queryFn: async () => {
       if (!selectedAccount) return { total: 0 };
-      
+
       const folder = selectedFolder === 'starred' ? 'inbox' : selectedFolder;
+      const params = new URLSearchParams({
+        limit: '1',
+        offset: '0',
+      });
+
+      if (selectedAccount !== ALL_ACCOUNTS) {
+        params.set('account_id', selectedAccount);
+      }
+      if (folder !== ALL_MAIL) {
+        params.set('folder', folder);
+      }
+      if (selectedFolder === 'starred') {
+        params.set('is_starred', 'true');
+      }
+
       const response = await api.get<{ emails: Email[]; pagination?: { total: number } }>(
-        `/mail/emails?account_id=${selectedAccount}&folder=${folder}&limit=1&offset=0`
+        `/mail/emails?${params.toString()}`
       );
       if (response.error) return { total: 0 };
       return { total: response.data?.pagination?.total || 0 };
@@ -345,11 +373,16 @@ const MailPage = () => {
       const folder = selectedFolder === 'starred' ? 'inbox' : selectedFolder;
       const offset = (emailPage - 1) * emailsPerPage;
       const params = new URLSearchParams({
-        account_id: selectedAccount,
-        folder,
         limit: String(emailsPerPage),
         offset: String(offset),
       });
+
+      if (selectedAccount !== ALL_ACCOUNTS) {
+        params.set('account_id', selectedAccount);
+      }
+      if (folder !== ALL_MAIL) {
+        params.set('folder', folder);
+      }
 
       if (showUnreadOnly) {
         params.set('is_read', 'false');
@@ -905,7 +938,7 @@ const MailPage = () => {
 
   const handleSendEmail = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedAccount) {
+    if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
       toast({ title: 'Please select an account', variant: 'destructive' });
       return;
     }
@@ -935,6 +968,11 @@ const MailPage = () => {
   };
 
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
+  const selectedFolderData = folders.find((folder) => folder.id === selectedFolder);
+  const folderLabel = selectedFolder === ALL_MAIL ? 'All mail' : selectedFolderData?.label || selectedFolder;
+  const accountLabel = selectedAccount === ALL_ACCOUNTS
+    ? 'All accounts'
+    : selectedAccountData?.display_name || selectedAccountData?.email_address || 'No account selected';
 
   return (
     <div className="flex h-[calc(100vh-0px)] overflow-hidden relative">
@@ -989,7 +1027,7 @@ const MailPage = () => {
 
         {/* Folders */}
         <nav className="px-2 space-y-1">
-          {folders.map((folder) => (
+          {folderFilters.map((folder) => (
             <button
               key={folder.id}
               onClick={() => {
@@ -1201,65 +1239,91 @@ const MailPage = () => {
                 <p className="text-sm text-muted-foreground">No accounts yet</p>
               </div>
             ) : (
-              accounts.map((account) => (
-                <div key={account.id} className={`relative group ${(sidebarCollapsed && !isMobile) ? 'flex justify-center' : ''}`}>
+              <>
+                <div className={`relative group ${(sidebarCollapsed && !isMobile) ? 'flex justify-center' : ''}`}>
                   <button
                     onClick={() => {
-                      setSelectedAccount(account.id);
+                      setSelectedAccount(ALL_ACCOUNTS);
                       if (isMobile) setMobileSidebarOpen(false);
                     }}
                     className={`w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
-                      selectedAccount === account.id
+                      selectedAccount === ALL_ACCOUNTS
                         ? 'bg-mail/10 text-mail font-medium'
                         : 'text-muted-foreground hover:bg-muted'
                     }`}
-                    title={(sidebarCollapsed && !isMobile) ? (account.display_name || account.email_address) : undefined}
+                    title={(sidebarCollapsed && !isMobile) ? 'All accounts' : undefined}
                   >
                     <div className="w-8 h-8 rounded-full bg-mail/10 flex items-center justify-center text-mail text-xs font-medium shrink-0">
-                      {account.unread_count && account.unread_count > 0 && (
-                        <motion.span
-                          className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-mail"
-                          animate={{ opacity: [0.4, 1, 0.4], scale: [0.9, 1.2, 0.9] }}
-                          transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
-                        />
-                      )}
-                      {account.email_address[0].toUpperCase()}
+                      A
                     </div>
                     {(!sidebarCollapsed || isMobile) && (
                       <div className="flex-1 min-w-0 text-left">
-                        <p className="truncate">{account.display_name || account.email_address}</p>
-                        <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
+                        <p className="truncate">All accounts</p>
+                        <p className="text-xs text-muted-foreground truncate">Combined mailbox</p>
                       </div>
                     )}
                   </button>
-                  {(!sidebarCollapsed || isMobile) && (
-                    <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleEditAccount(account);
-                        }}
-                      >
-                        <Edit className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-destructive hover:text-destructive"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setAccountToDelete(account.id);
-                        }}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  )}
                 </div>
-              ))
+                {accounts.map((account) => (
+                  <div key={account.id} className={`relative group ${(sidebarCollapsed && !isMobile) ? 'flex justify-center' : ''}`}>
+                    <button
+                      onClick={() => {
+                        setSelectedAccount(account.id);
+                        if (isMobile) setMobileSidebarOpen(false);
+                      }}
+                      className={`w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
+                        selectedAccount === account.id
+                          ? 'bg-mail/10 text-mail font-medium'
+                          : 'text-muted-foreground hover:bg-muted'
+                      }`}
+                      title={(sidebarCollapsed && !isMobile) ? (account.display_name || account.email_address) : undefined}
+                    >
+                      <div className="w-8 h-8 rounded-full bg-mail/10 flex items-center justify-center text-mail text-xs font-medium shrink-0">
+                        {account.unread_count && account.unread_count > 0 && (
+                          <motion.span
+                            className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-mail"
+                            animate={{ opacity: [0.4, 1, 0.4], scale: [0.9, 1.2, 0.9] }}
+                            transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+                          />
+                        )}
+                        {account.email_address[0].toUpperCase()}
+                      </div>
+                      {(!sidebarCollapsed || isMobile) && (
+                        <div className="flex-1 min-w-0 text-left">
+                          <p className="truncate">{account.display_name || account.email_address}</p>
+                          <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
+                        </div>
+                      )}
+                    </button>
+                    {(!sidebarCollapsed || isMobile) && (
+                      <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEditAccount(account);
+                          }}
+                        >
+                          <Edit className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-destructive hover:text-destructive"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAccountToDelete(account.id);
+                          }}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </>
             )}
           </div>
         </div>
@@ -1296,7 +1360,12 @@ const MailPage = () => {
                 )}
               </Button>
             )}
-            <h2 className="font-semibold capitalize shrink-0">{selectedFolder}</h2>
+            <h2 className="font-semibold shrink-0">{folderLabel}</h2>
+            {!selectedEmails.size && selectedAccount && (
+              <span className="text-sm text-muted-foreground shrink-0 hidden sm:inline">
+                {accountLabel}
+              </span>
+            )}
             {selectedEmails.size > 0 && (
               <span className="text-sm text-muted-foreground shrink-0">
                 ({selectedEmails.size} selected)
@@ -1398,8 +1467,8 @@ const MailPage = () => {
             <Button 
               variant="ghost" 
               size="icon"
-              onClick={() => selectedAccount && syncMail.mutate(selectedAccount)}
-              disabled={!selectedAccount || syncMail.isPending}
+              onClick={() => selectedAccount && selectedAccount !== ALL_ACCOUNTS && syncMail.mutate(selectedAccount)}
+              disabled={!selectedAccount || selectedAccount === ALL_ACCOUNTS || syncMail.isPending}
               title="Refresh emails"
             >
               <RefreshCw className={`h-4 w-4 ${syncMail.isPending ? 'animate-spin' : ''}`} />
@@ -1433,17 +1502,25 @@ const MailPage = () => {
                   ? 'No search results' 
                   : showUnreadOnly 
                     ? 'No unread emails' 
-                    : `No emails in ${selectedFolder}`
+                    : selectedFolder === ALL_MAIL
+                      ? `No emails in ${accountLabel}`
+                      : `No emails in ${folderLabel}`
                 }
               </h3>
               <p className="text-muted-foreground">
                 {searchQuery.trim()
                   ? `No emails found matching "${searchQuery}"${showUnreadOnly ? ' in unread emails' : ''}`
                   : showUnreadOnly
-                    ? `No unread emails in ${selectedFolder === 'inbox' ? 'your inbox' : `your ${selectedFolder} folder`}.`
-                    : selectedFolder === 'inbox' 
-                      ? 'Your inbox is empty. Sync your account to fetch emails.'
-                      : `No emails in your ${selectedFolder} folder.`
+                    ? selectedFolder === ALL_MAIL
+                      ? `No unread emails across ${accountLabel.toLowerCase()}.`
+                      : `No unread emails in ${selectedFolder === 'inbox' ? 'your inbox' : `your ${folderLabel.toLowerCase()} folder`}.`
+                    : selectedFolder === 'inbox'
+                      ? selectedAccount === ALL_ACCOUNTS
+                        ? 'All inboxes are empty. Select a specific account to sync.'
+                        : 'Your inbox is empty. Sync your account to fetch emails.'
+                      : selectedFolder === ALL_MAIL
+                        ? `No emails available across ${accountLabel.toLowerCase()}.`
+                        : `No emails in your ${folderLabel.toLowerCase()} folder.`
                 }
               </p>
             </div>
@@ -1746,7 +1823,7 @@ const MailPage = () => {
                     onClick={() => {
                       setComposeMode('reply');
                       setComposeAttachments([]);
-                      if (!selectedAccount) {
+                      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
                       setComposeForm({
@@ -1770,7 +1847,7 @@ const MailPage = () => {
                     onClick={() => {
                       setComposeMode('forward');
                       setComposeAttachments([]);
-                      if (!selectedAccount) {
+                      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
                       setComposeForm({
@@ -1998,7 +2075,10 @@ const MailPage = () => {
             <div className={`space-y-4 ${isMobile ? 'shrink-0' : ''}`}>
               <div className="space-y-2">
                 <Label>From</Label>
-                <Select value={selectedAccount || ''} onValueChange={setSelectedAccount}>
+                <Select
+                  value={selectedAccount && selectedAccount !== ALL_ACCOUNTS ? selectedAccount : ''}
+                  onValueChange={(value) => setSelectedAccount(value as AccountMode)}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Select account" />
                   </SelectTrigger>
