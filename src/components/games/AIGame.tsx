@@ -35,6 +35,7 @@ import {
 const CONTROLLER_DEADZONE = 0.45;
 const CONTROLLER_REPEAT_MS = 155;
 const UPGRADE_DRAFT_SIZE = 3;
+const MOBILE_CONTROL_FOOTER = 136;
 
 type GameStatus = 'idle' | 'playing' | 'lost';
 type GamePhase = 'combat' | 'upgrade_draft';
@@ -867,14 +868,53 @@ const getRarityClass = (rarity: string) => {
   }
 };
 
+const getCameraWindowSize = (gridSize: number) => {
+  if (gridSize >= 16) return 9;
+  if (gridSize >= 13) return 11;
+  return gridSize;
+};
+
+const getTierThreatPreview = (tier: number) => {
+  if (tier >= 4) {
+    return {
+      title: 'Tier Surge Detected',
+      notes: ['Elite squads can close distance quickly.', 'Hazard storms stay active longer.'],
+    };
+  }
+
+  if (tier === 3) {
+    return {
+      title: 'Advanced Grid Online',
+      notes: ['Patrol coverage widens with larger maps.', 'Wall clusters create longer choke lanes.'],
+    };
+  }
+
+  if (tier === 2) {
+    return {
+      title: 'Threat Escalation',
+      notes: ['Enemy composition now includes tougher mixes.', 'Objectives require more secure pathing.'],
+    };
+  }
+
+  return {
+    title: 'Sector Update',
+    notes: ['New floor modifiers may appear.', 'Watch for hazard rhythm shifts.'],
+  };
+};
+
 const AIGame = () => {
   const [state, dispatch] = useReducer(gameReducer, undefined, createGameState);
   const [now, setNow] = useState(Date.now());
   const [gamepadConnected, setGamepadConnected] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1024 : window.innerWidth));
+  const [viewportHeight, setViewportHeight] = useState(() => (typeof window === 'undefined' ? 768 : window.innerHeight));
+  const [showFullMap, setShowFullMap] = useState(false);
+  const [tierPreview, setTierPreview] = useState<{ tier: number; floor: number; title: string; notes: string[] } | null>(null);
   const stateRef = useRef(state);
   const prevARef = useRef(false);
   const heldDirectionRef = useRef<Direction | null>(null);
   const lastMoveTsRef = useRef(0);
+  const prevTierRef = useRef(state.mapTier);
 
   useEffect(() => {
     stateRef.current = state;
@@ -885,6 +925,40 @@ const AIGame = () => {
     const timer = window.setInterval(() => setNow(Date.now()), 200);
     return () => window.clearInterval(timer);
   }, [state.status]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setViewportWidth(window.innerWidth);
+      setViewportHeight(window.innerHeight);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    if (state.gridSize <= 12 && showFullMap) {
+      setShowFullMap(false);
+    }
+  }, [showFullMap, state.gridSize]);
+
+  useEffect(() => {
+    if (state.status !== 'playing' || state.phase !== 'combat') {
+      prevTierRef.current = state.mapTier;
+      return;
+    }
+
+    const previousTier = prevTierRef.current;
+    if (state.mapTier > previousTier) {
+      const preview = getTierThreatPreview(state.mapTier);
+      setTierPreview({ tier: state.mapTier, floor: state.floor, ...preview });
+      const timeout = window.setTimeout(() => setTierPreview(null), 4200);
+      prevTierRef.current = state.mapTier;
+      return () => window.clearTimeout(timeout);
+    }
+
+    prevTierRef.current = state.mapTier;
+    return undefined;
+  }, [state.floor, state.mapTier, state.phase, state.status]);
 
   useEffect(() => {
     if (state.status !== 'playing' || state.phase !== 'combat') return;
@@ -1052,6 +1126,26 @@ const AIGame = () => {
   );
 
   const stormCycle = state.floorEvents.includes('storm_cycle');
+  const isMobileLayout = viewportWidth < 640;
+  const boardWrapPadding = isMobileLayout ? 20 : 16;
+  const availableWidth = Math.max(220, Math.min(viewportWidth - boardWrapPadding * 2, 560));
+  const mobileBoardBudget = Math.max(190, viewportHeight - MOBILE_CONTROL_FOOTER - 280);
+  const boardMaxPixel = isMobileLayout ? Math.min(availableWidth, mobileBoardBudget) : Math.min(availableWidth, 520);
+  const cellPixel = Math.max(16, Math.floor(boardMaxPixel / state.gridSize));
+  const cameraWindow = getCameraWindowSize(state.gridSize);
+  const shouldUseCamera = state.gridSize > cameraWindow && !showFullMap;
+  const halfCamera = Math.floor(cameraWindow / 2);
+  const startX = shouldUseCamera ? Math.max(0, Math.min(state.gridSize - cameraWindow, state.player.x - halfCamera)) : 0;
+  const startY = shouldUseCamera ? Math.max(0, Math.min(state.gridSize - cameraWindow, state.player.y - halfCamera)) : 0;
+  const visibleGridSize = shouldUseCamera ? cameraWindow : state.gridSize;
+  const visibleCells = useMemo(() => {
+    return Array.from({ length: visibleGridSize * visibleGridSize }).map((_, index) => {
+      const x = startX + (index % visibleGridSize);
+      const y = startY + Math.floor(index / visibleGridSize);
+      return { x, y, key: toKey({ x, y }) };
+    });
+  }, [startX, startY, visibleGridSize]);
+
   const floorEventLabels: Record<FloorEventModifier, string> = {
     dense_walls: 'Dense Walls',
     double_target: 'Double Target',
@@ -1147,19 +1241,41 @@ const AIGame = () => {
           </div>
         )}
 
+        {tierPreview && (
+          <div className="rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs">
+            <div className="font-semibold text-amber-900 dark:text-amber-100">
+              {tierPreview.title} · Tier {tierPreview.tier} (Floor {tierPreview.floor})
+            </div>
+            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-amber-900/90 dark:text-amber-100/90">
+              {tierPreview.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {state.gridSize > 12 && (
+          <div className="flex items-center justify-between rounded-md border bg-background/70 px-3 py-2 text-xs">
+            <div className="text-muted-foreground">
+              {shouldUseCamera
+                ? `Focused view centered near your position (${cameraWindow}×${cameraWindow}).`
+                : 'Full-map overview enabled for scouting.'}
+            </div>
+            <Button type="button" variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setShowFullMap((prev) => !prev)}>
+              {showFullMap ? 'Focus Camera' : 'Show Full Map'}
+            </Button>
+          </div>
+        )}
+
         <div className="relative rounded-lg border bg-muted/20 p-2">
           <div
             className="grid gap-1 mx-auto"
             style={{
-              gridTemplateColumns: `repeat(${state.gridSize}, minmax(0, 1fr))`,
-              maxWidth: '420px',
+              gridTemplateColumns: `repeat(${visibleGridSize}, ${cellPixel}px)`,
+              maxWidth: `${visibleGridSize * cellPixel}px`,
             }}
           >
-            {Array.from({ length: state.gridSize * state.gridSize }).map((_, index) => {
-              const x = index % state.gridSize;
-              const y = Math.floor(index / state.gridSize);
-              const point = { x, y };
-              const key = toKey(point);
+            {visibleCells.map(({ x, y, key }) => {
               const isWall = wallsSet.has(key);
               const isPlayer = toKey(state.player) === key;
               const enemy = state.enemies.find((unit) => toKey(unit.position) === key);
@@ -1167,50 +1283,66 @@ const AIGame = () => {
               const hazard = state.hazards.find((tile) => toKey(tile.position) === key);
               const isHazardActiveNow = hazard ? isHazardActive(hazard, state.tickCount, stormCycle) : false;
 
-              let cellClass = 'bg-background';
-              if (isWall) cellClass = 'bg-slate-500/25';
-              if (hazard) cellClass = isHazardActiveNow ? 'bg-orange-500/35 ring-1 ring-orange-400/60' : 'bg-orange-300/15';
-              if (isTarget) cellClass = 'bg-cyan-500/25';
+              let cellClass = 'bg-background/95';
+              if (isWall) cellClass = 'bg-slate-700/35 border-slate-500/70';
+              if (hazard) {
+                cellClass = isHazardActiveNow
+                  ? 'bg-orange-600/40 ring-1 ring-orange-400/90 border-orange-300/80'
+                  : 'bg-orange-500/15 border-orange-400/45';
+              }
+              if (isTarget) cellClass = 'bg-cyan-500/30 border-cyan-300/80';
               if (enemy) {
                 cellClass =
                   enemy.archetype === 'elite'
-                    ? 'bg-fuchsia-500/35'
+                    ? 'bg-fuchsia-500/35 border-fuchsia-300/90'
                     : enemy.archetype === 'patrol'
-                      ? 'bg-amber-500/35'
-                      : 'bg-red-500/30';
+                      ? 'bg-amber-500/35 border-amber-300/90'
+                      : 'bg-red-500/30 border-red-300/90';
               }
-              if (isPlayer) cellClass = 'bg-accent/50';
+              if (isPlayer) cellClass = 'bg-emerald-500/45 border-emerald-200';
 
               return (
                 <div
                   key={key}
-                  className={`relative aspect-square rounded-[4px] border border-border/40 ${cellClass}`}
+                  className={`relative rounded-[5px] border ${cellClass}`}
+                  style={{ width: `${cellPixel}px`, height: `${cellPixel}px` }}
                   onClick={() => handleGridCellClick(x, y)}
                   onPointerDown={() => handleGridCellClick(x, y)}
                 >
+                  {isWall && !isTarget && !enemy && !isPlayer && (
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-slate-300">▦</span>
+                  )}
                   {isTarget && !isPlayer && (
-                    <span className="absolute inset-0 flex items-center justify-center text-[10px] text-cyan-900 dark:text-cyan-200">
-                      DATA
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold text-cyan-950 dark:text-cyan-100">
+                      ◈
                     </span>
                   )}
                   {hazard && !enemy && !isPlayer && (
-                    <span className="absolute inset-0 flex items-center justify-center text-[9px] text-orange-900 dark:text-orange-100">
-                      {isHazardActiveNow ? 'HOT' : 'ARM'}
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold text-orange-950 dark:text-orange-50">
+                      {isHazardActiveNow ? '⚠' : '△'}
                     </span>
                   )}
                   {enemy && (
-                    <span className="absolute inset-0 flex items-center justify-center text-[9px] text-red-900 dark:text-red-100">
-                      {enemy.archetype === 'hunter' ? 'HNT' : enemy.archetype === 'elite' ? 'ELT' : 'PAT'}
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-bold text-red-950 dark:text-red-100">
+                      {enemy.archetype === 'hunter' ? '◆' : enemy.archetype === 'elite' ? '✦' : '▸'}
                     </span>
                   )}
                   {isPlayer && (
-                    <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold text-accent-foreground">
-                      YOU
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] font-semibold text-emerald-950 dark:text-emerald-50">
+                      ⬢
                     </span>
                   )}
                 </div>
               );
             })}
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+            <span className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5">⬢ Player</span>
+            <span className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5">◈ Target</span>
+            <span className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5">▦ Wall</span>
+            <span className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5">△/⚠ Hazard</span>
+            <span className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5">▸/◆/✦ Enemy</span>
           </div>
 
           {state.status === 'playing' && state.phase === 'upgrade_draft' && (
@@ -1254,7 +1386,7 @@ const AIGame = () => {
           )}
         </div>
 
-        <div className="sm:hidden pt-1">
+        <div className="sm:hidden sticky bottom-0 z-10 -mx-4 mt-1 border-t bg-background/95 px-4 pb-2 pt-2 backdrop-blur">
           <div className="mx-auto grid w-[176px] grid-cols-3 gap-2">
             <div />
             <Button variant="secondary" size="icon" onClick={() => handleDirection('up')} aria-label="Move up">
