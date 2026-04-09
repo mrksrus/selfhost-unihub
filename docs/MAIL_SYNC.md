@@ -21,8 +21,8 @@ UniHub synchronises email using the IMAP protocol to fetch messages from externa
 - `mail_accounts.sync_fetch_limit` -- per-account initial import size (`100`, `500`, `1000`, `2000`, `all`)
 - `emails` -- message metadata, plain-text body, HTML body, folder, read/starred status
 - `email_attachments` -- attachment metadata, filesystem path, Content-ID for inline images
-- `mail_folders` -- app-owned folder catalog per user (system folders + future custom folders)
-- `mail_sender_rules` -- future sender/domain-to-folder routing rules (schema ready, logic not active yet)
+- `mail_folders` -- app-owned folder catalog per user (system folders + custom UI targets)
+- `mail_sender_rules` -- active sender/domain-to-folder routing rules (global + account-scoped precedence)
 - `mail_email_scores` -- future scam/spam scoring snapshots per email (schema ready, logic not active yet)
 
 ## Account Creation Flow
@@ -71,8 +71,9 @@ On success:
 4. For each UID, fetch HEADER + TEXT individually.
 5. Reconstruct RFC 822 message and parse with `mailparser`.
 6. Check for duplicates by `message_id`.
-7. Insert into `emails`; process attachments; replace inline `cid:` references with `/api/mail/attachments/{id}` URLs.
-8. Update `last_synced_at` on the account.
+7. Resolve destination folder using `mail_sender_rules` and sender normalization before insert (fallback: `inbox`).
+8. Insert into `emails`; process attachments; replace inline `cid:` references with `/api/mail/attachments/{id}` URLs.
+9. Update `last_synced_at` on the account.
 
 ### Sync limit behavior
 
@@ -89,11 +90,35 @@ System folders currently available in UI/API:
 - `inbox`, `sent`, `archive`, `trash`
 - `important`, `marketing`, `scam`, `unknown`, `twofactor_notifications`
 
-Current default behavior:
+### Active sender/domain routing behavior
 
-- New incoming synced emails are stored in `inbox` by default.
-- Additional folders are manual-move targets for now.
-- Future automatic sender/domain categorization and scam scoring will build on `mail_sender_rules` and `mail_email_scores`.
+Inbound sync resolves the destination folder at write-time using the sender rule resolver.
+
+Resolution flow:
+
+1. Normalize sender email to lowercase and trim spaces.
+2. Derive sender domain from normalized email.
+3. Load active user rules where scope is global (`mail_account_id IS NULL`) or matches the syncing account.
+4. Deterministically sort candidates:
+   - account-scoped rules before global rules
+   - email match rules before domain match rules
+   - lower `priority` value first
+   - earlier `created_at` first (stable tie-break)
+5. First matching rule wins. If no valid match exists, folder falls back to `inbox`.
+
+Rule CRUD endpoints:
+
+- `GET /api/mail/sender-rules`
+- `POST /api/mail/sender-rules`
+- `PUT /api/mail/sender-rules/:id`
+- `DELETE /api/mail/sender-rules/:id`
+
+Backfill endpoint:
+
+- `POST /api/mail/sender-rules/backfill`
+  - Dry-run by default (`mode` omitted)
+  - Apply updates with `{ "mode": "apply" }`
+  - Optional `account_id` filter and `limit` cap
 
 ### Why one-by-one fetching?
 
