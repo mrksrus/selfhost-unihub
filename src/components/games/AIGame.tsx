@@ -4,16 +4,16 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bot, Gamepad2, Keyboard } from 'lucide-react';
 
-const GRID_SIZE = 9;
-const WALL_COUNT = 11;
-const WIN_SCORE = 12;
 const INITIAL_AI_INTERVAL = 980;
-const MIN_AI_INTERVAL = 360;
+const MIN_AI_INTERVAL = 320;
 const CONTROLLER_DEADZONE = 0.45;
 const CONTROLLER_REPEAT_MS = 155;
+const MOBILE_MAX_GRID_SIZE = 15;
 
-type GameStatus = 'idle' | 'playing' | 'won' | 'lost';
+type GameStatus = 'idle' | 'playing' | 'lost';
+type GamePhase = 'combat' | 'upgrade_draft';
 type Direction = 'up' | 'down' | 'left' | 'right';
+type UpgradeOption = 'shield_boost' | 'threat_disruptor' | 'objective_trim';
 
 interface Point {
   x: number;
@@ -22,6 +22,7 @@ interface Point {
 
 interface GameState {
   status: GameStatus;
+  phase: GamePhase;
   player: Point;
   ai: Point;
   target: Point;
@@ -29,12 +30,19 @@ interface GameState {
   score: number;
   shields: number;
   startedAt: number | null;
+  floor: number;
+  floorProgress: number;
+  floorTarget: number;
+  threatLevel: number;
+  gridSize: number;
+  mapTier: number;
 }
 
 type Action =
   | { type: 'START' }
   | { type: 'MOVE_PLAYER'; direction: Direction }
   | { type: 'AI_TICK' }
+  | { type: 'PICK_UPGRADE'; option: UpgradeOption }
   | { type: 'RESTART' };
 
 const DIRECTION_VECTORS: Record<Direction, Point> = {
@@ -44,6 +52,24 @@ const DIRECTION_VECTORS: Record<Direction, Point> = {
   right: { x: 1, y: 0 },
 };
 
+const UPGRADE_OPTIONS: { value: UpgradeOption; label: string; description: string }[] = [
+  {
+    value: 'shield_boost',
+    label: 'Shield Boost',
+    description: '+1 shield for the next floor.',
+  },
+  {
+    value: 'threat_disruptor',
+    label: 'Threat Disruptor',
+    description: '-1 threat level next floor (min 1).',
+  },
+  {
+    value: 'objective_trim',
+    label: 'Objective Trim',
+    description: '-1 data node required next floor (min 3).',
+  },
+];
+
 const toKey = ({ x, y }: Point) => `${x},${y}`;
 
 const fromKey = (value: string): Point => {
@@ -51,14 +77,44 @@ const fromKey = (value: string): Point => {
   return { x, y };
 };
 
-const inBounds = ({ x, y }: Point) => x >= 0 && x < GRID_SIZE && y >= 0 && y < GRID_SIZE;
+const inBounds = ({ x, y }: Point, gridSize: number) => x >= 0 && x < gridSize && y >= 0 && y < gridSize;
 
 const randomInt = (maxExclusive: number) => Math.floor(Math.random() * maxExclusive);
 
-const randomOpenCell = (walls: Set<string>, excluded: Set<string>) => {
+const getMapTierForFloor = (floor: number) => Math.min(5, 1 + Math.floor((floor - 1) / 8));
+
+const getGridSizeForFloor = (floor: number) => {
+  const earlyGrowth = Math.min(2, Math.floor((floor - 1) / 5));
+  const earlySize = 9 + earlyGrowth * 2;
+  if (floor <= 15) return earlySize;
+
+  const lateGrowth = Math.floor((floor - 15) / 9);
+  return Math.min(MOBILE_MAX_GRID_SIZE, earlySize + lateGrowth * 2);
+};
+
+const getWallDensity = (floor: number, mapTier: number) => {
+  const baseDensity = 0.15;
+  const tierBump = (mapTier - 1) * 0.012;
+  const floorBump = Math.min(0.045, floor * 0.0018);
+  return Math.min(0.24, baseDensity + tierBump + floorBump);
+};
+
+const getWallCount = (gridSize: number, floor: number, mapTier: number) => {
+  const totalCells = gridSize * gridSize;
+  const density = getWallDensity(floor, mapTier);
+  const suggested = Math.round(totalCells * density);
+  const reserved = 10;
+  return Math.min(suggested, totalCells - reserved);
+};
+
+const getFloorTarget = (floor: number, mapTier: number) => Math.min(9, 3 + Math.floor((floor - 1) / 3) + Math.floor(mapTier / 2));
+
+const getThreatLevel = (floor: number, mapTier: number) => 1 + Math.floor((floor - 1) / 2) + mapTier;
+
+const randomOpenCell = (walls: Set<string>, excluded: Set<string>, gridSize: number) => {
   const options: Point[] = [];
-  for (let y = 0; y < GRID_SIZE; y += 1) {
-    for (let x = 0; x < GRID_SIZE; x += 1) {
+  for (let y = 0; y < gridSize; y += 1) {
+    for (let x = 0; x < gridSize; x += 1) {
       const key = toKey({ x, y });
       if (!walls.has(key) && !excluded.has(key)) {
         options.push({ x, y });
@@ -69,30 +125,31 @@ const randomOpenCell = (walls: Set<string>, excluded: Set<string>) => {
   return options[randomInt(options.length)];
 };
 
-const chooseAIStart = (walls: Set<string>) => {
+const chooseAIStart = (walls: Set<string>, gridSize: number) => {
   const corners: Point[] = [
-    { x: GRID_SIZE - 1, y: GRID_SIZE - 1 },
-    { x: GRID_SIZE - 1, y: 0 },
-    { x: 0, y: GRID_SIZE - 1 },
+    { x: gridSize - 1, y: gridSize - 1 },
+    { x: gridSize - 1, y: 0 },
+    { x: 0, y: gridSize - 1 },
     { x: 0, y: 0 },
   ];
   for (const corner of corners) {
     if (!walls.has(toKey(corner))) return corner;
   }
-  return randomOpenCell(walls, new Set([toKey({ x: 0, y: 0 })]));
+  return randomOpenCell(walls, new Set([toKey({ x: 0, y: 0 })]), gridSize);
 };
 
-const generateWalls = () => {
+const generateWalls = (gridSize: number, floor: number, mapTier: number) => {
   const walls = new Set<string>();
+  const wallCount = getWallCount(gridSize, floor, mapTier);
   const protectedCells = new Set<string>([
     toKey({ x: 0, y: 0 }),
-    toKey({ x: GRID_SIZE - 1, y: GRID_SIZE - 1 }),
-    toKey({ x: GRID_SIZE - 1, y: 0 }),
-    toKey({ x: 0, y: GRID_SIZE - 1 }),
+    toKey({ x: gridSize - 1, y: gridSize - 1 }),
+    toKey({ x: gridSize - 1, y: 0 }),
+    toKey({ x: 0, y: gridSize - 1 }),
   ]);
 
-  while (walls.size < WALL_COUNT) {
-    const candidate = { x: randomInt(GRID_SIZE), y: randomInt(GRID_SIZE) };
+  while (walls.size < wallCount) {
+    const candidate = { x: randomInt(gridSize), y: randomInt(gridSize) };
     const key = toKey(candidate);
     if (protectedCells.has(key)) continue;
     walls.add(key);
@@ -101,7 +158,21 @@ const generateWalls = () => {
   return walls;
 };
 
-const getAIInterval = (score: number) => Math.max(MIN_AI_INTERVAL, INITIAL_AI_INTERVAL - score * 44);
+const generateFloorLayout = (floor: number, mapTier: number, gridSize: number) => {
+  const walls = generateWalls(gridSize, floor, mapTier);
+  const player = { x: 0, y: 0 };
+  const ai = chooseAIStart(walls, gridSize);
+  const target = randomOpenCell(walls, new Set([toKey(player), toKey(ai)]), gridSize);
+
+  return {
+    player,
+    ai,
+    target,
+    walls: Array.from(walls),
+  };
+};
+
+const getAIInterval = (threatLevel: number) => Math.max(MIN_AI_INTERVAL, INITIAL_AI_INTERVAL - threatLevel * 58);
 
 const getDirectionFromGamepad = (gp: Gamepad): Direction | null => {
   const dpadUp = gp.buttons[12]?.pressed;
@@ -145,29 +216,33 @@ const getDirectionFromGamepad = (gp: Gamepad): Direction | null => {
 };
 
 const createGameState = (): GameState => {
-  const walls = generateWalls();
-  const player = { x: 0, y: 0 };
-  const ai = chooseAIStart(walls);
-  const target = randomOpenCell(walls, new Set([toKey(player), toKey(ai)]));
+  const floor = 1;
+  const mapTier = getMapTierForFloor(floor);
+  const gridSize = getGridSizeForFloor(floor);
+  const layout = generateFloorLayout(floor, mapTier, gridSize);
 
   return {
     status: 'idle',
-    player,
-    ai,
-    target,
-    walls: Array.from(walls),
+    phase: 'combat',
+    ...layout,
     score: 0,
     shields: 1,
     startedAt: null,
+    floor,
+    floorProgress: 0,
+    floorTarget: getFloorTarget(floor, mapTier),
+    threatLevel: getThreatLevel(floor, mapTier),
+    gridSize,
+    mapTier,
   };
 };
 
-const tryMove = (origin: Point, direction: Direction, wallsSet: Set<string>) => {
+const tryMove = (origin: Point, direction: Direction, wallsSet: Set<string>, gridSize: number) => {
   const next = {
     x: origin.x + DIRECTION_VECTORS[direction].x,
     y: origin.y + DIRECTION_VECTORS[direction].y,
   };
-  if (!inBounds(next)) return origin;
+  if (!inBounds(next, gridSize)) return origin;
   if (wallsSet.has(toKey(next))) return origin;
   return next;
 };
@@ -188,7 +263,7 @@ const moveAI = (state: GameState, wallsSet: Set<string>) => {
     if (toKey(current) === goalKey) break;
 
     for (const direction of directions) {
-      const next = tryMove(current, direction, wallsSet);
+      const next = tryMove(current, direction, wallsSet, state.gridSize);
       const nextKey = toKey(next);
       if (nextKey === toKey(current) || visited.has(nextKey)) continue;
       visited.add(nextKey);
@@ -199,7 +274,7 @@ const moveAI = (state: GameState, wallsSet: Set<string>) => {
 
   if (!visited.has(goalKey)) {
     const choices = directions
-      .map((direction) => tryMove(state.ai, direction, wallsSet))
+      .map((direction) => tryMove(state.ai, direction, wallsSet, state.gridSize))
       .filter((candidate) => toKey(candidate) !== toKey(state.ai));
     if (choices.length === 0) return state.ai;
     return choices[randomInt(choices.length)];
@@ -218,7 +293,7 @@ const moveAI = (state: GameState, wallsSet: Set<string>) => {
 const resolveState = (state: GameState, wallsSet: Set<string>): GameState => {
   if (toKey(state.player) === toKey(state.ai)) {
     if (state.shields > 0) {
-      const resetAI = chooseAIStart(wallsSet);
+      const resetAI = chooseAIStart(wallsSet, state.gridSize);
       return {
         ...state,
         ai: resetAI,
@@ -229,27 +304,27 @@ const resolveState = (state: GameState, wallsSet: Set<string>): GameState => {
   }
 
   if (toKey(state.player) === toKey(state.target)) {
+    const nextProgress = state.floorProgress + 1;
     const nextScore = state.score + 1;
-    const shieldBonus = nextScore % 3 === 0 ? 1 : 0;
-    const nextTarget = randomOpenCell(
-      wallsSet,
-      new Set([toKey(state.player), toKey(state.ai)])
-    );
+    const shieldBonus = nextScore % 4 === 0 ? 1 : 0;
 
-    if (nextScore >= WIN_SCORE) {
+    if (nextProgress >= state.floorTarget) {
       return {
         ...state,
         score: nextScore,
         shields: state.shields + shieldBonus,
-        status: 'won',
-        target: nextTarget,
+        floorProgress: nextProgress,
+        phase: 'upgrade_draft',
       };
     }
+
+    const nextTarget = randomOpenCell(wallsSet, new Set([toKey(state.player), toKey(state.ai)]), state.gridSize);
 
     return {
       ...state,
       score: nextScore,
       shields: state.shields + shieldBonus,
+      floorProgress: nextProgress,
       target: nextTarget,
     };
   }
@@ -267,11 +342,47 @@ const gameReducer = (state: GameState, action: Action): GameState => {
     };
   }
 
+  if (action.type === 'PICK_UPGRADE') {
+    if (state.status !== 'playing' || state.phase !== 'upgrade_draft') return state;
+
+    const nextFloor = state.floor + 1;
+    const nextMapTier = getMapTierForFloor(nextFloor);
+    const nextGridSize = getGridSizeForFloor(nextFloor);
+    const nextLayout = generateFloorLayout(nextFloor, nextMapTier, nextGridSize);
+
+    let nextShields = state.shields;
+    let nextThreatLevel = getThreatLevel(nextFloor, nextMapTier);
+    let nextFloorTarget = getFloorTarget(nextFloor, nextMapTier);
+
+    if (action.option === 'shield_boost') {
+      nextShields += 1;
+    }
+    if (action.option === 'threat_disruptor') {
+      nextThreatLevel = Math.max(1, nextThreatLevel - 1);
+    }
+    if (action.option === 'objective_trim') {
+      nextFloorTarget = Math.max(3, nextFloorTarget - 1);
+    }
+
+    return {
+      ...state,
+      ...nextLayout,
+      phase: 'combat',
+      floor: nextFloor,
+      floorProgress: 0,
+      floorTarget: nextFloorTarget,
+      threatLevel: nextThreatLevel,
+      shields: nextShields,
+      gridSize: nextGridSize,
+      mapTier: nextMapTier,
+    };
+  }
+
   const wallsSet = new Set(state.walls);
-  if (state.status !== 'playing') return state;
+  if (state.status !== 'playing' || state.phase !== 'combat') return state;
 
   if (action.type === 'MOVE_PLAYER') {
-    const movedPlayer = tryMove(state.player, action.direction, wallsSet);
+    const movedPlayer = tryMove(state.player, action.direction, wallsSet, state.gridSize);
     return resolveState({ ...state, player: movedPlayer }, wallsSet);
   }
 
@@ -303,24 +414,27 @@ const AIGame = () => {
   }, [state.status]);
 
   useEffect(() => {
-    if (state.status !== 'playing') return;
-    const interval = window.setInterval(() => dispatch({ type: 'AI_TICK' }), getAIInterval(state.score));
+    if (state.status !== 'playing' || state.phase !== 'combat') return;
+    const interval = window.setInterval(
+      () => dispatch({ type: 'AI_TICK' }),
+      getAIInterval(state.threatLevel)
+    );
     return () => window.clearInterval(interval);
-  }, [state.status, state.score]);
+  }, [state.phase, state.status, state.threatLevel]);
 
   const startOrRestart = useCallback(() => {
     dispatch({ type: state.status === 'idle' ? 'START' : 'RESTART' });
   }, [state.status]);
 
   const handleDirection = useCallback((direction: Direction) => {
-    if (stateRef.current.status !== 'playing') return;
+    if (stateRef.current.status !== 'playing' || stateRef.current.phase !== 'combat') return;
     dispatch({ type: 'MOVE_PLAYER', direction });
   }, []);
 
   const handleGridCellClick = useCallback(
     (x: number, y: number) => {
       const current = stateRef.current;
-      if (current.status !== 'playing') return;
+      if (current.status !== 'playing' || current.phase !== 'combat') return;
 
       const dx = x - current.player.x;
       const dy = y - current.player.y;
@@ -438,11 +552,11 @@ const AIGame = () => {
   }, [now, state.startedAt]);
 
   const statusLabel = useMemo(() => {
-    if (state.status === 'idle') return 'Steal 12 data nodes before the hunter bot catches you.';
-    if (state.status === 'playing') return 'Move fast. The bot gets quicker as your score climbs.';
-    if (state.status === 'won') return 'You outsmarted the AI. Nicely played.';
-    return 'Hunter caught you. Run it back.';
-  }, [state.status]);
+    if (state.status === 'idle') return 'Clear each floor objective to reach the next sector.';
+    if (state.status === 'lost') return 'Hunter caught you. Run it back.';
+    if (state.phase === 'upgrade_draft') return 'Floor cleared. Choose one upgrade to push deeper.';
+    return 'Steal data and avoid the hunter. Threat increases every floor.';
+  }, [state.phase, state.status]);
 
   const wallsSet = useMemo(() => new Set(state.walls), [state.walls]);
 
@@ -481,12 +595,24 @@ const AIGame = () => {
 
         <div className="grid grid-cols-3 gap-2 text-xs">
           <div className="rounded-md border px-3 py-2">
-            <div className="text-muted-foreground">Score</div>
-            <div className="font-semibold">{state.score} / {WIN_SCORE}</div>
+            <div className="text-muted-foreground">Floor</div>
+            <div className="font-semibold">{state.floor} (Tier {state.mapTier})</div>
+          </div>
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-muted-foreground">Map Size</div>
+            <div className="font-semibold">{state.gridSize} × {state.gridSize}</div>
+          </div>
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-muted-foreground">Objective</div>
+            <div className="font-semibold">{state.floorProgress} / {state.floorTarget} DATA</div>
           </div>
           <div className="rounded-md border px-3 py-2">
             <div className="text-muted-foreground">Shield</div>
             <div className="font-semibold">{state.shields}</div>
+          </div>
+          <div className="rounded-md border px-3 py-2">
+            <div className="text-muted-foreground">Threat</div>
+            <div className="font-semibold">Lv {state.threatLevel}</div>
           </div>
           <div className="rounded-md border px-3 py-2">
             <div className="text-muted-foreground">Time</div>
@@ -498,13 +624,13 @@ const AIGame = () => {
           <div
             className="grid gap-1 mx-auto"
             style={{
-              gridTemplateColumns: `repeat(${GRID_SIZE}, minmax(0, 1fr))`,
+              gridTemplateColumns: `repeat(${state.gridSize}, minmax(0, 1fr))`,
               maxWidth: '420px',
             }}
           >
-            {Array.from({ length: GRID_SIZE * GRID_SIZE }).map((_, index) => {
-              const x = index % GRID_SIZE;
-              const y = Math.floor(index / GRID_SIZE);
+            {Array.from({ length: state.gridSize * state.gridSize }).map((_, index) => {
+              const x = index % state.gridSize;
+              const y = Math.floor(index / state.gridSize);
               const point = { x, y };
               const key = toKey(point);
               const isWall = wallsSet.has(key);
@@ -545,6 +671,26 @@ const AIGame = () => {
             })}
           </div>
         </div>
+
+        {state.status === 'playing' && state.phase === 'upgrade_draft' && (
+          <div className="rounded-md border bg-background/80 p-3 space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Upgrade Draft</div>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {UPGRADE_OPTIONS.map((option) => (
+                <Button
+                  key={option.value}
+                  type="button"
+                  variant="outline"
+                  className="h-auto flex-col items-start gap-1 p-3 text-left"
+                  onClick={() => dispatch({ type: 'PICK_UPGRADE', option: option.value })}
+                >
+                  <span className="font-semibold text-sm">{option.label}</span>
+                  <span className="text-[11px] text-muted-foreground whitespace-normal">{option.description}</span>
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="flex gap-2">
           {state.status === 'playing' ? (
