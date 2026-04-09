@@ -11,6 +11,7 @@ import AIGame from '@/components/games/AIGame';
 import TetrisGame from '@/components/games/TetrisGame';
 import SnakeGame from '@/components/games/SnakeGame';
 import TamagotchiGame from '@/components/games/TamagotchiGame';
+import { getAIGameCardSummary, type AIGameCardSummary } from '@/components/games/ai-game/persistence';
 
 type GameId =
   | 'reaction-timer'
@@ -85,6 +86,7 @@ const Games = () => {
   const [activeGameId, setActiveGameId] = useState<GameId>('reaction-timer');
   const [isFullscreenOpen, setIsFullscreenOpen] = useState(false);
   const [orientationLockSupported, setOrientationLockSupported] = useState(true);
+  const [aiSummary, setAiSummary] = useState<AIGameCardSummary>(() => getAIGameCardSummary());
   const fullscreenContainerRef = useRef<HTMLDivElement>(null);
 
   const activeGame = useMemo(() => GAMES.find((game) => game.id === activeGameId) ?? GAMES[0], [activeGameId]);
@@ -119,6 +121,7 @@ const Games = () => {
 
   const closeGameFullscreen = useCallback(async () => {
     setIsFullscreenOpen(false);
+    setAiSummary(getAIGameCardSummary());
     unlockOrientation();
     if (document.fullscreenElement) {
       try {
@@ -155,10 +158,22 @@ const Games = () => {
   }, [enableAnyOrientation, isFullscreenOpen]);
 
   useEffect(() => {
+    const refreshSummary = () => setAiSummary(getAIGameCardSummary());
+    refreshSummary();
+    window.addEventListener('focus', refreshSummary);
+    window.addEventListener('storage', refreshSummary);
+    return () => {
+      window.removeEventListener('focus', refreshSummary);
+      window.removeEventListener('storage', refreshSummary);
+    };
+  }, []);
+
+  useEffect(() => {
     const onFullscreenChange = () => {
       if (!document.fullscreenElement && isFullscreenOpen) {
         setIsFullscreenOpen(false);
         unlockOrientation();
+        setAiSummary(getAIGameCardSummary());
       }
     };
 
@@ -223,6 +238,22 @@ const Games = () => {
                         </Badge>
                       ))}
                     </div>
+                    {game.id === 'ai-game' && (
+                      <div className="rounded-md border bg-muted/25 px-2.5 py-2 text-[11px] space-y-1">
+                        <div className="font-medium text-foreground">
+                          Best Floor {aiSummary.bestFloor} <span className="text-muted-foreground">(N {aiSummary.bestFloorNormal} · D {aiSummary.bestFloorDaily})</span>
+                        </div>
+                        <div className="text-muted-foreground">
+                          Daily: {aiSummary.playedDailyToday ? 'Played today' : 'Not played today'} · Streak {aiSummary.dailyStreak}
+                        </div>
+                        <div className="text-muted-foreground">
+                          Unlocks: Tier {aiSummary.unlockSummary.tier} ({aiSummary.unlockSummary.unlockedPools.join(', ')})
+                          {aiSummary.unlockSummary.nextUnlockAt
+                            ? ` · ${aiSummary.unlockSummary.points}/${aiSummary.unlockSummary.nextUnlockAt} pts`
+                            : ` · ${aiSummary.unlockSummary.points} pts`}
+                        </div>
+                      </div>
+                    )}
                     <Button
                       size="sm"
                       className="mt-1"
