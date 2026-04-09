@@ -31,6 +31,11 @@ import {
   type GameMode,
   type RNGSnapshot,
 } from './ai-game/rng';
+import {
+  getAIGameStartingBonuses,
+  markDailyParticipation,
+  recordAIGameRun,
+} from './ai-game/persistence';
 
 const CONTROLLER_DEADZONE = 0.45;
 const CONTROLLER_REPEAT_MS = 155;
@@ -407,6 +412,7 @@ const buildUpgradeChoices = (
   state: Pick<GameState, 'ownedUpgrades' | 'floor' | 'score' | 'shields' | 'threatLevel' | 'floorTarget'>,
   random: RandomSource
 ) => {
+  const unlockBonuses = getAIGameStartingBonuses();
   const ownedSet = new Set(state.ownedUpgrades);
   const snapshot = {
     floor: state.floor,
@@ -418,6 +424,7 @@ const buildUpgradeChoices = (
 
   const filtered = AI_UPGRADES.filter((upgrade) => {
     if (!isUpgradeCompatible(upgrade.id, ownedSet)) return false;
+    if (!unlockBonuses.hasVarietyPool && (upgrade.rarity === 'rare' || upgrade.rarity === 'epic')) return false;
     if (upgrade.isUseful && !upgrade.isUseful(snapshot, ownedSet)) return false;
     return true;
   }).map((upgrade) => upgrade.id);
@@ -437,6 +444,7 @@ const createGameState = (
   seed = createSessionSeed(mode, getUTCDateString(), DAILY_VERSION_SALT),
   dailySeedLabel: string | null = mode === 'daily' ? buildDailySeed(getUTCDateString(), DAILY_VERSION_SALT) : null
 ): GameState => {
+  const unlockBonuses = getAIGameStartingBonuses();
   const random = createRandomSource(seed);
   const floor = 1;
   const mapTier = getMapTierForFloor(floor);
@@ -455,8 +463,8 @@ const createGameState = (
     ...layout,
     floorEvents,
     tickCount: 0,
-    score: 0,
-    shields: floorEvents.includes('shield_bonus') ? 2 : 1,
+    score: unlockBonuses.bonusScore,
+    shields: floorEvents.includes('shield_bonus') ? 2 + unlockBonuses.bonusShields : 1 + unlockBonuses.bonusShields,
     startedAt: null,
     floor,
     floorProgress: 0,
@@ -915,10 +923,25 @@ const AIGame = () => {
   const heldDirectionRef = useRef<Direction | null>(null);
   const lastMoveTsRef = useRef(0);
   const prevTierRef = useRef(state.mapTier);
+  const previousStatusRef = useRef(state.status);
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
+
+  useEffect(() => {
+    const previousStatus = previousStatusRef.current;
+    if (previousStatus === 'playing' && state.status === 'lost') {
+      const completedFloors = Math.max(0, state.floor - 1);
+      recordAIGameRun({
+        mode: state.mode,
+        reachedFloor: state.floor,
+        score: state.score,
+        completedFloors,
+      });
+    }
+    previousStatusRef.current = state.status;
+  }, [state.floor, state.mode, state.score, state.status]);
 
   useEffect(() => {
     if (state.status !== 'playing') return;
@@ -983,6 +1006,7 @@ const AIGame = () => {
   }, [getDeviceClass]);
 
   const startDaily = useCallback(() => {
+    markDailyParticipation();
     dispatch({ type: 'START', deviceClass: getDeviceClass(), mode: 'daily' });
   }, [getDeviceClass]);
 
@@ -1124,6 +1148,7 @@ const AIGame = () => {
     () => state.upgradeChoices.map((id) => UPGRADE_MAP.get(id)).filter(Boolean),
     [state.upgradeChoices]
   );
+  const unlockedMeta = useMemo(() => getAIGameStartingBonuses(), []);
 
   const stormCycle = state.floorEvents.includes('storm_cycle');
   const isMobileLayout = viewportWidth < 640;
@@ -1187,6 +1212,11 @@ const AIGame = () => {
           {state.mode === 'daily' && state.dailySeedLabel && (
             <Badge variant="outline" className="text-[11px] border-cyan-500/40 text-cyan-700 dark:text-cyan-200">
               Daily · {state.dailySeedLabel}
+            </Badge>
+          )}
+          {unlockedMeta.cosmeticLabel && (
+            <Badge variant="outline" className="text-[11px] border-fuchsia-500/40 text-fuchsia-700 dark:text-fuchsia-200">
+              {unlockedMeta.cosmeticLabel}
             </Badge>
           )}
         </div>
