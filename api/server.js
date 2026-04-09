@@ -5317,8 +5317,10 @@ const routes = {
     let query, params, folder, accountId;
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
-      folder = url.searchParams.get('folder') || 'inbox';
+      folder = url.searchParams.get('folder');
       accountId = url.searchParams.get('account_id');
+      const hasFolderFilter = !!folder && folder !== 'all';
+      const hasAccountFilter = !!accountId && accountId !== 'all';
       const isReadParam = url.searchParams.get('is_read');
       const isStarredParam = url.searchParams.get('is_starred');
       const searchParam = (url.searchParams.get('search') || '').trim();
@@ -5326,12 +5328,12 @@ const routes = {
       query = 'SELECT * FROM emails WHERE user_id = ?';
       params = [userId];
       
-      if (folder) {
+      if (hasFolderFilter) {
         query += ' AND folder = ?';
         params.push(folder);
       }
       
-      if (accountId) {
+      if (hasAccountFilter) {
         query += ' AND mail_account_id = ?';
         params.push(accountId);
       }
@@ -5371,11 +5373,11 @@ const routes = {
       // Get total count for pagination
       let countQuery = 'SELECT COUNT(*) as total FROM emails WHERE user_id = ?';
       const countParams = [userId];
-      if (folder) {
+      if (hasFolderFilter) {
         countQuery += ' AND folder = ?';
         countParams.push(folder);
       }
-      if (accountId) {
+      if (hasAccountFilter) {
         countQuery += ' AND mail_account_id = ?';
         countParams.push(accountId);
       }
@@ -5401,7 +5403,7 @@ const routes = {
       const total = countResult[0]?.total || 0;
       
       const [emails] = await db.execute(query, params);
-      console.log(`[API] GET /api/mail/emails: Found ${emails.length} emails for user ${userId}, folder ${folder}, account ${accountId || 'all'}, total ${total}`);
+      console.log(`[API] GET /api/mail/emails: Found ${emails.length} emails for user ${userId}, folder ${hasFolderFilter ? folder : 'all'}, account ${hasAccountFilter ? accountId : 'all'}, total ${total}`);
       
       // Parse JSON fields
       const parsedEmails = emails.map(email => ({
