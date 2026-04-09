@@ -323,9 +323,9 @@ const TetrisGame = () => {
           </div>
         </div>
 
-        <div className="rounded-lg border bg-muted/20 p-2">
+        <div className="rounded-lg border-2 border-border/80 bg-muted/30 p-2 shadow-inner">
           <div
-            className="grid gap-[2px] mx-auto"
+            className="grid gap-[2px] mx-auto rounded-md border border-border/70 bg-slate-300/35 p-1"
             style={{
               gridTemplateColumns: `repeat(${BOARD_WIDTH}, minmax(0, 1fr))`,
               maxWidth: '280px',
@@ -335,8 +335,10 @@ const TetrisGame = () => {
               row.map((cell, cellIndex) => (
                 <div
                   key={`${rowIndex}-${cellIndex}`}
-                  className={`aspect-square rounded-[2px] border border-border/20 ${
-                    cell ? 'bg-cyan-500/80' : 'bg-background'
+                  className={`aspect-square rounded-[2px] border ${
+                    cell
+                      ? 'border-cyan-700/80 bg-cyan-500/85 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.25)]'
+                      : 'border-slate-400/70 bg-slate-100'
                   }`}
                 />
               ))
