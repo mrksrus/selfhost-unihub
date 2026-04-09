@@ -3,16 +3,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Gamepad2 } from 'lucide-react';
 
-const GRAVITY = 0.6;
-const JUMP_VELOCITY = -12;
+const GRAVITY = -0.58;
+const JUMP_VELOCITY = 11.5;
 const GROUND_Y = 0.75; // fraction of canvas height
 const DINO_WIDTH = 28;
 const DINO_HEIGHT = 32;
 const CACTUS_WIDTH = 16;
 const CACTUS_HEIGHT = 28;
-const OBSTACLE_MIN_GAP = 280;
-const OBSTACLE_MAX_GAP = 420;
-const GAME_SPEED = 8;
+const OBSTACLE_MIN_GAP = 360;
+const OBSTACLE_MAX_GAP = 620;
+const START_SPEED = 4.2;
+const MAX_SPEED = 9.5;
+const SPEED_RAMP_PER_POINT = 0.006;
 const SCORE_PER_FRAME = 0.5;
 const CONTROLLER_DEADZONE = 0.45;
 
@@ -39,7 +41,7 @@ export const JumpGame = () => {
     score: 0,
     gapCounter: 0,
     nextGap: (OBSTACLE_MIN_GAP + OBSTACLE_MAX_GAP) / 2,
-    speed: GAME_SPEED,
+    speed: START_SPEED,
   });
   const rafRef = useRef<number>(0);
   const prevJumpRef = useRef<boolean>(false);
@@ -54,7 +56,7 @@ export const JumpGame = () => {
   const jump = useCallback(() => {
     const state = gameStateRef.current;
     if (state.status !== 'playing') return;
-    const isOnGround = state.dinoY >= -0.5 && Math.abs(state.dinoVy) < 0.2;
+    const isOnGround = state.dinoY <= 0.5 && Math.abs(state.dinoVy) < 0.2;
     if (isOnGround) {
       state.dinoVy = JUMP_VELOCITY;
     }
@@ -69,6 +71,7 @@ export const JumpGame = () => {
     state.obstacles = [];
     state.score = 0;
     state.gapCounter = 0;
+    state.speed = START_SPEED;
     state.nextGap = OBSTACLE_MIN_GAP + Math.random() * (OBSTACLE_MAX_GAP - OBSTACLE_MIN_GAP);
     setStatus('playing');
     setScore(0);
@@ -108,12 +111,13 @@ export const JumpGame = () => {
       if (state.status === 'playing') {
         state.dinoVy += GRAVITY;
         state.dinoY += state.dinoVy;
-        if (state.dinoY > 0) {
+        if (state.dinoY < 0) {
           state.dinoY = 0;
           state.dinoVy = 0;
         }
 
         state.score += SCORE_PER_FRAME;
+        state.speed = Math.min(MAX_SPEED, START_SPEED + state.score * SPEED_RAMP_PER_POINT);
         setScore(Math.floor(state.score));
 
         state.obstacles.forEach((obs) => {
@@ -127,9 +131,10 @@ export const JumpGame = () => {
           const variant = Math.random();
           let width = CACTUS_WIDTH;
           const height = CACTUS_HEIGHT;
-          if (variant > 0.66) {
+          const canSpawnWideObstacle = state.score > 140;
+          if (canSpawnWideObstacle && variant > 0.73) {
             width = CACTUS_WIDTH * 2; // double cactus
-          } else if (variant > 0.33) {
+          } else if (canSpawnWideObstacle && variant > 0.45) {
             width = CACTUS_WIDTH * 1.5;
           }
 
@@ -139,7 +144,10 @@ export const JumpGame = () => {
             height,
           });
           state.gapCounter = 0;
-          state.nextGap = OBSTACLE_MIN_GAP + Math.random() * (OBSTACLE_MAX_GAP - OBSTACLE_MIN_GAP);
+          const difficulty = Math.min(1, state.score / 900);
+          const adaptiveMinGap = OBSTACLE_MIN_GAP - difficulty * 150;
+          const adaptiveMaxGap = OBSTACLE_MAX_GAP - difficulty * 210;
+          state.nextGap = adaptiveMinGap + Math.random() * (adaptiveMaxGap - adaptiveMinGap);
         }
 
         const dinoLeft = 60;
