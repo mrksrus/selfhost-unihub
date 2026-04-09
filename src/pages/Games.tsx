@@ -3,13 +3,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { Bot, Blocks, Gamepad2, Timer, Wind, Zap, X } from 'lucide-react';
+import { Bot, Blocks, Egg, Gamepad2, Timer, Wind, Zap, X } from 'lucide-react';
 import ReactionTimerGame from '@/components/games/ReactionTimerGame';
 import FocusBreathingGame from '@/components/games/FocusBreathingGame';
 import JumpGame from '@/components/games/JumpGame';
 import AIGame from '@/components/games/AIGame';
 import TetrisGame from '@/components/games/TetrisGame';
 import SnakeGame from '@/components/games/SnakeGame';
+import TamagotchiGame from '@/components/games/TamagotchiGame';
 
 type GameId =
   | 'reaction-timer'
@@ -17,7 +18,8 @@ type GameId =
   | 'jump-game'
   | 'ai-game'
   | 'tetris-game'
-  | 'snake-game';
+  | 'snake-game'
+  | 'tamagotchi';
 
 interface GameDefinition {
   id: GameId;
@@ -69,6 +71,13 @@ const GAMES: GameDefinition[] = [
     description: 'Easy endless snake with edge teleportation. Crossing any border wraps to the opposite side.',
     difficulty: 'Relaxed',
     tags: ['Arcade', 'Wraparound', 'Infinite'],
+  },
+  {
+    id: 'tamagotchi',
+    name: 'Pocket Pet',
+    description: 'Persistent Tamagotchi-style companion: raise an egg into a mature pet with mood, personality, and care history.',
+    difficulty: 'Relaxed',
+    tags: ['Persistent', 'ASCII Art', 'Care Sim'],
   },
 ];
 
@@ -195,6 +204,7 @@ const Games = () => {
                         {game.id === 'ai-game' && <Bot className="h-4 w-4 text-accent" />}
                         {game.id === 'tetris-game' && <Blocks className="h-4 w-4 text-accent" />}
                         {game.id === 'snake-game' && <Gamepad2 className="h-4 w-4 text-accent" />}
+                        {game.id === 'tamagotchi' && <Egg className="h-4 w-4 text-accent" />}
                         <span>{game.name}</span>
                       </CardTitle>
                       <Badge variant="outline" className="text-[11px]">
@@ -256,13 +266,14 @@ const Games = () => {
             </div>
 
             <Tabs value={activeGameId} onValueChange={(value) => setActiveGameId(value as GameId)} className="w-full">
-              <TabsList className="grid w-full grid-cols-3 md:grid-cols-6 mb-4">
+              <TabsList className="grid w-full grid-cols-2 md:grid-cols-7 mb-4">
                 <TabsTrigger value="reaction-timer">Reaction Timer</TabsTrigger>
                 <TabsTrigger value="focus-breathing">Focus Breathing</TabsTrigger>
                 <TabsTrigger value="jump-game">Jump Game</TabsTrigger>
                 <TabsTrigger value="ai-game">AI Game</TabsTrigger>
                 <TabsTrigger value="tetris-game">Block Stack</TabsTrigger>
                 <TabsTrigger value="snake-game">Snake</TabsTrigger>
+                <TabsTrigger value="tamagotchi">Pocket Pet</TabsTrigger>
               </TabsList>
               <TabsContent value="reaction-timer">
                 <ReactionTimerGame />
@@ -281,6 +292,9 @@ const Games = () => {
               </TabsContent>
               <TabsContent value="snake-game">
                 <SnakeGame />
+              </TabsContent>
+              <TabsContent value="tamagotchi">
+                <TamagotchiGame />
               </TabsContent>
             </Tabs>
           </div>
