@@ -29,13 +29,33 @@ interface Point {
   y: number;
 }
 
+type EnemyArchetype = 'hunter' | 'elite' | 'patrol';
+type FloorEventModifier = 'dense_walls' | 'double_target' | 'storm_cycle' | 'shield_bonus';
+
+interface Enemy {
+  id: string;
+  archetype: EnemyArchetype;
+  position: Point;
+  patrolDirection: Direction;
+}
+
+interface HazardTile {
+  id: string;
+  position: Point;
+  pattern: 'pulse' | 'alternating' | 'storm';
+  offset: number;
+}
+
 interface GameState {
   status: GameStatus;
   phase: GamePhase;
   player: Point;
-  ai: Point;
+  enemies: Enemy[];
   target: Point;
   walls: string[];
+  hazards: HazardTile[];
+  floorEvents: FloorEventModifier[];
+  tickCount: number;
   score: number;
   shields: number;
   startedAt: number | null;
@@ -86,32 +106,66 @@ const getGridSizeForFloor = (floor: number) => {
   return Math.min(MOBILE_MAX_GRID_SIZE, earlySize + lateGrowth * 2);
 };
 
-const getWallDensity = (floor: number, mapTier: number) => {
+const getFloorBand = (floor: number) => {
+  if (floor <= 4) return 'early';
+  if (floor <= 11) return 'mid';
+  return 'late';
+};
+
+const getFloorEvents = (floor: number): FloorEventModifier[] => {
+  const band = getFloorBand(floor);
+  if (band === 'early') return [];
+
+  const events: FloorEventModifier[] = [];
+  if (band === 'mid') {
+    if (Math.random() < 0.35) events.push('dense_walls');
+    if (Math.random() < 0.25) events.push('shield_bonus');
+    return events;
+  }
+
+  if (Math.random() < 0.45) events.push('dense_walls');
+  if (Math.random() < 0.45) events.push('double_target');
+  if (Math.random() < 0.5) events.push('storm_cycle');
+  if (Math.random() < 0.35) events.push('shield_bonus');
+  return events;
+};
+
+const getWallDensity = (floor: number, mapTier: number, events: FloorEventModifier[]) => {
   const baseDensity = 0.15;
   const tierBump = (mapTier - 1) * 0.012;
   const floorBump = Math.min(0.045, floor * 0.0018);
-  return Math.min(0.24, baseDensity + tierBump + floorBump);
+  const denseWallBump = events.includes('dense_walls') ? 0.045 : 0;
+  return Math.min(0.3, baseDensity + tierBump + floorBump + denseWallBump);
 };
 
-const getWallCount = (gridSize: number, floor: number, mapTier: number) => {
+const getWallCount = (gridSize: number, floor: number, mapTier: number, events: FloorEventModifier[]) => {
   const totalCells = gridSize * gridSize;
-  const density = getWallDensity(floor, mapTier);
+  const density = getWallDensity(floor, mapTier, events);
   const suggested = Math.round(totalCells * density);
-  const reserved = 10;
+  const reserved = 14;
   return Math.min(suggested, totalCells - reserved);
 };
 
-const getFloorTarget = (floor: number, mapTier: number) => Math.min(9, 3 + Math.floor((floor - 1) / 3) + Math.floor(mapTier / 2));
+const getFloorTarget = (floor: number, mapTier: number, events: FloorEventModifier[]) => {
+  const base = Math.min(9, 3 + Math.floor((floor - 1) / 3) + Math.floor(mapTier / 2));
+  return events.includes('double_target') ? Math.min(12, base + 2) : base;
+};
 
-const getThreatLevel = (floor: number, mapTier: number) => 1 + Math.floor((floor - 1) / 2) + mapTier;
+const getThreatLevel = (floor: number, mapTier: number, events: FloorEventModifier[]) => {
+  const base = 1 + Math.floor((floor - 1) / 2) + mapTier;
+  return events.includes('storm_cycle') ? base + 1 : base;
+};
 
-const randomOpenCell = (walls: Set<string>, excluded: Set<string>, gridSize: number) => {
+const manhattan = (a: Point, b: Point) => Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+
+const randomOpenCell = (walls: Set<string>, excluded: Set<string>, gridSize: number, minDistanceFromPlayer = 0, player: Point = { x: 0, y: 0 }) => {
   const options: Point[] = [];
   for (let y = 0; y < gridSize; y += 1) {
     for (let x = 0; x < gridSize; x += 1) {
       const key = toKey({ x, y });
       if (!walls.has(key) && !excluded.has(key)) {
-        options.push({ x, y });
+        const point = { x, y };
+        if (manhattan(point, player) >= minDistanceFromPlayer) options.push(point);
       }
     }
   }
@@ -119,24 +173,18 @@ const randomOpenCell = (walls: Set<string>, excluded: Set<string>, gridSize: num
   return options[randomInt(options.length)];
 };
 
-const chooseAIStart = (walls: Set<string>, gridSize: number) => {
-  const corners: Point[] = [
-    { x: gridSize - 1, y: gridSize - 1 },
-    { x: gridSize - 1, y: 0 },
-    { x: 0, y: gridSize - 1 },
-    { x: 0, y: 0 },
-  ];
-  for (const corner of corners) {
-    if (!walls.has(toKey(corner))) return corner;
-  }
-  return randomOpenCell(walls, new Set([toKey({ x: 0, y: 0 })]), gridSize);
+const chooseEnemyStart = (walls: Set<string>, gridSize: number, excluded: Set<string>, player: Point) => {
+  const minSpawnDistance = gridSize >= 13 ? 7 : gridSize >= 11 ? 6 : 4;
+  return randomOpenCell(walls, excluded, gridSize, minSpawnDistance, player);
 };
 
-const generateWalls = (gridSize: number, floor: number, mapTier: number) => {
+const generateWalls = (gridSize: number, floor: number, mapTier: number, events: FloorEventModifier[]) => {
   const walls = new Set<string>();
-  const wallCount = getWallCount(gridSize, floor, mapTier);
+  const wallCount = getWallCount(gridSize, floor, mapTier, events);
   const protectedCells = new Set<string>([
     toKey({ x: 0, y: 0 }),
+    toKey({ x: 1, y: 0 }),
+    toKey({ x: 0, y: 1 }),
     toKey({ x: gridSize - 1, y: gridSize - 1 }),
     toKey({ x: gridSize - 1, y: 0 }),
     toKey({ x: 0, y: gridSize - 1 }),
@@ -152,17 +200,79 @@ const generateWalls = (gridSize: number, floor: number, mapTier: number) => {
   return walls;
 };
 
-const generateFloorLayout = (floor: number, mapTier: number, gridSize: number) => {
-  const walls = generateWalls(gridSize, floor, mapTier);
+const generateEnemyComposition = (floor: number): EnemyArchetype[] => {
+  const band = getFloorBand(floor);
+  if (band === 'early') return ['hunter'];
+  if (band === 'mid') {
+    const composition: EnemyArchetype[] = ['hunter'];
+    if (Math.random() < 0.4) composition.push('patrol');
+    if (Math.random() < 0.25) composition.push('elite');
+    return composition;
+  }
+
+  const composition: EnemyArchetype[] = ['hunter', 'patrol'];
+  if (Math.random() < 0.8) composition.push('elite');
+  if (Math.random() < 0.5) composition.push('hunter');
+  return composition;
+};
+
+const generateHazards = (floor: number, walls: Set<string>, gridSize: number, blocked: Set<string>, events: FloorEventModifier[]) => {
+  const band = getFloorBand(floor);
+  if (band === 'early') return [] as HazardTile[];
+
+  const baseCount = band === 'mid' ? (Math.random() < 0.4 ? 1 : 0) : 1 + randomInt(2);
+  const stormBonus = events.includes('storm_cycle') ? 1 : 0;
+  const hazardCount = Math.min(4, baseCount + stormBonus);
+  const hazards: HazardTile[] = [];
+
+  for (let i = 0; i < hazardCount; i += 1) {
+    const point = randomOpenCell(walls, blocked, gridSize, 2, { x: 0, y: 0 });
+    const key = toKey(point);
+    blocked.add(key);
+    const pattern: HazardTile['pattern'] = events.includes('storm_cycle') && Math.random() < 0.5
+      ? 'storm'
+      : i % 2 === 0
+        ? 'pulse'
+        : 'alternating';
+
+    hazards.push({
+      id: `hazard-${i}`,
+      position: point,
+      pattern,
+      offset: randomInt(4),
+    });
+  }
+
+  return hazards;
+};
+
+const generateFloorLayout = (floor: number, mapTier: number, gridSize: number, events: FloorEventModifier[]) => {
+  const walls = generateWalls(gridSize, floor, mapTier, events);
   const player = { x: 0, y: 0 };
-  const ai = chooseAIStart(walls, gridSize);
-  const target = randomOpenCell(walls, new Set([toKey(player), toKey(ai)]), gridSize);
+
+  const composition = generateEnemyComposition(floor);
+  const blocked = new Set<string>([toKey(player)]);
+  const enemies = composition.map((archetype, index) => {
+    const position = chooseEnemyStart(walls, gridSize, blocked, player);
+    blocked.add(toKey(position));
+    return {
+      id: `enemy-${index}`,
+      archetype,
+      position,
+      patrolDirection: index % 2 === 0 ? 'right' : 'down',
+    } as Enemy;
+  });
+
+  const target = randomOpenCell(walls, blocked, gridSize, 3, player);
+  blocked.add(toKey(target));
+  const hazards = generateHazards(floor, walls, gridSize, blocked, events);
 
   return {
     player,
-    ai,
+    enemies,
     target,
     walls: Array.from(walls),
+    hazards,
   };
 };
 
@@ -293,19 +403,22 @@ const createGameState = (): GameState => {
   const floor = 1;
   const mapTier = getMapTierForFloor(floor);
   const gridSize = getGridSizeForFloor(floor);
-  const layout = generateFloorLayout(floor, mapTier, gridSize);
+  const floorEvents = getFloorEvents(floor);
+  const layout = generateFloorLayout(floor, mapTier, gridSize, floorEvents);
 
   return {
     status: 'idle',
     phase: 'combat',
     ...layout,
+    floorEvents,
+    tickCount: 0,
     score: 0,
-    shields: 1,
+    shields: floorEvents.includes('shield_bonus') ? 2 : 1,
     startedAt: null,
     floor,
     floorProgress: 0,
-    floorTarget: getFloorTarget(floor, mapTier),
-    threatLevel: getThreatLevel(floor, mapTier),
+    floorTarget: getFloorTarget(floor, mapTier, floorEvents),
+    threatLevel: getThreatLevel(floor, mapTier, floorEvents),
     gridSize,
     mapTier,
     ownedUpgrades: [],
@@ -324,12 +437,12 @@ const tryMove = (origin: Point, direction: Direction, wallsSet: Set<string>, gri
   return next;
 };
 
-const moveAI = (state: GameState, wallsSet: Set<string>) => {
-  const startKey = toKey(state.ai);
-  const goalKey = toKey(state.player);
-  if (startKey === goalKey) return state.ai;
+const findPathStep = (start: Point, goal: Point, wallsSet: Set<string>, gridSize: number) => {
+  const startKey = toKey(start);
+  const goalKey = toKey(goal);
+  if (startKey === goalKey) return start;
 
-  const queue: Point[] = [state.ai];
+  const queue: Point[] = [start];
   const visited = new Set<string>([startKey]);
   const previous = new Map<string, string>();
   const directions: Direction[] = ['up', 'down', 'left', 'right'];
@@ -340,7 +453,7 @@ const moveAI = (state: GameState, wallsSet: Set<string>) => {
     if (toKey(current) === goalKey) break;
 
     for (const direction of directions) {
-      const next = tryMove(current, direction, wallsSet, state.gridSize);
+      const next = tryMove(current, direction, wallsSet, gridSize);
       const nextKey = toKey(next);
       if (nextKey === toKey(current) || visited.has(nextKey)) continue;
       visited.add(nextKey);
@@ -349,13 +462,7 @@ const moveAI = (state: GameState, wallsSet: Set<string>) => {
     }
   }
 
-  if (!visited.has(goalKey)) {
-    const choices = directions
-      .map((direction) => tryMove(state.ai, direction, wallsSet, state.gridSize))
-      .filter((candidate) => toKey(candidate) !== toKey(state.ai));
-    if (choices.length === 0) return state.ai;
-    return choices[randomInt(choices.length)];
-  }
+  if (!visited.has(goalKey)) return start;
 
   let currentKey = goalKey;
   let parent = previous.get(currentKey);
@@ -367,8 +474,78 @@ const moveAI = (state: GameState, wallsSet: Set<string>) => {
   return fromKey(currentKey);
 };
 
+const rotatePatrolDirection = (direction: Direction): Direction => {
+  switch (direction) {
+    case 'up':
+      return 'right';
+    case 'right':
+      return 'down';
+    case 'down':
+      return 'left';
+    default:
+      return 'up';
+  }
+};
+
+const moveEnemy = (enemy: Enemy, state: GameState, wallsSet: Set<string>) => {
+  if (enemy.archetype === 'hunter') {
+    const next = findPathStep(enemy.position, state.player, wallsSet, state.gridSize);
+    if (toKey(next) === toKey(enemy.position)) {
+      const directions: Direction[] = ['up', 'down', 'left', 'right'];
+      const options = directions
+        .map((direction) => tryMove(enemy.position, direction, wallsSet, state.gridSize))
+        .filter((candidate) => toKey(candidate) !== toKey(enemy.position));
+      return { ...enemy, position: options.length > 0 ? options[randomInt(options.length)] : enemy.position };
+    }
+    return { ...enemy, position: next };
+  }
+
+  if (enemy.archetype === 'elite') {
+    let current = enemy.position;
+    for (let i = 0; i < 2; i += 1) {
+      const step = findPathStep(current, state.player, wallsSet, state.gridSize);
+      if (toKey(step) === toKey(current)) break;
+      current = step;
+      if (toKey(current) === toKey(state.player)) break;
+    }
+    return { ...enemy, position: current };
+  }
+
+  let patrolDirection = enemy.patrolDirection;
+  let next = tryMove(enemy.position, patrolDirection, wallsSet, state.gridSize);
+  if (toKey(next) === toKey(enemy.position)) {
+    patrolDirection = rotatePatrolDirection(patrolDirection);
+    next = tryMove(enemy.position, patrolDirection, wallsSet, state.gridSize);
+  }
+
+  if (toKey(next) === toKey(enemy.position) || Math.random() < 0.2) {
+    patrolDirection = rotatePatrolDirection(patrolDirection);
+    next = tryMove(enemy.position, patrolDirection, wallsSet, state.gridSize);
+  }
+
+  return { ...enemy, position: next, patrolDirection };
+};
+
+const respawnEnemies = (state: GameState, wallsSet: Set<string>) => {
+  const blocked = new Set<string>([toKey(state.player), toKey(state.target), ...state.hazards.map((hazard) => toKey(hazard.position))]);
+  return state.enemies.map((enemy) => {
+    const position = chooseEnemyStart(wallsSet, state.gridSize, blocked, state.player);
+    blocked.add(toKey(position));
+    return { ...enemy, position };
+  });
+};
+
+const isHazardActive = (hazard: HazardTile, tickCount: number, stormCycle: boolean) => {
+  const cycleTick = tickCount + hazard.offset;
+  if (hazard.pattern === 'pulse') return cycleTick % 4 >= 2;
+  if (hazard.pattern === 'alternating') return cycleTick % 2 === 0;
+  if (stormCycle) return cycleTick % 3 !== 1;
+  return cycleTick % 3 === 0;
+};
+
 const resolveCollision = (state: GameState, wallsSet: Set<string>) => {
-  if (toKey(state.player) !== toKey(state.ai)) return state;
+  const collided = state.enemies.some((enemy) => toKey(enemy.position) === toKey(state.player));
+  if (!collided) return state;
 
   const collisionEvent: CollisionEffectEvent = {
     random: Math.random,
@@ -381,21 +558,37 @@ const resolveCollision = (state: GameState, wallsSet: Set<string>) => {
   runUpgradeHook(state.ownedUpgrades, 'on_collision', collisionEvent);
 
   if (collisionEvent.consumeShield && state.shields > 0) {
-    const resetAI = chooseAIStart(wallsSet, state.gridSize);
     return {
       ...state,
       shields: state.shields - 1,
-      ai: resetAI,
+      enemies: respawnEnemies(state, wallsSet),
       aiStunTicks: Math.max(state.aiStunTicks, collisionEvent.stunAiTicks),
     };
   }
 
   if (collisionEvent.preventLoss) {
-    const resetAI = chooseAIStart(wallsSet, state.gridSize);
     return {
       ...state,
-      ai: resetAI,
+      enemies: respawnEnemies(state, wallsSet),
       aiStunTicks: Math.max(state.aiStunTicks, collisionEvent.stunAiTicks),
+    };
+  }
+
+  return { ...state, status: 'lost' };
+};
+
+const resolveHazardDamage = (state: GameState, wallsSet: Set<string>) => {
+  const stormCycle = state.floorEvents.includes('storm_cycle');
+  const playerOnActiveHazard = state.hazards.some(
+    (hazard) => toKey(hazard.position) === toKey(state.player) && isHazardActive(hazard, state.tickCount, stormCycle)
+  );
+  if (!playerOnActiveHazard) return state;
+
+  if (state.shields > 0) {
+    return {
+      ...state,
+      shields: state.shields - 1,
+      enemies: respawnEnemies(state, wallsSet),
     };
   }
 
@@ -465,7 +658,15 @@ const resolveTargetCollection = (state: GameState, wallsSet: Set<string>, direct
     };
   }
 
-  const nextTarget = randomOpenCell(wallsSet, new Set([toKey(upgradedState.player), toKey(upgradedState.ai)]), upgradedState.gridSize);
+  const enemyKeys = upgradedState.enemies.map((enemy) => toKey(enemy.position));
+  const hazardKeys = upgradedState.hazards.map((hazard) => toKey(hazard.position));
+  const nextTarget = randomOpenCell(
+    wallsSet,
+    new Set([toKey(upgradedState.player), ...enemyKeys, ...hazardKeys]),
+    upgradedState.gridSize,
+    2,
+    upgradedState.player
+  );
 
   return {
     ...upgradedState,
@@ -493,7 +694,8 @@ const gameReducer = (state: GameState, action: Action): GameState => {
     const nextFloor = state.floor + 1;
     const nextMapTier = getMapTierForFloor(nextFloor);
     const nextGridSize = getGridSizeForFloor(nextFloor);
-    const nextLayout = generateFloorLayout(nextFloor, nextMapTier, nextGridSize);
+    const nextFloorEvents = getFloorEvents(nextFloor);
+    const nextLayout = generateFloorLayout(nextFloor, nextMapTier, nextGridSize, nextFloorEvents);
     const nextOwnedUpgrades = [...state.ownedUpgrades, action.upgradeId];
 
     const floorEvent: FloorStartEffectEvent = {
@@ -507,8 +709,8 @@ const gameReducer = (state: GameState, action: Action): GameState => {
 
     runUpgradeHook(nextOwnedUpgrades, 'on_floor_start', floorEvent);
 
-    const baseThreat = getThreatLevel(nextFloor, nextMapTier);
-    const baseTarget = getFloorTarget(nextFloor, nextMapTier);
+    const baseThreat = getThreatLevel(nextFloor, nextMapTier, nextFloorEvents);
+    const baseTarget = getFloorTarget(nextFloor, nextMapTier, nextFloorEvents);
 
     return {
       ...state,
@@ -516,9 +718,11 @@ const gameReducer = (state: GameState, action: Action): GameState => {
       phase: 'combat',
       floor: nextFloor,
       floorProgress: 0,
+      floorEvents: nextFloorEvents,
+      tickCount: 0,
       floorTarget: Math.max(3, baseTarget + floorEvent.floorTargetDelta),
       threatLevel: Math.max(1, baseThreat + floorEvent.threatDelta),
-      shields: Math.max(0, state.shields + floorEvent.bonusShields),
+      shields: Math.max(0, state.shields + floorEvent.bonusShields + (nextFloorEvents.includes('shield_bonus') ? 1 : 0)),
       score: state.score + floorEvent.bonusScore,
       gridSize: nextGridSize,
       mapTier: nextMapTier,
@@ -536,12 +740,12 @@ const gameReducer = (state: GameState, action: Action): GameState => {
     const blocked = !moved;
 
     const afterMove = resolveTargetCollection({ ...state, player: movedPlayer }, wallsSet, action.direction, moved, blocked);
-    return resolveCollision(afterMove, wallsSet);
+    return resolveCollision(resolveHazardDamage(afterMove, wallsSet), wallsSet);
   }
 
   if (action.type === 'AI_TICK') {
     if (state.aiStunTicks > 0) {
-      return { ...state, aiStunTicks: state.aiStunTicks - 1 };
+      return resolveHazardDamage({ ...state, aiStunTicks: state.aiStunTicks - 1, tickCount: state.tickCount + 1 }, wallsSet);
     }
 
     const aiEvent: AITickEffectEvent = {
@@ -552,13 +756,16 @@ const gameReducer = (state: GameState, action: Action): GameState => {
 
     runUpgradeHook(state.ownedUpgrades, 'on_ai_tick', aiEvent);
 
-    const nextAi = aiEvent.skipMove ? state.ai : moveAI(state, wallsSet);
+    const movedEnemies = aiEvent.skipMove
+      ? state.enemies
+      : state.enemies.map((enemy) => moveEnemy(enemy, state, wallsSet));
     const nextState = {
       ...state,
-      ai: nextAi,
+      enemies: movedEnemies,
+      tickCount: state.tickCount + 1,
       score: state.score + aiEvent.bonusScore,
     };
-    return resolveCollision(nextState, wallsSet);
+    return resolveCollision(resolveHazardDamage(nextState, wallsSet), wallsSet);
   }
 
   return state;
@@ -736,9 +943,9 @@ const AIGame = () => {
 
   const statusLabel = useMemo(() => {
     if (state.status === 'idle') return 'Clear each floor objective to reach the next sector.';
-    if (state.status === 'lost') return 'Hunter caught you. Run it back.';
+    if (state.status === 'lost') return 'You were intercepted. Reboot and try a new route.';
     if (state.phase === 'upgrade_draft') return 'Floor cleared. Choose one upgrade to push deeper.';
-    return 'Steal data and avoid the hunter. Threat increases every floor.';
+    return 'Steal data, track hazard timing, and avoid enemy squads.';
   }, [state.phase, state.status]);
 
   const wallsSet = useMemo(() => new Set(state.walls), [state.walls]);
@@ -747,6 +954,14 @@ const AIGame = () => {
     () => state.upgradeChoices.map((id) => UPGRADE_MAP.get(id)).filter(Boolean),
     [state.upgradeChoices]
   );
+
+  const stormCycle = state.floorEvents.includes('storm_cycle');
+  const floorEventLabels: Record<FloorEventModifier, string> = {
+    dense_walls: 'Dense Walls',
+    double_target: 'Double Target',
+    storm_cycle: 'Storm Cycle',
+    shield_bonus: 'Shield Bonus',
+  };
 
   return (
     <Card className="border bg-gradient-to-br from-violet-500/5 via-background to-cyan-500/5">
@@ -780,6 +995,16 @@ const AIGame = () => {
             Touch pad on mobile
           </Badge>
         </div>
+
+        {state.floorEvents.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {state.floorEvents.map((modifier) => (
+              <Badge key={modifier} variant="outline" className="text-[11px] border-amber-400/40 text-amber-700 dark:text-amber-200">
+                {floorEventLabels[modifier]}
+              </Badge>
+            ))}
+          </div>
+        )}
 
         <div className="grid grid-cols-3 gap-2 text-xs">
           <div className="rounded-md border px-3 py-2">
@@ -836,13 +1061,23 @@ const AIGame = () => {
               const key = toKey(point);
               const isWall = wallsSet.has(key);
               const isPlayer = toKey(state.player) === key;
-              const isAI = toKey(state.ai) === key;
+              const enemy = state.enemies.find((unit) => toKey(unit.position) === key);
               const isTarget = toKey(state.target) === key;
+              const hazard = state.hazards.find((tile) => toKey(tile.position) === key);
+              const isHazardActiveNow = hazard ? isHazardActive(hazard, state.tickCount, stormCycle) : false;
 
               let cellClass = 'bg-background';
               if (isWall) cellClass = 'bg-slate-500/25';
+              if (hazard) cellClass = isHazardActiveNow ? 'bg-orange-500/35 ring-1 ring-orange-400/60' : 'bg-orange-300/15';
               if (isTarget) cellClass = 'bg-cyan-500/25';
-              if (isAI) cellClass = 'bg-red-500/30';
+              if (enemy) {
+                cellClass =
+                  enemy.archetype === 'elite'
+                    ? 'bg-fuchsia-500/35'
+                    : enemy.archetype === 'patrol'
+                      ? 'bg-amber-500/35'
+                      : 'bg-red-500/30';
+              }
               if (isPlayer) cellClass = 'bg-accent/50';
 
               return (
@@ -857,9 +1092,14 @@ const AIGame = () => {
                       DATA
                     </span>
                   )}
-                  {isAI && (
-                    <span className="absolute inset-0 flex items-center justify-center text-[10px] text-red-900 dark:text-red-100">
-                      AI
+                  {hazard && !enemy && !isPlayer && (
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] text-orange-900 dark:text-orange-100">
+                      {isHazardActiveNow ? 'HOT' : 'ARM'}
+                    </span>
+                  )}
+                  {enemy && (
+                    <span className="absolute inset-0 flex items-center justify-center text-[9px] text-red-900 dark:text-red-100">
+                      {enemy.archetype === 'hunter' ? 'HNT' : enemy.archetype === 'elite' ? 'ELT' : 'PAT'}
                     </span>
                   )}
                   {isPlayer && (
