@@ -204,6 +204,11 @@ const readState = (key: string) => {
   }
 };
 
+const readRawState = (key: string) => {
+  if (typeof window === 'undefined') return null;
+  return window.localStorage.getItem(key);
+};
+
 const writeState = (key: string, state: PetState) => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(key, JSON.stringify(state));
@@ -375,18 +380,32 @@ const getVisual = (state: PetState, breatheFrame: number) => {
 };
 
 const TamagotchiGame = () => {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const storageKey = useMemo(() => `unihub:pet:v2:${user?.id ?? 'guest'}`, [user?.id]);
   const [state, setState] = useState<PetState>(() => readState(storageKey));
   const [breatheFrame, setBreatheFrame] = useState(0);
 
   useEffect(() => {
+    if (loading) return;
+
+    if (typeof window !== 'undefined' && user?.id) {
+      const guestKey = 'unihub:pet:v2:guest';
+      const guestRaw = readRawState(guestKey);
+      const existingUserRaw = readRawState(storageKey);
+
+      if (!existingUserRaw && guestRaw) {
+        window.localStorage.setItem(storageKey, guestRaw);
+        window.localStorage.removeItem(guestKey);
+      }
+    }
+
     setState(applyPassiveChanges(readState(storageKey)));
-  }, [storageKey]);
+  }, [loading, storageKey, user?.id]);
 
   useEffect(() => {
+    if (loading) return;
     writeState(storageKey, state);
-  }, [storageKey, state]);
+  }, [loading, storageKey, state]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setBreatheFrame((frame) => (frame + 1) % 2), 1200);
@@ -492,7 +511,7 @@ const TamagotchiGame = () => {
               <p className="text-xs text-muted-foreground">
                 {state.lifeStage === 'egg'
                   ? state.eggType
-                    ? `Egg shell: ${EGG_NOTES[state.eggType]} Hatch meter: ${Math.round(state.hatchProgress)}%.`
+                    ? `Egg shell: ${EGG_NOTES[state.eggType]} Hatch meter is building steadily.`
                     : 'Choose an egg shell to begin. Hatch species is still random.'
                   : `It looks ${SPECIES_DETAILS[state.species ?? 'mossling'].aura} and ${PERSONALITY_HINTS[state.personality]}`}
               </p>
@@ -501,9 +520,6 @@ const TamagotchiGame = () => {
             <div className="space-y-2">
               <div className="text-xs font-medium text-muted-foreground">Lifecycle clock</div>
               <Progress value={clamp(((now - state.createdAt) / (state.lifecycle.lifespanEndsAt - state.createdAt)) * 100)} />
-              <p className="text-[11px] text-muted-foreground">
-                Remaining lifespan: {state.lifeStage === 'deceased' ? '0h' : formatDuration(state.lifecycle.lifespanEndsAt - now)}
-              </p>
             </div>
           </div>
 

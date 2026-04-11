@@ -104,14 +104,14 @@ const TetrisGame = () => {
     setStatus('playing');
   }, []);
 
-  const lockPiece = useCallback(() => {
+  const lockPiece = useCallback((pieceToLock: Piece = piece) => {
     setBoard((prevBoard) => {
       const nextBoard = prevBoard.map((row) => [...row]) as Cell[][];
-      for (let y = 0; y < piece.shape.length; y += 1) {
-        for (let x = 0; x < piece.shape[y].length; x += 1) {
-          if (!piece.shape[y][x]) continue;
-          const boardX = piece.x + x;
-          const boardY = piece.y + y;
+      for (let y = 0; y < pieceToLock.shape.length; y += 1) {
+        for (let x = 0; x < pieceToLock.shape[y].length; x += 1) {
+          if (!pieceToLock.shape[y][x]) continue;
+          const boardX = pieceToLock.x + x;
+          const boardY = pieceToLock.y + y;
           if (boardY < 0) continue;
           nextBoard[boardY][boardX] = 1;
         }
@@ -182,8 +182,7 @@ const TetrisGame = () => {
     while (!collides({ ...dropped, y: dropped.y + 1 }, board)) {
       dropped = { ...dropped, y: dropped.y + 1 };
     }
-    setPiece(dropped);
-    setTimeout(() => lockPiece(), 0);
+    lockPiece(dropped);
   }, [board, collides, lockPiece, piece]);
 
   useEffect(() => {
@@ -337,8 +336,8 @@ const TetrisGame = () => {
                   key={`${rowIndex}-${cellIndex}`}
                   className={`aspect-square rounded-[2px] border ${
                     cell
-                      ? 'border-cyan-700/80 bg-cyan-500/85 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.25)]'
-                      : 'border-slate-400/70 bg-slate-100'
+                      ? 'border-cyan-700/60 bg-cyan-500/75 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.18)]'
+                      : 'border-slate-300/50 bg-slate-100/85'
                   }`}
                 />
               ))
