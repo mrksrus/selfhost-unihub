@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCalendarNotifications } from '@/hooks/use-calendar-notifications';
 import { useAuth } from '@/contexts/AuthContext';
 import { calendarApi, calendarQueryKeys, formatEventTime, localDatetimeToIso, toDatetimeLocalValue, type CalendarEvent, type CalendarSubtask } from '@/lib/calendar-api';
 import { Button } from '@/components/ui/button';
@@ -41,8 +40,6 @@ const TodoPage = () => {
   const timezone = user?.timezone ?? null;
   const { toast } = useToast();
   const queryClient = useQueryClient();
-
-  useCalendarNotifications();
 
   const [isChangeDialogOpen, setIsChangeDialogOpen] = useState(false);
   const [isTimeMoveDialogOpen, setIsTimeMoveDialogOpen] = useState(false);

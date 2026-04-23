@@ -44,8 +44,8 @@ Untrusted email HTML is rendered inside a **sandboxed iframe** (`sandbox=""`) wi
 ### Mail transport security
 
 - All IMAP and SMTP connections use **strict TLS certificate verification** by default (`rejectUnauthorized: true`).
-- When adding a mail account with an unknown/custom host, a **preflight check** runs that classifies the host (known provider vs unknown) and resolves DNS to detect private/local addresses.
-- Unknown hosts trigger a confirmation dialog showing certificate details (subject, issuer, fingerprint) so you can verify before trusting.
+- When adding or editing a mail account, a host/certificate check classifies the host (known provider vs unknown), resolves DNS to detect private/local addresses, and inspects the certificate.
+- Unknown hosts or untrusted certificates trigger a confirmation dialog showing certificate details (subject, issuer, fingerprint) so you can verify before trusting.
 - Private/local IP hosts are blocked unless explicitly allowlisted via `TRUSTED_MAIL_HOSTS`.
 
 ## Features
@@ -83,16 +83,16 @@ services:
       NODE_ENV: production
       MYSQL_DATABASE: unihub
       MYSQL_USER: unihub
-      MYSQL_PASSWORD: CHANGE_ME_db_password
+      MYSQL_PASSWORD: ${UNIHUB_MYSQL_PASSWORD:?Set UNIHUB_MYSQL_PASSWORD before starting}
       MYSQL_HOST: unihub-mysql
       MYSQL_PORT: "3306"
       MYSQL_STARTUP_MAX_WAIT_SECONDS: "120"
       MYSQL_STARTUP_CHECK_INTERVAL_SECONDS: "5"
       UNIHUB_API_START_DELAY_SECONDS: "2"
-      JWT_SECRET: ""                                  # REQUIRED -- openssl rand -base64 48
-      ENCRYPTION_KEY: CHANGE_ME_encryption_key        # REQUIRED
-      BOOTSTRAP_ADMIN_EMAIL: admin@example.com        # REQUIRED on first start
-      BOOTSTRAP_ADMIN_PASSWORD: CHANGE_ME_admin_pw    # REQUIRED on first start (min 12 chars)
+      JWT_SECRET: ${UNIHUB_JWT_SECRET:?Set UNIHUB_JWT_SECRET before starting}
+      ENCRYPTION_KEY: ${UNIHUB_ENCRYPTION_KEY:?Set UNIHUB_ENCRYPTION_KEY before starting}
+      BOOTSTRAP_ADMIN_EMAIL: ${UNIHUB_BOOTSTRAP_ADMIN_EMAIL:?Set UNIHUB_BOOTSTRAP_ADMIN_EMAIL before first startup}
+      BOOTSTRAP_ADMIN_PASSWORD: ${UNIHUB_BOOTSTRAP_ADMIN_PASSWORD:?Set UNIHUB_BOOTSTRAP_ADMIN_PASSWORD before first startup}
       ALLOWED_ORIGINS: http://localhost:3000           # Your frontend origin
       TRUST_PROXY_HEADERS: "true"                     # Set true when behind reverse proxy
       TRUSTED_MAIL_HOSTS: ""                          # Optional: mail.example.com
@@ -112,8 +112,8 @@ services:
     environment:
       MYSQL_DATABASE: unihub
       MYSQL_USER: unihub
-      MYSQL_PASSWORD: CHANGE_ME_db_password
-      MYSQL_ROOT_PASSWORD: CHANGE_ME_root_password
+      MYSQL_PASSWORD: ${UNIHUB_MYSQL_PASSWORD:?Set UNIHUB_MYSQL_PASSWORD before starting}
+      MYSQL_ROOT_PASSWORD: ${UNIHUB_MYSQL_ROOT_PASSWORD:?Set UNIHUB_MYSQL_ROOT_PASSWORD before starting}
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
@@ -138,16 +138,16 @@ volumes:
 
 ### Step 2 -- Set your passwords
 
-Replace every `CHANGE_ME_*` value and fill in required secrets:
+Create a `.env` file next to `docker-compose.yml` and fill in the required secrets. If any required value is missing, Docker Compose stops immediately and shows the message from the `${...:?message}` field.
 
 | Value | What to put there |
 |-------|-------------------|
-| `MYSQL_PASSWORD` | A strong password (must match in both services) |
-| `MYSQL_ROOT_PASSWORD` | A different strong password for the MySQL root user |
-| `JWT_SECRET` | A long random string -- generate with `openssl rand -base64 48` |
-| `ENCRYPTION_KEY` | Another random string -- used to encrypt stored mail credentials |
-| `BOOTSTRAP_ADMIN_EMAIL` | Email for the first admin account (used only when DB has no users) |
-| `BOOTSTRAP_ADMIN_PASSWORD` | Bootstrap admin password (minimum 12 characters) |
+| `UNIHUB_MYSQL_PASSWORD` | A strong password (used by both app and database services) |
+| `UNIHUB_MYSQL_ROOT_PASSWORD` | A different strong password for the MySQL root user |
+| `UNIHUB_JWT_SECRET` | A long random string -- generate with `openssl rand -base64 48` |
+| `UNIHUB_ENCRYPTION_KEY` | Another random string -- used to encrypt stored mail credentials |
+| `UNIHUB_BOOTSTRAP_ADMIN_EMAIL` | Email for the first admin account (used only when DB has no users) |
+| `UNIHUB_BOOTSTRAP_ADMIN_PASSWORD` | Bootstrap admin password (minimum 12 characters) |
 | `ALLOWED_ORIGINS` | Comma-separated browser origins allowed for API calls (e.g. `https://hub.example.com`) |
 | `TRUST_PROXY_HEADERS` | Set to `true` when running behind a reverse proxy (Nginx, Caddy, Traefik) |
 | `TRUSTED_MAIL_HOSTS` | Optional comma-separated custom mail host domains/IPs to trust (e.g. `mail.example.com`) |
@@ -161,9 +161,9 @@ On first launch:
 1. MySQL creates the `unihub` database and user automatically
 2. The API waits for MySQL readiness (up to `MYSQL_STARTUP_MAX_WAIT_SECONDS`, default 120 seconds)
 3. The API creates all database tables automatically
-4. If no users exist, the API creates the first admin from `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD`
+4. If no users exist, the API creates the first admin from `UNIHUB_BOOTSTRAP_ADMIN_EMAIL` and `UNIHUB_BOOTSTRAP_ADMIN_PASSWORD`
 
-The server will **refuse to start** if `JWT_SECRET`, `ENCRYPTION_KEY`, or the bootstrap admin env vars (when no users exist) are missing.
+Docker Compose will stop before startup if a required `UNIHUB_*` value is missing. The server also refuses placeholder or empty runtime secrets.
 
 ### Step 4 -- Log in
 
@@ -182,7 +182,7 @@ The values under `environment:` in `docker-compose.yml` are passed into each con
   docker compose run --rm unihub-mysql env | grep -E '^MYSQL_'
   ```
 
-Ensure `MYSQL_PASSWORD` is identical in both services; the MySQL container creates the user with that password, and the unihub container must use the same one to connect.
+Ensure `UNIHUB_MYSQL_PASSWORD` is set once in `.env`; Docker Compose passes the same value to both services.
 
 ## Environment Variables Reference
 
@@ -190,11 +190,12 @@ Ensure `MYSQL_PASSWORD` is identical in both services; the MySQL container creat
 
 | Variable | Purpose |
 |----------|---------|
-| `JWT_SECRET` | Signs JWT auth tokens |
-| `ENCRYPTION_KEY` | AES-256-GCM key for stored mail passwords |
-| `BOOTSTRAP_ADMIN_EMAIL` | First admin email (only used when users table is empty) |
-| `BOOTSTRAP_ADMIN_PASSWORD` | First admin password (min 12 characters, only used when users table is empty) |
-| `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD` | Database connection |
+| `UNIHUB_JWT_SECRET` | Signs JWT auth tokens |
+| `UNIHUB_ENCRYPTION_KEY` | AES-256-GCM key for stored mail passwords |
+| `UNIHUB_BOOTSTRAP_ADMIN_EMAIL` | First admin email (only used when users table is empty) |
+| `UNIHUB_BOOTSTRAP_ADMIN_PASSWORD` | First admin password (min 12 characters, only used when users table is empty) |
+| `UNIHUB_MYSQL_PASSWORD`, `UNIHUB_MYSQL_ROOT_PASSWORD` | Database passwords used by Docker Compose |
+| `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER` | Database connection settings inside the container |
 
 ### Optional
 
@@ -217,9 +218,9 @@ Ensure `MYSQL_PASSWORD` is identical in both services; the MySQL container creat
 ## Mail Sync Details
 
 - **Supported providers**: Gmail, Apple/iCloud, Yahoo, Outlook, and any standard IMAP/SMTP provider (including self-hosted)
-- **Sync behavior**: automatic every 10 minutes; manual sync via UI; fetches last 500 emails per account
+- **Sync behavior**: automatic every 5 minutes; manual sync via UI; fetches last 500 emails per account
 - **Compose**: new messages, reply, forward with attachment support (up to 20 attachments, 25 MB total)
-- **Security**: mail passwords encrypted with AES-256-GCM; strict TLS verification; unknown-host preflight with certificate inspection; SSRF protection (private IP blocking)
+- **Security**: mail passwords encrypted with AES-256-GCM; strict TLS verification; host/certificate confirmation; SSRF protection (private IP blocking)
 - **Limitations**: syncs last 500 emails only; one-by-one fetching may be slow for large mailboxes; INBOX only (no sent folder sync yet)
 
 ## Calendar Sync Details
@@ -297,7 +298,7 @@ package.json              Frontend dependencies
 
 ## Technical Documentation
 
-- **[Mail Sync](docs/MAIL_SYNC.md)** -- IMAP sync process, TLS verification, host trust preflight, encryption
+- **[Mail Sync](docs/MAIL_SYNC.md)** -- IMAP sync process, TLS verification, host/certificate trust checks, encryption
 - **[Attachments](docs/ATTACHMENTS.md)** -- Attachment storage, inline images, sandboxed rendering, download security
 - **[Contacts](docs/CONTACTS.md)** -- Contact management, vCard import/export, API endpoints
 - **[Calendar](docs/CALENDAR.md)** -- Calendar events, to-do/subtask system, date handling, API endpoints

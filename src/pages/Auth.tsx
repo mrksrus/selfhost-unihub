@@ -12,7 +12,7 @@ import { motion } from 'framer-motion';
 import { z } from 'zod';
 
 const emailSchema = z.string().email('Please enter a valid email address');
-const passwordSchema = z.string().min(6, 'Password must be at least 6 characters');
+const passwordSchema = z.string().min(12, 'Password must be at least 12 characters');
 
 const Auth = () => {
   const { user, signIn, signUp, loading: authLoading } = useAuth();

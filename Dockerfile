@@ -19,8 +19,8 @@ RUN apk add --no-cache nginx wget netcat-openbsd mariadb-client \
 # ── Set up the API ─────────────────────────────────────────────────
 WORKDIR /app
 
-COPY api/package.json ./api/
-RUN cd api && npm install --omit=dev \
+COPY api/package*.json ./api/
+RUN cd api && npm ci --omit=dev \
     && apk del .build-deps
 
 COPY api/*.js ./api/

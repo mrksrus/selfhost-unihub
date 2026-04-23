@@ -2,7 +2,7 @@ services:
   # ── UniHub Application (Frontend + API) ─────────────────────────
   #
   # Bootstrap admin account (required on first start):
-  #   BOOTSTRAP_ADMIN_EMAIL + BOOTSTRAP_ADMIN_PASSWORD
+  #   UNIHUB_BOOTSTRAP_ADMIN_EMAIL + UNIHUB_BOOTSTRAP_ADMIN_PASSWORD
   # Password must be at least 12 characters.
   #
   unihub:
@@ -18,7 +18,7 @@ services:
       NODE_ENV: production
       MYSQL_DATABASE: unihub
       MYSQL_USER: unihub
-      MYSQL_PASSWORD: CHANGE_ME_db_password          # ← CHANGE THIS
+      MYSQL_PASSWORD: ${UNIHUB_MYSQL_PASSWORD:?Set UNIHUB_MYSQL_PASSWORD to a strong database password before starting}
       MYSQL_HOST: unihub-mysql
       MYSQL_PORT: "3306"
       # ── Startup timing controls used by docker/start.sh ───────────────
@@ -27,12 +27,12 @@ services:
       UNIHUB_API_START_DELAY_SECONDS: "2"
       # ── Required: set a strong, random secret ──────────────────────
       # Generate one with:  openssl rand -base64 48
-      JWT_SECRET: ""                               # ← REQUIRED – fill this in
+      JWT_SECRET: ${UNIHUB_JWT_SECRET:?Set UNIHUB_JWT_SECRET to a strong random value before starting}
       # ── Encryption key for stored email passwords ──────────────────
-      ENCRYPTION_KEY: CHANGE_ME_encryption_key     # ← CHANGE THIS
+      ENCRYPTION_KEY: ${UNIHUB_ENCRYPTION_KEY:?Set UNIHUB_ENCRYPTION_KEY to a strong random value before starting}
       # ── First-run admin bootstrap (required when users table is empty) ──
-      BOOTSTRAP_ADMIN_EMAIL: admin@example.com      # ← CHANGE THIS
-      BOOTSTRAP_ADMIN_PASSWORD: CHANGE_ME_admin_password # ← CHANGE THIS (min 12 chars)
+      BOOTSTRAP_ADMIN_EMAIL: ${UNIHUB_BOOTSTRAP_ADMIN_EMAIL:?Set UNIHUB_BOOTSTRAP_ADMIN_EMAIL before first startup}
+      BOOTSTRAP_ADMIN_PASSWORD: ${UNIHUB_BOOTSTRAP_ADMIN_PASSWORD:?Set UNIHUB_BOOTSTRAP_ADMIN_PASSWORD before first startup}
       # ── CORS allowlist (comma-separated origins) ───────────────────
       ALLOWED_ORIGINS: "http://localhost:3000,https://mydomain.domain.com"
       # ── Trust proxy headers only when behind a trusted reverse proxy ──
@@ -62,8 +62,8 @@ services:
     environment:
       MYSQL_DATABASE: unihub
       MYSQL_USER: unihub
-      MYSQL_PASSWORD: CHANGE_ME_db_password         # ← MUST match above
-      MYSQL_ROOT_PASSWORD: CHANGE_ME_root_password  # ← CHANGE THIS
+      MYSQL_PASSWORD: ${UNIHUB_MYSQL_PASSWORD:?Set UNIHUB_MYSQL_PASSWORD to a strong database password before starting}
+      MYSQL_ROOT_PASSWORD: ${UNIHUB_MYSQL_ROOT_PASSWORD:?Set UNIHUB_MYSQL_ROOT_PASSWORD to a strong root database password before starting}
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci

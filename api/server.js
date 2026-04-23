@@ -45,6 +45,7 @@ const { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } = require('./
 const writeFile = promisify(fs.writeFile);
 const mkdir = promisify(fs.mkdir);
 const readFile = promisify(fs.readFile);
+const rm = promisify(fs.rm);
 
 // Debug logging helper - write to container filesystem and console
 const DEBUG_LOG_PATH = '/app/debug.log';
@@ -90,6 +91,7 @@ const CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED = process.env.CALENDAR_SYNC_PROVIDER
 const CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED = process.env.CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED !== 'false';
 const CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED = process.env.CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED !== 'false';
 const AUTH_COOKIE_NAME = 'auth-token';
+const MIN_PASSWORD_LENGTH = 12;
 
 // ── Encryption helpers (AES-256-GCM) ─────────────────────────────
 function deriveKey(secret) {
@@ -282,6 +284,19 @@ function isSelfSignedTlsError(message) {
   );
 }
 
+function isTlsTrustError(message) {
+  const normalized = String(message || '').toUpperCase();
+  if (!normalized) return false;
+  return (
+    isSelfSignedTlsError(normalized) ||
+    normalized.includes('CERT') ||
+    normalized.includes('UNABLE_TO_VERIFY') ||
+    normalized.includes('HOSTNAME') ||
+    normalized.includes('EXPIRED') ||
+    normalized.includes('NOT_YET_VALID')
+  );
+}
+
 function isPrivateIPv4(ip) {
   const parts = ip.split('.').map(Number);
   if (parts.length !== 4 || parts.some(Number.isNaN)) return false;
@@ -352,7 +367,28 @@ async function assessMailHost(host, port) {
   };
 }
 
-function fetchTlsCertificate(host, port) {
+function serializePeerCertificate(socket) {
+  const cert = socket.getPeerCertificate(true);
+  const authorizationError = socket.authorizationError || null;
+  if (!cert || Object.keys(cert).length === 0) {
+    return { error: 'No certificate presented' };
+  }
+  return {
+    subject: cert.subject || null,
+    issuer: cert.issuer || null,
+    valid_from: cert.valid_from || null,
+    valid_to: cert.valid_to || null,
+    fingerprint: cert.fingerprint || null,
+    fingerprint256: cert.fingerprint256 || null,
+    serialNumber: cert.serialNumber || null,
+    authorized: socket.authorized === true,
+    authorizationError,
+    selfSigned: isSelfSignedTlsError(authorizationError),
+    trustError: isTlsTrustError(authorizationError),
+  };
+}
+
+function fetchDirectTlsCertificate(host, port) {
   const normalizedHost = normalizeHost(host);
   const numericPort = Number(port);
   if (!normalizedHost || !numericPort) {
@@ -370,25 +406,9 @@ function fetchTlsCertificate(host, port) {
     }, () => {
       if (settled) return;
       settled = true;
-      const cert = socket.getPeerCertificate(true);
-      const authorizationError = socket.authorizationError || null;
+      const certificate = serializePeerCertificate(socket);
       socket.end();
-      if (!cert || Object.keys(cert).length === 0) {
-        resolve({ error: 'No certificate presented' });
-        return;
-      }
-      resolve({
-        subject: cert.subject || null,
-        issuer: cert.issuer || null,
-        valid_from: cert.valid_from || null,
-        valid_to: cert.valid_to || null,
-        fingerprint: cert.fingerprint || null,
-        fingerprint256: cert.fingerprint256 || null,
-        serialNumber: cert.serialNumber || null,
-        authorized: socket.authorized === true,
-        authorizationError,
-        selfSigned: isSelfSignedTlsError(authorizationError),
-      });
+      resolve(certificate);
     });
 
     socket.on('error', (error) => {
@@ -403,6 +423,139 @@ function fetchTlsCertificate(host, port) {
       resolve({ error: 'TLS handshake timed out' });
     });
   });
+}
+
+function smtpResponseComplete(buffer) {
+  const lines = buffer.split(/\r?\n/).filter(Boolean);
+  const lastLine = lines[lines.length - 1] || '';
+  return /^[0-9]{3} /.test(lastLine);
+}
+
+function fetchSmtpStartTlsCertificate(host, port) {
+  const normalizedHost = normalizeHost(host);
+  const numericPort = Number(port);
+  if (!normalizedHost || !numericPort) {
+    return Promise.resolve({ error: 'Missing host or port' });
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let state = 'banner';
+    let buffer = '';
+    const socket = net.createConnection({ host: normalizedHost, port: numericPort });
+
+    const settle = (result) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(result);
+    };
+
+    socket.setTimeout(7000);
+
+    socket.on('data', (chunk) => {
+      if (settled) return;
+      buffer += chunk.toString('utf8');
+      if (!smtpResponseComplete(buffer)) return;
+
+      const response = buffer;
+      buffer = '';
+
+      if (state === 'banner') {
+        if (!response.startsWith('220')) {
+          settle({ error: `Unexpected SMTP banner: ${response.split(/\r?\n/)[0] || 'unknown'}` });
+          return;
+        }
+        state = 'ehlo';
+        socket.write('EHLO unihub.local\r\n');
+        return;
+      }
+
+      if (state === 'ehlo') {
+        if (!/^250[ -]/.test(response)) {
+          settle({ error: 'SMTP EHLO failed before STARTTLS check' });
+          return;
+        }
+        if (!/STARTTLS/i.test(response)) {
+          settle({ error: 'SMTP server does not advertise STARTTLS' });
+          return;
+        }
+        state = 'starttls';
+        socket.write('STARTTLS\r\n');
+        return;
+      }
+
+      if (state === 'starttls') {
+        if (!response.startsWith('220')) {
+          settle({ error: 'SMTP server refused STARTTLS' });
+          return;
+        }
+
+        socket.removeAllListeners('data');
+        socket.removeAllListeners('timeout');
+        socket.removeAllListeners('error');
+
+        const tlsSocket = tls.connect({
+          socket,
+          servername: normalizedHost,
+          rejectUnauthorized: false,
+        }, () => {
+          if (settled) return;
+          settled = true;
+          const certificate = serializePeerCertificate(tlsSocket);
+          tlsSocket.end();
+          resolve(certificate);
+        });
+
+        tlsSocket.setTimeout(7000);
+        tlsSocket.on('error', (error) => {
+          if (settled) return;
+          settled = true;
+          resolve({ error: error.message });
+        });
+        tlsSocket.on('timeout', () => {
+          if (settled) return;
+          settled = true;
+          tlsSocket.destroy();
+          resolve({ error: 'SMTP STARTTLS handshake timed out' });
+        });
+      }
+    });
+
+    socket.on('error', (error) => settle({ error: error.message }));
+    socket.on('timeout', () => settle({ error: 'SMTP STARTTLS probe timed out' }));
+  });
+}
+
+function fetchMailTlsCertificate(host, port, service) {
+  const numericPort = Number(port);
+  if (service === 'smtp' && numericPort !== 465) {
+    return fetchSmtpStartTlsCertificate(host, numericPort || 587);
+  }
+  return fetchDirectTlsCertificate(host, numericPort || (service === 'imap' ? 993 : 465));
+}
+
+function certificateRequiresInsecureTls(certificate) {
+  if (!certificate) return true;
+  if (certificate.error) return true;
+  return certificate.authorized !== true;
+}
+
+function normalizeCertificateFingerprint(value) {
+  return String(value || '').replace(/[^a-f0-9]/gi, '').toUpperCase();
+}
+
+async function assertAcceptedMailCertificate({ host, port, service, expectedFingerprint }) {
+  const normalizedExpected = normalizeCertificateFingerprint(expectedFingerprint);
+  if (!normalizedExpected) return;
+  const certificate = await fetchMailTlsCertificate(host, port, service);
+  const normalizedActual = normalizeCertificateFingerprint(certificate?.fingerprint256);
+  if (!normalizedActual) {
+    throw new Error(`${service.toUpperCase()} certificate could not be read for accepted server ${host}.`);
+  }
+  if (normalizedActual !== normalizedExpected) {
+    throw new Error(`${service.toUpperCase()} certificate changed for ${host}. Review the mail account settings before connecting.`);
+  }
 }
 
 async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port }) {
@@ -422,27 +575,41 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
   if (imapAssessment.blocked) warnings.push(`IMAP host "${imapAssessment.host}" resolves to a private/local address.`);
   if (smtpAssessment.blocked) warnings.push(`SMTP host "${smtpAssessment.host}" resolves to a private/local address.`);
 
+  if (blocked) {
+    return {
+      blocked,
+      requiresConfirmation: true,
+      requiresInsecureTls: false,
+      warnings,
+      assessments,
+      certificates: {
+        imap: { error: 'Blocked before certificate check because the host resolves to a private/local address.' },
+        smtp: { error: 'Blocked before certificate check because the host resolves to a private/local address.' },
+      },
+    };
+  }
+
   const [imapCertificate, smtpCertificate] = await Promise.all([
-    fetchTlsCertificate(imapAssessment.host, imapAssessment.port || 993),
-    fetchTlsCertificate(smtpAssessment.host, smtpAssessment.port || 587),
+    fetchMailTlsCertificate(imapAssessment.host, imapAssessment.port || 993, 'imap'),
+    fetchMailTlsCertificate(smtpAssessment.host, smtpAssessment.port || 587, 'smtp'),
   ]);
   const certificates = {
     imap: imapCertificate,
     smtp: smtpCertificate,
   };
-  const imapSelfSigned = Boolean(certificates.imap && !certificates.imap.error && certificates.imap.selfSigned);
-  const smtpSelfSigned = Boolean(certificates.smtp && !certificates.smtp.error && certificates.smtp.selfSigned);
-  const requiresInsecureTls = imapSelfSigned || smtpSelfSigned;
+  const imapRequiresInsecureTls = certificateRequiresInsecureTls(certificates.imap);
+  const smtpRequiresInsecureTls = certificateRequiresInsecureTls(certificates.smtp);
+  const requiresInsecureTls = imapRequiresInsecureTls || smtpRequiresInsecureTls;
   const requiresConfirmation =
     imapAssessment.unknownProvider ||
     smtpAssessment.unknownProvider ||
     requiresInsecureTls;
 
-  if (imapSelfSigned) {
-    warnings.push(`IMAP certificate for "${imapAssessment.host}" is self-signed (${certificates.imap.authorizationError || 'untrusted'}).`);
+  if (imapRequiresInsecureTls) {
+    warnings.push(`IMAP certificate for "${imapAssessment.host}" could not be fully verified (${certificates.imap?.authorizationError || certificates.imap?.error || 'untrusted'}).`);
   }
-  if (smtpSelfSigned) {
-    warnings.push(`SMTP certificate for "${smtpAssessment.host}" is self-signed (${certificates.smtp.authorizationError || 'untrusted'}).`);
+  if (smtpRequiresInsecureTls) {
+    warnings.push(`SMTP certificate for "${smtpAssessment.host}" could not be fully verified (${certificates.smtp?.authorizationError || certificates.smtp?.error || 'untrusted'}).`);
   }
 
   return {
@@ -453,6 +620,64 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
     assessments,
     certificates,
   };
+}
+
+async function requireMailHostTrustApproval({ imap_host, imap_port, smtp_host, smtp_port, accept_host_trust }) {
+  const mailHostTrust = await buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port });
+  if (mailHostTrust.blocked) {
+    return {
+      error: 'Mail host blocked because it resolves to a private/local address. Ask the host administrator to add it to TRUSTED_MAIL_HOSTS if this is intentional.',
+      status: 400,
+      mailHostTrust,
+    };
+  }
+
+  if (mailHostTrust.requiresConfirmation && !toBooleanFlag(accept_host_trust)) {
+    return {
+      error: 'Review and confirm mail server authenticity before continuing.',
+      status: 409,
+      requiresHostTrustConfirmation: true,
+      mailHostTrust,
+    };
+  }
+
+  return {
+    accepted: true,
+    allowInsecureTls: mailHostTrust.requiresInsecureTls && toBooleanFlag(accept_host_trust),
+    trustedImapFingerprint256: mailHostTrust.requiresInsecureTls ? mailHostTrust.certificates.imap?.fingerprint256 || null : null,
+    trustedSmtpFingerprint256: mailHostTrust.requiresInsecureTls ? mailHostTrust.certificates.smtp?.fingerprint256 || null : null,
+    mailHostTrust,
+  };
+}
+
+function isAttachmentPathUnderUploads(storagePath) {
+  const uploadsRoot = path.resolve('/app/uploads/attachments');
+  const resolvedPath = path.resolve(storagePath || '');
+  return resolvedPath === uploadsRoot || resolvedPath.startsWith(`${uploadsRoot}${path.sep}`);
+}
+
+async function deleteStoredAttachmentFiles(storagePaths) {
+  const uniquePaths = Array.from(new Set((storagePaths || []).filter(Boolean)));
+  let deletedFiles = 0;
+  let failedFiles = 0;
+
+  for (const storagePath of uniquePaths) {
+    if (!isAttachmentPathUnderUploads(storagePath)) {
+      console.error('[ATTACH] Skipped deleting attachment outside uploads root:', storagePath);
+      failedFiles++;
+      continue;
+    }
+
+    try {
+      await rm(path.resolve(storagePath), { force: true });
+      deletedFiles++;
+    } catch (error) {
+      failedFiles++;
+      console.error('[ATTACH] Failed to delete attachment file:', error.message);
+    }
+  }
+
+  return { deletedFiles, failedFiles };
 }
 
 // ── Mail sync and send functions ──────────────────────────────────
@@ -813,7 +1038,7 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
   }
 }
 
-// Test IMAP connection and authentication without syncing (no TLS cert verification)
+// Test IMAP connection and authentication without syncing.
 async function testImapConnection(account) {
   let connection = null;
   try {
@@ -823,6 +1048,14 @@ async function testImapConnection(account) {
     }
     
     const imapPort = account.imap_port || 993;
+    if (toBooleanFlag(account.allow_self_signed)) {
+      await assertAcceptedMailCertificate({
+        host: account.imap_host,
+        port: imapPort,
+        service: 'imap',
+        expectedFingerprint: account.trusted_imap_fingerprint256,
+      });
+    }
     const config = {
       imap: {
         user: account.username || account.email_address,
@@ -831,7 +1064,7 @@ async function testImapConnection(account) {
         port: imapPort,
         tls: true,
         tlsOptions: { 
-          rejectUnauthorized: false,
+          rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
           servername: account.imap_host,
         },
         connTimeout: 60000,
@@ -890,6 +1123,14 @@ async function syncMailAccount(accountId) {
     }
     
     const imapPort = account.imap_port || 993;
+    if (toBooleanFlag(account.allow_self_signed)) {
+      await assertAcceptedMailCertificate({
+        host: account.imap_host,
+        port: imapPort,
+        service: 'imap',
+        expectedFingerprint: account.trusted_imap_fingerprint256,
+      });
+    }
     const config = {
       imap: {
         user: account.username || account.email_address,
@@ -898,7 +1139,7 @@ async function syncMailAccount(accountId) {
         port: imapPort,
         tls: true,
         tlsOptions: { 
-          rejectUnauthorized: false,
+          rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
           servername: account.imap_host,
         },
         connTimeout: 60000,
@@ -997,18 +1238,26 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
     if (!password) throw new Error('No password configured');
 
     const smtpPort = account.smtp_port || 587;
+    if (toBooleanFlag(account.allow_self_signed)) {
+      await assertAcceptedMailCertificate({
+        host: account.smtp_host,
+        port: smtpPort,
+        service: 'smtp',
+        expectedFingerprint: account.trusted_smtp_fingerprint256,
+      });
+    }
     // Port 465 uses implicit SSL/TLS, port 587 uses STARTTLS
     const transporter = nodemailer.createTransport({
       host: account.smtp_host,
       port: smtpPort,
       secure: smtpPort === 465, // Implicit SSL/TLS for port 465
-      requireTLS: smtpPort === 587, // Require STARTTLS for port 587
+      requireTLS: smtpPort !== 465, // Require STARTTLS on explicit-TLS SMTP ports
       auth: {
         user: account.username || account.email_address,
         pass: password,
       },
       tls: {
-        rejectUnauthorized: false,
+        rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
         servername: account.smtp_host, // SNI support for proper TLS handshake
       },
       connectionTimeout: 60000, // Connection timeout: 60 seconds
@@ -1140,9 +1389,16 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
 // Database connection pool
 let db;
 
-function getDatabaseUrl() {
+function getDatabaseConfig() {
   if (process.env.DATABASE_URL) {
-    return process.env.DATABASE_URL;
+    const dbUrl = new URL(process.env.DATABASE_URL);
+    return {
+      host: dbUrl.hostname,
+      port: parseInt(dbUrl.port, 10) || 3306,
+      user: decodeURIComponent(dbUrl.username),
+      password: decodeURIComponent(dbUrl.password),
+      database: dbUrl.pathname.slice(1),
+    };
   }
 
   const host = process.env.MYSQL_HOST;
@@ -1155,32 +1411,46 @@ function getDatabaseUrl() {
     return null;
   }
 
-  return `mysql://${user}:${password}@${host}:${port}/${database}`;
+  return {
+    host,
+    port: parseInt(port, 10) || 3306,
+    user,
+    password,
+    database,
+  };
+}
+
+function isPlaceholderSecret(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return !normalized || normalized.includes('change_me') || normalized === 'changeme';
 }
 
 async function initDatabase() {
-  if (!JWT_SECRET) {
-    console.error('✗ Missing JWT_SECRET. Set it in docker-compose.yml before starting.');
+  if (isPlaceholderSecret(JWT_SECRET)) {
+    console.error('✗ Missing or placeholder JWT_SECRET. Set a strong random JWT secret before starting.');
     process.exit(1);
   }
-  if (!ENCRYPTION_KEY) {
-    console.error('✗ Missing ENCRYPTION_KEY. Set it in docker-compose.yml before starting.');
+  if (isPlaceholderSecret(ENCRYPTION_KEY)) {
+    console.error('✗ Missing or placeholder ENCRYPTION_KEY. Set a strong random encryption key before starting.');
     process.exit(1);
   }
-  const databaseUrl = getDatabaseUrl();
-  if (!databaseUrl) {
+  const databaseConfig = getDatabaseConfig();
+  if (!databaseConfig) {
     console.error('✗ Missing database configuration. Set DATABASE_URL or MYSQL_* in docker-compose.yml.');
     process.exit(1);
   }
 
-  const dbUrl = new URL(databaseUrl);
+  if (isPlaceholderSecret(databaseConfig.password)) {
+    console.error('✗ Missing or placeholder database password. Set a real MySQL password before starting.');
+    process.exit(1);
+  }
   const poolConfig = {
     // Connection options (inherited by pool)
-    host: dbUrl.hostname,
-    port: parseInt(dbUrl.port, 10) || 3306,
-    user: decodeURIComponent(dbUrl.username),
-    password: decodeURIComponent(dbUrl.password),
-    database: dbUrl.pathname.slice(1),
+    host: databaseConfig.host,
+    port: databaseConfig.port,
+    user: databaseConfig.user,
+    password: databaseConfig.password,
+    database: databaseConfig.database,
     timezone: '+00:00', // interpret DATETIME as UTC (we store UTC)
     
     // Pool-specific options only
@@ -1510,6 +1780,8 @@ async function ensureSchema() {
     encrypted_password TEXT,
     sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT '500',
     allow_self_signed BOOLEAN DEFAULT FALSE,
+    trusted_imap_fingerprint256 VARCHAR(128),
+    trusted_smtp_fingerprint256 VARCHAR(128),
     is_active BOOLEAN DEFAULT TRUE,
     last_synced_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1530,6 +1802,22 @@ async function ensureSchema() {
     await db.execute(`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS allow_self_signed BOOLEAN DEFAULT FALSE AFTER encrypted_password`);
   } catch (e) {
     // Ignore when unsupported or already exists
+  }
+  try {
+    const [imapFingerprintCols] = await db.execute(`SHOW COLUMNS FROM mail_accounts LIKE 'trusted_imap_fingerprint256'`);
+    if (!Array.isArray(imapFingerprintCols) || imapFingerprintCols.length === 0) {
+      await db.execute(`ALTER TABLE mail_accounts ADD COLUMN trusted_imap_fingerprint256 VARCHAR(128) AFTER allow_self_signed`);
+    }
+  } catch (e) {
+    // Ignore migration failures and continue startup
+  }
+  try {
+    const [smtpFingerprintCols] = await db.execute(`SHOW COLUMNS FROM mail_accounts LIKE 'trusted_smtp_fingerprint256'`);
+    if (!Array.isArray(smtpFingerprintCols) || smtpFingerprintCols.length === 0) {
+      await db.execute(`ALTER TABLE mail_accounts ADD COLUMN trusted_smtp_fingerprint256 VARCHAR(128) AFTER trusted_imap_fingerprint256`);
+    }
+  } catch (e) {
+    // Ignore migration failures and continue startup
   }
   try {
     // Version-safe migration (MySQL variants may not support ADD COLUMN IF NOT EXISTS)
@@ -2043,15 +2331,45 @@ function unescapeVCard(str) {
 }
 
 function decodeQuotedPrintable(str) {
-  return str.replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+  return str
+    .replace(/=\r?\n/g, '')
+    .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+function splitVCardComponents(value) {
+  const parts = [];
+  let current = '';
+  let escaped = false;
+  for (const char of String(value || '')) {
+    if (escaped) {
+      current += `\\${char}`;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === ';') {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (escaped) current += '\\';
+  parts.push(current);
+  return parts;
 }
 
 function contactToVCard(c) {
   const lines = ['BEGIN:VCARD', 'VERSION:3.0'];
   const ln = escapeVCard(c.last_name || '');
   const fn = escapeVCard(c.first_name || '');
+  const fallbackName = c.email || c.email2 || c.email3 || c.phone || c.phone2 || c.phone3 || 'Unnamed Contact';
+  const fullName = [c.first_name, c.last_name].filter(Boolean).join(' ') || fallbackName;
   lines.push(`N:${ln};${fn};;;`);
-  lines.push(`FN:${escapeVCard([c.first_name, c.last_name].filter(Boolean).join(' '))}`);
+  lines.push(`FN:${escapeVCard(fullName)}`);
   const emails = [c.email, c.email2, c.email3].filter((v) => v && String(v).trim() !== '');
   const phones = [c.phone, c.phone2, c.phone3].filter((v) => v && String(v).trim() !== '');
   for (const email of emails) lines.push(`EMAIL;TYPE=INTERNET:${escapeVCard(email)}`);
@@ -2087,19 +2405,19 @@ function parseVCards(vcfData) {
       if (colonIdx === -1) continue;
 
       const propFull = line.substring(0, colonIdx).toUpperCase();
-      let value = line.substring(colonIdx + 1).trim();
+      let rawValue = line.substring(colonIdx + 1).trim();
       const propName = propFull.split(';')[0];
 
       // Handle quoted-printable encoding (used by some Apple exports)
       if (propFull.includes('ENCODING=QUOTED-PRINTABLE')) {
-        value = decodeQuotedPrintable(value);
+        rawValue = decodeQuotedPrintable(rawValue);
       }
 
-      value = unescapeVCard(value);
+      const value = unescapeVCard(rawValue);
 
       switch (propName) {
         case 'N': {
-          const parts = value.split(';');
+          const parts = splitVCardComponents(rawValue).map(unescapeVCard);
           contact.last_name = parts[0] || null;
           contact.first_name = parts[1] || '';
           break;
@@ -2119,7 +2437,7 @@ function parseVCards(vcfData) {
           if (value) phoneValues.push(value);
           break;
         case 'ORG':
-          contact.company = value.split(';')[0] || null;
+          contact.company = splitVCardComponents(rawValue).map(unescapeVCard)[0] || null;
           break;
         case 'TITLE':
           contact.job_title = value || null;
@@ -2135,8 +2453,8 @@ function parseVCards(vcfData) {
     [contact.email, contact.email2, contact.email3] = [uniqueEmails[0] || null, uniqueEmails[1] || null, uniqueEmails[2] || null];
     [contact.phone, contact.phone2, contact.phone3] = [uniquePhones[0] || null, uniquePhones[1] || null, uniquePhones[2] || null];
 
-    // Must have at least a name
-    if (contact.first_name || contact.last_name) {
+    // Keep valid vCards that contain at least one useful identity field.
+    if (contact.first_name || contact.last_name || contact.email || contact.phone) {
       if (!contact.first_name && contact.last_name) {
         contact.first_name = contact.last_name;
         contact.last_name = null;
@@ -2146,6 +2464,146 @@ function parseVCards(vcfData) {
   }
 
   return contacts;
+}
+
+function normalizeContactEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeContactPhone(value) {
+  return String(value || '').replace(/[^\d+]/g, '');
+}
+
+function getContactEmails(contact) {
+  return [contact.email, contact.email2, contact.email3].map(normalizeContactEmail).filter(Boolean);
+}
+
+function getContactPhones(contact) {
+  return [contact.phone, contact.phone2, contact.phone3].map(normalizeContactPhone).filter(Boolean);
+}
+
+function getContactIdentityKeys(contact) {
+  return [
+    ...getContactEmails(contact).map(email => `e:${email}`),
+    ...getContactPhones(contact).map(phone => `p:${phone}`),
+  ];
+}
+
+function getPrimaryContactIdentityKey(contact) {
+  return getContactIdentityKeys(contact)[0] || null;
+}
+
+function contactCompletenessScore(contact) {
+  let score = 0;
+  if ((contact.first_name || '').trim()) score++;
+  if ((contact.last_name || '').trim()) score++;
+  score += getContactEmails(contact).length * 2;
+  score += getContactPhones(contact).length * 2;
+  if ((contact.company || '').trim()) score++;
+  if ((contact.job_title || '').trim()) score++;
+  if ((contact.notes || '').trim()) score++;
+  if (contact.is_favorite) score += 2;
+  return score;
+}
+
+function rankContactsForMerge(members) {
+  return [...members].sort((a, b) => {
+    const scoreDiff = contactCompletenessScore(b) - contactCompletenessScore(a);
+    if (scoreDiff !== 0) return scoreDiff;
+    return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
+  });
+}
+
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (value != null && String(value).trim() !== '') return value;
+  }
+  return null;
+}
+
+function buildMergedContact(members) {
+  const [primary, ...others] = rankContactsForMerge(members);
+  const mergedNotes = Array.from(
+    new Set(
+      [primary.notes, ...others.map((contact) => contact.notes)]
+        .filter((note) => note != null && String(note).trim() !== '')
+        .map((note) => String(note).trim())
+    )
+  ).join('\n\n');
+  const mergedEmails = Array.from(new Set(members.flatMap((contact) => [contact.email, contact.email2, contact.email3].map((value) => String(value || '').trim()).filter(Boolean)))).slice(0, 3);
+  const mergedPhones = Array.from(new Set(members.flatMap((contact) => [contact.phone, contact.phone2, contact.phone3].map((value) => String(value || '').trim()).filter(Boolean)))).slice(0, 3);
+
+  return {
+    primary,
+    others,
+    mergedContact: {
+      first_name: firstNonEmpty(primary.first_name, ...others.map((contact) => contact.first_name), ''),
+      last_name: firstNonEmpty(primary.last_name, ...others.map((contact) => contact.last_name)),
+      email: mergedEmails[0] || null,
+      email2: mergedEmails[1] || null,
+      email3: mergedEmails[2] || null,
+      phone: mergedPhones[0] || null,
+      phone2: mergedPhones[1] || null,
+      phone3: mergedPhones[2] || null,
+      company: firstNonEmpty(primary.company, ...others.map((contact) => contact.company)),
+      job_title: firstNonEmpty(primary.job_title, ...others.map((contact) => contact.job_title)),
+      notes: mergedNotes || null,
+      is_favorite: members.some((contact) => Boolean(contact.is_favorite)),
+    },
+  };
+}
+
+function getContactDisplayName(contact) {
+  const first = (contact.first_name || '').trim();
+  const last = (contact.last_name || '').trim();
+  if (first || last) return [first, last].filter(Boolean).join(' ');
+  return contact.email || contact.email2 || contact.email3 || contact.phone || contact.phone2 || contact.phone3 || 'No name';
+}
+
+function groupDuplicateContacts(contacts) {
+  const parent = new Map();
+  const byId = new Map();
+  const keyOwner = new Map();
+
+  const find = (id) => {
+    const current = parent.get(id) || id;
+    if (current === id) return id;
+    const root = find(current);
+    parent.set(id, root);
+    return root;
+  };
+  const union = (a, b) => {
+    const rootA = find(a);
+    const rootB = find(b);
+    if (rootA !== rootB) parent.set(rootB, rootA);
+  };
+
+  for (const contact of contacts || []) {
+    if (!contact.id) continue;
+    parent.set(contact.id, contact.id);
+    byId.set(contact.id, contact);
+  }
+
+  for (const contact of contacts || []) {
+    if (!contact.id) continue;
+    for (const key of getContactIdentityKeys(contact)) {
+      const existingId = keyOwner.get(key);
+      if (existingId) {
+        union(existingId, contact.id);
+      } else {
+        keyOwner.set(key, contact.id);
+      }
+    }
+  }
+
+  const groups = new Map();
+  for (const [id, contact] of byId.entries()) {
+    const root = find(id);
+    if (!groups.has(root)) groups.set(root, []);
+    groups.get(root).push(contact);
+  }
+
+  return Array.from(groups.values()).filter((group) => group.length > 1);
 }
 
 function parseDatetimeToMillis(value) {
@@ -3344,7 +3802,17 @@ async function syncCalendarAccount(accountId, userId) {
 
 // Simple router
 const routes = {
-  'GET /health': async () => ({ status: 'ok', timestamp: new Date().toISOString() }),
+  'GET /health': async () => {
+    try {
+      if (!db) {
+        return { status: 503, health: 'error', database: 'not_initialized', timestamp: new Date().toISOString() };
+      }
+      await db.execute('SELECT 1');
+      return { health: 'ok', database: 'ok', timestamp: new Date().toISOString() };
+    } catch (error) {
+      return { status: 503, health: 'error', database: 'unavailable', error: error.message, timestamp: new Date().toISOString() };
+    }
+  },
   
   // Authentication endpoints
   'POST /api/auth/signup': async (req, userId, body, res) => {
@@ -3363,6 +3831,9 @@ const routes = {
     const { email, password, full_name } = body;
     if (!email || !password) {
       return { error: 'Email and password are required', status: 400 };
+    }
+    if (String(password).length < MIN_PASSWORD_LENGTH) {
+      return { error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters`, status: 400 };
     }
     
     try {
@@ -3550,8 +4021,8 @@ const routes = {
     if (!current_password || !new_password) {
       return { error: 'Current password and new password are required', status: 400 };
     }
-    if (new_password.length < 6) {
-      return { error: 'New password must be at least 6 characters', status: 400 };
+    if (new_password.length < MIN_PASSWORD_LENGTH) {
+      return { error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters`, status: 400 };
     }
 
     try {
@@ -3788,28 +4259,6 @@ const routes = {
   'POST /api/contacts/merge-duplicates': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
-    const normalizeEmail = (value) => (value || '').trim().toLowerCase();
-    const normalizePhone = (value) => (value || '').replace(/[^\d+]/g, '');
-    const normalizeName = (value) => (value || '').trim().toLowerCase();
-    const getEmails = (contact) => [contact.email, contact.email2, contact.email3].map(normalizeEmail).filter(Boolean);
-    const getPhones = (contact) => [contact.phone, contact.phone2, contact.phone3].map(normalizePhone).filter(Boolean);
-    const getDedupeKey = (contact) => {
-      const email = getEmails(contact)[0];
-      if (email) return `e:${email}`;
-      const phone = getPhones(contact)[0];
-      if (phone) return `p:${phone}`;
-      const first = normalizeName(contact.first_name);
-      const last = normalizeName(contact.last_name);
-      if (first || last) return `n:${first}|${last}`;
-      return null;
-    };
-    const firstNonEmpty = (...values) => {
-      for (const v of values) {
-        if (v != null && String(v).trim() !== '') return v;
-      }
-      return null;
-    };
-
     try {
       const [rows] = await db.execute(
         `SELECT id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes, is_favorite, created_at
@@ -3818,69 +4267,13 @@ const routes = {
         [userId]
       );
 
-      const groups = new Map();
-      for (const row of rows || []) {
-        const key = getDedupeKey(row);
-        if (!key) continue;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(row);
-      }
+      const duplicateGroups = groupDuplicateContacts(rows || []);
 
       let merged = 0;
       let removed = 0;
-      let groupsCount = 0;
 
-      for (const [, members] of groups.entries()) {
-        if (members.length < 2) continue;
-        groupsCount++;
-
-        const ranked = [...members].sort((a, b) => {
-          const score = (c) => {
-            let s = 0;
-            if ((c.first_name || '').trim()) s++;
-            if ((c.last_name || '').trim()) s++;
-            s += getEmails(c).length * 2;
-            s += getPhones(c).length * 2;
-            if ((c.company || '').trim()) s++;
-            if ((c.job_title || '').trim()) s++;
-            if ((c.notes || '').trim()) s++;
-            if (c.is_favorite) s += 2;
-            return s;
-          };
-
-          const scoreDiff = score(b) - score(a);
-          if (scoreDiff !== 0) return scoreDiff;
-          return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
-        });
-
-        const primary = ranked[0];
-        const others = ranked.slice(1);
-
-        const mergedNotes = Array.from(
-          new Set(
-            [primary.notes, ...others.map((o) => o.notes)]
-              .filter((n) => n != null && String(n).trim() !== '')
-              .map((n) => String(n).trim())
-          )
-        ).join('\n\n');
-
-        const mergedEmails = Array.from(new Set([primary, ...others].flatMap((c) => [c.email, c.email2, c.email3].map((v) => (v || '').trim()).filter(Boolean)))).slice(0, 3);
-        const mergedPhones = Array.from(new Set([primary, ...others].flatMap((c) => [c.phone, c.phone2, c.phone3].map((v) => (v || '').trim()).filter(Boolean)))).slice(0, 3);
-        const mergedContact = {
-          first_name: firstNonEmpty(primary.first_name, ...others.map((o) => o.first_name), ''),
-          last_name: firstNonEmpty(primary.last_name, ...others.map((o) => o.last_name)),
-          email: mergedEmails[0] || null,
-          email2: mergedEmails[1] || null,
-          email3: mergedEmails[2] || null,
-          phone: mergedPhones[0] || null,
-          phone2: mergedPhones[1] || null,
-          phone3: mergedPhones[2] || null,
-          company: firstNonEmpty(primary.company, ...others.map((o) => o.company)),
-          job_title: firstNonEmpty(primary.job_title, ...others.map((o) => o.job_title)),
-          notes: mergedNotes || null,
-          is_favorite: members.some((m) => Boolean(m.is_favorite)),
-        };
-
+      for (const members of duplicateGroups) {
+        const { primary, others, mergedContact } = buildMergedContact(members);
         await db.execute(
           `UPDATE contacts
            SET first_name = ?, last_name = ?, email = ?, email2 = ?, email3 = ?, phone = ?, phone2 = ?, phone3 = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?
@@ -3915,14 +4308,14 @@ const routes = {
         }
       }
 
-      if (groupsCount === 0) {
+      if (duplicateGroups.length === 0) {
         return { merged: 0, removed: 0, groups: 0, message: 'No duplicates detected.' };
       }
 
       return {
         merged,
         removed,
-        groups: groupsCount,
+        groups: duplicateGroups.length,
         message: `Merged ${merged} duplicate group(s), removed ${removed} duplicate contact(s).`,
       };
     } catch (error) {
@@ -3934,28 +4327,6 @@ const routes = {
   'POST /api/contacts/merge-duplicates/preview': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
-    const normalizeEmail = (value) => (value || '').trim().toLowerCase();
-    const normalizePhone = (value) => (value || '').replace(/[^\d+]/g, '');
-    const normalizeName = (value) => (value || '').trim().toLowerCase();
-    const getEmails = (contact) => [contact.email, contact.email2, contact.email3].map(normalizeEmail).filter(Boolean);
-    const getPhones = (contact) => [contact.phone, contact.phone2, contact.phone3].map(normalizePhone).filter(Boolean);
-    const getDedupeKey = (contact) => {
-      const email = getEmails(contact)[0];
-      if (email) return `e:${email}`;
-      const phone = getPhones(contact)[0];
-      if (phone) return `p:${phone}`;
-      const first = normalizeName(contact.first_name);
-      const last = normalizeName(contact.last_name);
-      if (first || last) return `n:${first}|${last}`;
-      return null;
-    };
-    const displayName = (c) => {
-      const first = (c.first_name || '').trim();
-      const last = (c.last_name || '').trim();
-      if (first || last) return [first, last].filter(Boolean).join(' ');
-      return c.email || c.email2 || c.email3 || c.phone || c.phone2 || c.phone3 || 'No name';
-    };
-
     try {
       const [rows] = await db.execute(
         `SELECT id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes, is_favorite, created_at
@@ -3964,56 +4335,25 @@ const routes = {
         [userId]
       );
 
-      const groups = new Map();
-      for (const row of rows || []) {
-        const key = getDedupeKey(row);
-        if (!key) continue;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(row);
-      }
-
+      const duplicateGroups = groupDuplicateContacts(rows || []);
       const previewGroups = [];
-      let groupsCount = 0;
       let toRemove = 0;
 
-      for (const [key, members] of groups.entries()) {
-        if (members.length < 2) continue;
-        groupsCount++;
+      for (const members of duplicateGroups) {
         toRemove += members.length - 1;
-
-        const ranked = [...members].sort((a, b) => {
-          const score = (c) => {
-            let s = 0;
-            if ((c.first_name || '').trim()) s++;
-            if ((c.last_name || '').trim()) s++;
-            s += getEmails(c).length * 2;
-            s += getPhones(c).length * 2;
-            if ((c.company || '').trim()) s++;
-            if ((c.job_title || '').trim()) s++;
-            if ((c.notes || '').trim()) s++;
-            if (c.is_favorite) s += 2;
-            return s;
-          };
-
-          const scoreDiff = score(b) - score(a);
-          if (scoreDiff !== 0) return scoreDiff;
-          return new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime();
-        });
-
-        const primary = ranked[0];
-        const others = ranked.slice(1);
+        const [primary, ...others] = rankContactsForMerge(members);
         previewGroups.push({
-          key,
+          key: getPrimaryContactIdentityKey(primary) || primary.id,
           size: members.length,
           keep: {
             id: primary.id,
-            name: displayName(primary),
+            name: getContactDisplayName(primary),
             email: primary.email || primary.email2 || primary.email3 || null,
             phone: primary.phone || primary.phone2 || primary.phone3 || null,
           },
           remove: others.map((c) => ({
             id: c.id,
-            name: displayName(c),
+            name: getContactDisplayName(c),
             email: c.email || c.email2 || c.email3 || null,
             phone: c.phone || c.phone2 || c.phone3 || null,
           })),
@@ -4022,9 +4362,9 @@ const routes = {
 
       previewGroups.sort((a, b) => b.size - a.size || a.key.localeCompare(b.key));
       return {
-        groups: groupsCount,
+        groups: duplicateGroups.length,
         to_remove: toRemove,
-        merge_target_count: groupsCount,
+        merge_target_count: duplicateGroups.length,
         preview: previewGroups,
       };
     } catch (error) {
@@ -4069,24 +4409,14 @@ const routes = {
         return { error: 'No valid contacts found in the file. Make sure it is a .vcf (vCard) file.', status: 400 };
       }
 
-      // Dedupe key: same first available email/phone = same contact; else same first+last name
-      function contactDedupeKey(c) {
-        const email = (c.email || c.email2 || c.email3 || '').toLowerCase().trim();
-        const phone = (c.phone || c.phone2 || c.phone3 || '').replace(/[^\d+]/g, '');
-        const first = (c.first_name || '').trim().toLowerCase();
-        const last = (c.last_name || '').trim().toLowerCase();
-        if (email) return 'e:' + email;
-        if (phone) return 'p:' + phone;
-        return 'n:' + first + '|' + last;
-      }
-
-      // 1) Within-file dedupe: keep first occurrence of each key (file often has same card 2–3x)
+      // 1) Within-file dedupe: keep first occurrence of each identity key (file often has same card 2–3x)
       const seenInFile = new Set();
       const dedupedFromFile = [];
       for (const c of parsed) {
-        const key = contactDedupeKey(c);
-        if (seenInFile.has(key)) continue;
-        seenInFile.add(key);
+        const keys = getContactIdentityKeys(c);
+        const primaryKey = keys[0];
+        if (primaryKey && keys.some((key) => seenInFile.has(key))) continue;
+        keys.forEach((key) => seenInFile.add(key));
         dedupedFromFile.push(c);
       }
 
@@ -4095,19 +4425,14 @@ const routes = {
         'SELECT email, email2, email3, phone, phone2, phone3, first_name, last_name FROM contacts WHERE user_id = ?',
         [userId]
       );
-      const existingKeys = new Set(
-        (existingRows || []).map((r) => {
-          const c = { email: r.email, first_name: r.first_name, last_name: r.last_name };
-          return contactDedupeKey(c);
-        })
-      );
+      const existingKeys = new Set((existingRows || []).flatMap(getContactIdentityKeys));
 
       let imported = 0;
       const errors = [];
 
       for (const c of dedupedFromFile) {
-        const key = contactDedupeKey(c);
-        if (existingKeys.has(key)) continue; // already in DB, skip
+        const keys = getContactIdentityKeys(c);
+        if (keys.some((key) => existingKeys.has(key))) continue; // already in DB, skip
         try {
           const contactId = crypto.randomUUID();
           await db.execute(
@@ -4129,7 +4454,7 @@ const routes = {
             ]
           );
           imported++;
-          existingKeys.add(key); // avoid inserting twice if file has same key again
+          keys.forEach((key) => existingKeys.add(key)); // avoid inserting twice if file has same identity again
         } catch (err) {
           const name = [c.first_name, c.last_name].filter(Boolean).join(' ');
           errors.push(`Failed to import "${name}": ${err.message}`);
@@ -4198,9 +4523,19 @@ const routes = {
   'POST /api/settings/clear-mail-accounts': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
+      const [attachments] = await db.execute(
+        'SELECT storage_path FROM email_attachments WHERE user_id = ?',
+        [userId]
+      );
       const [result] = await db.execute('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
+      const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
       const deleted = result.affectedRows || 0;
-      return { message: `Deleted ${deleted} mail account(s). Emails and attachments were removed.`, deleted };
+      return {
+        message: `Deleted ${deleted} mail account(s). Removed ${fileResult.deletedFiles} attachment file(s).`,
+        deleted,
+        deletedAttachmentFiles: fileResult.deletedFiles,
+        failedAttachmentFiles: fileResult.failedFiles,
+      };
     } catch (error) {
       console.error('Clear mail accounts error:', error);
       return { error: 'Failed to delete mail accounts', status: 500 };
@@ -5408,7 +5743,7 @@ const routes = {
     
     try {
       const [accounts] = await db.execute(
-        'SELECT id, user_id, email_address, display_name, provider, sync_fetch_limit, is_active, last_synced_at, created_at FROM mail_accounts WHERE user_id = ?',
+        'SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, sync_fetch_limit, is_active, last_synced_at, created_at FROM mail_accounts WHERE user_id = ?',
         [userId]
       );
       await ensureDefaultMailFoldersForUser(userId);
@@ -5512,6 +5847,7 @@ const routes = {
         smtp_port,
         encrypted_password,
         sync_fetch_limit,
+        accept_host_trust,
       } = body;
       
       if (!email_address || !encrypted_password) {
@@ -5525,12 +5861,23 @@ const routes = {
         return { error: 'Invalid sync fetch limit. Allowed values: 100, 500, 1000, 2000, all', status: 400 };
       }
 
-      // Only verify authentication; no TLS/cert verification.
+      const hostTrustResult = await requireMailHostTrustApproval({
+        imap_host,
+        imap_port: imap_port || 993,
+        smtp_host,
+        smtp_port: smtp_port || 587,
+        accept_host_trust,
+      });
+      if (hostTrustResult.error) return hostTrustResult;
+
+      // Verify authentication using strict TLS unless the user explicitly accepted an untrusted certificate.
       const tempAccount = {
         email_address,
         username: username || email_address,
         imap_host,
         imap_port: imap_port || 993,
+        allow_self_signed: hostTrustResult.allowInsecureTls,
+        trusted_imap_fingerprint256: hostTrustResult.trustedImapFingerprint256,
         encrypted_password: encrypt(encrypted_password),
       };
       
@@ -5550,12 +5897,12 @@ const routes = {
       const accountId = crypto.randomUUID();
       const actualUsername = username || email_address;
       await db.execute(
-        'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, sync_fetch_limit) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, imap_port || 993, smtp_host || null, smtp_port || 587, tempAccount.encrypted_password, normalizedSyncFetchLimit]
+        'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, sync_fetch_limit, allow_self_signed, trusted_imap_fingerprint256, trusted_smtp_fingerprint256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, imap_port || 993, smtp_host || null, smtp_port || 587, tempAccount.encrypted_password, normalizedSyncFetchLimit, hostTrustResult.allowInsecureTls ? 1 : 0, hostTrustResult.trustedImapFingerprint256, hostTrustResult.trustedSmtpFingerprint256]
       );
       await ensureDefaultMailFoldersForUser(userId);
       
-      const [accounts] = await db.execute('SELECT id, user_id, email_address, display_name, provider, sync_fetch_limit, is_active FROM mail_accounts WHERE id = ?', [accountId]);
+      const [accounts] = await db.execute('SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, sync_fetch_limit, is_active FROM mail_accounts WHERE id = ?', [accountId]);
       
       // Start sync in background (non-blocking)
       console.log(`[ACCOUNT] Starting background sync for ${email_address}...`);
@@ -5568,6 +5915,7 @@ const routes = {
         account: accounts[0],
         authSuccess: true,
         syncInProgress: true,
+        mailHostTrust: hostTrustResult.mailHostTrust,
         message: 'Account connected successfully. Syncing emails in the background — this may take several minutes for large mailboxes.'
       };
     } catch (error) {
@@ -5591,14 +5939,34 @@ const routes = {
         smtp_port,
         encrypted_password,
         sync_fetch_limit,
+        accept_host_trust,
       } = body;
       
       // Verify account belongs to user
       const [accounts] = await db.execute(
-        'SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?',
+        'SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?',
         [id, userId]
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+      const existingAccount = accounts[0];
+
+      const nextImapHost = imap_host || existingAccount.imap_host;
+      const nextImapPort = imap_port || existingAccount.imap_port || 993;
+      const nextSmtpHost = smtp_host || existingAccount.smtp_host;
+      const nextSmtpPort = smtp_port || existingAccount.smtp_port || 587;
+      const hostSettingsChanged = Boolean(imap_host || imap_port || smtp_host || smtp_port);
+      let hostTrustResult = null;
+
+      if (hostSettingsChanged) {
+        hostTrustResult = await requireMailHostTrustApproval({
+          imap_host: nextImapHost,
+          imap_port: nextImapPort,
+          smtp_host: nextSmtpHost,
+          smtp_port: nextSmtpPort,
+          accept_host_trust,
+        });
+        if (hostTrustResult.error) return hostTrustResult;
+      }
       
       // Build update query dynamically
       const updates = [];
@@ -5606,12 +5974,20 @@ const routes = {
       
       if (email_address) { updates.push('email_address = ?'); params.push(email_address); }
       if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name || null); }
-      if (username !== undefined) { updates.push('username = ?'); params.push(username || email_address); }
+      if (username !== undefined) { updates.push('username = ?'); params.push(username || email_address || existingAccount.email_address); }
       if (imap_host) { updates.push('imap_host = ?'); params.push(imap_host); }
       if (imap_port) { updates.push('imap_port = ?'); params.push(imap_port); }
       if (smtp_host) { updates.push('smtp_host = ?'); params.push(smtp_host); }
       if (smtp_port) { updates.push('smtp_port = ?'); params.push(smtp_port); }
       if (encrypted_password) { updates.push('encrypted_password = ?'); params.push(encrypt(encrypted_password)); }
+      if (hostTrustResult) {
+        updates.push('allow_self_signed = ?');
+        params.push(hostTrustResult.allowInsecureTls ? 1 : 0);
+        updates.push('trusted_imap_fingerprint256 = ?');
+        params.push(hostTrustResult.trustedImapFingerprint256);
+        updates.push('trusted_smtp_fingerprint256 = ?');
+        params.push(hostTrustResult.trustedSmtpFingerprint256);
+      }
       if (sync_fetch_limit !== undefined) {
         const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);
         if (!normalizedSyncFetchLimit) {
@@ -5630,7 +6006,7 @@ const routes = {
       );
       
       const [updated] = await db.execute(
-        'SELECT id, user_id, email_address, display_name, provider, sync_fetch_limit, is_active FROM mail_accounts WHERE id = ?',
+        'SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, sync_fetch_limit, is_active FROM mail_accounts WHERE id = ?',
         [id]
       );
       
@@ -5646,8 +6022,20 @@ const routes = {
     
     try {
       const id = req.url.split('/').pop();
+      const [attachments] = await db.execute(
+        `SELECT a.storage_path
+         FROM email_attachments a
+         INNER JOIN emails e ON e.id = a.email_id
+         WHERE e.mail_account_id = ? AND e.user_id = ?`,
+        [id, userId]
+      );
       await db.execute('DELETE FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
-      return { message: 'Mail account deleted' };
+      const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
+      return {
+        message: 'Mail account deleted',
+        deletedAttachmentFiles: fileResult.deletedFiles,
+        failedAttachmentFiles: fileResult.failedFiles,
+      };
     } catch (error) {
       return { error: 'Failed to delete mail account', status: 500 };
     }
@@ -6110,8 +6498,8 @@ const routes = {
     const targetId = parts[parts.length - 2];
     const { new_password } = body;
 
-    if (!new_password || new_password.length < 6) {
-      return { error: 'New password must be at least 6 characters', status: 400 };
+    if (!new_password || new_password.length < MIN_PASSWORD_LENGTH) {
+      return { error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters`, status: 400 };
     }
 
     try {
@@ -6381,7 +6769,7 @@ async function start() {
     console.log(`✓ UniHub API server running on port ${PORT}`);
   });
   
-  // Periodic mail sync every 10 minutes
+  // Periodic mail sync every 5 minutes
   setInterval(async () => {
     try {
       const [accounts] = await db.execute(
@@ -6396,7 +6784,7 @@ async function start() {
     } catch (error) {
       console.error('Periodic sync error:', error);
     }
-  }, 10 * 60 * 1000); // 10 minutes
+  }, 5 * 60 * 1000); // 5 minutes
 
   // Periodic external calendar sync every 10 minutes
   setInterval(async () => {
@@ -6469,7 +6857,7 @@ async function start() {
     }
   }, 15 * 60 * 1000); // 15 minutes
   
-  console.log('✓ Periodic mail sync enabled (every 10 minutes)');
+  console.log('✓ Periodic mail sync enabled (every 5 minutes)');
   console.log('✓ Periodic calendar sync enabled (every 10 minutes)');
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Database connection pool health check enabled (every 15 minutes)');

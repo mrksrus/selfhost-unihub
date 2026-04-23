@@ -76,11 +76,76 @@ interface MailAccount {
   email_address: string;
   display_name: string | null;
   provider: string;
+  username?: string | null;
+  imap_host?: string | null;
+  imap_port?: number | null;
+  smtp_host?: string | null;
+  smtp_port?: number | null;
   is_active: boolean;
   last_synced_at: string | null;
   sync_fetch_limit?: string;
   unread_count?: number;
 }
+
+interface AccountFormState {
+  email_address: string;
+  display_name: string;
+  provider: string;
+  username: string;
+  password: string;
+  imap_host: string;
+  smtp_host: string;
+  imap_port: number;
+  smtp_port: number;
+  sync_fetch_limit: string;
+}
+
+interface MailHostCertificate {
+  subject?: Record<string, string> | null;
+  issuer?: Record<string, string> | null;
+  valid_from?: string | null;
+  valid_to?: string | null;
+  fingerprint256?: string | null;
+  authorizationError?: string | null;
+  authorized?: boolean;
+  error?: string;
+}
+
+interface MailHostAssessment {
+  host: string;
+  port: number | null;
+  knownProvider: boolean;
+  allowlisted: boolean;
+  blocked: boolean;
+  resolvedAddresses?: string[];
+}
+
+interface MailHostTrustResult {
+  blocked: boolean;
+  requiresConfirmation: boolean;
+  requiresInsecureTls: boolean;
+  warnings: string[];
+  assessments: {
+    imap: MailHostAssessment;
+    smtp: MailHostAssessment;
+  };
+  certificates: {
+    imap?: MailHostCertificate;
+    smtp?: MailHostCertificate;
+  };
+}
+
+type PendingHostTrust = {
+  mode: 'add' | 'edit';
+  accountId?: string;
+  account: AccountFormState;
+  trust: MailHostTrustResult;
+};
+
+type MailHostTrustError = Error & {
+  requiresHostTrustConfirmation?: boolean;
+  mailHostTrust?: MailHostTrustResult;
+};
 
 interface EmailAttachment {
   id: string;
@@ -191,6 +256,7 @@ const MailPage = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [emailPage, setEmailPage] = useState(1);
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [pendingHostTrust, setPendingHostTrust] = useState<PendingHostTrust | null>(null);
   const [composeForm, setComposeForm] = useState({
     to: '',
     subject: '',
@@ -198,7 +264,7 @@ const MailPage = () => {
   });
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
   const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
-  const [accountForm, setAccountForm] = useState({
+  const [accountForm, setAccountForm] = useState<AccountFormState>({
     email_address: '',
     display_name: '',
     provider: '',
@@ -326,63 +392,12 @@ const MailPage = () => {
     staleTime: 0,
   });
 
-  // Request notification permission on mount and set up service worker listeners
-  React.useEffect(() => {
-    if ('Notification' in window && Notification.permission === 'default') {
-      Notification.requestPermission().catch(console.error);
-    }
-
-    // Listen for service worker messages to trigger email checks
-    const handleSWMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'CHECK_EMAILS') {
-        console.log('[MailPage] Service worker requested email check');
-        // Invalidate email count query to trigger refetch
-        queryClient.invalidateQueries({ queryKey: ['email-count', selectedAccount] });
-      }
-    };
-
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.addEventListener('message', handleSWMessage);
-      return () => {
-        navigator.serviceWorker.removeEventListener('message', handleSWMessage);
-      };
-    }
-  }, [selectedAccount, queryClient]);
-
-  // Track when count changes and invalidate emails query + show notification
+  // Track when count changes and invalidate emails query
   React.useEffect(() => {
     const currentCount = emailCountData?.total || 0;
     if (previousEmailCount.current !== null && currentCount !== previousEmailCount.current && currentCount > previousEmailCount.current) {
-      // Count increased - new emails arrived
-      const newEmailCount = currentCount - previousEmailCount.current;
       console.log(`[MailPage] Email count changed: ${previousEmailCount.current} -> ${currentCount}, invalidating emails query`);
       queryClient.invalidateQueries({ queryKey: ['emails', selectedAccount, selectedFolder] });
-      
-      // Show notification if permission granted and not on Mail page or different folder
-      if ('Notification' in window && Notification.permission === 'granted') {
-        // Only notify if we're not currently viewing inbox or if we're on a different folder
-        if (selectedFolder !== 'inbox' || document.hidden) {
-          // Use dynamic import to avoid circular dependencies
-          import('@/utils/service-worker').then(({ showNotification }) => {
-            showNotification(`New Email${newEmailCount > 1 ? 's' : ''}`, {
-              body: `${newEmailCount} new email${newEmailCount > 1 ? 's' : ''} in your inbox`,
-              icon: '/favicon.ico',
-              tag: 'new-email',
-              requireInteraction: false,
-            });
-          }).catch(() => {
-            // Fallback to regular Notification if service worker not available
-            if (document.visibilityState === 'visible') {
-              new Notification(`New Email${newEmailCount > 1 ? 's' : ''}`, {
-                body: `${newEmailCount} new email${newEmailCount > 1 ? 's' : ''} in your inbox`,
-                icon: '/favicon.ico',
-                tag: 'new-email',
-                requireInteraction: false,
-              });
-            }
-          });
-        }
-      }
     }
     previousEmailCount.current = currentCount;
   }, [emailCountData?.total, selectedAccount, selectedFolder, queryClient]);
@@ -443,6 +458,17 @@ const MailPage = () => {
   const pagination = emailsData?.pagination;
   const totalMatchingEmails = pagination?.total ?? emails.length;
   const totalPages = pagination?.totalPages ?? 1;
+
+  const createHostTrustError = (message: string, mailHostTrust?: unknown) => {
+    const error = new Error(message) as MailHostTrustError;
+    error.requiresHostTrustConfirmation = true;
+    error.mailHostTrust = mailHostTrust as MailHostTrustResult | undefined;
+    return error;
+  };
+
+  const isHostTrustError = (error: Error): error is MailHostTrustError => (
+    Boolean((error as MailHostTrustError).requiresHostTrustConfirmation && (error as MailHostTrustError).mailHostTrust)
+  );
   
   // Debug logging
   React.useEffect(() => {
@@ -452,13 +478,16 @@ const MailPage = () => {
     }
   }, [emails.length, selectedAccount, selectedFolder, emailsLoading, pagination]);
 
-  // Add mail account mutation (connection verified by backend via testImapConnection; no cert/host verification)
+  // Add mail account mutation (backend verifies host safety, certificate trust, then IMAP auth)
   const addAccount = useMutation({
-    mutationFn: async (account: typeof accountForm) => {
+    mutationFn: async (account: AccountFormState & { accept_host_trust?: boolean }) => {
       const response = await api.post<AddMailAccountResponse>('/mail/accounts', {
         ...account,
         encrypted_password: account.password, // Will be encrypted on server
       });
+      if (response.status === 409 && response.requiresHostTrustConfirmation) {
+        throw createHostTrustError(response.error || 'Review mail server authenticity before continuing.', response.mailHostTrust);
+      }
       if (response.error) throw new Error(response.error);
       return response.data ?? {};
     },
@@ -492,7 +521,11 @@ const MailPage = () => {
         sync_fetch_limit: '500',
       });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (isHostTrustError(error)) {
+        setPendingHostTrust({ mode: 'add', account: variables, trust: error.mailHostTrust! });
+        return;
+      }
       toast({ 
         title: 'Failed to add mail account', 
         description: error.message,
@@ -504,11 +537,14 @@ const MailPage = () => {
 
   // Update account mutation
   const updateAccount = useMutation({
-    mutationFn: async ({ id, ...data }: { id: string } & Partial<typeof accountForm>) => {
+    mutationFn: async ({ id, ...data }: { id: string } & Partial<AccountFormState> & { accept_host_trust?: boolean }) => {
       const response = await api.put(`/mail/accounts/${id}`, {
         ...data,
         encrypted_password: data.password || undefined,
       });
+      if (response.status === 409 && response.requiresHostTrustConfirmation) {
+        throw createHostTrustError(response.error || 'Review mail server authenticity before continuing.', response.mailHostTrust);
+      }
       if (response.error) throw new Error(response.error);
       return response.data;
     },
@@ -530,10 +566,14 @@ const MailPage = () => {
         sync_fetch_limit: '500',
       });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, variables) => {
+      if (isHostTrustError(error)) {
+        setPendingHostTrust({ mode: 'edit', accountId: variables.id, account: { ...accountForm, ...variables }, trust: error.mailHostTrust! });
+        return;
+      }
       toast({ 
         title: 'Failed to update account', 
-        description: error.message, 
+        description: error.message,
         variant: 'destructive' 
       });
     },
@@ -817,6 +857,59 @@ const MailPage = () => {
       addAccount.mutate(accountForm);
     }
   };
+
+  const handleConfirmHostTrust = () => {
+    if (!pendingHostTrust) return;
+    if (pendingHostTrust.mode === 'edit' && pendingHostTrust.accountId) {
+      updateAccount.mutate({
+        id: pendingHostTrust.accountId,
+        ...pendingHostTrust.account,
+        accept_host_trust: true,
+      });
+    } else {
+      addAccount.mutate({
+        ...pendingHostTrust.account,
+        accept_host_trust: true,
+      });
+    }
+    setPendingHostTrust(null);
+  };
+
+  const formatCertificateName = (value?: Record<string, string> | null) => {
+    if (!value) return 'Unknown';
+    return value.CN || Object.entries(value).map(([key, item]) => `${key}=${item}`).join(', ') || 'Unknown';
+  };
+
+  const renderTrustSection = (label: 'IMAP' | 'SMTP', assessment?: MailHostAssessment, certificate?: MailHostCertificate) => (
+    <div className="rounded-md border border-border p-3 space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <p className="font-medium">{label} server</p>
+        <span className={certificate?.authorized ? 'text-success text-xs' : 'text-warning text-xs'}>
+          {certificate?.authorized ? 'Verified certificate' : 'Needs review'}
+        </span>
+      </div>
+      <p className="text-sm text-muted-foreground break-all">
+        {assessment?.host || 'Unknown host'}:{assessment?.port || 'unknown'}
+      </p>
+      <p className="text-xs text-muted-foreground">
+        Provider: {assessment?.knownProvider ? 'known provider' : assessment?.allowlisted ? 'hoster allowlisted' : 'unknown/custom'}
+      </p>
+      {assessment?.resolvedAddresses && assessment.resolvedAddresses.length > 0 && (
+        <p className="text-xs text-muted-foreground break-all">
+          IPs: {assessment.resolvedAddresses.join(', ')}
+        </p>
+      )}
+      <div className="text-xs text-muted-foreground space-y-1">
+        <p>Certificate owner: {formatCertificateName(certificate?.subject)}</p>
+        <p>Certificate issuer: {formatCertificateName(certificate?.issuer)}</p>
+        {certificate?.valid_to && <p>Valid until: {certificate.valid_to}</p>}
+        {certificate?.fingerprint256 && <p className="break-all">SHA-256 fingerprint: {certificate.fingerprint256}</p>}
+        {(certificate?.authorizationError || certificate?.error) && (
+          <p className="text-warning">Verification message: {certificate.authorizationError || certificate.error}</p>
+        )}
+      </div>
+    </div>
+  );
   
   const handleEditAccount = (account: MailAccount) => {
     setEditingAccount(account);
@@ -824,12 +917,12 @@ const MailPage = () => {
       email_address: account.email_address,
       display_name: account.display_name || '',
       provider: account.provider,
-      username: '', // Don't pre-fill for security
+      username: account.username || account.email_address,
       password: '',
-      imap_host: '', // Would need to fetch from backend or store in state
-      smtp_host: '',
-      imap_port: 993,
-      smtp_port: 587,
+      imap_host: account.imap_host || '',
+      smtp_host: account.smtp_host || '',
+      imap_port: account.imap_port || 993,
+      smtp_port: account.smtp_port || 587,
       sync_fetch_limit: account.sync_fetch_limit || '500',
     });
     setIsAddAccountOpen(true);
@@ -1115,6 +1208,7 @@ const MailPage = () => {
                   smtp_port: 587,
                   sync_fetch_limit: '500',
                 });
+                setPendingHostTrust(null);
               }
             }}>
               <DialogTrigger asChild>
@@ -1838,6 +1932,45 @@ const MailPage = () => {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Mail Host Trust Confirmation */}
+      <AlertDialog open={!!pendingHostTrust} onOpenChange={(open) => !open && setPendingHostTrust(null)}>
+        <AlertDialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Mail Server Authenticity</AlertDialogTitle>
+            <AlertDialogDescription>
+              Review the server and certificate details below. Continue only if you trust this mail server.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {pendingHostTrust && (
+            <div className="space-y-4">
+              {pendingHostTrust.trust.warnings.length > 0 && (
+                <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+                  <p className="font-medium text-warning mb-2">Warnings</p>
+                  <ul className="list-disc pl-5 space-y-1">
+                    {pendingHostTrust.trust.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {renderTrustSection('IMAP', pendingHostTrust.trust.assessments.imap, pendingHostTrust.trust.certificates.imap)}
+              {renderTrustSection('SMTP', pendingHostTrust.trust.assessments.smtp, pendingHostTrust.trust.certificates.smtp)}
+              {pendingHostTrust.trust.requiresInsecureTls && (
+                <p className="text-sm text-muted-foreground">
+                  If you continue, this account will allow the shown untrusted certificate. This is useful for self-hosted mail, but unsafe if you do not recognize the server.
+                </p>
+              )}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Deny</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirmHostTrust}>
+              Continue and Trust Server
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

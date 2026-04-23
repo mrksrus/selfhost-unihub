@@ -5,6 +5,7 @@ const API_URL = import.meta.env.VITE_API_URL || '/api';
 interface ApiResponse<T> {
   data?: T;
   error?: string;
+  status?: number;
   [key: string]: unknown;
 }
 
@@ -83,6 +84,7 @@ class ApiClient {
       if (!response.ok) {
         return {
           ...data,
+          status: response.status,
           error: data.error || `HTTP ${response.status}: ${response.statusText}`,
           details: data.details,
         };
@@ -92,21 +94,6 @@ class ApiClient {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Network error';
       const isJsonError = message.includes('JSON') && message.includes('<');
-      const isTimeout = message.includes('timeout') || message.includes('aborted') || message.includes('network') || message.includes('Failed to fetch');
-      
-      // For mail account operations, treat timeout as success - sync continues in background
-      const isMailAccountOp = endpoint.includes('/mail/accounts') && (options.method === 'POST' || options.method === 'PUT');
-      
-      if (isMailAccountOp && isTimeout) {
-        // Return success response indicating sync is in progress
-        return {
-          data: {
-            syncInProgress: true,
-            message: 'Account added. Email sync is running in the background — this may take several minutes for large mailboxes.',
-          } as unknown as T,
-        };
-      }
-      
       return {
         error: isJsonError
           ? 'Request timed out or server returned an error page. Mail sync can take several minutes — check server logs for progress.'

@@ -12,7 +12,7 @@ UniHub synchronises email using the IMAP protocol to fetch messages from externa
 | Email parser | `mailparser` | Parse RFC 822 messages into structured data |
 | SMTP sender | `nodemailer` | Send composed/reply/forwarded emails |
 | Encryption | Node.js `crypto` (AES-256-GCM) | Encrypt/decrypt stored mail account passwords |
-| TLS inspector | Node.js `tls` | Fetch certificate metadata during host preflight |
+| TLS inspector | Node.js `tls` | Fetch certificate metadata during host/certificate verification |
 | DNS resolver | Node.js `dns.promises` | Resolve mail hosts to detect private/local addresses |
 
 ## Database Tables
@@ -29,19 +29,19 @@ UniHub synchronises email using the IMAP protocol to fetch messages from externa
 
 ### 1. Preflight host assessment
 
-Before an account is saved, the frontend calls `POST /api/mail/accounts/preflight` with the IMAP and SMTP host/port. The backend:
+Before an account is saved or its server settings are changed, the backend verifies the IMAP and SMTP host/port. The backend:
 
 1. Classifies each host as **known provider** (Gmail, iCloud, Yahoo, Outlook, Hotmail, Live) or **unknown**.
 2. Checks whether the host appears in the `TRUSTED_MAIL_HOSTS` env allowlist.
 3. Resolves the hostname via DNS and checks whether any resolved address is private or local (RFC 1918, loopback, link-local, IPv6 ULA/link-local).
 4. If the host resolves to a private/local address and is not allowlisted, the request is **blocked** (HTTP 400).
-5. If the host is unknown (not a known provider and not allowlisted), the backend fetches the TLS certificate from each host and returns warnings plus certificate metadata (subject, issuer, validity, fingerprint).
+5. If the host is unknown or a TLS certificate cannot be fully verified, the backend returns warnings plus certificate metadata (subject, issuer, validity, fingerprint).
 
-The frontend displays an "Unknown mail host" confirmation dialog with the warnings and certificate details. The user must explicitly click "Trust and Continue" before the account is created.
+The frontend displays a "Confirm Mail Server Authenticity" dialog with the warnings and certificate details. The user must explicitly continue before the account is created or updated.
 
 ### 2. Connection test
 
-After preflight passes (or the user confirms), the backend:
+After host/certificate verification passes (or the user confirms), the backend:
 
 1. Encrypts the password with AES-256-GCM and creates a temporary account object.
 2. Opens a test IMAP connection to verify credentials (`testImapConnection`).
@@ -59,7 +59,7 @@ On success:
 
 ### Trigger points
 
-- **Automatic**: every 10 minutes for all active accounts
+- **Automatic**: every 5 minutes for all active accounts
 - **Manual**: user clicks Sync in the UI (`POST /api/mail/sync`)
 - **Initial**: immediately after account creation
 
@@ -132,7 +132,7 @@ All IMAP and SMTP connections use **strict TLS certificate verification** (`reje
 
 - Self-signed certificates are rejected by default.
 - The `servername` option is set for proper SNI.
-- To use a self-hosted mail server with a custom/self-signed certificate, add its hostname to the `TRUSTED_MAIL_HOSTS` env var. The user will still see the preflight confirmation dialog with certificate details.
+- To use a self-hosted mail server that resolves to a private/local address, add its hostname to the `TRUSTED_MAIL_HOSTS` env var. If its certificate is self-signed or otherwise untrusted, the user will still see the confirmation dialog with certificate details.
 
 Connection timeouts: 60 s connect, 30 s auth, 60 s socket.
 

@@ -63,19 +63,19 @@ async function checkForCalendarReminders() {
 self.addEventListener('message', (event) => {
   console.log('[SW] Message received:', event.data);
 
-  if (event.data.type === 'SHOW_NOTIFICATION') {
+  if (event.data?.type === 'SHOW_NOTIFICATION') {
     const { title, options } = event.data;
     event.waitUntil(
       self.registration.showNotification(title, {
         ...options,
-        icon: options.icon || '/favicon.ico',
+        icon: options.icon || '/icons/icon-512x512.png',
         badge: '/favicon.ico',
         tag: options.tag || 'unihub-notification',
         requireInteraction: false,
         silent: false,
       })
     );
-  } else if (event.data.type === 'REGISTER_SYNC') {
+  } else if (event.data?.type === 'REGISTER_SYNC') {
     // Register background sync
     if ('sync' in self.registration) {
       self.registration.sync.register(event.data.tag).catch((err) => {
@@ -90,20 +90,26 @@ self.addEventListener('notificationclick', (event) => {
   console.log('[SW] Notification clicked:', event.notification.tag);
   event.notification.close();
 
+  const fallbackUrl = event.notification.tag.includes('calendar')
+    ? '/calendar'
+    : '/mail';
+  const requestedUrl = event.notification.data?.url || fallbackUrl;
+  const targetUrl = new URL(requestedUrl, self.location.origin).toString();
+
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (clients) => {
       // If app is already open, focus it
       for (const client of clients) {
         if (client.url.includes(self.location.origin) && 'focus' in client) {
+          if ('navigate' in client && client.url !== targetUrl) {
+            await client.navigate(targetUrl);
+          }
           return client.focus();
         }
       }
       // Otherwise open the app
       if (self.clients.openWindow) {
-        const url = event.notification.tag.includes('calendar')
-          ? '/todo'
-          : '/mail';
-        return self.clients.openWindow(self.location.origin + url);
+        return self.clients.openWindow(targetUrl);
       }
     })
   );

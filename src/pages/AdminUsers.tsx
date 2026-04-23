@@ -105,8 +105,8 @@ const AdminUsers = () => {
   });
 
   const handleChangePassword = async () => {
-    if (!passwordDialogUser || !newPassword || newPassword.length < 6) {
-      toast({ title: 'New password must be at least 6 characters', variant: 'destructive' });
+    if (!passwordDialogUser || !newPassword || newPassword.length < 12) {
+      toast({ title: 'New password must be at least 12 characters', variant: 'destructive' });
       return;
     }
     setPasswordLoading(true);
@@ -338,7 +338,7 @@ const AdminUsers = () => {
                 type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Min 6 characters"
+                placeholder="Min 12 characters"
               />
             </div>
             <div className="flex justify-end gap-2 pt-2">

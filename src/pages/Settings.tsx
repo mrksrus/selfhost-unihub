@@ -138,8 +138,8 @@ const Settings = () => {
       toast({ title: 'Passwords do not match', variant: 'destructive' });
       return;
     }
-    if (passwordForm.new_password.length < 6) {
-      toast({ title: 'New password must be at least 6 characters', variant: 'destructive' });
+    if (passwordForm.new_password.length < 12) {
+      toast({ title: 'New password must be at least 12 characters', variant: 'destructive' });
       return;
     }
     setPasswordLoading(true);
