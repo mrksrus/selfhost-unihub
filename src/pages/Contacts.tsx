@@ -128,8 +128,19 @@ const Contacts = () => {
   // Open new contact dialog if linked from dashboard
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const search = params.get('search') || params.get('q');
+    if (search) {
+      setSearchQuery(search);
+    }
     if (params.get('action') === 'new') {
+      setFormData((prev) => ({
+        ...prev,
+        first_name: params.get('name') || prev.first_name,
+        email: params.get('email') || prev.email,
+      }));
       setIsDialogOpen(true);
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (search) {
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);

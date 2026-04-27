@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS users (
     is_active BOOLEAN DEFAULT TRUE,
     email_verified BOOLEAN DEFAULT FALSE,
     timezone VARCHAR(64) NULL COMMENT 'IANA timezone e.g. Europe/Berlin; NULL = use device',
+    two_factor_enabled BOOLEAN DEFAULT FALSE,
+    encrypted_two_factor_secret TEXT NULL,
+    two_factor_recovery_codes JSON NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     
@@ -36,6 +39,22 @@ CREATE TABLE IF NOT EXISTS sessions (
     INDEX idx_sessions_token (token),
     INDEX idx_sessions_user (user_id),
     INDEX idx_sessions_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Short-lived login challenges used after password verification when 2FA is enabled
+CREATE TABLE IF NOT EXISTS two_factor_challenges (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    expires_at TIMESTAMP NOT NULL,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_2fa_challenges_token (token_hash),
+    INDEX idx_2fa_challenges_user (user_id),
+    INDEX idx_2fa_challenges_expires (expires_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Contacts table

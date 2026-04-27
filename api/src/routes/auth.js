@@ -18,6 +18,43 @@ const {
   clearAuthCookie,
   clearCsrfCookie,
 } = require('../auth');
+const {
+  generateTwoFactorSecret,
+  verifyTotp,
+  getOtpAuthUri,
+  getTwoFactorStatus,
+  enableTwoFactor,
+  disableTwoFactor,
+  verifyUserSecondFactor,
+  createTwoFactorLoginChallenge,
+  consumeTwoFactorLoginChallenge,
+  deleteTwoFactorLoginChallenge,
+} = require('../services/two-factor');
+
+async function createSessionResponse(user, res) {
+  const token = generateToken(user.id);
+  const csrfToken = generateCsrfToken();
+  const expiresAt = getSessionExpiry();
+  await db.execute(
+    'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
+    [user.id, token, expiresAt]
+  );
+
+  setAuthCookie(res, token);
+  setCsrfCookie(res, csrfToken);
+  return {
+    csrfToken,
+    user: {
+      id: user.id,
+      email: user.email,
+      full_name: user.full_name,
+      avatar_url: user.avatar_url,
+      role: user.role,
+      timezone: user.timezone ?? null,
+      two_factor_enabled: !!user.two_factor_enabled,
+    },
+  };
+}
 
 
 module.exports = {
@@ -83,7 +120,7 @@ module.exports = {
       );
       
       resetRateLimit(ip);
-      const result = { csrfToken, user: { id: newUserId, email, full_name, role: 'user', timezone: null } };
+      const result = { csrfToken, user: { id: newUserId, email, full_name, role: 'user', timezone: null, two_factor_enabled: false } };
       setAuthCookie(res, token);
       setCsrfCookie(res, csrfToken);
       return result;
@@ -113,7 +150,7 @@ module.exports = {
       while (retries > 0) {
         try {
           const result = await db.execute(
-            'SELECT id, email, password_hash, full_name, role, is_active, timezone FROM users WHERE email = ?',
+            'SELECT id, email, password_hash, full_name, avatar_url, role, is_active, timezone, two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE email = ?',
             [email]
           );
           users = result[0];
@@ -145,20 +182,23 @@ module.exports = {
       if (!user.is_active) {
         return { error: 'Your account is pending admin approval', status: 403 };
       }
-      
-      const token = generateToken(user.id);
-      const csrfToken = generateCsrfToken();
+
+      if (user.two_factor_enabled) {
+        const challengeToken = await createTwoFactorLoginChallenge(user.id, req);
+        return {
+          requires2fa: true,
+          challengeToken,
+          message: 'Two-factor authentication code required',
+        };
+      }
       
       // Create session with retry logic
-      const expiresAt = getSessionExpiry();
       retries = 3;
       while (retries > 0) {
         try {
-          await db.execute(
-            'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
-            [user.id, token, expiresAt]
-          );
-          break;
+          const result = await createSessionResponse(user, res);
+          resetRateLimit(ip);
+          return result;
         } catch (dbError) {
           retries--;
           if (retries === 0) {
@@ -169,16 +209,161 @@ module.exports = {
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       }
-      
-      resetRateLimit(ip);
-      const result = { csrfToken, user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role, timezone: user.timezone ?? null } };
-      setAuthCookie(res, token);
-      setCsrfCookie(res, csrfToken);
-      return result;
     } catch (error) {
       console.error('Signin error:', error);
       recordFailedAttempt(ip);
       return { error: 'Failed to sign in', status: 500 };
+    }
+  },
+
+  'POST /api/auth/2fa/login': async (req, userId, body, res) => {
+    const ip = getClientIP(req);
+    const blockedMinutes = isRateLimited(ip);
+    if (blockedMinutes) {
+      return { error: `Too many attempts. Try again in ${blockedMinutes} minutes.`, status: 429 };
+    }
+
+    const challengeToken = String(body?.challenge_token || '').trim();
+    const code = String(body?.code || '').trim();
+    if (!challengeToken || !code) {
+      return { error: 'Challenge token and authentication code are required', status: 400 };
+    }
+
+    try {
+      const challengeUser = await consumeTwoFactorLoginChallenge(challengeToken);
+      if (!challengeUser || !challengeUser.is_active) {
+        recordFailedAttempt(ip);
+        return { error: 'Two-factor challenge expired. Sign in again.', status: 401 };
+      }
+
+      const verification = await verifyUserSecondFactor(challengeUser, code);
+      if (!verification.ok) {
+        recordFailedAttempt(ip);
+        return { error: 'Invalid authentication code', status: 401 };
+      }
+
+      await deleteTwoFactorLoginChallenge(challengeToken);
+      resetRateLimit(ip);
+      const result = await createSessionResponse(challengeUser, res);
+      return {
+        ...result,
+        usedRecoveryCode: !!verification.usedRecoveryCode,
+        recoveryCodesRemaining: verification.recoveryCodesRemaining,
+      };
+    } catch (error) {
+      console.error('2FA login error:', error);
+      recordFailedAttempt(ip);
+      return { error: 'Failed to verify authentication code', status: 500 };
+    }
+  },
+
+  'GET /api/auth/2fa/status': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const status = await getTwoFactorStatus(userId);
+      if (!status) return { error: 'User not found', status: 404 };
+      return status;
+    } catch (error) {
+      console.error('2FA status error:', error);
+      return { error: 'Failed to get two-factor status', status: 500 };
+    }
+  },
+
+  'POST /api/auth/2fa/setup/start': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const [users] = await db.execute('SELECT email, two_factor_enabled FROM users WHERE id = ?', [userId]);
+      if (users.length === 0) return { error: 'User not found', status: 404 };
+      if (users[0].two_factor_enabled) {
+        return { error: 'Two-factor authentication is already enabled', status: 400 };
+      }
+
+      const secret = generateTwoFactorSecret();
+      return {
+        secret,
+        otpauth_uri: getOtpAuthUri({ email: users[0].email, secret }),
+      };
+    } catch (error) {
+      console.error('2FA setup start error:', error);
+      return { error: 'Failed to start two-factor setup', status: 500 };
+    }
+  },
+
+  'POST /api/auth/2fa/setup/confirm': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const secret = String(body?.secret || '').trim().toUpperCase();
+    const code = String(body?.code || '').trim();
+    if (!secret || !code) return { error: 'Secret and authentication code are required', status: 400 };
+    if (!verifyTotp(secret, code)) return { error: 'Invalid authentication code', status: 400 };
+
+    try {
+      const [users] = await db.execute('SELECT id, two_factor_enabled FROM users WHERE id = ?', [userId]);
+      if (users.length === 0) return { error: 'User not found', status: 404 };
+      if (users[0].two_factor_enabled) {
+        return { error: 'Two-factor authentication is already enabled', status: 400 };
+      }
+      const recoveryCodes = await enableTwoFactor(userId, secret);
+      return {
+        enabled: true,
+        recoveryCodes,
+        recoveryCodesRemaining: recoveryCodes.length,
+      };
+    } catch (error) {
+      console.error('2FA setup confirm error:', error);
+      return { error: 'Failed to enable two-factor authentication', status: 500 };
+    }
+  },
+
+  'POST /api/auth/2fa/disable': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const { current_password, code } = body || {};
+    if (!current_password || !code) {
+      return { error: 'Current password and authentication code are required', status: 400 };
+    }
+
+    try {
+      const [users] = await db.execute(
+        'SELECT id, password_hash, two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE id = ?',
+        [userId]
+      );
+      if (users.length === 0) return { error: 'User not found', status: 404 };
+      const isValidPassword = await verifyPassword(current_password, users[0].password_hash);
+      if (!isValidPassword) return { error: 'Current password is incorrect', status: 401 };
+      const verification = await verifyUserSecondFactor(users[0], code);
+      if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
+      await disableTwoFactor(userId);
+      await db.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, getAuthTokenFromRequest(req) || '']);
+      return { enabled: false };
+    } catch (error) {
+      console.error('2FA disable error:', error);
+      return { error: 'Failed to disable two-factor authentication', status: 500 };
+    }
+  },
+
+  'POST /api/auth/2fa/recovery-codes/regenerate': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const code = String(body?.code || '').trim();
+    if (!code) return { error: 'Authentication code is required', status: 400 };
+
+    try {
+      const [users] = await db.execute(
+        'SELECT id, email, two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE id = ?',
+        [userId]
+      );
+      if (users.length === 0) return { error: 'User not found', status: 404 };
+      if (!users[0].two_factor_enabled) return { error: 'Two-factor authentication is not enabled', status: 400 };
+      const verification = await verifyUserSecondFactor(users[0], code);
+      if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
+      const secret = users[0].encrypted_two_factor_secret ? require('../security/encryption').decrypt(users[0].encrypted_two_factor_secret) : null;
+      if (!secret) return { error: 'Two-factor secret is unavailable', status: 500 };
+      const recoveryCodes = await enableTwoFactor(userId, secret);
+      return {
+        recoveryCodes,
+        recoveryCodesRemaining: recoveryCodes.length,
+      };
+    } catch (error) {
+      console.error('2FA recovery regenerate error:', error);
+      return { error: 'Failed to regenerate recovery codes', status: 500 };
     }
   },
   
@@ -203,7 +388,7 @@ module.exports = {
     
     try {
       const [users] = await db.execute(
-        'SELECT id, email, full_name, avatar_url, role, timezone FROM users WHERE id = ?',
+        'SELECT id, email, full_name, avatar_url, role, timezone, two_factor_enabled FROM users WHERE id = ?',
         [userId]
       );
       
@@ -273,7 +458,7 @@ module.exports = {
     try {
       await db.execute('UPDATE users SET full_name = ?, timezone = ? WHERE id = ?', [full_name.trim() || null, tzValue, userId]);
       const [users] = await db.execute(
-        'SELECT id, email, full_name, avatar_url, role, timezone FROM users WHERE id = ?',
+        'SELECT id, email, full_name, avatar_url, role, timezone, two_factor_enabled FROM users WHERE id = ?',
         [userId]
       );
       return { user: users[0] };

@@ -15,11 +15,7 @@ async function handleRequest(req, res) {
       routeKey = `${req.method} /api/contacts/:id/favorite`;
     }
   } else if (routeKey.includes('/api/calendar/accounts/')) {
-    if (url.pathname.endsWith('/sync')) {
-      routeKey = `${req.method} /api/calendar/accounts/:id/sync`;
-    } else {
-      routeKey = `${req.method} /api/calendar/accounts/:id`;
-    }
+    routeKey = `${req.method} /api/calendar/accounts/:id`;
   } else if (routeKey.includes('/api/calendar/calendars/')) {
     routeKey = `${req.method} /api/calendar/calendars/:id`;
   } else if (routeKey.includes('/api/calendar/events/')) {
@@ -127,10 +123,9 @@ async function handleRequest(req, res) {
       maxBodySize = 30 * 1024 * 1024; // Allow attachments in compose (base64 JSON payload)
     } else if (
       routeKey === 'POST /api/calendar/accounts' ||
-      routeKey === 'PUT /api/calendar/accounts/:id' ||
-      routeKey === 'POST /api/calendar/accounts/:id/sync'
+      routeKey === 'PUT /api/calendar/accounts/:id'
     ) {
-      maxBodySize = 50000; // OAuth tokens/provider config payloads
+      maxBodySize = 50000; // Calendar account metadata payloads
     } else if (
       routeKey === 'POST /api/mail/emails/bulk-update' ||
       routeKey === 'POST /api/mail/emails/bulk-delete' ||

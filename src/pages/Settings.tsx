@@ -80,6 +80,16 @@ type BackupImportResult = {
   restored_files?: number;
 };
 
+type TwoFactorStatus = {
+  enabled: boolean;
+  recoveryCodesRemaining: number;
+};
+
+type TwoFactorSetup = {
+  secret: string;
+  otpauth_uri: string;
+};
+
 const FALLBACK_MAIL_FOLDERS: MailFolder[] = [
   { slug: 'inbox', display_name: 'Inbox', is_system: true },
   { slug: 'important', display_name: 'Important', is_system: true },
@@ -173,6 +183,24 @@ const Settings = () => {
     confirm_password: '',
   });
   const [passwordLoading, setPasswordLoading] = useState(false);
+  const [twoFactorSetupOpen, setTwoFactorSetupOpen] = useState(false);
+  const [twoFactorDisableOpen, setTwoFactorDisableOpen] = useState(false);
+  const [twoFactorRecoveryOpen, setTwoFactorRecoveryOpen] = useState(false);
+  const [twoFactorSetup, setTwoFactorSetup] = useState<TwoFactorSetup | null>(null);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorDisableForm, setTwoFactorDisableForm] = useState({ current_password: '', code: '' });
+  const [newRecoveryCodes, setNewRecoveryCodes] = useState<string[] | null>(null);
+  const [twoFactorLoading, setTwoFactorLoading] = useState(false);
+
+  const { data: twoFactorStatus, refetch: refetchTwoFactorStatus } = useQuery({
+    queryKey: ['auth', '2fa-status'],
+    queryFn: async () => {
+      const response = await api.get<TwoFactorStatus>('/auth/2fa/status');
+      if (response.error) throw new Error(response.error);
+      return response.data || { enabled: false, recoveryCodesRemaining: 0 };
+    },
+    enabled: !!user,
+  });
 
   const handleChangePassword = async () => {
     if (passwordForm.new_password !== passwordForm.confirm_password) {
@@ -201,6 +229,95 @@ const Settings = () => {
       toast({ title: 'Failed to change password', description: message, variant: 'destructive' });
     } finally {
       setPasswordLoading(false);
+    }
+  };
+
+  const startTwoFactorSetup = async () => {
+    setTwoFactorLoading(true);
+    setNewRecoveryCodes(null);
+    setTwoFactorCode('');
+    try {
+      const response = await api.post<TwoFactorSetup>('/auth/2fa/setup/start');
+      if (response.error) {
+        toast({ title: 'Failed to start 2FA setup', description: response.error, variant: 'destructive' });
+        return;
+      }
+      setTwoFactorSetup(response.data || null);
+      setTwoFactorSetupOpen(true);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to start 2FA setup', description: message, variant: 'destructive' });
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const confirmTwoFactorSetup = async () => {
+    if (!twoFactorSetup) return;
+    setTwoFactorLoading(true);
+    try {
+      const response = await api.post<{ enabled: boolean; recoveryCodes: string[]; recoveryCodesRemaining: number }>('/auth/2fa/setup/confirm', {
+        secret: twoFactorSetup.secret,
+        code: twoFactorCode,
+      });
+      if (response.error) {
+        toast({ title: 'Failed to enable 2FA', description: response.error, variant: 'destructive' });
+        return;
+      }
+      setNewRecoveryCodes(response.data?.recoveryCodes || []);
+      setUser(user ? { ...user, two_factor_enabled: true } : user);
+      await refetchTwoFactorStatus();
+      toast({ title: 'Two-factor authentication enabled' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to enable 2FA', description: message, variant: 'destructive' });
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const disableTwoFactor = async () => {
+    setTwoFactorLoading(true);
+    try {
+      const response = await api.post<{ enabled: boolean }>('/auth/2fa/disable', twoFactorDisableForm);
+      if (response.error) {
+        toast({ title: 'Failed to disable 2FA', description: response.error, variant: 'destructive' });
+        return;
+      }
+      setTwoFactorDisableOpen(false);
+      setTwoFactorDisableForm({ current_password: '', code: '' });
+      setNewRecoveryCodes(null);
+      setUser(user ? { ...user, two_factor_enabled: false } : user);
+      await refetchTwoFactorStatus();
+      toast({ title: 'Two-factor authentication disabled' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to disable 2FA', description: message, variant: 'destructive' });
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const regenerateRecoveryCodes = async () => {
+    setTwoFactorLoading(true);
+    try {
+      const response = await api.post<{ recoveryCodes: string[]; recoveryCodesRemaining: number }>('/auth/2fa/recovery-codes/regenerate', {
+        code: twoFactorCode,
+      });
+      if (response.error) {
+        toast({ title: 'Failed to regenerate recovery codes', description: response.error, variant: 'destructive' });
+        return;
+      }
+      setNewRecoveryCodes(response.data?.recoveryCodes || []);
+      setTwoFactorRecoveryOpen(false);
+      setTwoFactorCode('');
+      await refetchTwoFactorStatus();
+      toast({ title: 'Recovery codes regenerated' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to regenerate recovery codes', description: message, variant: 'destructive' });
+    } finally {
+      setTwoFactorLoading(false);
     }
   };
 
@@ -596,16 +713,184 @@ const Settings = () => {
                 </Dialog>
               </div>
               <Separator />
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <p className="font-medium text-foreground">Two-Factor Authentication</p>
-                  <p className="text-sm text-muted-foreground">Add an extra layer of security</p>
+                  <p className="text-sm text-muted-foreground">
+                    {twoFactorStatus?.enabled
+                      ? `Enabled. ${twoFactorStatus.recoveryCodesRemaining} recovery code${twoFactorStatus.recoveryCodesRemaining === 1 ? '' : 's'} remaining.`
+                      : 'Require an authenticator code when signing in.'}
+                  </p>
                 </div>
-                <Button variant="outline" disabled>Coming Soon</Button>
+                <div className="flex flex-wrap gap-2">
+                  {twoFactorStatus?.enabled ? (
+                    <>
+                      <Dialog open={twoFactorRecoveryOpen} onOpenChange={(open) => {
+                        setTwoFactorRecoveryOpen(open);
+                        if (!open) setTwoFactorCode('');
+                      }}>
+                        <DialogTrigger asChild>
+                          <Button variant="outline">New Recovery Codes</Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Regenerate Recovery Codes</DialogTitle>
+                          </DialogHeader>
+                          <div className="space-y-4 pt-2">
+                            <p className="text-sm text-muted-foreground">
+                              Enter a current authenticator code. Existing unused recovery codes will stop working.
+                            </p>
+                            <div className="space-y-2">
+                              <Label htmlFor="recoveryCodeVerify">Authentication code</Label>
+                              <Input
+                                id="recoveryCodeVerify"
+                                inputMode="numeric"
+                                value={twoFactorCode}
+                                onChange={(event) => setTwoFactorCode(event.target.value)}
+                              />
+                            </div>
+                            <div className="flex justify-end gap-2">
+                              <Button variant="outline" onClick={() => setTwoFactorRecoveryOpen(false)}>Cancel</Button>
+                              <Button onClick={regenerateRecoveryCodes} disabled={twoFactorLoading || !twoFactorCode.trim()}>
+                                {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                                Regenerate
+                              </Button>
+                            </div>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                      <Dialog open={twoFactorDisableOpen} onOpenChange={(open) => {
+                        setTwoFactorDisableOpen(open);
+                        if (!open) setTwoFactorDisableForm({ current_password: '', code: '' });
+                      }}>
+                        <DialogTrigger asChild>
+                          <Button variant="outline">Disable</Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Disable Two-Factor Authentication</DialogTitle>
+                          </DialogHeader>
+                          <div className="space-y-4 pt-2">
+                            <div className="space-y-2">
+                              <Label htmlFor="disable2faPassword">Current Password</Label>
+                              <Input
+                                id="disable2faPassword"
+                                type="password"
+                                value={twoFactorDisableForm.current_password}
+                                onChange={(event) => setTwoFactorDisableForm((prev) => ({ ...prev, current_password: event.target.value }))}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor="disable2faCode">Authenticator or recovery code</Label>
+                              <Input
+                                id="disable2faCode"
+                                value={twoFactorDisableForm.code}
+                                onChange={(event) => setTwoFactorDisableForm((prev) => ({ ...prev, code: event.target.value }))}
+                              />
+                            </div>
+                            <div className="flex justify-end gap-2">
+                              <Button variant="outline" onClick={() => setTwoFactorDisableOpen(false)}>Cancel</Button>
+                              <Button variant="destructive" onClick={disableTwoFactor} disabled={twoFactorLoading}>
+                                {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                                Disable 2FA
+                              </Button>
+                            </div>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                    </>
+                  ) : (
+                    <Button variant="outline" onClick={startTwoFactorSetup} disabled={twoFactorLoading}>
+                      {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Set Up 2FA
+                    </Button>
+                  )}
+                </div>
               </div>
+              {newRecoveryCodes && newRecoveryCodes.length > 0 && (
+                <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+                  <p className="font-medium text-foreground mb-2">Recovery codes</p>
+                  <p className="text-muted-foreground mb-3">
+                    Store these somewhere safe. Each code can be used once if you lose access to your authenticator app.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 font-mono text-foreground">
+                    {newRecoveryCodes.map((code) => <span key={code}>{code}</span>)}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         </motion.div>
+
+        <Dialog open={twoFactorSetupOpen} onOpenChange={(open) => {
+          setTwoFactorSetupOpen(open);
+          if (!open) {
+            setTwoFactorSetup(null);
+            setTwoFactorCode('');
+          }
+        }}>
+          <DialogContent className="sm:max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Set Up Two-Factor Authentication</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 pt-2">
+              {!newRecoveryCodes ? (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Add this account to your authenticator app using the manual key below, then enter the 6-digit code it shows.
+                  </p>
+                  <div className="space-y-2">
+                    <Label>Manual setup key</Label>
+                    <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-sm break-all">
+                      {twoFactorSetup?.secret}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Authenticator URI</Label>
+                    <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs break-all">
+                      {twoFactorSetup?.otpauth_uri}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="confirm2faCode">Authentication code</Label>
+                    <Input
+                      id="confirm2faCode"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      value={twoFactorCode}
+                      onChange={(event) => setTwoFactorCode(event.target.value)}
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => setTwoFactorSetupOpen(false)}>Cancel</Button>
+                    <Button onClick={confirmTwoFactorSetup} disabled={twoFactorLoading || !twoFactorCode.trim()}>
+                      {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Enable 2FA
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Two-factor authentication is enabled. Store these recovery codes now; they will not be shown again.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 rounded-md border border-border p-3 font-mono text-sm">
+                    {newRecoveryCodes.map((code) => <span key={code}>{code}</span>)}
+                  </div>
+                  <div className="flex justify-end">
+                    <Button onClick={() => {
+                      setTwoFactorSetupOpen(false);
+                      setTwoFactorSetup(null);
+                      setTwoFactorCode('');
+                    }}>
+                      Done
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {/* App Info */}
         <motion.div

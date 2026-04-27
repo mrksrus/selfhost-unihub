@@ -1,16 +1,13 @@
 const crypto = require('crypto');
 const { db } = require('../state');
-const { encrypt } = require('../security/encryption');
 const {
   CALENDAR_MULTI_ENABLED,
-  CALENDAR_SYNC_ENABLED,
 } = require('../config');
 const {
   CALENDAR_PROVIDER_DEFAULT_CAPABILITIES,
   normalizeCalendarAccountProvider,
   toMysqlDatetime,
   serializeCalendarAccount,
-  syncCalendarAccount,
   getCalendarAccountIdFromReq,
   getCalendarCalendarIdFromReq,
   serializeCalendarCalendar,
@@ -21,14 +18,12 @@ const {
   serializeCalendarEvent,
   parseDatetimeToMillis,
   replaceEventAttendees,
-  pushLocalEventToProvider,
   getCalendarEventWithSubtasks,
   getCalendarEventIdFromReq,
   normalizeResponseStatus,
   loadCalendarWithAccount,
   getCalendarSubtaskIdFromReq,
   serializeCalendarSubtask,
-  deleteLocalEventOnProvider,
 } = require('../services/calendar');
 
 
@@ -54,69 +49,44 @@ module.exports = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
     try {
-      const provider = normalizeCalendarAccountProvider(body.provider);
-      if (!provider) return { error: 'provider must be one of: local, google, microsoft, icloud, ical', status: 400 };
-      if (provider !== 'local' && !CALENDAR_SYNC_ENABLED) {
-        return { error: 'Calendar sync feature disabled', status: 503 };
-      }
+      const provider = normalizeCalendarAccountProvider(body.provider || 'local');
+      if (!provider) return { error: 'Only local calendar accounts are supported', status: 400 };
 
       const accountId = crypto.randomUUID();
-      const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
-      const encryptedAccessToken = body.access_token ? encrypt(String(body.access_token)) : null;
-      const encryptedRefreshToken = body.refresh_token ? encrypt(String(body.refresh_token)) : null;
-      const providerConfig = body.provider_config && typeof body.provider_config === 'object' ? body.provider_config : {};
-      const tokenExpiresAt = body.token_expires_at ? toMysqlDatetime(body.token_expires_at) : null;
+      const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
 
       await db.execute(
         `INSERT INTO calendar_accounts
-          (id, user_id, provider, account_email, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, provider_config, capabilities, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, user_id, provider, account_email, display_name, capabilities, is_active)
+         VALUES (?, ?, 'local', ?, ?, ?, ?)`,
         [
           accountId,
           userId,
-          provider,
           body.account_email?.trim() || null,
           body.display_name?.trim() || null,
-          encryptedAccessToken,
-          encryptedRefreshToken,
-          tokenExpiresAt,
-          JSON.stringify(providerConfig || {}),
           JSON.stringify(capabilities),
           body.is_active === false ? 0 : 1,
         ]
       );
 
-      // Create a default calendar immediately for local, iCloud, and ical accounts
-      // so the UI always has at least one selectable calendar.
-      if (provider === 'local' || provider === 'icloud' || provider === 'ical') {
-        const defaultExternalId = provider === 'local' ? 'local-default' : (body.default_external_id || null);
-        const defaultName = provider === 'local' ? 'Default' : (provider === 'ical' ? 'Web calendar' : 'iCloud Calendar');
-        await db.execute(
-          `INSERT INTO calendar_calendars
-            (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
-           VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, ?, TRUE)`,
-          [
-            crypto.randomUUID(),
-            userId,
-            accountId,
-            body.default_calendar_name?.trim() || defaultName,
-            defaultExternalId,
-            body.default_calendar_color || '#22c55e',
-            provider === 'ical' ? 1 : 0,
-          ]
-        );
-      }
+      await db.execute(
+        `INSERT INTO calendar_calendars
+          (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
+         VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
+        [
+          crypto.randomUUID(),
+          userId,
+          accountId,
+          body.default_calendar_name?.trim() || 'Default',
+          'local-default',
+          body.default_calendar_color || '#22c55e',
+        ]
+      );
 
       const [rows] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
       const created = rows[0];
       const account = serializeCalendarAccount(created);
-
-      let syncResult = null;
-      if (provider !== 'local' && body.sync_on_create !== false) {
-        syncResult = await syncCalendarAccount(accountId, userId);
-      }
-
-      return { account, sync: syncResult };
+      return { account };
     } catch (error) {
       console.error('Create calendar account error:', error);
       return { error: error.message || 'Failed to create calendar account', status: 500 };
@@ -145,25 +115,6 @@ module.exports = {
       if (Object.prototype.hasOwnProperty.call(body, 'is_active')) {
         updates.push('is_active = ?');
         params.push(body.is_active === false ? 0 : 1);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'access_token')) {
-        updates.push('encrypted_access_token = ?');
-        params.push(body.access_token ? encrypt(String(body.access_token)) : null);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'refresh_token')) {
-        updates.push('encrypted_refresh_token = ?');
-        params.push(body.refresh_token ? encrypt(String(body.refresh_token)) : null);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'token_expires_at')) {
-        updates.push('token_expires_at = ?');
-        params.push(body.token_expires_at ? toMysqlDatetime(body.token_expires_at) : null);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'provider_config')) {
-        if (body.provider_config !== null && typeof body.provider_config !== 'object') {
-          return { error: 'provider_config must be an object or null', status: 400 };
-        }
-        updates.push('provider_config = ?');
-        params.push(JSON.stringify(body.provider_config || {}));
       }
       if (updates.length === 0) return { error: 'No fields to update', status: 400 };
 
@@ -211,23 +162,6 @@ module.exports = {
     } catch (error) {
       console.error('Delete calendar account error:', error);
       return { error: error.message || 'Failed to delete calendar account', status: 500 };
-    }
-  },
-
-  'POST /api/calendar/accounts/:id/sync': async (req, userId) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!CALENDAR_SYNC_ENABLED) return { error: 'Calendar sync feature disabled', status: 503 };
-    try {
-      const accountId = getCalendarAccountIdFromReq(req);
-      if (!accountId) return { error: 'Invalid account id', status: 400 };
-      const result = await syncCalendarAccount(accountId, userId);
-      if (!result.success) {
-        return { error: result.error || 'Sync failed', status: result.status || 500, details: result };
-      }
-      return { sync: result };
-    } catch (error) {
-      console.error('Calendar sync error:', error);
-      return { error: error.message || 'Calendar sync failed', status: 500 };
     }
   },
 
@@ -282,7 +216,7 @@ module.exports = {
           body.color || '#22c55e',
           body.is_visible === false ? 0 : 1,
           body.auto_todo_enabled === false ? 0 : 1,
-          account.provider === 'local' ? !!body.read_only : !!body.read_only,
+          0,
           !!body.is_primary,
         ]
       );
@@ -322,10 +256,6 @@ module.exports = {
       if (Object.prototype.hasOwnProperty.call(body, 'auto_todo_enabled')) {
         updates.push('auto_todo_enabled = ?');
         params.push(body.auto_todo_enabled === false ? 0 : 1);
-      }
-      if (Object.prototype.hasOwnProperty.call(body, 'read_only')) {
-        updates.push('read_only = ?');
-        params.push(body.read_only === true ? 1 : 0);
       }
       if (Object.prototype.hasOwnProperty.call(body, 'is_primary')) {
         updates.push('is_primary = ?');
@@ -509,15 +439,7 @@ module.exports = {
         await replaceEventAttendees(userId, eventId, body.attendees);
       }
 
-      const pushResult = await pushLocalEventToProvider(userId, eventId);
       const event = await getCalendarEventWithSubtasks(userId, eventId);
-      if (pushResult?.error) {
-        return {
-          event,
-          warning: `Event saved locally but provider sync failed: ${pushResult.error}`,
-          provider_sync_error: pushResult.error,
-        };
-      }
       return { event };
     } catch (error) {
       console.error('Create event error:', error);
@@ -617,15 +539,7 @@ module.exports = {
         await replaceEventAttendees(userId, id, body.attendees);
       }
 
-      const pushResult = await pushLocalEventToProvider(userId, id);
       const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
-      if (pushResult?.error) {
-        return {
-          event: updatedEvent,
-          warning: `Event updated locally but provider sync failed: ${pushResult.error}`,
-          provider_sync_error: pushResult.error,
-        };
-      }
       return { event: updatedEvent };
     } catch (error) {
       console.error('Update event error:', error);
@@ -742,15 +656,7 @@ module.exports = {
         });
       }
       await replaceEventAttendees(userId, id, nextAttendees);
-      const providerPush = await pushLocalEventToProvider(userId, id);
       const updated = await getCalendarEventWithSubtasks(userId, id);
-      if (providerPush?.error) {
-        return {
-          event: updated,
-          warning: `RSVP updated locally but provider sync failed: ${providerPush.error}`,
-          provider_sync_error: providerPush.error,
-        };
-      }
       return { event: updated };
     } catch (error) {
       console.error('RSVP update error:', error);
@@ -942,10 +848,6 @@ module.exports = {
     try {
       const id = getCalendarEventIdFromReq(req);
       if (!id) return { error: 'Invalid event id', status: 400 };
-      const providerDeleteResult = await deleteLocalEventOnProvider(userId, id);
-      if (providerDeleteResult?.error) {
-        return { error: `Failed to delete provider event: ${providerDeleteResult.error}`, status: providerDeleteResult.status || 502 };
-      }
       await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       return { message: 'Event deleted' };
     } catch (error) {

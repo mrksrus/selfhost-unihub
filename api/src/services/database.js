@@ -120,6 +120,9 @@ async function ensureSchema() {
     is_active BOOLEAN DEFAULT TRUE,
     email_verified BOOLEAN DEFAULT FALSE,
     timezone VARCHAR(64) NULL,
+    two_factor_enabled BOOLEAN DEFAULT FALSE,
+    encrypted_two_factor_secret TEXT NULL,
+    two_factor_recovery_codes JSON NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_users_email (email),
@@ -131,6 +134,21 @@ async function ensureSchema() {
   } catch (error) {
     if (!error.message.includes('Duplicate column name')) {
       console.log('[DB] Note: users.timezone column may already exist');
+    }
+  }
+  const userTwoFactorMigrations = [
+    ['two_factor_enabled', `ALTER TABLE users ADD COLUMN two_factor_enabled BOOLEAN DEFAULT FALSE AFTER timezone`],
+    ['encrypted_two_factor_secret', `ALTER TABLE users ADD COLUMN encrypted_two_factor_secret TEXT NULL AFTER two_factor_enabled`],
+    ['two_factor_recovery_codes', `ALTER TABLE users ADD COLUMN two_factor_recovery_codes JSON NULL AFTER encrypted_two_factor_secret`],
+  ];
+  for (const [columnName, alterSql] of userTwoFactorMigrations) {
+    try {
+      const [columns] = await db.execute('SHOW COLUMNS FROM users LIKE ?', [columnName]);
+      if (!Array.isArray(columns) || columns.length === 0) {
+        await db.execute(alterSql);
+      }
+    } catch (error) {
+      // Continue startup if a migration is unsupported or already applied.
     }
   }
 
@@ -146,6 +164,20 @@ async function ensureSchema() {
     INDEX idx_sessions_token (token),
     INDEX idx_sessions_user (user_id),
     INDEX idx_sessions_expires (expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS two_factor_challenges (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    expires_at TIMESTAMP NOT NULL,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_2fa_challenges_token (token_hash),
+    INDEX idx_2fa_challenges_user (user_id),
+    INDEX idx_2fa_challenges_expires (expires_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   await db.execute(`CREATE TABLE IF NOT EXISTS contacts (

@@ -5,6 +5,7 @@ import { useMailNotifications } from '@/hooks/use-mail-notifications';
 import AppSidebar from './AppSidebar';
 import MobileHeader from './MobileHeader';
 import BottomNav from './BottomNav';
+import GlobalCommandPalette from '@/components/GlobalCommandPalette';
 import { Loader2 } from 'lucide-react';
 
 const AppLayout = () => {
@@ -33,6 +34,7 @@ const AppLayout = () => {
       <main className="flex-1 overflow-auto w-full pb-mobile-nav md:pb-0 min-w-0">
         <Outlet />
       </main>
+      <GlobalCommandPalette />
       <BottomNav />
     </div>
   );

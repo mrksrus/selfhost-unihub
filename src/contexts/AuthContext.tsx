@@ -8,6 +8,7 @@ interface User {
   avatar_url?: string;
   role?: 'user' | 'admin';
   timezone?: string | null;
+  two_factor_enabled?: boolean;
 }
 
 interface AuthContextType {
@@ -16,7 +17,8 @@ interface AuthContextType {
   loading: boolean;
   setUser: (user: User | null) => void;
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null; requiresApproval?: boolean }>;
-  signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signIn: (email: string, password: string) => Promise<{ error: Error | null; requires2fa?: boolean; challengeToken?: string }>;
+  verifyTwoFactorLogin: (challengeToken: string, code: string) => Promise<{ error: Error | null; usedRecoveryCode?: boolean; recoveryCodesRemaining?: number }>;
   signOut: () => Promise<void>;
 }
 
@@ -76,13 +78,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signIn = async (email: string, password: string) => {
-    const response = await api.post<{ csrfToken?: string; user: User }>('/auth/signin', {
+    const response = await api.post<{ csrfToken?: string; user?: User; requires2fa?: boolean; challengeToken?: string }>('/auth/signin', {
       email,
       password,
     });
 
     if (response.error) {
       return { error: new Error(response.error) };
+    }
+
+    if (response.data?.requires2fa && response.data.challengeToken) {
+      return { error: null, requires2fa: true, challengeToken: response.data.challengeToken };
     }
 
     if (response.data?.user) {
@@ -97,6 +103,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return { error: new Error('Failed to sign in') };
   };
 
+  const verifyTwoFactorLogin = async (challengeToken: string, code: string) => {
+    const response = await api.post<{
+      csrfToken?: string;
+      user?: User;
+      usedRecoveryCode?: boolean;
+      recoveryCodesRemaining?: number;
+    }>('/auth/2fa/login', {
+      challenge_token: challengeToken,
+      code,
+    });
+
+    if (response.error) {
+      return { error: new Error(response.error) };
+    }
+
+    if (response.data?.user) {
+      if (response.data.csrfToken) {
+        api.setCsrfToken(response.data.csrfToken);
+      }
+      setUser(response.data.user);
+      setSession({ authenticated: true });
+      return {
+        error: null,
+        usedRecoveryCode: response.data.usedRecoveryCode,
+        recoveryCodesRemaining: response.data.recoveryCodesRemaining,
+      };
+    }
+
+    return { error: new Error('Failed to verify authentication code') };
+  };
+
   const signOut = async () => {
     await api.post('/auth/signout');
     api.setCsrfToken(null);
@@ -105,7 +142,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, setUser, signUp, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, session, loading, setUser, signUp, signIn, verifyTwoFactorLogin, signOut }}>
       {children}
     </AuthContext.Provider>
   );

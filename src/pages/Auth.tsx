@@ -15,7 +15,7 @@ const emailSchema = z.string().email('Please enter a valid email address');
 const passwordSchema = z.string().min(12, 'Password must be at least 12 characters');
 
 const Auth = () => {
-  const { user, signIn, signUp, loading: authLoading } = useAuth();
+  const { user, signIn, signUp, verifyTwoFactorLogin, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const { toast } = useToast();
   
@@ -24,6 +24,8 @@ const Auth = () => {
   const [fullName, setFullName] = useState('');
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
+  const [twoFactorChallengeToken, setTwoFactorChallengeToken] = useState<string | null>(null);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
 
   useEffect(() => {
     if (user) {
@@ -53,7 +55,7 @@ const Auth = () => {
     if (!validateForm()) return;
     
     setLoading(true);
-    const { error } = await signIn(email, password);
+    const { error, requires2fa, challengeToken } = await signIn(email, password);
     setLoading(false);
     
     if (error) {
@@ -63,6 +65,34 @@ const Auth = () => {
           ? 'Invalid email or password. Please try again.'
           : error.message,
         variant: 'destructive',
+      });
+    } else if (requires2fa && challengeToken) {
+      setTwoFactorChallengeToken(challengeToken);
+      setTwoFactorCode('');
+    }
+  };
+
+  const handleTwoFactorSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!twoFactorChallengeToken) return;
+
+    setLoading(true);
+    const { error, usedRecoveryCode, recoveryCodesRemaining } = await verifyTwoFactorLogin(twoFactorChallengeToken, twoFactorCode);
+    setLoading(false);
+
+    if (error) {
+      toast({
+        title: 'Verification failed',
+        description: error.message,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (usedRecoveryCode) {
+      toast({
+        title: 'Recovery code used',
+        description: `${recoveryCodesRemaining ?? 0} recovery codes remain. Generate new ones from Settings soon.`,
       });
     }
   };
@@ -182,7 +212,47 @@ const Auth = () => {
                 </TabsList>
                 
                 <TabsContent value="signin">
-                  <form onSubmit={handleSignIn} className="space-y-4">
+                  {twoFactorChallengeToken ? (
+                    <form onSubmit={handleTwoFactorSubmit} className="space-y-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="signin-2fa">Authentication code</Label>
+                        <Input
+                          id="signin-2fa"
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          placeholder="123456 or recovery code"
+                          value={twoFactorCode}
+                          onChange={(e) => setTwoFactorCode(e.target.value)}
+                          required
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          Enter the 6-digit code from your authenticator app, or one unused recovery code.
+                        </p>
+                      </div>
+                      <Button type="submit" className="w-full" disabled={loading}>
+                        {loading ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Verifying...
+                          </>
+                        ) : (
+                          'Verify and Sign In'
+                        )}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="w-full"
+                        onClick={() => {
+                          setTwoFactorChallengeToken(null);
+                          setTwoFactorCode('');
+                        }}
+                      >
+                        Use a different account
+                      </Button>
+                    </form>
+                  ) : (
+                    <form onSubmit={handleSignIn} className="space-y-4">
                     <div className="space-y-2">
                       <Label htmlFor="signin-email">Email</Label>
                       <Input
@@ -223,7 +293,8 @@ const Auth = () => {
                         'Sign In'
                       )}
                     </Button>
-                  </form>
+                    </form>
+                  )}
                 </TabsContent>
                 
                 <TabsContent value="signup">

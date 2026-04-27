@@ -4,7 +4,7 @@ import { api } from '@/lib/api';
 
 export type TodoStatus = 'done' | 'changed' | 'time_moved' | 'cancelled' | null;
 export type CalendarRsvpStatus = 'needsAction' | 'accepted' | 'tentative' | 'declined';
-export type CalendarProvider = 'local' | 'google' | 'microsoft' | 'icloud' | 'ical';
+export type CalendarProvider = 'local';
 
 export interface CalendarSubtask {
   id: string;
@@ -37,8 +37,8 @@ export interface CalendarAccount {
   provider: CalendarProvider;
   account_email: string | null;
   display_name: string | null;
-  token_expires_at: string | null;
-  provider_config: Record<string, unknown>;
+  token_expires_at: null;
+  provider_config: Record<string, never>;
   capabilities: Record<string, unknown>;
   is_active: boolean;
   last_synced_at: string | null;
@@ -166,17 +166,11 @@ export const calendarApi = {
     provider: CalendarProvider;
     account_email?: string | null;
     display_name?: string | null;
-    access_token?: string;
-    refresh_token?: string;
-    token_expires_at?: string | null;
-    provider_config?: Record<string, unknown>;
     is_active?: boolean;
-    sync_on_create?: boolean;
     default_calendar_name?: string;
     default_calendar_color?: string;
-    default_external_id?: string | null;
-  }): Promise<{ account: CalendarAccount; sync?: unknown }> {
-    const response = await api.post<{ account: CalendarAccount; sync?: unknown }>('/calendar/accounts', payload);
+  }): Promise<{ account: CalendarAccount }> {
+    const response = await api.post<{ account: CalendarAccount }>('/calendar/accounts', payload);
     if (response.error) throw new Error(response.error);
     if (!response.data?.account) throw new Error('Calendar account response missing');
     return response.data;
@@ -185,10 +179,6 @@ export const calendarApi = {
   async updateAccount(id: string, payload: Partial<{
     account_email: string | null;
     display_name: string | null;
-    access_token: string;
-    refresh_token: string;
-    token_expires_at: string | null;
-    provider_config: Record<string, unknown>;
     is_active: boolean;
   }>): Promise<CalendarAccount> {
     const response = await api.put<{ account: CalendarAccount }>(`/calendar/accounts/${id}`, payload);
@@ -200,12 +190,6 @@ export const calendarApi = {
   async deleteAccount(id: string): Promise<void> {
     const response = await api.delete(`/calendar/accounts/${id}`);
     if (response.error) throw new Error(response.error);
-  },
-
-  async syncAccount(id: string): Promise<unknown> {
-    const response = await api.post<{ sync: unknown }>(`/calendar/accounts/${id}/sync`);
-    if (response.error) throw new Error(response.error);
-    return response.data?.sync;
   },
 
   async fetchCalendars(): Promise<CalendarCalendar[]> {
