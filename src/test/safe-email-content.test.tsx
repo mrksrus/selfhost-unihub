@@ -14,8 +14,9 @@ describe('SafeEmailContent', () => {
 
     const iframe = screen.getByTitle('email-email-1');
     expect(iframe).toBeInTheDocument();
-    expect(iframe).toHaveAttribute('sandbox');
-    expect(iframe).toHaveAttribute('srcdoc', '<h1>Hello</h1>');
+    expect(iframe).toHaveAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
+    expect(iframe.getAttribute('srcdoc')).toContain('<base target="_blank" />');
+    expect(iframe.getAttribute('srcdoc')).toContain('<body><h1>Hello</h1></body>');
   });
 
   it('falls back to plain text when HTML is unavailable', () => {

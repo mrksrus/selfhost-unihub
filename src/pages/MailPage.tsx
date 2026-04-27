@@ -30,7 +30,6 @@ import {
   PaginationPrevious,
 } from '@/components/ui/pagination';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
@@ -64,7 +63,15 @@ import {
   ShieldAlert,
   Bell,
   CircleHelp,
-  Megaphone
+  Megaphone,
+  Bold,
+  Italic,
+  Underline,
+  List,
+  ListOrdered,
+  Link as LinkIcon,
+  Image as ImageIcon,
+  Palette
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
@@ -191,6 +198,16 @@ interface MailUnreadCountsResponse {
   unreadByFolderAccount?: Record<string, Record<string, number>>;
 }
 
+interface MailFolder {
+  id: string;
+  slug: string;
+  display_name: string;
+  is_system: boolean;
+  position: number;
+  total_count?: number;
+  unread_count?: number;
+}
+
 const mailProviders = [
   { value: 'gmail', label: 'Gmail', imapHost: 'imap.gmail.com', smtpHost: 'smtp.gmail.com', imapPort: 993, smtpPort: 587 },
   { value: 'yahoo', label: 'Yahoo Mail', imapHost: 'imap.mail.yahoo.com', smtpHost: 'smtp.mail.yahoo.com', imapPort: 993, smtpPort: 587 },
@@ -200,7 +217,7 @@ const mailProviders = [
   { value: 'custom', label: 'Other (Custom IMAP/SMTP)', imapHost: '', smtpHost: '', imapPort: 993, smtpPort: 587 },
 ];
 
-const folders = [
+const systemFolders = [
   { id: 'inbox', label: 'Inbox', icon: Inbox },
   { id: 'sent', label: 'Sent', icon: Send },
   { id: 'starred', label: 'Starred', icon: Star },
@@ -214,15 +231,10 @@ const folders = [
 ];
 
 type AccountMode = MailAccount['id'] | 'all';
-type FolderMode = (typeof folders)[number]['id'] | 'all';
+type FolderMode = string;
 
 const ALL_ACCOUNTS: AccountMode = 'all';
 const ALL_MAIL: FolderMode = 'all';
-
-const folderFilters: Array<{ id: FolderMode; label: string; icon: React.ComponentType<{ className?: string }> }> = [
-  { id: ALL_MAIL, label: 'All mail', icon: Mail },
-  ...folders,
-];
 
 const syncFetchLimitOptions = [
   { value: '100', label: 'Last 100 emails' },
@@ -232,9 +244,28 @@ const syncFetchLimitOptions = [
   { value: 'all', label: 'All emails' },
 ] as const;
 
-const movableFolderIds = folders
-  .map(folder => folder.id)
-  .filter(folderId => folderId !== 'starred');
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const plainTextToHtml = (value: string) =>
+  escapeHtml(value || '')
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\n/g, '<br>'))
+    .map((paragraph) => `<p>${paragraph || '<br>'}</p>`)
+    .join('');
+
+const isComposeHtmlEmpty = (value: string) =>
+  !value
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .trim();
 
 const MailPage = () => {
   const { toast } = useToast();
@@ -257,6 +288,10 @@ const MailPage = () => {
   const [emailPage, setEmailPage] = useState(1);
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [pendingHostTrust, setPendingHostTrust] = useState<PendingHostTrust | null>(null);
+  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [editingFolderSlug, setEditingFolderSlug] = useState<string | null>(null);
+  const [editingFolderName, setEditingFolderName] = useState('');
   const [composeForm, setComposeForm] = useState({
     to: '',
     subject: '',
@@ -264,6 +299,8 @@ const MailPage = () => {
   });
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
   const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
+  const inlineComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
+  const dialogComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
   const [accountForm, setAccountForm] = useState<AccountFormState>({
     email_address: '',
     display_name: '',
@@ -286,6 +323,14 @@ const MailPage = () => {
     }
   }, []);
 
+  useEffect(() => {
+    for (const editorRef of [inlineComposeEditorRef, dialogComposeEditorRef]) {
+      if (editorRef.current && editorRef.current.innerHTML !== composeForm.body) {
+        editorRef.current.innerHTML = composeForm.body;
+      }
+    }
+  }, [composeForm.body, isComposeOpen, isReplying]);
+
   // Fetch mail accounts
   const { data: accounts = [], isLoading: accountsLoading } = useQuery({
     queryKey: ['mail-accounts'],
@@ -295,6 +340,39 @@ const MailPage = () => {
       return response.data?.accounts || [];
     },
   });
+
+  const { data: mailFolders = [] } = useQuery({
+    queryKey: ['mail-folders'],
+    queryFn: async () => {
+      const response = await api.get<{ folders: MailFolder[] }>('/mail/folders');
+      if (response.error) throw new Error(response.error);
+      return response.data?.folders || [];
+    },
+  });
+
+  const folders = React.useMemo(() => {
+    const systemBySlug = new Map(systemFolders.map(folder => [folder.id, folder]));
+    if (mailFolders.length === 0) return systemFolders;
+    return mailFolders.map((folder) => {
+      const systemFolder = systemBySlug.get(folder.slug);
+      return {
+        id: folder.slug,
+        label: folder.display_name,
+        icon: systemFolder?.icon || FolderOpen,
+        isSystem: folder.is_system,
+      };
+    });
+  }, [mailFolders]);
+
+  const folderFilters = React.useMemo(
+    () => [{ id: ALL_MAIL, label: 'All mail', icon: Mail }, ...folders],
+    [folders]
+  );
+
+  const movableFolderIds = React.useMemo(
+    () => folders.map(folder => folder.id).filter(folderId => folderId !== 'starred'),
+    [folders]
+  );
 
   const { data: unreadCountsData } = useQuery({
     queryKey: ['mail-unread-counts', selectedAccount],
@@ -701,11 +779,67 @@ const MailPage = () => {
     },
   });
 
+  const createFolder = useMutation({
+    mutationFn: async (displayName: string) => {
+      const response = await api.post<{ folder: MailFolder }>('/mail/folders', { display_name: displayName });
+      if (response.error) throw new Error(response.error);
+      return response.data?.folder;
+    },
+    onSuccess: (folder) => {
+      queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+      if (folder?.slug) setSelectedFolder(folder.slug);
+      setNewFolderName('');
+      toast({ title: 'Folder created' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to create folder', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const updateFolder = useMutation({
+    mutationFn: async ({ slug, displayName }: { slug: string; displayName: string }) => {
+      const response = await api.put(`/mail/folders/${encodeURIComponent(slug)}`, { display_name: displayName });
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+      setEditingFolderSlug(null);
+      setEditingFolderName('');
+      toast({ title: 'Folder updated' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to update folder', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const deleteFolder = useMutation({
+    mutationFn: async (slug: string) => {
+      const response = await api.delete(`/mail/folders/${encodeURIComponent(slug)}`);
+      if (response.error) throw new Error(response.error);
+      return slug;
+    },
+    onSuccess: (slug) => {
+      queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+      if (selectedFolder === slug) setSelectedFolder('inbox');
+      toast({ title: 'Folder deleted', description: 'Messages and rules were moved back to Inbox.' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to delete folder', description: error.message, variant: 'destructive' });
+    },
+  });
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       // Don't handle shortcuts if user is typing in an input/textarea
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
+      ) {
         return;
       }
 
@@ -808,6 +942,7 @@ const MailPage = () => {
       to: string;
       subject: string;
       body: string;
+      isHtml?: boolean;
       attachments?: Array<{
         filename: string;
         contentType: string;
@@ -988,6 +1123,108 @@ const MailPage = () => {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  const updateComposeBodyFromEditor = (editorRef: React.RefObject<HTMLDivElement>) => {
+    setComposeForm(prev => ({ ...prev, body: editorRef.current?.innerHTML || '' }));
+  };
+
+  const applyComposeCommand = (editorRef: React.RefObject<HTMLDivElement>, command: string, value?: string) => {
+    editorRef.current?.focus();
+    document.execCommand(command, false, value);
+    updateComposeBodyFromEditor(editorRef);
+  };
+
+  const renderRichComposeEditor = (
+    editorId: string,
+    editorRef: React.RefObject<HTMLDivElement>,
+    editorClassName = ''
+  ) => (
+    <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''}`}>
+      <div className="flex flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Bold" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'bold')}>
+          <Bold className="h-4 w-4" />
+        </Button>
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Italic" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'italic')}>
+          <Italic className="h-4 w-4" />
+        </Button>
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Underline" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'underline')}>
+          <Underline className="h-4 w-4" />
+        </Button>
+        <div className="h-5 w-px bg-border mx-1" />
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Bullet list" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'insertUnorderedList')}>
+          <List className="h-4 w-4" />
+        </Button>
+        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Numbered list" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'insertOrderedList')}>
+          <ListOrdered className="h-4 w-4" />
+        </Button>
+        <div className="h-5 w-px bg-border mx-1" />
+        <label className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground" title="Text color">
+          <Palette className="h-4 w-4" />
+          <input
+            type="color"
+            className="sr-only"
+            onChange={(event) => applyComposeCommand(editorRef, 'foreColor', event.target.value)}
+          />
+        </label>
+        <select
+          aria-label="Text size"
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+          defaultValue=""
+          onChange={(event) => {
+            if (event.target.value) applyComposeCommand(editorRef, 'fontSize', event.target.value);
+            event.target.value = '';
+          }}
+        >
+          <option value="" disabled>Size</option>
+          <option value="2">Small</option>
+          <option value="3">Normal</option>
+          <option value="5">Large</option>
+          <option value="6">Huge</option>
+        </select>
+        <div className="h-5 w-px bg-border mx-1" />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          title="Insert link"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            const url = window.prompt('Link URL');
+            if (url?.trim()) applyComposeCommand(editorRef, 'createLink', url.trim());
+          }}
+        >
+          <LinkIcon className="h-4 w-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8"
+          title="Insert image URL"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => {
+            const url = window.prompt('Image URL');
+            if (url?.trim()) applyComposeCommand(editorRef, 'insertImage', url.trim());
+          }}
+        >
+          <ImageIcon className="h-4 w-4" />
+        </Button>
+      </div>
+      <div
+        id={editorId}
+        ref={editorRef}
+        role="textbox"
+        aria-multiline="true"
+        contentEditable
+        suppressContentEditableWarning
+        data-placeholder="Write your message..."
+        className={`p-3 text-sm outline-none [&:empty:before]:content-[attr(data-placeholder)] [&:empty:before]:text-muted-foreground [&_a]:text-accent [&_a]:underline [&_img]:max-w-full [&_img]:rounded-md [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6 ${editorClassName}`}
+        onInput={() => updateComposeBodyFromEditor(editorRef)}
+        onBlur={() => updateComposeBodyFromEditor(editorRef)}
+      />
+    </div>
+  );
+
   const renderComposeAttachmentsSection = (inputId: string) => (
     <div className="space-y-2">
       <Label>Attachments</Label>
@@ -1067,6 +1304,10 @@ const MailPage = () => {
       toast({ title: 'Please select an account', variant: 'destructive' });
       return;
     }
+    if (isComposeHtmlEmpty(composeForm.body) && composeAttachments.length === 0) {
+      toast({ title: 'Please enter a message or add an attachment', variant: 'destructive' });
+      return;
+    }
 
     try {
       const attachmentPayload = await Promise.all(
@@ -1081,6 +1322,8 @@ const MailPage = () => {
       sendEmailMutation.mutate({
         account_id: selectedAccount,
         ...composeForm,
+        body: composeForm.body || '<p></p>',
+        isHtml: true,
         attachments: attachmentPayload,
       });
     } catch (error) {
@@ -1151,6 +1394,22 @@ const MailPage = () => {
         </div>
 
         {/* Folders */}
+        <div className={`px-4 pb-2 flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'justify-between'}`}>
+          {(!sidebarCollapsed || isMobile) && (
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Folders
+            </span>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`}
+            onClick={() => setFolderDialogOpen(true)}
+            title="Manage folders"
+          >
+            <FolderOpen className="h-4 w-4" />
+          </Button>
+        </div>
         <nav className="px-2 space-y-1">
           {folderFilters.map((folder) => (
             <button
@@ -2006,7 +2265,7 @@ const MailPage = () => {
                       setComposeForm({
                         to: selectedEmail.from_address,
                         subject: `Re: ${selectedEmail.subject || ''}`,
-                        body: `\n\n--- Original Message ---\nFrom: ${selectedEmail.from_name || selectedEmail.from_address}\nDate: ${format(new Date(selectedEmail.received_at), 'PPpp')}\n\n${selectedEmail.body_text || ''}`,
+                        body: `<p><br></p><hr><p><strong>Original Message</strong><br>From: ${escapeHtml(selectedEmail.from_name || selectedEmail.from_address)}<br>Date: ${escapeHtml(format(new Date(selectedEmail.received_at), 'PPpp'))}</p><blockquote>${plainTextToHtml(selectedEmail.body_text || '')}</blockquote>`,
                       });
                       if (isMobile) {
                         setIsComposeOpen(true);
@@ -2030,7 +2289,7 @@ const MailPage = () => {
                       setComposeForm({
                         to: '',
                         subject: `Fwd: ${selectedEmail.subject || ''}`,
-                        body: `\n\n--- Forwarded Message ---\nFrom: ${selectedEmail.from_name || selectedEmail.from_address}\nDate: ${format(new Date(selectedEmail.received_at), 'PPpp')}\n\n${selectedEmail.body_text || ''}`,
+                        body: `<p><br></p><hr><p><strong>Forwarded Message</strong><br>From: ${escapeHtml(selectedEmail.from_name || selectedEmail.from_address)}<br>Date: ${escapeHtml(format(new Date(selectedEmail.received_at), 'PPpp'))}</p><blockquote>${plainTextToHtml(selectedEmail.body_text || '')}</blockquote>`,
                       });
                       if (isMobile) {
                         setIsComposeOpen(true);
@@ -2193,14 +2452,7 @@ const MailPage = () => {
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="compose-body-inline">Message</Label>
-                      <Textarea 
-                        id="compose-body-inline"
-                        className="min-h-[300px]"
-                        placeholder="Write your message..."
-                        value={composeForm.body}
-                        onChange={(e) => setComposeForm({ ...composeForm, body: e.target.value })}
-                        required
-                      />
+                      {renderRichComposeEditor('compose-body-inline', inlineComposeEditorRef, 'min-h-[300px]')}
                     </div>
                     {renderComposeAttachmentsSection('compose-attachments-inline')}
                     <div className="flex justify-end gap-3">
@@ -2234,6 +2486,98 @@ const MailPage = () => {
           </div>
         </div>
       )}
+
+      <Dialog open={folderDialogOpen} onOpenChange={setFolderDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Mail folders</DialogTitle>
+            <DialogDescription>
+              Create custom folders and manage where local messages are grouped. Deleting a custom folder moves its messages and routing rules back to Inbox.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <Input
+                value={newFolderName}
+                onChange={(event) => setNewFolderName(event.target.value)}
+                placeholder="New folder name"
+              />
+              <Button
+                type="button"
+                onClick={() => {
+                  const name = newFolderName.trim();
+                  if (name) createFolder.mutate(name);
+                }}
+                disabled={createFolder.isPending || !newFolderName.trim()}
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Add
+              </Button>
+            </div>
+            <div className="space-y-2 max-h-[360px] overflow-y-auto">
+              {mailFolders.map((folder) => (
+                <div key={folder.slug} className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
+                  {editingFolderSlug === folder.slug ? (
+                    <Input
+                      value={editingFolderName}
+                      onChange={(event) => setEditingFolderName(event.target.value)}
+                      className="h-8"
+                    />
+                  ) : (
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium text-sm truncate">{folder.display_name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {folder.total_count || 0} messages{folder.is_system ? ' • system' : ''}
+                      </p>
+                    </div>
+                  )}
+                  {editingFolderSlug === folder.slug ? (
+                    <>
+                      <Button
+                        type="button"
+                        size="sm"
+                        onClick={() => updateFolder.mutate({ slug: folder.slug, displayName: editingFolderName.trim() })}
+                        disabled={!editingFolderName.trim() || updateFolder.isPending}
+                      >
+                        Save
+                      </Button>
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setEditingFolderSlug(null)}>
+                        Cancel
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => {
+                          setEditingFolderSlug(folder.slug);
+                          setEditingFolderName(folder.display_name);
+                        }}
+                        disabled={folder.is_system}
+                        title="Rename folder"
+                      >
+                        <Edit className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => deleteFolder.mutate(folder.slug)}
+                        disabled={folder.is_system || deleteFolder.isPending}
+                        title="Delete folder"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Compose Dialog - Mobile or New Message */}
       <Dialog open={isComposeOpen} onOpenChange={(open) => {
@@ -2292,14 +2636,7 @@ const MailPage = () => {
             </div>
             <div className={`space-y-2 ${isMobile ? 'flex-1 flex flex-col min-h-0' : ''}`}>
               <Label htmlFor="compose-body">Message</Label>
-              <Textarea 
-                id="compose-body"
-                className={`${isMobile ? 'flex-1 min-h-[200px] resize-none' : 'min-h-[200px]'}`}
-                placeholder="Write your message..."
-                value={composeForm.body}
-                onChange={(e) => setComposeForm({ ...composeForm, body: e.target.value })}
-                required
-              />
+              {renderRichComposeEditor('compose-body', dialogComposeEditorRef, isMobile ? 'flex-1 min-h-[200px]' : 'min-h-[200px]')}
             </div>
             {renderComposeAttachmentsSection('compose-attachments-dialog')}
             <div className={`flex justify-end gap-3 ${isMobile ? 'shrink-0 pt-4 border-t border-border' : ''}`}>

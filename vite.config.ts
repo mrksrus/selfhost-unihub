@@ -23,6 +23,18 @@ export default defineConfig(() => ({
         ],
         runtimeCaching: [
           {
+            urlPattern: ({ url, request }) => request.method === 'GET' && url.pathname.startsWith('/api/'),
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'local-api-cache',
+              networkTimeoutSeconds: 3,
+              expiration: {
+                maxEntries: 200,
+                maxAgeSeconds: 5 * 60,
+              },
+            },
+          },
+          {
             urlPattern: /^https:\/\/api\./,
             handler: 'NetworkFirst',
             options: {

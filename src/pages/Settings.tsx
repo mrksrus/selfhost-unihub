@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ChangeEvent } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -21,7 +21,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Shield, Download, Loader2, Database, Globe, AtSign } from 'lucide-react';
+import { User, Shield, Download, Loader2, Database, Globe, AtSign, Upload } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const DEVICE_TZ_VALUE = '';
@@ -65,7 +65,31 @@ type MailCandidateSender = {
   matching_rule?: MailSenderRule | null;
 };
 
-const MAIL_FOLDER_OPTIONS = ['inbox', 'important', 'marketing', 'twofactor_notifications', 'archive', 'unknown', 'scam', 'trash'];
+type MailFolder = {
+  slug: string;
+  display_name: string;
+  is_system: boolean;
+};
+
+type BackupImportResult = {
+  dry_run?: boolean;
+  valid?: boolean;
+  errors?: string[];
+  warnings?: string[];
+  counts?: Record<string, number>;
+  restored_files?: number;
+};
+
+const FALLBACK_MAIL_FOLDERS: MailFolder[] = [
+  { slug: 'inbox', display_name: 'Inbox', is_system: true },
+  { slug: 'important', display_name: 'Important', is_system: true },
+  { slug: 'marketing', display_name: 'Marketing', is_system: true },
+  { slug: 'twofactor_notifications', display_name: '2FA / Notifications', is_system: true },
+  { slug: 'archive', display_name: 'Archive', is_system: true },
+  { slug: 'unknown', display_name: 'Unknown', is_system: true },
+  { slug: 'scam', display_name: 'Scam', is_system: true },
+  { slug: 'trash', display_name: 'Trash', is_system: true },
+];
 
 const Settings = () => {
   const { user, setUser, signOut } = useAuth();
@@ -83,6 +107,11 @@ const Settings = () => {
   const [clearMailLoading, setClearMailLoading] = useState(false);
   const [ruleSaving, setRuleSaving] = useState(false);
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
+  const [backupExporting, setBackupExporting] = useState(false);
+  const [backupImporting, setBackupImporting] = useState(false);
+  const [backupApplying, setBackupApplying] = useState(false);
+  const [pendingBackup, setPendingBackup] = useState<Record<string, unknown> | null>(null);
+  const [backupPlan, setBackupPlan] = useState<BackupImportResult | null>(null);
   const [ruleEditor, setRuleEditor] = useState<{
     id?: string;
     match_type: 'domain' | 'email';
@@ -120,6 +149,18 @@ const Settings = () => {
       return response.data?.accounts ?? [];
     },
   });
+
+  const { data: mailFolders = FALLBACK_MAIL_FOLDERS } = useQuery({
+    queryKey: ['mail-folders'],
+    queryFn: async () => {
+      const response = await api.get<{ folders: MailFolder[] }>('/mail/folders');
+      if (response.error) throw new Error(response.error);
+      return response.data?.folders ?? FALLBACK_MAIL_FOLDERS;
+    },
+  });
+
+  const getMailFolderLabel = (slug: string) =>
+    (mailFolders.length ? mailFolders : FALLBACK_MAIL_FOLDERS).find((folder) => folder.slug === slug)?.display_name || slug;
 
   useEffect(() => {
     setFullName(user?.full_name || '');
@@ -248,6 +289,85 @@ const Settings = () => {
     }
   };
 
+  const handleExportBackup = async () => {
+    setBackupExporting(true);
+    try {
+      const { blob, filename } = await api.getBlob('/backup/export');
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename || `unihub-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      toast({ title: 'Backup exported' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to export backup', description: message, variant: 'destructive' });
+    } finally {
+      setBackupExporting(false);
+    }
+  };
+
+  const handleBackupImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setBackupImporting(true);
+    try {
+      const parsedBackup = JSON.parse(await file.text()) as Record<string, unknown>;
+      const response = await api.post<{ import: BackupImportResult }>('/backup/import', {
+        mode: 'dry-run',
+        backup: parsedBackup,
+      });
+      if (response.error) {
+        toast({ title: 'Backup validation failed', description: response.error, variant: 'destructive' });
+        return;
+      }
+      const result = response.data?.import || null;
+      setPendingBackup(parsedBackup);
+      setBackupPlan(result);
+      toast({
+        title: result?.valid ? 'Backup is ready to import' : 'Backup validation failed',
+        description: result?.valid ? 'Review the counts and apply when ready.' : result?.errors?.join(' '),
+        variant: result?.valid ? undefined : 'destructive',
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Invalid backup file';
+      toast({ title: 'Failed to read backup', description: message, variant: 'destructive' });
+      setPendingBackup(null);
+      setBackupPlan(null);
+    } finally {
+      setBackupImporting(false);
+    }
+  };
+
+  const handleApplyBackupImport = async () => {
+    if (!pendingBackup) return;
+    setBackupApplying(true);
+    try {
+      const response = await api.post<{ import: BackupImportResult }>('/backup/import', {
+        mode: 'apply',
+        backup: pendingBackup,
+      });
+      if (response.error) {
+        toast({ title: 'Backup import failed', description: response.error, variant: 'destructive' });
+        return;
+      }
+      setBackupPlan(response.data?.import || null);
+      setPendingBackup(null);
+      await queryClient.invalidateQueries();
+      toast({ title: 'Backup imported', description: `${response.data?.import?.restored_files || 0} files restored.` });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Backup import failed', description: message, variant: 'destructive' });
+    } finally {
+      setBackupApplying(false);
+    }
+  };
+
   const formatCandidateDate = (value: string | null) => {
     if (!value) return 'Never';
     const date = new Date(value);
@@ -258,7 +378,7 @@ const Settings = () => {
   const formatRuleDetails = (rule?: MailSenderRule | null) => {
     if (!rule) return 'No rule yet';
     const scope = rule.mail_account_id ? `Account: ${rule.account_email || rule.mail_account_id}` : 'All accounts';
-    return `Folder: ${rule.target_folder} • ${scope} • Priority: ${rule.priority} • ${rule.is_active ? 'Active' : 'Inactive'}`;
+    return `Folder: ${getMailFolderLabel(rule.target_folder)} • ${scope} • Priority: ${rule.priority} • ${rule.is_active ? 'Active' : 'Inactive'}`;
   };
 
   const openCreateRuleEditor = (candidate: { match_type: 'domain' | 'email'; match_value: string; matching_rule?: MailSenderRule | null }) => {
@@ -517,6 +637,84 @@ const Settings = () => {
           </Card>
         </motion.div>
 
+        {/* Backup and restore */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.33 }}
+        >
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-accent/10">
+                  <Database className="h-5 w-5 text-accent" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">Backup and restore</CardTitle>
+                  <CardDescription>Export everything first, then validate imports before applying them.</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-3">
+                <Button variant="outline" onClick={handleExportBackup} disabled={backupExporting}>
+                  {backupExporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
+                  Export backup
+                </Button>
+                <input
+                  id="backup-import-file"
+                  type="file"
+                  accept="application/json,.json"
+                  className="hidden"
+                  onChange={handleBackupImportFile}
+                />
+                <Button
+                  variant="outline"
+                  onClick={() => document.getElementById('backup-import-file')?.click()}
+                  disabled={backupImporting}
+                >
+                  {backupImporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                  Validate import
+                </Button>
+                <Button
+                  onClick={handleApplyBackupImport}
+                  disabled={!pendingBackup || !backupPlan?.valid || backupApplying}
+                >
+                  {backupApplying && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  Apply validated import
+                </Button>
+              </div>
+
+              {backupPlan && (
+                <div className="rounded-md border border-border p-3 text-sm space-y-2">
+                  <p className="font-medium text-foreground">
+                    {backupPlan.valid ? 'Validated backup contents' : 'Backup validation errors'}
+                  </p>
+                  {backupPlan.counts && (
+                    <div className="grid gap-1 sm:grid-cols-2">
+                      {Object.entries(backupPlan.counts).map(([key, value]) => (
+                        <p key={key} className="text-muted-foreground">
+                          {key.replace(/_/g, ' ')}: <span className="text-foreground">{value}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  {(backupPlan.errors?.length || 0) > 0 && (
+                    <ul className="list-disc pl-5 text-destructive">
+                      {backupPlan.errors?.map((error) => <li key={error}>{error}</li>)}
+                    </ul>
+                  )}
+                  {(backupPlan.warnings?.length || 0) > 0 && (
+                    <ul className="list-disc pl-5 text-muted-foreground">
+                      {backupPlan.warnings?.map((warning) => <li key={warning}>{warning}</li>)}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
         {/* Data management */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -699,8 +897,8 @@ const Settings = () => {
                           value={ruleEditor.target_folder}
                           onChange={(e) => setRuleEditor((prev) => ({ ...prev, target_folder: e.target.value }))}
                         >
-                          {MAIL_FOLDER_OPTIONS.map((folder) => (
-                            <option key={folder} value={folder}>{folder}</option>
+                          {(mailFolders.length ? mailFolders : FALLBACK_MAIL_FOLDERS).map((folder) => (
+                            <option key={folder.slug} value={folder.slug}>{folder.display_name}</option>
                           ))}
                         </select>
                       </div>
