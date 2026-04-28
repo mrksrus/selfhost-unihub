@@ -207,10 +207,6 @@ Ensure `UNIHUB_MYSQL_PASSWORD` is set once in `.env`; Docker Compose passes the 
 | `TRUST_PROXY_HEADERS` | `false` | Trust `X-Real-IP` / `X-Forwarded-For` for rate limiting |
 | `TRUSTED_MAIL_HOSTS` | -- | Comma-separated custom mail hosts to trust without confirmation |
 | `CALENDAR_MULTI_ENABLED` | `true` | Enable multi-account and multi-calendar features |
-| `CALENDAR_SYNC_ENABLED` | `true` | Enable external calendar sync/account APIs |
-| `CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED` | `true` | Enable Google calendar sync provider |
-| `CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED` | `true` | Enable Microsoft calendar sync provider |
-| `CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED` | `true` | Enable iCloud/CalDAV calendar sync provider |
 | `MYSQL_STARTUP_MAX_WAIT_SECONDS` | `120` | Max seconds `start.sh` waits for MySQL before continuing |
 | `MYSQL_STARTUP_CHECK_INTERVAL_SECONDS` | `5` | Seconds between MySQL readiness checks in `start.sh` |
 | `UNIHUB_API_START_DELAY_SECONDS` | `2` | Delay after API start before Nginx startup check |
@@ -223,15 +219,11 @@ Ensure `UNIHUB_MYSQL_PASSWORD` is set once in `.env`; Docker Compose passes the 
 - **Security**: mail passwords encrypted with AES-256-GCM; strict TLS verification; host/certificate confirmation; SSRF protection (private IP blocking)
 - **Limitations**: syncs last 500 emails only; one-by-one fetching may be slow for large mailboxes; INBOX only (no sent folder sync yet)
 
-## Calendar Sync Details
+## Calendar Details
 
-- **Providers**: Local, Web calendar (iCal URL), iCloud/CalDAV. Connect Google, Microsoft, or Apple by adding a **Web calendar** with the provider’s iCal/ICS URL (see in-app (i) guide).
-- **Capabilities**:
-  - Multiple calendars per account with per-calendar visibility and auto-ToDo toggle
-  - Manual and periodic provider sync (read-only for URL-based feeds)
-  - Local event create/update/delete where the provider supports it (e.g. iCloud CalDAV)
-- **No OAuth**: Calendar connection is URL + optional password per account; no server-side OAuth env vars required.
-- **Invitations**: Sending, accepting, or declining invitations natively is not supported with URL-based sync; use the provider’s app or OAuth-based integration elsewhere for that.
+- **Provider**: Local calendars only.
+- **Capabilities**: multiple local calendar accounts, multiple calendars per account, per-calendar visibility/color settings, auto-ToDo projection, attendees, RSVP state, and subtasks.
+- **Behavior**: events and tasks are stored in UniHub only.
 
 ## Known Limitations
 

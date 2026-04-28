@@ -4,11 +4,11 @@
 
 Calendar and ToDo still share one underlying event model, but the calendar subsystem now supports:
 
-- Multiple calendar accounts per user (`local`, `google`, `microsoft`, `icloud`)
+- Multiple local calendar accounts per user
 - Multiple calendars per account with per-calendar visibility/color/auto-ToDo settings
 - Day/Week/Month rendering support in frontend
 - Persistent completed items in calendar views (done items are marked, not removed)
-- Provider sync/account APIs and RSVP endpoint
+- Local account/calendar APIs, attendee storage, subtasks, and RSVP state
 
 ## Data Model
 
@@ -53,13 +53,10 @@ All endpoints require auth cookie; write routes require `X-CSRF-Token`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/calendar/oauth/:provider/start` | Start OAuth redirect flow (`google`, `microsoft`) |
-| GET | `/api/calendar/oauth/:provider/callback` | OAuth callback handler (stores tokens/account and triggers initial sync) |
 | GET | `/api/calendar/accounts` | List calendar accounts |
-| POST | `/api/calendar/accounts` | Create account (local/google/microsoft/icloud) |
-| PUT | `/api/calendar/accounts/:id` | Update account metadata/tokens/config |
+| POST | `/api/calendar/accounts` | Create local account |
+| PUT | `/api/calendar/accounts/:id` | Update account metadata |
 | DELETE | `/api/calendar/accounts/:id` | Delete account and account calendars/events |
-| POST | `/api/calendar/accounts/:id/sync` | Trigger provider sync now |
 
 ### Calendars
 
@@ -67,7 +64,7 @@ All endpoints require auth cookie; write routes require `X-CSRF-Token`.
 |---|---|---|
 | GET | `/api/calendar/calendars` | List calendars across accounts |
 | POST | `/api/calendar/calendars` | Create calendar |
-| PUT | `/api/calendar/calendars/:id` | Update name/color/visibility/auto-ToDo/read-only/primary |
+| PUT | `/api/calendar/calendars/:id` | Update name/color/visibility/auto-ToDo/primary |
 
 ### Events
 
@@ -78,7 +75,7 @@ All endpoints require auth cookie; write routes require `X-CSRF-Token`.
 | PUT | `/api/calendar/events/:id` | Update event fields |
 | PUT | `/api/calendar/events/:id/todo-status` | Update todo status |
 | PUT | `/api/calendar/events/:id/rsvp` | RSVP status update (`accepted`, `tentative`, `declined`, `needsAction`) |
-| DELETE | `/api/calendar/events/:id` | Delete event (with provider delete propagation when mapped) |
+| DELETE | `/api/calendar/events/:id` | Delete event |
 
 ### Subtasks
 
@@ -90,43 +87,20 @@ All endpoints require auth cookie; write routes require `X-CSRF-Token`.
 | DELETE | `/api/calendar/events/:id/subtasks/:subtaskId` | Delete subtask |
 | POST | `/api/calendar/events/:id/subtasks/reorder` | Reorder subtasks |
 
-## Sync behavior
+## Calendar behavior
 
-### Google / Microsoft
-
-- Supports account-level sync trigger
-- OAuth connect flow in backend routes (`start`/`callback`) exchanges auth code for tokens
-- Pulls calendars and events into local model
-- Stores provider mappings in `calendar_event_external_refs`
-- Pushes local create/update/delete for mapped provider calendars
-- Carries attendee data into local attendee table
-
-### iCloud / CalDAV (limited invitations)
-
-- Supports sync from configured iCal feeds (`provider_config.ics_url` or configured feeds)
-- Supports limited write path when CalDAV event base URL is configured
-- Invitation handling remains limited by provider/protocol behavior
+Calendar data is local to UniHub. The backend ensures each user has a default local account and default local calendar, and event create/update/delete operations only affect UniHub data.
 
 ## Feature flags
 
 - `CALENDAR_MULTI_ENABLED` (default enabled)
-- `CALENDAR_SYNC_ENABLED` (default enabled)
-- `CALENDAR_SYNC_PROVIDER_GOOGLE_ENABLED` (default enabled)
-- `CALENDAR_SYNC_PROVIDER_MICROSOFT_ENABLED` (default enabled)
-- `CALENDAR_SYNC_PROVIDER_ICLOUD_ENABLED` (default enabled)
-
-## Connecting external calendars
-
-Calendar connection uses **URL + optional password** per account (no OAuth or server env vars). Use **Web calendar (iCal URL)** for Google or Microsoft: get the private iCal/ICS link from the provider and paste it when adding an account. Use **iCloud / CalDAV** for Apple with Apple ID + app-specific password and iCal/CalDAV URL. See the in-app (i) guide next to “Add Calendar Account” for step-by-step instructions per provider.
 
 ## Security notes
 
 - All calendar queries scoped by `user_id`
-- Provider tokens are stored encrypted (`encrypted_access_token`, `encrypted_refresh_token`)
 - Write APIs are CSRF-protected
 
 ## Known limitations
 
-1. **Invitations**: Sending, accepting, or declining invitations natively is not supported with URL-based sync; use the provider’s app for that.
+1. External calendar sync/import is not implemented.
 2. Recurrence expansion is still limited (field exists but no full recurrence engine in UI).
-3. iCloud invitation semantics are constrained by CalDAV/server behavior.

@@ -24,6 +24,7 @@ RUN cd api && npm ci --omit=dev \
     && apk del .build-deps
 
 COPY api/*.js ./api/
+COPY api/src ./api/src
 
 # ── Set up Nginx for the frontend ─────────────────────────────────
 COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf

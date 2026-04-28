@@ -71,7 +71,8 @@ import {
   ListOrdered,
   Link as LinkIcon,
   Image as ImageIcon,
-  Palette
+  Palette,
+  UserPlus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
@@ -208,6 +209,21 @@ interface MailFolder {
   unread_count?: number;
 }
 
+interface MailContact {
+  id: string;
+  first_name: string;
+  last_name: string | null;
+  email: string | null;
+  email2: string | null;
+  email3: string | null;
+}
+
+interface ContactEmailSuggestion {
+  key: string;
+  name: string;
+  email: string;
+}
+
 const mailProviders = [
   { value: 'gmail', label: 'Gmail', imapHost: 'imap.gmail.com', smtpHost: 'smtp.gmail.com', imapPort: 993, smtpPort: 587 },
   { value: 'yahoo', label: 'Yahoo Mail', imapHost: 'imap.mail.yahoo.com', smtpHost: 'smtp.mail.yahoo.com', imapPort: 993, smtpPort: 587 },
@@ -259,6 +275,29 @@ const plainTextToHtml = (value: string) =>
     .map((paragraph) => `<p>${paragraph || '<br>'}</p>`)
     .join('');
 
+const getContactDisplayName = (contact: MailContact) =>
+  [contact.first_name, contact.last_name].filter(Boolean).join(' ').trim();
+
+const formatRecipient = (suggestion: ContactEmailSuggestion) =>
+  suggestion.name ? `${suggestion.name} <${suggestion.email}>` : suggestion.email;
+
+const getActiveRecipientSearchTerm = (value: string) => {
+  const parts = value.split(',');
+  return (parts[parts.length - 1] || '').trim().toLowerCase();
+};
+
+const deriveContactNameFromEmail = (email: Email) => {
+  const cleanedName = (email.from_name || '').replace(/^["']|["']$/g, '').trim();
+  const localPart = email.from_address.split('@')[0]?.replace(/[._-]+/g, ' ').trim();
+  const source = cleanedName || localPart || email.from_address;
+  const parts = source.split(/\s+/).filter(Boolean);
+
+  return {
+    first_name: parts[0] || email.from_address,
+    last_name: parts.slice(1).join(' ') || '',
+  };
+};
+
 const isComposeHtmlEmpty = (value: string) =>
   !value
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -297,6 +336,7 @@ const MailPage = () => {
     subject: '',
     body: '',
   });
+  const [focusedRecipientInput, setFocusedRecipientInput] = useState<string | null>(null);
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
   const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
   const inlineComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
@@ -339,6 +379,16 @@ const MailPage = () => {
       if (response.error) throw new Error(response.error);
       return response.data?.accounts || [];
     },
+  });
+
+  const { data: contactsForCompose = [] } = useQuery({
+    queryKey: ['contacts', 'mail-autocomplete'],
+    queryFn: async () => {
+      const response = await api.get<{ contacts: MailContact[] }>('/contacts?limit=2000');
+      if (response.error) throw new Error(response.error);
+      return response.data?.contacts || [];
+    },
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: mailFolders = [] } = useQuery({
@@ -537,6 +587,19 @@ const MailPage = () => {
   const totalMatchingEmails = pagination?.total ?? emails.length;
   const totalPages = pagination?.totalPages ?? 1;
 
+  const contactEmailSuggestions = React.useMemo<ContactEmailSuggestion[]>(() => {
+    return contactsForCompose.flatMap((contact) => {
+      const name = getContactDisplayName(contact);
+      return [contact.email, contact.email2, contact.email3]
+        .filter((email): email is string => Boolean(email?.trim()))
+        .map((email, index) => ({
+          key: `${contact.id}-${index}-${email}`,
+          name,
+          email,
+        }));
+    });
+  }, [contactsForCompose]);
+
   const createHostTrustError = (message: string, mailHostTrust?: unknown) => {
     const error = new Error(message) as MailHostTrustError;
     error.requiresHostTrustConfirmation = true;
@@ -702,6 +765,72 @@ const MailPage = () => {
       queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+    },
+  });
+
+  const loadEmailForReader = React.useCallback(async (emailId: string, fallbackEmail?: Email) => {
+    if (fallbackEmail && !fallbackEmail.is_read) {
+      markAsRead.mutate(fallbackEmail.id);
+    }
+
+    try {
+      const response = await api.get<{ email: Email }>(`/mail/emails/${emailId}`);
+      if (response.error) {
+        toast({ title: 'Failed to load email', description: response.error, variant: 'destructive' });
+        return;
+      }
+
+      if (response.data?.email) {
+        const fetchedEmail = response.data.email;
+        if (!fetchedEmail.is_read) {
+          markAsRead.mutate(fetchedEmail.id);
+          setSelectedEmail({ ...fetchedEmail, is_read: true });
+        } else {
+          setSelectedEmail(fetchedEmail);
+        }
+        return;
+      }
+
+      if (fallbackEmail) {
+        setSelectedEmail(fallbackEmail.is_read ? fallbackEmail : { ...fallbackEmail, is_read: true });
+      }
+    } catch (error) {
+      console.error('Error loading email:', error);
+      if (fallbackEmail) {
+        setSelectedEmail(fallbackEmail.is_read ? fallbackEmail : { ...fallbackEmail, is_read: true });
+      } else {
+        toast({ title: 'Failed to load email', variant: 'destructive' });
+      }
+    }
+  }, [markAsRead, toast]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const emailId = params.get('email');
+    if (!emailId) return;
+
+    void loadEmailForReader(emailId);
+    params.delete('email');
+    const nextQuery = params.toString();
+    window.history.replaceState({}, '', `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}`);
+  }, [loadEmailForReader]);
+
+  const createContactFromEmail = useMutation({
+    mutationFn: async (email: Email) => {
+      const derivedName = deriveContactNameFromEmail(email);
+      const response = await api.post('/contacts', {
+        ...derivedName,
+        email: email.from_address,
+      });
+      if (response.error) throw new Error(response.error);
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
+      toast({ title: 'Contact added' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to add contact', description: error.message, variant: 'destructive' });
     },
   });
 
@@ -1089,9 +1218,70 @@ const MailPage = () => {
   const resetComposeState = () => {
     setComposeMode('new');
     setComposeForm({ to: '', subject: '', body: '' });
+    setFocusedRecipientInput(null);
     setComposeAttachments([]);
     setIsAttachmentDragOver(false);
     setIsReplying(false);
+  };
+
+  const replaceActiveRecipient = (suggestion: ContactEmailSuggestion) => {
+    setComposeForm(prev => {
+      const parts = prev.to.split(',');
+      parts[parts.length - 1] = ` ${formatRecipient(suggestion)}`;
+      const nextValue = parts
+        .map((part, index) => (index === 0 ? part.trimStart() : part.trim()))
+        .filter(Boolean)
+        .join(', ');
+      return { ...prev, to: `${nextValue}, ` };
+    });
+  };
+
+  const renderRecipientInput = (inputId: string) => {
+    const searchTerm = getActiveRecipientSearchTerm(composeForm.to);
+    const suggestions = contactEmailSuggestions
+      .filter((suggestion) => {
+        const haystack = `${suggestion.name} ${suggestion.email}`.toLowerCase();
+        return !searchTerm || haystack.includes(searchTerm);
+      })
+      .slice(0, 8);
+    const showSuggestions = focusedRecipientInput === inputId && suggestions.length > 0;
+
+    return (
+      <div className="relative">
+        <Input
+          id={inputId}
+          type="text"
+          placeholder="recipient@example.com"
+          value={composeForm.to}
+          onChange={(e) => setComposeForm({ ...composeForm, to: e.target.value })}
+          onFocus={() => setFocusedRecipientInput(inputId)}
+          onBlur={() => window.setTimeout(() => setFocusedRecipientInput((current) => current === inputId ? null : current), 100)}
+          autoComplete="off"
+          required
+        />
+        {showSuggestions && (
+          <div className="absolute left-0 right-0 top-full z-[80] mt-1 max-h-64 overflow-auto rounded-md border border-border bg-popover p-1 shadow-lg">
+            {suggestions.map((suggestion) => (
+              <button
+                key={suggestion.key}
+                type="button"
+                className="flex w-full flex-col rounded-sm px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  replaceActiveRecipient(suggestion);
+                  setFocusedRecipientInput(inputId);
+                }}
+              >
+                <span className="font-medium truncate">{suggestion.name || suggestion.email}</span>
+                {suggestion.name && (
+                  <span className="text-xs text-muted-foreground truncate">{suggestion.email}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
   };
 
   const fileToBase64 = (file: File) =>
@@ -1341,6 +1531,9 @@ const MailPage = () => {
   const accountLabel = selectedAccount === ALL_ACCOUNTS
     ? 'All accounts'
     : selectedAccountData?.display_name || selectedAccountData?.email_address || 'No account selected';
+  const senderAlreadyInContacts = selectedEmail
+    ? contactEmailSuggestions.some((suggestion) => suggestion.email.toLowerCase() === selectedEmail.from_address.toLowerCase())
+    : false;
 
   return (
     <div className="flex h-[calc(100vh-0px)] overflow-hidden relative">
@@ -1939,36 +2132,7 @@ const MailPage = () => {
                       if ((e.target as HTMLElement).closest('.email-checkbox')) {
                         return;
                       }
-                      // Mark as read if unread
-                      if (!email.is_read) {
-                        markAsRead.mutate(email.id);
-                      }
-                      // Fetch full email and open reader
-                      try {
-                        const response = await api.get<{ email: Email }>(`/mail/emails/${email.id}`);
-                        if (response.error) {
-                          toast({ title: 'Failed to load email', description: response.error, variant: 'destructive' });
-                          return;
-                        }
-                        if (response.data?.email) {
-                          const fetchedEmail = response.data.email;
-                          // Mark as read if it was unread (update local state)
-                          if (!fetchedEmail.is_read) {
-                            setSelectedEmail({ ...fetchedEmail, is_read: true });
-                          } else {
-                            setSelectedEmail(fetchedEmail);
-                          }
-                        } else {
-                          // Fallback: use the email from list if full fetch fails
-                          const fallbackEmail = email.is_read ? email : { ...email, is_read: true };
-                          setSelectedEmail(fallbackEmail);
-                        }
-                      } catch (error) {
-                        console.error('Error loading email:', error);
-                        // Fallback: use the email from list
-                        const fallbackEmail = email.is_read ? email : { ...email, is_read: true };
-                        setSelectedEmail(fallbackEmail);
-                      }
+                      await loadEmailForReader(email.id, email);
                     }}
                     onContextMenu={(e) => {
                       e.preventDefault();
@@ -2318,8 +2482,27 @@ const MailPage = () => {
                 <div>
                   <h1 className="text-2xl font-bold mb-4">{selectedEmail.subject || '(No subject)'}</h1>
                   <div className="space-y-2 text-sm text-muted-foreground">
-                    <div>
-                      <span className="font-medium text-foreground">From:</span> {selectedEmail.from_name ? `${selectedEmail.from_name} <${selectedEmail.from_address}>` : selectedEmail.from_address}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="min-w-0 break-all">
+                        <span className="font-medium text-foreground">From:</span> {selectedEmail.from_name ? `${selectedEmail.from_name} <${selectedEmail.from_address}>` : selectedEmail.from_address}
+                      </span>
+                      {!senderAlreadyInContacts && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 gap-1.5"
+                          onClick={() => createContactFromEmail.mutate(selectedEmail)}
+                          disabled={createContactFromEmail.isPending}
+                        >
+                          {createContactFromEmail.isPending ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <UserPlus className="h-3.5 w-3.5" />
+                          )}
+                          Add contact
+                        </Button>
+                      )}
                     </div>
                     <div>
                       <span className="font-medium text-foreground">To:</span> {selectedEmail.to_addresses?.join(', ') || 'N/A'}
@@ -2431,14 +2614,7 @@ const MailPage = () => {
                   <form onSubmit={handleSendEmail} className="space-y-4">
                     <div className="space-y-2">
                       <Label htmlFor="compose-to-inline">To</Label>
-                      <Input 
-                        id="compose-to-inline"
-                        type="email"
-                        placeholder="recipient@example.com"
-                        value={composeForm.to}
-                        onChange={(e) => setComposeForm({ ...composeForm, to: e.target.value })}
-                        required
-                      />
+                      {renderRecipientInput('compose-to-inline')}
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="compose-subject-inline">Subject</Label>
@@ -2614,14 +2790,7 @@ const MailPage = () => {
               </div>
               <div className="space-y-2">
                 <Label htmlFor="compose-to">To</Label>
-                <Input 
-                  id="compose-to"
-                  type="email"
-                  placeholder="recipient@example.com"
-                  value={composeForm.to}
-                  onChange={(e) => setComposeForm({ ...composeForm, to: e.target.value })}
-                  required
-                />
+                {renderRecipientInput('compose-to')}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="compose-subject">Subject</Label>

@@ -1,10 +1,9 @@
 const http = require('http');
 require('./imap-patch');
-const { PORT, CALENDAR_SYNC_ENABLED } = require('./config');
+const { PORT } = require('./config');
 const { db } = require('./state');
 const { initDatabase } = require('./services/database');
 const { syncMailAccount } = require('./services/mail');
-const { syncCalendarAccount } = require('./services/calendar');
 const { handleRequest } = require('./request-handler');
 
 async function start() {
@@ -33,25 +32,6 @@ async function start() {
     }
   }, 5 * 60 * 1000); // 5 minutes
 
-  // Periodic external calendar sync every 10 minutes
-  setInterval(async () => {
-    if (!CALENDAR_SYNC_ENABLED) return;
-    try {
-      const [accounts] = await db.execute(
-        `SELECT id, user_id, provider
-         FROM calendar_accounts
-         WHERE is_active = TRUE AND provider IN ('google', 'microsoft', 'icloud', 'ical')`
-      );
-      for (const account of accounts) {
-        syncCalendarAccount(account.id, account.user_id).catch((err) => {
-          console.error(`[CALENDAR SYNC] Failed for account ${account.id}:`, err.message);
-        });
-      }
-    } catch (error) {
-      console.error('[CALENDAR SYNC] Periodic sync error:', error.message);
-    }
-  }, 10 * 60 * 1000);
-  
   // Clean up expired sessions every hour to prevent table bloat
   setInterval(async () => {
     try {
@@ -105,7 +85,6 @@ async function start() {
   }, 15 * 60 * 1000); // 15 minutes
   
   console.log('✓ Periodic mail sync enabled (every 5 minutes)');
-  console.log('✓ Periodic calendar sync enabled (every 10 minutes)');
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Database connection pool health check enabled (every 15 minutes)');
 }
