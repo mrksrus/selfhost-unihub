@@ -27,10 +27,9 @@ export default defineConfig(() => ({
             handler: 'NetworkFirst',
             options: {
               cacheName: 'local-api-cache',
-              networkTimeoutSeconds: 3,
               expiration: {
                 maxEntries: 200,
-                maxAgeSeconds: 5 * 60,
+                maxAgeSeconds: 60,
               },
             },
           },
@@ -39,7 +38,10 @@ export default defineConfig(() => ({
             handler: 'NetworkFirst',
             options: {
               cacheName: 'api-cache',
-              networkTimeoutSeconds: 5,
+              expiration: {
+                maxEntries: 100,
+                maxAgeSeconds: 60,
+              },
             },
           },
         ],
@@ -57,6 +59,14 @@ export default defineConfig(() => ({
         orientation: "portrait-primary",
         icons: [
           { src: "/icons/icon-512x512.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
+          { src: "/icons/icon-72x72.png", sizes: "72x72", type: "image/png", purpose: "any maskable" },
+          { src: "/icons/icon-96x96.png", sizes: "96x96", type: "image/png", purpose: "any maskable" },
+          { src: "/icons/icon-128x128.png", sizes: "128x128", type: "image/png", purpose: "any maskable" },
+          { src: "/icons/icon-144x144.png", sizes: "144x144", type: "image/png", purpose: "any maskable" },
+          { src: "/icons/icon-152x152.png", sizes: "152x152", type: "image/png", purpose: "any maskable" },
+          { src: "/icons/icon-180x180.png", sizes: "180x180", type: "image/png", purpose: "any" },
+          { src: "/icons/icon-192x192.png", sizes: "192x192", type: "image/png", purpose: "any maskable" },
+          { src: "/icons/icon-384x384.png", sizes: "384x384", type: "image/png", purpose: "any maskable" },
           { src: "/icons/icon-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
         ],
         categories: ["productivity", "utilities"],
@@ -66,21 +76,21 @@ export default defineConfig(() => ({
             short_name: "Contacts",
             description: "View your contacts",
             url: "/contacts",
-            icons: [{ src: "/icons/icon-512x512.svg", sizes: "any" }]
+            icons: [{ src: "/icons/icon-96x96.png", sizes: "96x96", type: "image/png" }]
           },
           {
             name: "Calendar",
             short_name: "Calendar",
             description: "View your calendar",
             url: "/calendar",
-            icons: [{ src: "/icons/icon-512x512.svg", sizes: "any" }]
+            icons: [{ src: "/icons/icon-96x96.png", sizes: "96x96", type: "image/png" }]
           },
           {
             name: "Mail",
             short_name: "Mail",
             description: "View your mail",
             url: "/mail",
-            icons: [{ src: "/icons/icon-512x512.svg", sizes: "any" }]
+            icons: [{ src: "/icons/icon-96x96.png", sizes: "96x96", type: "image/png" }]
           }
         ]
       }

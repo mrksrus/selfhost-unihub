@@ -1,5 +1,10 @@
 // Service Worker utilities for notifications and background sync
 
+export const NOTIFICATION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+export const BACKGROUND_NOTIFICATION_SYNC_TAG = 'unihub-notification-check';
+export const MAIL_PERIODIC_SYNC_TAG = 'check-emails-periodic';
+export const CALENDAR_PERIODIC_SYNC_TAG = 'check-calendar-periodic';
+
 let swRegistration: ServiceWorkerRegistration | null = null;
 let initPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 let messageListenerAttached = false;
@@ -141,7 +146,7 @@ export async function registerBackgroundSync(tag: string) {
 }
 
 // Register periodic background sync (if supported)
-export async function registerPeriodicSync(tag: string, minInterval: number = 15 * 60 * 1000) {
+export async function registerPeriodicSync(tag: string, minInterval: number = NOTIFICATION_CHECK_INTERVAL_MS) {
   if (!('serviceWorker' in navigator)) {
     console.log('[SW] Service Workers not supported');
     return false;
@@ -166,6 +171,44 @@ export async function registerPeriodicSync(tag: string, minInterval: number = 15
     console.error(`[SW] Failed to register periodic sync ${tag}:`, error);
   }
   return false;
+}
+
+export async function requestBackgroundNotificationCheck(reason = 'client') {
+  if (!('serviceWorker' in navigator)) {
+    return false;
+  }
+
+  try {
+    const registration = swRegistration || await initServiceWorker();
+    const worker = registration?.active || navigator.serviceWorker.controller;
+    if (!worker) return false;
+    worker.postMessage({
+      type: 'RUN_NOTIFICATION_CHECKS',
+      reason,
+      suppressNotifications: true,
+    });
+    return true;
+  } catch (error) {
+    console.error('[SW] Failed to request notification check:', error);
+    return false;
+  }
+}
+
+export async function resetBackgroundNotificationState() {
+  if (!('serviceWorker' in navigator)) {
+    return false;
+  }
+
+  try {
+    const registration = swRegistration || await initServiceWorker();
+    const worker = registration?.active || navigator.serviceWorker.controller;
+    if (!worker) return false;
+    worker.postMessage({ type: 'RESET_NOTIFICATION_STATE' });
+    return true;
+  } catch (error) {
+    console.error('[SW] Failed to reset notification state:', error);
+    return false;
+  }
 }
 
 // Initialize on module load

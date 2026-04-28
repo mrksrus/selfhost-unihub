@@ -2,7 +2,12 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import App from "./App.tsx";
 import "./index.css";
-import { initServiceWorker, registerPeriodicSync } from "./utils/service-worker";
+import {
+  BACKGROUND_NOTIFICATION_SYNC_TAG,
+  NOTIFICATION_CHECK_INTERVAL_MS,
+  initServiceWorker,
+  registerPeriodicSync,
+} from "./utils/service-worker";
 
 // Register service worker
 const updateSW = registerSW({
@@ -12,8 +17,7 @@ const updateSW = registerSW({
     // Initialize our service worker utilities
     if (registration) {
       initServiceWorker();
-      // Register periodic background sync for email checks (if supported)
-      registerPeriodicSync('check-emails-periodic', 10).catch(console.error);
+      registerPeriodicSync(BACKGROUND_NOTIFICATION_SYNC_TAG, NOTIFICATION_CHECK_INTERVAL_MS).catch(console.error);
     }
   },
   onNeedRefresh() {

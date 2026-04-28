@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
+import { resetBackgroundNotificationState } from '@/utils/service-worker';
 
 interface User {
   id: string;
@@ -136,6 +137,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signOut = async () => {
     await api.post('/auth/signout');
+    void resetBackgroundNotificationState();
     api.setCsrfToken(null);
     setUser(null);
     setSession(null);

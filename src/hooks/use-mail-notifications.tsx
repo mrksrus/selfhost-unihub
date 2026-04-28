@@ -2,11 +2,18 @@ import { useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import { api } from '@/lib/api';
-import { initServiceWorker, registerPeriodicSync, requestNotificationPermission, showNotification } from '@/utils/service-worker';
+import {
+  MAIL_PERIODIC_SYNC_TAG,
+  NOTIFICATION_CHECK_INTERVAL_MS,
+  initServiceWorker,
+  registerPeriodicSync,
+  requestNotificationPermission,
+  showNotification,
+} from '@/utils/service-worker';
 
 const MAIL_NOTIFICATION_STORAGE_PREFIX = 'unihub:mail-notifications:';
 const MAX_TRACKED_EMAIL_IDS = 200;
-const MAIL_REFETCH_INTERVAL_MS = 5 * 60 * 1000;
+const MAIL_REFETCH_INTERVAL_MS = NOTIFICATION_CHECK_INTERVAL_MS;
 const NEW_EMAIL_GRACE_MS = 5 * 60 * 1000;
 const NOTIFICATION_FETCH_LIMIT = 50;
 const EXCLUDED_NOTIFICATION_FOLDERS = new Set(['sent', 'trash', 'archive']);
@@ -77,7 +84,7 @@ export const useMailNotifications = () => {
     const setupNotifications = async () => {
       await initServiceWorker();
       await requestNotificationPermission();
-      await registerPeriodicSync('check-emails-periodic', MAIL_REFETCH_INTERVAL_MS);
+      await registerPeriodicSync(MAIL_PERIODIC_SYNC_TAG, MAIL_REFETCH_INTERVAL_MS);
     };
 
     void setupNotifications();

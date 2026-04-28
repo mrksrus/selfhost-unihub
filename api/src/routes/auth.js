@@ -396,10 +396,16 @@ module.exports = {
         return { error: 'User not found', status: 404 };
       }
       
-      // Refresh CSRF token on every /auth/me call to prevent stale tokens
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const isBackgroundCheck = url.searchParams.get('background') === '1' || req.headers['x-background-sync'] === '1';
+      if (isBackgroundCheck) {
+        return { user: users[0] };
+      }
+
+      // Refresh CSRF token on regular /auth/me calls to prevent stale tokens.
       const csrfToken = generateCsrfToken();
       setCsrfCookie(res, csrfToken);
-      
+
       return { user: users[0], csrfToken };
     } catch (error) {
       return { error: 'Failed to get user', status: 500 };

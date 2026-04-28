@@ -102,6 +102,13 @@ function validateCsrfToken(req, res) {
     return true;
   }
 
+  // The service worker can start a non-blocking same-origin mail sync while
+  // the app window is closed. Cross-origin callers cannot send this custom
+  // header without a rejected CORS preflight.
+  if (url === '/api/mail/sync/background' && req.headers['x-background-sync'] === '1') {
+    return true;
+  }
+
   // Get CSRF token from cookie and header
   const cookieToken = req.headers.cookie
     ?.split(';')

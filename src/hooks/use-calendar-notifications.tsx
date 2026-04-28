@@ -2,17 +2,32 @@ import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import { calendarApi, calendarQueryKeys, type CalendarEvent } from '@/lib/calendar-api';
-import { initServiceWorker, registerPeriodicSync, requestNotificationPermission, showNotification } from '@/utils/service-worker';
+import {
+  CALENDAR_PERIODIC_SYNC_TAG,
+  NOTIFICATION_CHECK_INTERVAL_MS,
+  initServiceWorker,
+  registerPeriodicSync,
+  requestNotificationPermission,
+  showNotification,
+} from '@/utils/service-worker';
 
 const CALENDAR_REMINDER_STORAGE_PREFIX = 'unihub:calendar-reminders:';
+const CALENDAR_EVENT_NOTIFICATION_STORAGE_PREFIX = 'unihub:calendar-event-notifications:';
 const MAX_SCHEDULE_AHEAD_MS = 7 * 24 * 60 * 60 * 1000;
 const MISSED_REMINDER_GRACE_MS = 5 * 60 * 1000;
 const MAX_STORED_REMINDERS = 500;
+const MAX_TRACKED_CALENDAR_EVENT_IDS = 500;
 const REMINDER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-const CALENDAR_PERIODIC_SYNC_MS = 15 * 60 * 1000;
+const NEW_EVENT_GRACE_MS = 5 * 60 * 1000;
+const CALENDAR_PERIODIC_SYNC_MS = NOTIFICATION_CHECK_INTERVAL_MS;
 
 type ReminderTimeout = ReturnType<typeof window.setTimeout>;
 type ReminderStore = Record<string, number>;
+
+interface CalendarEventNotificationState {
+  knownIds: string[];
+  lastCheckedAt: number;
+}
 
 function getCalendarReminderStorageKey(userId: string) {
   return `${CALENDAR_REMINDER_STORAGE_PREFIX}${userId}`;
@@ -44,6 +59,38 @@ function saveReminderStore(storageKey: string, store: ReminderStore) {
     window.localStorage.setItem(storageKey, JSON.stringify(normalizeReminderStore(store)));
   } catch {
     // Ignore storage failures; reminders can still work for the current session.
+  }
+}
+
+function getCalendarEventNotificationStorageKey(userId: string) {
+  return `${CALENDAR_EVENT_NOTIFICATION_STORAGE_PREFIX}${userId}`;
+}
+
+function loadCalendarEventNotificationState(storageKey: string): CalendarEventNotificationState | null {
+  try {
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<CalendarEventNotificationState>;
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.knownIds)) {
+      return null;
+    }
+    return {
+      knownIds: parsed.knownIds.filter((id): id is string => typeof id === 'string').slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS),
+      lastCheckedAt: Number.isFinite(parsed.lastCheckedAt) ? Number(parsed.lastCheckedAt) : Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function saveCalendarEventNotificationState(storageKey: string, state: CalendarEventNotificationState) {
+  try {
+    window.localStorage.setItem(storageKey, JSON.stringify({
+      knownIds: state.knownIds.slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS),
+      lastCheckedAt: state.lastCheckedAt,
+    }));
+  } catch {
+    // Ignore storage failures; notifications can still work for the current session.
   }
 }
 
@@ -82,20 +129,35 @@ function getCalendarNotificationPath(event: CalendarEvent) {
   return event.is_todo_only ? '/todo' : '/calendar';
 }
 
+function getCalendarEventStartText(event: CalendarEvent) {
+  const start = new Date(event.start_time);
+  if (!Number.isFinite(start.getTime())) return '';
+  const options: Intl.DateTimeFormatOptions = event.all_day
+    ? { dateStyle: 'medium' }
+    : { dateStyle: 'medium', timeStyle: 'short' };
+  return `Starts ${start.toLocaleString(undefined, options)}`;
+}
+
 export const useCalendarNotifications = () => {
   const { user } = useAuth();
   const reminderStoreRef = useRef<ReminderStore>({});
+  const eventNotificationStateRef = useRef<CalendarEventNotificationState | null>(null);
   const notificationTimeoutsRef = useRef<Map<string, ReminderTimeout[]>>(new Map());
 
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id) {
+      reminderStoreRef.current = {};
+      eventNotificationStateRef.current = null;
+      return;
+    }
 
     reminderStoreRef.current = loadReminderStore(getCalendarReminderStorageKey(user.id));
+    eventNotificationStateRef.current = loadCalendarEventNotificationState(getCalendarEventNotificationStorageKey(user.id));
 
     const setupNotifications = async () => {
       await initServiceWorker();
       await requestNotificationPermission();
-      await registerPeriodicSync('check-calendar-periodic', CALENDAR_PERIODIC_SYNC_MS);
+      await registerPeriodicSync(CALENDAR_PERIODIC_SYNC_TAG, CALENDAR_PERIODIC_SYNC_MS);
     };
 
     void setupNotifications();
@@ -133,6 +195,69 @@ export const useCalendarNotifications = () => {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [refetch, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const storageKey = getCalendarEventNotificationStorageKey(user.id);
+    const relevantEvents = events.filter((event) => (
+      !event.is_todo_only &&
+      event.todo_status !== 'done' &&
+      event.todo_status !== 'cancelled'
+    ));
+    const now = Date.now();
+
+    if (!eventNotificationStateRef.current) {
+      const initialState = {
+        knownIds: relevantEvents.map((event) => event.id).slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS),
+        lastCheckedAt: now,
+      };
+      eventNotificationStateRef.current = initialState;
+      saveCalendarEventNotificationState(storageKey, initialState);
+      return;
+    }
+
+    const currentState = eventNotificationStateRef.current;
+    const knownIds = new Set(currentState.knownIds);
+    const freshnessThreshold = Math.max(0, currentState.lastCheckedAt - NEW_EVENT_GRACE_MS);
+    const newEvents = relevantEvents.filter((event) => {
+      if (knownIds.has(event.id)) return false;
+      const createdAtMs = Date.parse(event.created_at);
+      return Number.isFinite(createdAtMs) && createdAtMs >= freshnessThreshold;
+    });
+
+    const nextState: CalendarEventNotificationState = {
+      knownIds: Array.from(new Set([
+        ...relevantEvents.map((event) => event.id),
+        ...currentState.knownIds,
+      ])).slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS),
+      lastCheckedAt: now,
+    };
+    eventNotificationStateRef.current = nextState;
+    saveCalendarEventNotificationState(storageKey, nextState);
+
+    if (newEvents.length === 0) return;
+
+    const isViewingCalendar = document.visibilityState === 'visible' && window.location.pathname.startsWith('/calendar');
+    if (isViewingCalendar) return;
+
+    const firstEvent = newEvents[0];
+    const title = newEvents.length === 1 ? 'New Calendar Event' : 'New Calendar Events';
+    const body = newEvents.length === 1
+      ? [firstEvent.title, getCalendarEventStartText(firstEvent)].filter(Boolean).join(' - ')
+      : `${newEvents.length} new calendar events added`;
+
+    void showNotification(title, {
+      body,
+      tag: 'calendar-new-events',
+      renotify: true,
+      requireInteraction: false,
+      data: {
+        url: '/calendar',
+        eventIds: newEvents.map((event) => event.id),
+      },
+    });
+  }, [events, user?.id]);
 
   useEffect(() => {
     const timeoutRegistry = notificationTimeoutsRef.current;

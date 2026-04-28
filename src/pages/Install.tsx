@@ -22,7 +22,7 @@ const Install = () => {
         >
           <h1 className="text-3xl font-bold text-foreground mb-2">Install UniHub</h1>
           <p className="text-muted-foreground mb-8">
-            UniHub is a Progressive Web App (PWA) that can be installed on your device for quick access and offline use.
+            UniHub is a Progressive Web App (PWA) that can be installed on your device for quick access and an app-like window.
           </p>
         </motion.div>
 

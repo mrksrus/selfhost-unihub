@@ -15,6 +15,46 @@ interface BlobResponse {
   contentType?: string;
 }
 
+function isBrowserOffline() {
+  return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+function getNetworkErrorMessage(error: unknown) {
+  if (isBrowserOffline()) {
+    return 'No network connection. Check Wi-Fi, mobile data, or local network access, then try again.';
+  }
+
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return 'The server was reached, but it did not respond before the request timed out.';
+  }
+
+  const message = error instanceof Error ? error.message : '';
+  if (/failed to fetch|load failed|networkerror|network error/i.test(message)) {
+    return 'Could not reach the UniHub API. The browser is online, but the server did not respond.';
+  }
+
+  return message || 'Network request failed before the server returned a response.';
+}
+
+function getHttpErrorMessage(status: number, statusText: string) {
+  if (status === 401) return 'Session expired or authentication is required. Sign in again.';
+  if (status === 403) return 'Request rejected by the server. Refresh the app and try again.';
+  if (status === 404) return 'The requested API endpoint was not found.';
+  if (status === 408 || status === 504) return `The server or proxy did not respond in time (${status}).`;
+  if (status === 502 || status === 503) return `The API is temporarily unavailable (${status}). Check that the server is running.`;
+  if (status >= 500) return `The server returned an internal error (${status}).`;
+  if (status >= 400) return `Request failed (${status}${statusText ? ` ${statusText}` : ''}).`;
+  return `Unexpected response (${status}${statusText ? ` ${statusText}` : ''}).`;
+}
+
+function getUnexpectedResponseMessage(response: Response, contentType: string) {
+  const received = contentType || 'no content type';
+  if (response.ok) {
+    return `The server responded, but not with JSON (${received}). Check proxy or server routing.`;
+  }
+  return `${getHttpErrorMessage(response.status, response.statusText)} The response was not JSON (${received}).`;
+}
+
 class ApiClient {
   private baseUrl: string;
   private csrfToken: string | null = null;
@@ -72,32 +112,35 @@ class ApiClient {
         const text = await response.text();
         const preview = text.slice(0, 80).replace(/\s+/g, ' ');
         return {
-          error: response.ok
-            ? 'Server returned non-JSON response'
-            : `Request failed (${response.status}). Server may have timed out or returned an error page. Try again; if adding mail, wait a few minutes and retry.`,
+          status: response.status,
+          error: getUnexpectedResponseMessage(response, contentType),
           details: preview,
         };
       }
 
-      const data = await response.json();
+      let data: Record<string, unknown>;
+      try {
+        data = await response.json();
+      } catch {
+        return {
+          status: response.status,
+          error: 'The server responded with invalid JSON. Check the API logs or proxy configuration.',
+        };
+      }
 
       if (!response.ok) {
         return {
           ...data,
           status: response.status,
-          error: data.error || `HTTP ${response.status}: ${response.statusText}`,
+          error: typeof data.error === 'string' ? data.error : getHttpErrorMessage(response.status, response.statusText),
           details: data.details,
         };
       }
 
       return { data };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Network error';
-      const isJsonError = message.includes('JSON') && message.includes('<');
       return {
-        error: isJsonError
-          ? 'Request timed out or server returned an error page. Mail sync can take several minutes — check server logs for progress.'
-          : message,
+        error: getNetworkErrorMessage(error),
       };
     }
   }

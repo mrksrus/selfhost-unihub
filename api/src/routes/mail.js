@@ -27,6 +27,31 @@ const {
 } = require('../services/mail');
 
 const readFile = promisify(fs.readFile);
+const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 5 * 60 * 1000;
+const backgroundMailSyncAccounts = new Set();
+
+function startMailSyncInBackground(accountId, label = accountId) {
+  if (backgroundMailSyncAccounts.has(accountId)) {
+    return false;
+  }
+
+  backgroundMailSyncAccounts.add(accountId);
+  syncMailAccount(accountId)
+    .catch((error) => {
+      console.error(`[SYNC] Background sync failed for ${label}:`, error.message);
+    })
+    .finally(() => {
+      backgroundMailSyncAccounts.delete(accountId);
+    });
+  return true;
+}
+
+function isMailSyncFresh(lastSyncedAt, minAgeMs = BACKGROUND_MAIL_SYNC_MIN_AGE_MS) {
+  if (!lastSyncedAt) return false;
+  const lastSyncedAtMs = new Date(lastSyncedAt).getTime();
+  if (!Number.isFinite(lastSyncedAtMs)) return false;
+  return Date.now() - lastSyncedAtMs < minAgeMs;
+}
 
 async function getMailFolderRowsWithCounts(userId) {
   const folders = await loadMailFoldersForUser(userId);
@@ -521,9 +546,7 @@ module.exports = {
       
       // Start sync in background (non-blocking)
       console.log(`[ACCOUNT] Starting background sync for ${email_address}...`);
-      syncMailAccount(accountId).catch(err => {
-        console.error(`[ACCOUNT] Background sync failed for ${email_address}:`, err.message);
-      });
+      startMailSyncInBackground(accountId, email_address);
       
       // Return success immediately
       return { 
@@ -1006,6 +1029,57 @@ module.exports = {
     } catch (error) {
       console.error('[BULK] Update error:', error);
       return { error: 'Failed to update emails', status: 500 };
+    }
+  },
+
+  'POST /api/mail/sync/background': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const accountId = String(body?.account_id || '').trim();
+      const requestedMinAgeMs = Number(body?.min_age_ms);
+      const minAgeMs = Number.isFinite(requestedMinAgeMs)
+        ? Math.max(60 * 1000, requestedMinAgeMs)
+        : BACKGROUND_MAIL_SYNC_MIN_AGE_MS;
+
+      const params = [userId];
+      let query = `
+        SELECT id, email_address, last_synced_at
+        FROM mail_accounts
+        WHERE user_id = ? AND is_active = TRUE`;
+
+      if (accountId) {
+        query += ' AND id = ?';
+        params.push(accountId);
+      }
+
+      const [accounts] = await db.execute(query, params);
+      if (accountId && accounts.length === 0) {
+        return { error: 'Account not found', status: 404 };
+      }
+
+      const started = [];
+      const skipped = [];
+      const alreadyRunning = [];
+
+      for (const account of accounts) {
+        if (isMailSyncFresh(account.last_synced_at, minAgeMs)) {
+          skipped.push(account.id);
+          continue;
+        }
+
+        const didStart = startMailSyncInBackground(account.id, account.email_address || account.id);
+        if (didStart) {
+          started.push(account.id);
+        } else {
+          alreadyRunning.push(account.id);
+        }
+      }
+
+      return { started, skipped, alreadyRunning };
+    } catch (error) {
+      console.error('[SYNC] Background sync trigger error:', error);
+      return { error: error.message || 'Failed to start background mail sync', status: 500 };
     }
   },
   

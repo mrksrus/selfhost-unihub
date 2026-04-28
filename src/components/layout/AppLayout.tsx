@@ -1,5 +1,6 @@
 import { Outlet, Navigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { useBackgroundNotificationChecks } from '@/hooks/use-background-notification-checks';
 import { useCalendarNotifications } from '@/hooks/use-calendar-notifications';
 import { useMailNotifications } from '@/hooks/use-mail-notifications';
 import AppSidebar from './AppSidebar';
@@ -10,6 +11,7 @@ import { Loader2 } from 'lucide-react';
 
 const AppLayout = () => {
   const { user, loading } = useAuth();
+  useBackgroundNotificationChecks();
   useCalendarNotifications();
   useMailNotifications();
 
