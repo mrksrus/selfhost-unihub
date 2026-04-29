@@ -30,8 +30,10 @@ const KNOWN_MAIL_HOST_SUFFIXES = [
   'live.com',
 ];
 
-const DEFAULT_MAIL_SYNC_FETCH_LIMIT = '500';
-const MAIL_SYNC_FETCH_LIMITS = new Set(['100', '500', '1000', '2000', 'all']);
+const DEFAULT_MAIL_SYNC_FETCH_LIMIT = 'all';
+const MAIL_SYNC_FETCH_LIMITS = new Set(['all']);
+const LEGACY_MAIL_SYNC_FETCH_LIMITS = new Set(['100', '500', '1000', '2000']);
+const activeMailAccountSyncs = new Map();
 const MAIL_RAW_STORAGE_ROOT = '/app/uploads/mail-raw';
 const MAIL_FOLDER_DEFINITIONS = [
   { slug: 'inbox', displayName: 'Inbox', position: 10 },
@@ -55,6 +57,8 @@ const MAIL_SYNC_FOLDER_CANDIDATES = [
   { slug: 'archive', names: ['Archive', 'Archives', '[Gmail]/All Mail', '[Google Mail]/All Mail'] },
   { slug: 'trash', names: ['Trash', 'Deleted Items', 'Deleted Messages', '[Gmail]/Trash', '[Google Mail]/Trash'] },
 ];
+
+const IMAP_FULL_MESSAGE_BODY = '';
 
 function normalizeMailFolderSlug(value) {
   return String(value || '')
@@ -107,8 +111,26 @@ function normalizeHost(host) {
 function normalizeSyncFetchLimit(value, fallbackValue = DEFAULT_MAIL_SYNC_FETCH_LIMIT) {
   const normalized = String(value ?? '').trim().toLowerCase();
   if (!normalized) return fallbackValue;
+  if (LEGACY_MAIL_SYNC_FETCH_LIMITS.has(normalized)) return DEFAULT_MAIL_SYNC_FETCH_LIMIT;
   if (!MAIL_SYNC_FETCH_LIMITS.has(normalized)) return null;
   return normalized;
+}
+
+function normalizeMailAccountId(accountId) {
+  return String(accountId || '').trim();
+}
+
+function isMailAccountSyncRunning(accountId) {
+  const normalizedAccountId = normalizeMailAccountId(accountId);
+  return !!normalizedAccountId && activeMailAccountSyncs.has(normalizedAccountId);
+}
+
+function isAnyMailAccountSyncRunning() {
+  return activeMailAccountSyncs.size > 0;
+}
+
+function getRunningMailSyncAccountIds() {
+  return Array.from(activeMailAccountSyncs.keys());
 }
 
 function normalizeSenderEmail(value) {
@@ -711,6 +733,249 @@ function getCurrentBoxUidValidity(connection) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function stringifyImapBody(body) {
+  if (!body) return '';
+  if (Buffer.isBuffer(body)) return body.toString('utf8');
+  if (typeof body === 'string') return body;
+  return String(body);
+}
+
+function stringifyImapHeaderBody(body) {
+  if (!body) return '';
+  if (typeof body === 'string' || Buffer.isBuffer(body)) return stringifyImapBody(body);
+  if (typeof body !== 'object') return String(body);
+
+  const headerLines = [];
+  for (const [key, value] of Object.entries(body)) {
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item) headerLines.push(`${key}: ${item}`);
+      });
+    } else if (value) {
+      headerLines.push(`${key}: ${value}`);
+    }
+  }
+  return headerLines.join('\r\n');
+}
+
+function getImapPart(item, which) {
+  return (item?.parts || []).find(part => part.which === which) || null;
+}
+
+function buildRawEmailFromImapParts(item) {
+  const fullPart = getImapPart(item, IMAP_FULL_MESSAGE_BODY);
+  const fullBody = stringifyImapBody(fullPart?.body);
+  if (fullBody.trim()) return fullBody;
+
+  const headerContent = stringifyImapHeaderBody(getImapPart(item, 'HEADER')?.body);
+  const bodyContent = stringifyImapBody(getImapPart(item, 'TEXT')?.body);
+
+  if (headerContent) {
+    return headerContent + (bodyContent ? '\r\n\r\n' + bodyContent : '');
+  }
+  return bodyContent;
+}
+
+function extractSenderFromParsedEmail(parsed) {
+  let fromAddress = 'unknown';
+  let fromName = null;
+
+  if (parsed.from) {
+    if (parsed.from.value && parsed.from.value.length > 0) {
+      fromAddress = parsed.from.value[0].address || parsed.from.text || 'unknown';
+      fromName = parsed.from.value[0].name || null;
+    } else if (parsed.from.text) {
+      const textMatch = parsed.from.text.match(/^(.+?)\s*<(.+?)>$/);
+      if (textMatch) {
+        fromName = textMatch[1].trim();
+        fromAddress = textMatch[2].trim();
+      } else {
+        fromAddress = parsed.from.text;
+      }
+    }
+  }
+
+  return { fromAddress, fromName };
+}
+
+function extractEmailAddresses(addressObject) {
+  if (!addressObject?.value) return [];
+  return addressObject.value.map(address => address.address).filter(Boolean);
+}
+
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function isUnknownSender(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return !normalized || normalized === 'unknown' || normalized === 'unknown sender';
+}
+
+function bodyLooksLikeHeaderDump(value) {
+  const normalized = String(value || '').trimStart().toLowerCase();
+  return normalized.startsWith('content-type:')
+    || normalized.startsWith('date:')
+    || normalized.startsWith('from:')
+    || /^[-\w]+:\s+.+\r?\n[-\w]+:/m.test(normalized);
+}
+
+async function findExistingImportedEmail({ connection = db, messageId, accountId, folderName, uid, uidValidity }) {
+  const [byMessageId] = await connection.execute(
+    `SELECT id, message_id, from_address, from_name, to_addresses, body_text, body_html, received_at,
+            source_folder, imap_uid, imap_uidvalidity, raw_storage_path
+     FROM emails
+     WHERE message_id = ? AND mail_account_id = ?
+     LIMIT 1`,
+    [messageId, accountId]
+  );
+  if (byMessageId.length > 0) return byMessageId[0];
+
+  if (typeof uid !== 'number' || !folderName) return null;
+  const params = [accountId, folderName, uid];
+  let query = `
+    SELECT id, message_id, from_address, from_name, to_addresses, body_text, body_html, received_at,
+           source_folder, imap_uid, imap_uidvalidity, raw_storage_path
+    FROM emails
+    WHERE mail_account_id = ? AND source_folder = ? AND imap_uid = ?`;
+
+  if (uidValidity !== null && uidValidity !== undefined) {
+    query += ' AND (imap_uidvalidity = ? OR imap_uidvalidity IS NULL)';
+    params.push(uidValidity);
+  }
+
+  query += ' ORDER BY created_at ASC LIMIT 1';
+  const [byUid] = await connection.execute(query, params);
+  return byUid[0] || null;
+}
+
+async function repairExistingImportedEmail({
+  existingEmail,
+  account,
+  messageId,
+  fullEmail,
+  parsed,
+  fromAddress,
+  fromName,
+  toAddresses,
+  processedHtml,
+  folderName,
+  uid,
+  uidValidity,
+}) {
+  const updates = [];
+  const params = [];
+
+  if (messageId && existingEmail.message_id !== messageId) {
+    updates.push('message_id = ?');
+    params.push(messageId);
+  }
+
+  if (isUnknownSender(existingEmail.from_address) && !isUnknownSender(fromAddress)) {
+    updates.push('from_address = ?');
+    params.push(fromAddress);
+    updates.push('from_name = ?');
+    params.push(fromName);
+  } else if (!existingEmail.from_name && fromName) {
+    updates.push('from_name = ?');
+    params.push(fromName);
+  }
+
+  if (toAddresses.length > 0 && parseJsonArray(existingEmail.to_addresses).length === 0) {
+    updates.push('to_addresses = ?');
+    params.push(JSON.stringify(toAddresses));
+  }
+
+  if (bodyLooksLikeHeaderDump(existingEmail.body_text) && (parsed.text || processedHtml)) {
+    updates.push('body_text = ?');
+    params.push(parsed.text || null);
+    updates.push('body_html = ?');
+    params.push(processedHtml || null);
+    if (parsed.date) {
+      updates.push('received_at = ?');
+      params.push(parsed.date);
+    }
+  }
+
+  updates.push('source_folder = COALESCE(source_folder, ?)');
+  params.push(folderName);
+  updates.push('imap_uid = COALESCE(imap_uid, ?)');
+  params.push(uid);
+  updates.push('imap_uidvalidity = COALESCE(imap_uidvalidity, ?)');
+  params.push(uidValidity);
+
+  if (!existingEmail.raw_storage_path) {
+    try {
+      const rawArchive = await saveRawEmailSource({
+        userId: account.user_id,
+        emailId: existingEmail.id,
+        messageId,
+        rawEmail: fullEmail,
+      });
+      updates.push('raw_storage_path = COALESCE(raw_storage_path, ?)');
+      params.push(rawArchive.rawStoragePath);
+      updates.push('raw_sha256 = COALESCE(raw_sha256, ?)');
+      params.push(rawArchive.rawSha256);
+    } catch (rawError) {
+      console.error(`[SYNC] Failed to archive raw existing email UID ${uid}:`, rawError.message);
+    }
+  }
+
+  if (updates.length === 0) return;
+  params.push(existingEmail.id, account.user_id);
+  await db.execute(
+    `UPDATE emails
+     SET ${updates.join(', ')}
+     WHERE id = ? AND user_id = ?`,
+    params
+  );
+}
+
+function chunkArray(values, chunkSize) {
+  const chunks = [];
+  for (let i = 0; i < values.length; i += chunkSize) {
+    chunks.push(values.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+async function loadExistingImportedUidSet({ connection = db, accountId, folderName, uids, uidValidity }) {
+  const normalizedUids = Array.from(new Set((uids || []).filter(uid => typeof uid === 'number' && Number.isFinite(uid))));
+  const existingUids = new Set();
+  if (!accountId || !folderName || normalizedUids.length === 0) return existingUids;
+
+  for (const uidChunk of chunkArray(normalizedUids, 1000)) {
+    const placeholders = uidChunk.map(() => '?').join(',');
+    const params = [accountId, folderName, ...uidChunk];
+    let query = `
+      SELECT imap_uid
+      FROM emails
+      WHERE mail_account_id = ?
+        AND source_folder = ?
+        AND imap_uid IN (${placeholders})`;
+
+    if (uidValidity !== null && uidValidity !== undefined) {
+      query += ' AND (imap_uidvalidity = ? OR imap_uidvalidity IS NULL)';
+      params.push(uidValidity);
+    }
+
+    const [rows] = await connection.execute(query, params);
+    for (const row of rows || []) {
+      const uid = Number(row.imap_uid);
+      if (Number.isFinite(uid)) existingUids.add(uid);
+    }
+  }
+
+  return existingUids;
+}
+
 // ── Mail sync and send functions ──────────────────────────────────
 
 // Helper function to sync a specific folder
@@ -726,11 +991,9 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
     }
     const uidValidity = getCurrentBoxUidValidity(connection);
     
-    // "all" must really scan history. Duplicate detection preserves local folder moves.
+    // "all" applies to the first import only. After that, every sync is incremental.
     let searchCriteria = ['ALL'];
-    if (syncFetchLimit === 'all') {
-      console.log('[SYNC] Full mailbox sync requested - scanning all available messages');
-    } else if (lastSyncedAt) {
+    if (lastSyncedAt) {
       // Use SINCE to only get emails since last sync (subtract 1 day for safety margin)
       const sinceDate = new Date(lastSyncedAt);
       sinceDate.setDate(sinceDate.getDate() - 1); // 1 day margin for timezone/server differences
@@ -738,6 +1001,8 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
       const sinceDateStr = sinceDate.toISOString();
       searchCriteria = [['SINCE', sinceDateStr]];
       console.log(`[SYNC] Using optimized search: emails since ${sinceDateStr} (last sync: ${lastSyncedAt})`);
+    } else if (syncFetchLimit === 'all') {
+      console.log('[SYNC] First sync - fetching full mailbox history');
     } else {
       console.log(`[SYNC] First sync - fetching last ${syncFetchLimit} emails`);
     }
@@ -747,7 +1012,7 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
     try {
       searchResults = await connection.search(searchCriteria, {});
     } catch (searchError) {
-      const errorPrefix = syncFetchLimit === 'all' ? 'Unable to resolve full mailbox history' : 'Unable to search mailbox';
+      const errorPrefix = !lastSyncedAt && syncFetchLimit === 'all' ? 'Unable to resolve full mailbox history' : 'Unable to search mailbox';
       return { newEmails: 0, processed: 0, failed: 0, total: 0, error: `${errorPrefix}: ${searchError.message}` };
     }
 
@@ -787,11 +1052,23 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
       const limitNumber = Number.parseInt(syncFetchLimit, 10);
       const safeLimit = Number.isFinite(limitNumber) && limitNumber > 0
         ? limitNumber
-        : Number.parseInt(DEFAULT_MAIL_SYNC_FETCH_LIMIT, 10);
+        : 500;
       uidsToProcess = allUids.slice(-safeLimit);
       console.log(`[SYNC] First sync limit requested: ${safeLimit}, available: ${allUids.length}, selected: ${uidsToProcess.length}`);
     } else if (!lastSyncedAt && syncFetchLimit === 'all') {
       console.log(`[SYNC] First sync limit requested: all, available: ${allUids.length}, selected: ${uidsToProcess.length}`);
+    }
+
+    const knownUidSet = await loadExistingImportedUidSet({
+      connection: db,
+      accountId,
+      folderName,
+      uids: uidsToProcess,
+      uidValidity,
+    });
+    if (knownUidSet.size > 0) {
+      uidsToProcess = uidsToProcess.filter(uid => !knownUidSet.has(uid));
+      console.log(`[SYNC] Skipping ${knownUidSet.size} already imported UID(s) in ${folderName}; ${uidsToProcess.length} UID(s) still need download`);
     }
 
     console.log(`[SYNC] Will fetch ${uidsToProcess.length} emails from ${folderName}${lastSyncedAt ? ' (new since last sync)' : ''}...`);
@@ -801,7 +1078,7 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
     }
     
     const fetchOptions = {
-      bodies: ['HEADER', 'TEXT'],
+      bodies: [IMAP_FULL_MESSAGE_BODY],
       markSeen: false,
       struct: true,
     };
@@ -838,38 +1115,7 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
         
         const item = messageResults[0]; // Should only be one result
         console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] ✓ Downloaded UID ${uid}`);
-        const headerPart = item.parts.find(p => p.which === 'HEADER');
-        const textPart = item.parts.find(p => p.which === 'TEXT');
-        
-        let headerContent = '';
-        let bodyContent = '';
-        
-        if (headerPart && headerPart.body) {
-          if (typeof headerPart.body === 'string') {
-            headerContent = headerPart.body;
-          } else if (typeof headerPart.body === 'object') {
-            const headerLines = [];
-            for (const [key, value] of Object.entries(headerPart.body)) {
-              if (Array.isArray(value)) {
-                value.forEach(v => { if (v) headerLines.push(`${key}: ${v}`); });
-              } else if (value) {
-                headerLines.push(`${key}: ${value}`);
-              }
-            }
-            headerContent = headerLines.join('\r\n');
-          }
-        }
-        
-        if (textPart && textPart.body) {
-          bodyContent = typeof textPart.body === 'string' ? textPart.body : String(textPart.body);
-        }
-        
-        let fullEmail = '';
-        if (headerContent) {
-          fullEmail = headerContent + (bodyContent ? '\r\n\r\n' + bodyContent : '');
-        } else if (bodyContent) {
-          fullEmail = bodyContent;
-        }
+        const fullEmail = buildRawEmailFromImapParts(item);
         
         if (!fullEmail || fullEmail.trim().length === 0) {
           if (processedCount <= 5) {
@@ -880,78 +1126,45 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
         
         const parsed = await simpleParser(fullEmail);
         const messageId = parsed.messageId || (dbFolderName === 'inbox' ? `${accountId}-${uid}` : `${accountId}-${folderName}-${uid}`);
+        const { fromAddress, fromName } = extractSenderFromParsedEmail(parsed);
+        const toAddresses = extractEmailAddresses(parsed.to);
+        const hasAttachments = parsed.attachments && parsed.attachments.length > 0;
+        let attachmentCount = 0;
+        let processedHtml = parsed.html || null;
         
         // Preserve existing local folder moves by never reclassifying an email that is already imported.
-        const [existing] = await db.execute(
-          'SELECT id, raw_storage_path FROM emails WHERE message_id = ? AND mail_account_id = ?',
-          [messageId, accountId]
-        );
-        if (existing.length > 0) {
-          const existingEmail = existing[0];
-          if (!existingEmail.raw_storage_path) {
-            try {
-              const rawArchive = await saveRawEmailSource({
-                userId: account.user_id,
-                emailId: existingEmail.id,
-                messageId,
-                rawEmail: fullEmail,
-              });
-              await db.execute(
-                `UPDATE emails
-                 SET raw_storage_path = COALESCE(raw_storage_path, ?),
-                     raw_sha256 = COALESCE(raw_sha256, ?),
-                     source_folder = COALESCE(source_folder, ?),
-                     imap_uid = COALESCE(imap_uid, ?),
-                     imap_uidvalidity = COALESCE(imap_uidvalidity, ?)
-                 WHERE id = ? AND user_id = ?`,
-                [
-                  rawArchive.rawStoragePath,
-                  rawArchive.rawSha256,
-                  folderName,
-                  uid,
-                  uidValidity,
-                  existingEmail.id,
-                  account.user_id,
-                ]
-              );
-            } catch (rawError) {
-              console.error(`[SYNC] Failed to archive raw existing email UID ${uid}:`, rawError.message);
-            }
+        const existingEmail = await findExistingImportedEmail({
+          messageId,
+          accountId,
+          folderName,
+          uid,
+          uidValidity,
+          connection: db,
+        });
+        if (existingEmail) {
+          try {
+            await repairExistingImportedEmail({
+              existingEmail,
+              account,
+              messageId,
+              fullEmail,
+              parsed,
+              fromAddress,
+              fromName,
+              toAddresses,
+              processedHtml,
+              folderName,
+              uid,
+              uidValidity,
+            });
+          } catch (rawError) {
+            console.error(`[SYNC] Failed to update existing email UID ${uid}:`, rawError.message);
           }
           if (processedCount <= 5) {
             console.log(`[SYNC] Email already exists (UID: ${uid}, messageId: ${messageId}), skipping`);
           }
           continue;
         }
-        
-        // Extract from address and name
-        let fromAddress = 'unknown';
-        let fromName = null;
-        if (parsed.from) {
-          if (parsed.from.value && parsed.from.value.length > 0) {
-            fromAddress = parsed.from.value[0].address || parsed.from.text || 'unknown';
-            fromName = parsed.from.value[0].name || null;
-          } else if (parsed.from.text) {
-            const textMatch = parsed.from.text.match(/^(.+?)\s*<(.+?)>$/);
-            if (textMatch) {
-              fromName = textMatch[1].trim();
-              fromAddress = textMatch[2].trim();
-            } else {
-              fromAddress = parsed.from.text;
-            }
-          }
-        }
-        
-        // Extract to addresses
-        const toAddresses = [];
-        if (parsed.to && parsed.to.value) {
-          toAddresses.push(...parsed.to.value.map(t => t.address).filter(Boolean));
-        }
-        
-        // Process attachments
-        const hasAttachments = parsed.attachments && parsed.attachments.length > 0;
-        let attachmentCount = 0;
-        let processedHtml = parsed.html || null;
         
         if (hasAttachments) {
           try {
@@ -1185,7 +1398,7 @@ async function testImapConnection(account) {
   }
 }
 
-async function syncMailAccount(accountId) {
+async function syncMailAccountOnce(accountId) {
   let connection = null;
   try {
     debugLog('server.js:50', 'syncMailAccount START', { accountId }, 'H1');
@@ -1336,6 +1549,34 @@ async function syncMailAccount(accountId) {
     }
 
     return { success: false, error: friendlyError, details: errorMsg };
+  }
+}
+
+async function syncMailAccount(accountId) {
+  const normalizedAccountId = normalizeMailAccountId(accountId);
+  if (!normalizedAccountId) {
+    return { success: false, error: 'Account ID required' };
+  }
+
+  if (activeMailAccountSyncs.has(normalizedAccountId)) {
+    return {
+      success: true,
+      alreadyRunning: true,
+      skipped: true,
+      newEmails: 0,
+      totalFound: 0,
+      message: 'Sync already running for this account; not starting another sync.',
+    };
+  }
+
+  const syncPromise = syncMailAccountOnce(normalizedAccountId);
+  activeMailAccountSyncs.set(normalizedAccountId, syncPromise);
+  try {
+    return await syncPromise;
+  } finally {
+    if (activeMailAccountSyncs.get(normalizedAccountId) === syncPromise) {
+      activeMailAccountSyncs.delete(normalizedAccountId);
+    }
   }
 }
 
@@ -1522,6 +1763,10 @@ module.exports = {
   mailFolderExists,
   normalizeHost,
   normalizeSyncFetchLimit,
+  normalizeMailAccountId,
+  isMailAccountSyncRunning,
+  isAnyMailAccountSyncRunning,
+  getRunningMailSyncAccountIds,
   normalizeSenderEmail,
   normalizeSenderDomain,
   normalizeMailSenderRuleInput,
@@ -1556,6 +1801,8 @@ module.exports = {
   listAvailableImapFolders,
   pickImapSyncFolders,
   getCurrentBoxUidValidity,
+  buildRawEmailFromImapParts,
+  loadExistingImportedUidSet,
   syncMailFolder,
   testImapConnection,
   syncMailAccount,

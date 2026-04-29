@@ -214,10 +214,10 @@ Ensure `UNIHUB_MYSQL_PASSWORD` is set once in `.env`; Docker Compose passes the 
 ## Mail Sync Details
 
 - **Supported providers**: Gmail, Apple/iCloud, Yahoo, Outlook, and any standard IMAP/SMTP provider (including self-hosted)
-- **Sync behavior**: automatic every 5 minutes; manual sync via UI; fetches last 500 emails per account
+- **Sync behavior**: automatic every 10 minutes when no mail sync is already running; manual sync via UI; first import fetches all available email, later syncs fetch only new UIDs
 - **Compose**: new messages, reply, forward with attachment support (up to 20 attachments, 25 MB total)
 - **Security**: mail passwords encrypted with AES-256-GCM; strict TLS verification; host/certificate confirmation; SSRF protection (private IP blocking)
-- **Limitations**: syncs last 500 emails only; one-by-one fetching may be slow for large mailboxes; INBOX only (no sent folder sync yet)
+- **Limitations**: first full imports can be slow for large mailboxes; server-side deletion sync is not implemented yet
 
 ## Calendar Details
 

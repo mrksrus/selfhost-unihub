@@ -22,26 +22,28 @@ const {
   requireMailHostTrustApproval,
   testImapConnection,
   syncMailAccount,
+  isAnyMailAccountSyncRunning,
+  getRunningMailSyncAccountIds,
   sendEmail,
   deleteStoredAttachmentFiles,
 } = require('../services/mail');
 
 const readFile = promisify(fs.readFile);
-const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 5 * 60 * 1000;
-const backgroundMailSyncAccounts = new Set();
+const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
 
 function startMailSyncInBackground(accountId, label = accountId) {
-  if (backgroundMailSyncAccounts.has(accountId)) {
+  if (isAnyMailAccountSyncRunning()) {
     return false;
   }
 
-  backgroundMailSyncAccounts.add(accountId);
   syncMailAccount(accountId)
+    .then((result) => {
+      if (result?.success === false) {
+        console.error(`[SYNC] Background sync failed for ${label}:`, result.error || 'Unknown error');
+      }
+    })
     .catch((error) => {
       console.error(`[SYNC] Background sync failed for ${label}:`, error.message);
-    })
-    .finally(() => {
-      backgroundMailSyncAccounts.delete(accountId);
     });
   return true;
 }
@@ -498,7 +500,7 @@ module.exports = {
       }
       const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);
       if (!normalizedSyncFetchLimit) {
-        return { error: 'Invalid sync fetch limit. Allowed values: 100, 500, 1000, 2000, all', status: 400 };
+        return { error: 'Invalid sync fetch limit. Allowed value: all', status: 400 };
       }
 
       const hostTrustResult = await requireMailHostTrustApproval({
@@ -546,15 +548,17 @@ module.exports = {
       
       // Start sync in background (non-blocking)
       console.log(`[ACCOUNT] Starting background sync for ${email_address}...`);
-      startMailSyncInBackground(accountId, email_address);
+      const syncStarted = startMailSyncInBackground(accountId, email_address);
       
       // Return success immediately
       return { 
         account: accounts[0],
         authSuccess: true,
-        syncInProgress: true,
+        syncInProgress: syncStarted,
         mailHostTrust: hostTrustResult.mailHostTrust,
-        message: 'Account connected successfully. Syncing emails in the background — this may take several minutes for large mailboxes.'
+        message: syncStarted
+          ? 'Account connected successfully. Syncing emails in the background — this may take several minutes for large mailboxes.'
+          : 'Account connected successfully. A mail sync is already running; this account will sync on the next scheduled pass.'
       };
     } catch (error) {
       console.error('[ACCOUNT] Create mail account error:', error);
@@ -629,7 +633,7 @@ module.exports = {
       if (sync_fetch_limit !== undefined) {
         const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);
         if (!normalizedSyncFetchLimit) {
-          return { error: 'Invalid sync fetch limit. Allowed values: 100, 500, 1000, 2000, all', status: 400 };
+          return { error: 'Invalid sync fetch limit. Allowed value: all', status: 400 };
         }
         updates.push('sync_fetch_limit = ?');
         params.push(normalizedSyncFetchLimit);
@@ -1039,7 +1043,7 @@ module.exports = {
       const accountId = String(body?.account_id || '').trim();
       const requestedMinAgeMs = Number(body?.min_age_ms);
       const minAgeMs = Number.isFinite(requestedMinAgeMs)
-        ? Math.max(60 * 1000, requestedMinAgeMs)
+        ? Math.max(BACKGROUND_MAIL_SYNC_MIN_AGE_MS, requestedMinAgeMs)
         : BACKGROUND_MAIL_SYNC_MIN_AGE_MS;
 
       const params = [userId];
@@ -1071,12 +1075,15 @@ module.exports = {
         const didStart = startMailSyncInBackground(account.id, account.email_address || account.id);
         if (didStart) {
           started.push(account.id);
+          break;
         } else {
-          alreadyRunning.push(account.id);
+          const runningAccountIds = getRunningMailSyncAccountIds();
+          alreadyRunning.push(...(runningAccountIds.length > 0 ? runningAccountIds : [account.id]));
+          break;
         }
       }
 
-      return { started, skipped, alreadyRunning };
+      return { started, skipped, alreadyRunning: Array.from(new Set(alreadyRunning)) };
     } catch (error) {
       console.error('[SYNC] Background sync trigger error:', error);
       return { error: error.message || 'Failed to start background mail sync', status: 500 };
@@ -1096,6 +1103,16 @@ module.exports = {
         [account_id, userId]
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+
+      if (isAnyMailAccountSyncRunning()) {
+        return {
+          success: true,
+          alreadyRunning: true,
+          newEmails: 0,
+          totalFound: 0,
+          message: 'Sync already running; not starting another sync.',
+        };
+      }
       
       // Sync and wait for result
       console.log(`[SYNC] Manual sync requested for account ${account_id}`);

@@ -252,14 +252,6 @@ type FolderMode = string;
 const ALL_ACCOUNTS: AccountMode = 'all';
 const ALL_MAIL: FolderMode = 'all';
 
-const syncFetchLimitOptions = [
-  { value: '100', label: 'Last 100 emails' },
-  { value: '500', label: 'Last 500 emails (default)' },
-  { value: '1000', label: 'Last 1000 emails' },
-  { value: '2000', label: 'Last 2000 emails' },
-  { value: 'all', label: 'All emails' },
-] as const;
-
 const escapeHtml = (value: string) =>
   value
     .replace(/&/g, '&amp;')
@@ -351,7 +343,7 @@ const MailPage = () => {
     smtp_host: '',
     imap_port: 993,
     smtp_port: 587,
-    sync_fetch_limit: '500',
+    sync_fetch_limit: 'all',
   });
 
   // Open compose dialog if linked from dashboard
@@ -659,7 +651,7 @@ const MailPage = () => {
         smtp_host: '',
         imap_port: 993,
         smtp_port: 587,
-        sync_fetch_limit: '500',
+        sync_fetch_limit: 'all',
       });
     },
     onError: (error: Error, variables) => {
@@ -704,7 +696,7 @@ const MailPage = () => {
         smtp_host: '',
         imap_port: 993,
         smtp_port: 587,
-        sync_fetch_limit: '500',
+        sync_fetch_limit: 'all',
       });
     },
     onError: (error: Error, variables) => {
@@ -1187,7 +1179,7 @@ const MailPage = () => {
       smtp_host: account.smtp_host || '',
       imap_port: account.imap_port || 993,
       smtp_port: account.smtp_port || 587,
-      sync_fetch_limit: account.sync_fetch_limit || '500',
+      sync_fetch_limit: account.sync_fetch_limit || 'all',
     });
     setIsAddAccountOpen(true);
   };
@@ -1658,7 +1650,7 @@ const MailPage = () => {
                   smtp_host: '',
                   imap_port: 993,
                   smtp_port: 587,
-                  sync_fetch_limit: '500',
+                  sync_fetch_limit: 'all',
                 });
                 setPendingHostTrust(null);
               }
@@ -1782,27 +1774,6 @@ const MailPage = () => {
                       onChange={(e) => setAccountForm({ ...accountForm, smtp_port: parseInt(e.target.value) || 587 })}
                       placeholder="587"
                     />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="sync_fetch_limit">Initial Sync Limit</Label>
-                    <Select
-                      value={accountForm.sync_fetch_limit}
-                      onValueChange={(value) => setAccountForm({ ...accountForm, sync_fetch_limit: value })}
-                    >
-                      <SelectTrigger id="sync_fetch_limit">
-                        <SelectValue placeholder="Select sync limit" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {syncFetchLimitOptions.map((option) => (
-                          <SelectItem key={option.value} value={option.value}>
-                            {option.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <p className="text-xs text-muted-foreground">
-                      Applies to first full import for this account. Later syncs fetch only new messages.
-                    </p>
                   </div>
                   <div className="flex justify-end gap-3 pt-2">
                     <Button type="button" variant="outline" onClick={() => setIsAddAccountOpen(false)}>

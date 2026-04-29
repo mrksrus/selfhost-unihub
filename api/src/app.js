@@ -3,8 +3,11 @@ require('./imap-patch');
 const { PORT } = require('./config');
 const { db } = require('./state');
 const { initDatabase } = require('./services/database');
-const { syncMailAccount } = require('./services/mail');
+const { syncMailAccount, isAnyMailAccountSyncRunning } = require('./services/mail');
 const { handleRequest } = require('./request-handler');
+
+const MAIL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+let periodicMailSyncRunning = false;
 
 async function start() {
   await initDatabase();
@@ -15,22 +18,31 @@ async function start() {
     console.log(`✓ UniHub API server running on port ${PORT}`);
   });
   
-  // Periodic mail sync every 5 minutes
+  // Periodic mail sync every 10 minutes
   setInterval(async () => {
+    if (periodicMailSyncRunning || isAnyMailAccountSyncRunning()) {
+      console.log('[SYNC] Skipping periodic mail sync because a sync is already running');
+      return;
+    }
+
+    periodicMailSyncRunning = true;
     try {
       const [accounts] = await db.execute(
         'SELECT id, email_address FROM mail_accounts WHERE is_active = TRUE'
       );
       console.log(`\n[${new Date().toISOString()}] Starting periodic mail sync for ${accounts.length} accounts...`);
       for (const account of accounts) {
-        syncMailAccount(account.id).catch(err => 
-          console.error(`Failed to sync ${account.email_address}:`, err.message)
-        );
+        const result = await syncMailAccount(account.id);
+        if (result?.success === false) {
+          console.error(`Failed to sync ${account.email_address}:`, result.error || 'Unknown error');
+        }
       }
     } catch (error) {
       console.error('Periodic sync error:', error);
+    } finally {
+      periodicMailSyncRunning = false;
     }
-  }, 5 * 60 * 1000); // 5 minutes
+  }, MAIL_SYNC_INTERVAL_MS);
 
   // Clean up expired sessions every hour to prevent table bloat
   setInterval(async () => {
@@ -84,7 +96,7 @@ async function start() {
     }
   }, 15 * 60 * 1000); // 15 minutes
   
-  console.log('✓ Periodic mail sync enabled (every 5 minutes)');
+  console.log('✓ Periodic mail sync enabled (every 10 minutes)');
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Database connection pool health check enabled (every 15 minutes)');
 }

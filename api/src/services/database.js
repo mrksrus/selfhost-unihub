@@ -430,7 +430,7 @@ async function ensureSchema() {
     smtp_host VARCHAR(255),
     smtp_port INT DEFAULT 587,
     encrypted_password TEXT,
-    sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT '500',
+    sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all',
     allow_self_signed BOOLEAN DEFAULT FALSE,
     trusted_imap_fingerprint256 VARCHAR(128),
     trusted_smtp_fingerprint256 VARCHAR(128),
@@ -475,17 +475,22 @@ async function ensureSchema() {
     // Version-safe migration (MySQL variants may not support ADD COLUMN IF NOT EXISTS)
     const [syncFetchLimitCols] = await db.execute(`SHOW COLUMNS FROM mail_accounts LIKE 'sync_fetch_limit'`);
     if (!Array.isArray(syncFetchLimitCols) || syncFetchLimitCols.length === 0) {
-      await db.execute(`ALTER TABLE mail_accounts ADD COLUMN sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT '500' AFTER encrypted_password`);
+      await db.execute(`ALTER TABLE mail_accounts ADD COLUMN sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all' AFTER encrypted_password`);
     }
   } catch (e) {
     // Ignore when unsupported or already exists
   }
   try {
+    await db.execute(`ALTER TABLE mail_accounts MODIFY sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all'`);
+  } catch (e) {
+    // Ignore migration failures and continue startup
+  }
+  try {
     await db.execute(
       `UPDATE mail_accounts
-       SET sync_fetch_limit = '500'
+       SET sync_fetch_limit = 'all'
        WHERE sync_fetch_limit IS NULL
-          OR sync_fetch_limit NOT IN ('100', '500', '1000', '2000', 'all')`
+          OR sync_fetch_limit <> 'all'`
     );
   } catch (e) {
     // Ignore migration failures and continue startup

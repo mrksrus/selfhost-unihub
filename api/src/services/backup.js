@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../state');
-const { MAIL_RAW_STORAGE_ROOT } = require('./mail');
+const { MAIL_RAW_STORAGE_ROOT, DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } = require('./mail');
 
 const BACKUP_VERSION = 1;
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
@@ -317,6 +317,7 @@ async function importBackupForUser(userId, backup, { mode = 'dry-run' } = {}) {
         : await connection.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
       const targetAccountId = existingById[0]?.id || row.id;
       mailAccountIdMap.set(row.id, targetAccountId);
+      const syncFetchLimit = normalizeSyncFetchLimit(row.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT;
 
       if (existingById.length) {
         await connection.execute(
@@ -325,13 +326,13 @@ async function importBackupForUser(userId, backup, { mode = 'dry-run' } = {}) {
                smtp_host = ?, smtp_port = ?, encrypted_password = ?, sync_fetch_limit = ?, allow_self_signed = ?,
                trusted_imap_fingerprint256 = ?, trusted_smtp_fingerprint256 = ?, is_active = ?, last_synced_at = ?
            WHERE id = ? AND user_id = ?`,
-          [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, row.sync_fetch_limit || '500', row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, row.last_synced_at || null, targetAccountId, userId]
+          [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, row.last_synced_at || null, targetAccountId, userId]
         );
       } else {
         await connection.execute(
           `INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, sync_fetch_limit, allow_self_signed, trusted_imap_fingerprint256, trusted_smtp_fingerprint256, is_active, last_synced_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, row.sync_fetch_limit || '500', row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, row.last_synced_at || null]
+          [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, row.last_synced_at || null]
         );
       }
     }

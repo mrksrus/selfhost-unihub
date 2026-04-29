@@ -234,7 +234,7 @@ CREATE TABLE IF NOT EXISTS mail_accounts (
     smtp_port INT DEFAULT 587,
     -- Encrypted credentials
     encrypted_password TEXT,
-    sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT '500' COMMENT '100, 500, 1000, 2000, all',
+    sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all' COMMENT 'all',
     is_active BOOLEAN DEFAULT TRUE,
     last_synced_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

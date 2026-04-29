@@ -18,7 +18,7 @@ UniHub synchronises email using the IMAP protocol to fetch messages from externa
 ## Database Tables
 
 - `mail_accounts` -- credentials (encrypted), IMAP/SMTP settings, last-sync timestamp, user association
-- `mail_accounts.sync_fetch_limit` -- per-account initial import size (`100`, `500`, `1000`, `2000`, `all`)
+- `mail_accounts.sync_fetch_limit` -- initial import mode (`all`)
 - `emails` -- message metadata, plain-text body, HTML body, folder, read/starred status
 - `email_attachments` -- attachment metadata, filesystem path, Content-ID for inline images
 - `mail_folders` -- app-owned folder catalog per user (system folders + custom UI targets)
@@ -59,28 +59,28 @@ On success:
 
 ### Trigger points
 
-- **Automatic**: every 5 minutes for all active accounts
+- **Automatic**: every 10 minutes for active accounts when no mail sync is already running
 - **Manual**: user clicks Sync in the UI (`POST /api/mail/sync`)
 - **Initial**: immediately after account creation
 
 ### Fetch strategy
 
 1. Connect to IMAP server (TLS on port 993, STARTTLS on port 143).
-2. Open INBOX.
-3. If last-sync timestamp exists, search with `SINCE` (minus 1-day safety margin). Otherwise search `ALL` and apply the account's configured `sync_fetch_limit`.
-4. For each UID, fetch HEADER + TEXT individually.
-5. Reconstruct RFC 822 message and parse with `mailparser`.
-6. Check for duplicates by `message_id`.
-7. Resolve destination folder using `mail_sender_rules` and sender normalization before insert (fallback: `inbox`).
-8. Insert into `emails`; process attachments; replace inline `cid:` references with `/api/mail/attachments/{id}` URLs.
-9. Update `last_synced_at` on the account.
+2. Discover supported mail folders and open each selected folder sequentially.
+3. If last-sync timestamp exists, search with `SINCE` (minus 1-day safety margin). Otherwise search `ALL` for the first full import.
+4. Remove UIDs that are already stored locally before downloading message bodies.
+5. For each remaining UID, fetch the full RFC 822 message individually.
+6. Parse with `mailparser`.
+7. Check for duplicates by `message_id`.
+8. Resolve destination folder using `mail_sender_rules` and sender normalization before insert (fallback: `inbox`).
+9. Insert into `emails`; process attachments; replace inline `cid:` references with `/api/mail/attachments/{id}` URLs.
+10. Update `last_synced_at` on the account.
 
 ### Sync limit behavior
 
-- The user selects sync limit per mail account: `100`, `500` (default), `1000`, `2000`, `all`.
-- This limit applies to the first full import for that account.
-- If the user requests more emails than exist (e.g. `2000` requested, `1000` available), sync safely imports only available emails and reports counts.
-- `all` requests full mailbox history. If the provider returns malformed or inconsistent UID search results, sync aborts with a clear error instead of importing partial/corrupt placeholders.
+- Initial sync imports all available messages.
+- Later syncs are incremental and use `last_synced_at` plus local UID filtering so already-imported messages are not downloaded again.
+- If the provider returns malformed or inconsistent UID search results, sync aborts with a clear error instead of importing partial/corrupt placeholders.
 - No dummy/empty emails are created when counts mismatch.
 
 ### App-owned folders
@@ -160,8 +160,6 @@ Connection timeouts: 60 s connect, 30 s auth, 60 s socket.
 
 ## Limitations
 
-1. Only syncs INBOX (no sent/archive/draft folder sync yet).
-2. Initial sync is configurable per account (`100/500/1000/2000/all`; default `500`).
-3. No server-side deletion sync (deletes are local only).
-4. One-by-one fetching can be slow for large mailboxes.
-5. No incremental UID tracking yet (uses date-based `SINCE` after first sync).
+1. Draft folder sync is not implemented.
+2. No server-side deletion sync (deletes are local only).
+3. One-by-one fetching can be slow for large first imports.

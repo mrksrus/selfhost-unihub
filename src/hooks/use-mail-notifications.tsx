@@ -4,7 +4,6 @@ import { useAuth } from '@/contexts/AuthContext';
 import { api } from '@/lib/api';
 import {
   MAIL_PERIODIC_SYNC_TAG,
-  NOTIFICATION_CHECK_INTERVAL_MS,
   initServiceWorker,
   registerPeriodicSync,
   requestNotificationPermission,
@@ -13,7 +12,7 @@ import {
 
 const MAIL_NOTIFICATION_STORAGE_PREFIX = 'unihub:mail-notifications:';
 const MAX_TRACKED_EMAIL_IDS = 200;
-const MAIL_REFETCH_INTERVAL_MS = NOTIFICATION_CHECK_INTERVAL_MS;
+const MAIL_REFETCH_INTERVAL_MS = 10 * 60 * 1000;
 const NEW_EMAIL_GRACE_MS = 5 * 60 * 1000;
 const NOTIFICATION_FETCH_LIMIT = 50;
 const EXCLUDED_NOTIFICATION_FOLDERS = new Set(['sent', 'trash', 'archive']);
