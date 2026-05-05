@@ -489,6 +489,7 @@ const MailPage = () => {
       const params = new URLSearchParams({
         limit: '1',
         offset: '0',
+        include_count: 'true',
       });
 
       if (selectedAccount !== ALL_ACCOUNTS) {
@@ -508,7 +509,8 @@ const MailPage = () => {
       return { total: response.data?.pagination?.total || 0 };
     },
     enabled: !!selectedAccount,
-    refetchInterval: 5000, // Check count every 5 seconds
+    refetchInterval: 60000, // Check count periodically without competing with folder navigation
+    refetchIntervalInBackground: false,
     staleTime: 0,
   });
 

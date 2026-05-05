@@ -93,7 +93,7 @@ export const useMailNotifications = () => {
     queryKey: ['mail-notification-feed', user?.id],
     queryFn: async () => {
       const response = await api.get<{ emails: NotificationEmail[] }>(
-        `/mail/emails?limit=${NOTIFICATION_FETCH_LIMIT}&offset=0`
+        `/mail/emails?limit=${NOTIFICATION_FETCH_LIMIT}&offset=0&include_count=false`
       );
       if (response.error) throw new Error(response.error);
       return response.data?.emails || [];

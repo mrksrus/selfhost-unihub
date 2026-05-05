@@ -30,6 +30,7 @@ const {
 
 const readFile = promisify(fs.readFile);
 const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
+const MAIL_LIST_PREVIEW_LENGTH = 240;
 
 function startMailSyncInBackground(accountId, label = accountId) {
   if (isAnyMailAccountSyncRunning()) {
@@ -697,38 +698,38 @@ module.exports = {
       const isReadParam = url.searchParams.get('is_read');
       const isStarredParam = url.searchParams.get('is_starred');
       const searchParam = (url.searchParams.get('search') || '').trim();
-      
-      query = 'SELECT * FROM emails WHERE user_id = ?';
+      const includeCount = url.searchParams.get('include_count') !== 'false';
+      const where = ['user_id = ?'];
       params = [userId];
       
       if (hasFolderFilter) {
-        query += ' AND folder = ?';
+        where.push('folder = ?');
         params.push(folder);
       }
       
       if (hasAccountFilter) {
-        query += ' AND mail_account_id = ?';
+        where.push('mail_account_id = ?');
         params.push(accountId);
       }
 
       if (isReadParam === 'true' || isReadParam === 'false') {
-        query += ' AND is_read = ?';
+        where.push('is_read = ?');
         params.push(isReadParam === 'true' ? 1 : 0);
       }
 
       if (isStarredParam === 'true' || isStarredParam === 'false') {
-        query += ' AND is_starred = ?';
+        where.push('is_starred = ?');
         params.push(isStarredParam === 'true' ? 1 : 0);
       }
 
       if (searchParam) {
         const searchValue = `%${searchParam.toLowerCase()}%`;
-        query += ` AND (
+        where.push(`(
           LOWER(COALESCE(subject, '')) LIKE ? OR
           LOWER(COALESCE(from_name, '')) LIKE ? OR
           LOWER(COALESCE(from_address, '')) LIKE ? OR
           LOWER(COALESCE(body_text, '')) LIKE ?
-        )`;
+        )`);
         params.push(searchValue, searchValue, searchValue, searchValue);
       }
       
@@ -738,45 +739,54 @@ module.exports = {
       const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
       const offset = Number.isFinite(requestedOffset) ? Math.max(requestedOffset, 0) : 0;
       const page = Math.max(1, Math.floor(offset / limit) + 1);
+      const whereSql = where.join(' AND ');
       
       // Use template literals for LIMIT/OFFSET since they're already sanitized integers
       // This avoids parameter binding issues with mysql2
-      query += ` ORDER BY received_at DESC LIMIT ${limit} OFFSET ${offset}`;
+      query = `
+        SELECT
+          id,
+          user_id,
+          mail_account_id,
+          message_id,
+          subject,
+          from_address,
+          from_name,
+          to_addresses,
+          CASE
+            WHEN body_text IS NULL THEN NULL
+            WHEN CHAR_LENGTH(body_text) > ${MAIL_LIST_PREVIEW_LENGTH}
+              THEN CONCAT(LEFT(body_text, ${MAIL_LIST_PREVIEW_LENGTH}), '...')
+            ELSE body_text
+          END AS body_text,
+          NULL AS body_html,
+          folder,
+          source_folder,
+          imap_uid,
+          imap_uidvalidity,
+          raw_storage_path,
+          raw_sha256,
+          is_read,
+          is_starred,
+          is_draft,
+          has_attachments,
+          received_at,
+          created_at
+        FROM emails
+        WHERE ${whereSql}
+        ORDER BY received_at DESC, id DESC
+        LIMIT ${limit} OFFSET ${offset}`;
       
       // Get total count for pagination
-      let countQuery = 'SELECT COUNT(*) as total FROM emails WHERE user_id = ?';
-      const countParams = [userId];
-      if (hasFolderFilter) {
-        countQuery += ' AND folder = ?';
-        countParams.push(folder);
+      let total = null;
+      if (includeCount) {
+        const countQuery = `SELECT COUNT(*) as total FROM emails WHERE ${whereSql}`;
+        const [countResult] = await db.execute(countQuery, params);
+        total = countResult[0]?.total || 0;
       }
-      if (hasAccountFilter) {
-        countQuery += ' AND mail_account_id = ?';
-        countParams.push(accountId);
-      }
-      if (isReadParam === 'true' || isReadParam === 'false') {
-        countQuery += ' AND is_read = ?';
-        countParams.push(isReadParam === 'true' ? 1 : 0);
-      }
-      if (isStarredParam === 'true' || isStarredParam === 'false') {
-        countQuery += ' AND is_starred = ?';
-        countParams.push(isStarredParam === 'true' ? 1 : 0);
-      }
-      if (searchParam) {
-        const searchValue = `%${searchParam.toLowerCase()}%`;
-        countQuery += ` AND (
-          LOWER(COALESCE(subject, '')) LIKE ? OR
-          LOWER(COALESCE(from_name, '')) LIKE ? OR
-          LOWER(COALESCE(from_address, '')) LIKE ? OR
-          LOWER(COALESCE(body_text, '')) LIKE ?
-        )`;
-        countParams.push(searchValue, searchValue, searchValue, searchValue);
-      }
-      const [countResult] = await db.execute(countQuery, countParams);
-      const total = countResult[0]?.total || 0;
       
       const [emails] = await db.execute(query, params);
-      console.log(`[API] GET /api/mail/emails: Found ${emails.length} emails for user ${userId}, folder ${hasFolderFilter ? folder : 'all'}, account ${hasAccountFilter ? accountId : 'all'}, total ${total}`);
+      console.log(`[API] GET /api/mail/emails: Found ${emails.length} emails for user ${userId}, folder ${hasFolderFilter ? folder : 'all'}, account ${hasAccountFilter ? accountId : 'all'}, total ${includeCount ? total : 'not requested'}`);
       
       // Parse JSON fields
       const parsedEmails = emails.map(email => ({
@@ -792,7 +802,8 @@ module.exports = {
           limit,
           offset,
           page,
-          totalPages: Math.ceil(total / limit),
+          totalPages: includeCount ? Math.ceil(total / limit) : null,
+          hasMore: emails.length === limit,
         }
       };
     } catch (error) {

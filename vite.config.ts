@@ -23,6 +23,12 @@ export default defineConfig(() => ({
         ],
         runtimeCaching: [
           {
+            urlPattern: ({ url, request }) =>
+              request.method === 'GET' &&
+              (url.pathname.startsWith('/api/mail/emails') || url.pathname.startsWith('/api/mail/attachments')),
+            handler: 'NetworkOnly',
+          },
+          {
             urlPattern: ({ url, request }) => request.method === 'GET' && url.pathname.startsWith('/api/'),
             handler: 'NetworkFirst',
             options: {

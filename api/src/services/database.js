@@ -564,6 +564,12 @@ async function ensureSchema() {
     INDEX idx_emails_imap_uid (mail_account_id, source_folder, imap_uid),
     INDEX idx_emails_date (received_at DESC),
     INDEX idx_emails_unread (user_id, is_read, received_at DESC),
+    INDEX idx_emails_user_date (user_id, received_at DESC, id),
+    INDEX idx_emails_user_account_date (user_id, mail_account_id, received_at DESC, id),
+    INDEX idx_emails_user_folder_date (user_id, folder, received_at DESC, id),
+    INDEX idx_emails_user_account_folder_date (user_id, mail_account_id, folder, received_at DESC, id),
+    INDEX idx_emails_user_starred_date (user_id, is_starred, received_at DESC),
+    INDEX idx_emails_user_read_folder_account (user_id, is_read, folder, mail_account_id),
     FULLTEXT INDEX ft_emails_search (subject, body_text)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
@@ -593,6 +599,21 @@ async function ensureSchema() {
     await db.execute('CREATE INDEX idx_emails_imap_uid ON emails(mail_account_id, source_folder, imap_uid)');
   } catch (e) {
     // Ignore duplicate index errors.
+  }
+  const emailIndexMigrations = [
+    ['idx_emails_user_date', 'CREATE INDEX idx_emails_user_date ON emails(user_id, received_at DESC, id)'],
+    ['idx_emails_user_account_date', 'CREATE INDEX idx_emails_user_account_date ON emails(user_id, mail_account_id, received_at DESC, id)'],
+    ['idx_emails_user_folder_date', 'CREATE INDEX idx_emails_user_folder_date ON emails(user_id, folder, received_at DESC, id)'],
+    ['idx_emails_user_account_folder_date', 'CREATE INDEX idx_emails_user_account_folder_date ON emails(user_id, mail_account_id, folder, received_at DESC, id)'],
+    ['idx_emails_user_starred_date', 'CREATE INDEX idx_emails_user_starred_date ON emails(user_id, is_starred, received_at DESC)'],
+    ['idx_emails_user_read_folder_account', 'CREATE INDEX idx_emails_user_read_folder_account ON emails(user_id, is_read, folder, mail_account_id)'],
+  ];
+  for (const [, createIndexSql] of emailIndexMigrations) {
+    try {
+      await db.execute(createIndexSql);
+    } catch (e) {
+      // Ignore duplicate index errors.
+    }
   }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS email_attachments (

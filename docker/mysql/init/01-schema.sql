@@ -314,6 +314,12 @@ CREATE TABLE IF NOT EXISTS emails (
     INDEX idx_emails_folder (mail_account_id, folder),
     INDEX idx_emails_date (received_at DESC),
     INDEX idx_emails_unread (user_id, is_read, received_at DESC),
+    INDEX idx_emails_user_date (user_id, received_at DESC, id),
+    INDEX idx_emails_user_account_date (user_id, mail_account_id, received_at DESC, id),
+    INDEX idx_emails_user_folder_date (user_id, folder, received_at DESC, id),
+    INDEX idx_emails_user_account_folder_date (user_id, mail_account_id, folder, received_at DESC, id),
+    INDEX idx_emails_user_starred_date (user_id, is_starred, received_at DESC),
+    INDEX idx_emails_user_read_folder_account (user_id, is_read, folder, mail_account_id),
     FULLTEXT INDEX ft_emails_search (subject, body_text)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

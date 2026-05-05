@@ -172,7 +172,7 @@ async function getCurrentAuthContext() {
 async function checkMailNotifications(state, now, suppressNotifications) {
   await triggerBackgroundMailSync();
 
-  const data = await fetchJson(`/api/mail/emails?limit=${MAIL_NOTIFICATION_FETCH_LIMIT}&offset=0`);
+  const data = await fetchJson(`/api/mail/emails?limit=${MAIL_NOTIFICATION_FETCH_LIMIT}&offset=0&include_count=false`);
   const emails = Array.isArray(data?.emails) ? data.emails : [];
   const relevantEmails = emails.filter((email) => !EXCLUDED_NOTIFICATION_FOLDERS.has(email.folder));
 

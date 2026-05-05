@@ -65,7 +65,7 @@ const Dashboard = () => {
   const { data: unreadEmails = [] } = useQuery({
     queryKey: ['dashboard-unread-mail'],
     queryFn: async () => {
-      const response = await api.get<{ emails: EmailSummary[] }>('/mail/emails?limit=5&offset=0&is_read=false');
+      const response = await api.get<{ emails: EmailSummary[] }>('/mail/emails?limit=5&offset=0&is_read=false&include_count=false');
       if (response.error) throw new Error(response.error);
       return response.data?.emails || [];
     },
