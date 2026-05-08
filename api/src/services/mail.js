@@ -1363,13 +1363,13 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
 // Test IMAP connection and authentication without syncing.
 async function testImapConnection(account) {
   let connection = null;
+  const imapPort = account.imap_port || 993;
   try {
     const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
     if (!password) {
       return { success: false, error: 'No password configured' };
     }
     
-    const imapPort = account.imap_port || 993;
     if (toBooleanFlag(account.allow_self_signed)) {
       await assertAcceptedMailCertificate({
         host: account.imap_host,
