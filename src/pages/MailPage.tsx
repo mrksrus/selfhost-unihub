@@ -630,6 +630,7 @@ const MailPage = () => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
+      setPendingHostTrust(null);
       
       // Show success immediately with green checkmark
       const syncMsg = data?.syncInProgress 
@@ -685,6 +686,7 @@ const MailPage = () => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      setPendingHostTrust(null);
       toast({ title: '✓ Account updated successfully' });
       setEditingAccount(null);
       setIsAddAccountOpen(false);
@@ -1168,6 +1170,40 @@ const MailPage = () => {
       </div>
     </div>
   );
+
+  const renderHostTrustConfirmation = () => {
+    if (!pendingHostTrust) return null;
+    return (
+      <div className="space-y-4 mt-4">
+        {pendingHostTrust.trust.warnings.length > 0 && (
+          <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+            <p className="font-medium text-warning mb-2">Warnings</p>
+            <ul className="list-disc pl-5 space-y-1">
+              {pendingHostTrust.trust.warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {renderTrustSection('IMAP', pendingHostTrust.trust.assessments.imap, pendingHostTrust.trust.certificates.imap)}
+        {renderTrustSection('SMTP', pendingHostTrust.trust.assessments.smtp, pendingHostTrust.trust.certificates.smtp)}
+        {pendingHostTrust.trust.requiresInsecureTls && (
+          <p className="text-sm text-muted-foreground">
+            If you continue, this account will allow the shown untrusted certificate. This is useful for self-hosted mail, but unsafe if you do not recognize the server.
+          </p>
+        )}
+        <div className="flex justify-end gap-3 pt-2">
+          <Button type="button" variant="outline" onClick={() => setPendingHostTrust(null)}>
+            Deny
+          </Button>
+          <Button type="button" onClick={handleConfirmHostTrust} disabled={addAccount.isPending || updateAccount.isPending}>
+            {(addAccount.isPending || updateAccount.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+            Continue and Trust Server
+          </Button>
+        </div>
+      </div>
+    );
+  };
   
   const handleEditAccount = (account: MailAccount) => {
     setEditingAccount(account);
@@ -1662,131 +1698,139 @@ const MailPage = () => {
                   <Plus className="h-4 w-4" />
                 </Button>
               </DialogTrigger>
-              <DialogContent>
+              <DialogContent className={pendingHostTrust ? 'max-w-2xl max-h-[85vh] overflow-y-auto' : undefined}>
                 <DialogHeader>
-                  <DialogTitle>{editingAccount ? 'Edit Mail Account' : 'Add Mail Account'}</DialogTitle>
+                  <DialogTitle>
+                    {pendingHostTrust ? 'Confirm Mail Server Authenticity' : editingAccount ? 'Edit Mail Account' : 'Add Mail Account'}
+                  </DialogTitle>
                   <DialogDescription>
-                    Connect an email account to view and manage your mail.
+                    {pendingHostTrust
+                      ? 'Review the server and certificate details below. Continue only if you trust this mail server.'
+                      : 'Connect an email account to view and manage your mail.'}
                   </DialogDescription>
                 </DialogHeader>
-                <form onSubmit={handleAddAccount} className="space-y-4 mt-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="provider">Email Provider</Label>
-                    <Select 
-                      value={accountForm.provider} 
-                      onValueChange={handleProviderChange}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select provider" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {mailProviders.map((provider) => (
-                          <SelectItem key={provider.value} value={provider.value}>
-                            {provider.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="email_address">Email Address</Label>
-                    <Input
-                      id="email_address"
-                      type="email"
-                      value={accountForm.email_address}
-                      onChange={(e) => setAccountForm({ ...accountForm, email_address: e.target.value })}
-                      placeholder="you@example.com"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="display_name">Display Name</Label>
-                    <Input
-                      id="display_name"
-                      value={accountForm.display_name}
-                      onChange={(e) => setAccountForm({ ...accountForm, display_name: e.target.value })}
-                      placeholder="John Doe"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="username">Username</Label>
-                    <Input
-                      id="username"
-                      value={accountForm.username}
-                      onChange={(e) => setAccountForm({ ...accountForm, username: e.target.value })}
-                      placeholder={accountForm.provider === 'gmail' ? 'Usually your email' : 'IMAP/SMTP username'}
-                      required
-                    />
-                    {(accountForm.provider === 'gmail' || accountForm.provider === 'yahoo') && (
-                      <p className="text-xs text-muted-foreground">
-                        {accountForm.provider === 'gmail' ? 'Use an App Password (not your regular password). Generate one at myaccount.google.com/apppasswords' : 'You may need an App Password for Yahoo Mail'}
-                      </p>
-                    )}
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="password">Password {editingAccount && '(leave blank to keep current)'}</Label>
-                    <Input
-                      id="password"
-                      type="password"
-                      value={accountForm.password}
-                      onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })}
-                      placeholder="Password or App Password"
-                      required={!editingAccount}
-                    />
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Server details are filled from the provider; you can change any value.
-                  </p>
-                  <div className="space-y-2">
-                    <Label htmlFor="imap_host">IMAP Server</Label>
-                    <Input
-                      id="imap_host"
-                      value={accountForm.imap_host}
-                      onChange={(e) => setAccountForm({ ...accountForm, imap_host: e.target.value })}
-                      placeholder="e.g. imap.gmail.com"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="imap_port">IMAP Port</Label>
-                    <Input
-                      id="imap_port"
-                      type="number"
-                      value={accountForm.imap_port}
-                      onChange={(e) => setAccountForm({ ...accountForm, imap_port: parseInt(e.target.value) || 993 })}
-                      placeholder="993"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="smtp_host">SMTP Server</Label>
-                    <Input
-                      id="smtp_host"
-                      value={accountForm.smtp_host}
-                      onChange={(e) => setAccountForm({ ...accountForm, smtp_host: e.target.value })}
-                      placeholder="e.g. smtp.gmail.com"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="smtp_port">SMTP Port</Label>
-                    <Input
-                      id="smtp_port"
-                      type="number"
-                      value={accountForm.smtp_port}
-                      onChange={(e) => setAccountForm({ ...accountForm, smtp_port: parseInt(e.target.value) || 587 })}
-                      placeholder="587"
-                    />
-                  </div>
-                  <div className="flex justify-end gap-3 pt-2">
-                    <Button type="button" variant="outline" onClick={() => setIsAddAccountOpen(false)}>
-                      Cancel
-                    </Button>
-                    <Button type="submit" disabled={addAccount.isPending || updateAccount.isPending}>
-                      {(addAccount.isPending || updateAccount.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                      {editingAccount ? 'Save Changes' : 'Add Account'}
-                    </Button>
-                  </div>
-                </form>
+                {pendingHostTrust ? (
+                  renderHostTrustConfirmation()
+                ) : (
+                  <form onSubmit={handleAddAccount} className="space-y-4 mt-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="provider">Email Provider</Label>
+                      <Select
+                        value={accountForm.provider}
+                        onValueChange={handleProviderChange}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select provider" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {mailProviders.map((provider) => (
+                            <SelectItem key={provider.value} value={provider.value}>
+                              {provider.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="email_address">Email Address</Label>
+                      <Input
+                        id="email_address"
+                        type="email"
+                        value={accountForm.email_address}
+                        onChange={(e) => setAccountForm({ ...accountForm, email_address: e.target.value })}
+                        placeholder="you@example.com"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="display_name">Display Name</Label>
+                      <Input
+                        id="display_name"
+                        value={accountForm.display_name}
+                        onChange={(e) => setAccountForm({ ...accountForm, display_name: e.target.value })}
+                        placeholder="John Doe"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="username">Username</Label>
+                      <Input
+                        id="username"
+                        value={accountForm.username}
+                        onChange={(e) => setAccountForm({ ...accountForm, username: e.target.value })}
+                        placeholder={accountForm.provider === 'gmail' ? 'Usually your email' : 'IMAP/SMTP username'}
+                        required
+                      />
+                      {(accountForm.provider === 'gmail' || accountForm.provider === 'yahoo') && (
+                        <p className="text-xs text-muted-foreground">
+                          {accountForm.provider === 'gmail' ? 'Use an App Password (not your regular password). Generate one at myaccount.google.com/apppasswords' : 'You may need an App Password for Yahoo Mail'}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="password">Password {editingAccount && '(leave blank to keep current)'}</Label>
+                      <Input
+                        id="password"
+                        type="password"
+                        value={accountForm.password}
+                        onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })}
+                        placeholder="Password or App Password"
+                        required={!editingAccount}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Server details are filled from the provider; you can change any value.
+                    </p>
+                    <div className="space-y-2">
+                      <Label htmlFor="imap_host">IMAP Server</Label>
+                      <Input
+                        id="imap_host"
+                        value={accountForm.imap_host}
+                        onChange={(e) => setAccountForm({ ...accountForm, imap_host: e.target.value })}
+                        placeholder="e.g. imap.gmail.com"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="imap_port">IMAP Port</Label>
+                      <Input
+                        id="imap_port"
+                        type="number"
+                        value={accountForm.imap_port}
+                        onChange={(e) => setAccountForm({ ...accountForm, imap_port: parseInt(e.target.value) || 993 })}
+                        placeholder="993"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="smtp_host">SMTP Server</Label>
+                      <Input
+                        id="smtp_host"
+                        value={accountForm.smtp_host}
+                        onChange={(e) => setAccountForm({ ...accountForm, smtp_host: e.target.value })}
+                        placeholder="e.g. smtp.gmail.com"
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="smtp_port">SMTP Port</Label>
+                      <Input
+                        id="smtp_port"
+                        type="number"
+                        value={accountForm.smtp_port}
+                        onChange={(e) => setAccountForm({ ...accountForm, smtp_port: parseInt(e.target.value) || 587 })}
+                        placeholder="587"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-3 pt-2">
+                      <Button type="button" variant="outline" onClick={() => setIsAddAccountOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Button type="submit" disabled={addAccount.isPending || updateAccount.isPending}>
+                        {(addAccount.isPending || updateAccount.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        {editingAccount ? 'Save Changes' : 'Add Account'}
+                      </Button>
+                    </div>
+                  </form>
+                )}
               </DialogContent>
             </Dialog>
           </div>
@@ -2328,45 +2372,6 @@ const MailPage = () => {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Mail Host Trust Confirmation */}
-      <AlertDialog open={!!pendingHostTrust} onOpenChange={(open) => !open && setPendingHostTrust(null)}>
-        <AlertDialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Confirm Mail Server Authenticity</AlertDialogTitle>
-            <AlertDialogDescription>
-              Review the server and certificate details below. Continue only if you trust this mail server.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {pendingHostTrust && (
-            <div className="space-y-4">
-              {pendingHostTrust.trust.warnings.length > 0 && (
-                <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
-                  <p className="font-medium text-warning mb-2">Warnings</p>
-                  <ul className="list-disc pl-5 space-y-1">
-                    {pendingHostTrust.trust.warnings.map((warning) => (
-                      <li key={warning}>{warning}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {renderTrustSection('IMAP', pendingHostTrust.trust.assessments.imap, pendingHostTrust.trust.certificates.imap)}
-              {renderTrustSection('SMTP', pendingHostTrust.trust.assessments.smtp, pendingHostTrust.trust.certificates.smtp)}
-              {pendingHostTrust.trust.requiresInsecureTls && (
-                <p className="text-sm text-muted-foreground">
-                  If you continue, this account will allow the shown untrusted certificate. This is useful for self-hosted mail, but unsafe if you do not recognize the server.
-                </p>
-              )}
-            </div>
-          )}
-          <AlertDialogFooter>
-            <AlertDialogCancel>Deny</AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirmHostTrust}>
-              Continue and Trust Server
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

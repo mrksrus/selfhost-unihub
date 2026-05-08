@@ -599,10 +599,7 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
   const imapRequiresInsecureTls = certificateRequiresInsecureTls(certificates.imap);
   const smtpRequiresInsecureTls = certificateRequiresInsecureTls(certificates.smtp);
   const requiresInsecureTls = imapRequiresInsecureTls || smtpRequiresInsecureTls;
-  const requiresConfirmation =
-    imapAssessment.unknownProvider ||
-    smtpAssessment.unknownProvider ||
-    requiresInsecureTls;
+  const requiresConfirmation = requiresInsecureTls;
 
   if (imapRequiresInsecureTls) {
     warnings.push(`IMAP certificate for "${imapAssessment.host}" could not be fully verified (${certificates.imap?.authorizationError || certificates.imap?.error || 'untrusted'}).`);
@@ -1412,6 +1409,14 @@ async function testImapConnection(account) {
       try { connection.end(); } catch (e) { /* ignore */ }
     }
     const errorMsg = error.message || String(error);
+    console.error('[ACCOUNT] IMAP test failed:', {
+      host: account.imap_host,
+      port: imapPort,
+      rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
+      code: error.code || null,
+      source: error.source || null,
+      message: errorMsg,
+    });
 
     let friendlyError = errorMsg;
     if (errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
