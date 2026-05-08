@@ -4,6 +4,7 @@ const { EventEmitter } = require('node:events');
 const net = require('node:net');
 const { simpleParser } = require('mailparser');
 const {
+  buildMailHostTrustResult,
   buildRawEmailFromImapParts,
   fetchSmtpStartTlsCertificate,
   loadExistingImportedUidSet,
@@ -107,6 +108,21 @@ test('SMTP STARTTLS certificate probe resolves when the server closes early', as
 
   const result = await fetchSmtpStartTlsCertificate('mail.example.test', 587);
   assert.match(result.error, /SMTP connection (ended|closed) during banner phase/);
+});
+
+test('accepted mail host trust can skip the certificate probe before authentication', async () => {
+  const result = await buildMailHostTrustResult({
+    imap_host: '203.0.113.10',
+    imap_port: 993,
+    smtp_host: '203.0.113.10',
+    smtp_port: 587,
+    skipCertificateProbe: true,
+  });
+
+  assert.equal(result.blocked, false);
+  assert.equal(result.requiresConfirmation, false);
+  assert.equal(result.requiresInsecureTls, true);
+  assert.equal(result.certificateProbeSkipped, true);
 });
 
 test('loads existing imported UIDs before message download', async () => {

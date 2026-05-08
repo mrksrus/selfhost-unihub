@@ -542,7 +542,7 @@ async function assertAcceptedMailCertificate({ host, port, service, expectedFing
   }
 }
 
-async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port }) {
+async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port, skipCertificateProbe = false }) {
   const [imapAssessment, smtpAssessment] = await Promise.all([
     assessMailHost(imap_host, imap_port || 993),
     assessMailHost(smtp_host, smtp_port || 587),
@@ -569,6 +569,21 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
       certificates: {
         imap: { error: 'Blocked before certificate check because the host resolves to a private/local address.' },
         smtp: { error: 'Blocked before certificate check because the host resolves to a private/local address.' },
+      },
+    };
+  }
+
+  if (skipCertificateProbe) {
+    return {
+      blocked,
+      requiresConfirmation: false,
+      requiresInsecureTls: true,
+      certificateProbeSkipped: true,
+      warnings,
+      assessments,
+      certificates: {
+        imap: { error: 'Certificate check skipped after explicit server trust confirmation.' },
+        smtp: { error: 'Certificate check skipped after explicit server trust confirmation.' },
       },
     };
   }
@@ -607,7 +622,14 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
 }
 
 async function requireMailHostTrustApproval({ imap_host, imap_port, smtp_host, smtp_port, accept_host_trust }) {
-  const mailHostTrust = await buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port });
+  const trustAccepted = toBooleanFlag(accept_host_trust);
+  const mailHostTrust = await buildMailHostTrustResult({
+    imap_host,
+    imap_port,
+    smtp_host,
+    smtp_port,
+    skipCertificateProbe: trustAccepted,
+  });
   if (mailHostTrust.blocked) {
     return {
       error: 'Mail host blocked because it resolves to a private/local address. Ask the host administrator to add it to TRUSTED_MAIL_HOSTS if this is intentional.',
@@ -616,7 +638,7 @@ async function requireMailHostTrustApproval({ imap_host, imap_port, smtp_host, s
     };
   }
 
-  if (mailHostTrust.requiresConfirmation && !toBooleanFlag(accept_host_trust)) {
+  if (mailHostTrust.requiresConfirmation && !trustAccepted) {
     return {
       error: 'Review and confirm mail server authenticity before continuing.',
       status: 409,
@@ -627,7 +649,7 @@ async function requireMailHostTrustApproval({ imap_host, imap_port, smtp_host, s
 
   return {
     accepted: true,
-    allowInsecureTls: mailHostTrust.requiresInsecureTls && toBooleanFlag(accept_host_trust),
+    allowInsecureTls: trustAccepted && (mailHostTrust.requiresInsecureTls || mailHostTrust.certificateProbeSkipped),
     trustedImapFingerprint256: mailHostTrust.requiresInsecureTls ? mailHostTrust.certificates.imap?.fingerprint256 || null : null,
     trustedSmtpFingerprint256: mailHostTrust.requiresInsecureTls ? mailHostTrust.certificates.smtp?.fingerprint256 || null : null,
     mailHostTrust,
@@ -1372,7 +1394,7 @@ async function testImapConnection(account) {
         },
         connTimeout: 60000,
         authTimeout: 30000,
-        keepalive: true,
+        keepalive: false,
       },
     };
     
