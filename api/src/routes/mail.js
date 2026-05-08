@@ -19,7 +19,8 @@ const {
   resolveMailSenderTargetFolder,
   ensureDefaultMailFoldersForUser,
   normalizeSyncFetchLimit,
-  requireMailHostTrustApproval,
+  buildMailHostTrustResult,
+  validateMailHostPolicy,
   testImapConnection,
   syncMailAccount,
   isAnyMailAccountSyncRunning,
@@ -86,6 +87,22 @@ async function validateUserMailFolder(userId, folderSlug) {
     return { error: 'Folder not found', status: 404 };
   }
   return { folder: normalizedSlug };
+}
+
+async function buildHostTrustConfirmationResponse({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError }) {
+  const mailHostTrust = await buildMailHostTrustResult({
+    imap_host,
+    imap_port,
+    smtp_host,
+    smtp_port,
+    imapTlsError,
+  });
+  return {
+    error: 'Review and confirm mail server authenticity before continuing.',
+    status: 409,
+    requiresHostTrustConfirmation: true,
+    mailHostTrust,
+  };
 }
 
 
@@ -505,36 +522,50 @@ module.exports = {
         return { error: 'Invalid sync fetch limit. Allowed value: all', status: 400 };
       }
 
-      console.log(`[ACCOUNT] Checking mail host trust for ${email_address}: IMAP ${imap_host}:${imap_port || 993}, SMTP ${smtp_host}:${smtp_port || 587}`);
-      const hostTrustResult = await requireMailHostTrustApproval({
+      const normalizedImapPort = Number(imap_port) || 993;
+      const normalizedSmtpPort = Number(smtp_port) || 587;
+      const trustAccepted = toBooleanFlag(accept_host_trust);
+
+      console.log(`[ACCOUNT] Checking mail host policy for ${email_address}: IMAP ${imap_host}:${normalizedImapPort}, SMTP ${smtp_host}:${normalizedSmtpPort}`);
+      const hostPolicyResult = await validateMailHostPolicy({
         imap_host,
-        imap_port: imap_port || 993,
+        imap_port: normalizedImapPort,
         smtp_host,
-        smtp_port: smtp_port || 587,
-        accept_host_trust,
+        smtp_port: normalizedSmtpPort,
       });
-      console.log(`[ACCOUNT] Host trust check complete for ${email_address}: blocked=${hostTrustResult.mailHostTrust?.blocked ? 'yes' : 'no'}, confirmation=${hostTrustResult.mailHostTrust?.requiresConfirmation ? 'yes' : 'no'}, insecure_tls=${hostTrustResult.allowInsecureTls ? 'yes' : 'no'}`);
-      if (hostTrustResult.error) {
-        console.warn(`[ACCOUNT] Host trust rejected for ${email_address}: ${hostTrustResult.error}`);
-        return hostTrustResult;
+      console.log(`[ACCOUNT] Host policy check complete for ${email_address}: blocked=${hostPolicyResult.mailHostTrust?.blocked ? 'yes' : 'no'}, trust_accepted=${trustAccepted ? 'yes' : 'no'}`);
+      if (hostPolicyResult.error) {
+        console.warn(`[ACCOUNT] Host policy rejected for ${email_address}: ${hostPolicyResult.error}`);
+        return hostPolicyResult;
       }
 
-      // Verify authentication using strict TLS unless the user explicitly accepted an untrusted certificate.
+      const encryptedPasswordForStorage = encrypt(encrypted_password);
+      // Verify authentication using strict TLS unless the user explicitly accepted an IMAP certificate failure.
       const tempAccount = {
         email_address,
         username: username || email_address,
         imap_host,
-        imap_port: imap_port || 993,
-        allow_self_signed: hostTrustResult.allowInsecureTls,
-        trusted_imap_fingerprint256: hostTrustResult.trustedImapFingerprint256,
-        encrypted_password: encrypt(encrypted_password),
+        imap_port: normalizedImapPort,
+        allow_self_signed: trustAccepted ? 1 : 0,
+        trusted_imap_fingerprint256: null,
+        encrypted_password: encryptedPasswordForStorage,
       };
       
       // Test IMAP connection and auth (wrong password / connection errors still returned)
-      console.log(`[ACCOUNT] Testing IMAP connection for ${email_address}...`);
+      console.log(`[ACCOUNT] Testing IMAP connection for ${email_address} (strict_tls=${trustAccepted ? 'no' : 'yes'})...`);
       const testResult = await testImapConnection(tempAccount);
       
       if (!testResult.success) {
+        if (testResult.tlsTrustError && !trustAccepted) {
+          console.warn(`[ACCOUNT] IMAP TLS trust confirmation required for ${email_address}: ${testResult.details || testResult.error}`);
+          return buildHostTrustConfirmationResponse({
+            imap_host,
+            imap_port: normalizedImapPort,
+            smtp_host,
+            smtp_port: normalizedSmtpPort,
+            imapTlsError: testResult.details || testResult.error,
+          });
+        }
         return { 
           error: testResult.error, 
           details: testResult.details,
@@ -547,7 +578,7 @@ module.exports = {
       const actualUsername = username || email_address;
       await db.execute(
         'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, sync_fetch_limit, allow_self_signed, trusted_imap_fingerprint256, trusted_smtp_fingerprint256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, imap_port || 993, smtp_host || null, smtp_port || 587, tempAccount.encrypted_password, normalizedSyncFetchLimit, hostTrustResult.allowInsecureTls ? 1 : 0, hostTrustResult.trustedImapFingerprint256, hostTrustResult.trustedSmtpFingerprint256]
+        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, normalizedImapPort, smtp_host || null, normalizedSmtpPort, encryptedPasswordForStorage, normalizedSyncFetchLimit, trustAccepted ? 1 : 0, null, null]
       );
       await ensureDefaultMailFoldersForUser(userId);
       
@@ -562,7 +593,7 @@ module.exports = {
         account: accounts[0],
         authSuccess: true,
         syncInProgress: syncStarted,
-        mailHostTrust: hostTrustResult.mailHostTrust,
+        mailHostTrust: hostPolicyResult.mailHostTrust,
         message: syncStarted
           ? 'Account connected successfully. Syncing emails in the background — this may take several minutes for large mailboxes.'
           : 'Account connected successfully. A mail sync is already running; this account will sync on the next scheduled pass.'
@@ -599,22 +630,64 @@ module.exports = {
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
       const existingAccount = accounts[0];
 
+      const nextEmailAddress = email_address || existingAccount.email_address;
+      const nextUsername = username !== undefined ? (username || nextEmailAddress) : (existingAccount.username || nextEmailAddress);
       const nextImapHost = imap_host || existingAccount.imap_host;
-      const nextImapPort = imap_port || existingAccount.imap_port || 993;
+      const nextImapPort = Number(imap_port) || Number(existingAccount.imap_port) || 993;
       const nextSmtpHost = smtp_host || existingAccount.smtp_host;
-      const nextSmtpPort = smtp_port || existingAccount.smtp_port || 587;
+      const nextSmtpPort = Number(smtp_port) || Number(existingAccount.smtp_port) || 587;
+      const nextEncryptedPassword = encrypted_password ? encrypt(encrypted_password) : existingAccount.encrypted_password;
+      const trustAccepted = toBooleanFlag(accept_host_trust);
       const hostSettingsChanged = Boolean(imap_host || imap_port || smtp_host || smtp_port);
-      let hostTrustResult = null;
+      const imapLoginSettingsChanged = Boolean(email_address || username !== undefined || imap_host || imap_port || encrypted_password);
+      let shouldUpdateTlsTrust = false;
+      let nextAllowSelfSigned = toBooleanFlag(existingAccount.allow_self_signed) ? 1 : 0;
 
       if (hostSettingsChanged) {
-        hostTrustResult = await requireMailHostTrustApproval({
+        const hostPolicyResult = await validateMailHostPolicy({
           imap_host: nextImapHost,
           imap_port: nextImapPort,
           smtp_host: nextSmtpHost,
           smtp_port: nextSmtpPort,
-          accept_host_trust,
         });
-        if (hostTrustResult.error) return hostTrustResult;
+        if (hostPolicyResult.error) return hostPolicyResult;
+      }
+
+      if (imapLoginSettingsChanged) {
+        const existingTrustStillApplies = toBooleanFlag(existingAccount.allow_self_signed) && !imap_host && !imap_port;
+        const allowInsecureForTest = trustAccepted || existingTrustStillApplies;
+        const testAccount = {
+          email_address: nextEmailAddress,
+          username: nextUsername,
+          imap_host: nextImapHost,
+          imap_port: nextImapPort,
+          encrypted_password: nextEncryptedPassword,
+          allow_self_signed: allowInsecureForTest ? 1 : 0,
+        };
+        console.log(`[ACCOUNT] Testing updated IMAP connection for ${nextEmailAddress} (strict_tls=${allowInsecureForTest ? 'no' : 'yes'})...`);
+        const testResult = await testImapConnection(testAccount);
+        if (!testResult.success) {
+          if (testResult.tlsTrustError && !allowInsecureForTest) {
+            console.warn(`[ACCOUNT] IMAP TLS trust confirmation required for updated account ${nextEmailAddress}: ${testResult.details || testResult.error}`);
+            return buildHostTrustConfirmationResponse({
+              imap_host: nextImapHost,
+              imap_port: nextImapPort,
+              smtp_host: nextSmtpHost,
+              smtp_port: nextSmtpPort,
+              imapTlsError: testResult.details || testResult.error,
+            });
+          }
+          return {
+            error: testResult.error,
+            details: testResult.details,
+            status: 400,
+          };
+        }
+
+        if (trustAccepted || imap_host || imap_port) {
+          nextAllowSelfSigned = trustAccepted ? 1 : 0;
+          shouldUpdateTlsTrust = true;
+        }
       }
       
       // Build update query dynamically
@@ -623,19 +696,19 @@ module.exports = {
       
       if (email_address) { updates.push('email_address = ?'); params.push(email_address); }
       if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name || null); }
-      if (username !== undefined) { updates.push('username = ?'); params.push(username || email_address || existingAccount.email_address); }
+      if (username !== undefined) { updates.push('username = ?'); params.push(nextUsername); }
       if (imap_host) { updates.push('imap_host = ?'); params.push(imap_host); }
       if (imap_port) { updates.push('imap_port = ?'); params.push(imap_port); }
       if (smtp_host) { updates.push('smtp_host = ?'); params.push(smtp_host); }
       if (smtp_port) { updates.push('smtp_port = ?'); params.push(smtp_port); }
-      if (encrypted_password) { updates.push('encrypted_password = ?'); params.push(encrypt(encrypted_password)); }
-      if (hostTrustResult) {
+      if (encrypted_password) { updates.push('encrypted_password = ?'); params.push(nextEncryptedPassword); }
+      if (shouldUpdateTlsTrust) {
         updates.push('allow_self_signed = ?');
-        params.push(hostTrustResult.allowInsecureTls ? 1 : 0);
+        params.push(nextAllowSelfSigned);
         updates.push('trusted_imap_fingerprint256 = ?');
-        params.push(hostTrustResult.trustedImapFingerprint256);
+        params.push(null);
         updates.push('trusted_smtp_fingerprint256 = ?');
-        params.push(hostTrustResult.trustedSmtpFingerprint256);
+        params.push(null);
       }
       if (sync_fetch_limit !== undefined) {
         const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);

@@ -3,7 +3,6 @@ require('../imap-patch');
 const imaps = require('imap-simple');
 const { simpleParser } = require('mailparser');
 const nodemailer = require('nodemailer');
-const tls = require('tls');
 const dns = require('dns').promises;
 const net = require('net');
 const fs = require('fs');
@@ -258,14 +257,29 @@ function isSelfSignedTlsError(message) {
   );
 }
 
-function isTlsTrustError(message) {
-  const normalized = String(message || '').toUpperCase();
+function isTlsTrustError(errorOrMessage) {
+  const values = typeof errorOrMessage === 'object' && errorOrMessage !== null
+    ? [
+        errorOrMessage.message,
+        errorOrMessage.code,
+        errorOrMessage.source,
+        errorOrMessage.authorizationError,
+        errorOrMessage.reason,
+      ]
+    : [errorOrMessage];
+  const normalized = values
+    .filter(value => value !== undefined && value !== null)
+    .map(value => String(value).toUpperCase())
+    .join(' ');
   if (!normalized) return false;
   return (
     isSelfSignedTlsError(normalized) ||
     normalized.includes('CERT') ||
     normalized.includes('UNABLE_TO_VERIFY') ||
+    normalized.includes('UNABLE_TO_GET_ISSUER') ||
+    normalized.includes('UNABLE_TO_GET_CRL') ||
     normalized.includes('HOSTNAME') ||
+    normalized.includes('ALTNAME') ||
     normalized.includes('EXPIRED') ||
     normalized.includes('NOT_YET_VALID')
   );
@@ -341,208 +355,7 @@ async function assessMailHost(host, port) {
   };
 }
 
-function serializePeerCertificate(socket) {
-  const cert = socket.getPeerCertificate(true);
-  const authorizationError = socket.authorizationError || null;
-  if (!cert || Object.keys(cert).length === 0) {
-    return { error: 'No certificate presented' };
-  }
-  return {
-    subject: cert.subject || null,
-    issuer: cert.issuer || null,
-    valid_from: cert.valid_from || null,
-    valid_to: cert.valid_to || null,
-    fingerprint: cert.fingerprint || null,
-    fingerprint256: cert.fingerprint256 || null,
-    serialNumber: cert.serialNumber || null,
-    authorized: socket.authorized === true,
-    authorizationError,
-    selfSigned: isSelfSignedTlsError(authorizationError),
-    trustError: isTlsTrustError(authorizationError),
-  };
-}
-
-function fetchDirectTlsCertificate(host, port) {
-  const normalizedHost = normalizeHost(host);
-  const numericPort = Number(port);
-  if (!normalizedHost || !numericPort) {
-    return Promise.resolve({ error: 'Missing host or port' });
-  }
-
-  return new Promise((resolve) => {
-    let settled = false;
-    const settle = (result, { destroy = true } = {}) => {
-      if (settled) return;
-      settled = true;
-      if (destroy && !socket.destroyed) socket.destroy();
-      resolve(result);
-    };
-    const socket = tls.connect({
-      host: normalizedHost,
-      port: numericPort,
-      servername: normalizedHost,
-      rejectUnauthorized: false,
-      timeout: 7000,
-    }, () => {
-      const certificate = serializePeerCertificate(socket);
-      socket.end();
-      settle(certificate, { destroy: false });
-    });
-
-    socket.on('error', (error) => {
-      settle({ error: error.message });
-    });
-    socket.on('timeout', () => {
-      settle({ error: 'TLS handshake timed out' });
-    });
-    socket.on('end', () => {
-      settle({ error: 'TLS connection ended before certificate was read' });
-    });
-    socket.on('close', () => {
-      settle({ error: 'TLS connection closed before certificate was read' });
-    });
-  });
-}
-
-function smtpResponseComplete(buffer) {
-  const lines = buffer.split(/\r?\n/).filter(Boolean);
-  const lastLine = lines[lines.length - 1] || '';
-  return /^[0-9]{3} /.test(lastLine);
-}
-
-function fetchSmtpStartTlsCertificate(host, port) {
-  const normalizedHost = normalizeHost(host);
-  const numericPort = Number(port);
-  if (!normalizedHost || !numericPort) {
-    return Promise.resolve({ error: 'Missing host or port' });
-  }
-
-  return new Promise((resolve) => {
-    let settled = false;
-    let state = 'banner';
-    let buffer = '';
-    const socket = net.createConnection({ host: normalizedHost, port: numericPort });
-
-    const settle = (result, activeSocket = socket) => {
-      if (settled) return;
-      settled = true;
-      if (activeSocket && !activeSocket.destroyed) activeSocket.destroy();
-      resolve(result);
-    };
-
-    socket.setTimeout(7000);
-
-    socket.on('data', (chunk) => {
-      if (settled) return;
-      buffer += chunk.toString('utf8');
-      if (!smtpResponseComplete(buffer)) return;
-
-      const response = buffer;
-      buffer = '';
-
-      if (state === 'banner') {
-        if (!response.startsWith('220')) {
-          settle({ error: `Unexpected SMTP banner: ${response.split(/\r?\n/)[0] || 'unknown'}` });
-          return;
-        }
-        state = 'ehlo';
-        socket.write('EHLO unihub.local\r\n');
-        return;
-      }
-
-      if (state === 'ehlo') {
-        if (!/^250[ -]/.test(response)) {
-          settle({ error: 'SMTP EHLO failed before STARTTLS check' });
-          return;
-        }
-        if (!/STARTTLS/i.test(response)) {
-          settle({ error: 'SMTP server does not advertise STARTTLS' });
-          return;
-        }
-        state = 'starttls';
-        socket.write('STARTTLS\r\n');
-        return;
-      }
-
-      if (state === 'starttls') {
-        if (!response.startsWith('220')) {
-          settle({ error: 'SMTP server refused STARTTLS' });
-          return;
-        }
-
-        socket.removeAllListeners('data');
-        socket.removeAllListeners('timeout');
-        socket.removeAllListeners('error');
-        socket.removeAllListeners('end');
-        socket.removeAllListeners('close');
-
-        const tlsSocket = tls.connect({
-          socket,
-          servername: normalizedHost,
-          rejectUnauthorized: false,
-        }, () => {
-          if (settled) return;
-          settled = true;
-          const certificate = serializePeerCertificate(tlsSocket);
-          tlsSocket.end();
-          resolve(certificate);
-        });
-
-        tlsSocket.setTimeout(7000);
-        tlsSocket.on('error', (error) => {
-          settle({ error: error.message }, tlsSocket);
-        });
-        tlsSocket.on('timeout', () => {
-          settle({ error: 'SMTP STARTTLS handshake timed out' }, tlsSocket);
-        });
-        tlsSocket.on('end', () => {
-          settle({ error: 'SMTP STARTTLS connection ended before certificate was read' }, tlsSocket);
-        });
-        tlsSocket.on('close', () => {
-          settle({ error: 'SMTP STARTTLS connection closed before certificate was read' }, tlsSocket);
-        });
-      }
-    });
-
-    socket.on('error', (error) => settle({ error: error.message }));
-    socket.on('timeout', () => settle({ error: 'SMTP STARTTLS probe timed out' }));
-    socket.on('end', () => settle({ error: `SMTP connection ended during ${state} phase` }));
-    socket.on('close', () => settle({ error: `SMTP connection closed during ${state} phase` }));
-  });
-}
-
-function fetchMailTlsCertificate(host, port, service) {
-  const numericPort = Number(port);
-  if (service === 'smtp' && numericPort !== 465) {
-    return fetchSmtpStartTlsCertificate(host, numericPort || 587);
-  }
-  return fetchDirectTlsCertificate(host, numericPort || (service === 'imap' ? 993 : 465));
-}
-
-function certificateRequiresInsecureTls(certificate) {
-  if (!certificate) return true;
-  if (certificate.error) return true;
-  return certificate.authorized !== true;
-}
-
-function normalizeCertificateFingerprint(value) {
-  return String(value || '').replace(/[^a-f0-9]/gi, '').toUpperCase();
-}
-
-async function assertAcceptedMailCertificate({ host, port, service, expectedFingerprint }) {
-  const normalizedExpected = normalizeCertificateFingerprint(expectedFingerprint);
-  if (!normalizedExpected) return;
-  const certificate = await fetchMailTlsCertificate(host, port, service);
-  const normalizedActual = normalizeCertificateFingerprint(certificate?.fingerprint256);
-  if (!normalizedActual) {
-    throw new Error(`${service.toUpperCase()} certificate could not be read for accepted server ${host}.`);
-  }
-  if (normalizedActual !== normalizedExpected) {
-    throw new Error(`${service.toUpperCase()} certificate changed for ${host}. Review the mail account settings before connecting.`);
-  }
-}
-
-async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port, skipCertificateProbe = false }) {
+async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError = null }) {
   const [imapAssessment, smtpAssessment] = await Promise.all([
     assessMailHost(imap_host, imap_port || 993),
     assessMailHost(smtp_host, smtp_port || 587),
@@ -558,6 +371,9 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
   if (smtpAssessment.unknownProvider) warnings.push(`SMTP host "${smtpAssessment.host}" is not a known provider.`);
   if (imapAssessment.blocked) warnings.push(`IMAP host "${imapAssessment.host}" resolves to a private/local address.`);
   if (smtpAssessment.blocked) warnings.push(`SMTP host "${smtpAssessment.host}" resolves to a private/local address.`);
+  if (imapTlsError) {
+    warnings.push(`IMAP certificate for "${imapAssessment.host}" could not be verified by the mail login (${imapTlsError}).`);
+  }
 
   if (blocked) {
     return {
@@ -573,60 +389,33 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
     };
   }
 
-  if (skipCertificateProbe) {
-    return {
-      blocked,
-      requiresConfirmation: false,
-      requiresInsecureTls: true,
-      certificateProbeSkipped: true,
-      warnings,
-      assessments,
-      certificates: {
-        imap: { error: 'Certificate check skipped after explicit server trust confirmation.' },
-        smtp: { error: 'Certificate check skipped after explicit server trust confirmation.' },
-      },
-    };
-  }
-
-  const [imapCertificate, smtpCertificate] = await Promise.all([
-    fetchMailTlsCertificate(imapAssessment.host, imapAssessment.port || 993, 'imap'),
-    fetchMailTlsCertificate(smtpAssessment.host, smtpAssessment.port || 587, 'smtp'),
-  ]);
-  const certificates = {
-    imap: imapCertificate,
-    smtp: smtpCertificate,
-  };
-  const imapRequiresInsecureTls = certificateRequiresInsecureTls(certificates.imap);
-  const smtpRequiresInsecureTls = certificateRequiresInsecureTls(certificates.smtp);
-  const requiresInsecureTls = imapRequiresInsecureTls || smtpRequiresInsecureTls;
-  const requiresConfirmation = requiresInsecureTls;
-
-  if (imapRequiresInsecureTls) {
-    warnings.push(`IMAP certificate for "${imapAssessment.host}" could not be fully verified (${certificates.imap?.authorizationError || certificates.imap?.error || 'untrusted'}).`);
-  }
-  if (smtpRequiresInsecureTls) {
-    warnings.push(`SMTP certificate for "${smtpAssessment.host}" could not be fully verified (${certificates.smtp?.authorizationError || certificates.smtp?.error || 'untrusted'}).`);
-  }
-
+  const requiresInsecureTls = Boolean(imapTlsError);
   return {
     blocked,
-    requiresConfirmation,
+    requiresConfirmation: requiresInsecureTls,
     requiresInsecureTls,
     warnings,
     assessments,
-    certificates,
+    certificates: requiresInsecureTls
+      ? {
+          imap: {
+            authorized: false,
+            authorizationError: imapTlsError,
+            error: imapTlsError,
+          },
+        }
+      : {},
   };
 }
 
-async function requireMailHostTrustApproval({ imap_host, imap_port, smtp_host, smtp_port, accept_host_trust }) {
-  const trustAccepted = toBooleanFlag(accept_host_trust);
+async function validateMailHostPolicy({ imap_host, imap_port, smtp_host, smtp_port }) {
   const mailHostTrust = await buildMailHostTrustResult({
     imap_host,
     imap_port,
     smtp_host,
     smtp_port,
-    skipCertificateProbe: trustAccepted,
   });
+
   if (mailHostTrust.blocked) {
     return {
       error: 'Mail host blocked because it resolves to a private/local address. Ask the host administrator to add it to TRUSTED_MAIL_HOSTS if this is intentional.',
@@ -635,20 +424,8 @@ async function requireMailHostTrustApproval({ imap_host, imap_port, smtp_host, s
     };
   }
 
-  if (mailHostTrust.requiresConfirmation && !trustAccepted) {
-    return {
-      error: 'Review and confirm mail server authenticity before continuing.',
-      status: 409,
-      requiresHostTrustConfirmation: true,
-      mailHostTrust,
-    };
-  }
-
   return {
     accepted: true,
-    allowInsecureTls: trustAccepted && (mailHostTrust.requiresInsecureTls || mailHostTrust.certificateProbeSkipped),
-    trustedImapFingerprint256: mailHostTrust.requiresInsecureTls ? mailHostTrust.certificates.imap?.fingerprint256 || null : null,
-    trustedSmtpFingerprint256: mailHostTrust.requiresInsecureTls ? mailHostTrust.certificates.smtp?.fingerprint256 || null : null,
     mailHostTrust,
   };
 }
@@ -1370,14 +1147,6 @@ async function testImapConnection(account) {
       return { success: false, error: 'No password configured' };
     }
     
-    if (toBooleanFlag(account.allow_self_signed)) {
-      await assertAcceptedMailCertificate({
-        host: account.imap_host,
-        port: imapPort,
-        service: 'imap',
-        expectedFingerprint: account.trusted_imap_fingerprint256,
-      });
-    }
     const config = {
       imap: {
         user: account.username || account.email_address,
@@ -1409,6 +1178,7 @@ async function testImapConnection(account) {
       try { connection.end(); } catch (e) { /* ignore */ }
     }
     const errorMsg = error.message || String(error);
+    const tlsTrustError = isTlsTrustError(error);
     console.error('[ACCOUNT] IMAP test failed:', {
       host: account.imap_host,
       port: imapPort,
@@ -1416,10 +1186,13 @@ async function testImapConnection(account) {
       code: error.code || null,
       source: error.source || null,
       message: errorMsg,
+      tlsTrustError,
     });
 
     let friendlyError = errorMsg;
-    if (errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
+    if (tlsTrustError && !toBooleanFlag(account.allow_self_signed)) {
+      friendlyError = 'IMAP certificate could not be verified. Review and confirm mail server authenticity before continuing.';
+    } else if (errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
       friendlyError = 'Authentication failed. Check your username and password (use App Password for Gmail/Yahoo).';
     } else if (errorMsg.includes('ETIMEDOUT') || errorMsg.includes('timeout')) {
       friendlyError = 'Connection timeout. Check server address and port.';
@@ -1431,7 +1204,13 @@ async function testImapConnection(account) {
       friendlyError = 'Connection closed by server. Check your credentials and server settings.';
     }
 
-    return { success: false, error: friendlyError, details: errorMsg };
+    return {
+      success: false,
+      error: friendlyError,
+      details: errorMsg,
+      code: error.code || null,
+      tlsTrustError,
+    };
   }
 }
 
@@ -1453,14 +1232,6 @@ async function syncMailAccountOnce(accountId) {
     }
     
     const imapPort = account.imap_port || 993;
-    if (toBooleanFlag(account.allow_self_signed)) {
-      await assertAcceptedMailCertificate({
-        host: account.imap_host,
-        port: imapPort,
-        service: 'imap',
-        expectedFingerprint: account.trusted_imap_fingerprint256,
-      });
-    }
     const config = {
       imap: {
         user: account.username || account.email_address,
@@ -1636,14 +1407,6 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
     if (!password) throw new Error('No password configured');
 
     const smtpPort = account.smtp_port || 587;
-    if (toBooleanFlag(account.allow_self_signed)) {
-      await assertAcceptedMailCertificate({
-        host: account.smtp_host,
-        port: smtpPort,
-        service: 'smtp',
-        expectedFingerprint: account.trusted_smtp_fingerprint256,
-      });
-    }
     // Port 465 uses implicit SSL/TLS, port 587 uses STARTTLS
     const transporter = nodemailer.createTransport({
       host: account.smtp_host,
@@ -1820,16 +1583,8 @@ module.exports = {
   isPrivateIPv6,
   isPrivateOrLocalIP,
   assessMailHost,
-  serializePeerCertificate,
-  fetchDirectTlsCertificate,
-  smtpResponseComplete,
-  fetchSmtpStartTlsCertificate,
-  fetchMailTlsCertificate,
-  certificateRequiresInsecureTls,
-  normalizeCertificateFingerprint,
-  assertAcceptedMailCertificate,
   buildMailHostTrustResult,
-  requireMailHostTrustApproval,
+  validateMailHostPolicy,
   isAttachmentPathUnderUploads,
   deleteStoredAttachmentFiles,
   getMailRawStoragePath,

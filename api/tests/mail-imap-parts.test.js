@@ -1,14 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { EventEmitter } = require('node:events');
-const net = require('node:net');
 const { simpleParser } = require('mailparser');
 const {
   buildMailHostTrustResult,
   buildRawEmailFromImapParts,
-  fetchSmtpStartTlsCertificate,
+  isTlsTrustError,
   loadExistingImportedUidSet,
   normalizeSyncFetchLimit,
+  validateMailHostPolicy,
 } = require('../src/services/mail');
 
 test('prefers complete RFC822 IMAP body over split HEADER/TEXT parts', async () => {
@@ -82,47 +81,43 @@ test('normalizes legacy initial sync limits to all', () => {
   assert.equal(normalizeSyncFetchLimit('nope'), null);
 });
 
-test('SMTP STARTTLS certificate probe resolves when the server closes early', async (t) => {
-  const originalCreateConnection = net.createConnection;
-  class ClosingSocket extends EventEmitter {
-    constructor() {
-      super();
-      this.destroyed = false;
-    }
-
-    setTimeout() {}
-    destroy() {
-      this.destroyed = true;
-    }
-    write() {}
-  }
-
-  net.createConnection = () => {
-    const socket = new ClosingSocket();
-    process.nextTick(() => socket.emit('close'));
-    return socket;
-  };
-  t.after(() => {
-    net.createConnection = originalCreateConnection;
+test('host policy validation does not require certificate probes for public custom hosts', async () => {
+  const result = await validateMailHostPolicy({
+    imap_host: '203.0.113.10',
+    imap_port: 993,
+    smtp_host: '203.0.113.10',
+    smtp_port: 587,
   });
 
-  const result = await fetchSmtpStartTlsCertificate('mail.example.test', 587);
-  assert.match(result.error, /SMTP connection (ended|closed) during banner phase/);
+  assert.equal(result.accepted, true);
+  assert.equal(result.mailHostTrust.blocked, false);
+  assert.equal(result.mailHostTrust.requiresConfirmation, false);
+  assert.equal(result.mailHostTrust.requiresInsecureTls, false);
+  assert.deepEqual(result.mailHostTrust.certificates, {});
 });
 
-test('accepted mail host trust can skip the certificate probe before authentication', async () => {
+test('IMAP TLS verification failures produce host trust confirmation details', async () => {
   const result = await buildMailHostTrustResult({
     imap_host: '203.0.113.10',
     imap_port: 993,
     smtp_host: '203.0.113.10',
     smtp_port: 587,
-    skipCertificateProbe: true,
+    imapTlsError: 'self-signed certificate',
   });
 
   assert.equal(result.blocked, false);
-  assert.equal(result.requiresConfirmation, false);
+  assert.equal(result.requiresConfirmation, true);
   assert.equal(result.requiresInsecureTls, true);
-  assert.equal(result.certificateProbeSkipped, true);
+  assert.equal(result.certificates.imap.authorized, false);
+  assert.equal(result.certificates.imap.error, 'self-signed certificate');
+  assert.equal(result.certificates.smtp, undefined);
+  assert.match(result.warnings.join('\n'), /IMAP certificate/);
+});
+
+test('classifies Node TLS certificate errors for trust confirmation', () => {
+  assert.equal(isTlsTrustError({ code: 'DEPTH_ZERO_SELF_SIGNED_CERT', message: 'self-signed certificate' }), true);
+  assert.equal(isTlsTrustError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID', message: 'Hostname/IP does not match certificate' }), true);
+  assert.equal(isTlsTrustError({ code: 'ECONNRESET', message: 'Connection ended unexpectedly' }), false);
 });
 
 test('loads existing imported UIDs before message download', async () => {

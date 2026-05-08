@@ -1185,11 +1185,11 @@ const MailPage = () => {
             </ul>
           </div>
         )}
-        {renderTrustSection('IMAP', pendingHostTrust.trust.assessments.imap, pendingHostTrust.trust.certificates.imap)}
-        {renderTrustSection('SMTP', pendingHostTrust.trust.assessments.smtp, pendingHostTrust.trust.certificates.smtp)}
+        {pendingHostTrust.trust.certificates.imap && renderTrustSection('IMAP', pendingHostTrust.trust.assessments.imap, pendingHostTrust.trust.certificates.imap)}
+        {pendingHostTrust.trust.certificates.smtp && renderTrustSection('SMTP', pendingHostTrust.trust.assessments.smtp, pendingHostTrust.trust.certificates.smtp)}
         {pendingHostTrust.trust.requiresInsecureTls && (
           <p className="text-sm text-muted-foreground">
-            If you continue, this account will allow the shown untrusted certificate. This is useful for self-hosted mail, but unsafe if you do not recognize the server.
+            If you continue, this account will allow insecure TLS for this mail server. This is useful for self-hosted mail, but unsafe if you do not recognize the server.
           </p>
         )}
         <div className="flex justify-end gap-3 pt-2">
