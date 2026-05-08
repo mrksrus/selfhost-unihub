@@ -600,21 +600,6 @@ async function ensureSchema() {
   } catch (e) {
     // Ignore duplicate index errors.
   }
-  const emailIndexMigrations = [
-    ['idx_emails_user_date', 'CREATE INDEX idx_emails_user_date ON emails(user_id, received_at DESC, id)'],
-    ['idx_emails_user_account_date', 'CREATE INDEX idx_emails_user_account_date ON emails(user_id, mail_account_id, received_at DESC, id)'],
-    ['idx_emails_user_folder_date', 'CREATE INDEX idx_emails_user_folder_date ON emails(user_id, folder, received_at DESC, id)'],
-    ['idx_emails_user_account_folder_date', 'CREATE INDEX idx_emails_user_account_folder_date ON emails(user_id, mail_account_id, folder, received_at DESC, id)'],
-    ['idx_emails_user_starred_date', 'CREATE INDEX idx_emails_user_starred_date ON emails(user_id, is_starred, received_at DESC)'],
-    ['idx_emails_user_read_folder_account', 'CREATE INDEX idx_emails_user_read_folder_account ON emails(user_id, is_read, folder, mail_account_id)'],
-  ];
-  for (const [, createIndexSql] of emailIndexMigrations) {
-    try {
-      await db.execute(createIndexSql);
-    } catch (e) {
-      // Ignore duplicate index errors.
-    }
-  }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS email_attachments (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -740,9 +725,35 @@ async function ensureSchema() {
   console.log('✓ Database schema ready');
 }
 
+async function ensurePerformanceIndexes() {
+  const emailIndexMigrations = [
+    ['idx_emails_user_date', 'CREATE INDEX idx_emails_user_date ON emails(user_id, received_at DESC, id)'],
+    ['idx_emails_user_account_date', 'CREATE INDEX idx_emails_user_account_date ON emails(user_id, mail_account_id, received_at DESC, id)'],
+    ['idx_emails_user_folder_date', 'CREATE INDEX idx_emails_user_folder_date ON emails(user_id, folder, received_at DESC, id)'],
+    ['idx_emails_user_account_folder_date', 'CREATE INDEX idx_emails_user_account_folder_date ON emails(user_id, mail_account_id, folder, received_at DESC, id)'],
+    ['idx_emails_user_starred_date', 'CREATE INDEX idx_emails_user_starred_date ON emails(user_id, is_starred, received_at DESC)'],
+    ['idx_emails_user_read_folder_account', 'CREATE INDEX idx_emails_user_read_folder_account ON emails(user_id, is_read, folder, mail_account_id)'],
+  ];
+
+  console.log('[DB] Checking mail performance indexes...');
+  for (const [indexName, createIndexSql] of emailIndexMigrations) {
+    try {
+      await db.execute(createIndexSql);
+      console.log(`[DB] Created mail performance index ${indexName}`);
+    } catch (error) {
+      const message = String(error?.message || '');
+      if (!message.includes('Duplicate key name')) {
+        console.warn(`[DB] Could not create mail performance index ${indexName}: ${message}`);
+      }
+    }
+  }
+  console.log('[DB] Mail performance indexes ready');
+}
+
 module.exports = {
   getDatabaseConfig,
   isPlaceholderSecret,
   initDatabase,
   ensureSchema,
+  ensurePerformanceIndexes,
 };

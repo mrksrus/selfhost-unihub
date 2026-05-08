@@ -2,7 +2,7 @@ const http = require('http');
 require('./imap-patch');
 const { PORT } = require('./config');
 const { db } = require('./state');
-const { initDatabase } = require('./services/database');
+const { initDatabase, ensurePerformanceIndexes } = require('./services/database');
 const { syncMailAccount, isAnyMailAccountSyncRunning } = require('./services/mail');
 const { handleRequest } = require('./request-handler');
 
@@ -16,6 +16,11 @@ async function start() {
   
   server.listen(PORT, () => {
     console.log(`✓ UniHub API server running on port ${PORT}`);
+    setTimeout(() => {
+      ensurePerformanceIndexes().catch((error) => {
+        console.error('[DB] Mail performance index setup failed:', error.message);
+      });
+    }, 5000);
   });
   
   // Periodic mail sync every 10 minutes
