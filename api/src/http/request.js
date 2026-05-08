@@ -5,21 +5,17 @@ async function parseBody(req, maxSize = 1000) {
   return new Promise((resolve) => {
     let body = '';
     let currentSize = 0;
-    let resolved = false;
+    let tooLarge = false;
     req.on('data', chunk => {
-      if (resolved) return;
       currentSize += chunk.length;
       if (currentSize > maxSize) {
-        resolved = true;
-        resolve(null);
-        req.destroy();
+        tooLarge = true;
         return;
       }
       body += chunk.toString();
     });
     req.on('end', () => {
-      if (resolved) return;
-      if (body.length > maxSize) { resolve(null); return; }
+      if (tooLarge || body.length > maxSize) { resolve(null); return; }
       try {
         resolve(body ? JSON.parse(body) : {});
       } catch {
@@ -27,7 +23,7 @@ async function parseBody(req, maxSize = 1000) {
       }
     });
     req.on('error', () => {
-      if (!resolved) resolve(null);
+      resolve(null);
     });
   });
 }

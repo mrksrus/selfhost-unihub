@@ -492,6 +492,7 @@ module.exports = {
         sync_fetch_limit,
         accept_host_trust,
       } = body;
+      console.log(`[ACCOUNT] Add mail account requested for ${email_address || '(missing email)'} via ${provider || 'unknown provider'}`);
       
       if (!email_address || !encrypted_password) {
         return { error: 'Email address and password are required', status: 400 };

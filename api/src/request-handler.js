@@ -127,6 +127,11 @@ async function handleRequest(req, res) {
     ) {
       maxBodySize = 50000; // Calendar account metadata payloads
     } else if (
+      routeKey === 'POST /api/mail/accounts' ||
+      routeKey === 'PUT /api/mail/accounts/:id'
+    ) {
+      maxBodySize = 50000; // Mail account credentials and custom host metadata
+    } else if (
       routeKey === 'POST /api/mail/emails/bulk-update' ||
       routeKey === 'POST /api/mail/emails/bulk-delete' ||
       routeKey === 'POST /api/mail/emails/bulk-move' ||
