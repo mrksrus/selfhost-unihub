@@ -1,8 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+const net = require('node:net');
 const { simpleParser } = require('mailparser');
 const {
   buildRawEmailFromImapParts,
+  fetchSmtpStartTlsCertificate,
   loadExistingImportedUidSet,
   normalizeSyncFetchLimit,
 } = require('../src/services/mail');
@@ -76,6 +79,34 @@ test('normalizes legacy initial sync limits to all', () => {
   assert.equal(normalizeSyncFetchLimit('all'), 'all');
   assert.equal(normalizeSyncFetchLimit('500'), 'all');
   assert.equal(normalizeSyncFetchLimit('nope'), null);
+});
+
+test('SMTP STARTTLS certificate probe resolves when the server closes early', async (t) => {
+  const originalCreateConnection = net.createConnection;
+  class ClosingSocket extends EventEmitter {
+    constructor() {
+      super();
+      this.destroyed = false;
+    }
+
+    setTimeout() {}
+    destroy() {
+      this.destroyed = true;
+    }
+    write() {}
+  }
+
+  net.createConnection = () => {
+    const socket = new ClosingSocket();
+    process.nextTick(() => socket.emit('close'));
+    return socket;
+  };
+  t.after(() => {
+    net.createConnection = originalCreateConnection;
+  });
+
+  const result = await fetchSmtpStartTlsCertificate('mail.example.test', 587);
+  assert.match(result.error, /SMTP connection (ended|closed) during banner phase/);
 });
 
 test('loads existing imported UIDs before message download', async () => {

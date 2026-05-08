@@ -371,6 +371,12 @@ function fetchDirectTlsCertificate(host, port) {
 
   return new Promise((resolve) => {
     let settled = false;
+    const settle = (result, { destroy = true } = {}) => {
+      if (settled) return;
+      settled = true;
+      if (destroy && !socket.destroyed) socket.destroy();
+      resolve(result);
+    };
     const socket = tls.connect({
       host: normalizedHost,
       port: numericPort,
@@ -378,23 +384,22 @@ function fetchDirectTlsCertificate(host, port) {
       rejectUnauthorized: false,
       timeout: 7000,
     }, () => {
-      if (settled) return;
-      settled = true;
       const certificate = serializePeerCertificate(socket);
       socket.end();
-      resolve(certificate);
+      settle(certificate, { destroy: false });
     });
 
     socket.on('error', (error) => {
-      if (settled) return;
-      settled = true;
-      resolve({ error: error.message });
+      settle({ error: error.message });
     });
     socket.on('timeout', () => {
-      if (settled) return;
-      settled = true;
-      socket.destroy();
-      resolve({ error: 'TLS handshake timed out' });
+      settle({ error: 'TLS handshake timed out' });
+    });
+    socket.on('end', () => {
+      settle({ error: 'TLS connection ended before certificate was read' });
+    });
+    socket.on('close', () => {
+      settle({ error: 'TLS connection closed before certificate was read' });
     });
   });
 }
@@ -418,10 +423,10 @@ function fetchSmtpStartTlsCertificate(host, port) {
     let buffer = '';
     const socket = net.createConnection({ host: normalizedHost, port: numericPort });
 
-    const settle = (result) => {
+    const settle = (result, activeSocket = socket) => {
       if (settled) return;
       settled = true;
-      socket.destroy();
+      if (activeSocket && !activeSocket.destroyed) activeSocket.destroy();
       resolve(result);
     };
 
@@ -468,6 +473,8 @@ function fetchSmtpStartTlsCertificate(host, port) {
         socket.removeAllListeners('data');
         socket.removeAllListeners('timeout');
         socket.removeAllListeners('error');
+        socket.removeAllListeners('end');
+        socket.removeAllListeners('close');
 
         const tlsSocket = tls.connect({
           socket,
@@ -483,21 +490,24 @@ function fetchSmtpStartTlsCertificate(host, port) {
 
         tlsSocket.setTimeout(7000);
         tlsSocket.on('error', (error) => {
-          if (settled) return;
-          settled = true;
-          resolve({ error: error.message });
+          settle({ error: error.message }, tlsSocket);
         });
         tlsSocket.on('timeout', () => {
-          if (settled) return;
-          settled = true;
-          tlsSocket.destroy();
-          resolve({ error: 'SMTP STARTTLS handshake timed out' });
+          settle({ error: 'SMTP STARTTLS handshake timed out' }, tlsSocket);
+        });
+        tlsSocket.on('end', () => {
+          settle({ error: 'SMTP STARTTLS connection ended before certificate was read' }, tlsSocket);
+        });
+        tlsSocket.on('close', () => {
+          settle({ error: 'SMTP STARTTLS connection closed before certificate was read' }, tlsSocket);
         });
       }
     });
 
     socket.on('error', (error) => settle({ error: error.message }));
     socket.on('timeout', () => settle({ error: 'SMTP STARTTLS probe timed out' }));
+    socket.on('end', () => settle({ error: `SMTP connection ended during ${state} phase` }));
+    socket.on('close', () => settle({ error: `SMTP connection closed during ${state} phase` }));
   });
 }
 

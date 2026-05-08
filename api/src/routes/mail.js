@@ -505,6 +505,7 @@ module.exports = {
         return { error: 'Invalid sync fetch limit. Allowed value: all', status: 400 };
       }
 
+      console.log(`[ACCOUNT] Checking mail host trust for ${email_address}: IMAP ${imap_host}:${imap_port || 993}, SMTP ${smtp_host}:${smtp_port || 587}`);
       const hostTrustResult = await requireMailHostTrustApproval({
         imap_host,
         imap_port: imap_port || 993,
@@ -512,7 +513,11 @@ module.exports = {
         smtp_port: smtp_port || 587,
         accept_host_trust,
       });
-      if (hostTrustResult.error) return hostTrustResult;
+      console.log(`[ACCOUNT] Host trust check complete for ${email_address}: blocked=${hostTrustResult.mailHostTrust?.blocked ? 'yes' : 'no'}, confirmation=${hostTrustResult.mailHostTrust?.requiresConfirmation ? 'yes' : 'no'}, insecure_tls=${hostTrustResult.allowInsecureTls ? 'yes' : 'no'}`);
+      if (hostTrustResult.error) {
+        console.warn(`[ACCOUNT] Host trust rejected for ${email_address}: ${hostTrustResult.error}`);
+        return hostTrustResult;
+      }
 
       // Verify authentication using strict TLS unless the user explicitly accepted an untrusted certificate.
       const tempAccount = {
