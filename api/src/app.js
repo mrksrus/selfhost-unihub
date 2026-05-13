@@ -4,6 +4,8 @@ const { PORT } = require('./config');
 const { db } = require('./state');
 const { initDatabase, ensurePerformanceIndexes } = require('./services/database');
 const { syncMailAccount, isAnyMailAccountSyncRunning } = require('./services/mail');
+const { cleanupExpiredRecordingUploads } = require('./services/recordings');
+const { resumePendingDataExportJobs } = require('./services/export-jobs');
 const { handleRequest } = require('./request-handler');
 
 const MAIL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
@@ -11,6 +13,14 @@ let periodicMailSyncRunning = false;
 
 async function start() {
   await initDatabase();
+  try {
+    const resumedExportJobs = await resumePendingDataExportJobs();
+    if (resumedExportJobs > 0) {
+      console.log(`✓ Resumed ${resumedExportJobs} pending data export job(s)`);
+    }
+  } catch (error) {
+    console.warn('[EXPORT] Could not resume pending data export jobs:', error.message);
+  }
   
   const server = http.createServer(handleRequest);
   
@@ -62,6 +72,17 @@ async function start() {
       console.error('[CLEANUP] Error cleaning expired sessions:', error.message);
     }
   }, 60 * 60 * 1000); // 1 hour
+
+  setInterval(async () => {
+    try {
+      const deleted = await cleanupExpiredRecordingUploads();
+      if (deleted > 0) {
+        console.log(`[CLEANUP] Deleted ${deleted} expired recording upload(s)`);
+      }
+    } catch (error) {
+      console.error('[CLEANUP] Error cleaning expired recording uploads:', error.message);
+    }
+  }, 60 * 60 * 1000);
   
   // Database connection pool health check and cleanup every 15 minutes
   setInterval(async () => {
@@ -103,6 +124,7 @@ async function start() {
   
   console.log('✓ Periodic mail sync enabled (every 10 minutes)');
   console.log('✓ Expired session cleanup enabled (every hour)');
+  console.log('✓ Expired recording upload cleanup enabled (every hour)');
   console.log('✓ Database connection pool health check enabled (every 15 minutes)');
 }
 

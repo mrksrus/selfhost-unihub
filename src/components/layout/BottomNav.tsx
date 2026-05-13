@@ -1,14 +1,13 @@
 import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import { LayoutDashboard, Users, Calendar, Mail, CheckSquare, Gamepad2 } from 'lucide-react';
+import { Calendar, Mail, CheckSquare, Mic, MoreHorizontal } from 'lucide-react';
 
 const navItems = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Contacts', href: '/contacts', icon: Users },
+  { name: 'Mail', href: '/mail', icon: Mail },
   { name: 'Calendar', href: '/calendar', icon: Calendar },
   { name: 'ToDo', href: '/todo', icon: CheckSquare },
-  { name: 'Mail', href: '/mail', icon: Mail },
-  { name: 'Games', href: '/games', icon: Gamepad2 },
+  { name: 'Recordings', href: '/recordings', icon: Mic },
+  { name: 'More', href: '/more', icon: MoreHorizontal },
 ];
 
 const BottomNav = () => {
@@ -21,8 +20,8 @@ const BottomNav = () => {
     >
       {navItems.map((item) => {
         const isActive =
-          item.href === '/'
-            ? location.pathname === '/'
+          item.href === '/more'
+            ? ['/more', '/games', '/dashboard', '/contacts'].some((path) => location.pathname.startsWith(path))
             : location.pathname.startsWith(item.href);
         return (
           <NavLink

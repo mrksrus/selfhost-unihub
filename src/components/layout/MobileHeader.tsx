@@ -8,7 +8,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Menu, Settings, Shield, LogOut } from 'lucide-react';
+import { Menu, Settings, Shield, LogOut, Search } from 'lucide-react';
 
 const MobileHeader = () => {
   const { user, signOut } = useAuth();
@@ -21,7 +21,16 @@ const MobileHeader = () => {
         </div>
         <span className="font-semibold text-lg text-foreground">UniHub</span>
       </div>
-      <DropdownMenu>
+      <div className="flex items-center gap-1">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="text-foreground"
+          onClick={() => window.dispatchEvent(new Event('open-global-command-palette'))}
+        >
+          <Search className="h-5 w-5" />
+        </Button>
+        <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="icon" className="text-foreground">
             <Menu className="h-6 w-6" />
@@ -35,12 +44,20 @@ const MobileHeader = () => {
             </Link>
           </DropdownMenuItem>
           {user?.role === 'admin' && (
-            <DropdownMenuItem asChild>
-              <Link to="/admin/users" className="flex items-center gap-2 cursor-pointer">
-                <Shield className="h-4 w-4" />
-                Admin
-              </Link>
-            </DropdownMenuItem>
+            <>
+              <DropdownMenuItem asChild>
+                <Link to="/admin/users" className="flex items-center gap-2 cursor-pointer">
+                  <Shield className="h-4 w-4" />
+                  User Management
+                </Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem asChild>
+                <Link to="/admin/settings" className="flex items-center gap-2 cursor-pointer">
+                  <Shield className="h-4 w-4" />
+                  Admin Settings
+                </Link>
+              </DropdownMenuItem>
+            </>
           )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
@@ -52,6 +69,7 @@ const MobileHeader = () => {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      </div>
     </header>
   );
 };

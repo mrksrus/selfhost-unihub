@@ -13,6 +13,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Gamepad2,
+  Mic,
+  MoreHorizontal,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -21,12 +23,17 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const navigation = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Contacts', href: '/contacts', icon: Users },
+  { name: 'Mail', href: '/mail', icon: Mail },
   { name: 'Calendar', href: '/calendar', icon: Calendar },
   { name: 'ToDo', href: '/todo', icon: CheckSquare },
-  { name: 'Mail', href: '/mail', icon: Mail },
+  { name: 'Contacts', href: '/contacts', icon: Users },
+  { name: 'Recordings', href: '/recordings', icon: Mic },
+];
+
+const moreNavigation = [
+  { name: 'More', href: '/more', icon: MoreHorizontal },
   { name: 'Games', href: '/games', icon: Gamepad2 },
+  { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
 ];
 
 const AppSidebar = () => {
@@ -80,7 +87,7 @@ const AppSidebar = () => {
       {/* Navigation */}
       <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
         {navigation.map((item) => {
-          const isActive = location.pathname === item.href;
+          const isActive = location.pathname.startsWith(item.href);
           return (
             <NavLink
               key={item.name}
@@ -107,6 +114,38 @@ const AppSidebar = () => {
             </NavLink>
           );
         })}
+        <div className="pt-3 mt-3 border-t border-sidebar-border/70">
+          {moreNavigation.map((item) => {
+            const isActive = location.pathname === item.href || (
+              item.href === '/more' && ['/games', '/dashboard'].includes(location.pathname)
+            );
+            return (
+              <NavLink
+                key={item.name}
+                to={item.href}
+                className={cn(
+                  'sidebar-nav-item',
+                  isActive && 'active'
+                )}
+              >
+                <item.icon className="h-5 w-5 shrink-0" />
+                <AnimatePresence mode="wait">
+                  {!collapsed && (
+                    <motion.span
+                      initial={{ opacity: 0, width: 0 }}
+                      animate={{ opacity: 1, width: 'auto' }}
+                      exit={{ opacity: 0, width: 0 }}
+                      transition={{ duration: 0.15 }}
+                      className="whitespace-nowrap"
+                    >
+                      {item.name}
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+              </NavLink>
+            );
+          })}
+        </div>
       </nav>
 
       <Separator className="bg-sidebar-border" />
@@ -137,10 +176,10 @@ const AppSidebar = () => {
         </NavLink>
         {user?.role === 'admin' && (
           <NavLink
-            to="/admin/users"
+            to="/admin/settings"
             className={cn(
               'sidebar-nav-item',
-              location.pathname === '/admin/users' && 'active'
+            location.pathname.startsWith('/admin') && 'active'
             )}
           >
             <Shield className="h-5 w-5 shrink-0" />
@@ -153,7 +192,7 @@ const AppSidebar = () => {
                   transition={{ duration: 0.15 }}
                   className="whitespace-nowrap"
                 >
-                  Admin
+                  Admin Settings
                 </motion.span>
               )}
             </AnimatePresence>

@@ -1,3 +1,4 @@
+const fs = require('fs');
 const routes = require('./routes');
 const { verifyToken, validateCsrfToken } = require('./auth');
 const { parseBody, getAllowedOriginForRequest } = require('./http/request');
@@ -59,9 +60,27 @@ async function handleRequest(req, res) {
       // Handle GET /api/mail/emails/:id
       routeKey = `${req.method} /api/mail/emails/:id`;
     }
+  } else if (routeKey.includes('/api/recordings/uploads/')) {
+    if (url.pathname.endsWith('/chunk')) {
+      routeKey = `${req.method} /api/recordings/uploads/:id/chunk`;
+    } else if (url.pathname.endsWith('/complete')) {
+      routeKey = `${req.method} /api/recordings/uploads/:id/complete`;
+    }
+  } else if (routeKey.includes('/api/recordings/') && url.pathname.endsWith('/file')) {
+    routeKey = `${req.method} /api/recordings/:id/file`;
+  } else if (routeKey.includes('/api/recordings/')) {
+    routeKey = `${req.method} /api/recordings/:id`;
+  } else if (routeKey.includes('/api/backup/jobs/')) {
+    if (url.pathname.endsWith('/download')) {
+      routeKey = `${req.method} /api/backup/jobs/:id/download`;
+    } else {
+      routeKey = `${req.method} /api/backup/jobs/:id`;
+    }
   } else if (routeKey.includes('/api/admin/users/')) {
     if (url.pathname.includes('/password')) {
       routeKey = `${req.method} /api/admin/users/:id/password`;
+    } else if (url.pathname.includes('/role')) {
+      routeKey = `${req.method} /api/admin/users/:id/role`;
     } else if (url.pathname.includes('/activate')) {
       routeKey = `${req.method} /api/admin/users/:id/activate`;
     } else {
@@ -117,6 +136,10 @@ async function handleRequest(req, res) {
     let maxBodySize = 1000; // Default for most endpoints
     if (routeKey === 'POST /api/contacts/import') {
       maxBodySize = 500000; // vCard import can be large
+    } else if (routeKey === 'POST /api/recordings/uploads/:id/chunk') {
+      maxBodySize = 1200 * 1024; // Recording chunks are base64 encoded JSON.
+    } else if (routeKey === 'POST /api/recordings/uploads/start') {
+      maxBodySize = 50000;
     } else if (routeKey === 'POST /api/backup/import') {
       maxBodySize = 150 * 1024 * 1024; // Backup archives can include attachments/raw email content.
     } else if (routeKey === 'POST /api/mail/send') {
@@ -164,9 +187,10 @@ async function handleRequest(req, res) {
     // Raw response (used by vCard export and attachments)
     if (result.__raw) {
       const filename = result.__filename || 'download';
+      const dispositionType = result.__disposition === 'inline' ? 'inline' : 'attachment';
       // Properly encode filename for Content-Disposition header (RFC 5987)
       const encodedFilename = encodeURIComponent(filename);
-      const contentDisposition = `attachment; filename="${filename}"; filename*=UTF-8''${encodedFilename}`;
+      const contentDisposition = `${dispositionType}; filename="${filename}"; filename*=UTF-8''${encodedFilename}`;
       
       res.writeHead(200, {
         'Content-Type': result.__contentType || 'application/octet-stream',
@@ -174,6 +198,32 @@ async function handleRequest(req, res) {
         'Cache-Control': 'no-cache',
       });
       res.end(result.__raw);
+      return;
+    }
+
+    if (result.__streamPath) {
+      const filename = result.__filename || 'download';
+      const dispositionType = result.__disposition === 'inline' ? 'inline' : 'attachment';
+      const encodedFilename = encodeURIComponent(filename);
+      const contentDisposition = `${dispositionType}; filename="${filename}"; filename*=UTF-8''${encodedFilename}`;
+      const headers = {
+        'Content-Type': result.__contentType || 'application/octet-stream',
+        'Content-Disposition': contentDisposition,
+        'Cache-Control': 'no-cache',
+      };
+      if (result.__contentLength !== undefined && result.__contentLength !== null) {
+        headers['Content-Length'] = String(result.__contentLength);
+      }
+      res.writeHead(200, headers);
+      const stream = fs.createReadStream(result.__streamPath);
+      stream.on('error', (error) => {
+        console.error('Stream response error:', error);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+        }
+        res.end();
+      });
+      stream.pipe(res);
       return;
     }
     

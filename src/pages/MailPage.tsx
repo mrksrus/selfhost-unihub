@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -30,6 +31,7 @@ import {
   PaginationPrevious,
 } from '@/components/ui/pagination';
 import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
@@ -106,6 +108,8 @@ interface AccountFormState {
   imap_port: number;
   smtp_port: number;
   sync_fetch_limit: string;
+  try_calendar_sync: boolean;
+  caldav_url: string;
 }
 
 interface MailHostCertificate {
@@ -187,6 +191,12 @@ interface ComposeAttachment {
 interface AddMailAccountResponse {
   syncInProgress?: boolean;
   message?: string;
+  calendarSync?: {
+    attempted: boolean;
+    success: boolean;
+    warning?: string;
+    importedEvents?: number;
+  };
 }
 
 interface MailSyncResponse {
@@ -252,6 +262,21 @@ type FolderMode = string;
 const ALL_ACCOUNTS: AccountMode = 'all';
 const ALL_MAIL: FolderMode = 'all';
 
+const initialAccountForm: AccountFormState = {
+  email_address: '',
+  display_name: '',
+  provider: '',
+  username: '',
+  password: '',
+  imap_host: '',
+  smtp_host: '',
+  imap_port: 993,
+  smtp_port: 587,
+  sync_fetch_limit: 'all',
+  try_calendar_sync: false,
+  caldav_url: '',
+};
+
 const escapeHtml = (value: string) =>
   value
     .replace(/&/g, '&amp;')
@@ -290,6 +315,13 @@ const deriveContactNameFromEmail = (email: Email) => {
   };
 };
 
+const sanitizeReturnTo = (value: string | null) => {
+  if (!value) return null;
+  if (!value.startsWith('/') || value.startsWith('//') || /^https?:\/\//i.test(value)) return null;
+  if (value.startsWith('/auth')) return null;
+  return value;
+};
+
 const isComposeHtmlEmpty = (value: string) =>
   !value
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -301,6 +333,7 @@ const isComposeHtmlEmpty = (value: string) =>
 const MailPage = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const isMobile = useIsMobile();
   const [selectedAccount, setSelectedAccount] = useState<AccountMode | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
@@ -328,28 +361,26 @@ const MailPage = () => {
     subject: '',
     body: '',
   });
+  const [composeReturnTo, setComposeReturnTo] = useState<string | null>(null);
   const [focusedRecipientInput, setFocusedRecipientInput] = useState<string | null>(null);
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
   const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
   const inlineComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
   const dialogComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
-  const [accountForm, setAccountForm] = useState<AccountFormState>({
-    email_address: '',
-    display_name: '',
-    provider: '',
-    username: '',
-    password: '',
-    imap_host: '',
-    smtp_host: '',
-    imap_port: 993,
-    smtp_port: 587,
-    sync_fetch_limit: 'all',
-  });
+  const [accountForm, setAccountForm] = useState<AccountFormState>(initialAccountForm);
 
   // Open compose dialog if linked from dashboard
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('action') === 'compose') {
+      const returnTo = sanitizeReturnTo(params.get('returnTo'));
+      setComposeMode('new');
+      setComposeForm({
+        to: params.get('to') || '',
+        subject: params.get('subject') || '',
+        body: params.get('body') ? plainTextToHtml(params.get('body') || '') : '',
+      });
+      setComposeReturnTo(returnTo);
       setIsComposeOpen(true);
       window.history.replaceState({}, '', window.location.pathname);
     }
@@ -630,6 +661,8 @@ const MailPage = () => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
+      queryClient.invalidateQueries({ queryKey: ['calendar-accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['calendar-calendars'] });
       setPendingHostTrust(null);
       
       // Show success immediately with green checkmark
@@ -642,20 +675,24 @@ const MailPage = () => {
         description: syncMsg,
         duration: 10000,
       });
+      if (data.calendarSync?.attempted) {
+        if (data.calendarSync.success) {
+          toast({
+            title: 'Calendar sync connected',
+            description: `${data.calendarSync.importedEvents || 0} events imported.`,
+          });
+        } else {
+          toast({
+            title: 'Mail connected, calendar sync failed',
+            description: data.calendarSync.warning || 'Check the CalDAV URL or credentials.',
+            variant: 'destructive',
+            duration: 10000,
+          });
+        }
+      }
       
       setIsAddAccountOpen(false);
-      setAccountForm({
-        email_address: '',
-        display_name: '',
-        provider: '',
-        username: '',
-        password: '',
-        imap_host: '',
-        smtp_host: '',
-        imap_port: 993,
-        smtp_port: 587,
-        sync_fetch_limit: 'all',
-      });
+      setAccountForm(initialAccountForm);
     },
     onError: (error: Error, variables) => {
       if (isHostTrustError(error)) {
@@ -690,18 +727,7 @@ const MailPage = () => {
       toast({ title: '✓ Account updated successfully' });
       setEditingAccount(null);
       setIsAddAccountOpen(false);
-      setAccountForm({
-        email_address: '',
-        display_name: '',
-        provider: '',
-        username: '',
-        password: '',
-        imap_host: '',
-        smtp_host: '',
-        imap_port: 993,
-        smtp_port: 587,
-        sync_fetch_limit: 'all',
-      });
+      setAccountForm(initialAccountForm);
     },
     onError: (error: Error, variables) => {
       if (isHostTrustError(error)) {
@@ -1083,9 +1109,7 @@ const MailPage = () => {
     },
     onSuccess: () => {
       toast({ title: '✓ Email sent successfully' });
-      setIsComposeOpen(false);
-      setIsReplying(false);
-      resetComposeState();
+      closeComposeFlow();
     },
     onError: (error: Error) => {
       toast({ 
@@ -1218,6 +1242,8 @@ const MailPage = () => {
       imap_port: account.imap_port || 993,
       smtp_port: account.smtp_port || 587,
       sync_fetch_limit: account.sync_fetch_limit || 'all',
+      try_calendar_sync: false,
+      caldav_url: '',
     });
     setIsAddAccountOpen(true);
   };
@@ -1252,6 +1278,14 @@ const MailPage = () => {
     setComposeAttachments([]);
     setIsAttachmentDragOver(false);
     setIsReplying(false);
+  };
+
+  const closeComposeFlow = () => {
+    const target = composeReturnTo;
+    setIsComposeOpen(false);
+    resetComposeState();
+    setComposeReturnTo(null);
+    if (target) navigate(target);
   };
 
   const replaceActiveRecipient = (suggestion: ContactEmailSuggestion) => {
@@ -1678,18 +1712,7 @@ const MailPage = () => {
               setIsAddAccountOpen(open);
               if (!open) {
                 setEditingAccount(null);
-                setAccountForm({
-                  email_address: '',
-                  display_name: '',
-                  provider: '',
-                  username: '',
-                  password: '',
-                  imap_host: '',
-                  smtp_host: '',
-                  imap_port: 993,
-                  smtp_port: 587,
-                  sync_fetch_limit: 'all',
-                });
+                setAccountForm(initialAccountForm);
                 setPendingHostTrust(null);
               }
             }}>
@@ -1777,6 +1800,33 @@ const MailPage = () => {
                         required={!editingAccount}
                       />
                     </div>
+                    {!editingAccount && (
+                      <div className="rounded-md border border-border p-3 space-y-3">
+                        <label className="flex items-start gap-3 text-sm">
+                          <Checkbox
+                            checked={accountForm.try_calendar_sync}
+                            onCheckedChange={(checked) => setAccountForm({ ...accountForm, try_calendar_sync: checked === true })}
+                          />
+                          <span>
+                            <span className="font-medium text-foreground">Try calendar sync too</span>
+                            <span className="block text-muted-foreground">
+                              Uses CalDAV with the same username and password. Mail setup continues even if calendar discovery fails.
+                            </span>
+                          </span>
+                        </label>
+                        {accountForm.try_calendar_sync && (
+                          <div className="space-y-2">
+                            <Label htmlFor="caldav_url">Advanced CalDAV URL</Label>
+                            <Input
+                              id="caldav_url"
+                              value={accountForm.caldav_url}
+                              onChange={(e) => setAccountForm({ ...accountForm, caldav_url: e.target.value })}
+                              placeholder="https://mail.example.com/.well-known/caldav"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
                     <p className="text-xs text-muted-foreground">
                       Server details are filled from the provider; you can change any value.
                     </p>
@@ -2735,10 +2785,8 @@ const MailPage = () => {
 
       {/* Compose Dialog - Mobile or New Message */}
       <Dialog open={isComposeOpen} onOpenChange={(open) => {
-        setIsComposeOpen(open);
-        if (!open) {
-          resetComposeState();
-        }
+        if (open) setIsComposeOpen(true);
+        else closeComposeFlow();
       }}>
         <DialogContent className={`${isMobile ? 'max-w-full h-[95vh] max-h-[95vh] flex flex-col p-4 translate-y-[-47.5%] top-[47.5%] rounded-t-lg rounded-b-none' : 'sm:max-w-2xl'}`}>
           <DialogHeader className="shrink-0">
@@ -2788,8 +2836,7 @@ const MailPage = () => {
             {renderComposeAttachmentsSection('compose-attachments-dialog')}
             <div className={`flex justify-end gap-3 ${isMobile ? 'shrink-0 pt-4 border-t border-border' : ''}`}>
               <Button type="button" variant="outline" onClick={() => {
-                setIsComposeOpen(false);
-                resetComposeState();
+                closeComposeFlow();
               }}>
                 Cancel
               </Button>

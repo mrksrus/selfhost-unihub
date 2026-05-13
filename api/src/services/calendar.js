@@ -9,6 +9,13 @@ const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
     rsvp: false,
     deletePropagation: false,
   },
+  caldav: {
+    sync: true,
+    invites: false,
+    rsvp: false,
+    deletePropagation: false,
+    push: false,
+  },
 };
 
 function parseDatetimeToMillis(value) {
@@ -44,23 +51,29 @@ function safeJsonParse(value, fallback = null) {
 
 function normalizeCalendarAccountProvider(provider) {
   const normalized = String(provider || '').trim().toLowerCase();
-  return normalized === 'local' ? 'local' : null;
+  if (normalized === 'local' || normalized === 'caldav') return normalized;
+  return null;
 }
 
 function serializeCalendarAccount(row) {
   const provider = normalizeCalendarAccountProvider(row.provider) || 'local';
-  const capabilities = safeJsonParse(row.capabilities, null) || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
+  const capabilities = safeJsonParse(row.capabilities, null) || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
   return {
     id: row.id,
     user_id: row.user_id,
     provider,
     account_email: row.account_email || null,
     display_name: row.display_name || null,
+    username: row.username || null,
+    discovery_url: row.discovery_url || null,
+    base_url: row.base_url || null,
     token_expires_at: null,
-    provider_config: {},
+    provider_config: safeJsonParse(row.provider_config, {}) || {},
     capabilities,
     is_active: !!row.is_active,
-    last_synced_at: null,
+    sync_status: row.sync_status || null,
+    sync_error: row.sync_error || null,
+    last_synced_at: row.last_synced_at instanceof Date ? row.last_synced_at.toISOString() : (row.last_synced_at || null),
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
   };
@@ -72,13 +85,13 @@ function serializeCalendarCalendar(row) {
     user_id: row.user_id,
     account_id: row.account_id,
     name: row.name,
-    external_id: null,
+    external_id: row.external_id || null,
     color: row.color || '#22c55e',
     is_visible: !!row.is_visible,
     auto_todo_enabled: !!row.auto_todo_enabled,
-    read_only: false,
+    read_only: !!row.read_only,
     is_primary: !!row.is_primary,
-    sync_token: null,
+    sync_token: row.sync_token || null,
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
   };

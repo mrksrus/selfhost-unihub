@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Calendar, CheckSquare, LayoutDashboard, Mail, Plus, Search, Settings, Users } from 'lucide-react';
+import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, MoreHorizontal, Plus, Search, Settings, Users } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
   CommandDialog,
@@ -16,21 +16,23 @@ import {
 
 type SearchResult = {
   id: string;
-  type: 'contact' | 'mail' | 'calendar' | 'todo';
+  type: 'contact' | 'mail' | 'calendar' | 'todo' | 'recording';
   title: string;
   subtitle?: string;
   href: string;
 };
 
 const staticActions = [
-  { id: 'dashboard', label: 'Open Dashboard', href: '/', icon: LayoutDashboard },
-  { id: 'contacts', label: 'Open Contacts', href: '/contacts', icon: Users },
-  { id: 'new-contact', label: 'Add Contact', href: '/contacts?action=new', icon: Plus },
+  { id: 'mail', label: 'Open Mail', href: '/mail', icon: Mail },
+  { id: 'compose', label: 'Compose Email', href: '/mail?action=compose', icon: Plus },
   { id: 'calendar', label: 'Open Calendar', href: '/calendar', icon: Calendar },
   { id: 'new-event', label: 'Create Event', href: '/calendar?action=new', icon: Plus },
   { id: 'todo', label: 'Open ToDo', href: '/todo', icon: CheckSquare },
-  { id: 'mail', label: 'Open Mail', href: '/mail', icon: Mail },
-  { id: 'compose', label: 'Compose Email', href: '/mail?action=compose', icon: Plus },
+  { id: 'contacts', label: 'Open Contacts', href: '/contacts', icon: Users },
+  { id: 'new-contact', label: 'Add Contact', href: '/contacts?action=new', icon: Plus },
+  { id: 'recordings', label: 'Open Recordings', href: '/recordings', icon: Mic },
+  { id: 'more', label: 'Open More', href: '/more', icon: MoreHorizontal },
+  { id: 'dashboard', label: 'Open Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { id: 'settings', label: 'Open Settings', href: '/settings', icon: Settings },
 ];
 
@@ -46,6 +48,7 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 function getResultIcon(type: SearchResult['type']) {
   if (type === 'contact') return Users;
   if (type === 'mail') return Mail;
+  if (type === 'recording') return Mic;
   if (type === 'todo') return CheckSquare;
   return Calendar;
 }
@@ -64,8 +67,14 @@ const GlobalCommandPalette = () => {
       }
     };
 
+    const openCommandPalette = () => setOpen(true);
+
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('open-global-command-palette', openCommandPalette);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('open-global-command-palette', openCommandPalette);
+    };
   }, []);
 
   const { data: searchResults = [], isFetching } = useQuery({

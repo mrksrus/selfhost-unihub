@@ -14,9 +14,12 @@ import MailPage from "./pages/MailPage";
 import TodoPage from "./pages/TodoPage";
 import Settings from "./pages/Settings";
 import AdminUsers from "./pages/AdminUsers";
-import Install from "./pages/Install";
 import NotFound from "./pages/NotFound";
 import Games from "./pages/Games";
+import Recordings from "./pages/Recordings";
+import More from "./pages/More";
+import AdminSettings from "./pages/AdminSettings";
+import StartRedirect from "./pages/StartRedirect";
 
 const queryClient = new QueryClient();
 
@@ -29,16 +32,19 @@ const App = () => (
         <BrowserRouter>
           <Routes>
             <Route path="/auth" element={<Auth />} />
-            <Route path="/install" element={<Install />} />
             <Route element={<AppLayout />}>
-              <Route path="/" element={<Dashboard />} />
+              <Route path="/" element={<StartRedirect />} />
+              <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/contacts" element={<Contacts />} />
               <Route path="/calendar" element={<CalendarPage />} />
               <Route path="/todo" element={<TodoPage />} />
               <Route path="/mail" element={<MailPage />} />
+              <Route path="/recordings" element={<Recordings />} />
               <Route path="/games" element={<Games />} />
+              <Route path="/more" element={<More />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/admin/users" element={<AdminUsers />} />
+              <Route path="/admin/settings" element={<AdminSettings />} />
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>

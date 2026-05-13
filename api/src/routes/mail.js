@@ -28,6 +28,7 @@ const {
   sendEmail,
   deleteStoredAttachmentFiles,
 } = require('../services/mail');
+const { createCalDavAccountForMail } = require('../services/caldav');
 
 const readFile = promisify(fs.readFile);
 const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
@@ -508,6 +509,8 @@ module.exports = {
         encrypted_password,
         sync_fetch_limit,
         accept_host_trust,
+        try_calendar_sync,
+        caldav_url,
       } = body;
       console.log(`[ACCOUNT] Add mail account requested for ${email_address || '(missing email)'} via ${provider || 'unknown provider'}`);
       
@@ -583,6 +586,35 @@ module.exports = {
       await ensureDefaultMailFoldersForUser(userId);
       
       const [accounts] = await db.execute('SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, sync_fetch_limit, is_active FROM mail_accounts WHERE id = ?', [accountId]);
+
+      let calendarSync = null;
+      if (toBooleanFlag(try_calendar_sync)) {
+        try {
+          const caldavResult = await createCalDavAccountForMail({
+            userId,
+            emailAddress: email_address,
+            displayName: display_name || email_address,
+            username: actualUsername,
+            password: encrypted_password,
+            imapHost: imap_host,
+            caldavUrl: caldav_url,
+          });
+          calendarSync = {
+            attempted: true,
+            success: true,
+            account: caldavResult.account,
+            calendars: caldavResult.calendars,
+            importedEvents: caldavResult.importedEvents,
+          };
+        } catch (calendarError) {
+          console.warn(`[CALDAV] Calendar sync setup failed for ${email_address}:`, calendarError.message);
+          calendarSync = {
+            attempted: true,
+            success: false,
+            warning: calendarError.message || 'Calendar sync setup failed',
+          };
+        }
+      }
       
       // Start sync in background (non-blocking)
       console.log(`[ACCOUNT] Starting background sync for ${email_address}...`);
@@ -593,6 +625,7 @@ module.exports = {
         account: accounts[0],
         authSuccess: true,
         syncInProgress: syncStarted,
+        calendarSync,
         mailHostTrust: hostPolicyResult.mailHostTrust,
         message: syncStarted
           ? 'Account connected successfully. Syncing emails in the background — this may take several minutes for large mailboxes.'

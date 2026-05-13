@@ -5,6 +5,7 @@ module.exports = {
   ...require('./settings'),
   ...require('./backup'),
   ...require('./search'),
+  ...require('./recordings'),
   ...require('./calendar'),
   ...require('./mail'),
   ...require('./admin'),

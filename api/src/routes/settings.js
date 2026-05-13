@@ -1,4 +1,7 @@
 const { db } = require('../state');
+const fs = require('fs');
+const path = require('path');
+const { clearAuthCookie, clearCsrfCookie } = require('../auth');
 const { ensureDefaultLocalCalendarForUser } = require('../services/calendar');
 const {
   deleteStoredAttachmentFiles,
@@ -6,9 +9,113 @@ const {
   pickBestMailSenderRuleMatch,
   normalizeSenderDomain,
 } = require('../services/mail');
+const { isPathUnderRoot: isRecordingPathUnderRoot } = require('../services/recordings');
+const { isBackupPathUnderRoot } = require('../services/export-jobs');
 
+const USER_SETTING_DEFAULTS = {
+  email_link_behavior: 'mailto',
+  default_start_page: 'mail',
+};
+
+const USER_SETTING_ALLOWED_VALUES = {
+  email_link_behavior: new Set(['mailto', 'internal']),
+  default_start_page: new Set(['mail', 'calendar', 'todo', 'contacts', 'recordings', 'dashboard']),
+};
+
+async function getUserPreferences(userId) {
+  const [rows] = await db.execute(
+    'SELECT setting_key, setting_value FROM user_settings WHERE user_id = ?',
+    [userId]
+  );
+  const preferences = { ...USER_SETTING_DEFAULTS };
+  for (const row of rows || []) {
+    if (Object.prototype.hasOwnProperty.call(preferences, row.setting_key)) {
+      preferences[row.setting_key] = row.setting_value;
+    }
+  }
+  return preferences;
+}
+
+async function setUserPreferences(userId, input = {}) {
+  const updates = {};
+  for (const [key, value] of Object.entries(input || {})) {
+    if (!Object.prototype.hasOwnProperty.call(USER_SETTING_DEFAULTS, key)) continue;
+    const normalizedValue = String(value || '').trim();
+    const allowedValues = USER_SETTING_ALLOWED_VALUES[key];
+    if (allowedValues && !allowedValues.has(normalizedValue)) {
+      return { error: `Invalid value for ${key}`, status: 400 };
+    }
+    updates[key] = normalizedValue;
+  }
+  for (const [key, value] of Object.entries(updates)) {
+    await db.execute(
+      `INSERT INTO user_settings (user_id, setting_key, setting_value)
+       VALUES (?, ?, ?)
+       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
+      [userId, key, value]
+    );
+  }
+  return { preferences: await getUserPreferences(userId) };
+}
 
 module.exports = {
+  'GET /api/settings/preferences': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      return { preferences: await getUserPreferences(userId) };
+    } catch (error) {
+      console.error('Get preferences error:', error);
+      return { error: 'Failed to load preferences', status: 500 };
+    }
+  },
+
+  'PUT /api/settings/preferences': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      return await setUserPreferences(userId, body || {});
+    } catch (error) {
+      console.error('Update preferences error:', error);
+      return { error: 'Failed to update preferences', status: 500 };
+    }
+  },
+
+  'DELETE /api/settings/account': async (req, userId, body, res) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const [[attachments], [recordings], [exports], [rawEmails]] = await Promise.all([
+        db.execute('SELECT storage_path FROM email_attachments WHERE user_id = ?', [userId]),
+        db.execute('SELECT storage_path FROM recordings WHERE user_id = ?', [userId]),
+        db.execute('SELECT file_path FROM data_export_jobs WHERE user_id = ?', [userId]),
+        db.execute('SELECT raw_storage_path FROM emails WHERE user_id = ? AND raw_storage_path IS NOT NULL', [userId]),
+      ]);
+      await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
+      for (const row of recordings || []) {
+        if (row.storage_path && isRecordingPathUnderRoot(row.storage_path)) {
+          await fs.promises.rm(path.resolve(row.storage_path), { force: true }).catch(() => {});
+        }
+      }
+      for (const row of exports || []) {
+        if (row.file_path && isBackupPathUnderRoot(row.file_path)) {
+          await fs.promises.rm(path.resolve(row.file_path), { force: true }).catch(() => {});
+        }
+      }
+      for (const row of rawEmails || []) {
+        const rawPath = path.resolve(row.raw_storage_path || '');
+        const root = path.resolve('/app/uploads/mail-raw');
+        if (rawPath.startsWith(`${root}${path.sep}`)) {
+          await fs.promises.rm(rawPath, { force: true }).catch(() => {});
+        }
+      }
+      await db.execute('DELETE FROM users WHERE id = ?', [userId]);
+      clearAuthCookie(res);
+      clearCsrfCookie(res);
+      return { deleted: true };
+    } catch (error) {
+      console.error('Delete account error:', error);
+      return { error: 'Failed to delete account', status: 500 };
+    }
+  },
+
   // User data management: clear all for current user
   'POST /api/settings/clear-contacts': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
@@ -56,6 +163,22 @@ module.exports = {
     } catch (error) {
       console.error('Clear mail accounts error:', error);
       return { error: 'Failed to delete mail accounts', status: 500 };
+    }
+  },
+  'POST /api/settings/clear-recordings': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const [recordings] = await db.execute('SELECT storage_path FROM recordings WHERE user_id = ?', [userId]);
+      for (const row of recordings || []) {
+        if (row.storage_path && isRecordingPathUnderRoot(row.storage_path)) {
+          await fs.promises.rm(path.resolve(row.storage_path), { force: true }).catch(() => {});
+        }
+      }
+      const [result] = await db.execute('DELETE FROM recordings WHERE user_id = ?', [userId]);
+      return { message: `Deleted ${result.affectedRows || 0} recording(s)`, deleted: result.affectedRows || 0 };
+    } catch (error) {
+      console.error('Clear recordings error:', error);
+      return { error: 'Failed to delete recordings', status: 500 };
     }
   },
   'GET /api/settings/mail-sender-candidates': async (req, userId) => {

@@ -116,15 +116,21 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 CREATE TABLE IF NOT EXISTS calendar_accounts (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     user_id CHAR(36) NOT NULL,
-    provider VARCHAR(32) NOT NULL COMMENT 'local',
+    provider VARCHAR(32) NOT NULL COMMENT 'local, caldav',
     account_email VARCHAR(255),
     display_name VARCHAR(255),
+    username VARCHAR(255) NULL,
+    encrypted_password TEXT NULL,
+    discovery_url TEXT NULL,
+    base_url TEXT NULL,
     encrypted_access_token TEXT,
     encrypted_refresh_token TEXT,
     token_expires_at DATETIME NULL,
     provider_config JSON DEFAULT NULL COMMENT 'account configuration',
     capabilities JSON DEFAULT NULL COMMENT 'feature flags/capabilities for this account',
     is_active BOOLEAN DEFAULT TRUE,
+    sync_status VARCHAR(32) NULL,
+    sync_error TEXT NULL,
     last_synced_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -369,6 +375,128 @@ CREATE TABLE IF NOT EXISTS mail_email_scores (
     INDEX idx_mail_email_scores_user (user_id, scored_at DESC),
     INDEX idx_mail_email_scores_risk (risk_level),
     INDEX idx_mail_email_scores_total (total_score DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Per-user app settings
+CREATE TABLE IF NOT EXISTS user_settings (
+    user_id CHAR(36) NOT NULL,
+    setting_key VARCHAR(100) NOT NULL,
+    setting_value TEXT NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (user_id, setting_key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_settings_key (setting_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- User recordings and tags
+CREATE TABLE IF NOT EXISTS recordings (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT NULL,
+    original_filename VARCHAR(255) NULL,
+    content_type VARCHAR(128) NOT NULL,
+    size_bytes BIGINT NOT NULL DEFAULT 0,
+    duration_seconds DECIMAL(12,3) NULL,
+    storage_path TEXT NOT NULL,
+    source VARCHAR(32) NOT NULL DEFAULT 'imported',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_recordings_user_created (user_id, created_at DESC),
+    INDEX idx_recordings_user_title (user_id, title)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS recording_tags (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    name VARCHAR(80) NOT NULL,
+    color VARCHAR(20) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_recording_tag_user_name (user_id, name),
+    INDEX idx_recording_tags_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS recording_tag_links (
+    recording_id CHAR(36) NOT NULL,
+    tag_id CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (recording_id, tag_id),
+    FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE CASCADE,
+    FOREIGN KEY (tag_id) REFERENCES recording_tags(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_recording_tag_links_user (user_id),
+    INDEX idx_recording_tag_links_tag (tag_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS recording_uploads (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT NULL,
+    original_filename VARCHAR(255) NULL,
+    content_type VARCHAR(128) NOT NULL,
+    total_bytes BIGINT NOT NULL,
+    bytes_received BIGINT NOT NULL DEFAULT 0,
+    duration_seconds DECIMAL(12,3) NULL,
+    source VARCHAR(32) NOT NULL DEFAULT 'imported',
+    tags JSON NULL,
+    temp_path TEXT NOT NULL,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_recording_uploads_user (user_id),
+    INDEX idx_recording_uploads_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS recording_transcription_jobs (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    recording_id CHAR(36) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'queued',
+    provider VARCHAR(64) NULL,
+    model VARCHAR(128) NULL,
+    language VARCHAR(32) NULL,
+    transcript_text LONGTEXT NULL,
+    error TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE CASCADE,
+    INDEX idx_recording_transcription_jobs_user (user_id),
+    INDEX idx_recording_transcription_jobs_recording (recording_id),
+    INDEX idx_recording_transcription_jobs_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Async export jobs write ZIPs into the persisted uploads volume
+CREATE TABLE IF NOT EXISTS data_export_jobs (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    scope VARCHAR(32) NOT NULL DEFAULT 'full',
+    status VARCHAR(32) NOT NULL DEFAULT 'queued',
+    progress INT NOT NULL DEFAULT 0,
+    requested_sections JSON NULL,
+    file_path TEXT NULL,
+    file_size BIGINT NULL,
+    error TEXT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP NULL,
+    downloaded_at TIMESTAMP NULL,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_data_export_jobs_user_created (user_id, created_at DESC),
+    INDEX idx_data_export_jobs_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Admin bootstrap is now handled by API startup using:

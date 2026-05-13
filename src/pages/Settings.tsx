@@ -1,12 +1,14 @@
-import { useState, useEffect, type ChangeEvent } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
+import { Progress } from '@/components/ui/progress';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/lib/api';
 import { calendarQueryKeys } from '@/lib/calendar-api';
@@ -21,7 +23,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Shield, Download, Loader2, Database, Globe, AtSign, Upload } from 'lucide-react';
+import { User, Shield, Download, Loader2, Database, Globe, AtSign, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const DEVICE_TZ_VALUE = '';
@@ -71,13 +73,21 @@ type MailFolder = {
   is_system: boolean;
 };
 
-type BackupImportResult = {
-  dry_run?: boolean;
-  valid?: boolean;
-  errors?: string[];
-  warnings?: string[];
-  counts?: Record<string, number>;
-  restored_files?: number;
+type UserPreferences = {
+  email_link_behavior: 'mailto' | 'internal';
+  default_start_page: 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'dashboard';
+};
+
+type ExportJob = {
+  id: string;
+  scope: 'full' | 'partial';
+  status: 'queued' | 'running' | 'ready' | 'failed';
+  progress: number;
+  requested_sections: string[];
+  file_size: number | null;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
 };
 
 type TwoFactorStatus = {
@@ -102,7 +112,7 @@ const FALLBACK_MAIL_FOLDERS: MailFolder[] = [
 ];
 
 const Settings = () => {
-  const { user, setUser, signOut } = useAuth();
+  const { user, setUser } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [loading, setLoading] = useState(false);
@@ -112,16 +122,21 @@ const Settings = () => {
   const [clearContactsOpen, setClearContactsOpen] = useState(false);
   const [clearCalendarOpen, setClearCalendarOpen] = useState(false);
   const [clearMailOpen, setClearMailOpen] = useState(false);
+  const [clearRecordingsOpen, setClearRecordingsOpen] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [clearContactsLoading, setClearContactsLoading] = useState(false);
   const [clearCalendarLoading, setClearCalendarLoading] = useState(false);
   const [clearMailLoading, setClearMailLoading] = useState(false);
+  const [clearRecordingsLoading, setClearRecordingsLoading] = useState(false);
+  const [deleteAccountLoading, setDeleteAccountLoading] = useState(false);
+  const [preferencesSaving, setPreferencesSaving] = useState(false);
+  const [preferences, setPreferences] = useState<UserPreferences>({
+    email_link_behavior: 'mailto',
+    default_start_page: 'mail',
+  });
   const [ruleSaving, setRuleSaving] = useState(false);
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
   const [backupExporting, setBackupExporting] = useState(false);
-  const [backupImporting, setBackupImporting] = useState(false);
-  const [backupApplying, setBackupApplying] = useState(false);
-  const [pendingBackup, setPendingBackup] = useState<Record<string, unknown> | null>(null);
-  const [backupPlan, setBackupPlan] = useState<BackupImportResult | null>(null);
   const [ruleEditor, setRuleEditor] = useState<{
     id?: string;
     match_type: 'domain' | 'email';
@@ -169,6 +184,27 @@ const Settings = () => {
     },
   });
 
+  const { data: preferencesData } = useQuery({
+    queryKey: ['settings', 'preferences'],
+    queryFn: async () => {
+      const response = await api.get<{ preferences: UserPreferences }>('/settings/preferences');
+      if (response.error) throw new Error(response.error);
+      return response.data?.preferences || { email_link_behavior: 'mailto', default_start_page: 'mail' };
+    },
+    enabled: !!user,
+  });
+
+  const { data: exportJobs = [], refetch: refetchExportJobs } = useQuery({
+    queryKey: ['backup-jobs'],
+    queryFn: async () => {
+      const response = await api.get<{ jobs: ExportJob[] }>('/backup/jobs');
+      if (response.error) throw new Error(response.error);
+      return response.data?.jobs || [];
+    },
+    refetchInterval: 5000,
+    enabled: !!user,
+  });
+
   const getMailFolderLabel = (slug: string) =>
     (mailFolders.length ? mailFolders : FALLBACK_MAIL_FOLDERS).find((folder) => folder.slug === slug)?.display_name || slug;
 
@@ -176,6 +212,10 @@ const Settings = () => {
     setFullName(user?.full_name || '');
     setTimezone(user?.timezone ?? DEVICE_TZ_VALUE);
   }, [user?.full_name, user?.timezone]);
+
+  useEffect(() => {
+    if (preferencesData) setPreferences(preferencesData);
+  }, [preferencesData]);
 
   const [passwordForm, setPasswordForm] = useState({
     current_password: '',
@@ -406,82 +446,108 @@ const Settings = () => {
     }
   };
 
-  const handleExportBackup = async () => {
-    setBackupExporting(true);
+  const handleClearRecordings = async () => {
+    setClearRecordingsLoading(true);
     try {
-      const { blob, filename } = await api.getBlob('/backup/export');
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = filename || `unihub-backup-${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-      toast({ title: 'Backup exported' });
+      const response = await api.post<{ message?: string; error?: string; deleted?: number }>('/settings/clear-recordings');
+      if (response.error) {
+        toast({ title: 'Failed to delete recordings', description: response.error, variant: 'destructive' });
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ['recordings'] });
+      toast({ title: response.data?.message || 'All recordings deleted' });
+      setClearRecordingsOpen(false);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      toast({ title: 'Failed to export backup', description: message, variant: 'destructive' });
+      toast({ title: 'Failed to delete recordings', description: message, variant: 'destructive' });
+    } finally {
+      setClearRecordingsLoading(false);
+    }
+  };
+
+  const handleSavePreferences = async () => {
+    setPreferencesSaving(true);
+    try {
+      const response = await api.put<{ preferences: UserPreferences }>('/settings/preferences', preferences);
+      if (response.error) {
+        toast({ title: 'Failed to save preferences', description: response.error, variant: 'destructive' });
+        return;
+      }
+      if (response.data?.preferences) setPreferences(response.data.preferences);
+      queryClient.invalidateQueries({ queryKey: ['settings', 'preferences'] });
+      toast({ title: 'Preferences saved' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to save preferences', description: message, variant: 'destructive' });
+    } finally {
+      setPreferencesSaving(false);
+    }
+  };
+
+  const handleStartExportJob = async (sections: string[] | 'full') => {
+    setBackupExporting(true);
+    try {
+      const response = await api.post<{ job: ExportJob }>('/backup/jobs', { sections });
+      if (response.error) {
+        toast({ title: 'Failed to start export', description: response.error, variant: 'destructive' });
+        return;
+      }
+      await refetchExportJobs();
+      toast({ title: 'Export job started' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to start export', description: message, variant: 'destructive' });
     } finally {
       setBackupExporting(false);
     }
   };
 
-  const handleBackupImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-
-    setBackupImporting(true);
+  const handleDownloadExportJob = async (job: ExportJob) => {
     try {
-      const parsedBackup = JSON.parse(await file.text()) as Record<string, unknown>;
-      const response = await api.post<{ import: BackupImportResult }>('/backup/import', {
-        mode: 'dry-run',
-        backup: parsedBackup,
-      });
-      if (response.error) {
-        toast({ title: 'Backup validation failed', description: response.error, variant: 'destructive' });
-        return;
-      }
-      const result = response.data?.import || null;
-      setPendingBackup(parsedBackup);
-      setBackupPlan(result);
-      toast({
-        title: result?.valid ? 'Backup is ready to import' : 'Backup validation failed',
-        description: result?.valid ? 'Review the counts and apply when ready.' : result?.errors?.join(' '),
-        variant: result?.valid ? undefined : 'destructive',
-      });
+      const { blob, filename } = await api.getBlob(`/backup/jobs/${job.id}/download`);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename || `unihub-export-${job.id}.zip`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      await refetchExportJobs();
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Invalid backup file';
-      toast({ title: 'Failed to read backup', description: message, variant: 'destructive' });
-      setPendingBackup(null);
-      setBackupPlan(null);
-    } finally {
-      setBackupImporting(false);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to download export', description: message, variant: 'destructive' });
     }
   };
 
-  const handleApplyBackupImport = async () => {
-    if (!pendingBackup) return;
-    setBackupApplying(true);
+  const handleDeleteExportJob = async (job: ExportJob) => {
     try {
-      const response = await api.post<{ import: BackupImportResult }>('/backup/import', {
-        mode: 'apply',
-        backup: pendingBackup,
-      });
+      const response = await api.delete(`/backup/jobs/${job.id}`);
       if (response.error) {
-        toast({ title: 'Backup import failed', description: response.error, variant: 'destructive' });
+        toast({ title: 'Failed to delete export', description: response.error, variant: 'destructive' });
         return;
       }
-      setBackupPlan(response.data?.import || null);
-      setPendingBackup(null);
-      await queryClient.invalidateQueries();
-      toast({ title: 'Backup imported', description: `${response.data?.import?.restored_files || 0} files restored.` });
+      await refetchExportJobs();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      toast({ title: 'Backup import failed', description: message, variant: 'destructive' });
+      toast({ title: 'Failed to delete export', description: message, variant: 'destructive' });
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    setDeleteAccountLoading(true);
+    try {
+      const response = await api.delete('/settings/account');
+      if (response.error) {
+        toast({ title: 'Failed to delete account', description: response.error, variant: 'destructive' });
+        return;
+      }
+      window.location.assign('/auth');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete account', description: message, variant: 'destructive' });
     } finally {
-      setBackupApplying(false);
+      setDeleteAccountLoading(false);
     }
   };
 
@@ -574,7 +640,7 @@ const Settings = () => {
       </motion.div>
 
       <div className="space-y-6">
-        {/* Profile Section */}
+        {/* General Section */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -587,8 +653,8 @@ const Settings = () => {
                   <User className="h-5 w-5 text-accent" />
                 </div>
                 <div>
-                  <CardTitle className="text-lg">Profile</CardTitle>
-                  <CardDescription>Manage your account details</CardDescription>
+                  <CardTitle className="text-lg">General</CardTitle>
+                  <CardDescription>Profile and app preferences</CardDescription>
                 </div>
               </div>
             </CardHeader>
@@ -630,7 +696,48 @@ const Settings = () => {
               </div>
               <Button onClick={handleUpdateProfile} disabled={loading}>
                 {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Save Changes
+                Save Profile
+              </Button>
+              <Separator />
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Default start page</Label>
+                  <Select
+                    value={preferences.default_start_page}
+                    onValueChange={(value) => setPreferences((prev) => ({ ...prev, default_start_page: value as UserPreferences['default_start_page'] }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mail">Mail</SelectItem>
+                      <SelectItem value="calendar">Calendar</SelectItem>
+                      <SelectItem value="todo">ToDo</SelectItem>
+                      <SelectItem value="contacts">Contacts</SelectItem>
+                      <SelectItem value="recordings">Recordings</SelectItem>
+                      <SelectItem value="dashboard">Dashboard</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Email address clicks</Label>
+                  <Select
+                    value={preferences.email_link_behavior}
+                    onValueChange={(value) => setPreferences((prev) => ({ ...prev, email_link_behavior: value as UserPreferences['email_link_behavior'] }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mailto">Use device mail app</SelectItem>
+                      <SelectItem value="internal">Use UniHub composer</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <Button onClick={handleSavePreferences} disabled={preferencesSaving}>
+                {preferencesSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Save Preferences
               </Button>
             </CardContent>
           </Card>
@@ -892,37 +999,7 @@ const Settings = () => {
           </DialogContent>
         </Dialog>
 
-        {/* App Info */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.3 }}
-        >
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-accent/10">
-                  <Download className="h-5 w-5 text-accent" />
-                </div>
-                <div>
-                  <CardTitle className="text-lg">Install App</CardTitle>
-                  <CardDescription>UniHub works as a Progressive Web App</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-4">
-                Install UniHub on your device for quick access. On mobile, use your browser's "Add to Home Screen" option.
-                On desktop, look for the install icon in your browser's address bar.
-              </p>
-              <Button variant="outline" asChild>
-                <a href="/install">Learn How to Install</a>
-              </Button>
-            </CardContent>
-          </Card>
-        </motion.div>
-
-        {/* Backup and restore */}
+        {/* Data export jobs */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -935,67 +1012,61 @@ const Settings = () => {
                   <Database className="h-5 w-5 text-accent" />
                 </div>
                 <div>
-                  <CardTitle className="text-lg">Backup and restore</CardTitle>
-                  <CardDescription>Export everything first, then validate imports before applying them.</CardDescription>
+                  <CardTitle className="text-lg">Data Management</CardTitle>
+                  <CardDescription>Start ZIP exports in the background and download them when ready.</CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="flex flex-wrap gap-3">
-                <Button variant="outline" onClick={handleExportBackup} disabled={backupExporting}>
+                <Button variant="outline" onClick={() => handleStartExportJob('full')} disabled={backupExporting}>
                   {backupExporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
-                  Export backup
+                  Full export
                 </Button>
-                <input
-                  id="backup-import-file"
-                  type="file"
-                  accept="application/json,.json"
-                  className="hidden"
-                  onChange={handleBackupImportFile}
-                />
-                <Button
-                  variant="outline"
-                  onClick={() => document.getElementById('backup-import-file')?.click()}
-                  disabled={backupImporting}
-                >
-                  {backupImporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
-                  Validate import
-                </Button>
-                <Button
-                  onClick={handleApplyBackupImport}
-                  disabled={!pendingBackup || !backupPlan?.valid || backupApplying}
-                >
-                  {backupApplying && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  Apply validated import
-                </Button>
+                {['mail', 'calendar', 'todo', 'contacts', 'recordings', 'settings'].map((section) => (
+                  <Button
+                    key={section}
+                    variant="outline"
+                    onClick={() => handleStartExportJob([section])}
+                    disabled={backupExporting}
+                  >
+                    {section[0].toUpperCase() + section.slice(1)}
+                  </Button>
+                ))}
               </div>
 
-              {backupPlan && (
-                <div className="rounded-md border border-border p-3 text-sm space-y-2">
-                  <p className="font-medium text-foreground">
-                    {backupPlan.valid ? 'Validated backup contents' : 'Backup validation errors'}
-                  </p>
-                  {backupPlan.counts && (
-                    <div className="grid gap-1 sm:grid-cols-2">
-                      {Object.entries(backupPlan.counts).map(([key, value]) => (
-                        <p key={key} className="text-muted-foreground">
-                          {key.replace(/_/g, ' ')}: <span className="text-foreground">{value}</span>
+              <div className="space-y-3">
+                {exportJobs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No export jobs yet.</p>
+                ) : exportJobs.map((job) => (
+                  <div key={job.id} className="rounded-md border border-border p-3 space-y-2">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="font-medium text-foreground">
+                          {job.scope === 'full' ? 'Full export' : job.requested_sections.join(', ')}
                         </p>
-                      ))}
+                        <p className="text-xs text-muted-foreground">
+                          {new Date(job.created_at).toLocaleString()} • {job.status}
+                          {job.file_size ? ` • ${(job.file_size / 1024 / 1024).toFixed(1)} MB` : ''}
+                        </p>
+                      </div>
+                      <div className="flex gap-2">
+                        {job.status === 'ready' && (
+                          <Button variant="outline" size="sm" onClick={() => handleDownloadExportJob(job)}>
+                            <Download className="h-4 w-4 mr-2" />
+                            Download
+                          </Button>
+                        )}
+                        <Button variant="ghost" size="sm" onClick={() => handleDeleteExportJob(job)}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
-                  )}
-                  {(backupPlan.errors?.length || 0) > 0 && (
-                    <ul className="list-disc pl-5 text-destructive">
-                      {backupPlan.errors?.map((error) => <li key={error}>{error}</li>)}
-                    </ul>
-                  )}
-                  {(backupPlan.warnings?.length || 0) > 0 && (
-                    <ul className="list-disc pl-5 text-muted-foreground">
-                      {backupPlan.warnings?.map((warning) => <li key={warning}>{warning}</li>)}
-                    </ul>
-                  )}
-                </div>
-              )}
+                    {(job.status === 'queued' || job.status === 'running') && <Progress value={job.progress} />}
+                    {job.error && <p className="text-sm text-destructive">{job.error}</p>}
+                  </div>
+                ))}
+              </div>
             </CardContent>
           </Card>
         </motion.div>
@@ -1006,14 +1077,14 @@ const Settings = () => {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.35 }}
         >
-          <Card>
+          <Card className="border-destructive/30">
             <CardHeader>
               <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-accent/10">
-                  <Database className="h-5 w-5 text-accent" />
+                <div className="p-2 rounded-lg bg-destructive/10">
+                  <Trash2 className="h-5 w-5 text-destructive" />
                 </div>
                 <div>
-                  <CardTitle className="text-lg">Data management</CardTitle>
+                  <CardTitle className="text-lg text-destructive">Danger Zone</CardTitle>
                   <CardDescription>Permanently clear your data. These actions cannot be undone.</CardDescription>
                 </div>
               </div>
@@ -1056,6 +1127,27 @@ const Settings = () => {
                 >
                   Delete all Mail Accounts
                 </Button>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Delete all Recordings</p>
+                  <p className="text-sm text-muted-foreground">Remove all recordings and stored audio files</p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setClearRecordingsOpen(true)}
+                >
+                  Delete all Recordings
+                </Button>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-destructive">Delete Account</p>
+                  <p className="text-sm text-muted-foreground">Permanently delete your account and all data</p>
+                </div>
+                <Button variant="destructive" onClick={() => setDeleteAccountOpen(true)}>Delete Account</Button>
               </div>
             </CardContent>
           </Card>
@@ -1311,37 +1403,54 @@ const Settings = () => {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-
-        {/* Danger Zone */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.4 }}
-        >
-          <Card className="border-destructive/30">
-            <CardHeader>
-              <CardTitle className="text-lg text-destructive">Danger Zone</CardTitle>
-              <CardDescription>Irreversible actions</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-foreground">Sign Out</p>
-                  <p className="text-sm text-muted-foreground">Sign out of your account on this device</p>
-                </div>
-                <Button variant="outline" onClick={signOut}>Sign Out</Button>
-              </div>
-              <Separator />
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="font-medium text-destructive">Delete Account</p>
-                  <p className="text-sm text-muted-foreground">Permanently delete your account and all data</p>
-                </div>
-                <Button variant="destructive" disabled>Delete Account</Button>
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
+        <AlertDialog open={clearRecordingsOpen} onOpenChange={setClearRecordingsOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete all recordings?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete all your recordings and stored audio files and cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleClearRecordings();
+                }}
+                disabled={clearRecordingsLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {clearRecordingsLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete all
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <AlertDialog open={deleteAccountOpen} onOpenChange={setDeleteAccountOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete your account?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This permanently deletes your account and all associated UniHub data. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleDeleteAccount();
+                }}
+                disabled={deleteAccountLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {deleteAccountLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete account
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   );

@@ -58,6 +58,16 @@ module.exports = {
         [userId, like, like, like]
       );
 
+      const [recordings] = await db.execute(
+        `SELECT id, title, description, created_at
+         FROM recordings
+         WHERE user_id = ?
+           AND (title LIKE ? OR description LIKE ? OR original_filename LIKE ?)
+         ORDER BY created_at DESC
+         LIMIT ${perTypeLimit}`,
+        [userId, like, like, like]
+      );
+
       const results = [
         ...contacts.map((contact) => {
           const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.email || 'Contact';
@@ -88,6 +98,15 @@ module.exports = {
           entity_id: event.id,
           date: isoDate(event.start_time),
           status: event.todo_status || null,
+        })),
+        ...recordings.map((recording) => ({
+          id: `recording:${recording.id}`,
+          type: 'recording',
+          title: recording.title,
+          subtitle: recording.description || isoDate(recording.created_at) || 'Recording',
+          href: `/recordings?search=${encodeURIComponent(q)}`,
+          entity_id: recording.id,
+          date: isoDate(recording.created_at),
         })),
       ];
 

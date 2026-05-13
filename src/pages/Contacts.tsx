@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, type MouseEvent } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -101,6 +102,8 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 const Contacts = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const location = useLocation();
   const [searchQuery, setSearchQuery] = useState('');
   const [group, setGroup] = useState<ContactGroup>('all');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -124,6 +127,15 @@ const Contacts = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const debouncedSearch = useDebouncedValue(searchQuery, SEARCH_DEBOUNCE_MS);
+
+  const { data: preferences } = useQuery({
+    queryKey: ['settings', 'preferences'],
+    queryFn: async () => {
+      const response = await api.get<{ preferences: { email_link_behavior: 'mailto' | 'internal' } }>('/settings/preferences');
+      if (response.error) throw new Error(response.error);
+      return response.data?.preferences || { email_link_behavior: 'mailto' };
+    },
+  });
 
   // Open new contact dialog if linked from dashboard
   useEffect(() => {
@@ -255,6 +267,18 @@ const Contacts = () => {
 
     return filtered;
   }, [allContacts, debouncedSearch, group, duplicateMeta]);
+
+  const handleEmailClick = (event: MouseEvent<HTMLAnchorElement>, email: string) => {
+    if (preferences?.email_link_behavior !== 'internal') return;
+    event.preventDefault();
+    const returnTo = `${location.pathname}${location.search}`;
+    const params = new URLSearchParams({
+      action: 'compose',
+      to: email,
+      returnTo,
+    });
+    navigate(`/mail?${params.toString()}`);
+  };
 
   // Create contact mutation
   const createContact = useMutation({
@@ -898,6 +922,7 @@ const Contacts = () => {
                           <a
                             key={`${email}-${idx}`}
                             href={`mailto:${email}`}
+                            onClick={(event) => handleEmailClick(event, String(email))}
                             className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 truncate max-w-[220px] text-xs"
                           >
                             <Mail className="h-3.5 w-3.5 shrink-0" />

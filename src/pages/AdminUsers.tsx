@@ -7,7 +7,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   AlertDialog,
@@ -22,7 +21,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
-import { Shield, Key, Trash2, Loader2, UserCheck, UserX, Settings } from 'lucide-react';
+import { Shield, Key, Trash2, Loader2, UserCheck, UserX, UserCog } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 interface UserRow {
@@ -52,16 +51,6 @@ const AdminUsers = () => {
     enabled: user?.role === 'admin',
   });
   
-  const { data: signupModeData } = useQuery({
-    queryKey: ['admin', 'signup-mode'],
-    queryFn: async () => {
-      const response = await api.get<{ signup_mode: string }>('/admin/settings/signup-mode');
-      if (response.error) throw new Error(response.error);
-      return response.data!.signup_mode;
-    },
-    enabled: user?.role === 'admin',
-  });
-
   const deleteUser = useMutation({
     mutationFn: async (userId: string) => {
       const response = await api.delete(`/admin/users/${userId}`);
@@ -73,6 +62,20 @@ const AdminUsers = () => {
     },
     onError: (err: Error) => {
       toast({ title: 'Failed to delete user', description: err.message, variant: 'destructive' });
+    },
+  });
+
+  const updateUserRole = useMutation({
+    mutationFn: async ({ userId, role }: { userId: string; role: 'user' | 'admin' }) => {
+      const response = await api.put(`/admin/users/${userId}/role`, { role });
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+      toast({ title: variables.role === 'admin' ? 'User promoted to admin' : 'User changed to standard user' });
+    },
+    onError: (err: Error) => {
+      toast({ title: 'Failed to update role', description: err.message, variant: 'destructive' });
     },
   });
   
@@ -90,20 +93,6 @@ const AdminUsers = () => {
     },
   });
   
-  const updateSignupMode = useMutation({
-    mutationFn: async (mode: string) => {
-      const response = await api.put('/admin/settings/signup-mode', { signup_mode: mode });
-      if (response.error) throw new Error(response.error);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'signup-mode'] });
-      toast({ title: 'Signup settings updated' });
-    },
-    onError: (err: Error) => {
-      toast({ title: 'Failed to update settings', description: err.message, variant: 'destructive' });
-    },
-  });
-
   const handleChangePassword = async () => {
     if (!passwordDialogUser || !newPassword || newPassword.length < 12) {
       toast({ title: 'New password must be at least 12 characters', variant: 'destructive' });
@@ -151,51 +140,6 @@ const AdminUsers = () => {
       >
         <h1 className="text-2xl font-bold text-foreground">User Management</h1>
         <p className="text-muted-foreground">Manage accounts and reset passwords</p>
-      </motion.div>
-
-      {/* Signup Settings */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.1 }}
-        className="mb-6"
-      >
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-info/10">
-                  <Settings className="h-5 w-5 text-info" />
-                </div>
-                <div>
-                  <CardTitle className="text-lg">Signup Settings</CardTitle>
-                  <CardDescription>Control who can create accounts</CardDescription>
-                </div>
-              </div>
-              <div className="w-64">
-                <Select 
-                  value={signupModeData || 'open'} 
-                  onValueChange={(mode) => updateSignupMode.mutate(mode)}
-                  disabled={updateSignupMode.isPending}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="open">Open (anyone can sign up)</SelectItem>
-                    <SelectItem value="approval">Approval required (inactive until approved)</SelectItem>
-                    <SelectItem value="disabled">Disabled (no signups)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            {signupModeData === 'open' && '✓ New users can sign up and immediately access the app.'}
-            {signupModeData === 'approval' && '⏳ New users can sign up but need admin approval before accessing the app.'}
-            {signupModeData === 'disabled' && '✗ New user signups are completely disabled.'}
-          </CardContent>
-        </Card>
       </motion.div>
 
       <motion.div
@@ -277,6 +221,15 @@ const AdminUsers = () => {
                             Deactivate
                           </Button>
                         )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => updateUserRole.mutate({ userId: u.id, role: u.role === 'admin' ? 'user' : 'admin' })}
+                          disabled={updateUserRole.isPending}
+                        >
+                          <UserCog className="h-3.5 w-3.5 mr-1" />
+                          {u.role === 'admin' ? 'Make user' : 'Make admin'}
+                        </Button>
                         <Button
                           variant="outline"
                           size="sm"
