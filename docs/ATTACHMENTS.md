@@ -1,95 +1,149 @@
-# Email Attachments - Technical Documentation
+# Email Attachments Technical Documentation
 
 ## Overview
 
-UniHub handles two kinds of email attachments during IMAP sync: **regular attachments** (downloadable files) and **inline attachments** (images embedded in HTML email bodies).
+UniHub stores email attachments on disk and metadata in MySQL. Attachments come
+from two paths:
 
-## Types
-
-| Type | Stored where | Shown how |
-|------|-------------|-----------|
-| Regular | Filesystem + DB metadata | Listed below the email body with download links |
-| Inline | Filesystem + DB metadata; `cid:` URLs replaced in HTML | Rendered inside the sandboxed email iframe |
+- IMAP sync, including regular attachments and inline `cid:` images
+- SMTP compose, where sent attachments are saved with the sent-mail copy
 
 ## Storage
 
 ### Filesystem
 
-- Location: `/app/uploads/attachments/`
-- Naming convention: `{emailId}-{attachmentId}-{sanitised_filename}`
-- Files are written as raw binary; no transcoding.
+Attachment root:
 
-### Database (`email_attachments` table)
+```text
+/app/uploads/attachments/<userId>/
+```
+
+Filename pattern during mail sync and send:
+
+```text
+<emailId>-<attachmentId>-<sanitized_filename>
+```
+
+The `uploads_data` Docker volume persists this path in the default Compose
+deployment.
+
+### Database
+
+Table: `email_attachments`
 
 | Column | Purpose |
-|--------|---------|
+| --- | --- |
 | `id` | UUID primary key |
-| `email_id` | FK to `emails` |
-| `user_id` | FK to `users` (for ownership checks) |
+| `email_id` | Parent email |
+| `user_id` | Owner, used for direct attachment authorization |
 | `filename` | Original filename |
-| `content_type` | MIME type |
-| `size_bytes` | File size |
-| `storage_path` | Absolute filesystem path |
-| `content_id` | CID value for inline attachments (null for regular) |
+| `content_type` | MIME type from parser/send payload |
+| `size_bytes` | Stored file size |
+| `storage_path` | Absolute path under attachment root |
+| `content_id` | CID for inline attachments, null for regular files |
+| `created_at` | Insert timestamp |
 
-## Processing During Sync
+## IMAP Sync Processing
 
-For each attachment found by `mailparser`:
+For each parsed attachment:
 
-1. Generate a UUID attachment ID.
-2. Sanitise the filename (strip non-alphanumeric characters except `.`, `-`, `_`).
-3. Write content to disk (handles Buffer, string, and stream inputs).
-4. Insert metadata row into `email_attachments`.
-5. If the attachment is inline (has a `contentId` / `cid`):
-   - Replace all `cid:{value}` references in the email's HTML body with `/api/mail/attachments/{id}`.
-   - Update the `body_html` column in `emails` with the rewritten HTML.
+1. Generate an attachment UUID.
+2. Sanitize the filename for filesystem use.
+3. Write the content to `/app/uploads/attachments/<userId>/`.
+4. Insert an `email_attachments` row.
+5. If the attachment has `contentId`/`cid`, replace matching `cid:` URLs in the
+   email HTML body with `/api/mail/attachments/<attachmentId>`.
+6. If inline replacements changed the HTML, update `emails.body_html`.
 
-Individual attachment failures are logged and skipped; the rest of the email sync continues.
+Individual attachment write failures are logged and skipped. The parent email
+sync continues.
 
 ## Download Endpoint
 
-### `GET /api/mail/attachments/:id`
+`GET /api/mail/attachments/:id`
 
-1. Authenticate via session cookie.
-2. Look up the attachment and verify the requesting user owns it (`user_id` check).
-3. Resolve the filesystem path and apply a **path-traversal guard**: `path.resolve(storage_path)` must start with the uploads root (`/app/uploads/attachments`). Requests that escape this root are rejected.
-4. Read the file and return it with the correct `Content-Type` and `Content-Disposition: attachment` headers.
+Behavior:
 
-Common MIME types (PDF, JPEG, PNG, plain text) are normalised from the filename extension if the stored `content_type` is generic.
+1. Requires authenticated session.
+2. Selects the attachment by `id` and `user_id`.
+3. Resolves the stored path.
+4. Rejects paths outside `/app/uploads/attachments`.
+5. Reads the file and returns it as a raw response.
+6. Normalizes common MIME types from filename when stored content type is generic.
+
+The request handler sets `Content-Disposition: attachment` for raw attachment
+responses. Inline images still load through the authenticated endpoint because
+their `cid:` references are replaced before rendering.
 
 ## Frontend Rendering
 
-### Email HTML (inline images)
+HTML email content is rendered by
+`src/components/mail/SafeEmailContent.tsx` inside:
 
-Email HTML is rendered inside a **sandboxed iframe** (`<iframe sandbox="" srcDoc={html}>`). The empty `sandbox` attribute blocks all script execution, form submission, and popups. Inline images load via the attachment endpoint because the `cid:` URLs were already replaced during sync.
+```tsx
+<iframe sandbox="" srcDoc={html} />
+```
 
-The `SafeEmailContent` component (`src/components/mail/SafeEmailContent.tsx`) encapsulates this:
+An empty sandbox blocks scripts, forms, popups, and same-origin access. When
+HTML is unavailable, the component renders plain text in a preformatted block.
 
-- If `body_html` is available: render in sandboxed iframe.
-- Otherwise: render `body_text` as preformatted plain text.
-
-### Regular attachments
-
-Displayed below the email body as a list showing filename, MIME type, and size. Each item is a button that triggers `api.getBlob('/mail/attachments/{id}')` and initiates a browser download.
+Regular attachments are listed below the email body. Clicking one calls
+`api.getBlob('/mail/attachments/<id>')` with cookie credentials.
 
 ## Compose Attachments
 
-When composing/replying/forwarding, users can attach files from their device:
+`POST /api/mail/send` accepts base64-encoded attachment objects:
 
-- Files are read client-side, base64-encoded, and sent in the `POST /api/mail/send` payload.
-- Limits: max 20 attachments, each up to 15 MB, total up to 25 MB.
-- The backend passes them to `nodemailer` for SMTP delivery.
+```json
+{
+  "filename": "report.pdf",
+  "contentType": "application/pdf",
+  "dataBase64": "..."
+}
+```
 
-## Security
+Limits enforced by the backend:
 
-- **Ownership check**: every download verifies the requesting user owns the attachment.
-- **Path-traversal guard**: resolved path must stay within `/app/uploads/attachments`.
-- **Sandboxed rendering**: inline images display inside a script-free iframe, preventing XSS from email HTML.
-- **No direct filesystem access**: attachments are only served through the authenticated API endpoint.
+- max 20 attachments
+- max 15 MB per attachment after base64 decode
+- max 25 MB total decoded attachment bytes
+- route request body cap: 30 MB
+
+Sent attachments are written to the same attachment root and linked to the local
+sent-mail copy.
+
+## Cleanup Behavior
+
+Attachment files are deleted when:
+
+- a mail account is deleted through `DELETE /api/mail/accounts/:id`
+- all mail accounts are cleared through `POST /api/settings/clear-mail-accounts`
+- the user account is deleted through `DELETE /api/settings/account`
+
+There is no age-based attachment cleanup job.
+
+## Security Notes
+
+- Download authorization uses the attachment `user_id`.
+- File serving has a path traversal guard.
+- Email HTML is isolated in a sandboxed iframe.
+- Attachment paths are not exposed as direct static files.
+- State-changing mail routes require CSRF validation.
+
+## Related Raw Email Storage
+
+The mail sync service also stores raw imported email source below:
+
+```text
+/app/uploads/mail-raw/<userId>/
+```
+
+Those `.eml` files are used by backup/export workflows and are cleaned up during
+account deletion where applicable.
 
 ## Limitations
 
-1. No in-browser file preview (download only).
-2. No virus/malware scanning.
-3. No automatic cleanup of old attachments.
-4. No server-enforced per-attachment size limit during sync (only during compose).
+- No inline preview UI for regular attachments.
+- No antivirus or malware scanning.
+- No per-user attachment quota.
+- No automatic cleanup for orphaned files outside explicit delete flows.

@@ -1,105 +1,159 @@
-# Contacts - Technical Documentation
+# Contacts Technical Documentation
 
 ## Overview
 
-UniHub provides contact management with vCard 3.0 import/export, search, group filtering, favorites, and bulk operations.
+Contacts are per-user records stored in MySQL. The current implementation
+supports:
 
-## Database Schema (`contacts` table)
+- server-side search and grouping
+- favorites and bulk delete
+- up to three email addresses and three phone numbers per contact
+- vCard 3.0 import/export
+- import-time duplicate skipping
+- duplicate preview and merge across existing contacts
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | UUID | Primary key |
-| `user_id` | UUID | FK to `users` |
-| `first_name` | VARCHAR(255) | Required |
-| `last_name` | VARCHAR(255) | Nullable |
-| `email` | VARCHAR(255) | Nullable |
-| `phone` | VARCHAR(50) | Nullable |
-| `company` | VARCHAR(255) | Nullable |
-| `job_title` | VARCHAR(255) | Nullable |
-| `notes` | TEXT | Nullable |
-| `is_favorite` | BOOLEAN | Default false |
-| `created_at` | TIMESTAMP | Auto-set |
-| `updated_at` | TIMESTAMP | Auto-updated |
+## Data Model
 
-Indexes: `idx_contacts_user`, `idx_contacts_email`, `idx_contacts_favorite`.
+Primary table: `contacts`
+
+| Column | Notes |
+| --- | --- |
+| `id` | UUID primary key |
+| `user_id` | Owner, cascades when the user is deleted |
+| `first_name` | Required for manual create; imports can derive it from other identity fields |
+| `last_name` | Nullable |
+| `email`, `email2`, `email3` | Up to three email addresses |
+| `phone`, `phone2`, `phone3` | Up to three phone numbers |
+| `company`, `job_title`, `notes` | Optional metadata |
+| `avatar_url` | Stored field, currently not populated by vCard import |
+| `is_favorite` | Favorite flag |
+| `created_at`, `updated_at` | Database timestamps |
+
+Important indexes:
+
+- `idx_contacts_user`
+- `idx_contacts_name`
+- `idx_contacts_email`
+- `idx_contacts_favorite`
+- `idx_contacts_user_fav_name`
 
 ## API Endpoints
 
-All endpoints require authentication via session cookie. State-changing requests require a valid `X-CSRF-Token` header.
+All endpoints require an authenticated session cookie. State-changing requests
+require `X-CSRF-Token`.
 
 | Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/contacts` | List contacts (supports `?q=` search and `?group=` filter) |
-| POST | `/api/contacts` | Create a contact |
-| PUT | `/api/contacts/:id` | Update a contact (ownership enforced) |
-| DELETE | `/api/contacts/:id` | Delete a contact (ownership enforced) |
-| PUT | `/api/contacts/:id/favorite` | Toggle favorite status |
-| POST | `/api/contacts/import` | Import contacts from vCard file |
-| GET | `/api/contacts/export` | Export all contacts as a `.vcf` download |
+| --- | --- | --- |
+| GET | `/api/contacts` | List contacts |
+| POST | `/api/contacts` | Create contact |
+| PUT | `/api/contacts/:id` | Update contact owned by the current user |
+| DELETE | `/api/contacts/:id` | Delete contact owned by the current user |
+| PUT | `/api/contacts/:id/favorite` | Set favorite status |
 | POST | `/api/contacts/bulk-delete` | Delete multiple contacts by ID |
+| POST | `/api/contacts/merge-duplicates/preview` | Preview duplicate groups and merge targets |
+| POST | `/api/contacts/merge-duplicates` | Merge detected duplicate groups |
+| GET | `/api/contacts/export` | Download `contacts.vcf` |
+| POST | `/api/contacts/import` | Import vCard payload |
 
-### Search and group filtering
+### List Query Parameters
 
-`GET /api/contacts?q=alice&group=name_only`
+`GET /api/contacts?q=alice&group=all&limit=200`
 
-- `q`: full-text search across first name, last name, email, phone, company.
-- `group`: `all` (default), `name_only` (contacts with only a name), `number_or_email_only` (contacts that have a phone or email).
+| Parameter | Behavior |
+| --- | --- |
+| `q` | Search first name, last name, all email fields, all phone fields, and company |
+| `group` | `all`, `name_only`, or `number_or_email_only` |
+| `limit` | 1-2000, default 2000 |
+
+Results are ordered by favorite status, then first name, then last name.
 
 ## vCard Import
 
-### Process
+`POST /api/contacts/import` accepts JSON:
 
-1. User uploads a `.vcf` file via the frontend file picker.
-2. File content is sent as a JSON string to `POST /api/contacts/import` (max 500 KB).
-3. The backend splits the file into individual `BEGIN:VCARD` ... `END:VCARD` blocks.
-4. Each block is parsed: `N`, `FN`, `EMAIL`, `TEL`, `ORG`, `TITLE`, `NOTE` properties are extracted.
-5. Encoding is handled automatically (quoted-printable decoding, vCard character escaping).
-6. Contacts are inserted into the database; the response reports how many were imported.
+```json
+{
+  "vcf_data": "BEGIN:VCARD..."
+}
+```
 
-### Property mapping
+The request body limit for this route is 500 KB.
 
-| vCard property | Database field | Notes |
-|----------------|---------------|-------|
-| `N` | `first_name`, `last_name` | Format: `Last;First` |
-| `FN` | `first_name`, `last_name` | Fallback when `N` is absent |
-| `EMAIL` | `email` | First email used |
-| `TEL` | `phone` | First phone used |
-| `ORG` | `company` | |
-| `TITLE` | `job_title` | |
-| `NOTE` | `notes` | |
+Import behavior:
 
-### Compatibility
+1. vCard continuation lines are unfolded.
+2. `N`, `FN`, `EMAIL`, `TEL`, `ORG`, `TITLE`, and `NOTE` are parsed.
+3. Quoted-printable values and escaped vCard text are decoded.
+4. The first three unique email values and first three unique phone values are kept.
+5. Contacts with no useful identity field are skipped.
+6. Duplicate identity keys are skipped within the uploaded file.
+7. Existing contacts with the same normalized email or phone are skipped.
 
-Tested with exports from Google Contacts, Apple Contacts, and Microsoft Outlook (vCard 3.0). Quoted-printable encoding from Apple is handled automatically.
+Property mapping:
+
+| vCard property | Contact fields |
+| --- | --- |
+| `N` | `last_name`, `first_name` |
+| `FN` | fallback name when `N` is absent |
+| `EMAIL` | `email`, `email2`, `email3` |
+| `TEL` | `phone`, `phone2`, `phone3` |
+| `ORG` | `company` |
+| `TITLE` | `job_title` |
+| `NOTE` | `notes` |
 
 ## vCard Export
 
-1. User clicks Export in the UI.
-2. Frontend calls `api.getBlob('/contacts/export')` -- this uses the cookie-based session (no manual bearer token needed).
-3. The backend generates a vCard 3.0 string for each contact, concatenates them, and returns the file with `Content-Type: text/vcard` and `Content-Disposition: attachment; filename="contacts.vcf"`.
+`GET /api/contacts/export` returns vCard 3.0 with:
 
-## Frontend Features
+- one card per contact
+- all non-empty email and phone fields
+- `ORG`, `TITLE`, and `NOTE` when present
+- `Content-Type: text/vcard`
+- `Content-Disposition` for `contacts.vcf`
 
-- Contact list with real-time debounced search (300 ms)
-- Group tabs: All, Name only, Number/email only
-- Create/edit dialog with form validation
-- Favorite toggle (star icon)
-- Bulk selection with checkboxes and bulk delete
-- Import (file picker for `.vcf` files)
-- Export (downloads `contacts.vcf`)
-- Clickable `mailto:` and `tel:` links on contact cards
+The endpoint returns 404 when the current user has no contacts.
 
-## Security
+## Duplicate Merge
 
-- All endpoints enforce `user_id` ownership via parameterised SQL queries.
-- CSRF token required on all state-changing operations.
-- Export uses cookie auth (`credentials: 'include'`) -- no token in localStorage or URL.
-- Import body size capped at 500 KB.
+Duplicate detection groups contacts by normalized email and phone identity keys.
+The merge process:
+
+1. ranks contacts by completeness score and age
+2. keeps the highest-ranked contact as the primary row
+3. combines unique emails and phones up to the three-field limit
+4. preserves favorite status if any duplicate was favorited
+5. concatenates unique notes
+6. deletes the duplicate rows after updating the primary row
+
+Use the preview endpoint before applying merge in UI flows.
+
+## Frontend Behavior
+
+The contacts page provides:
+
+- debounced search
+- group tabs
+- create/edit dialog
+- favorite toggle
+- bulk selection and delete
+- vCard import/export
+- duplicate merge actions
+- clickable `mailto:` and `tel:` links
+
+The user preference `email_link_behavior` controls whether email links open the
+system mail client (`mailto`) or UniHub mail composition (`internal`) where the
+frontend supports it.
+
+## Security Notes
+
+- All reads and writes are scoped by `user_id`.
+- SQL queries are parameterized.
+- State-changing routes require CSRF validation.
+- Import size is capped by the request handler.
 
 ## Limitations
 
-- Only vCard 3.0 supported (not 2.1 or 4.0).
-- Single email and phone per contact (first value used on import).
-- No photo/avatar support.
-- No address fields.
-- No automatic duplicate detection on import.
+- vCard 3.0 is the primary supported format.
+- Only the first three emails and first three phone numbers are stored.
+- Photos and postal addresses are not imported/exported.
+- Duplicate detection is based on normalized email/phone identity, not fuzzy name matching.

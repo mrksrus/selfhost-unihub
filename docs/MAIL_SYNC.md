@@ -1,165 +1,257 @@
-# Mail Sync - Technical Documentation
+# Mail Sync Technical Documentation
 
 ## Overview
 
-UniHub synchronises email using the IMAP protocol to fetch messages from external providers (Gmail, iCloud, Yahoo, Outlook, or any standard IMAP server) and stores them locally in MySQL. Outbound mail is sent via SMTP.
+UniHub stores mail locally after fetching it from IMAP providers and sends
+outbound mail through SMTP. The mail system includes:
+
+- encrypted mail credentials
+- strict TLS by default
+- host policy checks for unknown/private mail hosts
+- multi-folder IMAP import for common provider folders
+- app-owned folders and sender/domain routing rules
+- raw `.eml` archiving
+- attachment storage and inline `cid:` rewriting
+- manual, periodic, and service-worker background sync triggers
 
 ## Components
 
-| Component | Library / Module | Role |
-|-----------|-----------------|------|
-| IMAP client | `imap-simple` | Connect, authenticate, search, fetch |
-| Email parser | `mailparser` | Parse RFC 822 messages into structured data |
-| SMTP sender | `nodemailer` | Send composed/reply/forwarded emails |
-| Encryption | Node.js `crypto` (AES-256-GCM) | Encrypt/decrypt stored mail account passwords |
-| TLS inspector | Node.js `tls` | Fetch certificate metadata during host/certificate verification |
-| DNS resolver | Node.js `dns.promises` | Resolve mail hosts to detect private/local addresses |
+| Component | Module/library | Role |
+| --- | --- | --- |
+| IMAP client | `imap-simple` | Connect, search, fetch messages |
+| Parser | `mailparser` | Parse RFC 822 messages |
+| SMTP sender | `nodemailer` | Send composed mail |
+| Encryption | `api/src/security/encryption.js` | AES-256-GCM encryption for stored credentials |
+| Host policy | `api/src/services/mail.js` | DNS/private-IP checks and known-provider classification |
+| Raw archive | filesystem | Stores imported `.eml` source below `/app/uploads/mail-raw` |
+| Attachments | filesystem + DB | Stores regular and inline attachments below `/app/uploads/attachments` |
 
 ## Database Tables
 
-- `mail_accounts` -- credentials (encrypted), IMAP/SMTP settings, last-sync timestamp, user association
-- `mail_accounts.sync_fetch_limit` -- initial import mode (`all`)
-- `emails` -- message metadata, plain-text body, HTML body, folder, read/starred status
-- `email_attachments` -- attachment metadata, filesystem path, Content-ID for inline images
-- `mail_folders` -- app-owned folder catalog per user (system folders + custom UI targets)
-- `mail_sender_rules` -- active sender/domain-to-folder routing rules (global + account-scoped precedence)
-- `mail_email_scores` -- future scam/spam scoring snapshots per email (schema ready, logic not active yet)
+| Table | Purpose |
+| --- | --- |
+| `mail_accounts` | IMAP/SMTP settings, encrypted password, sync metadata, TLS trust state |
+| `mail_folders` | Per-user app folder catalog |
+| `mail_sender_rules` | Sender/domain routing rules |
+| `emails` | Local email metadata, bodies, folder, read/star state, raw archive path |
+| `email_attachments` | Attachment metadata and storage path |
+| `mail_email_scores` | Reserved schema for future scam/spam scoring |
 
 ## Account Creation Flow
 
-### 1. Preflight host assessment
+`POST /api/mail/accounts` accepts account details, validates the mail host, tests
+IMAP credentials, saves the account, optionally attempts CalDAV import, then
+starts mail sync in the background.
 
-Before an account is saved or its server settings are changed, the backend verifies the IMAP and SMTP host/port. The backend:
+Main payload fields:
 
-1. Classifies each host as **known provider** (Gmail, iCloud, Yahoo, Outlook, Hotmail, Live) or **unknown**.
-2. Checks whether the host appears in the `TRUSTED_MAIL_HOSTS` env allowlist.
-3. Resolves the hostname via DNS and checks whether any resolved address is private or local (RFC 1918, loopback, link-local, IPv6 ULA/link-local).
-4. If the host resolves to a private/local address and is not allowlisted, the request is **blocked** (HTTP 400).
-5. If the host is unknown or a TLS certificate cannot be fully verified, the backend returns warnings plus certificate metadata (subject, issuer, validity, fingerprint).
+| Field | Notes |
+| --- | --- |
+| `email_address` | Required |
+| `encrypted_password` | Required; despite the name, this is the plaintext password from the client and is encrypted server-side |
+| `provider` | Stored provider label |
+| `username` | Optional IMAP/SMTP username; defaults to email address |
+| `imap_host`, `imap_port` | Required host, port defaults to 993 |
+| `smtp_host`, `smtp_port` | Required host, port defaults to 587 |
+| `sync_fetch_limit` | Currently normalized to `all` |
+| `accept_host_trust` | Allows a user-confirmed TLS trust exception |
+| `try_calendar_sync`, `caldav_url` | Optional one-time CalDAV discovery/import after mail account creation |
 
-The frontend displays a "Confirm Mail Server Authenticity" dialog with the warnings and certificate details. The user must explicitly continue before the account is created or updated.
+### Host Policy
 
-### 2. Connection test
+Before saving an account, the backend:
 
-After host/certificate verification passes (or the user confirms), the backend:
+1. normalizes IMAP and SMTP hosts
+2. classifies known provider suffixes such as Gmail, iCloud, Yahoo, Outlook, and Office 365
+3. checks `TRUSTED_MAIL_HOSTS`
+4. resolves DNS and detects private/local addresses
+5. blocks private/local hosts unless allowlisted
+6. returns warnings for unknown hosts
+7. requires explicit user confirmation for TLS trust failures
 
-1. Encrypts the password with AES-256-GCM and creates a temporary account object.
-2. Opens a test IMAP connection to verify credentials (`testImapConnection`).
-3. If authentication fails, returns an error immediately without saving.
+Self-hosted mail servers that resolve to private/local addresses must be listed
+in `TRUSTED_MAIL_HOSTS`.
 
-### 3. Account persistence and initial sync
+## Sync Triggers
 
-On success:
+| Trigger | Endpoint/process | Behavior |
+| --- | --- | --- |
+| Initial account add | account creation route | starts non-blocking sync when no other sync is running |
+| Periodic server sync | `api/src/app.js` interval | every 10 minutes for active accounts |
+| Manual sync | `POST /api/mail/sync` | waits for sync result for one account |
+| Service worker sync | `POST /api/mail/sync/background` | starts at most one sync if data is stale |
 
-1. The account is inserted into `mail_accounts`.
-2. A background sync (`syncMailAccount`) is started immediately (non-blocking).
-3. The API returns `{ authSuccess: true, syncInProgress: true }`.
+Only one mail sync runs at a time. A second request returns an already-running
+result or skips starting a new sync.
 
-## Sync Process
+## IMAP Folder Strategy
 
-### Trigger points
+The sync service lists provider folders and selects common folder names:
 
-- **Automatic**: every 10 minutes for active accounts when no mail sync is already running
-- **Manual**: user clicks Sync in the UI (`POST /api/mail/sync`)
-- **Initial**: immediately after account creation
+| UniHub folder | IMAP names checked |
+| --- | --- |
+| `inbox` | `INBOX` |
+| `sent` | `Sent`, `Sent Items`, `Sent Mail`, Gmail sent folders |
+| `archive` | `Archive`, `Archives`, Gmail all-mail folders |
+| `trash` | `Trash`, `Deleted Items`, `Deleted Messages`, Gmail trash folders |
 
-### Fetch strategy
+If no inbox candidate is found, `INBOX` is still tried.
 
-1. Connect to IMAP server (TLS on port 993, STARTTLS on port 143).
-2. Discover supported mail folders and open each selected folder sequentially.
-3. If last-sync timestamp exists, search with `SINCE` (minus 1-day safety margin). Otherwise search `ALL` for the first full import.
-4. Remove UIDs that are already stored locally before downloading message bodies.
-5. For each remaining UID, fetch the full RFC 822 message individually.
-6. Parse with `mailparser`.
-7. Check for duplicates by `message_id`.
-8. Resolve destination folder using `mail_sender_rules` and sender normalization before insert (fallback: `inbox`).
-9. Insert into `emails`; process attachments; replace inline `cid:` references with `/api/mail/attachments/{id}` URLs.
-10. Update `last_synced_at` on the account.
+System app folders created per user:
 
-### Sync limit behavior
+- `inbox`
+- `sent`
+- `archive`
+- `trash`
+- `important`
+- `marketing`
+- `scam`
+- `unknown`
+- `twofactor_notifications`
 
-- Initial sync imports all available messages.
-- Later syncs are incremental and use `last_synced_at` plus local UID filtering so already-imported messages are not downloaded again.
-- If the provider returns malformed or inconsistent UID search results, sync aborts with a clear error instead of importing partial/corrupt placeholders.
-- No dummy/empty emails are created when counts mismatch.
+Users can create additional app-owned folders. These folders are local
+classification targets; UniHub does not create corresponding provider folders.
 
-### App-owned folders
+## Fetch Strategy
 
-System folders currently available in UI/API:
+For each selected folder:
 
-- `inbox`, `sent`, `archive`, `trash`
-- `important`, `marketing`, `scam`, `unknown`, `twofactor_notifications`
+1. Open the IMAP folder.
+2. Read current `UIDVALIDITY` when available.
+3. Search all messages on first sync, or `SINCE last_synced_at - 1 day` after that.
+4. Extract numeric UIDs and abort cleanly if the provider returns malformed UID data.
+5. Remove UIDs already stored locally for that account/folder.
+6. Fetch each remaining message one at a time.
+7. Build raw RFC 822 source from IMAP parts.
+8. Parse with `mailparser`.
+9. Detect existing imports by `message_id` or `(account, source_folder, imap_uid)`.
+10. Repair older incomplete rows when possible.
+11. Store the raw `.eml`, metadata, text body, HTML body, and attachment metadata.
+12. Apply sender routing rules before insert.
+13. Update `last_synced_at` after successful folder processing.
 
-### Active sender/domain routing behavior
+Fetching one UID at a time is slower, but it limits memory use and lets one bad
+message fail without losing the whole sync.
 
-Inbound sync resolves the destination folder at write-time using the sender rule resolver.
+## Sender Routing Rules
 
-Resolution flow:
+Rules route new inbound messages into app folders during sync.
 
-1. Normalize sender email to lowercase and trim spaces.
-2. Derive sender domain from normalized email.
-3. Load active user rules where scope is global (`mail_account_id IS NULL`) or matches the syncing account.
-4. Deterministically sort candidates:
-   - account-scoped rules before global rules
-   - email match rules before domain match rules
-   - lower `priority` value first
-   - earlier `created_at` first (stable tie-break)
-5. First matching rule wins. If no valid match exists, folder falls back to `inbox`.
+| Rule field | Notes |
+| --- | --- |
+| `match_type` | `email` or `domain` |
+| `match_value` | normalized sender email or domain |
+| `target_folder` | existing mail folder slug |
+| `mail_account_id` | optional account scope; null means global |
+| `priority` | lower number wins |
+| `is_active` | inactive rules are ignored |
 
-Rule CRUD endpoints:
+Resolution order:
 
-- `GET /api/mail/sender-rules`
-- `POST /api/mail/sender-rules`
-- `PUT /api/mail/sender-rules/:id`
-- `DELETE /api/mail/sender-rules/:id`
+1. account-scoped rules before global rules
+2. email rules before domain rules
+3. lower priority first
+4. older creation time first
+5. ID tie-breaker
 
-Backfill endpoint:
+Rule endpoints:
 
-- `POST /api/mail/sender-rules/backfill`
-  - Dry-run by default (`mode` omitted)
-  - Apply updates with `{ "mode": "apply" }`
-  - Optional `account_id` filter and `limit` cap
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/mail/sender-rules` | List rules |
+| POST | `/api/mail/sender-rules` | Create rule |
+| PUT | `/api/mail/sender-rules/:id` | Update rule |
+| DELETE | `/api/mail/sender-rules/:id` | Delete rule |
+| POST | `/api/mail/sender-rules/backfill` | Dry-run or apply routing to existing inbox mail |
 
-### Why one-by-one fetching?
+`POST /api/mail/sender-rules/backfill` is dry-run by default. Use
+`{ "mode": "apply" }` to move matched existing messages.
 
-- A single malformed email does not break the entire sync.
-- Progress is visible in real time via server logs.
-- Memory usage stays bounded (no large batch buffers).
+## Mail API Endpoints
 
-## TLS and Transport Security
+### Folders
 
-All IMAP and SMTP connections use **strict TLS certificate verification** (`rejectUnauthorized: true`). This means:
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/mail/folders` | List folders with total/unread counts |
+| POST | `/api/mail/folders` | Create app-owned folder |
+| PUT | `/api/mail/folders/:slug` | Rename/reposition folder |
+| DELETE | `/api/mail/folders/:slug` | Delete custom folder; messages/rules move to inbox |
 
-- Self-signed certificates are rejected by default.
-- The `servername` option is set for proper SNI.
-- To use a self-hosted mail server that resolves to a private/local address, add its hostname to the `TRUSTED_MAIL_HOSTS` env var. If its certificate is self-signed or otherwise untrusted, the user will still see the confirmation dialog with certificate details.
+System folders cannot be deleted.
 
-Connection timeouts: 60 s connect, 30 s auth, 60 s socket.
+### Accounts
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/mail/accounts` | List accounts with unread counts |
+| POST | `/api/mail/accounts` | Add account and start initial sync |
+| PUT | `/api/mail/accounts/:id` | Update account settings and retest IMAP when needed |
+| DELETE | `/api/mail/accounts/:id` | Delete account and attachment files for that account |
+
+### Messages
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/api/mail/emails` | List/paginate emails |
+| GET | `/api/mail/emails/:id` | Load full email and regular attachment list |
+| PUT | `/api/mail/emails/:id/read` | Set read state |
+| PUT | `/api/mail/emails/:id/star` | Set starred state |
+| POST | `/api/mail/emails/bulk-delete` | Move selected messages to `trash` |
+| POST | `/api/mail/emails/bulk-move` | Move selected messages to another app folder |
+| POST | `/api/mail/emails/bulk-update` | Bulk read/star updates |
+| GET | `/api/mail/unread-counts` | Unread counts by folder and optionally account |
+| GET | `/api/mail/attachments/:id` | Authenticated attachment download |
+| POST | `/api/mail/sync` | Manual sync for one account |
+| POST | `/api/mail/sync/background` | Non-blocking background sync trigger |
+| POST | `/api/mail/send` | Send mail through SMTP |
+
+`GET /api/mail/emails` supports `folder`, `account_id`, `is_read`,
+`is_starred`, `search`, `limit`, `offset`, and `include_count`.
 
 ## SMTP Sending
 
-`POST /api/mail/send` accepts to, subject, body, and optional attachments (base64-encoded, max 20 files, 25 MB total). The backend:
+`POST /api/mail/send` sends with strict TLS by default and saves a local copy in
+the `sent` folder.
 
-1. Loads the sender's account and decrypts the password.
-2. Creates a `nodemailer` transport with strict TLS.
-3. Sends the message.
-4. Saves a copy in the `emails` table with `folder = 'sent'`.
+Compose attachment limits:
+
+- maximum 20 attachments
+- maximum 15 MB per attachment
+- maximum 25 MB total attachment bytes
+- request body cap is 30 MB to allow base64 JSON overhead
+
+SMTP port behavior:
+
+- port 465 uses implicit TLS
+- other ports require STARTTLS
 
 ## Password Encryption
 
-- Algorithm: AES-256-GCM
-- Key derivation: SHA-256 hash of `ENCRYPTION_KEY` env var
-- Format stored in DB: `iv_hex:auth_tag_hex:ciphertext_hex`
-- Passwords are decrypted only at the moment of IMAP/SMTP connection.
+Stored mail passwords use AES-256-GCM through `api/src/security/encryption.js`.
+The encryption key is derived from `ENCRYPTION_KEY` with SHA-256. Stored format:
 
-## Error Handling
+```text
+iv_hex:auth_tag_hex:ciphertext_hex
+```
 
-- Individual email failures during sync are logged and skipped; the sync continues.
-- Connection errors (timeout, auth failure, DNS) return user-friendly messages.
-- SMTP errors during send return the error to the client (without internal stack traces).
+The password is decrypted only when opening IMAP/SMTP connections or optional
+CalDAV import connections.
+
+## Security Notes
+
+- Mail account rows are scoped by `user_id`.
+- State-changing endpoints require CSRF validation.
+- CORS is controlled by `ALLOWED_ORIGINS`.
+- Private/local mail hosts are blocked unless allowlisted.
+- TLS certificate verification is strict unless the user explicitly accepts a trust exception.
+- Email HTML is rendered by the frontend inside a sandboxed iframe.
+- Attachments are served only through authenticated API routes with path guards.
 
 ## Limitations
 
-1. Draft folder sync is not implemented.
-2. No server-side deletion sync (deletes are local only).
-3. One-by-one fetching can be slow for large first imports.
+- Provider-side delete sync is not implemented.
+- Draft sync is not implemented.
+- App folder moves are local and are not propagated to provider folders.
+- First full imports can be slow for large mailboxes.
+- There is no malware scanning for downloaded or uploaded attachments.
