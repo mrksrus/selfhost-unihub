@@ -1,7 +1,7 @@
 const fs = require('fs');
 const routes = require('./routes');
 const { verifyToken, validateCsrfToken } = require('./auth');
-const { parseBody, getAllowedOriginForRequest } = require('./http/request');
+const { parseBody, getAllowedOriginForRequest, isRequestBodyTooLarge } = require('./http/request');
 
 // Request handler
 async function handleRequest(req, res) {
@@ -162,11 +162,19 @@ async function handleRequest(req, res) {
     ) {
       maxBodySize = 50000; // Bulk operations and sync need more space (100 emails * ~36 chars UUID + JSON overhead)
     }
+    if (isRequestBodyTooLarge(req, maxBodySize)) {
+      res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
+      res.end(JSON.stringify({ error: `Request body too large (max ${maxBodySize} bytes)` }));
+      return;
+    }
+
     const body = await parseBody(req, maxBodySize);
 
     if (body === null) {
-      res.writeHead(413, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: `Request body too large (max ${maxBodySize} characters)` }));
+      res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
+      res.end(JSON.stringify({ error: `Request body too large (max ${maxBodySize} bytes)` }), () => {
+        req.destroy();
+      });
       return;
     }
 

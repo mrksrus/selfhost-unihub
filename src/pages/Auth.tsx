@@ -1,18 +1,21 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/useAuth';
+import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Users, Calendar, Mail } from 'lucide-react';
+import { Loader2, Users, Calendar, Mail, Lock } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { z } from 'zod';
 
 const emailSchema = z.string().email('Please enter a valid email address');
 const passwordSchema = z.string().min(12, 'Password must be at least 12 characters');
+type SignupMode = 'open' | 'approval' | 'disabled';
 
 const Auth = () => {
   const { user, signIn, signUp, verifyTwoFactorLogin, loading: authLoading } = useAuth();
@@ -26,12 +29,25 @@ const Auth = () => {
   const [errors, setErrors] = useState<{ email?: string; password?: string }>({});
   const [twoFactorChallengeToken, setTwoFactorChallengeToken] = useState<string | null>(null);
   const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [signupMode, setSignupMode] = useState<SignupMode>('disabled');
 
   useEffect(() => {
     if (user) {
       navigate('/');
     }
   }, [user, navigate]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<{ signup_mode?: SignupMode }>('/auth/signup-mode').then((response) => {
+      if (!cancelled && response.data?.signup_mode) {
+        setSignupMode(response.data.signup_mode);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const validateForm = () => {
     const newErrors: { email?: string; password?: string } = {};
@@ -99,6 +115,14 @@ const Auth = () => {
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (signupMode === 'disabled') {
+      toast({
+        title: 'Signups are disabled',
+        description: 'Contact an administrator if you need an account.',
+        variant: 'destructive',
+      });
+      return;
+    }
     if (!validateForm()) return;
     
     setLoading(true);
@@ -109,9 +133,11 @@ const Auth = () => {
       let message = error.message;
       if (error.message.includes('already registered') || error.message.includes('already exists')) {
         message = 'This email is already registered. Please sign in instead.';
+      } else if (error.message.includes('Signups are currently disabled')) {
+        message = 'Signups are currently disabled. Contact an administrator if you need an account.';
       }
       toast({
-        title: 'Sign up failed',
+        title: error.message.includes('Signups are currently disabled') ? 'Signups are disabled' : 'Sign up failed',
         description: message,
         variant: 'destructive',
       });
@@ -299,6 +325,14 @@ const Auth = () => {
                 
                 <TabsContent value="signup">
                   <form onSubmit={handleSignUp} className="space-y-4">
+                    {signupMode === 'disabled' && (
+                      <Alert>
+                        <Lock className="h-4 w-4" />
+                        <AlertDescription>
+                          New account signups are currently disabled. Contact an administrator if you need access.
+                        </AlertDescription>
+                      </Alert>
+                    )}
                     <div className="space-y-2">
                       <Label htmlFor="signup-name">Full Name</Label>
                       <Input
@@ -307,6 +341,7 @@ const Auth = () => {
                         placeholder="John Doe"
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
+                        disabled={signupMode === 'disabled'}
                         required
                       />
                     </div>
@@ -319,6 +354,7 @@ const Auth = () => {
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         className={errors.email ? 'border-destructive' : ''}
+                        disabled={signupMode === 'disabled'}
                         required
                       />
                       {errors.email && (
@@ -334,13 +370,14 @@ const Auth = () => {
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         className={errors.password ? 'border-destructive' : ''}
+                        disabled={signupMode === 'disabled'}
                         required
                       />
                       {errors.password && (
                         <p className="text-sm text-destructive">{errors.password}</p>
                       )}
                     </div>
-                    <Button type="submit" className="w-full" disabled={loading}>
+                    <Button type="submit" className="w-full" disabled={loading || signupMode === 'disabled'}>
                       {loading ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />

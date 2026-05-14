@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { addDays, endOfDay, format, isAfter, isBefore, parseISO, startOfDay } from 'date-fns';
 import { ArrowRight, Calendar, CheckCircle2, Clock, Mail, Plus, Search, Users } from 'lucide-react';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';

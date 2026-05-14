@@ -59,6 +59,14 @@ async function createSessionResponse(user, res) {
 
 module.exports = {
   // Authentication endpoints
+  'GET /api/auth/signup-mode': async () => {
+    try {
+      return { signup_mode: await getSignupMode() };
+    } catch {
+      return { signup_mode: 'disabled' };
+    }
+  },
+
   'POST /api/auth/signup': async (req, userId, body, res) => {
     const ip = getClientIP(req);
     const blockedMinutes = isRateLimited(ip);
@@ -69,7 +77,7 @@ module.exports = {
     // Check signup mode
     const signupMode = await getSignupMode();
     if (signupMode === 'disabled') {
-      return { error: 'Signups are currently disabled', status: 403 };
+      return { error: 'Signups are currently disabled. Contact an administrator if you need an account.', status: 403 };
     }
 
     const { email, password, full_name } = body;
@@ -412,7 +420,7 @@ module.exports = {
     }
   },
 
-  'PUT /api/auth/password': async (req, userId, body) => {
+  'PUT /api/auth/password': async (req, userId, body, res) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     const { current_password, new_password } = body;
@@ -439,8 +447,11 @@ module.exports = {
 
       const newHash = await hashPassword(new_password);
       await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId]);
+      await db.execute('DELETE FROM sessions WHERE user_id = ?', [userId]);
+      clearAuthCookie(res);
+      clearCsrfCookie(res);
 
-      return { message: 'Password updated successfully' };
+      return { message: 'Password updated successfully. Sign in again on all devices.' };
     } catch (error) {
       console.error('Password change error:', error);
       return { error: 'Failed to change password', status: 500 };

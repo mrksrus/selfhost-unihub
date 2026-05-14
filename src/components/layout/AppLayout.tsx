@@ -1,5 +1,5 @@
 import { Outlet, Navigate } from 'react-router-dom';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/useAuth';
 import { useBackgroundNotificationChecks } from '@/hooks/use-background-notification-checks';
 import { useCalendarNotifications } from '@/hooks/use-calendar-notifications';
 import { useMailNotifications } from '@/hooks/use-mail-notifications';

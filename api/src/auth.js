@@ -254,9 +254,9 @@ async function getSignupMode() {
       'SELECT setting_value FROM system_settings WHERE setting_key = ?',
       ['signup_mode']
     );
-    return rows[0]?.setting_value || 'open';
+    return rows[0]?.setting_value || 'disabled';
   } catch {
-    return 'open';
+    return 'disabled';
   }
 }
 

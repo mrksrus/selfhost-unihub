@@ -1,13 +1,14 @@
 import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Shield, Users } from 'lucide-react';
+import { KeyRound, Loader2, Shield, Users } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const AdminSettings = () => {
@@ -15,12 +16,12 @@ const AdminSettings = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
-  const { data: signupMode = 'open', isLoading } = useQuery({
+  const { data: signupMode = 'disabled', isLoading } = useQuery({
     queryKey: ['admin', 'signup-mode'],
     queryFn: async () => {
       const response = await api.get<{ signup_mode: string }>('/admin/settings/signup-mode');
       if (response.error) throw new Error(response.error);
-      return response.data?.signup_mode || 'open';
+      return response.data?.signup_mode || 'disabled';
     },
     enabled: user?.role === 'admin',
   });
@@ -61,6 +62,16 @@ const AdminSettings = () => {
         <h1 className="text-2xl font-bold text-foreground">Admin Settings</h1>
         <p className="text-muted-foreground">Server-wide settings separate from your personal preferences</p>
       </motion.div>
+
+      <Alert>
+        <KeyRound className="h-4 w-4" />
+        <AlertTitle>Deployment Secrets</AlertTitle>
+        <AlertDescription>
+          UniHub cannot verify whether existing deployment secrets are strong. Admins should keep JWT_SECRET and
+          ENCRYPTION_KEY long, random, unique, and stored outside the app. Rotating ENCRYPTION_KEY requires planning
+          because stored mail and calendar credentials depend on it.
+        </AlertDescription>
+      </Alert>
 
       <Tabs defaultValue="signup" className="space-y-6">
         <div className="-mx-4 overflow-x-auto px-4 sm:-mx-6 sm:px-6 lg:mx-0 lg:px-0">

@@ -59,6 +59,7 @@ type PendingAudio = {
 };
 
 const CHUNK_SIZE = 512 * 1024;
+const EMPTY_RECORDINGS: Recording[] = [];
 
 function getSupportedRecordingMimeType() {
   const candidates = [
@@ -203,7 +204,7 @@ const Recordings = () => {
     },
   });
 
-  const recordings = recordingsQuery.data || [];
+  const recordings = recordingsQuery.data ?? EMPTY_RECORDINGS;
   const allTags = useMemo(() => {
     const tags = new Set<string>();
     for (const recording of recordings) {

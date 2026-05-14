@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/useAuth';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -113,7 +113,7 @@ const FALLBACK_MAIL_FOLDERS: MailFolder[] = [
 ];
 
 const Settings = () => {
-  const { user, setUser } = useAuth();
+  const { user, setUser, signOut } = useAuth();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [loading, setLoading] = useState(false);
@@ -261,9 +261,13 @@ const Settings = () => {
       if (response.error) {
         toast({ title: 'Failed to change password', description: response.error, variant: 'destructive' });
       } else {
-        toast({ title: 'Password changed successfully' });
+        toast({
+          title: 'Password changed successfully',
+          description: 'All sessions were invalidated. Sign in again with your new password.',
+        });
         setIsPasswordOpen(false);
         setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+        await signOut();
       }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';

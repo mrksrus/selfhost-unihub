@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/useAuth';
 import {
   BACKGROUND_NOTIFICATION_SYNC_TAG,
   CALENDAR_PERIODIC_SYNC_TAG,

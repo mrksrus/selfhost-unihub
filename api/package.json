@@ -12,8 +12,8 @@
     "imap-simple": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "mailparser": "^3.7.1",
-    "mysql2": "^3.11.5",
-    "nodemailer": "^8.0.1"
+    "mysql2": "^3.22.3",
+    "nodemailer": "^8.0.7"
   },
   "overrides": {
     "semver": "^7.6.0"

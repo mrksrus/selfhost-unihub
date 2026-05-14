@@ -825,15 +825,32 @@ async function ensureSchema() {
     INDEX idx_data_export_jobs_status (status)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   
-  // Initialize default signup mode if not set
+  // Initialize signup mode with a secure default. Existing installs that still
+  // have the old implicit "open" default are closed once, then admin choices
+  // are left alone after the migration marker is written.
   const [signupModeSetting] = await db.execute(
     'SELECT setting_value FROM system_settings WHERE setting_key = ?',
     ['signup_mode']
   );
+  const [signupDefaultMigration] = await db.execute(
+    'SELECT setting_value FROM system_settings WHERE setting_key = ?',
+    ['signup_secure_default_applied']
+  );
   if (signupModeSetting.length === 0) {
     await db.execute(
       'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)',
-      ['signup_mode', 'open'] // Default: open signups
+      ['signup_mode', 'disabled'] // Default: closed signups
+    );
+  } else if (signupDefaultMigration.length === 0 && signupModeSetting[0]?.setting_value === 'open') {
+    await db.execute(
+      'UPDATE system_settings SET setting_value = ? WHERE setting_key = ?',
+      ['disabled', 'signup_mode']
+    );
+  }
+  if (signupDefaultMigration.length === 0) {
+    await db.execute(
+      'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)',
+      ['signup_secure_default_applied', 'true']
     );
   }
 

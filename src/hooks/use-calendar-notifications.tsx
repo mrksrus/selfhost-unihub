@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth } from '@/contexts/useAuth';
 import { calendarApi, calendarQueryKeys, type CalendarEvent } from '@/lib/calendar-api';
 import {
   CALENDAR_PERIODIC_SYNC_TAG,
