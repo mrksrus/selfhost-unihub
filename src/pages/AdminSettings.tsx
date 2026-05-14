@@ -5,6 +5,7 @@ import { api } from '@/lib/api';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { Loader2, Shield, Users } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -40,7 +41,7 @@ const AdminSettings = () => {
 
   if (user?.role !== 'admin') {
     return (
-      <div className="p-6 lg:p-8 max-w-4xl mx-auto">
+      <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto">
         <Card>
           <CardContent className="pt-6">
             <p className="text-muted-foreground">You do not have permission to view this page.</p>
@@ -51,7 +52,7 @@ const AdminSettings = () => {
   }
 
   return (
-    <div className="p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -61,65 +62,82 @@ const AdminSettings = () => {
         <p className="text-muted-foreground">Server-wide settings separate from your personal preferences</p>
       </motion.div>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-accent/10">
-              <Shield className="h-5 w-5 text-accent" />
-            </div>
-            <div>
-              <CardTitle className="text-lg">Signup Settings</CardTitle>
-              <CardDescription>Control who can create accounts</CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {isLoading ? (
-            <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-          ) : (
-            <div className="max-w-md space-y-2">
-              <Select
-                value={signupMode}
-                onValueChange={(mode) => updateSignupMode.mutate(mode)}
-                disabled={updateSignupMode.isPending}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="open">Open (anyone can sign up)</SelectItem>
-                  <SelectItem value="approval">Approval required</SelectItem>
-                  <SelectItem value="disabled">Disabled</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-sm text-muted-foreground">
-                {signupMode === 'open' && 'New users can sign up and immediately access the app.'}
-                {signupMode === 'approval' && 'New users can sign up but need admin approval before accessing the app.'}
-                {signupMode === 'disabled' && 'New user signups are disabled.'}
-              </p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <Tabs defaultValue="signup" className="space-y-6">
+        <div className="-mx-4 overflow-x-auto px-4 sm:-mx-6 sm:px-6 lg:mx-0 lg:px-0">
+          <TabsList className="h-11 w-max min-w-full justify-start gap-1 rounded-none border-b border-border bg-transparent p-0 text-muted-foreground lg:min-w-0 lg:rounded-md lg:border lg:bg-muted lg:p-1">
+            <TabsTrigger value="signup" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Signup
+            </TabsTrigger>
+            <TabsTrigger value="users" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Users
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-accent/10">
-              <Users className="h-5 w-5 text-accent" />
-            </div>
-            <div>
-              <CardTitle className="text-lg">User Management</CardTitle>
-              <CardDescription>Promote admins, activate accounts, reset passwords, and delete users</CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <Button asChild variant="outline">
-            <Link to="/admin/users">Open User Management</Link>
-          </Button>
-        </CardContent>
-      </Card>
+        <TabsContent value="signup" className="mt-0">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-accent/10">
+                  <Shield className="h-5 w-5 text-accent" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">Signup Settings</CardTitle>
+                  <CardDescription>Control who can create accounts</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {isLoading ? (
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+              ) : (
+                <div className="max-w-md space-y-2">
+                  <Select
+                    value={signupMode}
+                    onValueChange={(mode) => updateSignupMode.mutate(mode)}
+                    disabled={updateSignupMode.isPending}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="open">Open (anyone can sign up)</SelectItem>
+                      <SelectItem value="approval">Approval required</SelectItem>
+                      <SelectItem value="disabled">Disabled</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-sm text-muted-foreground">
+                    {signupMode === 'open' && 'New users can sign up and immediately access the app.'}
+                    {signupMode === 'approval' && 'New users can sign up but need admin approval before accessing the app.'}
+                    {signupMode === 'disabled' && 'New user signups are disabled.'}
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="users" className="mt-0">
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-accent/10">
+                  <Users className="h-5 w-5 text-accent" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">User Management</CardTitle>
+                  <CardDescription>Promote admins, activate accounts, reset passwords, and delete users</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <Button asChild variant="outline">
+                <Link to="/admin/users">Open User Management</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };

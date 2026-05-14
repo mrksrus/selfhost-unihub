@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Separator } from '@/components/ui/separator';
 import { Progress } from '@/components/ui/progress';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/lib/api';
 import { calendarQueryKeys } from '@/lib/calendar-api';
@@ -628,7 +629,7 @@ const Settings = () => {
   };
 
   return (
-    <div className="p-6 lg:p-8 max-w-4xl mx-auto">
+    <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto">
       <motion.div
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
@@ -639,7 +640,27 @@ const Settings = () => {
         <p className="text-muted-foreground">Manage your account and preferences</p>
       </motion.div>
 
-      <div className="space-y-6">
+      <Tabs defaultValue="general" className="space-y-6">
+        <div className="-mx-4 overflow-x-auto px-4 sm:-mx-6 sm:px-6 lg:mx-0 lg:px-0">
+          <TabsList className="h-11 w-max min-w-full justify-start gap-1 rounded-none border-b border-border bg-transparent p-0 text-muted-foreground lg:min-w-0 lg:rounded-md lg:border lg:bg-muted lg:p-1">
+            <TabsTrigger value="general" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              General
+            </TabsTrigger>
+            <TabsTrigger value="security" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Security
+            </TabsTrigger>
+            <TabsTrigger value="data" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Data Management
+            </TabsTrigger>
+            <TabsTrigger value="mail" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Mail Categorisation
+            </TabsTrigger>
+            <TabsTrigger value="danger" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Danger Zone
+            </TabsTrigger>
+          </TabsList>
+        </div>
+        <TabsContent value="general" className="mt-0">
         {/* General Section */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -742,7 +763,9 @@ const Settings = () => {
             </CardContent>
           </Card>
         </motion.div>
+        </TabsContent>
 
+        <TabsContent value="security" className="mt-0">
         {/* Security Section */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -998,7 +1021,9 @@ const Settings = () => {
             </div>
           </DialogContent>
         </Dialog>
+        </TabsContent>
 
+        <TabsContent value="data" className="mt-0">
         {/* Data export jobs */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -1070,7 +1095,9 @@ const Settings = () => {
             </CardContent>
           </Card>
         </motion.div>
+        </TabsContent>
 
+        <TabsContent value="danger" className="mt-0">
         {/* Data management */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -1152,7 +1179,9 @@ const Settings = () => {
             </CardContent>
           </Card>
         </motion.div>
+        </TabsContent>
 
+        <TabsContent value="mail" className="mt-0">
         {/* Mail categorization foundation */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -1330,6 +1359,8 @@ const Settings = () => {
             </CardContent>
           </Card>
         </motion.div>
+        </TabsContent>
+      </Tabs>
 
         <AlertDialog open={clearContactsOpen} onOpenChange={setClearContactsOpen}>
           <AlertDialogContent>
@@ -1451,7 +1482,6 @@ const Settings = () => {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-      </div>
     </div>
   );
 };

@@ -62,7 +62,7 @@ export default defineConfig(() => ({
         display: "standalone",
         background_color: "#f5f7fa",
         theme_color: "#1a2332",
-        orientation: "portrait-primary",
+        orientation: "any",
         icons: [
           { src: "/icons/icon-512x512.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },
           { src: "/icons/icon-72x72.png", sizes: "72x72", type: "image/png", purpose: "any maskable" },
