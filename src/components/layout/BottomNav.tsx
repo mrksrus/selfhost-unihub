@@ -21,7 +21,7 @@ const BottomNav = () => {
       {navItems.map((item) => {
         const isActive =
           item.href === '/more'
-            ? ['/more', '/games', '/dashboard', '/contacts'].some((path) => location.pathname.startsWith(path))
+            ? ['/more', '/music', '/games', '/dashboard', '/contacts'].some((path) => location.pathname.startsWith(path))
             : location.pathname.startsWith(item.href);
         return (
           <NavLink

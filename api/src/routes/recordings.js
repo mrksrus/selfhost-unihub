@@ -33,6 +33,8 @@ module.exports = {
       const recordings = await listRecordings(userId, {
         search: url.searchParams.get('search') || '',
         tag: url.searchParams.get('tag') || '',
+        category: url.searchParams.get('category') || '',
+        musicMissingChords: url.searchParams.get('music_missing_chords') === 'true',
       });
       return { recordings };
     } catch (error) {

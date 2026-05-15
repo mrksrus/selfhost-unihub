@@ -117,7 +117,7 @@ const AppSidebar = () => {
         <div className="pt-3 mt-3 border-t border-sidebar-border/70">
           {moreNavigation.map((item) => {
             const isActive = location.pathname === item.href || (
-              item.href === '/more' && ['/games', '/dashboard'].includes(location.pathname)
+              item.href === '/more' && ['/music', '/games', '/dashboard'].includes(location.pathname)
             );
             return (
               <NavLink

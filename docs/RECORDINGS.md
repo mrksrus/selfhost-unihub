@@ -13,6 +13,7 @@ Frontend capabilities:
 - import existing audio files
 - optional client-side MP3 export using `lamejs`
 - tags, search, edit, delete, download
+- optional category, explicit recorded date, and manual Music chords
 
 Backend capabilities:
 
@@ -51,6 +52,10 @@ Database tables:
 | `recording_tag_links` | Recording-to-tag join table |
 | `recording_uploads` | In-progress chunked uploads |
 | `recording_transcription_jobs` | Reserved schema for transcription jobs |
+
+Recording category values are `none`, `music`, `journal`, `memory`, and
+`reminder`. The generic `metadata` JSON object is reserved for category-specific
+fields; V1 uses `metadata.chords` for Music recordings.
 
 ## Limits
 
@@ -141,8 +146,10 @@ List query parameters:
 
 | Parameter | Behavior |
 | --- | --- |
-| `search` | Matches title, description, or original filename |
+| `search` | Matches title, description, original filename, or Music chords |
 | `tag` | Filters to recordings linked to an exact tag name |
+| `category` | Filters to one category, such as `music` |
+| `music_missing_chords=true` | Filters Music recordings where `metadata.chords` is empty |
 
 File route query parameters:
 

@@ -7,6 +7,7 @@ const RECORDINGS_ROOT = '/app/uploads/recordings';
 const MAX_RECORDING_BYTES = 500 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 768 * 1024;
 const UPLOAD_TTL_HOURS = 24;
+const RECORDING_CATEGORIES = new Set(['none', 'music', 'journal', 'memory', 'reminder']);
 
 function sanitizeFilename(value, fallback = 'recording') {
   const cleaned = String(value || fallback)
@@ -38,6 +39,46 @@ function normalizeSource(value) {
   return normalized === 'recorded' ? 'recorded' : 'imported';
 }
 
+function normalizeCategory(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return RECORDING_CATEGORIES.has(normalized) ? normalized : 'none';
+}
+
+function normalizeRecordedAt(value, fallback = new Date()) {
+  if (value === null || value === undefined || value === '') {
+    return fallback instanceof Date ? fallback : new Date(fallback);
+  }
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return fallback instanceof Date ? fallback : new Date(fallback);
+  }
+  return date;
+}
+
+function normalizeMetadata(value) {
+  let source = value;
+  if (typeof source === 'string') {
+    try {
+      source = JSON.parse(source);
+    } catch {
+      source = {};
+    }
+  }
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return {};
+
+  const metadata = {};
+  if (Object.prototype.hasOwnProperty.call(source, 'chords')) {
+    const chords = String(source.chords || '').trim().slice(0, 10000);
+    if (chords) metadata.chords = chords;
+  }
+  return metadata;
+}
+
+function serializeMetadata(value) {
+  const metadata = normalizeMetadata(value);
+  return Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null;
+}
+
 function normalizeTags(tags) {
   const source = Array.isArray(tags)
     ? tags
@@ -65,6 +106,10 @@ function parseTagsJson(value) {
   } catch {
     return [];
   }
+}
+
+function parseMetadataJson(value) {
+  return normalizeMetadata(value);
 }
 
 function extensionForContentType(contentType, originalFilename = '') {
@@ -108,6 +153,7 @@ async function ensureRecordingTags(userId, recordingId, tagNames, connection = d
 }
 
 function serializeRecording(row) {
+  const recordedAt = row.recorded_at || row.created_at;
   return {
     id: row.id,
     user_id: row.user_id,
@@ -118,20 +164,37 @@ function serializeRecording(row) {
     size_bytes: Number(row.size_bytes) || 0,
     duration_seconds: row.duration_seconds === null || row.duration_seconds === undefined ? null : Number(row.duration_seconds),
     source: row.source || 'imported',
+    category: normalizeCategory(row.category),
+    recorded_at: recordedAt instanceof Date ? recordedAt.toISOString() : recordedAt,
+    metadata: parseMetadataJson(row.metadata),
     tags: row.tags ? String(row.tags).split('\u001f').filter(Boolean) : [],
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
   };
 }
 
-async function listRecordings(userId, { search = '', tag = '' } = {}) {
+async function listRecordings(userId, { search = '', tag = '', category = '', musicMissingChords = false } = {}) {
   const where = ['r.user_id = ?'];
   const params = [userId];
   const trimmedSearch = String(search || '').trim();
   if (trimmedSearch) {
-    where.push('(r.title LIKE ? OR r.description LIKE ? OR r.original_filename LIKE ?)');
+    where.push(`(
+      r.title LIKE ?
+      OR r.description LIKE ?
+      OR r.original_filename LIKE ?
+      OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadata, '$.chords')), '') LIKE ?
+    )`);
     const like = `%${trimmedSearch.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
-    params.push(like, like, like);
+    params.push(like, like, like, like);
+  }
+  const trimmedCategory = String(category || '').trim();
+  if (trimmedCategory) {
+    where.push('r.category = ?');
+    params.push(normalizeCategory(trimmedCategory));
+  }
+  if (musicMissingChords) {
+    where.push(`r.category = 'music'`);
+    where.push(`NULLIF(TRIM(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadata, '$.chords')), '')), '') IS NULL`);
   }
   const trimmedTag = String(tag || '').trim();
   if (trimmedTag) {
@@ -146,15 +209,17 @@ async function listRecordings(userId, { search = '', tag = '' } = {}) {
 
   const [rows] = await db.execute(
     `SELECT r.id, r.user_id, r.title, r.description, r.original_filename, r.content_type,
-            r.size_bytes, r.duration_seconds, r.source, r.created_at, r.updated_at,
-            GROUP_CONCAT(rt.name ORDER BY rt.name SEPARATOR '\u001f') AS tags
+            r.size_bytes, r.duration_seconds, r.source, r.category, r.recorded_at, r.metadata,
+            r.created_at, r.updated_at,
+            (
+              SELECT GROUP_CONCAT(rt.name ORDER BY rt.name SEPARATOR '\u001f')
+              FROM recording_tag_links rtl
+              INNER JOIN recording_tags rt ON rt.id = rtl.tag_id
+              WHERE rtl.recording_id = r.id AND rtl.user_id = r.user_id
+            ) AS tags
      FROM recordings r
-     LEFT JOIN recording_tag_links rtl ON rtl.recording_id = r.id AND rtl.user_id = r.user_id
-     LEFT JOIN recording_tags rt ON rt.id = rtl.tag_id
      WHERE ${where.join(' AND ')}
-     GROUP BY r.id, r.user_id, r.title, r.description, r.original_filename, r.content_type,
-              r.size_bytes, r.duration_seconds, r.source, r.created_at, r.updated_at
-     ORDER BY r.created_at DESC`,
+     ORDER BY r.recorded_at DESC, r.created_at DESC`,
     params
   );
   return (rows || []).map(serializeRecording);
@@ -162,13 +227,15 @@ async function listRecordings(userId, { search = '', tag = '' } = {}) {
 
 async function getRecordingForUser(userId, recordingId) {
   const [rows] = await db.execute(
-    `SELECT r.*, GROUP_CONCAT(rt.name ORDER BY rt.name SEPARATOR '\u001f') AS tags
+    `SELECT r.*,
+            (
+              SELECT GROUP_CONCAT(rt.name ORDER BY rt.name SEPARATOR '\u001f')
+              FROM recording_tag_links rtl
+              INNER JOIN recording_tags rt ON rt.id = rtl.tag_id
+              WHERE rtl.recording_id = r.id AND rtl.user_id = r.user_id
+            ) AS tags
      FROM recordings r
-     LEFT JOIN recording_tag_links rtl ON rtl.recording_id = r.id AND rtl.user_id = r.user_id
-     LEFT JOIN recording_tags rt ON rt.id = rtl.tag_id
      WHERE r.id = ? AND r.user_id = ?
-     GROUP BY r.id, r.user_id, r.title, r.description, r.original_filename, r.content_type,
-              r.size_bytes, r.duration_seconds, r.storage_path, r.source, r.created_at, r.updated_at
      LIMIT 1`,
     [recordingId, userId]
   );
@@ -191,6 +258,7 @@ async function startRecordingUpload(userId, input = {}) {
   const durationSeconds = input.duration_seconds === null || input.duration_seconds === undefined
     ? null
     : Math.max(0, Number(input.duration_seconds) || 0);
+  const recordedAt = normalizeRecordedAt(input.recorded_at);
   const tempDir = path.join(RECORDINGS_ROOT, '.tmp', String(userId));
   const tempPath = path.join(tempDir, `${uploadId}.part`);
   await fs.promises.mkdir(tempDir, { recursive: true });
@@ -199,8 +267,8 @@ async function startRecordingUpload(userId, input = {}) {
 
   await db.execute(
     `INSERT INTO recording_uploads
-      (id, user_id, title, description, original_filename, content_type, total_bytes, duration_seconds, source, tags, temp_path, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (id, user_id, title, description, original_filename, content_type, total_bytes, duration_seconds, source, category, recorded_at, metadata, tags, temp_path, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       uploadId,
       userId,
@@ -211,6 +279,9 @@ async function startRecordingUpload(userId, input = {}) {
       totalBytes,
       durationSeconds,
       normalizeSource(input.source),
+      normalizeCategory(input.category),
+      recordedAt,
+      serializeMetadata(input.metadata),
       JSON.stringify(normalizeTags(input.tags)),
       tempPath,
       expiresAt,
@@ -302,8 +373,8 @@ async function completeRecordingUpload(userId, uploadId) {
     await connection.beginTransaction();
     await connection.execute(
       `INSERT INTO recordings
-        (id, user_id, title, description, original_filename, content_type, size_bytes, duration_seconds, storage_path, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (id, user_id, title, description, original_filename, content_type, size_bytes, duration_seconds, storage_path, source, category, recorded_at, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         recordingId,
         userId,
@@ -315,6 +386,9 @@ async function completeRecordingUpload(userId, uploadId) {
         upload.duration_seconds === null ? null : Number(upload.duration_seconds),
         finalPath,
         upload.source || 'imported',
+        normalizeCategory(upload.category),
+        normalizeRecordedAt(upload.recorded_at),
+        serializeMetadata(upload.metadata),
       ]
     );
     await ensureRecordingTags(userId, recordingId, parseTagsJson(upload.tags), connection);
@@ -344,6 +418,18 @@ async function updateRecording(userId, recordingId, input = {}) {
   if (Object.prototype.hasOwnProperty.call(input, 'description')) {
     updates.push('description = ?');
     params.push(normalizeDescription(input.description));
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'category')) {
+    updates.push('category = ?');
+    params.push(normalizeCategory(input.category));
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'recorded_at')) {
+    updates.push('recorded_at = ?');
+    params.push(normalizeRecordedAt(input.recorded_at, existing.created_at || new Date()));
+  }
+  if (Object.prototype.hasOwnProperty.call(input, 'metadata')) {
+    updates.push('metadata = ?');
+    params.push(serializeMetadata(input.metadata));
   }
   if (updates.length > 0) {
     params.push(recordingId, userId);
@@ -384,6 +470,8 @@ module.exports = {
   MAX_CHUNK_BYTES,
   MAX_RECORDING_BYTES,
   isPathUnderRoot,
+  normalizeCategory,
+  normalizeMetadata,
   normalizeTags,
   serializeRecording,
   listRecordings,

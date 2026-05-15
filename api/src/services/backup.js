@@ -658,8 +658,8 @@ async function importBackupForUser(userId, backup, { mode = 'dry-run', sections 
       recordingIdMap.set(row.id, row.id);
       await connection.execute(
         `INSERT INTO recordings
-           (id, user_id, title, description, original_filename, content_type, size_bytes, duration_seconds, storage_path, source, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           (id, user_id, title, description, original_filename, content_type, size_bytes, duration_seconds, storage_path, source, category, recorded_at, metadata, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE
            title = VALUES(title),
            description = VALUES(description),
@@ -668,7 +668,10 @@ async function importBackupForUser(userId, backup, { mode = 'dry-run', sections 
            size_bytes = VALUES(size_bytes),
            duration_seconds = VALUES(duration_seconds),
            storage_path = VALUES(storage_path),
-           source = VALUES(source)`,
+           source = VALUES(source),
+           category = VALUES(category),
+           recorded_at = VALUES(recorded_at),
+           metadata = VALUES(metadata)`,
         [
           row.id,
           row.user_id,
@@ -680,6 +683,9 @@ async function importBackupForUser(userId, backup, { mode = 'dry-run', sections 
           row.duration_seconds ?? null,
           storagePath,
           row.source || 'imported',
+          row.category || 'none',
+          row.recorded_at || row.created_at || new Date(),
+          row.metadata ? (typeof row.metadata === 'string' ? row.metadata : JSON.stringify(row.metadata)) : null,
           row.created_at || new Date(),
         ]
       );

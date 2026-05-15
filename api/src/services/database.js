@@ -734,12 +734,43 @@ async function ensureSchema() {
     duration_seconds DECIMAL(12,3) NULL,
     storage_path TEXT NOT NULL,
     source VARCHAR(32) NOT NULL DEFAULT 'imported',
+    category VARCHAR(32) NOT NULL DEFAULT 'none',
+    recorded_at DATETIME NULL,
+    metadata JSON NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     INDEX idx_recordings_user_created (user_id, created_at DESC),
+    INDEX idx_recordings_user_category_created (user_id, category, created_at DESC),
     INDEX idx_recordings_user_title (user_id, title)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  const recordingColumnMigrations = [
+    ['category', `ALTER TABLE recordings ADD COLUMN category VARCHAR(32) NOT NULL DEFAULT 'none' AFTER source`],
+    ['recorded_at', `ALTER TABLE recordings ADD COLUMN recorded_at DATETIME NULL AFTER category`],
+    ['metadata', `ALTER TABLE recordings ADD COLUMN metadata JSON NULL AFTER recorded_at`],
+  ];
+  for (const [columnName, alterSql] of recordingColumnMigrations) {
+    try {
+      const [columns] = await db.execute('SHOW COLUMNS FROM recordings LIKE ?', [columnName]);
+      if (!Array.isArray(columns) || columns.length === 0) {
+        await db.execute(alterSql);
+      }
+    } catch (e) {
+      // Continue startup if a migration is unsupported or already applied.
+    }
+  }
+  try {
+    await db.execute(`UPDATE recordings SET category = 'none' WHERE category IS NULL OR category = ''`);
+    await db.execute(`UPDATE recordings SET recorded_at = created_at WHERE recorded_at IS NULL`);
+  } catch (e) {
+    // Continue startup if backfill fails; defaults still protect new rows.
+  }
+  try {
+    await db.execute('CREATE INDEX idx_recordings_user_category_created ON recordings(user_id, category, created_at DESC)');
+  } catch (e) {
+    // Ignore duplicate index errors.
+  }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS recording_tags (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -777,6 +808,9 @@ async function ensureSchema() {
     bytes_received BIGINT NOT NULL DEFAULT 0,
     duration_seconds DECIMAL(12,3) NULL,
     source VARCHAR(32) NOT NULL DEFAULT 'imported',
+    category VARCHAR(32) NOT NULL DEFAULT 'none',
+    recorded_at DATETIME NULL,
+    metadata JSON NULL,
     tags JSON NULL,
     temp_path TEXT NOT NULL,
     expires_at TIMESTAMP NOT NULL,
@@ -786,6 +820,22 @@ async function ensureSchema() {
     INDEX idx_recording_uploads_user (user_id),
     INDEX idx_recording_uploads_expires (expires_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  const recordingUploadColumnMigrations = [
+    ['category', `ALTER TABLE recording_uploads ADD COLUMN category VARCHAR(32) NOT NULL DEFAULT 'none' AFTER source`],
+    ['recorded_at', `ALTER TABLE recording_uploads ADD COLUMN recorded_at DATETIME NULL AFTER category`],
+    ['metadata', `ALTER TABLE recording_uploads ADD COLUMN metadata JSON NULL AFTER recorded_at`],
+  ];
+  for (const [columnName, alterSql] of recordingUploadColumnMigrations) {
+    try {
+      const [columns] = await db.execute('SHOW COLUMNS FROM recording_uploads LIKE ?', [columnName]);
+      if (!Array.isArray(columns) || columns.length === 0) {
+        await db.execute(alterSql);
+      }
+    } catch (e) {
+      // Continue startup if a migration is unsupported or already applied.
+    }
+  }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS recording_transcription_jobs (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),

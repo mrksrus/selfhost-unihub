@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import lamejs from 'lamejs';
 import { api } from '@/lib/api';
+import {
+  recordingCategories,
+  recordingCategoryLabels,
+  recordingsApi,
+  recordingsQueryKeys,
+  type Recording,
+  type RecordingCategory,
+} from '@/lib/recordings-api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -9,6 +18,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,20 +46,6 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-
-type Recording = {
-  id: string;
-  title: string;
-  description: string | null;
-  original_filename: string | null;
-  content_type: string;
-  size_bytes: number;
-  duration_seconds: number | null;
-  source: 'recorded' | 'imported';
-  tags: string[];
-  created_at: string;
-  updated_at: string;
-};
 
 type PendingAudio = {
   blob: Blob;
@@ -108,6 +105,26 @@ function parseTags(value: string) {
 
 function filenameWithoutExtension(filename: string) {
   return filename.replace(/\.[^.]+$/, '').trim() || 'Recording';
+}
+
+function toDatetimeLocalValue(value: string | Date | null | undefined) {
+  if (!value) return '';
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function datetimeLocalToIso(value: string) {
+  const date = value ? new Date(value) : new Date();
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
+function formatRecordedAt(value: string | null | undefined) {
+  if (!value) return 'No recording date';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'No recording date';
+  return date.toLocaleString();
 }
 
 function uint8ToBase64(bytes: Uint8Array) {
@@ -170,6 +187,7 @@ async function encodeBlobToMp3(blob: Blob) {
 const Recordings = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -184,24 +202,37 @@ const Recordings = () => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [tagInput, setTagInput] = useState('');
-  const [search, setSearch] = useState('');
-  const [tagFilter, setTagFilter] = useState('');
+  const [category, setCategory] = useState<RecordingCategory>('none');
+  const [recordedAt, setRecordedAt] = useState(() => toDatetimeLocalValue(new Date()));
+  const [musicChords, setMusicChords] = useState('');
+  const [search, setSearch] = useState(() => searchParams.get('search') || '');
+  const [tagFilter, setTagFilter] = useState(() => searchParams.get('tag') || '');
+  const [categoryFilter, setCategoryFilter] = useState<'all' | RecordingCategory>(() => {
+    const raw = searchParams.get('category');
+    return recordingCategories.includes(raw as RecordingCategory) ? raw as RecordingCategory : 'all';
+  });
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [editingRecording, setEditingRecording] = useState<Recording | null>(null);
-  const [editForm, setEditForm] = useState({ title: '', description: '', tags: '' });
+  const [editForm, setEditForm] = useState({
+    title: '',
+    description: '',
+    tags: '',
+    category: 'none' as RecordingCategory,
+    recorded_at: '',
+    chords: '',
+  });
   const [deleteTarget, setDeleteTarget] = useState<Recording | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
 
+  const recordingFilters = useMemo(() => ({
+    search,
+    tag: tagFilter,
+    category: categoryFilter === 'all' ? undefined : categoryFilter,
+  }), [categoryFilter, search, tagFilter]);
+
   const recordingsQuery = useQuery({
-    queryKey: ['recordings', search, tagFilter],
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (search.trim()) params.set('search', search.trim());
-      if (tagFilter.trim()) params.set('tag', tagFilter.trim());
-      const response = await api.get<{ recordings: Recording[] }>(`/recordings?${params.toString()}`);
-      if (response.error) throw new Error(response.error);
-      return response.data?.recordings || [];
-    },
+    queryKey: recordingsQueryKeys.list(recordingFilters),
+    queryFn: () => recordingsApi.list(recordingFilters),
   });
 
   const recordings = recordingsQuery.data ?? EMPTY_RECORDINGS;
@@ -242,7 +273,7 @@ const Recordings = () => {
     mutationFn: async (audio: PendingAudio) => {
       setUploadProgress(0);
       const bytes = new Uint8Array(await audio.blob.arrayBuffer());
-      const start = await api.post<{ upload: { id: string; max_chunk_bytes: number } }>('/recordings/uploads/start', {
+      const start = await recordingsApi.startUpload({
         title: title.trim() || filenameWithoutExtension(audio.filename),
         description: description.trim(),
         original_filename: audio.filename,
@@ -250,32 +281,34 @@ const Recordings = () => {
         total_bytes: bytes.byteLength,
         duration_seconds: audio.durationSeconds,
         source: audio.source,
+        category,
+        recorded_at: datetimeLocalToIso(recordedAt),
+        metadata: category === 'music' ? { chords: musicChords } : {},
         tags: parseTags(tagInput),
       });
-      if (start.error || !start.data?.upload?.id) throw new Error(start.error || 'Could not start upload');
 
-      const uploadId = start.data.upload.id;
-      const chunkSize = Math.min(start.data.upload.max_chunk_bytes || CHUNK_SIZE, CHUNK_SIZE);
+      const uploadId = start.id;
+      const chunkSize = Math.min(start.max_chunk_bytes || CHUNK_SIZE, CHUNK_SIZE);
       for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
         const chunk = bytes.subarray(offset, offset + chunkSize);
-        const response = await api.post<{ upload: { bytes_received: number; total_bytes: number } }>(`/recordings/uploads/${uploadId}/chunk`, {
+        await recordingsApi.uploadChunk(uploadId, {
           offset,
           data_base64: uint8ToBase64(chunk),
         });
-        if (response.error) throw new Error(response.error);
         setUploadProgress(Math.round(((offset + chunk.byteLength) / bytes.byteLength) * 100));
       }
 
-      const complete = await api.post<{ recording: Recording }>(`/recordings/uploads/${uploadId}/complete`);
-      if (complete.error || !complete.data?.recording) throw new Error(complete.error || 'Could not complete upload');
-      return complete.data.recording;
+      return recordingsApi.completeUpload(uploadId);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['recordings'] });
+      queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
       setPendingAudio(null);
       setTitle('');
       setDescription('');
       setTagInput('');
+      setCategory('none');
+      setRecordedAt(toDatetimeLocalValue(new Date()));
+      setMusicChords('');
       setUploadProgress(null);
       toast({ title: 'Recording saved' });
     },
@@ -286,13 +319,9 @@ const Recordings = () => {
   });
 
   const updateRecording = useMutation({
-    mutationFn: async ({ id, payload }: { id: string; payload: { title: string; description: string; tags: string[] } }) => {
-      const response = await api.put<{ recording: Recording }>(`/recordings/${id}`, payload);
-      if (response.error) throw new Error(response.error);
-      return response.data?.recording;
-    },
+    mutationFn: ({ id, payload }: { id: string; payload: Parameters<typeof recordingsApi.update>[1] }) => recordingsApi.update(id, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['recordings'] });
+      queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
       setEditingRecording(null);
       toast({ title: 'Recording updated' });
     },
@@ -302,12 +331,9 @@ const Recordings = () => {
   });
 
   const deleteRecording = useMutation({
-    mutationFn: async (id: string) => {
-      const response = await api.delete(`/recordings/${id}`);
-      if (response.error) throw new Error(response.error);
-    },
+    mutationFn: (id: string) => recordingsApi.delete(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['recordings'] });
+      queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
       setDeleteTarget(null);
       toast({ title: 'Recording deleted' });
     },
@@ -356,7 +382,9 @@ const Recordings = () => {
           source: 'recorded',
           durationSeconds,
         });
-        setTitle((current) => current || `Recording ${new Date().toLocaleString()}`);
+        const stoppedAt = new Date();
+        setTitle((current) => current || `Recording ${stoppedAt.toLocaleString()}`);
+        setRecordedAt(toDatetimeLocalValue(stoppedAt));
         setRecordingState('idle');
         mediaRecorderRef.current = null;
         stopRecordingTracks();
@@ -408,6 +436,7 @@ const Recordings = () => {
       durationSeconds: null,
     });
     setTitle(filenameWithoutExtension(file.name));
+    setRecordedAt(toDatetimeLocalValue(new Date()));
   };
 
   const downloadRecording = async (recording: Recording, exportMp3 = false) => {
@@ -434,6 +463,9 @@ const Recordings = () => {
       title: recording.title,
       description: recording.description || '',
       tags: recording.tags.join(', '),
+      category: recording.category || 'none',
+      recorded_at: toDatetimeLocalValue(recording.recorded_at || recording.created_at),
+      chords: recording.metadata?.chords || '',
     });
   };
 
@@ -508,6 +540,28 @@ const Recordings = () => {
                       placeholder="meeting, client, idea"
                     />
                   </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="recording-category">Category</Label>
+                    <Select value={category} onValueChange={(value) => setCategory(value as RecordingCategory)}>
+                      <SelectTrigger id="recording-category">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {recordingCategories.map((item) => (
+                          <SelectItem key={item} value={item}>{recordingCategoryLabels[item]}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="recording-recorded-at">Recorded</Label>
+                    <Input
+                      id="recording-recorded-at"
+                      type="datetime-local"
+                      value={recordedAt}
+                      onChange={(event) => setRecordedAt(event.target.value)}
+                    />
+                  </div>
                   <div className="space-y-2 sm:col-span-2">
                     <Label htmlFor="recording-description">Description</Label>
                     <Textarea
@@ -517,6 +571,18 @@ const Recordings = () => {
                       rows={3}
                     />
                   </div>
+                  {category === 'music' && (
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label htmlFor="recording-chords">Chords</Label>
+                      <Textarea
+                        id="recording-chords"
+                        value={musicChords}
+                        onChange={(event) => setMusicChords(event.target.value)}
+                        placeholder="C  G  Am  F"
+                        rows={4}
+                      />
+                    </div>
+                  )}
                 </div>
                 {uploadProgress !== null && <Progress value={uploadProgress} />}
                 <div className="flex flex-wrap justify-end gap-2">
@@ -586,6 +652,14 @@ const Recordings = () => {
               />
             </div>
           </div>
+          <Tabs value={categoryFilter} onValueChange={(value) => setCategoryFilter(value as 'all' | RecordingCategory)} className="pt-2">
+            <TabsList className="flex h-auto flex-wrap justify-start">
+              <TabsTrigger value="all">All</TabsTrigger>
+              {recordingCategories.map((item) => (
+                <TabsTrigger key={item} value={item}>{recordingCategoryLabels[item]}</TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
           {allTags.length > 0 && (
             <div className="flex flex-wrap gap-2 pt-2">
               {allTags.map((tagName) => (
@@ -617,10 +691,20 @@ const Recordings = () => {
                       <div>
                         <h2 className="font-semibold text-foreground truncate">{recording.title}</h2>
                         <p className="text-xs text-muted-foreground">
-                          {formatBytes(recording.size_bytes)} • {formatDuration(recording.duration_seconds)} • {recording.source}
+                          {formatRecordedAt(recording.recorded_at)} • {formatBytes(recording.size_bytes)} • {formatDuration(recording.duration_seconds)} • {recording.source}
                         </p>
                       </div>
+                      <div className="flex flex-wrap gap-1.5">
+                        <Badge variant={recording.category === 'none' ? 'outline' : 'default'}>
+                          {recordingCategoryLabels[recording.category || 'none']}
+                        </Badge>
+                      </div>
                       {recording.description && <p className="text-sm text-muted-foreground">{recording.description}</p>}
+                      {recording.category === 'music' && recording.metadata?.chords && (
+                        <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 text-sm text-foreground font-sans">
+                          {recording.metadata.chords}
+                        </pre>
+                      )}
                       <audio controls className="w-full max-w-2xl" src={`/api/recordings/${recording.id}/file`} />
                       {recording.tags.length > 0 && (
                         <div className="flex flex-wrap gap-1.5">
@@ -665,21 +749,48 @@ const Recordings = () => {
             <DialogTitle>Edit Recording</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="edit-recording-title">Name</Label>
-              <Input
-                id="edit-recording-title"
-                value={editForm.title}
-                onChange={(event) => setEditForm({ ...editForm, title: event.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="edit-recording-tags">Tags</Label>
-              <Input
-                id="edit-recording-tags"
-                value={editForm.tags}
-                onChange={(event) => setEditForm({ ...editForm, tags: event.target.value })}
-              />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="edit-recording-title">Name</Label>
+                <Input
+                  id="edit-recording-title"
+                  value={editForm.title}
+                  onChange={(event) => setEditForm({ ...editForm, title: event.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-recording-tags">Tags</Label>
+                <Input
+                  id="edit-recording-tags"
+                  value={editForm.tags}
+                  onChange={(event) => setEditForm({ ...editForm, tags: event.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-recording-category">Category</Label>
+                <Select
+                  value={editForm.category}
+                  onValueChange={(value) => setEditForm({ ...editForm, category: value as RecordingCategory })}
+                >
+                  <SelectTrigger id="edit-recording-category">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {recordingCategories.map((item) => (
+                      <SelectItem key={item} value={item}>{recordingCategoryLabels[item]}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-recording-recorded-at">Recorded</Label>
+                <Input
+                  id="edit-recording-recorded-at"
+                  type="datetime-local"
+                  value={editForm.recorded_at}
+                  onChange={(event) => setEditForm({ ...editForm, recorded_at: event.target.value })}
+                />
+              </div>
             </div>
             <div className="space-y-2">
               <Label htmlFor="edit-recording-description">Description</Label>
@@ -690,6 +801,17 @@ const Recordings = () => {
                 rows={4}
               />
             </div>
+            {editForm.category === 'music' && (
+              <div className="space-y-2">
+                <Label htmlFor="edit-recording-chords">Chords</Label>
+                <Textarea
+                  id="edit-recording-chords"
+                  value={editForm.chords}
+                  onChange={(event) => setEditForm({ ...editForm, chords: event.target.value })}
+                  rows={5}
+                />
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <Button variant="outline" onClick={() => setEditingRecording(null)}>
                 Cancel
@@ -700,6 +822,9 @@ const Recordings = () => {
                   payload: {
                     title: editForm.title,
                     description: editForm.description,
+                    category: editForm.category,
+                    recorded_at: datetimeLocalToIso(editForm.recorded_at),
+                    metadata: editForm.category === 'music' ? { chords: editForm.chords } : {},
                     tags: parseTags(editForm.tags),
                   },
                 })}

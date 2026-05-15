@@ -17,6 +17,7 @@ import AdminUsers from "./pages/AdminUsers";
 import NotFound from "./pages/NotFound";
 import Games from "./pages/Games";
 import Recordings from "./pages/Recordings";
+import Music from "./pages/Music";
 import More from "./pages/More";
 import AdminSettings from "./pages/AdminSettings";
 import StartRedirect from "./pages/StartRedirect";
@@ -40,6 +41,7 @@ const App = () => (
               <Route path="/todo" element={<TodoPage />} />
               <Route path="/mail" element={<MailPage />} />
               <Route path="/recordings" element={<Recordings />} />
+              <Route path="/music" element={<Music />} />
               <Route path="/games" element={<Games />} />
               <Route path="/more" element={<More />} />
               <Route path="/settings" element={<Settings />} />

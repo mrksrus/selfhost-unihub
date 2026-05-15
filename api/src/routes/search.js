@@ -59,13 +59,18 @@ module.exports = {
       );
 
       const [recordings] = await db.execute(
-        `SELECT id, title, description, created_at
+        `SELECT id, title, description, recorded_at, created_at
          FROM recordings
          WHERE user_id = ?
-           AND (title LIKE ? OR description LIKE ? OR original_filename LIKE ?)
-         ORDER BY created_at DESC
+           AND (
+             title LIKE ?
+             OR description LIKE ?
+             OR original_filename LIKE ?
+             OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.chords')), '') LIKE ?
+           )
+         ORDER BY recorded_at DESC, created_at DESC
          LIMIT ${perTypeLimit}`,
-        [userId, like, like, like]
+        [userId, like, like, like, like]
       );
 
       const results = [
@@ -103,10 +108,10 @@ module.exports = {
           id: `recording:${recording.id}`,
           type: 'recording',
           title: recording.title,
-          subtitle: recording.description || isoDate(recording.created_at) || 'Recording',
+          subtitle: recording.description || isoDate(recording.recorded_at || recording.created_at) || 'Recording',
           href: `/recordings?search=${encodeURIComponent(q)}`,
           entity_id: recording.id,
-          date: isoDate(recording.created_at),
+          date: isoDate(recording.recorded_at || recording.created_at),
         })),
       ];
 
