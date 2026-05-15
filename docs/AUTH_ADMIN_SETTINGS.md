@@ -128,6 +128,7 @@ Admin routes require an authenticated user whose `users.role` is `admin`.
 | DELETE | `/api/admin/users/:id` | Delete user |
 | PUT | `/api/admin/users/:id/role` | Set role to `user` or `admin` |
 | PUT | `/api/admin/users/:id/activate` | Activate/deactivate user |
+| GET | `/api/admin/storage` | Aggregate server storage counts and byte usage |
 | GET | `/api/admin/settings/signup-mode` | Read signup mode |
 | PUT | `/api/admin/settings/signup-mode` | Set signup mode |
 
@@ -138,6 +139,11 @@ Safety checks:
 - the last active admin cannot be demoted
 - the last active admin cannot be deactivated
 - deactivating a user deletes their sessions
+
+The storage overview returns aggregate counts and byte totals for mail
+attachments, raw mail archives, recordings, and generated exports. It also
+splits those byte totals per user account. It does not return message subjects,
+filenames, contact records, or backup contents.
 
 ## User Preferences
 

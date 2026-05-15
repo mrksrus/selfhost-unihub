@@ -111,8 +111,9 @@ module.exports = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
       const mode = body?.mode === 'apply' ? 'apply' : 'dry-run';
+      const sections = body?.sections || 'full';
       const backup = body?.backup || body;
-      const result = await importBackupForUser(userId, backup, { mode });
+      const result = await importBackupForUser(userId, backup, { mode, sections });
       return { import: result };
     } catch (error) {
       console.error('Backup import error:', error);

@@ -304,14 +304,15 @@ async function collectExportEntries(userId, sections) {
   }
 
   if (sections.includes('mail')) {
-    const [[accounts], [folders], [rules], [emails], [attachments]] = await Promise.all([
+    const [[accounts], [folders], [rules], [emails], [attachments], [scores]] = await Promise.all([
       db.execute('SELECT * FROM mail_accounts WHERE user_id = ? ORDER BY created_at ASC', [userId]),
       db.execute('SELECT * FROM mail_folders WHERE user_id = ? ORDER BY position ASC', [userId]),
       db.execute('SELECT * FROM mail_sender_rules WHERE user_id = ? ORDER BY created_at ASC', [userId]),
       db.execute('SELECT * FROM emails WHERE user_id = ? ORDER BY received_at ASC', [userId]),
       db.execute('SELECT * FROM email_attachments WHERE user_id = ? ORDER BY created_at ASC', [userId]),
+      db.execute('SELECT * FROM mail_email_scores WHERE user_id = ? ORDER BY scored_at ASC', [userId]),
     ]);
-    entries.push(jsonEntry('mail/mail-metadata.json', { accounts, folders, rules, emails, attachments }));
+    entries.push(jsonEntry('mail/mail-metadata.json', { accounts, folders, rules, emails, attachments, scores }));
     for (const email of emails || []) {
       const safeName = sanitizeZipPath(`${email.received_at ? String(email.received_at).slice(0, 10) : 'email'}-${email.id}.eml`);
       const rawPath = email.raw_storage_path ? path.resolve(email.raw_storage_path) : null;

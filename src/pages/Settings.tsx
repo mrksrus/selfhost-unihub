@@ -24,7 +24,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { User, Shield, Download, Loader2, Database, Globe, AtSign, Trash2 } from 'lucide-react';
+import { User, Shield, Download, Loader2, Database, Globe, AtSign, Trash2, Upload } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const DEVICE_TZ_VALUE = '';
@@ -91,6 +91,16 @@ type ExportJob = {
   completed_at: string | null;
 };
 
+type BackupImportResult = {
+  dry_run: boolean;
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  counts: Record<string, number>;
+  import_sections?: string[];
+  restored_files?: number;
+};
+
 type TwoFactorStatus = {
   enabled: boolean;
   recoveryCodesRemaining: number;
@@ -111,6 +121,14 @@ const FALLBACK_MAIL_FOLDERS: MailFolder[] = [
   { slug: 'scam', display_name: 'Scam', is_system: true },
   { slug: 'trash', display_name: 'Trash', is_system: true },
 ];
+
+const IMPORT_SECTIONS = [
+  { id: 'mail', label: 'Mail' },
+  { id: 'calendar', label: 'Calendar/ToDo' },
+  { id: 'contacts', label: 'Contacts' },
+  { id: 'recordings', label: 'Recordings' },
+  { id: 'settings', label: 'Settings' },
+] as const;
 
 const Settings = () => {
   const { user, setUser, signOut } = useAuth();
@@ -138,6 +156,11 @@ const Settings = () => {
   const [ruleSaving, setRuleSaving] = useState(false);
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
   const [backupExporting, setBackupExporting] = useState(false);
+  const [backupJsonExporting, setBackupJsonExporting] = useState(false);
+  const [backupImporting, setBackupImporting] = useState(false);
+  const [backupImportFile, setBackupImportFile] = useState<File | null>(null);
+  const [backupImportResult, setBackupImportResult] = useState<BackupImportResult | null>(null);
+  const [backupImportSections, setBackupImportSections] = useState<string[] | 'full'>('full');
   const [ruleEditor, setRuleEditor] = useState<{
     id?: string;
     match_type: 'domain' | 'email';
@@ -504,6 +527,79 @@ const Settings = () => {
       toast({ title: 'Failed to start export', description: message, variant: 'destructive' });
     } finally {
       setBackupExporting(false);
+    }
+  };
+
+  const handleDownloadJsonBackup = async () => {
+    setBackupJsonExporting(true);
+    try {
+      const { blob, filename } = await api.getBlob('/backup/export');
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename || `unihub-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to download backup', description: message, variant: 'destructive' });
+    } finally {
+      setBackupJsonExporting(false);
+    }
+  };
+
+  const updateBackupImportSections = (sectionId: string | 'full') => {
+    setBackupImportResult(null);
+    if (sectionId === 'full') {
+      setBackupImportSections('full');
+      return;
+    }
+    setBackupImportSections((current) => {
+      const currentSections = current === 'full' ? [] : current;
+      const next = currentSections.includes(sectionId)
+        ? currentSections.filter((section) => section !== sectionId)
+        : [...currentSections, sectionId];
+      return next.length === 0 ? 'full' : next;
+    });
+  };
+
+  const handleImportJsonBackup = async (mode: 'dry-run' | 'apply') => {
+    if (!backupImportFile) {
+      toast({ title: 'Select a backup file first', variant: 'destructive' });
+      return;
+    }
+    setBackupImporting(true);
+    try {
+      const text = await backupImportFile.text();
+      const backup = JSON.parse(text);
+      const response = await api.post<{ import: BackupImportResult }>('/backup/import', {
+        mode,
+        sections: backupImportSections,
+        backup,
+      });
+      if (response.error) {
+        toast({ title: 'Backup import failed', description: response.error, variant: 'destructive' });
+        return;
+      }
+      const result = response.data?.import || null;
+      setBackupImportResult(result);
+      if (result?.errors?.length) {
+        toast({ title: 'Backup validation failed', description: result.errors[0], variant: 'destructive' });
+      } else if (mode === 'apply') {
+        toast({ title: 'Backup restored', description: `${result?.restored_files || 0} files restored.` });
+        queryClient.invalidateQueries();
+      } else {
+        toast({ title: 'Backup validated', description: 'Dry run completed without errors.' });
+      }
+    } catch (error: unknown) {
+      const message = error instanceof SyntaxError
+        ? 'The selected file is not valid JSON.'
+        : error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Backup import failed', description: message, variant: 'destructive' });
+    } finally {
+      setBackupImporting(false);
     }
   };
 
@@ -1028,12 +1124,13 @@ const Settings = () => {
         </TabsContent>
 
         <TabsContent value="data" className="mt-0">
-        {/* Data export jobs */}
+        {/* Backup and import */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.33 }}
         >
+          <div className="space-y-6">
           <Card>
             <CardHeader>
               <div className="flex items-center gap-3">
@@ -1041,12 +1138,27 @@ const Settings = () => {
                   <Database className="h-5 w-5 text-accent" />
                 </div>
                 <div>
-                  <CardTitle className="text-lg">Data Management</CardTitle>
-                  <CardDescription>Start ZIP exports in the background and download them when ready.</CardDescription>
+                  <CardTitle className="text-lg">Backup</CardTitle>
+                  <CardDescription>Download restore-compatible backups and human-readable ZIP exports.</CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Restore-compatible JSON backup</p>
+                  <p className="text-sm text-muted-foreground">
+                    Includes app data, mail account server settings, encrypted credentials, mail sync identity metadata, recordings, and embedded files.
+                  </p>
+                </div>
+                <Button variant="outline" onClick={handleDownloadJsonBackup} disabled={backupJsonExporting}>
+                  {backupJsonExporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
+                  Full backup
+                </Button>
+              </div>
+
+              <Separator />
+
               <div className="flex flex-wrap gap-3">
                 <Button variant="outline" onClick={() => handleStartExportJob('full')} disabled={backupExporting}>
                   {backupExporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
@@ -1098,6 +1210,116 @@ const Settings = () => {
               </div>
             </CardContent>
           </Card>
+
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-accent/10">
+                  <Upload className="h-5 w-5 text-accent" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">Import</CardTitle>
+                  <CardDescription>Validate and restore a UniHub JSON backup.</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="backupImportFile">Backup file</Label>
+                <Input
+                  id="backupImportFile"
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(event) => {
+                    setBackupImportFile(event.target.files?.[0] || null);
+                    setBackupImportResult(null);
+                  }}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Import scope</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant={backupImportSections === 'full' ? 'default' : 'outline'}
+                    onClick={() => updateBackupImportSections('full')}
+                  >
+                    Full import
+                  </Button>
+                  {IMPORT_SECTIONS.map((section) => (
+                    <Button
+                      key={section.id}
+                      type="button"
+                      variant={backupImportSections !== 'full' && backupImportSections.includes(section.id) ? 'default' : 'outline'}
+                      onClick={() => updateBackupImportSections(section.id)}
+                    >
+                      {section.label}
+                    </Button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">Full import restores every supported section. Category import restores only the selected data from the same JSON backup.</p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => handleImportJsonBackup('dry-run')}
+                  disabled={!backupImportFile || backupImporting}
+                >
+                  {backupImporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
+                  Validate
+                </Button>
+                <Button
+                  onClick={() => handleImportJsonBackup('apply')}
+                  disabled={
+                    !backupImportFile ||
+                    backupImporting ||
+                    !backupImportResult?.dry_run ||
+                    !backupImportResult.valid ||
+                    backupImportResult.errors?.length > 0
+                  }
+                >
+                  {backupImporting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  Restore
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">Validate a selected backup before restore is enabled.</p>
+
+              {backupImportResult && (
+                <div className="rounded-md border border-border bg-muted/30 p-3 text-sm">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-foreground">
+                      {backupImportResult.valid ? 'Valid backup' : 'Invalid backup'}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {backupImportResult.dry_run ? 'Dry run' : 'Applied'}
+                    </span>
+                    {backupImportResult.import_sections?.length ? (
+                      <span className="text-muted-foreground">
+                        {backupImportResult.import_sections.join(', ')}
+                      </span>
+                    ) : null}
+                  </div>
+                  {Object.keys(backupImportResult.counts || {}).length > 0 && (
+                    <p className="mt-2 text-muted-foreground">
+                      {Object.entries(backupImportResult.counts).map(([key, value]) => `${key}: ${value}`).join(' • ')}
+                    </p>
+                  )}
+                  {backupImportResult.restored_files !== undefined && (
+                    <p className="mt-1 text-muted-foreground">Restored files: {backupImportResult.restored_files}</p>
+                  )}
+                  {backupImportResult.warnings?.length > 0 && (
+                    <p className="mt-2 text-warning">{backupImportResult.warnings.join(' ')}</p>
+                  )}
+                  {backupImportResult.errors?.length > 0 && (
+                    <p className="mt-2 text-destructive">{backupImportResult.errors.join(' ')}</p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+          </div>
         </motion.div>
         </TabsContent>
 

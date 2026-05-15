@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   canonicalJson,
+  normalizeBackupImportSections,
   sha256Buffer,
   validateBackupPayload,
 } = require('../src/services/backup');
@@ -44,4 +45,9 @@ test('validateBackupPayload rejects tampered file content', () => {
   const validation = validateBackupPayload(backup);
   assert.equal(validation.valid, false);
   assert.match(validation.errors.join('\n'), /Checksum mismatch/);
+});
+
+test('normalizeBackupImportSections maps full and todo scopes', () => {
+  assert.deepEqual(normalizeBackupImportSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings']);
+  assert.deepEqual(normalizeBackupImportSections(['mail', 'todo', 'unknown']), ['mail', 'calendar']);
 });

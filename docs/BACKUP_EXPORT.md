@@ -17,14 +17,21 @@ MySQL volume and the uploads volume.
 Included data:
 
 - user profile metadata
+- user preferences
 - contacts
 - calendar accounts/calendars/events/subtasks/attendees/external refs
 - mail folders
 - mail sender rules
 - mail accounts with encrypted credentials
+- mail account connection settings such as provider, username, IMAP/SMTP hosts,
+  ports, TLS trust metadata, sync limit, active state, and `last_synced_at`
 - emails
+- email sync identity metadata: `message_id`, `source_folder`, `imap_uid`, and
+  `imap_uidvalidity`
 - email attachment metadata
+- mail email score metadata when present
 - embedded base64 file entries for attachments and raw emails when files exist
+- recordings, recording tags, tag links, and embedded recording files
 
 The backup includes:
 
@@ -46,6 +53,7 @@ target deployment uses the same `ENCRYPTION_KEY`.
 ```json
 {
   "mode": "dry-run",
+  "sections": "full",
   "backup": {}
 }
 ```
@@ -56,6 +64,14 @@ Modes:
 | --- | --- |
 | omitted / `dry-run` | Validate payload, checksums, and counts without writing |
 | `apply` | Restore rows and files for the current user |
+
+`sections` can be `"full"` or an array containing any of:
+
+- `settings`
+- `contacts`
+- `calendar` / `todo` (both map to the shared calendar/to-do tables)
+- `mail`
+- `recordings`
 
 Validation checks:
 
@@ -68,10 +84,19 @@ Validation checks:
 Import behavior:
 
 - every imported row is assigned to the current user
+- settings import restores profile display metadata and user preferences for the
+  current account, but not role or active-state privileges
 - mail accounts are matched by email when possible
+- imported email rows are matched to existing local mail by row ID, then
+  `(mail_account_id, message_id)`, then
+  `(mail_account_id, source_folder, imap_uid, imap_uidvalidity)` to avoid
+  duplicate rows when restoring into an already-synced account
+- mail sync metadata is restored so the next IMAP sync can skip already-imported
+  messages instead of downloading them again
 - restored files are written under the current user's upload roots
 - inserts use upsert behavior for known IDs
 - file checksum mismatch aborts restore
+- recordings with missing embedded audio files are skipped during apply
 
 ## Async ZIP Export Jobs
 
@@ -153,7 +178,8 @@ Job status values:
 ## Limitations
 
 - Export jobs are in-process, not distributed.
-- There is no scheduled export or automatic retention policy.
+- There is no scheduled export or automatic retention policy. Manual backup and
+  export is intentional.
 - JSON import is designed for same-app restore, not arbitrary migration across
   incompatible schema versions.
 - Encrypted mail/calendar credentials require the same `ENCRYPTION_KEY` after restore.
