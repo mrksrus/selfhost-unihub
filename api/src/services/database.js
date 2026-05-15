@@ -45,6 +45,37 @@ function isPlaceholderSecret(value) {
   return !normalized || normalized.includes('change_me') || normalized === 'changeme';
 }
 
+function quoteIdentifier(identifier) {
+  const normalized = String(identifier || '').trim();
+  if (!/^[A-Za-z0-9_]+$/.test(normalized)) {
+    throw new Error(`Unsafe SQL identifier: ${identifier}`);
+  }
+  return `\`${normalized}\``;
+}
+
+async function columnExists(tableName, columnName) {
+  const [columns] = await db.execute(`SHOW COLUMNS FROM ${quoteIdentifier(tableName)}`);
+  return Array.isArray(columns) && columns.some((column) => column.Field === columnName);
+}
+
+async function ensureColumn(tableName, columnName, alterSql, { required = false } = {}) {
+  if (await columnExists(tableName, columnName)) return false;
+
+  try {
+    await db.execute(alterSql);
+    console.log(`[DB] Added column ${tableName}.${columnName}`);
+    return true;
+  } catch (error) {
+    const message = `[DB] Failed to add column ${tableName}.${columnName}: ${error.message}`;
+    if (required) {
+      console.error(message);
+      throw error;
+    }
+    console.warn(message);
+    return false;
+  }
+}
+
 async function initDatabase() {
   if (isPlaceholderSecret(JWT_SECRET)) {
     console.error('✗ Missing or placeholder JWT_SECRET. Set a strong random JWT secret before starting.');
@@ -473,57 +504,18 @@ async function ensureSchema() {
     UNIQUE KEY unique_user_email (user_id, email_address)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   
-  // Add username column if it doesn't exist (migration for existing installs)
-  try {
-    await db.execute(`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS username VARCHAR(255) AFTER provider`);
-  } catch (e) {
-    // Column might already exist or unsupported syntax, ignore
-  }
-  try {
-    await db.execute(`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS allow_self_signed BOOLEAN DEFAULT FALSE AFTER encrypted_password`);
-  } catch (e) {
-    // Ignore when unsupported or already exists
-  }
-  try {
-    const [imapFingerprintCols] = await db.execute(`SHOW COLUMNS FROM mail_accounts LIKE 'trusted_imap_fingerprint256'`);
-    if (!Array.isArray(imapFingerprintCols) || imapFingerprintCols.length === 0) {
-      await db.execute(`ALTER TABLE mail_accounts ADD COLUMN trusted_imap_fingerprint256 VARCHAR(128) AFTER allow_self_signed`);
-    }
-  } catch (e) {
-    // Ignore migration failures and continue startup
-  }
-  try {
-    const [smtpFingerprintCols] = await db.execute(`SHOW COLUMNS FROM mail_accounts LIKE 'trusted_smtp_fingerprint256'`);
-    if (!Array.isArray(smtpFingerprintCols) || smtpFingerprintCols.length === 0) {
-      await db.execute(`ALTER TABLE mail_accounts ADD COLUMN trusted_smtp_fingerprint256 VARCHAR(128) AFTER trusted_imap_fingerprint256`);
-    }
-  } catch (e) {
-    // Ignore migration failures and continue startup
-  }
-  try {
-    // Version-safe migration (MySQL variants may not support ADD COLUMN IF NOT EXISTS)
-    const [syncFetchLimitCols] = await db.execute(`SHOW COLUMNS FROM mail_accounts LIKE 'sync_fetch_limit'`);
-    if (!Array.isArray(syncFetchLimitCols) || syncFetchLimitCols.length === 0) {
-      await db.execute(`ALTER TABLE mail_accounts ADD COLUMN sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all' AFTER encrypted_password`);
-    }
-  } catch (e) {
-    // Ignore when unsupported or already exists
-  }
-  try {
-    await db.execute(`ALTER TABLE mail_accounts MODIFY sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all'`);
-  } catch (e) {
-    // Ignore migration failures and continue startup
-  }
-  try {
-    await db.execute(
-      `UPDATE mail_accounts
-       SET sync_fetch_limit = 'all'
-       WHERE sync_fetch_limit IS NULL
-          OR sync_fetch_limit <> 'all'`
-    );
-  } catch (e) {
-    // Ignore migration failures and continue startup
-  }
+  await ensureColumn(
+    'mail_accounts',
+    'username',
+    `ALTER TABLE mail_accounts ADD COLUMN username VARCHAR(255) AFTER provider`,
+    { required: true }
+  );
+  await ensureColumn(
+    'mail_accounts',
+    'sync_fetch_limit',
+    `ALTER TABLE mail_accounts ADD COLUMN sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all' AFTER encrypted_password`,
+    { required: true }
+  );
   const mailAccountServerDeleteColumns = [
     ['delete_emails_on_server', `ALTER TABLE mail_accounts ADD COLUMN delete_emails_on_server BOOLEAN DEFAULT FALSE AFTER sync_fetch_limit`],
     ['server_delete_enabled_at', `ALTER TABLE mail_accounts ADD COLUMN server_delete_enabled_at TIMESTAMP NULL AFTER delete_emails_on_server`],
@@ -531,27 +523,41 @@ async function ensureSchema() {
     ['server_delete_last_run_at', `ALTER TABLE mail_accounts ADD COLUMN server_delete_last_run_at TIMESTAMP NULL AFTER server_delete_grace_until`],
   ];
   for (const [columnName, alterSql] of mailAccountServerDeleteColumns) {
-    try {
-      const [columns] = await db.execute(`SHOW COLUMNS FROM mail_accounts LIKE ?`, [columnName]);
-      if (!Array.isArray(columns) || columns.length === 0) {
-        await db.execute(alterSql);
-      }
-    } catch (e) {
-      // Ignore migration failures and continue startup
-    }
+    await ensureColumn('mail_accounts', columnName, alterSql, { required: true });
   }
-  try {
-    await db.execute(
-      `UPDATE mail_accounts
-       SET delete_emails_on_server = FALSE,
-           server_delete_enabled_at = NULL,
-           server_delete_grace_until = NULL,
-           server_delete_last_run_at = NULL
-       WHERE delete_emails_on_server IS NULL`
-    );
-  } catch (e) {
-    // Ignore migration failures and continue startup
-  }
+  await ensureColumn(
+    'mail_accounts',
+    'allow_self_signed',
+    `ALTER TABLE mail_accounts ADD COLUMN allow_self_signed BOOLEAN DEFAULT FALSE AFTER server_delete_last_run_at`,
+    { required: true }
+  );
+  await ensureColumn(
+    'mail_accounts',
+    'trusted_imap_fingerprint256',
+    `ALTER TABLE mail_accounts ADD COLUMN trusted_imap_fingerprint256 VARCHAR(128) AFTER allow_self_signed`,
+    { required: true }
+  );
+  await ensureColumn(
+    'mail_accounts',
+    'trusted_smtp_fingerprint256',
+    `ALTER TABLE mail_accounts ADD COLUMN trusted_smtp_fingerprint256 VARCHAR(128) AFTER trusted_imap_fingerprint256`,
+    { required: true }
+  );
+  await db.execute(`ALTER TABLE mail_accounts MODIFY sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all'`);
+  await db.execute(
+    `UPDATE mail_accounts
+     SET sync_fetch_limit = 'all'
+     WHERE sync_fetch_limit IS NULL
+        OR sync_fetch_limit <> 'all'`
+  );
+  await db.execute(
+    `UPDATE mail_accounts
+     SET delete_emails_on_server = FALSE,
+         server_delete_enabled_at = NULL,
+         server_delete_grace_until = NULL,
+         server_delete_last_run_at = NULL
+     WHERE delete_emails_on_server IS NULL`
+  );
 
   await db.execute(`CREATE TABLE IF NOT EXISTS mail_folders (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
