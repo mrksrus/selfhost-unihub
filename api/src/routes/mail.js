@@ -19,12 +19,14 @@ const {
   resolveMailSenderTargetFolder,
   ensureDefaultMailFoldersForUser,
   normalizeSyncFetchLimit,
+  seedMailServerDeletionQueueForAccount,
   buildMailHostTrustResult,
   validateMailHostPolicy,
   testImapConnection,
   syncMailAccount,
   isAnyMailAccountSyncRunning,
   getRunningMailSyncAccountIds,
+  getRunningMailServerDeleteAccountIds,
   sendEmail,
   deleteStoredAttachmentFiles,
 } = require('../services/mail');
@@ -404,7 +406,12 @@ module.exports = {
     
     try {
       const [accounts] = await db.execute(
-        'SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, sync_fetch_limit, is_active, last_synced_at, created_at FROM mail_accounts WHERE user_id = ?',
+        `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+                smtp_host, smtp_port, sync_fetch_limit, delete_emails_on_server,
+                server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
+                is_active, last_synced_at, created_at
+         FROM mail_accounts
+         WHERE user_id = ?`,
         [userId]
       );
       await ensureDefaultMailFoldersForUser(userId);
@@ -420,10 +427,37 @@ module.exports = {
         unreadByAccount[row.mail_account_id] = row.unread_count;
       }
 
+      const [deleteRows] = await db.execute(
+        `SELECT mail_account_id,
+                SUM(CASE WHEN delete_status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN delete_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                SUM(CASE WHEN delete_status = 'deleted' THEN 1 ELSE 0 END) AS deleted_count,
+                SUM(CASE WHEN delete_status = 'missing' THEN 1 ELSE 0 END) AS missing_count,
+                SUM(CASE WHEN delete_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count
+         FROM mail_server_messages
+         WHERE user_id = ?
+         GROUP BY mail_account_id`,
+        [userId]
+      );
+      const deleteCountsByAccount = {};
+      for (const row of deleteRows || []) {
+        deleteCountsByAccount[row.mail_account_id] = {
+          pending: Number(row.pending_count) || 0,
+          failed: Number(row.failed_count) || 0,
+          deleted: Number(row.deleted_count) || 0,
+          missing: Number(row.missing_count) || 0,
+          skipped: Number(row.skipped_count) || 0,
+        };
+      }
+      const runningDeleteAccountIds = new Set(getRunningMailServerDeleteAccountIds());
+
       const accountsWithUnread = accounts.map((account) => ({
         ...account,
+        delete_emails_on_server: toBooleanFlag(account.delete_emails_on_server),
         sync_fetch_limit: normalizeSyncFetchLimit(account.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT,
         unread_count: unreadByAccount[account.id] || 0,
+        server_delete_counts: deleteCountsByAccount[account.id] || { pending: 0, failed: 0, deleted: 0, missing: 0, skipped: 0 },
+        server_delete_running: runningDeleteAccountIds.has(account.id),
       }));
 
       return { accounts: accountsWithUnread };
@@ -508,6 +542,7 @@ module.exports = {
         smtp_port,
         encrypted_password,
         sync_fetch_limit,
+        delete_emails_on_server,
         accept_host_trust,
         try_calendar_sync,
         caldav_url,
@@ -528,6 +563,7 @@ module.exports = {
       const normalizedImapPort = Number(imap_port) || 993;
       const normalizedSmtpPort = Number(smtp_port) || 587;
       const trustAccepted = toBooleanFlag(accept_host_trust);
+      const serverDeleteEnabled = toBooleanFlag(delete_emails_on_server);
 
       console.log(`[ACCOUNT] Checking mail host policy for ${email_address}: IMAP ${imap_host}:${normalizedImapPort}, SMTP ${smtp_host}:${normalizedSmtpPort}`);
       const hostPolicyResult = await validateMailHostPolicy({
@@ -580,12 +616,43 @@ module.exports = {
       const accountId = crypto.randomUUID();
       const actualUsername = username || email_address;
       await db.execute(
-        'INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, sync_fetch_limit, allow_self_signed, trusted_imap_fingerprint256, trusted_smtp_fingerprint256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [accountId, userId, email_address, display_name || null, provider, actualUsername, imap_host || null, normalizedImapPort, smtp_host || null, normalizedSmtpPort, encryptedPasswordForStorage, normalizedSyncFetchLimit, trustAccepted ? 1 : 0, null, null]
+        `INSERT INTO mail_accounts
+           (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+            smtp_host, smtp_port, encrypted_password, sync_fetch_limit, delete_emails_on_server,
+            server_delete_enabled_at, server_delete_grace_until, allow_self_signed,
+            trusted_imap_fingerprint256, trusted_smtp_fingerprint256)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${serverDeleteEnabled ? 'UTC_TIMESTAMP()' : 'NULL'},
+                 ${serverDeleteEnabled ? 'DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)' : 'NULL'}, ?, ?, ?)`,
+        [
+          accountId,
+          userId,
+          email_address,
+          display_name || null,
+          provider,
+          actualUsername,
+          imap_host || null,
+          normalizedImapPort,
+          smtp_host || null,
+          normalizedSmtpPort,
+          encryptedPasswordForStorage,
+          normalizedSyncFetchLimit,
+          serverDeleteEnabled ? 1 : 0,
+          trustAccepted ? 1 : 0,
+          null,
+          null,
+        ]
       );
       await ensureDefaultMailFoldersForUser(userId);
       
-      const [accounts] = await db.execute('SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, sync_fetch_limit, is_active FROM mail_accounts WHERE id = ?', [accountId]);
+      const [accounts] = await db.execute(
+        `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+                smtp_host, smtp_port, sync_fetch_limit, delete_emails_on_server,
+                server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at, is_active
+         FROM mail_accounts
+         WHERE id = ?`,
+        [accountId]
+      );
+      if (accounts[0]) accounts[0].delete_emails_on_server = toBooleanFlag(accounts[0].delete_emails_on_server);
 
       let calendarSync = null;
       if (toBooleanFlag(try_calendar_sync)) {
@@ -652,6 +719,7 @@ module.exports = {
         smtp_port,
         encrypted_password,
         sync_fetch_limit,
+        delete_emails_on_server,
         accept_host_trust,
       } = body;
       
@@ -726,6 +794,10 @@ module.exports = {
       // Build update query dynamically
       const updates = [];
       const params = [];
+      const serverDeleteSettingProvided = Object.prototype.hasOwnProperty.call(body || {}, 'delete_emails_on_server');
+      const requestedServerDeleteEnabled = toBooleanFlag(delete_emails_on_server);
+      const currentServerDeleteEnabled = toBooleanFlag(existingAccount.delete_emails_on_server);
+      let shouldSeedServerDeleteQueue = false;
       
       if (email_address) { updates.push('email_address = ?'); params.push(email_address); }
       if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name || null); }
@@ -751,21 +823,45 @@ module.exports = {
         updates.push('sync_fetch_limit = ?');
         params.push(normalizedSyncFetchLimit);
       }
+      if (serverDeleteSettingProvided) {
+        if (requestedServerDeleteEnabled && !currentServerDeleteEnabled) {
+          updates.push('delete_emails_on_server = TRUE');
+          updates.push('server_delete_enabled_at = UTC_TIMESTAMP()');
+          updates.push('server_delete_grace_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)');
+          shouldSeedServerDeleteQueue = true;
+        } else if (!requestedServerDeleteEnabled && currentServerDeleteEnabled) {
+          updates.push('delete_emails_on_server = FALSE');
+          updates.push('server_delete_enabled_at = NULL');
+          updates.push('server_delete_grace_until = NULL');
+        }
+      }
       
-      if (updates.length === 0) return { error: 'No fields to update', status: 400 };
+      if (updates.length === 0 && !serverDeleteSettingProvided) return { error: 'No fields to update', status: 400 };
       
-      params.push(id, userId);
-      await db.execute(
-        `UPDATE mail_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
-        params
-      );
+      if (updates.length > 0) {
+        params.push(id, userId);
+        await db.execute(
+          `UPDATE mail_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+          params
+        );
+      }
+
+      if (shouldSeedServerDeleteQueue) {
+        await seedMailServerDeletionQueueForAccount({ userId, accountId: id });
+      }
       
       const [updated] = await db.execute(
-        'SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, sync_fetch_limit, is_active FROM mail_accounts WHERE id = ?',
+        `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+                smtp_host, smtp_port, sync_fetch_limit, delete_emails_on_server,
+                server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at, is_active
+         FROM mail_accounts
+         WHERE id = ?`,
         [id]
       );
       
-      return { account: updated[0] };
+      const updatedAccount = updated[0] || null;
+      if (updatedAccount) updatedAccount.delete_emails_on_server = toBooleanFlag(updatedAccount.delete_emails_on_server);
+      return { account: updatedAccount };
     } catch (error) {
       console.error('[ACCOUNT] Update error:', error);
       return { error: error.message || 'Failed to update mail account', status: 500 };

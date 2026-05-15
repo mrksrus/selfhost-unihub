@@ -89,6 +89,9 @@ test('backup import maps restored mail to existing account and email sync identi
         smtp_port: 587,
         encrypted_password: 'encrypted-secret',
         sync_fetch_limit: 'all',
+        delete_emails_on_server: true,
+        server_delete_enabled_at: '2026-05-15T09:30:00.000Z',
+        server_delete_grace_until: '2026-05-15T09:40:00.000Z',
         last_synced_at: '2026-05-15T10:00:00.000Z',
       }],
       emails: [{
@@ -123,6 +126,8 @@ test('backup import maps restored mail to existing account and email sync identi
   assert.equal(accountWrite.params[0], 'person@example.com');
   assert.equal(accountWrite.params[14], '2026-05-15T10:00:00.000Z');
   assert.equal(accountWrite.params[15], 'existing-account');
+  assert.match(accountWrite.sql, /delete_emails_on_server = FALSE/);
+  assert.match(accountWrite.sql, /server_delete_grace_until = NULL/);
 
   const emailWrite = calls.find(call => call.sql.includes('INSERT INTO emails'));
   assert.equal(emailWrite.params[0], 'existing-email');

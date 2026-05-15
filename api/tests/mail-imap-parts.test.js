@@ -4,9 +4,11 @@ const { simpleParser } = require('mailparser');
 const {
   buildMailHostTrustResult,
   buildRawEmailFromImapParts,
+  deleteImapUid,
   isTlsTrustError,
   loadExistingImportedUidSet,
   normalizeSyncFetchLimit,
+  recordMailServerMessageForDeletion,
   validateMailHostPolicy,
 } = require('../src/services/mail');
 
@@ -140,4 +142,71 @@ test('loads existing imported UIDs before message download', async () => {
   assert.match(calls[0].query, /source_folder = \?/);
   assert.match(calls[0].query, /imap_uid IN \(\?,\?,\?\)/);
   assert.deepEqual(calls[0].params, ['account-1', 'INBOX', 1, 2, 3, 123]);
+});
+
+test('server delete helper uses UID-scoped expunge', async () => {
+  const calls = [];
+  const connection = {
+    imap: {
+      serverSupports: capability => capability === 'UIDPLUS',
+      addFlags: (uid, flag, callback) => {
+        calls.push(['addFlags', uid, flag]);
+        callback(null);
+      },
+      expunge: (uid, callback) => {
+        calls.push(['expunge', uid]);
+        callback(null);
+      },
+      delFlags: (uid, flag, callback) => {
+        calls.push(['delFlags', uid, flag]);
+        callback(null);
+      },
+    },
+  };
+
+  await deleteImapUid(connection, 42);
+
+  assert.deepEqual(calls, [
+    ['addFlags', 42, '\\Deleted'],
+    ['expunge', 42],
+  ]);
+});
+
+test('server deletion queue skips messages without a usable raw archive', async () => {
+  let writes = 0;
+  const queued = await recordMailServerMessageForDeletion({
+    userId: 'user-1',
+    accountId: 'account-1',
+    emailId: 'email-1',
+    sourceFolder: 'INBOX',
+    imapUid: 42,
+    imapUidValidity: 123,
+    rawStoragePath: '/tmp/not-under-mail-raw/email.eml',
+    connection: {
+      execute: async () => {
+        writes++;
+        return [{ affectedRows: 1 }];
+      },
+    },
+  });
+
+  assert.equal(queued, false);
+  assert.equal(writes, 0);
+});
+
+test('server delete helper refuses mailbox-wide expunge fallback', async () => {
+  const calls = [];
+  const connection = {
+    imap: {
+      serverSupports: () => false,
+      addFlags: () => calls.push('addFlags'),
+      expunge: () => calls.push('expunge'),
+    },
+  };
+
+  await assert.rejects(
+    () => deleteImapUid(connection, 42),
+    /UIDPLUS/
+  );
+  assert.deepEqual(calls, []);
 });

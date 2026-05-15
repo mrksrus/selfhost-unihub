@@ -241,6 +241,10 @@ CREATE TABLE IF NOT EXISTS mail_accounts (
     -- Encrypted credentials
     encrypted_password TEXT,
     sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all' COMMENT 'all',
+    delete_emails_on_server BOOLEAN DEFAULT FALSE,
+    server_delete_enabled_at TIMESTAMP NULL,
+    server_delete_grace_until TIMESTAMP NULL,
+    server_delete_last_run_at TIMESTAMP NULL,
     is_active BOOLEAN DEFAULT TRUE,
     last_synced_at TIMESTAMP NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -327,6 +331,31 @@ CREATE TABLE IF NOT EXISTS emails (
     INDEX idx_emails_user_starred_date (user_id, is_starred, received_at DESC),
     INDEX idx_emails_user_read_folder_account (user_id, is_read, folder, mail_account_id),
     FULLTEXT INDEX ft_emails_search (subject, body_text)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Server-side IMAP deletion queue for imported messages
+CREATE TABLE IF NOT EXISTS mail_server_messages (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    mail_account_id CHAR(36) NOT NULL,
+    email_id CHAR(36) NOT NULL,
+    source_folder VARCHAR(255) NOT NULL,
+    imap_uid BIGINT NOT NULL,
+    imap_uidvalidity BIGINT NULL,
+    delete_status ENUM('pending', 'deleted', 'missing', 'failed', 'skipped') NOT NULL DEFAULT 'pending',
+    delete_attempts INT NOT NULL DEFAULT 0,
+    delete_error TEXT NULL,
+    deleted_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_mail_server_message_location (mail_account_id, source_folder, imap_uid),
+    INDEX idx_mail_server_messages_account_status (mail_account_id, delete_status, created_at),
+    INDEX idx_mail_server_messages_user_status (user_id, delete_status),
+    INDEX idx_mail_server_messages_email (email_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Email attachments table

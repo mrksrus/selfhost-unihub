@@ -18,9 +18,11 @@ const MAIL_NOTIFICATION_FETCH_LIMIT = 50;
 const MAIL_BACKGROUND_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
 const MAX_TRACKED_EMAIL_IDS = 200;
 const MAX_TRACKED_CALENDAR_EVENT_IDS = 500;
+const MAX_TRACKED_TODO_IDS = 500;
 const MAX_STORED_REMINDERS = 1000;
 const MAIL_NEW_GRACE_MS = 5 * 60 * 1000;
 const CALENDAR_NEW_GRACE_MS = 5 * 60 * 1000;
+const TODO_NEW_GRACE_MS = 5 * 60 * 1000;
 const CALENDAR_LOOKAHEAD_MS = 7 * 24 * 60 * 60 * 1000;
 const CALENDAR_REMINDER_LOOKBACK_MS = 2 * 60 * 60 * 1000;
 const REMINDER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -63,7 +65,9 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
   const tag = event.notification.tag || '';
-  const fallbackUrl = tag.includes('calendar')
+  const fallbackUrl = tag.includes('todo')
+    ? '/todo'
+    : tag.includes('calendar')
     ? '/calendar'
     : '/mail';
   const requestedUrl = event.notification.data?.url || fallbackUrl;
@@ -255,6 +259,7 @@ async function checkCalendarNotifications(state, now, suppressNotifications) {
   const events = Array.isArray(data?.events) ? data.events : [];
 
   await checkCalendarReminders(state, events, now, suppressNotifications);
+  await checkNewTodoNotifications(state, events, now, suppressNotifications);
   await checkNewCalendarEvents(state, events, now, suppressNotifications);
 }
 
@@ -353,6 +358,55 @@ async function checkNewCalendarEvents(state, events, now, suppressNotifications)
   });
 }
 
+async function checkNewTodoNotifications(state, events, now, suppressNotifications) {
+  const relevantTodos = events.filter((event) => (
+    event?.id &&
+    event.is_todo_only &&
+    event.todo_status !== 'done' &&
+    event.todo_status !== 'cancelled'
+  ));
+
+  if (!state.lastTodoCheckedAt) {
+    state.knownTodoIds = relevantTodos.map((event) => event.id).slice(0, MAX_TRACKED_TODO_IDS);
+    state.lastTodoCheckedAt = now;
+    return;
+  }
+
+  const knownIds = new Set(Array.isArray(state.knownTodoIds) ? state.knownTodoIds : []);
+  const freshnessThreshold = Math.max(0, state.lastTodoCheckedAt - TODO_NEW_GRACE_MS);
+  const newTodos = relevantTodos.filter((event) => {
+    if (knownIds.has(event.id)) return false;
+    const createdAtMs = Date.parse(event.created_at);
+    return Number.isFinite(createdAtMs) && createdAtMs >= freshnessThreshold;
+  });
+
+  state.knownTodoIds = unique([
+    ...relevantTodos.map((event) => event.id),
+    ...(state.knownTodoIds || []),
+  ]).slice(0, MAX_TRACKED_TODO_IDS);
+  state.lastTodoCheckedAt = now;
+
+  if (suppressNotifications || newTodos.length === 0) return;
+  if (await hasVisibleClientForPath('/todo')) return;
+
+  const firstTodo = newTodos[0];
+  const title = newTodos.length === 1 ? 'New ToDo' : 'New ToDos';
+  const body = newTodos.length === 1
+    ? getTodoNotificationBody(firstTodo)
+    : `${newTodos.length} new ToDo items added`;
+
+  await showNotification(title, {
+    body,
+    tag: 'todo-new-items',
+    renotify: true,
+    requireInteraction: false,
+    data: {
+      url: '/todo',
+      eventIds: newTodos.map((event) => event.id),
+    },
+  });
+}
+
 async function fetchJson(endpoint, headers = {}) {
   const response = await fetch(endpoint, {
     method: 'GET',
@@ -382,9 +436,11 @@ function createDefaultState(userId) {
     userId,
     knownEmailIds: [],
     knownCalendarEventIds: [],
+    knownTodoIds: [],
     deliveredReminderKeys: {},
     lastMailCheckedAt: 0,
     lastCalendarCheckedAt: 0,
+    lastTodoCheckedAt: 0,
     lastRunAt: 0,
     lastRunReason: null,
   };
@@ -408,6 +464,7 @@ async function loadNotificationState(userId) {
       knownCalendarEventIds: Array.isArray(state.knownCalendarEventIds)
         ? state.knownCalendarEventIds.slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS)
         : [],
+      knownTodoIds: Array.isArray(state.knownTodoIds) ? state.knownTodoIds.slice(0, MAX_TRACKED_TODO_IDS) : [],
       deliveredReminderKeys: state.deliveredReminderKeys && typeof state.deliveredReminderKeys === 'object'
         ? state.deliveredReminderKeys
         : {},
@@ -422,6 +479,7 @@ async function saveNotificationState(state) {
   try {
     state.knownEmailIds = unique(state.knownEmailIds || []).slice(0, MAX_TRACKED_EMAIL_IDS);
     state.knownCalendarEventIds = unique(state.knownCalendarEventIds || []).slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS);
+    state.knownTodoIds = unique(state.knownTodoIds || []).slice(0, MAX_TRACKED_TODO_IDS);
     state.deliveredReminderKeys = pruneReminderStore(state.deliveredReminderKeys || {}, Date.now());
 
     const cache = await caches.open(NOTIFICATION_STATE_CACHE);
@@ -546,4 +604,9 @@ function getCalendarEventStartText(event) {
     ? { dateStyle: 'medium' }
     : { dateStyle: 'medium', timeStyle: 'short' };
   return `Starts ${start.toLocaleString(undefined, options)}`;
+}
+
+function getTodoNotificationBody(event) {
+  const description = event.description?.trim();
+  return description || event.title || 'New ToDo item added';
 }

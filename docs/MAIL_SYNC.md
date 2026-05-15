@@ -12,6 +12,7 @@ outbound mail through SMTP. The mail system includes:
 - app-owned folders and sender/domain routing rules
 - raw `.eml` archiving
 - attachment storage and inline `cid:` rewriting
+- optional delayed server-side deletion after safe local import
 - manual, periodic, and service-worker background sync triggers
 
 ## Components
@@ -34,6 +35,7 @@ outbound mail through SMTP. The mail system includes:
 | `mail_folders` | Per-user app folder catalog |
 | `mail_sender_rules` | Sender/domain routing rules |
 | `emails` | Local email metadata, bodies, folder, read/star state, raw archive path |
+| `mail_server_messages` | Runtime queue for imported IMAP copies eligible for optional server deletion |
 | `email_attachments` | Attachment metadata and storage path |
 | `mail_email_scores` | Reserved schema for future scam/spam scoring |
 
@@ -54,6 +56,7 @@ Main payload fields:
 | `imap_host`, `imap_port` | Required host, port defaults to 993 |
 | `smtp_host`, `smtp_port` | Required host, port defaults to 587 |
 | `sync_fetch_limit` | Currently normalized to `all` |
+| `delete_emails_on_server` | Optional, defaults to false; enables delayed provider-side deletion after import |
 | `accept_host_trust` | Allows a user-confirmed TLS trust exception |
 | `try_calendar_sync`, `caldav_url` | Optional one-time CalDAV discovery/import after mail account creation |
 
@@ -132,6 +135,29 @@ For each selected folder:
 
 Fetching one UID at a time is slower, but it limits memory use and lets one bad
 message fail without losing the whole sync.
+
+## Optional Server Deletion
+
+Mail accounts default to keeping all provider-side messages. If
+`delete_emails_on_server` is enabled for an account, UniHub waits 10 minutes
+before attempting deletion so the user can turn the setting off again.
+
+The deletion worker:
+
+1. only runs after `server_delete_grace_until`
+2. skips while normal mail sync is running
+3. only queues messages with a stored `source_folder`, IMAP UID, and raw `.eml`
+   archive
+4. re-checks the account setting before each message
+5. marks each queue row as `deleted`, `missing`, `failed`, or `skipped`
+
+UniHub deletes by IMAP UID in the original source folder and refuses to expunge
+when the server lacks UID-scoped expunge support. Provider behavior can differ:
+Gmail may archive or label messages depending on folder/server semantics.
+
+Turning the setting off stops queued deletion and leaves local UniHub mail
+untouched. Turning it on again starts a fresh 10-minute grace period and
+re-queues safe, not-yet-deleted imported messages.
 
 ## Sender Routing Rules
 

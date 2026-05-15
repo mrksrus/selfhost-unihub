@@ -25,6 +25,8 @@ Included data:
 - mail accounts with encrypted credentials
 - mail account connection settings such as provider, username, IMAP/SMTP hosts,
   ports, TLS trust metadata, sync limit, active state, and `last_synced_at`
+- server-deletion account metadata may appear in backups, but restore always
+  disables provider-side deletion for safety
 - emails
 - email sync identity metadata: `message_id`, `source_folder`, `imap_uid`, and
   `imap_uidvalidity`
@@ -87,12 +89,16 @@ Import behavior:
 - settings import restores profile display metadata and user preferences for the
   current account, but not role or active-state privileges
 - mail accounts are matched by email when possible
+- restored mail accounts always set `delete_emails_on_server` to false and clear
+  server-deletion timing fields, even when restoring over an existing account
 - imported email rows are matched to existing local mail by row ID, then
   `(mail_account_id, message_id)`, then
   `(mail_account_id, source_folder, imap_uid, imap_uidvalidity)` to avoid
   duplicate rows when restoring into an already-synced account
 - mail sync metadata is restored so the next IMAP sync can skip already-imported
   messages instead of downloading them again
+- server-deletion queue rows are not restored; if the user later enables
+  provider-side deletion, UniHub regenerates the queue from safe imported mail
 - restored files are written under the current user's upload roots
 - inserts use upsert behavior for known IDs
 - file checksum mismatch aborts restore

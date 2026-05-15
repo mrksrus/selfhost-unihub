@@ -94,6 +94,18 @@ interface MailAccount {
   is_active: boolean;
   last_synced_at: string | null;
   sync_fetch_limit?: string;
+  delete_emails_on_server?: boolean;
+  server_delete_enabled_at?: string | null;
+  server_delete_grace_until?: string | null;
+  server_delete_last_run_at?: string | null;
+  server_delete_running?: boolean;
+  server_delete_counts?: {
+    pending: number;
+    failed: number;
+    deleted: number;
+    missing: number;
+    skipped: number;
+  };
   unread_count?: number;
 }
 
@@ -108,6 +120,7 @@ interface AccountFormState {
   imap_port: number;
   smtp_port: number;
   sync_fetch_limit: string;
+  delete_emails_on_server: boolean;
   try_calendar_sync: boolean;
   caldav_url: string;
 }
@@ -273,6 +286,7 @@ const initialAccountForm: AccountFormState = {
   imap_port: 993,
   smtp_port: 587,
   sync_fetch_limit: 'all',
+  delete_emails_on_server: false,
   try_calendar_sync: false,
   caldav_url: '',
 };
@@ -329,6 +343,21 @@ const isComposeHtmlEmpty = (value: string) =>
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
     .trim();
+
+const getServerDeleteStatus = (account: MailAccount) => {
+  if (!account.delete_emails_on_server) return null;
+  const counts = account.server_delete_counts;
+  if (account.server_delete_running) return 'Server delete running';
+  if (account.server_delete_grace_until) {
+    const graceUntil = new Date(account.server_delete_grace_until);
+    if (Number.isFinite(graceUntil.getTime()) && graceUntil.getTime() > Date.now()) {
+      return `Server delete queued until ${format(graceUntil, 'MMM d, HH:mm')}`;
+    }
+  }
+  if ((counts?.failed || 0) > 0) return `${counts?.failed || 0} server delete failed`;
+  if ((counts?.pending || 0) > 0) return `${counts?.pending || 0} server deletes pending`;
+  return 'Server delete enabled';
+};
 
 const MailPage = () => {
   const { toast } = useToast();
@@ -1242,6 +1271,7 @@ const MailPage = () => {
       imap_port: account.imap_port || 993,
       smtp_port: account.smtp_port || 587,
       sync_fetch_limit: account.sync_fetch_limit || 'all',
+      delete_emails_on_server: account.delete_emails_on_server === true,
       try_calendar_sync: false,
       caldav_url: '',
     });
@@ -1827,6 +1857,20 @@ const MailPage = () => {
                         )}
                       </div>
                     )}
+                    <div className="rounded-md border border-border p-3">
+                      <label className="flex items-start gap-3 text-sm">
+                        <Checkbox
+                          checked={accountForm.delete_emails_on_server}
+                          onCheckedChange={(checked) => setAccountForm({ ...accountForm, delete_emails_on_server: checked === true })}
+                        />
+                        <span>
+                          <span className="font-medium text-foreground">Delete Emails on Server</span>
+                          <span className="block text-muted-foreground">
+                            Off by default. When enabled, UniHub waits 10 minutes before deleting imported server copies; turning it off stops queued deletion.
+                          </span>
+                        </span>
+                      </label>
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       Server details are filled from the provider; you can change any value.
                     </p>
@@ -1949,6 +1993,9 @@ const MailPage = () => {
                         <div className="flex-1 min-w-0 text-left">
                           <p className="truncate">{account.display_name || account.email_address}</p>
                           <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
+                          {getServerDeleteStatus(account) && (
+                            <p className="text-xs text-destructive truncate">{getServerDeleteStatus(account)}</p>
+                          )}
                         </div>
                       )}
                     </button>

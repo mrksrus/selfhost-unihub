@@ -3,13 +3,15 @@ require('./imap-patch');
 const { PORT } = require('./config');
 const { db } = require('./state');
 const { initDatabase, ensurePerformanceIndexes } = require('./services/database');
-const { syncMailAccount, isAnyMailAccountSyncRunning } = require('./services/mail');
+const { syncMailAccount, isAnyMailAccountSyncRunning, runMailServerDeletionPass } = require('./services/mail');
 const { cleanupExpiredRecordingUploads } = require('./services/recordings');
 const { resumePendingDataExportJobs } = require('./services/export-jobs');
 const { handleRequest } = require('./request-handler');
 
 const MAIL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+const MAIL_SERVER_DELETE_INTERVAL_MS = 60 * 1000;
 let periodicMailSyncRunning = false;
+let periodicMailServerDeleteRunning = false;
 
 async function start() {
   await initDatabase();
@@ -58,6 +60,25 @@ async function start() {
       periodicMailSyncRunning = false;
     }
   }, MAIL_SYNC_INTERVAL_MS);
+
+  setInterval(async () => {
+    if (periodicMailServerDeleteRunning || periodicMailSyncRunning || isAnyMailAccountSyncRunning()) {
+      return;
+    }
+
+    periodicMailServerDeleteRunning = true;
+    try {
+      const result = await runMailServerDeletionPass();
+      const processed = (result.accounts || []).reduce((sum, item) => sum + (item.processed || 0), 0);
+      if (processed > 0) {
+        console.log(`[SERVER DELETE] Periodic pass processed ${processed} queued message(s)`);
+      }
+    } catch (error) {
+      console.error('[SERVER DELETE] Periodic pass error:', error.message);
+    } finally {
+      periodicMailServerDeleteRunning = false;
+    }
+  }, MAIL_SERVER_DELETE_INTERVAL_MS);
 
   // Clean up expired sessions every hour to prevent table bloat
   setInterval(async () => {
@@ -123,6 +144,7 @@ async function start() {
   }, 15 * 60 * 1000); // 15 minutes
   
   console.log('✓ Periodic mail sync enabled (every 10 minutes)');
+  console.log('✓ Mail server deletion worker enabled (every minute)');
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Expired recording upload cleanup enabled (every hour)');
   console.log('✓ Database connection pool health check enabled (every 15 minutes)');

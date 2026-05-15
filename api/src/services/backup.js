@@ -558,14 +558,20 @@ async function importBackupForUser(userId, backup, { mode = 'dry-run', sections 
           `UPDATE mail_accounts
            SET email_address = ?, display_name = ?, provider = ?, username = ?, imap_host = ?, imap_port = ?,
                smtp_host = ?, smtp_port = ?, encrypted_password = ?, sync_fetch_limit = ?, allow_self_signed = ?,
-               trusted_imap_fingerprint256 = ?, trusted_smtp_fingerprint256 = ?, is_active = ?, last_synced_at = ?
+               trusted_imap_fingerprint256 = ?, trusted_smtp_fingerprint256 = ?, is_active = ?, last_synced_at = ?,
+               delete_emails_on_server = FALSE, server_delete_enabled_at = NULL,
+               server_delete_grace_until = NULL, server_delete_last_run_at = NULL
            WHERE id = ? AND user_id = ?`,
           [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, row.last_synced_at || null, targetAccountId, userId]
         );
       } else {
         await connection.execute(
-          `INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, sync_fetch_limit, allow_self_signed, trusted_imap_fingerprint256, trusted_smtp_fingerprint256, is_active, last_synced_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO mail_accounts
+             (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+              smtp_host, smtp_port, encrypted_password, sync_fetch_limit, delete_emails_on_server,
+              server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
+              allow_self_signed, trusted_imap_fingerprint256, trusted_smtp_fingerprint256, is_active, last_synced_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
           [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, row.last_synced_at || null]
         );
       }

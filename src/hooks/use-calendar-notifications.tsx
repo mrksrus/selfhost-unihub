@@ -13,6 +13,7 @@ import {
 
 const CALENDAR_REMINDER_STORAGE_PREFIX = 'unihub:calendar-reminders:';
 const CALENDAR_EVENT_NOTIFICATION_STORAGE_PREFIX = 'unihub:calendar-event-notifications:';
+const TODO_NOTIFICATION_STORAGE_PREFIX = 'unihub:todo-notifications:';
 const MAX_SCHEDULE_AHEAD_MS = 7 * 24 * 60 * 60 * 1000;
 const MISSED_REMINDER_GRACE_MS = 5 * 60 * 1000;
 const MAX_STORED_REMINDERS = 500;
@@ -64,6 +65,10 @@ function saveReminderStore(storageKey: string, store: ReminderStore) {
 
 function getCalendarEventNotificationStorageKey(userId: string) {
   return `${CALENDAR_EVENT_NOTIFICATION_STORAGE_PREFIX}${userId}`;
+}
+
+function getTodoNotificationStorageKey(userId: string) {
+  return `${TODO_NOTIFICATION_STORAGE_PREFIX}${userId}`;
 }
 
 function loadCalendarEventNotificationState(storageKey: string): CalendarEventNotificationState | null {
@@ -138,21 +143,29 @@ function getCalendarEventStartText(event: CalendarEvent) {
   return `Starts ${start.toLocaleString(undefined, options)}`;
 }
 
+function getTodoNotificationBody(event: CalendarEvent) {
+  const description = event.description?.trim();
+  return description || event.title || 'New ToDo item added';
+}
+
 export const useCalendarNotifications = () => {
   const { user } = useAuth();
   const reminderStoreRef = useRef<ReminderStore>({});
   const eventNotificationStateRef = useRef<CalendarEventNotificationState | null>(null);
+  const todoNotificationStateRef = useRef<CalendarEventNotificationState | null>(null);
   const notificationTimeoutsRef = useRef<Map<string, ReminderTimeout[]>>(new Map());
 
   useEffect(() => {
     if (!user?.id) {
       reminderStoreRef.current = {};
       eventNotificationStateRef.current = null;
+      todoNotificationStateRef.current = null;
       return;
     }
 
     reminderStoreRef.current = loadReminderStore(getCalendarReminderStorageKey(user.id));
     eventNotificationStateRef.current = loadCalendarEventNotificationState(getCalendarEventNotificationStorageKey(user.id));
+    todoNotificationStateRef.current = loadCalendarEventNotificationState(getTodoNotificationStorageKey(user.id));
 
     const setupNotifications = async () => {
       await initServiceWorker();
@@ -255,6 +268,69 @@ export const useCalendarNotifications = () => {
       data: {
         url: '/calendar',
         eventIds: newEvents.map((event) => event.id),
+      },
+    });
+  }, [events, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+
+    const storageKey = getTodoNotificationStorageKey(user.id);
+    const relevantTodos = events.filter((event) => (
+      event.is_todo_only &&
+      event.todo_status !== 'done' &&
+      event.todo_status !== 'cancelled'
+    ));
+    const now = Date.now();
+
+    if (!todoNotificationStateRef.current) {
+      const initialState = {
+        knownIds: relevantTodos.map((event) => event.id).slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS),
+        lastCheckedAt: now,
+      };
+      todoNotificationStateRef.current = initialState;
+      saveCalendarEventNotificationState(storageKey, initialState);
+      return;
+    }
+
+    const currentState = todoNotificationStateRef.current;
+    const knownIds = new Set(currentState.knownIds);
+    const freshnessThreshold = Math.max(0, currentState.lastCheckedAt - NEW_EVENT_GRACE_MS);
+    const newTodos = relevantTodos.filter((event) => {
+      if (knownIds.has(event.id)) return false;
+      const createdAtMs = Date.parse(event.created_at);
+      return Number.isFinite(createdAtMs) && createdAtMs >= freshnessThreshold;
+    });
+
+    const nextState: CalendarEventNotificationState = {
+      knownIds: Array.from(new Set([
+        ...relevantTodos.map((event) => event.id),
+        ...currentState.knownIds,
+      ])).slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS),
+      lastCheckedAt: now,
+    };
+    todoNotificationStateRef.current = nextState;
+    saveCalendarEventNotificationState(storageKey, nextState);
+
+    if (newTodos.length === 0) return;
+
+    const isViewingTodo = document.visibilityState === 'visible' && window.location.pathname.startsWith('/todo');
+    if (isViewingTodo) return;
+
+    const firstTodo = newTodos[0];
+    const title = newTodos.length === 1 ? 'New ToDo' : 'New ToDos';
+    const body = newTodos.length === 1
+      ? getTodoNotificationBody(firstTodo)
+      : `${newTodos.length} new ToDo items added`;
+
+    void showNotification(title, {
+      body,
+      tag: 'todo-new-items',
+      renotify: true,
+      requireInteraction: false,
+      data: {
+        url: '/todo',
+        eventIds: newTodos.map((event) => event.id),
       },
     });
   }, [events, user?.id]);

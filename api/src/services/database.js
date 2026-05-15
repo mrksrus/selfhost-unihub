@@ -456,6 +456,10 @@ async function ensureSchema() {
     smtp_port INT DEFAULT 587,
     encrypted_password TEXT,
     sync_fetch_limit VARCHAR(16) NOT NULL DEFAULT 'all',
+    delete_emails_on_server BOOLEAN DEFAULT FALSE,
+    server_delete_enabled_at TIMESTAMP NULL,
+    server_delete_grace_until TIMESTAMP NULL,
+    server_delete_last_run_at TIMESTAMP NULL,
     allow_self_signed BOOLEAN DEFAULT FALSE,
     trusted_imap_fingerprint256 VARCHAR(128),
     trusted_smtp_fingerprint256 VARCHAR(128),
@@ -516,6 +520,34 @@ async function ensureSchema() {
        SET sync_fetch_limit = 'all'
        WHERE sync_fetch_limit IS NULL
           OR sync_fetch_limit <> 'all'`
+    );
+  } catch (e) {
+    // Ignore migration failures and continue startup
+  }
+  const mailAccountServerDeleteColumns = [
+    ['delete_emails_on_server', `ALTER TABLE mail_accounts ADD COLUMN delete_emails_on_server BOOLEAN DEFAULT FALSE AFTER sync_fetch_limit`],
+    ['server_delete_enabled_at', `ALTER TABLE mail_accounts ADD COLUMN server_delete_enabled_at TIMESTAMP NULL AFTER delete_emails_on_server`],
+    ['server_delete_grace_until', `ALTER TABLE mail_accounts ADD COLUMN server_delete_grace_until TIMESTAMP NULL AFTER server_delete_enabled_at`],
+    ['server_delete_last_run_at', `ALTER TABLE mail_accounts ADD COLUMN server_delete_last_run_at TIMESTAMP NULL AFTER server_delete_grace_until`],
+  ];
+  for (const [columnName, alterSql] of mailAccountServerDeleteColumns) {
+    try {
+      const [columns] = await db.execute(`SHOW COLUMNS FROM mail_accounts LIKE ?`, [columnName]);
+      if (!Array.isArray(columns) || columns.length === 0) {
+        await db.execute(alterSql);
+      }
+    } catch (e) {
+      // Ignore migration failures and continue startup
+    }
+  }
+  try {
+    await db.execute(
+      `UPDATE mail_accounts
+       SET delete_emails_on_server = FALSE,
+           server_delete_enabled_at = NULL,
+           server_delete_grace_until = NULL,
+           server_delete_last_run_at = NULL
+       WHERE delete_emails_on_server IS NULL`
     );
   } catch (e) {
     // Ignore migration failures and continue startup
@@ -625,6 +657,29 @@ async function ensureSchema() {
   } catch (e) {
     // Ignore duplicate index errors.
   }
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS mail_server_messages (
+    id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    user_id CHAR(36) NOT NULL,
+    mail_account_id CHAR(36) NOT NULL,
+    email_id CHAR(36) NOT NULL,
+    source_folder VARCHAR(255) NOT NULL,
+    imap_uid BIGINT NOT NULL,
+    imap_uidvalidity BIGINT NULL,
+    delete_status ENUM('pending', 'deleted', 'missing', 'failed', 'skipped') NOT NULL DEFAULT 'pending',
+    delete_attempts INT NOT NULL DEFAULT 0,
+    delete_error TEXT NULL,
+    deleted_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    UNIQUE KEY unique_mail_server_message_location (mail_account_id, source_folder, imap_uid),
+    INDEX idx_mail_server_messages_account_status (mail_account_id, delete_status, created_at),
+    INDEX idx_mail_server_messages_user_status (user_id, delete_status),
+    INDEX idx_mail_server_messages_email (email_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   await db.execute(`CREATE TABLE IF NOT EXISTS email_attachments (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),

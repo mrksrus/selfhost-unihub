@@ -33,6 +33,9 @@ const DEFAULT_MAIL_SYNC_FETCH_LIMIT = 'all';
 const MAIL_SYNC_FETCH_LIMITS = new Set(['all']);
 const LEGACY_MAIL_SYNC_FETCH_LIMITS = new Set(['100', '500', '1000', '2000']);
 const activeMailAccountSyncs = new Map();
+const activeMailServerDeleteAccounts = new Set();
+const MAIL_SERVER_DELETE_GRACE_MS = 10 * 60 * 1000;
+const MAIL_SERVER_DELETE_BATCH_SIZE = 100;
 const MAIL_RAW_STORAGE_ROOT = '/app/uploads/mail-raw';
 const MAIL_FOLDER_DEFINITIONS = [
   { slug: 'inbox', displayName: 'Inbox', position: 10 },
@@ -130,6 +133,19 @@ function isAnyMailAccountSyncRunning() {
 
 function getRunningMailSyncAccountIds() {
   return Array.from(activeMailAccountSyncs.keys());
+}
+
+function isMailServerDeleteRunning(accountId) {
+  const normalizedAccountId = normalizeMailAccountId(accountId);
+  return !!normalizedAccountId && activeMailServerDeleteAccounts.has(normalizedAccountId);
+}
+
+function isAnyMailServerDeleteRunning() {
+  return activeMailServerDeleteAccounts.size > 0;
+}
+
+function getRunningMailServerDeleteAccountIds() {
+  return Array.from(activeMailServerDeleteAccounts.keys());
 }
 
 function normalizeSenderEmail(value) {
@@ -467,6 +483,21 @@ function getMailRawStoragePath(userId, emailId, messageId = '') {
   return path.join(MAIL_RAW_STORAGE_ROOT, String(userId), `${emailId}-${safeMessagePart}.eml`);
 }
 
+function isMailRawPathUnderRoot(storagePath) {
+  const root = path.resolve(MAIL_RAW_STORAGE_ROOT);
+  const resolvedPath = path.resolve(storagePath || '');
+  return resolvedPath === root || resolvedPath.startsWith(`${root}${path.sep}`);
+}
+
+function isUsableRawEmailArchive(storagePath) {
+  if (!storagePath || !isMailRawPathUnderRoot(storagePath)) return false;
+  try {
+    return fs.existsSync(path.resolve(storagePath));
+  } catch {
+    return false;
+  }
+}
+
 async function saveRawEmailSource({ userId, emailId, messageId, rawEmail }) {
   if (!rawEmail) return { rawStoragePath: null, rawSha256: null };
   const rawStoragePath = getMailRawStoragePath(userId, emailId, messageId);
@@ -678,6 +709,7 @@ async function repairExistingImportedEmail({
 }) {
   const updates = [];
   const params = [];
+  let rawStoragePath = existingEmail.raw_storage_path || null;
 
   if (messageId && existingEmail.message_id !== messageId) {
     updates.push('message_id = ?');
@@ -725,6 +757,7 @@ async function repairExistingImportedEmail({
         messageId,
         rawEmail: fullEmail,
       });
+      rawStoragePath = rawArchive.rawStoragePath || rawStoragePath;
       updates.push('raw_storage_path = COALESCE(raw_storage_path, ?)');
       params.push(rawArchive.rawStoragePath);
       updates.push('raw_sha256 = COALESCE(raw_sha256, ?)');
@@ -734,7 +767,7 @@ async function repairExistingImportedEmail({
     }
   }
 
-  if (updates.length === 0) return;
+  if (updates.length === 0) return { rawStoragePath };
   params.push(existingEmail.id, account.user_id);
   await db.execute(
     `UPDATE emails
@@ -742,6 +775,7 @@ async function repairExistingImportedEmail({
      WHERE id = ? AND user_id = ?`,
     params
   );
+  return { rawStoragePath };
 }
 
 function chunkArray(values, chunkSize) {
@@ -780,6 +814,356 @@ async function loadExistingImportedUidSet({ connection = db, accountId, folderNa
   }
 
   return existingUids;
+}
+
+function normalizeImapUid(value) {
+  const uid = Number(value);
+  return Number.isFinite(uid) && uid > 0 ? uid : null;
+}
+
+async function recordMailServerMessageForDeletion({
+  connection = db,
+  userId,
+  accountId,
+  emailId,
+  sourceFolder,
+  imapUid,
+  imapUidValidity,
+  rawStoragePath,
+}) {
+  const normalizedUid = normalizeImapUid(imapUid);
+  const folderName = String(sourceFolder || '').trim();
+  if (!userId || !accountId || !emailId || !folderName || !normalizedUid) return false;
+  if (!isUsableRawEmailArchive(rawStoragePath)) return false;
+
+  await connection.execute(
+    `INSERT INTO mail_server_messages
+       (id, user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       user_id = VALUES(user_id),
+       email_id = VALUES(email_id),
+       imap_uidvalidity = VALUES(imap_uidvalidity)`,
+    [
+      crypto.randomUUID(),
+      userId,
+      accountId,
+      emailId,
+      folderName,
+      normalizedUid,
+      imapUidValidity === undefined ? null : imapUidValidity,
+    ]
+  );
+  return true;
+}
+
+async function seedMailServerDeletionQueueForAccount({ userId, accountId, connection = db }) {
+  if (!userId || !accountId) return { queued: 0 };
+  const [emails] = await connection.execute(
+    `SELECT id, source_folder, imap_uid, imap_uidvalidity, raw_storage_path
+     FROM emails
+     WHERE user_id = ?
+       AND mail_account_id = ?
+       AND source_folder IS NOT NULL
+       AND TRIM(source_folder) <> ''
+       AND imap_uid IS NOT NULL
+       AND raw_storage_path IS NOT NULL
+       AND TRIM(raw_storage_path) <> ''`,
+    [userId, accountId]
+  );
+
+  let queued = 0;
+  for (const email of emails || []) {
+    if (await recordMailServerMessageForDeletion({
+      connection,
+      userId,
+      accountId,
+      emailId: email.id,
+      sourceFolder: email.source_folder,
+      imapUid: email.imap_uid,
+      imapUidValidity: email.imap_uidvalidity,
+      rawStoragePath: email.raw_storage_path,
+    })) {
+      queued++;
+    }
+  }
+
+  await connection.execute(
+    `UPDATE mail_server_messages
+     SET delete_status = 'pending',
+         delete_error = NULL,
+         deleted_at = NULL
+     WHERE user_id = ?
+       AND mail_account_id = ?
+       AND delete_status IN ('failed', 'skipped')`,
+    [userId, accountId]
+  );
+
+  return { queued };
+}
+
+async function markMailServerMessageDeleteStatus({ connection = db, id, status, error = null }) {
+  const allowedStatuses = new Set(['pending', 'deleted', 'missing', 'failed', 'skipped']);
+  if (!id || !allowedStatuses.has(status)) return;
+  await connection.execute(
+    `UPDATE mail_server_messages
+     SET delete_status = ?,
+         delete_attempts = delete_attempts + 1,
+         delete_error = ?,
+         deleted_at = CASE WHEN ? = 'deleted' OR ? = 'missing' THEN UTC_TIMESTAMP() ELSE deleted_at END
+     WHERE id = ?`,
+    [status, error ? String(error).slice(0, 2000) : null, status, status, id]
+  );
+}
+
+function imapSupportsUidExpunge(connection) {
+  try {
+    return !!connection?.imap?.serverSupports?.('UIDPLUS');
+  } catch {
+    return false;
+  }
+}
+
+function addImapUidFlag(connection, uid, flag) {
+  return new Promise((resolve, reject) => {
+    connection.imap.addFlags(uid, flag, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function removeImapUidFlag(connection, uid, flag) {
+  return new Promise((resolve, reject) => {
+    connection.imap.delFlags(uid, flag, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+function expungeImapUid(connection, uid) {
+  return new Promise((resolve, reject) => {
+    connection.imap.expunge(uid, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+async function deleteImapUid(connection, uid) {
+  if (!imapSupportsUidExpunge(connection)) {
+    throw new Error('IMAP server does not support UIDPLUS; refusing mailbox-wide expunge for safety.');
+  }
+
+  let markedDeleted = false;
+  try {
+    await addImapUidFlag(connection, uid, '\\Deleted');
+    markedDeleted = true;
+    await expungeImapUid(connection, uid);
+  } catch (error) {
+    if (markedDeleted) {
+      try {
+        await removeImapUidFlag(connection, uid, '\\Deleted');
+      } catch (removeError) {
+        console.error(`[SERVER DELETE] Failed to remove \\Deleted flag from UID ${uid}:`, removeError.message);
+      }
+    }
+    throw error;
+  }
+}
+
+async function isMailServerDeletionStillEnabled(accountId) {
+  const [rows] = await db.execute(
+    `SELECT delete_emails_on_server, is_active, server_delete_grace_until
+     FROM mail_accounts
+     WHERE id = ?
+     LIMIT 1`,
+    [accountId]
+  );
+  const account = rows[0];
+  if (!account) return false;
+  if (!toBooleanFlag(account.delete_emails_on_server) || !toBooleanFlag(account.is_active)) return false;
+  if (!account.server_delete_grace_until) return false;
+  return new Date(account.server_delete_grace_until).getTime() <= Date.now();
+}
+
+function buildImapConnectionConfig(account) {
+  const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
+  if (!password) return null;
+  const imapPort = account.imap_port || 993;
+  return {
+    imap: {
+      user: account.username || account.email_address,
+      password,
+      host: account.imap_host,
+      port: imapPort,
+      tls: true,
+      tlsOptions: {
+        rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
+        servername: account.imap_host,
+      },
+      connTimeout: 60000,
+      authTimeout: 30000,
+      keepalive: true,
+    },
+  };
+}
+
+async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SERVER_DELETE_BATCH_SIZE } = {}) {
+  const normalizedAccountId = normalizeMailAccountId(accountId);
+  if (!normalizedAccountId || activeMailServerDeleteAccounts.has(normalizedAccountId)) {
+    return { accountId: normalizedAccountId, skipped: true, reason: 'already_running' };
+  }
+  if (isAnyMailAccountSyncRunning()) {
+    return { accountId: normalizedAccountId, skipped: true, reason: 'mail_sync_running' };
+  }
+
+  activeMailServerDeleteAccounts.add(normalizedAccountId);
+  let connection = null;
+  try {
+    const [accounts] = await db.execute(
+      `SELECT *
+       FROM mail_accounts
+       WHERE id = ?
+         AND delete_emails_on_server = TRUE
+         AND is_active = TRUE
+         AND server_delete_grace_until IS NOT NULL
+         AND server_delete_grace_until <= UTC_TIMESTAMP()
+       LIMIT 1`,
+      [normalizedAccountId]
+    );
+    const account = accounts[0];
+    if (!account) return { accountId: normalizedAccountId, skipped: true, reason: 'not_enabled_or_grace_pending' };
+
+    const config = buildImapConnectionConfig(account);
+    if (!config) return { accountId: normalizedAccountId, success: false, error: 'No password configured for this account' };
+
+    const safeLimit = Math.min(Math.max(Number(limit) || MAIL_SERVER_DELETE_BATCH_SIZE, 1), 500);
+    const [messages] = await db.execute(
+      `SELECT id, user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity
+       FROM mail_server_messages
+       WHERE mail_account_id = ?
+         AND user_id = ?
+         AND delete_status = 'pending'
+       ORDER BY created_at ASC
+       LIMIT ${safeLimit}`,
+      [normalizedAccountId, account.user_id]
+    );
+
+    if (!messages.length) {
+      await db.execute('UPDATE mail_accounts SET server_delete_last_run_at = UTC_TIMESTAMP() WHERE id = ?', [normalizedAccountId]);
+      return { accountId: normalizedAccountId, success: true, processed: 0, deleted: 0, missing: 0, failed: 0, stopped: false };
+    }
+
+    console.log(`[SERVER DELETE] Connecting to delete ${messages.length} queued message(s) for ${account.email_address}`);
+    connection = await imaps.connect(config);
+    connection.on('error', (err) => {
+      console.error('[SERVER DELETE] IMAP connection error (handled):', err.message);
+    });
+
+    let currentFolder = null;
+    let processed = 0;
+    let deleted = 0;
+    let missing = 0;
+    let failed = 0;
+    let skipped = 0;
+    let stopped = false;
+
+    for (const message of messages) {
+      if (!(await isMailServerDeletionStillEnabled(normalizedAccountId))) {
+        stopped = true;
+        break;
+      }
+
+      const uid = normalizeImapUid(message.imap_uid);
+      const sourceFolder = String(message.source_folder || '').trim();
+      if (!uid || !sourceFolder) {
+        await markMailServerMessageDeleteStatus({ id: message.id, status: 'skipped', error: 'Missing source folder or UID.' });
+        skipped++;
+        processed++;
+        continue;
+      }
+
+      try {
+        if (currentFolder !== sourceFolder) {
+          await connection.openBox(sourceFolder);
+          currentFolder = sourceFolder;
+        }
+
+        const currentUidValidity = getCurrentBoxUidValidity(connection);
+        const expectedUidValidity = message.imap_uidvalidity === null || message.imap_uidvalidity === undefined
+          ? null
+          : Number(message.imap_uidvalidity);
+        if (expectedUidValidity !== null && currentUidValidity !== null && expectedUidValidity !== currentUidValidity) {
+          await markMailServerMessageDeleteStatus({
+            id: message.id,
+            status: 'skipped',
+            error: `UIDVALIDITY changed for ${sourceFolder}; expected ${expectedUidValidity}, got ${currentUidValidity}.`,
+          });
+          skipped++;
+          processed++;
+          continue;
+        }
+
+        const found = await connection.search([['UID', uid]], { bodies: ['HEADER.FIELDS (MESSAGE-ID)'], markSeen: false });
+        if (!Array.isArray(found) || found.length === 0) {
+          await markMailServerMessageDeleteStatus({ id: message.id, status: 'missing', error: null });
+          missing++;
+          processed++;
+          continue;
+        }
+
+        await deleteImapUid(connection, uid);
+        await markMailServerMessageDeleteStatus({ id: message.id, status: 'deleted', error: null });
+        deleted++;
+        processed++;
+      } catch (error) {
+        await markMailServerMessageDeleteStatus({ id: message.id, status: 'failed', error: error.message || String(error) });
+        failed++;
+        processed++;
+      }
+    }
+
+    await db.execute('UPDATE mail_accounts SET server_delete_last_run_at = UTC_TIMESTAMP() WHERE id = ?', [normalizedAccountId]);
+    console.log(`[SERVER DELETE] ${account.email_address}: deleted=${deleted}, missing=${missing}, failed=${failed}, skipped=${skipped}, stopped=${stopped}`);
+    return { accountId: normalizedAccountId, success: failed === 0, processed, deleted, missing, failed, skipped, stopped };
+  } catch (error) {
+    console.error(`[SERVER DELETE] Account ${normalizedAccountId} failed:`, error.message);
+    return { accountId: normalizedAccountId, success: false, error: error.message || String(error) };
+  } finally {
+    if (connection) {
+      try { connection.end(); } catch (e) { /* ignore */ }
+    }
+    activeMailServerDeleteAccounts.delete(normalizedAccountId);
+  }
+}
+
+async function runMailServerDeletionPass({ accountId = null, limit = MAIL_SERVER_DELETE_BATCH_SIZE } = {}) {
+  if (isAnyMailAccountSyncRunning()) {
+    return { skipped: true, reason: 'mail_sync_running', accounts: [] };
+  }
+
+  const params = [];
+  let query = `
+    SELECT id
+    FROM mail_accounts
+    WHERE delete_emails_on_server = TRUE
+      AND is_active = TRUE
+      AND server_delete_grace_until IS NOT NULL
+      AND server_delete_grace_until <= UTC_TIMESTAMP()`;
+  if (accountId) {
+    query += ' AND id = ?';
+    params.push(accountId);
+  }
+  query += ' ORDER BY server_delete_grace_until ASC LIMIT 10';
+
+  const [accounts] = await db.execute(query, params);
+  const results = [];
+  for (const account of accounts || []) {
+    results.push(await processMailServerDeletionForAccount(account.id, { limit }));
+  }
+  return { skipped: false, accounts: results };
 }
 
 // ── Mail sync and send functions ──────────────────────────────────
@@ -948,8 +1332,9 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
           connection: db,
         });
         if (existingEmail) {
+          let repairedRawStoragePath = existingEmail.raw_storage_path || null;
           try {
-            await repairExistingImportedEmail({
+            const repairResult = await repairExistingImportedEmail({
               existingEmail,
               account,
               messageId,
@@ -963,9 +1348,19 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
               uid,
               uidValidity,
             });
+            repairedRawStoragePath = repairResult?.rawStoragePath || repairedRawStoragePath;
           } catch (rawError) {
             console.error(`[SYNC] Failed to update existing email UID ${uid}:`, rawError.message);
           }
+          await recordMailServerMessageForDeletion({
+            userId: account.user_id,
+            accountId,
+            emailId: existingEmail.id,
+            sourceFolder: folderName,
+            imapUid: uid,
+            imapUidValidity: uidValidity,
+            rawStoragePath: repairedRawStoragePath,
+          });
           if (processedCount <= 5) {
             console.log(`[SYNC] Email already exists (UID: ${uid}, messageId: ${messageId}), skipping`);
           }
@@ -1034,6 +1429,16 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
           console.error(`[SYNC] Error details:`, dbError.code, dbError.sqlState);
           throw dbError; // Re-throw to be caught by outer catch
         }
+
+        await recordMailServerMessageForDeletion({
+          userId: account.user_id,
+          accountId,
+          emailId,
+          sourceFolder: folderName,
+          imapUid: uid,
+          imapUidValidity: uidValidity,
+          rawStoragePath: rawArchive.rawStoragePath,
+        });
         
         // Process attachments
         if (hasAttachments) {
@@ -1551,6 +1956,8 @@ module.exports = {
   KNOWN_MAIL_HOST_SUFFIXES,
   DEFAULT_MAIL_SYNC_FETCH_LIMIT,
   MAIL_SYNC_FETCH_LIMITS,
+  MAIL_SERVER_DELETE_GRACE_MS,
+  MAIL_SERVER_DELETE_BATCH_SIZE,
   MAIL_RAW_STORAGE_ROOT,
   MAIL_FOLDER_DEFINITIONS,
   ALLOWED_MAIL_FOLDER_SET,
@@ -1567,6 +1974,9 @@ module.exports = {
   isMailAccountSyncRunning,
   isAnyMailAccountSyncRunning,
   getRunningMailSyncAccountIds,
+  isMailServerDeleteRunning,
+  isAnyMailServerDeleteRunning,
+  getRunningMailServerDeleteAccountIds,
   normalizeSenderEmail,
   normalizeSenderDomain,
   normalizeMailSenderRuleInput,
@@ -1588,6 +1998,8 @@ module.exports = {
   isAttachmentPathUnderUploads,
   deleteStoredAttachmentFiles,
   getMailRawStoragePath,
+  isMailRawPathUnderRoot,
+  isUsableRawEmailArchive,
   saveRawEmailSource,
   flattenImapBoxes,
   listAvailableImapFolders,
@@ -1595,6 +2007,12 @@ module.exports = {
   getCurrentBoxUidValidity,
   buildRawEmailFromImapParts,
   loadExistingImportedUidSet,
+  recordMailServerMessageForDeletion,
+  seedMailServerDeletionQueueForAccount,
+  markMailServerMessageDeleteStatus,
+  deleteImapUid,
+  processMailServerDeletionForAccount,
+  runMailServerDeletionPass,
   syncMailFolder,
   testImapConnection,
   syncMailAccount,
