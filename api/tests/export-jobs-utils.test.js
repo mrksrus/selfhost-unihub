@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const {
   crc32Buffer,
   normalizeSections,
+  parseRequestedSections,
 } = require('../src/services/export-jobs');
 
 test('normalizeSections returns all sections for full export', () => {
@@ -11,6 +12,18 @@ test('normalizeSections returns all sections for full export', () => {
 
 test('normalizeSections drops unknown and duplicate sections', () => {
   assert.deepEqual(normalizeSections(['mail', 'mail', 'unknown', 'recordings']), ['mail', 'recordings']);
+});
+
+test('parseRequestedSections accepts JSON arrays returned as strings', () => {
+  assert.deepEqual(parseRequestedSections('["contacts","mail"]'), ['contacts', 'mail']);
+});
+
+test('parseRequestedSections accepts parsed JSON arrays from mysql', () => {
+  assert.deepEqual(parseRequestedSections(['contacts', 'calendar', 'mail']), ['contacts', 'calendar', 'mail']);
+});
+
+test('parseRequestedSections accepts legacy comma-separated values', () => {
+  assert.deepEqual(parseRequestedSections('contacts,calendar,mail'), ['contacts', 'calendar', 'mail']);
 });
 
 test('crc32Buffer matches known CRC32 value', () => {

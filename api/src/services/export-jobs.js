@@ -255,6 +255,21 @@ function normalizeSections(sections) {
   return normalized.length ? Array.from(new Set(normalized)) : Array.from(EXPORT_SECTIONS);
 }
 
+function parseRequestedSections(value) {
+  if (Array.isArray(value)) return normalizeSections(value);
+  if (Buffer.isBuffer(value)) return parseRequestedSections(value.toString('utf8'));
+  if (value === null || value === undefined || value === '') return normalizeSections('full');
+  if (typeof value !== 'string') return normalizeSections(value);
+
+  const trimmed = value.trim();
+  if (!trimmed) return normalizeSections('full');
+  try {
+    return normalizeSections(JSON.parse(trimmed));
+  } catch (_error) {
+    return normalizeSections(trimmed);
+  }
+}
+
 async function collectExportEntries(userId, sections) {
   const entries = [
     jsonEntry('manifest.json', {
@@ -366,7 +381,7 @@ function serializeJob(row) {
     scope: row.scope,
     status: row.status,
     progress: Number(row.progress) || 0,
-    requested_sections: typeof row.requested_sections === 'string' ? JSON.parse(row.requested_sections || '[]') : row.requested_sections,
+    requested_sections: parseRequestedSections(row.requested_sections),
     file_size: row.file_size === null || row.file_size === undefined ? null : Number(row.file_size),
     error: row.error || null,
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
@@ -393,7 +408,7 @@ async function runDataExportJob(jobId) {
     const job = rows[0];
     if (!job || job.status === 'ready') return;
     await updateJob(jobId, { status: 'running', progress: 5, error: null });
-    const sections = normalizeSections(JSON.parse(job.requested_sections || '[]'));
+    const sections = parseRequestedSections(job.requested_sections);
     const entries = await collectExportEntries(job.user_id, sections);
     await updateJob(jobId, { progress: 45 });
     const targetDir = path.join(BACKUPS_ROOT, String(job.user_id));
@@ -487,6 +502,7 @@ module.exports = {
   BACKUPS_ROOT,
   EXPORT_SECTIONS,
   normalizeSections,
+  parseRequestedSections,
   crc32Buffer,
   writeZip,
   startDataExportJob,
