@@ -123,6 +123,16 @@ function sanitizeArchivePathPart(value) {
     .slice(0, 160) || 'file';
 }
 
+function legacyZipWriterPath(value) {
+  return String(value || 'file')
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(part => part && part !== '.' && part !== '..')
+    .map(part => part.replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 120) || 'item')
+    .join('/')
+    .slice(0, 220);
+}
+
 function getBackupArchivePath(file) {
   const safeId = sanitizeArchivePathPart(file.id || crypto.randomUUID());
   const safeName = sanitizeArchivePathPart(file.filename || safeId);
@@ -829,7 +839,13 @@ function backupFromZipBuffer(buffer) {
   const fileBuffersByPath = new Map();
   for (const file of backup.files || []) {
     if (!file.archive_path) continue;
-    const fileBuffer = entries.get(file.archive_path);
+    let fileBuffer = entries.get(file.archive_path);
+    if (!fileBuffer) {
+      const legacyPath = legacyZipWriterPath(file.archive_path);
+      if (legacyPath !== file.archive_path) {
+        fileBuffer = entries.get(legacyPath);
+      }
+    }
     if (!fileBuffer) {
       throw new Error(`Backup file is missing ${file.archive_path}.`);
     }

@@ -97,3 +97,46 @@ test('backupFromZipBuffer accepts restorable backup ZIP with file checksums', as
   assert.equal(parsed.backup.app, 'unihub');
   assert.equal(parsed.fileBuffersByPath.get('files/mail-attachments/attachment-1-invoice.pdf').toString('utf8'), 'attachment bytes');
 });
+
+test('backupFromZipBuffer accepts archives written with legacy truncated filenames', async () => {
+  const { writeZip } = require('../src/services/export-jobs');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-legacy-'));
+  const zipPath = path.join(dir, 'backup.zip');
+  const fileBuffer = Buffer.from('png bytes', 'utf8');
+  const archivePath = 'files/mail-attachments/0a6fbcc5-351e-47cf-92a4-7b7193dbd401-8d2608f7-8d3e-4078-912d-5ea7198aa2d8-0a6fbcc5-351e-47cf-92a4-7b7193dbd401-logo-gray.png';
+  const legacyArchivePath = 'files/mail-attachments/0a6fbcc5-351e-47cf-92a4-7b7193dbd401-8d2608f7-8d3e-4078-912d-5ea7198aa2d8-0a6fbcc5-351e-47cf-92a4-7b7193dbd401-logo-gray';
+  const backup = {
+    app: 'unihub',
+    version: 1,
+    format: 'unihub-restorable-backup',
+    format_version: 1,
+    exported_at: '2026-05-16T00:00:00.000Z',
+    data: { email_attachments: [] },
+    files: [{
+      kind: 'email_attachment',
+      id: 'attachment-1',
+      filename: 'logo-gray.png',
+      archive_path: archivePath,
+      sha256: sha256Buffer(fileBuffer),
+      size_bytes: fileBuffer.length,
+    }],
+  };
+  const dataBuffer = Buffer.from(`${JSON.stringify(backup, null, 2)}\n`, 'utf8');
+  await writeZip([
+    { name: 'manifest.json', data: JSON.stringify({ app: 'unihub', version: 1, format: 'unihub-restorable-backup', format_version: 1 }) },
+    { name: 'data/backup.json', data: dataBuffer },
+    {
+      name: 'checksums.json',
+      data: JSON.stringify({
+        entries: {
+          'data/backup.json': sha256Buffer(dataBuffer),
+          [archivePath]: sha256Buffer(fileBuffer),
+        },
+      }),
+    },
+    { name: legacyArchivePath, data: fileBuffer },
+  ], zipPath);
+
+  const parsed = backupFromZipBuffer(await fs.readFile(zipPath));
+  assert.equal(parsed.fileBuffersByPath.get(archivePath).toString('utf8'), 'png bytes');
+});

@@ -52,9 +52,8 @@ function sanitizeZipPath(value) {
     .replace(/\\/g, '/')
     .split('/')
     .filter(part => part && part !== '.' && part !== '..')
-    .map(part => part.replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 120) || 'item')
-    .join('/')
-    .slice(0, 220);
+    .map(part => part.replace(/[^a-zA-Z0-9._ -]/g, '_') || 'item')
+    .join('/');
 }
 
 function bufferFromUInt32(value) {
