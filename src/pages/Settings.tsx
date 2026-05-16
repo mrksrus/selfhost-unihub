@@ -79,7 +79,7 @@ type UserPreferences = {
   default_start_page: 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'dashboard';
 };
 
-type ExportJob = {
+type BackupJob = {
   id: string;
   scope: 'full' | 'partial';
   status: 'queued' | 'running' | 'ready' | 'failed';
@@ -97,8 +97,14 @@ type BackupImportResult = {
   errors: string[];
   warnings: string[];
   counts: Record<string, number>;
+  conflicts?: Record<string, number>;
   import_sections?: string[];
   restored_files?: number;
+  options?: {
+    conflict_mode?: string;
+    calendar_mode?: string;
+    credentials_mode?: string;
+  };
 };
 
 type TwoFactorStatus = {
@@ -155,12 +161,14 @@ const Settings = () => {
   });
   const [ruleSaving, setRuleSaving] = useState(false);
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
-  const [backupExporting, setBackupExporting] = useState(false);
-  const [backupJsonExporting, setBackupJsonExporting] = useState(false);
+  const [backupCreating, setBackupCreating] = useState(false);
   const [backupImporting, setBackupImporting] = useState(false);
   const [backupImportFile, setBackupImportFile] = useState<File | null>(null);
   const [backupImportResult, setBackupImportResult] = useState<BackupImportResult | null>(null);
   const [backupImportSections, setBackupImportSections] = useState<string[] | 'full'>('full');
+  const [backupConflictMode, setBackupConflictMode] = useState<'keep_existing' | 'replace' | 'keep_both'>('keep_existing');
+  const [backupCalendarMode, setBackupCalendarMode] = useState<'merge_same_name' | 'copy'>('merge_same_name');
+  const [backupCredentialsMode, setBackupCredentialsMode] = useState<'keep_existing' | 'restore'>('keep_existing');
   const [ruleEditor, setRuleEditor] = useState<{
     id?: string;
     match_type: 'domain' | 'email';
@@ -218,10 +226,10 @@ const Settings = () => {
     enabled: !!user,
   });
 
-  const { data: exportJobs = [], refetch: refetchExportJobs } = useQuery({
+  const { data: backupJobs = [], refetch: refetchBackupJobs } = useQuery({
     queryKey: ['backup-jobs'],
     queryFn: async () => {
-      const response = await api.get<{ jobs: ExportJob[] }>('/backup/jobs');
+      const response = await api.get<{ jobs: BackupJob[] }>('/backup/jobs');
       if (response.error) throw new Error(response.error);
       return response.data?.jobs || [];
     },
@@ -512,41 +520,21 @@ const Settings = () => {
     }
   };
 
-  const handleStartExportJob = async (sections: string[] | 'full') => {
-    setBackupExporting(true);
+  const handleStartBackupJob = async (sections: string[] | 'full') => {
+    setBackupCreating(true);
     try {
-      const response = await api.post<{ job: ExportJob }>('/backup/jobs', { sections });
+      const response = await api.post<{ job: BackupJob }>('/backup/jobs', { sections });
       if (response.error) {
-        toast({ title: 'Failed to start export', description: response.error, variant: 'destructive' });
+        toast({ title: 'Failed to start backup', description: response.error, variant: 'destructive' });
         return;
       }
-      await refetchExportJobs();
-      toast({ title: 'Export job started' });
+      await refetchBackupJobs();
+      toast({ title: 'Backup job started' });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      toast({ title: 'Failed to start export', description: message, variant: 'destructive' });
+      toast({ title: 'Failed to start backup', description: message, variant: 'destructive' });
     } finally {
-      setBackupExporting(false);
-    }
-  };
-
-  const handleDownloadJsonBackup = async () => {
-    setBackupJsonExporting(true);
-    try {
-      const { blob, filename } = await api.getBlob('/backup/export');
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = filename || `unihub-backup-${new Date().toISOString().slice(0, 10)}.json`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      toast({ title: 'Failed to download backup', description: message, variant: 'destructive' });
-    } finally {
-      setBackupJsonExporting(false);
+      setBackupCreating(false);
     }
   };
 
@@ -565,20 +553,25 @@ const Settings = () => {
     });
   };
 
-  const handleImportJsonBackup = async (mode: 'dry-run' | 'apply') => {
+  const handleImportZipBackup = async (mode: 'dry-run' | 'apply') => {
     if (!backupImportFile) {
       toast({ title: 'Select a backup file first', variant: 'destructive' });
       return;
     }
     setBackupImporting(true);
     try {
-      const text = await backupImportFile.text();
-      const backup = JSON.parse(text);
-      const response = await api.post<{ import: BackupImportResult }>('/backup/import', {
+      const params = new URLSearchParams({
         mode,
-        sections: backupImportSections,
-        backup,
+        sections: backupImportSections === 'full' ? 'full' : backupImportSections.join(','),
+        conflict_mode: backupConflictMode,
+        calendar_mode: backupCalendarMode,
+        credentials_mode: backupCredentialsMode,
       });
+      const response = await api.uploadBlob<{ import: BackupImportResult }>(
+        `/backup/import?${params.toString()}`,
+        backupImportFile,
+        'application/zip'
+      );
       if (response.error) {
         toast({ title: 'Backup import failed', description: response.error, variant: 'destructive' });
         return;
@@ -594,44 +587,42 @@ const Settings = () => {
         toast({ title: 'Backup validated', description: 'Dry run completed without errors.' });
       }
     } catch (error: unknown) {
-      const message = error instanceof SyntaxError
-        ? 'The selected file is not valid JSON.'
-        : error instanceof Error ? error.message : 'Unknown error';
+      const message = error instanceof Error ? error.message : 'Unknown error';
       toast({ title: 'Backup import failed', description: message, variant: 'destructive' });
     } finally {
       setBackupImporting(false);
     }
   };
 
-  const handleDownloadExportJob = async (job: ExportJob) => {
+  const handleDownloadBackupJob = async (job: BackupJob) => {
     try {
       const { blob, filename } = await api.getBlob(`/backup/jobs/${job.id}/download`);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
       anchor.href = url;
-      anchor.download = filename || `unihub-export-${job.id}.zip`;
+      anchor.download = filename || `unihub-backup-${job.id}.zip`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
       URL.revokeObjectURL(url);
-      await refetchExportJobs();
+      await refetchBackupJobs();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      toast({ title: 'Failed to download export', description: message, variant: 'destructive' });
+      toast({ title: 'Failed to download backup', description: message, variant: 'destructive' });
     }
   };
 
-  const handleDeleteExportJob = async (job: ExportJob) => {
+  const handleDeleteBackupJob = async (job: BackupJob) => {
     try {
       const response = await api.delete(`/backup/jobs/${job.id}`);
       if (response.error) {
-        toast({ title: 'Failed to delete export', description: response.error, variant: 'destructive' });
+        toast({ title: 'Failed to delete backup', description: response.error, variant: 'destructive' });
         return;
       }
-      await refetchExportJobs();
+      await refetchBackupJobs();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
-      toast({ title: 'Failed to delete export', description: message, variant: 'destructive' });
+      toast({ title: 'Failed to delete backup', description: message, variant: 'destructive' });
     }
   };
 
@@ -1139,52 +1130,43 @@ const Settings = () => {
                 </div>
                 <div>
                   <CardTitle className="text-lg">Backup</CardTitle>
-                  <CardDescription>Download restore-compatible backups and human-readable ZIP exports.</CardDescription>
+                  <CardDescription>Create restorable ZIP backups with app data, mail, attachments, and stored files.</CardDescription>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                <div>
-                  <p className="font-medium text-foreground">Restore-compatible JSON backup</p>
-                  <p className="text-sm text-muted-foreground">
-                    Includes app data, mail account server settings, encrypted credentials, mail sync identity metadata, recordings, and embedded files.
-                  </p>
-                </div>
-                <Button variant="outline" onClick={handleDownloadJsonBackup} disabled={backupJsonExporting}>
-                  {backupJsonExporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
+              <div className="flex flex-wrap gap-3">
+                <Button variant="outline" onClick={() => handleStartBackupJob('full')} disabled={backupCreating}>
+                  {backupCreating ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
                   Full backup
                 </Button>
-              </div>
-
-              <Separator />
-
-              <div className="flex flex-wrap gap-3">
-                <Button variant="outline" onClick={() => handleStartExportJob('full')} disabled={backupExporting}>
-                  {backupExporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
-                  Full export
-                </Button>
-                {['mail', 'calendar', 'todo', 'contacts', 'recordings', 'settings'].map((section) => (
+                {[
+                  ['mail', 'Mail backup'],
+                  ['calendar', 'Calendar backup'],
+                  ['contacts', 'Contacts backup'],
+                  ['recordings', 'Recordings backup'],
+                  ['settings', 'Settings backup'],
+                ].map(([section, label]) => (
                   <Button
                     key={section}
                     variant="outline"
-                    onClick={() => handleStartExportJob([section])}
-                    disabled={backupExporting}
+                    onClick={() => handleStartBackupJob([section])}
+                    disabled={backupCreating}
                   >
-                    {section[0].toUpperCase() + section.slice(1)}
+                    {label}
                   </Button>
                 ))}
               </div>
 
               <div className="space-y-3">
-                {exportJobs.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No export jobs yet.</p>
-                ) : exportJobs.map((job) => (
+                {backupJobs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No backup jobs yet.</p>
+                ) : backupJobs.map((job) => (
                   <div key={job.id} className="rounded-md border border-border p-3 space-y-2">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                       <div>
                         <p className="font-medium text-foreground">
-                          {job.scope === 'full' ? 'Full export' : job.requested_sections.join(', ')}
+                          {job.scope === 'full' ? 'Full backup' : `${job.requested_sections.join(', ')} backup`}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           {new Date(job.created_at).toLocaleString()} • {job.status}
@@ -1193,12 +1175,12 @@ const Settings = () => {
                       </div>
                       <div className="flex gap-2">
                         {job.status === 'ready' && (
-                          <Button variant="outline" size="sm" onClick={() => handleDownloadExportJob(job)}>
+                          <Button variant="outline" size="sm" onClick={() => handleDownloadBackupJob(job)}>
                             <Download className="h-4 w-4 mr-2" />
                             Download
                           </Button>
                         )}
-                        <Button variant="ghost" size="sm" onClick={() => handleDeleteExportJob(job)}>
+                        <Button variant="ghost" size="sm" onClick={() => handleDeleteBackupJob(job)}>
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
@@ -1219,7 +1201,7 @@ const Settings = () => {
                 </div>
                 <div>
                   <CardTitle className="text-lg">Import</CardTitle>
-                  <CardDescription>Validate and restore a UniHub JSON backup.</CardDescription>
+                  <CardDescription>Validate and restore a UniHub ZIP backup.</CardDescription>
                 </div>
               </div>
             </CardHeader>
@@ -1229,7 +1211,7 @@ const Settings = () => {
                 <Input
                   id="backupImportFile"
                   type="file"
-                  accept="application/json,.json"
+                  accept="application/zip,.zip"
                   onChange={(event) => {
                     setBackupImportFile(event.target.files?.[0] || null);
                     setBackupImportResult(null);
@@ -1258,20 +1240,54 @@ const Settings = () => {
                     </Button>
                   ))}
                 </div>
-                <p className="text-xs text-muted-foreground">Full import restores every supported section. Category import restores only the selected data from the same JSON backup.</p>
+                <p className="text-xs text-muted-foreground">Full import restores every supported section. Category import restores only the selected data from the same ZIP backup.</p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="space-y-2">
+                  <Label>Conflicts</Label>
+                  <Select value={backupConflictMode} onValueChange={(value) => setBackupConflictMode(value as typeof backupConflictMode)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="keep_existing">Keep existing</SelectItem>
+                      <SelectItem value="replace">Replace matching</SelectItem>
+                      <SelectItem value="keep_both">Keep both</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Local calendars</Label>
+                  <Select value={backupCalendarMode} onValueChange={(value) => setBackupCalendarMode(value as typeof backupCalendarMode)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="merge_same_name">Merge same name</SelectItem>
+                      <SelectItem value="copy">Create restored copies</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Account credentials</Label>
+                  <Select value={backupCredentialsMode} onValueChange={(value) => setBackupCredentialsMode(value as typeof backupCredentialsMode)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="keep_existing">Keep current</SelectItem>
+                      <SelectItem value="restore">Use backup</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
-                  onClick={() => handleImportJsonBackup('dry-run')}
+                  onClick={() => handleImportZipBackup('dry-run')}
                   disabled={!backupImportFile || backupImporting}
                 >
                   {backupImporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
                   Validate
                 </Button>
                 <Button
-                  onClick={() => handleImportJsonBackup('apply')}
+                  onClick={() => handleImportZipBackup('apply')}
                   disabled={
                     !backupImportFile ||
                     backupImporting ||
@@ -1304,6 +1320,11 @@ const Settings = () => {
                   {Object.keys(backupImportResult.counts || {}).length > 0 && (
                     <p className="mt-2 text-muted-foreground">
                       {Object.entries(backupImportResult.counts).map(([key, value]) => `${key}: ${value}`).join(' • ')}
+                    </p>
+                  )}
+                  {Object.keys(backupImportResult.conflicts || {}).length > 0 && (
+                    <p className="mt-1 text-muted-foreground">
+                      Conflicts: {Object.entries(backupImportResult.conflicts || {}).map(([key, value]) => `${key}: ${value}`).join(' • ')}
                     </p>
                   )}
                   {backupImportResult.restored_files !== undefined && (

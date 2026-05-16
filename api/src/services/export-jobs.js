@@ -2,9 +2,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../state');
-const { contactToVCard } = require('./contacts');
-const { MAIL_RAW_STORAGE_ROOT } = require('./mail');
-const { RECORDINGS_ROOT, isPathUnderRoot: isRecordingPathUnderRoot } = require('./recordings');
+const { buildBackupArchiveEntriesForUser } = require('./backup');
 
 const BACKUPS_ROOT = '/app/uploads/backups';
 const activeExportJobs = new Set();
@@ -191,63 +189,6 @@ async function writeZip(entries, targetPath) {
   }
 }
 
-function jsonEntry(name, value) {
-  return {
-    name,
-    data: `${JSON.stringify(value, null, 2)}\n`,
-  };
-}
-
-function escapeIcsText(value) {
-  return String(value || '')
-    .replace(/\\/g, '\\\\')
-    .replace(/\n/g, '\\n')
-    .replace(/;/g, '\\;')
-    .replace(/,/g, '\\,');
-}
-
-function formatIcsDate(value, allDay = false) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (allDay) return date.toISOString().slice(0, 10).replace(/-/g, '');
-  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
-}
-
-function eventsToIcs(events, { todosOnly = false } = {}) {
-  const lines = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//UniHub//Data Export//EN'];
-  for (const event of events || []) {
-    lines.push('BEGIN:VEVENT');
-    lines.push(`UID:${event.id}@unihub.local`);
-    lines.push(`SUMMARY:${escapeIcsText(event.title || 'Untitled')}`);
-    if (event.description) lines.push(`DESCRIPTION:${escapeIcsText(event.description)}`);
-    if (event.location) lines.push(`LOCATION:${escapeIcsText(event.location)}`);
-    if (event.all_day) {
-      lines.push(`DTSTART;VALUE=DATE:${formatIcsDate(event.start_time, true)}`);
-      lines.push(`DTEND;VALUE=DATE:${formatIcsDate(event.end_time, true)}`);
-    } else {
-      lines.push(`DTSTART:${formatIcsDate(event.start_time)}`);
-      lines.push(`DTEND:${formatIcsDate(event.end_time)}`);
-    }
-    if (todosOnly || event.is_todo_only) lines.push('CATEGORIES:TODO');
-    lines.push('END:VEVENT');
-  }
-  lines.push('END:VCALENDAR');
-  return `${lines.join('\r\n')}\r\n`;
-}
-
-function buildEmailFallback(row) {
-  const toAddresses = typeof row.to_addresses === 'string' ? row.to_addresses : JSON.stringify(row.to_addresses || []);
-  return [
-    `Message-ID: ${row.message_id || `<${row.id}@unihub.local>`}`,
-    `From: ${row.from_name ? `${row.from_name} <${row.from_address}>` : row.from_address}`,
-    `To: ${toAddresses}`,
-    `Subject: ${row.subject || ''}`,
-    `Date: ${new Date(row.received_at || row.created_at || Date.now()).toUTCString()}`,
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    row.body_text || '',
-  ].join('\r\n');
-}
-
 function normalizeSections(sections) {
   if (!sections || sections === 'full') return Array.from(EXPORT_SECTIONS);
   const values = Array.isArray(sections) ? sections : String(sections).split(',');
@@ -271,107 +212,7 @@ function parseRequestedSections(value) {
 }
 
 async function collectExportEntries(userId, sections) {
-  const entries = [
-    jsonEntry('manifest.json', {
-      app: 'unihub',
-      exported_at: new Date().toISOString(),
-      sections,
-      format: 'zip',
-      warnings: [
-        'Mail account credentials are exported only as encrypted database metadata.',
-        'Encrypted credentials only restore on deployments using the same ENCRYPTION_KEY.',
-      ],
-    }),
-  ];
-
-  if (sections.includes('settings')) {
-    const [[users], [settings]] = await Promise.all([
-      db.execute('SELECT id, email, full_name, avatar_url, role, is_active, email_verified, timezone, created_at, updated_at FROM users WHERE id = ?', [userId]),
-      db.execute('SELECT setting_key, setting_value, updated_at FROM user_settings WHERE user_id = ?', [userId]),
-    ]);
-    entries.push(jsonEntry('settings/profile.json', users[0] || {}));
-    entries.push(jsonEntry('settings/preferences.json', settings || []));
-  }
-
-  if (sections.includes('contacts')) {
-    const [contacts] = await db.execute('SELECT * FROM contacts WHERE user_id = ? ORDER BY first_name ASC, last_name ASC', [userId]);
-    entries.push({ name: 'contacts/contacts.vcf', data: (contacts || []).map(contactToVCard).join('\r\n') });
-    entries.push(jsonEntry('contacts/contacts.json', contacts || []));
-  }
-
-  if (sections.includes('calendar') || sections.includes('todo')) {
-    const [[accounts], [calendars], [events], [subtasks], [attendees]] = await Promise.all([
-      db.execute('SELECT * FROM calendar_accounts WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      db.execute('SELECT * FROM calendar_calendars WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      db.execute('SELECT * FROM calendar_events WHERE user_id = ? ORDER BY start_time ASC', [userId]),
-      db.execute('SELECT * FROM calendar_event_subtasks WHERE user_id = ? ORDER BY position ASC', [userId]),
-      db.execute('SELECT * FROM calendar_event_attendees WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-    ]);
-    const calendarEvents = (events || []).filter(event => !event.is_todo_only);
-    const todoEvents = (events || []).filter(event => event.is_todo_only || event.todo_status);
-    if (sections.includes('calendar')) {
-      entries.push({ name: 'calendar/events.ics', data: eventsToIcs(calendarEvents) });
-    }
-    if (sections.includes('todo')) {
-      entries.push({ name: 'todo/todos.ics', data: eventsToIcs(todoEvents, { todosOnly: true }) });
-    }
-    entries.push(jsonEntry('calendar/calendar-data.json', { accounts, calendars, events, subtasks, attendees }));
-  }
-
-  if (sections.includes('mail')) {
-    const [[accounts], [folders], [rules], [emails], [attachments], [scores]] = await Promise.all([
-      db.execute('SELECT * FROM mail_accounts WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      db.execute('SELECT * FROM mail_folders WHERE user_id = ? ORDER BY position ASC', [userId]),
-      db.execute('SELECT * FROM mail_sender_rules WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      db.execute('SELECT * FROM emails WHERE user_id = ? ORDER BY received_at ASC', [userId]),
-      db.execute('SELECT * FROM email_attachments WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      db.execute('SELECT * FROM mail_email_scores WHERE user_id = ? ORDER BY scored_at ASC', [userId]),
-    ]);
-    entries.push(jsonEntry('mail/mail-metadata.json', { accounts, folders, rules, emails, attachments, scores }));
-    for (const email of emails || []) {
-      const safeName = sanitizeZipPath(`${email.received_at ? String(email.received_at).slice(0, 10) : 'email'}-${email.id}.eml`);
-      const rawPath = email.raw_storage_path ? path.resolve(email.raw_storage_path) : null;
-      if (rawPath && rawPath.startsWith(`${path.resolve(MAIL_RAW_STORAGE_ROOT)}${path.sep}`) && fs.existsSync(rawPath)) {
-        entries.push({ name: `mail/eml/${safeName}`, filePath: rawPath });
-      } else {
-        entries.push({ name: `mail/eml/${safeName}`, data: buildEmailFallback(email) });
-      }
-    }
-    for (const attachment of attachments || []) {
-      const attachmentPath = attachment.storage_path ? path.resolve(attachment.storage_path) : null;
-      const root = path.resolve('/app/uploads/attachments');
-      if (attachmentPath && attachmentPath.startsWith(`${root}${path.sep}`) && fs.existsSync(attachmentPath)) {
-        entries.push({
-          name: `mail/attachments/${attachment.email_id}/${attachment.filename || attachment.id}`,
-          filePath: attachmentPath,
-        });
-      }
-    }
-  }
-
-  if (sections.includes('recordings')) {
-    const [[recordings], [tags], [links]] = await Promise.all([
-      db.execute('SELECT * FROM recordings WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      db.execute('SELECT * FROM recording_tags WHERE user_id = ? ORDER BY name ASC', [userId]),
-      db.execute('SELECT * FROM recording_tag_links WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-    ]);
-    entries.push(jsonEntry('recordings/recordings.json', { recordings, tags, links }));
-    for (const recording of recordings || []) {
-      if (recording.storage_path && isRecordingPathUnderRoot(recording.storage_path) && fs.existsSync(recording.storage_path)) {
-        const ext = path.extname(recording.original_filename || recording.storage_path || '') || path.extname(recording.storage_path);
-        entries.push({
-          name: `recordings/files/${recording.id}${ext || '.audio'}`,
-          filePath: recording.storage_path,
-        });
-      }
-    }
-  }
-
-  entries.push(jsonEntry('checksums.json', {
-    generated_at: new Date().toISOString(),
-    note: 'ZIP entry CRC32 values are stored in the ZIP central directory.',
-  }));
-  return entries;
+  return buildBackupArchiveEntriesForUser(userId, sections);
 }
 
 function serializeJob(row) {
@@ -423,11 +264,11 @@ async function runDataExportJob(jobId) {
       completed_at: new Date(),
     });
   } catch (error) {
-    console.error('[EXPORT] Job failed:', error);
+    console.error('[BACKUP] Job failed:', error);
     await updateJob(jobId, {
       status: 'failed',
       progress: 100,
-      error: error.message || 'Export failed',
+      error: error.message || 'Backup failed',
     }).catch(() => {});
   } finally {
     activeExportJobs.delete(jobId);
@@ -448,7 +289,7 @@ async function startDataExportJob(userId, { sections, scope } = {}) {
     ]
   );
   setTimeout(() => {
-    runDataExportJob(jobId).catch((error) => console.error('[EXPORT] Job runner crashed:', error));
+    runDataExportJob(jobId).catch((error) => console.error('[BACKUP] Job runner crashed:', error));
   }, 20);
   const [rows] = await db.execute('SELECT * FROM data_export_jobs WHERE id = ? AND user_id = ? LIMIT 1', [jobId, userId]);
   return serializeJob(rows[0]);
@@ -463,7 +304,7 @@ async function resumePendingDataExportJobs() {
   );
   for (const row of rows || []) {
     setTimeout(() => {
-      runDataExportJob(row.id).catch((error) => console.error('[EXPORT] Resumed job runner crashed:', error));
+      runDataExportJob(row.id).catch((error) => console.error('[BACKUP] Resumed job runner crashed:', error));
     }, 20);
   }
   return rows.length;
@@ -490,7 +331,7 @@ function isBackupPathUnderRoot(filePath) {
 
 async function deleteDataExportJob(userId, jobId) {
   const job = await getDataExportJob(userId, jobId);
-  if (!job) return { error: 'Export job not found', status: 404 };
+  if (!job) return { error: 'Backup job not found', status: 404 };
   if (job.file_path && isBackupPathUnderRoot(job.file_path)) {
     await fs.promises.rm(path.resolve(job.file_path), { force: true }).catch(() => {});
   }

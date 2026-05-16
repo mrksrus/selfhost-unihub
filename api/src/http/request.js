@@ -53,6 +53,41 @@ async function parseBody(req, maxSize = 1000) {
   });
 }
 
+async function parseRawBody(req, maxSize = 1000) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let currentSize = 0;
+    let tooLarge = false;
+    let settled = false;
+
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    req.on('data', chunk => {
+      if (settled || tooLarge) return;
+      currentSize += chunk.length;
+      if (currentSize > maxSize) {
+        tooLarge = true;
+        req.pause();
+        settle(null);
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      if (tooLarge || currentSize > maxSize) { settle(null); return; }
+      settle(Buffer.concat(chunks));
+    });
+    req.on('error', () => {
+      settle(null);
+    });
+  });
+}
+
 function getAllowedOriginForRequest(req) {
   const requestOrigin = req.headers.origin;
   if (!requestOrigin) return null;
@@ -71,5 +106,6 @@ module.exports = {
   getRequestContentLength,
   isRequestBodyTooLarge,
   parseBody,
+  parseRawBody,
   getAllowedOriginForRequest,
 };

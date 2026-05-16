@@ -1,7 +1,7 @@
 const fs = require('fs');
 const routes = require('./routes');
 const { verifyToken, validateCsrfToken } = require('./auth');
-const { parseBody, getAllowedOriginForRequest, isRequestBodyTooLarge } = require('./http/request');
+const { parseBody, parseRawBody, getAllowedOriginForRequest, isRequestBodyTooLarge } = require('./http/request');
 
 // Request handler
 async function handleRequest(req, res) {
@@ -168,7 +168,12 @@ async function handleRequest(req, res) {
       return;
     }
 
-    const body = await parseBody(req, maxBodySize);
+    const contentType = String(req.headers['content-type'] || '').toLowerCase();
+    const expectsRawBody = routeKey === 'POST /api/backup/import'
+      && (contentType.includes('application/zip') || contentType.includes('application/octet-stream'));
+    const body = expectsRawBody
+      ? await parseRawBody(req, maxBodySize)
+      : await parseBody(req, maxBodySize);
 
     if (body === null) {
       res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });

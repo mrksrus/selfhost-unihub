@@ -16,12 +16,12 @@ let periodicMailServerDeleteRunning = false;
 async function start() {
   await initDatabase();
   try {
-    const resumedExportJobs = await resumePendingDataExportJobs();
-    if (resumedExportJobs > 0) {
-      console.log(`✓ Resumed ${resumedExportJobs} pending data export job(s)`);
+    const resumedBackupJobs = await resumePendingDataExportJobs();
+    if (resumedBackupJobs > 0) {
+      console.log(`✓ Resumed ${resumedBackupJobs} pending backup job(s)`);
     }
   } catch (error) {
-    console.warn('[EXPORT] Could not resume pending data export jobs:', error.message);
+    console.warn('[BACKUP] Could not resume pending backup jobs:', error.message);
   }
   
   const server = http.createServer(handleRequest);

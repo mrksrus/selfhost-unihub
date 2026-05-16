@@ -121,7 +121,7 @@ then attempt additive column/index migrations.
 | `/app/uploads/attachments` | Email attachments |
 | `/app/uploads/mail-raw` | Raw imported email source |
 | `/app/uploads/recordings` | Recording audio files and upload temp files |
-| `/app/uploads/backups` | Generated ZIP export jobs |
+| `/app/uploads/backups` | Generated restorable ZIP backup jobs |
 
 The Docker Compose file mounts `/app/uploads` as `uploads_data`.
 
@@ -136,7 +136,7 @@ The Docker Compose file mounts `/app/uploads` as `uploads_data`.
 | 1 hour | Delete expired recording upload temp files |
 | 15 minutes | Database pool health logging |
 
-At startup, pending data export jobs in `queued` or `running` state are resumed.
+At startup, pending ZIP backup jobs in `queued` or `running` state are resumed.
 
 ## Service Worker and PWA
 
@@ -166,6 +166,6 @@ Important boundaries in the current code:
 
 - This is a single-container app design. Do not run multiple app containers
   against the same database without reviewing in-memory locks and rate limits.
-- Mail sync and export jobs use in-process state and are not distributed.
+- Mail sync and backup jobs use in-process state and are not distributed.
 - Use external backups for MySQL and the uploads volume.
 - Place a TLS-terminating reverse proxy in front of the app for real use.

@@ -1,156 +1,74 @@
-# Backup and Export Documentation
+# Backup and Restore Documentation
 
 ## Overview
 
-UniHub has two separate data portability paths:
+UniHub backups are restorable ZIP archives. A backup ZIP contains structured
+application data plus the stored files needed to restore mail attachments, raw
+mail archives, and recordings.
 
-1. JSON backup/import API for application-state restore.
-2. Asynchronous ZIP export jobs for user-friendly downloads of selected data.
+Backups do not replace infrastructure backups. You should still back up the
+MySQL volume and uploads volume.
 
-Neither path replaces infrastructure backups. You still need to back up the
-MySQL volume and the uploads volume.
+## Backup ZIP Format
 
-## JSON Backup API
+Every backup ZIP contains:
 
-`GET /api/backup/export` builds a JSON object for the current user.
+- `manifest.json`: app/version, format, selected sections, counts, warnings
+- `data/backup.json`: canonical restore metadata for selected sections
+- `checksums.json`: SHA-256 checksums for restore data and stored files
+- `files/mail-raw/...`: raw `.eml` files when available
+- `files/mail-attachments/...`: email attachment files
+- `files/recordings/...`: recording files
 
-Included data:
+The restore engine uses `data/backup.json` plus `files/`. Readable extras may be
+added later, but they are not the authoritative restore format.
 
-- user profile metadata
-- user preferences
-- contacts
-- calendar accounts/calendars/events/subtasks/attendees/external refs
-- mail folders
-- mail sender rules
-- mail accounts with encrypted credentials
-- mail account connection settings such as provider, username, IMAP/SMTP hosts,
-  ports, TLS trust metadata, sync limit, active state, and `last_synced_at`
-- server-deletion account metadata may appear in backups, but restore always
-  disables provider-side deletion for safety
-- emails
-- email sync identity metadata: `message_id`, `source_folder`, `imap_uid`, and
-  `imap_uidvalidity`
-- email attachment metadata
-- mail email score metadata when present
-- embedded base64 file entries for attachments and raw emails when files exist
-- recordings, recording tags, tag links, and embedded recording files
-
-The backup includes:
-
-- `app: "unihub"`
-- `version: 1`
-- `exported_at`
-- warnings
-- `data`
-- `files`
-- `manifest_sha256`
-
-Warnings are important: encrypted credentials only restore correctly when the
-target deployment uses the same `ENCRYPTION_KEY`.
-
-## JSON Import API
-
-`POST /api/backup/import` accepts either the backup object directly or:
-
-```json
-{
-  "mode": "dry-run",
-  "sections": "full",
-  "backup": {}
-}
-```
-
-Modes:
-
-| Mode | Behavior |
-| --- | --- |
-| omitted / `dry-run` | Validate payload, checksums, and counts without writing |
-| `apply` | Restore rows and files for the current user |
-
-`sections` can be `"full"` or an array containing any of:
-
-- `settings`
-- `contacts`
-- `calendar` / `todo` (both map to the shared calendar/to-do tables)
-- `mail`
-- `recordings`
-
-Validation checks:
-
-- backup object shape
-- `app === "unihub"`
-- supported version
-- file base64/checksum integrity
-- manifest checksum when present
-
-Import behavior:
-
-- every imported row is assigned to the current user
-- settings import restores profile display metadata and user preferences for the
-  current account, but not role or active-state privileges
-- mail accounts are matched by email when possible
-- restored mail accounts always set `delete_emails_on_server` to false and clear
-  server-deletion timing fields, even when restoring over an existing account
-- imported email rows are matched to existing local mail by row ID, then
-  `(mail_account_id, message_id)`, then
-  `(mail_account_id, source_folder, imap_uid, imap_uidvalidity)` to avoid
-  duplicate rows when restoring into an already-synced account
-- mail sync metadata is restored so the next IMAP sync can skip already-imported
-  messages instead of downloading them again
-- server-deletion queue rows are not restored; if the user later enables
-  provider-side deletion, UniHub regenerates the queue from safe imported mail
-- restored files are written under the current user's upload roots
-- inserts use upsert behavior for known IDs
-- file checksum mismatch aborts restore
-- recordings with missing embedded audio files are skipped during apply
-
-## Async ZIP Export Jobs
-
-The ZIP export path creates a downloadable archive under
-`/app/uploads/backups/<userId>/`.
+## Included Data
 
 Supported sections:
 
-- `contacts`
-- `calendar`
-- `todo`
-- `mail`
-- `recordings`
-- `settings`
+- `settings`: user display metadata and user settings
+- `contacts`: all contact fields, including secondary emails and phones
+- `calendar`: accounts, calendars, events, todos, subtasks, attendees, external refs
+- `mail`: accounts, folders, sender rules, emails, attachments, scores, raw `.eml`
+- `recordings`: recordings, tags, tag links, audio files
 
-Starting a job:
+Mail account credentials and calendar credentials are stored only as encrypted
+database metadata. They restore only when the target deployment uses the same
+`ENCRYPTION_KEY`.
 
-```json
-{
-  "sections": ["contacts", "mail"]
-}
-```
+## Restore Behavior
 
-If `sections` or `scope` is omitted, a full export is created.
+Imports validate the ZIP before writing:
 
-Jobs are stored in `data_export_jobs` and run in-process. Queued/running jobs are
-resumed on API startup.
+- ZIP shape and UniHub format
+- `manifest.json`, `data/backup.json`, and `checksums.json`
+- app/version compatibility
+- selected sections
+- file checksums
+- row counts and conflict summary
 
-## ZIP Contents
+Restore is merge-based and never deletes unrelated current data.
 
-Every ZIP contains:
+Conflict modes:
 
-- `manifest.json`
-- `checksums.json`
+- `keep_existing`: default; existing matching rows stay unchanged, missing rows are added
+- `replace`: matching rows are updated from the backup
+- `keep_both`: matching rows are restored as new rows where the schema allows it
 
-Section contents:
+Calendar mode:
 
-| Section | Files |
-| --- | --- |
-| `settings` | `settings/profile.json`, `settings/preferences.json` |
-| `contacts` | `contacts/contacts.vcf`, `contacts/contacts.json` |
-| `calendar` | `calendar/events.ics`, `calendar/calendar-data.json` |
-| `todo` | `todo/todos.ics`, `calendar/calendar-data.json` |
-| `mail` | `mail/mail-metadata.json`, `mail/eml/*.eml`, `mail/attachments/...` |
-| `recordings` | `recordings/recordings.json`, `recordings/files/...` |
+- `merge_same_name`: default; same-name local calendars, including `Local`, are merged
+- `copy`: creates restored calendar copies when possible
 
-Mail export prefers raw `.eml` snapshots from `/app/uploads/mail-raw`. If a raw
-file is missing, it writes a basic RFC 822 fallback from stored email fields.
+Credential mode:
+
+- `keep_existing`: default; existing matched accounts keep current credentials
+- `restore`: backup credentials replace matched account credentials
+
+For safety, restored mail accounts always set `delete_emails_on_server` to false
+and clear server-deletion timestamps. The server-deletion queue is never restored;
+it is regenerated only if the user later enables server deletion.
 
 ## API Endpoints
 
@@ -158,35 +76,29 @@ All endpoints require authentication. State-changing endpoints require CSRF.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/backup/jobs` | List latest 25 export jobs |
-| POST | `/api/backup/jobs` | Start ZIP export job |
-| GET | `/api/backup/jobs/:id` | Get job status |
-| GET | `/api/backup/jobs/:id/download` | Download ready ZIP and mark `downloaded_at` |
+| GET | `/api/backup/jobs` | List latest 25 backup jobs |
+| POST | `/api/backup/jobs` | Start a ZIP backup job |
+| GET | `/api/backup/jobs/:id` | Get backup job status |
+| GET | `/api/backup/jobs/:id/download` | Download a ready backup ZIP |
 | DELETE | `/api/backup/jobs/:id` | Delete job and generated ZIP |
-| GET | `/api/backup/export` | Download JSON backup |
-| POST | `/api/backup/import` | Dry-run or apply JSON restore |
+| POST | `/api/backup/import` | Dry-run or apply ZIP restore |
 
-Job status values:
+`POST /api/backup/import` accepts `application/zip` or
+`application/octet-stream` bodies. Restore options are passed as query params:
 
-- `queued`
-- `running`
-- `ready`
-- `failed`
+- `mode=dry-run|apply`
+- `sections=full|mail,calendar,...`
+- `conflict_mode=keep_existing|replace|keep_both`
+- `calendar_mode=merge_same_name|copy`
+- `credentials_mode=keep_existing|restore`
 
-## Security Notes
-
-- All backup/export routes are scoped by current `user_id`.
-- Download paths are checked to stay under `/app/uploads/backups`.
-- JSON backup files can contain private mail content and encrypted credentials.
-- ZIP exports can contain private mail, recordings, and attachments.
-- Store exports securely and delete old jobs when no longer needed.
+`GET /api/backup/export` is deprecated and returns `410 Gone`.
 
 ## Limitations
 
-- Export jobs are in-process, not distributed.
-- There is no scheduled export or automatic retention policy. Manual backup and
-  export is intentional.
-- JSON import is designed for same-app restore, not arbitrary migration across
-  incompatible schema versions.
-- Encrypted mail/calendar credentials require the same `ENCRYPTION_KEY` after restore.
-- ZIP export is a download/export format, not an import format.
+- Backup jobs are in-process and stored in the existing `data_export_jobs` table
+  for compatibility.
+- ZIP import currently supports UniHub-created stored ZIP entries.
+- There is no scheduled backup or automatic retention policy.
+- Backups can contain private mail, attachments, recordings, and encrypted
+  credentials; store them securely.

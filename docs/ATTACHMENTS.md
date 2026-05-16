@@ -138,7 +138,7 @@ The mail sync service also stores raw imported email source below:
 /app/uploads/mail-raw/<userId>/
 ```
 
-Those `.eml` files are used by backup/export workflows and are cleaned up during
+Those `.eml` files are used by backup/restore workflows and are cleaned up during
 account deletion where applicable.
 
 ## Limitations

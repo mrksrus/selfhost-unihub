@@ -203,6 +203,51 @@ class ApiClient {
     };
   }
 
+  async uploadBlob<T>(endpoint: string, blob: Blob, contentType = 'application/octet-stream'): Promise<ApiResponse<T>> {
+    let url: string;
+    try {
+      url = this.resolveUrl(endpoint);
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : 'Invalid API endpoint',
+      };
+    }
+
+    const headers: HeadersInit = {
+      'Content-Type': contentType,
+    };
+    if (this.csrfToken) headers['X-CSRF-Token'] = this.csrfToken;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: blob,
+        credentials: 'include',
+      });
+      const contentTypeHeader = response.headers.get('content-type') || '';
+      if (!contentTypeHeader.includes('application/json')) {
+        return {
+          status: response.status,
+          error: getUnexpectedResponseMessage(response, contentTypeHeader),
+        };
+      }
+      const data = await response.json();
+      if (!response.ok) {
+        return {
+          ...data,
+          status: response.status,
+          error: typeof data.error === 'string' ? data.error : getHttpErrorMessage(response.status, response.statusText),
+        };
+      }
+      return { data };
+    } catch (error) {
+      return {
+        error: getNetworkErrorMessage(error),
+      };
+    }
+  }
+
   async post<T>(endpoint: string, body?: unknown): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, {
       method: 'POST',

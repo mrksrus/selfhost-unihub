@@ -1,6 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
 const {
+  backupFromZipBuffer,
   canonicalJson,
   normalizeBackupImportSections,
   sha256Buffer,
@@ -50,4 +54,46 @@ test('validateBackupPayload rejects tampered file content', () => {
 test('normalizeBackupImportSections maps full and todo scopes', () => {
   assert.deepEqual(normalizeBackupImportSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings']);
   assert.deepEqual(normalizeBackupImportSections(['mail', 'todo', 'unknown']), ['mail', 'calendar']);
+});
+
+test('backupFromZipBuffer accepts restorable backup ZIP with file checksums', async () => {
+  const { writeZip } = require('../src/services/export-jobs');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-'));
+  const zipPath = path.join(dir, 'backup.zip');
+  const fileBuffer = Buffer.from('attachment bytes', 'utf8');
+  const backup = {
+    app: 'unihub',
+    version: 1,
+    format: 'unihub-restorable-backup',
+    format_version: 1,
+    exported_at: '2026-05-15T00:00:00.000Z',
+    data: { email_attachments: [] },
+    files: [{
+      kind: 'email_attachment',
+      id: 'attachment-1',
+      filename: 'invoice.pdf',
+      archive_path: 'files/mail-attachments/attachment-1-invoice.pdf',
+      sha256: sha256Buffer(fileBuffer),
+      size_bytes: fileBuffer.length,
+    }],
+  };
+  const dataBuffer = Buffer.from(`${JSON.stringify(backup, null, 2)}\n`, 'utf8');
+  await writeZip([
+    { name: 'manifest.json', data: JSON.stringify({ app: 'unihub', version: 1, format: 'unihub-restorable-backup', format_version: 1 }) },
+    { name: 'data/backup.json', data: dataBuffer },
+    {
+      name: 'checksums.json',
+      data: JSON.stringify({
+        entries: {
+          'data/backup.json': sha256Buffer(dataBuffer),
+          'files/mail-attachments/attachment-1-invoice.pdf': sha256Buffer(fileBuffer),
+        },
+      }),
+    },
+    { name: 'files/mail-attachments/attachment-1-invoice.pdf', data: fileBuffer },
+  ], zipPath);
+
+  const parsed = backupFromZipBuffer(await fs.readFile(zipPath));
+  assert.equal(parsed.backup.app, 'unihub');
+  assert.equal(parsed.fileBuffersByPath.get('files/mail-attachments/attachment-1-invoice.pdf').toString('utf8'), 'attachment bytes');
 });

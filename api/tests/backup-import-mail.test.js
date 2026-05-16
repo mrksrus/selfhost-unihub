@@ -119,13 +119,17 @@ test('backup import maps restored mail to existing account and email sync identi
     },
   };
 
-  const result = await importBackupForUser('new-user', backup, { mode: 'apply' });
+  const result = await importBackupForUser('new-user', backup, {
+    mode: 'apply',
+    conflict_mode: 'replace',
+    credentials_mode: 'restore',
+  });
 
   assert.equal(result.valid, true);
   const accountWrite = calls.find(call => call.sql.includes('UPDATE mail_accounts'));
   assert.equal(accountWrite.params[0], 'person@example.com');
-  assert.equal(accountWrite.params[14], '2026-05-15T10:00:00.000Z');
-  assert.equal(accountWrite.params[15], 'existing-account');
+  assert.equal(accountWrite.params[15], '2026-05-15T10:00:00.000Z');
+  assert.equal(accountWrite.params[16], 'existing-account');
   assert.match(accountWrite.sql, /delete_emails_on_server = FALSE/);
   assert.match(accountWrite.sql, /server_delete_grace_until = NULL/);
 
