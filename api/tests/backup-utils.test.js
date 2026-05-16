@@ -7,6 +7,7 @@ const {
   backupFromZipBuffer,
   canonicalJson,
   normalizeBackupImportSections,
+  normalizeMysqlDateTime,
   sha256Buffer,
   validateBackupPayload,
 } = require('../src/services/backup');
@@ -54,6 +55,13 @@ test('validateBackupPayload rejects tampered file content', () => {
 test('normalizeBackupImportSections maps full and todo scopes', () => {
   assert.deepEqual(normalizeBackupImportSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings']);
   assert.deepEqual(normalizeBackupImportSections(['mail', 'todo', 'unknown']), ['mail', 'calendar']);
+});
+
+test('normalizeMysqlDateTime converts backup ISO dates for MySQL columns', () => {
+  assert.equal(normalizeMysqlDateTime('2026-05-16T16:10:27.000Z'), '2026-05-16 16:10:27');
+  assert.equal(normalizeMysqlDateTime('2026-05-16 16:10:27'), '2026-05-16 16:10:27');
+  assert.equal(normalizeMysqlDateTime(null), null);
+  assert.equal(normalizeMysqlDateTime(null, new Date('2026-05-16T16:10:27.000Z')), '2026-05-16 16:10:27');
 });
 
 test('backupFromZipBuffer accepts restorable backup ZIP with file checksums', async () => {

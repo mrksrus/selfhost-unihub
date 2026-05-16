@@ -57,6 +57,29 @@ function safeSerializeDate(value) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+function normalizeMysqlDateTime(value, fallback = null) {
+  const candidate = value === undefined || value === null || value === '' ? fallback : value;
+  if (candidate === undefined || candidate === null || candidate === '') return null;
+  if (typeof candidate === 'string') {
+    const trimmed = candidate.trim();
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(trimmed)) {
+      return trimmed.slice(0, 19);
+    }
+  }
+  const date = candidate instanceof Date ? candidate : new Date(candidate);
+  if (Number.isNaN(date.getTime())) return null;
+  const pad = (number) => String(number).padStart(2, '0');
+  return [
+    date.getUTCFullYear(),
+    pad(date.getUTCMonth() + 1),
+    pad(date.getUTCDate()),
+  ].join('-') + ' ' + [
+    pad(date.getUTCHours()),
+    pad(date.getUTCMinutes()),
+    pad(date.getUTCSeconds()),
+  ].join(':');
+}
+
 function normalizeRows(rows) {
   return (rows || []).map(row => Object.fromEntries(
     Object.entries(row).map(([key, value]) => [key, safeSerializeDate(value)])
@@ -609,6 +632,8 @@ async function findExistingCalendarForRestore(connection, row, userId, targetAcc
 async function findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId) {
   const [existingById] = await connection.execute('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
   if (existingById.length) return existingById[0].id;
+  const startTime = normalizeMysqlDateTime(row.start_time);
+  const endTime = normalizeMysqlDateTime(row.end_time);
   const [existingByShape] = await connection.execute(
     `SELECT id FROM calendar_events
      WHERE user_id = ?
@@ -617,7 +642,7 @@ async function findExistingCalendarEventForRestore(connection, row, userId, targ
        AND start_time = ?
        AND end_time = ?
      LIMIT 1`,
-    [userId, targetCalendarId || null, row.title || 'Untitled Event', row.start_time, row.end_time]
+    [userId, targetCalendarId || null, row.title || 'Untitled Event', startTime, endTime]
   );
   return existingByShape[0]?.id || null;
 }
@@ -712,7 +737,7 @@ async function findExistingRecordingForRestore(connection, row, userId, restored
        AND COALESCE(recorded_at, created_at) = COALESCE(?, ?)
        AND COALESCE(size_bytes, 0) = ?
      LIMIT 1`,
-    [userId, normalizeIdentifier(row.title || row.original_filename || 'Recording'), row.recorded_at || null, row.created_at || null, Number(row.size_bytes) || 0]
+    [userId, normalizeIdentifier(row.title || row.original_filename || 'Recording'), normalizeMysqlDateTime(row.recorded_at), normalizeMysqlDateTime(row.created_at), Number(row.size_bytes) || 0]
   );
   return existingByShape[0]?.id || null;
 }
@@ -1014,13 +1039,13 @@ async function importBackupForUser(userId, backup, {
           row.base_url || null,
           encryptedAccessToken,
           encryptedRefreshToken,
-          row.token_expires_at || null,
+          normalizeMysqlDateTime(row.token_expires_at),
           row.provider_config ? (typeof row.provider_config === 'string' ? row.provider_config : JSON.stringify(row.provider_config)) : null,
           row.capabilities ? (typeof row.capabilities === 'string' ? row.capabilities : JSON.stringify(row.capabilities)) : null,
           row.is_active === false ? 0 : 1,
           row.sync_status || null,
           row.sync_error || null,
-          row.last_synced_at || null,
+          normalizeMysqlDateTime(row.last_synced_at),
           shouldRestoreCredentials ? 1 : 0,
           shouldRestoreCredentials ? 1 : 0,
           shouldRestoreCredentials ? 1 : 0,
@@ -1058,7 +1083,7 @@ async function importBackupForUser(userId, backup, {
         `INSERT INTO calendar_events (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, todo_status, is_todo_only, done_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE calendar_id = VALUES(calendar_id), title = VALUES(title), description = VALUES(description), start_time = VALUES(start_time), end_time = VALUES(end_time), all_day = VALUES(all_day), location = VALUES(location), color = VALUES(color), recurrence = VALUES(recurrence), reminder_minutes = VALUES(reminder_minutes), reminders = VALUES(reminders), todo_status = VALUES(todo_status), is_todo_only = VALUES(is_todo_only), done_at = VALUES(done_at)`,
-        [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description || null, row.start_time, row.end_time, row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, row.done_at || null]
+        [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at)]
       );
     }
 
@@ -1115,7 +1140,7 @@ async function importBackupForUser(userId, backup, {
         `INSERT INTO calendar_event_external_refs (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, external_updated_at, last_synced_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE event_id = VALUES(event_id), calendar_id = VALUES(calendar_id), provider = VALUES(provider), external_etag = VALUES(external_etag), external_updated_at = VALUES(external_updated_at), last_synced_at = VALUES(last_synced_at)`,
-        [targetRefId, row.user_id, targetEventId, targetCalendarId, targetAccountId, row.provider, row.external_event_id, row.external_etag || null, row.external_updated_at || null, row.last_synced_at || null]
+        [targetRefId, row.user_id, targetEventId, targetCalendarId, targetAccountId, row.provider, row.external_event_id, row.external_etag || null, normalizeMysqlDateTime(row.external_updated_at), normalizeMysqlDateTime(row.last_synced_at)]
       );
     }
 
@@ -1155,7 +1180,7 @@ async function importBackupForUser(userId, backup, {
                delete_emails_on_server = FALSE, server_delete_enabled_at = NULL,
                server_delete_grace_until = NULL, server_delete_last_run_at = NULL
            WHERE id = ? AND user_id = ?`,
-          [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, shouldRestoreCredentials ? 1 : 0, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, row.last_synced_at || null, targetAccountId, userId]
+          [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, shouldRestoreCredentials ? 1 : 0, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, normalizeMysqlDateTime(row.last_synced_at), targetAccountId, userId]
         );
       } else {
         await connection.execute(
@@ -1165,7 +1190,7 @@ async function importBackupForUser(userId, backup, {
               server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
               allow_self_signed, trusted_imap_fingerprint256, trusted_smtp_fingerprint256, is_active, last_synced_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
-          [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, row.last_synced_at || null]
+          [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, normalizeMysqlDateTime(row.last_synced_at)]
         );
       }
     }
@@ -1205,7 +1230,7 @@ async function importBackupForUser(userId, backup, {
         `INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, body_text, body_html, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256, is_read, is_starred, is_draft, has_attachments, received_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE subject = VALUES(subject), from_address = VALUES(from_address), from_name = VALUES(from_name), to_addresses = VALUES(to_addresses), cc_addresses = VALUES(cc_addresses), bcc_addresses = VALUES(bcc_addresses), body_text = VALUES(body_text), body_html = VALUES(body_html), folder = VALUES(folder), source_folder = VALUES(source_folder), imap_uid = VALUES(imap_uid), imap_uidvalidity = VALUES(imap_uidvalidity), raw_storage_path = VALUES(raw_storage_path), raw_sha256 = VALUES(raw_sha256), is_read = VALUES(is_read), is_starred = VALUES(is_starred), is_draft = VALUES(is_draft), has_attachments = VALUES(has_attachments), received_at = VALUES(received_at)`,
-        [targetEmailId, row.user_id, targetMailAccountId, row.message_id || null, row.subject || null, row.from_address || 'unknown', row.from_name || null, typeof row.to_addresses === 'string' ? row.to_addresses : JSON.stringify(row.to_addresses || []), row.cc_addresses ? (typeof row.cc_addresses === 'string' ? row.cc_addresses : JSON.stringify(row.cc_addresses)) : null, row.bcc_addresses ? (typeof row.bcc_addresses === 'string' ? row.bcc_addresses : JSON.stringify(row.bcc_addresses)) : null, row.body_text || null, row.body_html || null, row.folder || 'inbox', row.source_folder || null, row.imap_uid || null, row.imap_uidvalidity || null, rawPath, rawPath ? row.raw_sha256 || null : null, row.is_read ? 1 : 0, row.is_starred ? 1 : 0, row.is_draft ? 1 : 0, row.has_attachments ? 1 : 0, row.received_at || new Date()]
+        [targetEmailId, row.user_id, targetMailAccountId, row.message_id || null, row.subject || null, row.from_address || 'unknown', row.from_name || null, typeof row.to_addresses === 'string' ? row.to_addresses : JSON.stringify(row.to_addresses || []), row.cc_addresses ? (typeof row.cc_addresses === 'string' ? row.cc_addresses : JSON.stringify(row.cc_addresses)) : null, row.bcc_addresses ? (typeof row.bcc_addresses === 'string' ? row.bcc_addresses : JSON.stringify(row.bcc_addresses)) : null, row.body_text || null, row.body_html || null, row.folder || 'inbox', row.source_folder || null, row.imap_uid || null, row.imap_uidvalidity || null, rawPath, rawPath ? row.raw_sha256 || null : null, row.is_read ? 1 : 0, row.is_starred ? 1 : 0, row.is_draft ? 1 : 0, row.has_attachments ? 1 : 0, normalizeMysqlDateTime(row.received_at, new Date())]
       );
     }
 
@@ -1269,7 +1294,7 @@ async function importBackupForUser(userId, backup, {
           row.classifier_confidence ?? null,
           row.reasons ? (typeof row.reasons === 'string' ? row.reasons : JSON.stringify(row.reasons)) : null,
           row.metadata ? (typeof row.metadata === 'string' ? row.metadata : JSON.stringify(row.metadata)) : null,
-          row.scored_at || new Date(),
+          normalizeMysqlDateTime(row.scored_at, new Date()),
         ]
       );
     }
@@ -1310,9 +1335,9 @@ async function importBackupForUser(userId, backup, {
           storagePath,
           row.source || 'imported',
           row.category || 'none',
-          row.recorded_at || row.created_at || new Date(),
+          normalizeMysqlDateTime(row.recorded_at, row.created_at || new Date()),
           row.metadata ? (typeof row.metadata === 'string' ? row.metadata : JSON.stringify(row.metadata)) : null,
-          row.created_at || new Date(),
+          normalizeMysqlDateTime(row.created_at, new Date()),
         ]
       );
     }
@@ -1388,6 +1413,7 @@ module.exports = {
   ZIP_BACKUP_FORMAT_VERSION,
   sha256Buffer,
   canonicalJson,
+  normalizeMysqlDateTime,
   validateBackupPayload,
   countBackupRows,
   normalizeBackupImportSections,
