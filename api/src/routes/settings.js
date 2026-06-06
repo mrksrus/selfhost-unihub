@@ -9,7 +9,9 @@ const {
   pickBestMailSenderRuleMatch,
   normalizeSenderDomain,
 } = require('../services/mail');
-const { isPathUnderRoot: isRecordingPathUnderRoot } = require('../services/recordings');
+const {
+  deleteRecordingFiles,
+} = require('../services/recordings');
 const { isBackupPathUnderRoot } = require('../services/export-jobs');
 
 const USER_SETTING_DEFAULTS = {
@@ -90,9 +92,7 @@ module.exports = {
       ]);
       await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
       for (const row of recordings || []) {
-        if (row.storage_path && isRecordingPathUnderRoot(row.storage_path)) {
-          await fs.promises.rm(path.resolve(row.storage_path), { force: true }).catch(() => {});
-        }
+        await deleteRecordingFiles(row.storage_path);
       }
       for (const row of exports || []) {
         if (row.file_path && isBackupPathUnderRoot(row.file_path)) {
@@ -170,9 +170,7 @@ module.exports = {
     try {
       const [recordings] = await db.execute('SELECT storage_path FROM recordings WHERE user_id = ?', [userId]);
       for (const row of recordings || []) {
-        if (row.storage_path && isRecordingPathUnderRoot(row.storage_path)) {
-          await fs.promises.rm(path.resolve(row.storage_path), { force: true }).catch(() => {});
-        }
+        await deleteRecordingFiles(row.storage_path);
       }
       const [result] = await db.execute('DELETE FROM recordings WHERE user_id = ?', [userId]);
       return { message: `Deleted ${result.affectedRows || 0} recording(s)`, deleted: result.affectedRows || 0 };

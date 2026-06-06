@@ -2,8 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const {
   isPathUnderRoot,
+  replaceFilenameExtension,
   listRecordings,
   getRecordingForUser,
+  ensureRecordingMp3,
   startRecordingUpload,
   appendRecordingUploadChunk,
   completeRecordingUpload,
@@ -85,15 +87,30 @@ module.exports = {
       const recording = await getRecordingForUser(userId, recordingId);
       if (!recording) return { error: 'Recording not found', status: 404 };
       if (!isPathUnderRoot(recording.storage_path)) return { error: 'Invalid recording path', status: 500 };
-      const filePath = path.resolve(recording.storage_path);
-      const stat = await fs.promises.stat(filePath);
       const url = new URL(req.url, `http://${req.headers.host}`);
       const download = url.searchParams.get('download') === '1';
+      const format = url.searchParams.get('format');
+      let filePath = path.resolve(recording.storage_path);
+      let contentType = recording.content_type || 'application/octet-stream';
+      let filename = recording.original_filename || `${recording.title || 'recording'}`;
+      let contentLength;
+
+      if (format === 'mp3') {
+        const converted = await ensureRecordingMp3(recording);
+        filePath = converted.path;
+        contentLength = converted.size;
+        contentType = 'audio/mpeg';
+        filename = replaceFilenameExtension(filename, '.mp3');
+      } else {
+        const stat = await fs.promises.stat(filePath);
+        contentLength = stat.size;
+      }
+
       return {
         __streamPath: filePath,
-        __contentType: recording.content_type || 'application/octet-stream',
-        __contentLength: stat.size,
-        __filename: recording.original_filename || `${recording.title || 'recording'}`,
+        __contentType: contentType,
+        __contentLength: contentLength,
+        __filename: filename,
         __disposition: download ? 'attachment' : 'inline',
       };
     } catch (error) {

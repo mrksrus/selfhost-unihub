@@ -8,8 +8,10 @@ const {
   canonicalJson,
   normalizeBackupImportSections,
   normalizeMysqlDateTime,
+  readBackupFileEntry,
   sha256Buffer,
   validateBackupPayload,
+  writeBackupJsonFile,
 } = require('../src/services/backup');
 
 test('canonicalJson orders object keys deterministically', () => {
@@ -62,6 +64,48 @@ test('normalizeMysqlDateTime converts backup ISO dates for MySQL columns', () =>
   assert.equal(normalizeMysqlDateTime('2026-05-16 16:10:27'), '2026-05-16 16:10:27');
   assert.equal(normalizeMysqlDateTime(null), null);
   assert.equal(normalizeMysqlDateTime(null, new Date('2026-05-16T16:10:27.000Z')), '2026-05-16 16:10:27');
+});
+
+test('readBackupFileEntry keeps archive files file-backed when requested', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-file-'));
+  const filePath = path.join(dir, 'message.eml');
+  const contents = Buffer.from('raw email contents', 'utf8');
+  await fs.writeFile(filePath, contents);
+
+  const entry = await readBackupFileEntry({
+    kind: 'raw_email',
+    id: 'email-1',
+    storagePath: filePath,
+    rootPath: dir,
+    includeData: false,
+  });
+
+  assert.equal(entry.source_path, filePath);
+  assert.equal(entry.size_bytes, contents.length);
+  assert.equal(entry.sha256, sha256Buffer(contents));
+  assert.equal(Object.hasOwn(entry, 'data_base64'), false);
+});
+
+test('writeBackupJsonFile writes large backup metadata incrementally', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-json-'));
+  const filePath = path.join(dir, 'backup.json');
+  const largeBody = 'x'.repeat(2 * 1024 * 1024);
+  const payload = {
+    app: 'unihub',
+    data: {
+      emails: [
+        { id: 'email-1', body_text: largeBody },
+        { id: 'email-2', body_text: 'small' },
+      ],
+    },
+    files: [{ kind: 'raw_email', id: 'email-1' }],
+  };
+
+  await writeBackupJsonFile(payload, filePath);
+
+  const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+  assert.equal(parsed.data.emails[0].body_text.length, largeBody.length);
+  assert.deepEqual(parsed.files, payload.files);
 });
 
 test('backupFromZipBuffer accepts restorable backup ZIP with file checksums', async () => {

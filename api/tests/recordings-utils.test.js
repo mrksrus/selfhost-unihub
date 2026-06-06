@@ -2,10 +2,13 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   MAX_CHUNK_BYTES,
+  getConvertedMp3Path,
+  isMp3Audio,
   isPathUnderRoot,
   normalizeCategory,
   normalizeMetadata,
   normalizeTags,
+  replaceFilenameExtension,
   serializeRecording,
 } = require('../src/services/recordings');
 
@@ -56,6 +59,18 @@ test('recording path guard allows root descendants only', () => {
   assert.equal(isPathUnderRoot('/app/uploads/recordings'), true);
   assert.equal(isPathUnderRoot('/app/uploads/recordings/../mail/file.eml'), false);
   assert.equal(isPathUnderRoot('/tmp/file.webm'), false);
+});
+
+test('recording MP3 helpers identify formats and keep conversion paths under the recording root', () => {
+  assert.equal(isMp3Audio('audio/mpeg', 'recording.bin'), true);
+  assert.equal(isMp3Audio('application/octet-stream', 'recording.mp3'), true);
+  assert.equal(isMp3Audio('audio/webm', 'recording.webm'), false);
+  assert.equal(replaceFilenameExtension('meeting.webm', '.mp3'), 'meeting.mp3');
+  assert.equal(
+    getConvertedMp3Path('/app/uploads/recordings/user-1/recording.webm'),
+    '/app/uploads/recordings/user-1/recording.converted.mp3'
+  );
+  assert.throws(() => getConvertedMp3Path('/tmp/recording.webm'), /Invalid recording path/);
 });
 
 test('recording chunk limit stays below request body budget', () => {

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
-import lamejs from 'lamejs';
 import { api } from '@/lib/api';
 import {
   recordingCategories,
@@ -146,42 +145,6 @@ function saveBlob(blob: Blob, filename: string) {
   anchor.click();
   anchor.remove();
   URL.revokeObjectURL(url);
-}
-
-function floatTo16BitPcm(input: Float32Array) {
-  const output = new Int16Array(input.length);
-  for (let index = 0; index < input.length; index += 1) {
-    const sample = Math.max(-1, Math.min(1, input[index]));
-    output[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
-  }
-  return output;
-}
-
-async function encodeBlobToMp3(blob: Blob) {
-  const AudioContextClass = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-  if (!AudioContextClass) throw new Error('This browser cannot encode audio.');
-  const audioContext = new AudioContextClass();
-  try {
-    const buffer = await audioContext.decodeAudioData(await blob.arrayBuffer());
-    const channels = Math.min(2, buffer.numberOfChannels || 1);
-    const encoder = new lamejs.Mp3Encoder(channels, buffer.sampleRate, 128);
-    const left = floatTo16BitPcm(buffer.getChannelData(0));
-    const right = channels > 1 ? floatTo16BitPcm(buffer.getChannelData(1)) : undefined;
-    const mp3Chunks: Int8Array[] = [];
-
-    for (let offset = 0; offset < left.length; offset += 1152) {
-      const leftChunk = left.subarray(offset, offset + 1152);
-      const rightChunk = right?.subarray(offset, offset + 1152);
-      const encoded = channels > 1 ? encoder.encodeBuffer(leftChunk, rightChunk) : encoder.encodeBuffer(leftChunk);
-      if (encoded.length > 0) mp3Chunks.push(encoded);
-    }
-
-    const finalChunk = encoder.flush();
-    if (finalChunk.length > 0) mp3Chunks.push(finalChunk);
-    return new Blob(mp3Chunks, { type: 'audio/mpeg' });
-  } finally {
-    await audioContext.close().catch(() => {});
-  }
 }
 
 const Recordings = () => {
@@ -442,13 +405,9 @@ const Recordings = () => {
   const downloadRecording = async (recording: Recording, exportMp3 = false) => {
     try {
       setExportingId(recording.id);
-      const { blob, filename } = await api.getBlob(`/recordings/${recording.id}/file?download=1`);
-      if (!exportMp3 || recording.content_type.includes('mpeg') || /\.mp3$/i.test(filename || recording.original_filename || '')) {
-        saveBlob(blob, filename || recording.original_filename || `${recording.title}.audio`);
-        return;
-      }
-      const mp3Blob = await encodeBlobToMp3(blob);
-      saveBlob(mp3Blob, `${recording.title.replace(/[/\\]/g, '_') || 'recording'}.mp3`);
+      const query = exportMp3 ? 'download=1&format=mp3' : 'download=1';
+      const { blob, filename } = await api.getBlob(`/recordings/${recording.id}/file?${query}`);
+      saveBlob(blob, filename || recording.original_filename || `${recording.title}.${exportMp3 ? 'mp3' : 'audio'}`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Download failed';
       toast({ title: exportMp3 ? 'MP3 export failed' : 'Download failed', description: message, variant: 'destructive' });
@@ -705,7 +664,7 @@ const Recordings = () => {
                           {recording.metadata.chords}
                         </pre>
                       )}
-                      <audio controls className="w-full max-w-2xl" src={`/api/recordings/${recording.id}/file`} />
+                      <audio controls preload="none" className="w-full max-w-2xl" src={`/api/recordings/${recording.id}/file?format=mp3`} />
                       {recording.tags.length > 0 && (
                         <div className="flex flex-wrap gap-1.5">
                           {recording.tags.map((tagName) => (

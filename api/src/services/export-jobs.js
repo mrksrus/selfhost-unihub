@@ -243,13 +243,14 @@ async function updateJob(jobId, fields) {
 async function runDataExportJob(jobId) {
   if (activeExportJobs.has(jobId)) return;
   activeExportJobs.add(jobId);
+  let entries = [];
   try {
     const [rows] = await db.execute('SELECT * FROM data_export_jobs WHERE id = ? LIMIT 1', [jobId]);
     const job = rows[0];
     if (!job || job.status === 'ready') return;
     await updateJob(jobId, { status: 'running', progress: 5, error: null });
     const sections = parseRequestedSections(job.requested_sections);
-    const entries = await collectExportEntries(job.user_id, sections);
+    entries = await collectExportEntries(job.user_id, sections);
     await updateJob(jobId, { progress: 45 });
     const targetDir = path.join(BACKUPS_ROOT, String(job.user_id));
     const targetPath = path.join(targetDir, `${job.id}.zip`);
@@ -270,6 +271,11 @@ async function runDataExportJob(jobId) {
       error: error.message || 'Backup failed',
     }).catch(() => {});
   } finally {
+    await Promise.all(
+      entries
+        .filter(entry => entry.cleanupAfterWrite && entry.filePath)
+        .map(entry => fs.promises.rm(path.resolve(entry.filePath), { force: true }).catch(() => {}))
+    );
     activeExportJobs.delete(jobId);
   }
 }

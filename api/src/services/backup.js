@@ -1,6 +1,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { finished } = require('stream/promises');
 const { db } = require('../state');
 const { MAIL_RAW_STORAGE_ROOT, DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } = require('./mail');
 const { RECORDINGS_ROOT } = require('./recordings');
@@ -41,6 +43,16 @@ const BACKUP_IMPORT_SECTION_FILE_KINDS = {
 
 function sha256Buffer(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+async function sha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
 }
 
 function canonicalJson(value) {
@@ -111,18 +123,25 @@ function isPathUnderRoot(filePath, rootPath) {
   return resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`);
 }
 
-async function readBackupFileEntry({ kind, id, storagePath, rootPath }) {
+async function readBackupFileEntry({ kind, id, storagePath, rootPath, includeData = true }) {
   if (!storagePath || !isPathUnderRoot(storagePath, rootPath)) return null;
   try {
-    const buffer = await fs.promises.readFile(path.resolve(storagePath));
-    return {
+    const sourcePath = path.resolve(storagePath);
+    const stat = await fs.promises.stat(sourcePath);
+    if (!stat.isFile()) throw new Error('Backup source is not a regular file');
+    const entry = {
       kind,
       id,
-      filename: path.basename(storagePath),
-      sha256: sha256Buffer(buffer),
-      size_bytes: buffer.length,
-      data_base64: buffer.toString('base64'),
+      filename: path.basename(sourcePath),
+      sha256: await sha256File(sourcePath),
+      size_bytes: stat.size,
     };
+    if (includeData) {
+      entry.data_base64 = (await fs.promises.readFile(sourcePath)).toString('base64');
+    } else {
+      entry.source_path = sourcePath;
+    }
+    return entry;
   } catch {
     return {
       kind,
@@ -179,12 +198,95 @@ function jsonBuffer(value) {
   return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+async function writeBackupJsonFile(value, targetPath) {
+  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+  const stream = fs.createWriteStream(targetPath, { flags: 'wx' });
+  let pending = '';
+  let streamError = null;
+  stream.on('error', error => {
+    streamError = error;
+  });
+
+  const flush = async () => {
+    if (!pending) return;
+    const chunk = pending;
+    pending = '';
+    if (!stream.write(chunk, 'utf8')) {
+      await new Promise((resolve, reject) => {
+        const onDrain = () => {
+          cleanup();
+          resolve();
+        };
+        const onError = (error) => {
+          cleanup();
+          reject(error);
+        };
+        const cleanup = () => {
+          stream.off('drain', onDrain);
+          stream.off('error', onError);
+        };
+        stream.once('drain', onDrain);
+        stream.once('error', onError);
+      });
+    }
+    if (streamError) throw streamError;
+  };
+
+  const append = async (text) => {
+    pending += text;
+    if (pending.length >= 1024 * 1024) await flush();
+  };
+
+  const writeArray = async (items) => {
+    await append('[');
+    for (let index = 0; index < items.length; index += 1) {
+      if (index > 0) await append(',');
+      await append(JSON.stringify(items[index]) ?? 'null');
+    }
+    await append(']');
+  };
+
+  try {
+    await append('{');
+    const topLevelEntries = Object.entries(value).filter(([, item]) => item !== undefined);
+    for (let index = 0; index < topLevelEntries.length; index += 1) {
+      if (index > 0) await append(',');
+      const [key, item] = topLevelEntries[index];
+      await append(`${JSON.stringify(key)}:`);
+      if (key === 'data' && item && typeof item === 'object' && !Array.isArray(item)) {
+        await append('{');
+        const dataEntries = Object.entries(item).filter(([, dataItem]) => dataItem !== undefined);
+        for (let dataIndex = 0; dataIndex < dataEntries.length; dataIndex += 1) {
+          if (dataIndex > 0) await append(',');
+          const [dataKey, dataItem] = dataEntries[dataIndex];
+          await append(`${JSON.stringify(dataKey)}:`);
+          if (Array.isArray(dataItem)) await writeArray(dataItem);
+          else await append(JSON.stringify(dataItem) ?? 'null');
+        }
+        await append('}');
+      } else if (Array.isArray(item)) {
+        await writeArray(item);
+      } else {
+        await append(JSON.stringify(item) ?? 'null');
+      }
+    }
+    await append('}\n');
+    await flush();
+    stream.end();
+    await finished(stream);
+  } catch (error) {
+    stream.destroy();
+    await fs.promises.rm(targetPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 function normalizeArchiveFileEntry(file) {
-  const { data_base64, ...metadata } = file;
+  const { data_base64, source_path, ...metadata } = file;
   return metadata;
 }
 
-async function buildBackupForUser(userId) {
+async function buildBackupForUser(userId, { includeFileData = true } = {}) {
   const [
     [userRows],
     [userSettings],
@@ -236,6 +338,7 @@ async function buildBackupForUser(userId) {
       id: attachment.id,
       storagePath: attachment.storage_path,
       rootPath: ATTACHMENTS_ROOT,
+      includeData: includeFileData,
     });
     if (entry) fileEntries.push(entry);
   }
@@ -245,6 +348,7 @@ async function buildBackupForUser(userId) {
       id: email.id,
       storagePath: email.raw_storage_path,
       rootPath: MAIL_RAW_STORAGE_ROOT,
+      includeData: includeFileData,
     });
     if (entry) fileEntries.push(entry);
   }
@@ -254,6 +358,7 @@ async function buildBackupForUser(userId) {
       id: recording.id,
       storagePath: recording.storage_path,
       rootPath: RECORDINGS_ROOT,
+      includeData: includeFileData,
     });
     if (entry) fileEntries.push(entry);
   }
@@ -290,12 +395,11 @@ async function buildBackupForUser(userId) {
     data,
     files: fileEntries,
   };
-  backup.manifest_sha256 = sha256Buffer(Buffer.from(canonicalJson({ data, files: fileEntries }), 'utf8'));
   return backup;
 }
 
 async function buildBackupArchiveEntriesForUser(userId, sections = 'full') {
-  const fullBackup = await buildBackupForUser(userId);
+  const fullBackup = await buildBackupForUser(userId, { includeFileData: false });
   const scopedBackup = scopeBackupForImport(fullBackup, sections);
   const archiveFiles = [];
   const fileEntries = [];
@@ -307,22 +411,21 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full') {
       archiveFiles.push(normalizeArchiveFileEntry(file));
       continue;
     }
-    if (!file?.data_base64 || !file.sha256) {
+    if (!file?.source_path || !file.sha256) {
       missingFiles.push(`${file?.kind || 'unknown'}:${file?.id || 'unknown'}`);
       archiveFiles.push({ ...normalizeArchiveFileEntry(file), missing: true });
       continue;
     }
-    const buffer = Buffer.from(String(file.data_base64), 'base64');
     const archivePath = getBackupArchivePath(file);
     archiveFiles.push({
       ...normalizeArchiveFileEntry(file),
       archive_path: archivePath,
-      sha256: sha256Buffer(buffer),
-      size_bytes: buffer.length,
+      sha256: file.sha256,
+      size_bytes: file.size_bytes,
     });
     fileEntries.push({
       name: archivePath,
-      data: buffer,
+      filePath: file.source_path,
     });
   }
 
@@ -336,43 +439,47 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full') {
     data: scopedBackup.data,
     files: archiveFiles,
   };
-  backupPayload.manifest_sha256 = sha256Buffer(Buffer.from(canonicalJson({ data: backupPayload.data, files: backupPayload.files }), 'utf8'));
+  const dataPath = path.join(os.tmpdir(), `unihub-backup-data-${crypto.randomUUID()}.json`);
+  try {
+    await writeBackupJsonFile(backupPayload, dataPath);
+    const checksums = {
+      generated_at: new Date().toISOString(),
+      algorithm: 'sha256',
+      entries: {
+        'data/backup.json': await sha256File(dataPath),
+      },
+    };
+    for (const file of archiveFiles) {
+      if (file.archive_path && file.sha256) checksums.entries[file.archive_path] = file.sha256;
+    }
 
-  const dataBuffer = jsonBuffer(backupPayload);
-  const checksums = {
-    generated_at: new Date().toISOString(),
-    algorithm: 'sha256',
-    entries: {
-      'data/backup.json': sha256Buffer(dataBuffer),
-    },
-  };
-  for (const file of archiveFiles) {
-    if (file.archive_path && file.sha256) checksums.entries[file.archive_path] = file.sha256;
+    const manifest = {
+      app: 'unihub',
+      version: BACKUP_VERSION,
+      format: ZIP_BACKUP_FORMAT,
+      format_version: ZIP_BACKUP_FORMAT_VERSION,
+      exported_at: backupPayload.exported_at,
+      sections: scopedBackup.import_sections,
+      row_counts: getBackupRowCounts(backupPayload),
+      file_count: archiveFiles.filter(file => file.archive_path).length,
+      missing_files: missingFiles,
+      warnings: [
+        ...(backupPayload.warnings || []),
+        'Mail/calendar credentials are encrypted and only restore on deployments with the same ENCRYPTION_KEY.',
+        'Mail server deletion is always disabled after restore.',
+      ],
+    };
+
+    return [
+      { name: 'manifest.json', data: jsonBuffer(manifest) },
+      { name: 'data/backup.json', filePath: dataPath, cleanupAfterWrite: true },
+      { name: 'checksums.json', data: jsonBuffer(checksums) },
+      ...fileEntries,
+    ];
+  } catch (error) {
+    await fs.promises.rm(dataPath, { force: true }).catch(() => {});
+    throw error;
   }
-
-  const manifest = {
-    app: 'unihub',
-    version: BACKUP_VERSION,
-    format: ZIP_BACKUP_FORMAT,
-    format_version: ZIP_BACKUP_FORMAT_VERSION,
-    exported_at: backupPayload.exported_at,
-    sections: scopedBackup.import_sections,
-    row_counts: getBackupRowCounts(backupPayload),
-    file_count: archiveFiles.filter(file => file.archive_path).length,
-    missing_files: missingFiles,
-    warnings: [
-      ...(backupPayload.warnings || []),
-      'Mail/calendar credentials are encrypted and only restore on deployments with the same ENCRYPTION_KEY.',
-      'Mail server deletion is always disabled after restore.',
-    ],
-  };
-
-  return [
-    { name: 'manifest.json', data: jsonBuffer(manifest) },
-    { name: 'data/backup.json', data: dataBuffer },
-    { name: 'checksums.json', data: jsonBuffer(checksums) },
-    ...fileEntries,
-  ];
 }
 
 function validateBackupPayload(backup, { fileBuffersByPath = null } = {}) {
@@ -1412,8 +1519,11 @@ module.exports = {
   ZIP_BACKUP_FORMAT,
   ZIP_BACKUP_FORMAT_VERSION,
   sha256Buffer,
+  sha256File,
   canonicalJson,
   normalizeMysqlDateTime,
+  readBackupFileEntry,
+  writeBackupJsonFile,
   validateBackupPayload,
   countBackupRows,
   normalizeBackupImportSections,

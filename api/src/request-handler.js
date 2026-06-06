@@ -2,6 +2,7 @@ const fs = require('fs');
 const routes = require('./routes');
 const { verifyToken, validateCsrfToken } = require('./auth');
 const { parseBody, parseRawBody, getAllowedOriginForRequest, isRequestBodyTooLarge } = require('./http/request');
+const { parseSingleByteRange } = require('./http/range');
 
 // Request handler
 async function handleRequest(req, res) {
@@ -219,16 +220,38 @@ async function handleRequest(req, res) {
       const dispositionType = result.__disposition === 'inline' ? 'inline' : 'attachment';
       const encodedFilename = encodeURIComponent(filename);
       const contentDisposition = `${dispositionType}; filename="${filename}"; filename*=UTF-8''${encodedFilename}`;
+      const contentLength = result.__contentLength === undefined || result.__contentLength === null
+        ? null
+        : Number(result.__contentLength);
       const headers = {
         'Content-Type': result.__contentType || 'application/octet-stream',
         'Content-Disposition': contentDisposition,
         'Cache-Control': 'no-cache',
+        'Accept-Ranges': 'bytes',
       };
-      if (result.__contentLength !== undefined && result.__contentLength !== null) {
-        headers['Content-Length'] = String(result.__contentLength);
+
+      let status = 200;
+      let streamOptions;
+      if (req.headers.range && Number.isSafeInteger(contentLength) && contentLength > 0) {
+        const range = parseSingleByteRange(req.headers.range, contentLength);
+        if (!range) {
+          res.writeHead(416, {
+            ...headers,
+            'Content-Range': `bytes */${contentLength}`,
+            'Content-Length': '0',
+          });
+          res.end();
+          return;
+        }
+        status = 206;
+        streamOptions = range;
+        headers['Content-Range'] = `bytes ${range.start}-${range.end}/${contentLength}`;
+        headers['Content-Length'] = String(range.end - range.start + 1);
+      } else if (Number.isSafeInteger(contentLength) && contentLength >= 0) {
+        headers['Content-Length'] = String(contentLength);
       }
-      res.writeHead(200, headers);
-      const stream = fs.createReadStream(result.__streamPath);
+      res.writeHead(status, headers);
+      const stream = fs.createReadStream(result.__streamPath, streamOptions);
       stream.on('error', (error) => {
         console.error('Stream response error:', error);
         if (!res.headersSent) {

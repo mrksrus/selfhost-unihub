@@ -3,7 +3,7 @@ const path = require('path');
 const { db } = require('../state');
 const { MIN_PASSWORD_LENGTH } = require('../config');
 const { MAIL_RAW_STORAGE_ROOT } = require('../services/mail');
-const { RECORDINGS_ROOT } = require('../services/recordings');
+const { RECORDINGS_ROOT, deleteRecordingFiles } = require('../services/recordings');
 const { BACKUPS_ROOT } = require('../services/export-jobs');
 const {
   isAdmin,
@@ -297,6 +297,13 @@ module.exports = {
       if (!targetUser) return { error: 'User not found', status: 404 };
       if (targetUser.role === 'admin' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
         return { error: 'Cannot delete the last active admin', status: 400 };
+      }
+      const [recordings] = await db.execute(
+        'SELECT storage_path FROM recordings WHERE user_id = ?',
+        [id]
+      );
+      for (const recording of recordings || []) {
+        await deleteRecordingFiles(recording.storage_path);
       }
       await db.execute('DELETE FROM users WHERE id = ?', [id]);
       return { message: 'User deleted' };

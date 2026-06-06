@@ -11,7 +11,7 @@ Frontend capabilities:
 - pause/resume while recording
 - local playback before upload
 - import existing audio files
-- optional client-side MP3 export using `lamejs`
+- server-side MP3 playback and export
 - tags, search, edit, delete, download
 - optional category, explicit recorded date, and manual Music chords
 
@@ -19,7 +19,8 @@ Backend capabilities:
 
 - chunked uploads
 - resumable offset validation within one upload session
-- file streaming
+- MP3 conversion through `ffmpeg`
+- byte-range file streaming
 - tag normalization/linking
 - expired temporary upload cleanup
 
@@ -128,6 +129,9 @@ The server verifies:
 It then moves the file into the final user directory, inserts the recording row,
 links tags, and deletes the upload row in one transaction.
 
+Browser microphone recordings are converted to MP3 before the recording row is
+created. Imported files retain their original format.
+
 ## API Endpoints
 
 All endpoints require authentication. Write endpoints require CSRF.
@@ -156,6 +160,7 @@ File route query parameters:
 | Parameter | Behavior |
 | --- | --- |
 | `download=1` | Return `Content-Disposition: attachment`; otherwise stream inline |
+| `format=mp3` | Return MP3 audio; legacy files are converted and cached without deleting the original |
 
 ## Cleanup
 
@@ -184,3 +189,5 @@ Recording files are also deleted when:
 - There is no per-user storage quota beyond per-recording size limits.
 - Browser recording support depends on the user's browser and device permissions.
 - Chunk upload state is stored in MySQL, but partial uploads expire after 24 hours.
+- The production image includes `ffmpeg`; local API development also requires it
+  for microphone upload completion and MP3 playback/export.

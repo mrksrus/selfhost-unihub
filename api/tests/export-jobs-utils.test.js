@@ -45,3 +45,20 @@ test('writeZip preserves long backup filenames including extensions', async () =
   const entries = readZipEntries(await fs.readFile(zipPath));
   assert.equal(entries.has(longName), true);
 });
+
+test('writeZip streams file-backed entries into the archive', async () => {
+  const { readZipEntries } = require('../src/services/backup');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-zip-file-'));
+  const sourcePath = path.join(dir, 'source.eml');
+  const zipPath = path.join(dir, 'backup.zip');
+  const contents = Buffer.from('file-backed raw email', 'utf8');
+  await fs.writeFile(sourcePath, contents);
+
+  await writeZip([{
+    name: 'files/mail-raw/email-1.eml',
+    filePath: sourcePath,
+  }], zipPath);
+
+  const entries = readZipEntries(await fs.readFile(zipPath));
+  assert.deepEqual(entries.get('files/mail-raw/email-1.eml'), contents);
+});

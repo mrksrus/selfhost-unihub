@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../state');
@@ -8,6 +9,7 @@ const MAX_RECORDING_BYTES = 500 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 768 * 1024;
 const UPLOAD_TTL_HOURS = 24;
 const RECORDING_CATEGORIES = new Set(['none', 'music', 'journal', 'memory', 'reminder']);
+const mp3ConversionJobs = new Map();
 
 function sanitizeFilename(value, fallback = 'recording') {
   const cleaned = String(value || fallback)
@@ -122,10 +124,130 @@ function extensionForContentType(contentType, originalFilename = '') {
   return '.webm';
 }
 
+function isMp3Audio(contentType, filename = '') {
+  const normalizedType = String(contentType || '').toLowerCase();
+  return normalizedType.includes('mpeg')
+    || normalizedType.includes('mp3')
+    || path.extname(String(filename || '')).toLowerCase() === '.mp3';
+}
+
+function replaceFilenameExtension(filename, extension) {
+  const safeFilename = sanitizeFilename(filename || 'recording', 'recording');
+  const parsed = path.parse(safeFilename);
+  return `${parsed.name || 'recording'}${extension}`;
+}
+
 function isPathUnderRoot(filePath, rootPath = RECORDINGS_ROOT) {
   const resolvedRoot = path.resolve(rootPath);
   const resolvedPath = path.resolve(filePath || '');
   return resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
+function getConvertedMp3Path(storagePath) {
+  const resolvedPath = path.resolve(storagePath || '');
+  if (!isPathUnderRoot(resolvedPath)) {
+    throw new Error('Invalid recording path');
+  }
+  const parsed = path.parse(resolvedPath);
+  return path.join(parsed.dir, `${parsed.name}.converted.mp3`);
+}
+
+async function transcodeAudioToMp3(inputPath, outputPath) {
+  const resolvedInput = path.resolve(inputPath || '');
+  const resolvedOutput = path.resolve(outputPath || '');
+  if (!isPathUnderRoot(resolvedInput) || !isPathUnderRoot(resolvedOutput)) {
+    throw new Error('Invalid recording path');
+  }
+
+  await fs.promises.mkdir(path.dirname(resolvedOutput), { recursive: true });
+  const temporaryOutput = `${resolvedOutput}.${crypto.randomUUID()}.tmp.mp3`;
+
+  try {
+    await new Promise((resolve, reject) => {
+      const child = spawn('ffmpeg', [
+        '-nostdin',
+        '-hide_banner',
+        '-loglevel', 'error',
+        '-y',
+        '-i', resolvedInput,
+        '-map', '0:a:0',
+        '-vn',
+        '-map_metadata', '-1',
+        '-codec:a', 'libmp3lame',
+        '-q:a', '2',
+        temporaryOutput,
+      ], {
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+
+      let stderr = '';
+      child.stderr.on('data', (chunk) => {
+        if (stderr.length < 16000) stderr += chunk.toString();
+      });
+      child.on('error', (error) => {
+        if (error.code === 'ENOENT') {
+          reject(new Error('MP3 conversion is unavailable because ffmpeg is not installed'));
+          return;
+        }
+        reject(error);
+      });
+      child.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        reject(new Error(stderr.trim() || `ffmpeg exited with code ${code}`));
+      });
+    });
+
+    const stat = await fs.promises.stat(temporaryOutput);
+    if (stat.size <= 0) throw new Error('MP3 conversion produced an empty file');
+    await fs.promises.rename(temporaryOutput, resolvedOutput);
+  } catch (error) {
+    await fs.promises.rm(temporaryOutput, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
+async function ensureRecordingMp3(recording) {
+  if (!recording?.storage_path || !isPathUnderRoot(recording.storage_path)) {
+    throw new Error('Invalid recording path');
+  }
+
+  const sourcePath = path.resolve(recording.storage_path);
+  const sourceStat = await fs.promises.stat(sourcePath);
+  if (isMp3Audio(recording.content_type, sourcePath)) {
+    return { path: sourcePath, size: sourceStat.size };
+  }
+
+  const convertedPath = getConvertedMp3Path(sourcePath);
+  const existing = await fs.promises.stat(convertedPath).catch(() => null);
+  if (existing?.isFile() && existing.size > 0 && existing.mtimeMs >= sourceStat.mtimeMs) {
+    return { path: convertedPath, size: existing.size };
+  }
+
+  let conversion = mp3ConversionJobs.get(convertedPath);
+  if (!conversion) {
+    conversion = transcodeAudioToMp3(sourcePath, convertedPath)
+      .finally(() => mp3ConversionJobs.delete(convertedPath));
+    mp3ConversionJobs.set(convertedPath, conversion);
+  }
+  await conversion;
+  const stat = await fs.promises.stat(convertedPath);
+  return { path: convertedPath, size: stat.size };
+}
+
+async function deleteRecordingFiles(storagePath) {
+  if (!storagePath || !isPathUnderRoot(storagePath)) return;
+  const sourcePath = path.resolve(storagePath);
+  const paths = [sourcePath];
+  if (path.extname(sourcePath).toLowerCase() !== '.mp3') {
+    const convertedPath = getConvertedMp3Path(sourcePath);
+    const conversion = mp3ConversionJobs.get(convertedPath);
+    if (conversion) await conversion.catch(() => {});
+    paths.push(convertedPath);
+  }
+  await Promise.all(paths.map(filePath => fs.promises.rm(filePath, { force: true }).catch(() => {})));
 }
 
 async function ensureRecordingTags(userId, recordingId, tagNames, connection = db) {
@@ -363,13 +485,27 @@ async function completeRecordingUpload(userId, uploadId) {
 
   const recordingId = crypto.randomUUID();
   const finalDir = path.join(RECORDINGS_ROOT, String(userId));
-  const ext = extensionForContentType(upload.content_type, upload.original_filename);
+  const convertRecordedAudio = normalizeSource(upload.source) === 'recorded'
+    && !isMp3Audio(upload.content_type, upload.original_filename);
+  const storedContentType = convertRecordedAudio ? 'audio/mpeg' : upload.content_type;
+  const storedFilename = convertRecordedAudio
+    ? replaceFilenameExtension(upload.original_filename, '.mp3')
+    : upload.original_filename;
+  const ext = convertRecordedAudio
+    ? '.mp3'
+    : extensionForContentType(storedContentType, storedFilename);
   const finalPath = path.join(finalDir, `${recordingId}${ext}`);
   await fs.promises.mkdir(finalDir, { recursive: true });
-  await fs.promises.rename(path.resolve(upload.temp_path), finalPath);
+  if (convertRecordedAudio) {
+    await transcodeAudioToMp3(upload.temp_path, finalPath);
+  } else {
+    await fs.promises.rename(path.resolve(upload.temp_path), finalPath);
+  }
+  const storedStat = await fs.promises.stat(finalPath);
 
-  const connection = await db.getConnection();
+  let connection;
   try {
+    connection = await db.getConnection();
     await connection.beginTransaction();
     await connection.execute(
       `INSERT INTO recordings
@@ -380,9 +516,9 @@ async function completeRecordingUpload(userId, uploadId) {
         userId,
         upload.title,
         upload.description || null,
-        upload.original_filename || null,
-        upload.content_type,
-        Number(upload.total_bytes),
+        storedFilename || null,
+        storedContentType,
+        storedStat.size,
         upload.duration_seconds === null ? null : Number(upload.duration_seconds),
         finalPath,
         upload.source || 'imported',
@@ -394,12 +530,15 @@ async function completeRecordingUpload(userId, uploadId) {
     await ensureRecordingTags(userId, recordingId, parseTagsJson(upload.tags), connection);
     await connection.execute('DELETE FROM recording_uploads WHERE id = ? AND user_id = ?', [uploadId, userId]);
     await connection.commit();
+    if (convertRecordedAudio) {
+      await fs.promises.rm(path.resolve(upload.temp_path), { force: true }).catch(() => {});
+    }
   } catch (error) {
-    await connection.rollback();
+    if (connection) await connection.rollback().catch(() => {});
     await fs.promises.rm(finalPath, { force: true }).catch(() => {});
     throw error;
   } finally {
-    connection.release();
+    connection?.release();
   }
 
   const recording = await getRecordingForUser(userId, recordingId);
@@ -445,9 +584,7 @@ async function updateRecording(userId, recordingId, input = {}) {
 async function deleteRecording(userId, recordingId) {
   const recording = await getRecordingForUser(userId, recordingId);
   if (!recording) return { error: 'Recording not found', status: 404 };
-  if (recording.storage_path && isPathUnderRoot(recording.storage_path)) {
-    await fs.promises.rm(path.resolve(recording.storage_path), { force: true }).catch(() => {});
-  }
+  await deleteRecordingFiles(recording.storage_path);
   await db.execute('DELETE FROM recordings WHERE id = ? AND user_id = ?', [recordingId, userId]);
   return { deleted: true };
 }
@@ -470,12 +607,17 @@ module.exports = {
   MAX_CHUNK_BYTES,
   MAX_RECORDING_BYTES,
   isPathUnderRoot,
+  isMp3Audio,
+  replaceFilenameExtension,
+  getConvertedMp3Path,
   normalizeCategory,
   normalizeMetadata,
   normalizeTags,
   serializeRecording,
   listRecordings,
   getRecordingForUser,
+  ensureRecordingMp3,
+  deleteRecordingFiles,
   startRecordingUpload,
   appendRecordingUploadChunk,
   completeRecordingUpload,
