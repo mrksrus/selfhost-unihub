@@ -149,7 +149,36 @@ function getConvertedMp3Path(storagePath) {
     throw new Error('Invalid recording path');
   }
   const parsed = path.parse(resolvedPath);
+  return path.join(parsed.dir, `${parsed.name}.converted-v2.mp3`);
+}
+
+function getLegacyConvertedMp3Path(storagePath) {
+  const resolvedPath = path.resolve(storagePath || '');
+  if (!isPathUnderRoot(resolvedPath)) {
+    throw new Error('Invalid recording path');
+  }
+  const parsed = path.parse(resolvedPath);
   return path.join(parsed.dir, `${parsed.name}.converted.mp3`);
+}
+
+function normalizeSha256(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
+}
+
+async function calculateFileSha256(filePath) {
+  const resolvedPath = path.resolve(filePath || '');
+  if (!isPathUnderRoot(resolvedPath)) {
+    throw new Error('Invalid recording path');
+  }
+
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(resolvedPath);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
 }
 
 async function transcodeAudioToMp3(inputPath, outputPath) {
@@ -169,10 +198,12 @@ async function transcodeAudioToMp3(inputPath, outputPath) {
         '-hide_banner',
         '-loglevel', 'error',
         '-y',
+        '-fflags', '+genpts+discardcorrupt',
         '-i', resolvedInput,
         '-map', '0:a:0',
         '-vn',
         '-map_metadata', '-1',
+        '-af', 'asetpts=N/SR/TB',
         '-codec:a', 'libmp3lame',
         '-q:a', '2',
         temporaryOutput,
@@ -234,6 +265,7 @@ async function ensureRecordingMp3(recording) {
   }
   await conversion;
   const stat = await fs.promises.stat(convertedPath);
+  await fs.promises.rm(getLegacyConvertedMp3Path(sourcePath), { force: true }).catch(() => {});
   return { path: convertedPath, size: stat.size };
 }
 
@@ -245,7 +277,7 @@ async function deleteRecordingFiles(storagePath) {
     const convertedPath = getConvertedMp3Path(sourcePath);
     const conversion = mp3ConversionJobs.get(convertedPath);
     if (conversion) await conversion.catch(() => {});
-    paths.push(convertedPath);
+    paths.push(convertedPath, getLegacyConvertedMp3Path(sourcePath));
   }
   await Promise.all(paths.map(filePath => fs.promises.rm(filePath, { force: true }).catch(() => {})));
 }
@@ -464,7 +496,7 @@ async function appendRecordingUploadChunk(userId, uploadId, input = {}) {
   return { upload: { id: uploadId, bytes_received: nextBytes, total_bytes: Number(upload.total_bytes) } };
 }
 
-async function completeRecordingUpload(userId, uploadId) {
+async function completeRecordingUpload(userId, uploadId, input = {}) {
   const [rows] = await db.execute(
     'SELECT * FROM recording_uploads WHERE id = ? AND user_id = ? LIMIT 1',
     [uploadId, userId]
@@ -483,24 +515,25 @@ async function completeRecordingUpload(userId, uploadId) {
     return { error: 'Uploaded file size does not match declared size', status: 409 };
   }
 
+  const expectedSha256 = normalizeSha256(input.sha256);
+  if (expectedSha256) {
+    const actualSha256 = await calculateFileSha256(upload.temp_path);
+    if (actualSha256 !== expectedSha256) {
+      return {
+        error: 'Recording upload failed its integrity check. The saved bytes differ from the local preview.',
+        status: 409,
+      };
+    }
+  }
+
   const recordingId = crypto.randomUUID();
   const finalDir = path.join(RECORDINGS_ROOT, String(userId));
-  const convertRecordedAudio = normalizeSource(upload.source) === 'recorded'
-    && !isMp3Audio(upload.content_type, upload.original_filename);
-  const storedContentType = convertRecordedAudio ? 'audio/mpeg' : upload.content_type;
-  const storedFilename = convertRecordedAudio
-    ? replaceFilenameExtension(upload.original_filename, '.mp3')
-    : upload.original_filename;
-  const ext = convertRecordedAudio
-    ? '.mp3'
-    : extensionForContentType(storedContentType, storedFilename);
+  const storedContentType = upload.content_type;
+  const storedFilename = upload.original_filename;
+  const ext = extensionForContentType(storedContentType, storedFilename);
   const finalPath = path.join(finalDir, `${recordingId}${ext}`);
   await fs.promises.mkdir(finalDir, { recursive: true });
-  if (convertRecordedAudio) {
-    await transcodeAudioToMp3(upload.temp_path, finalPath);
-  } else {
-    await fs.promises.rename(path.resolve(upload.temp_path), finalPath);
-  }
+  await fs.promises.rename(path.resolve(upload.temp_path), finalPath);
   const storedStat = await fs.promises.stat(finalPath);
 
   let connection;
@@ -530,9 +563,6 @@ async function completeRecordingUpload(userId, uploadId) {
     await ensureRecordingTags(userId, recordingId, parseTagsJson(upload.tags), connection);
     await connection.execute('DELETE FROM recording_uploads WHERE id = ? AND user_id = ?', [uploadId, userId]);
     await connection.commit();
-    if (convertRecordedAudio) {
-      await fs.promises.rm(path.resolve(upload.temp_path), { force: true }).catch(() => {});
-    }
   } catch (error) {
     if (connection) await connection.rollback().catch(() => {});
     await fs.promises.rm(finalPath, { force: true }).catch(() => {});
@@ -610,6 +640,8 @@ module.exports = {
   isMp3Audio,
   replaceFilenameExtension,
   getConvertedMp3Path,
+  normalizeSha256,
+  calculateFileSha256,
   normalizeCategory,
   normalizeMetadata,
   normalizeTags,

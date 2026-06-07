@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
+import { createPcm16WavBlob } from '@/lib/wav';
 import {
   recordingCategories,
   recordingCategoryLabels,
@@ -57,16 +58,6 @@ type PendingAudio = {
 const CHUNK_SIZE = 512 * 1024;
 const EMPTY_RECORDINGS: Recording[] = [];
 
-function getSupportedRecordingMimeType() {
-  const candidates = [
-    'audio/webm;codecs=opus',
-    'audio/webm',
-    'audio/ogg;codecs=opus',
-    'audio/mp4',
-  ];
-  return candidates.find((type) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(type)) || '';
-}
-
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -104,6 +95,12 @@ function parseTags(value: string) {
 
 function filenameWithoutExtension(filename: string) {
   return filename.replace(/\.[^.]+$/, '').trim() || 'Recording';
+}
+
+async function sha256Hex(bytes: Uint8Array) {
+  if (!window.crypto?.subtle) return undefined;
+  const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function toDatetimeLocalValue(value: string | Date | null | undefined) {
@@ -152,9 +149,16 @@ const Recordings = () => {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const chunksRef = useRef<BlobPart[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const recorderWorkletRef = useRef<AudioWorkletNode | null>(null);
+  const silentGainRef = useRef<GainNode | null>(null);
+  const pcmChunksRef = useRef<ArrayBuffer[]>([]);
+  const pcmSampleCountRef = useRef(0);
+  const pcmSampleRateRef = useRef(44100);
+  const workletStoppedResolveRef = useRef<(() => void) | null>(null);
+  const stopInProgressRef = useRef(false);
   const startedAtRef = useRef<number | null>(null);
   const pausedAtRef = useRef<number | null>(null);
   const pausedMsRef = useRef(0);
@@ -220,6 +224,10 @@ const Recordings = () => {
 
   useEffect(() => () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
+    recorderWorkletRef.current?.disconnect();
+    audioSourceRef.current?.disconnect();
+    silentGainRef.current?.disconnect();
+    void audioContextRef.current?.close();
   }, []);
 
   useEffect(() => {
@@ -236,6 +244,7 @@ const Recordings = () => {
     mutationFn: async (audio: PendingAudio) => {
       setUploadProgress(0);
       const bytes = new Uint8Array(await audio.blob.arrayBuffer());
+      const sha256 = await sha256Hex(bytes);
       const start = await recordingsApi.startUpload({
         title: title.trim() || filenameWithoutExtension(audio.filename),
         description: description.trim(),
@@ -261,7 +270,7 @@ const Recordings = () => {
         setUploadProgress(Math.round(((offset + chunk.byteLength) / bytes.byteLength) * 100));
       }
 
-      return recordingsApi.completeUpload(uploadId);
+      return recordingsApi.completeUpload(uploadId, { sha256 });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
@@ -305,84 +314,145 @@ const Recordings = () => {
     },
   });
 
-  const stopRecordingTracks = () => {
+  const releaseRecordingResources = async () => {
+    recorderWorkletRef.current?.disconnect();
+    audioSourceRef.current?.disconnect();
+    silentGainRef.current?.disconnect();
     streamRef.current?.getTracks().forEach((track) => track.stop());
+    await audioContextRef.current?.close().catch(() => {});
+    recorderWorkletRef.current = null;
+    audioSourceRef.current = null;
+    silentGainRef.current = null;
+    audioContextRef.current = null;
     streamRef.current = null;
   };
 
   const startRecording = async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
+    const AudioContextClass = window.AudioContext || (window as typeof window & {
+      webkitAudioContext?: typeof AudioContext;
+    }).webkitAudioContext;
+    if (!navigator.mediaDevices?.getUserMedia || !AudioContextClass || typeof AudioWorkletNode === 'undefined') {
       toast({ title: 'Recording is not available in this browser', variant: 'destructive' });
       return;
     }
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mimeType = getSupportedRecordingMimeType();
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      chunksRef.current = [];
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          autoGainControl: false,
+          echoCancellation: false,
+          noiseSuppression: false,
+        },
+      });
+      const audioContext = new AudioContextClass({
+        sampleRate: 44100,
+      });
       streamRef.current = stream;
-      mediaRecorderRef.current = recorder;
+      audioContextRef.current = audioContext;
+      await audioContext.audioWorklet.addModule('/audio-recorder-worklet.js');
+      const source = audioContext.createMediaStreamSource(stream);
+      audioSourceRef.current = source;
+      const worklet = new AudioWorkletNode(audioContext, 'pcm-recorder', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        channelCount: 1,
+        channelCountMode: 'explicit',
+      });
+      recorderWorkletRef.current = worklet;
+      const silentGain = audioContext.createGain();
+      silentGainRef.current = silentGain;
+      silentGain.gain.value = 0;
+      source.connect(worklet);
+      worklet.connect(silentGain);
+      silentGain.connect(audioContext.destination);
+      await audioContext.resume();
+
+      pcmChunksRef.current = [];
+      pcmSampleCountRef.current = 0;
+      pcmSampleRateRef.current = audioContext.sampleRate;
       startedAtRef.current = Date.now();
       pausedAtRef.current = null;
       pausedMsRef.current = 0;
+      stopInProgressRef.current = false;
       setElapsedSeconds(0);
       setPendingAudio(null);
 
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) chunksRef.current.push(event.data);
+      worklet.port.onmessage = (event: MessageEvent<{
+        type?: string;
+        buffer?: ArrayBuffer;
+        samples?: number;
+      }>) => {
+        if (event.data.type === 'pcm' && event.data.buffer && event.data.samples) {
+          pcmChunksRef.current.push(event.data.buffer);
+          pcmSampleCountRef.current += event.data.samples;
+        } else if (event.data.type === 'stopped') {
+          workletStoppedResolveRef.current?.();
+          workletStoppedResolveRef.current = null;
+        }
       };
-      recorder.onstop = () => {
-        const contentType = recorder.mimeType || mimeType || 'audio/webm';
-        const blob = new Blob(chunksRef.current, { type: contentType });
-        const durationSeconds = elapsedSeconds || (
-          startedAtRef.current ? Math.max(0, (Date.now() - startedAtRef.current - pausedMsRef.current) / 1000) : null
-        );
-        setPendingAudio({
-          blob,
-          filename: `recording-${new Date().toISOString().replace(/[:.]/g, '-')}.webm`,
-          contentType,
-          source: 'recorded',
-          durationSeconds,
-        });
-        const stoppedAt = new Date();
-        setTitle((current) => current || `Recording ${stoppedAt.toLocaleString()}`);
-        setRecordedAt(toDatetimeLocalValue(stoppedAt));
-        setRecordingState('idle');
-        mediaRecorderRef.current = null;
-        stopRecordingTracks();
-      };
-
-      recorder.start();
       setRecordingState('recording');
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Microphone access failed';
       toast({ title: 'Could not start recording', description: message, variant: 'destructive' });
-      stopRecordingTracks();
+      await releaseRecordingResources();
     }
   };
 
   const pauseRecording = () => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder || recorder.state !== 'recording') return;
-    recorder.pause();
+    const worklet = recorderWorkletRef.current;
+    if (!worklet || recordingState !== 'recording') return;
+    worklet.port.postMessage({ type: 'pause' });
     pausedAtRef.current = Date.now();
     setRecordingState('paused');
   };
 
   const resumeRecording = () => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder || recorder.state !== 'paused') return;
+    const worklet = recorderWorkletRef.current;
+    if (!worklet || recordingState !== 'paused') return;
     if (pausedAtRef.current) pausedMsRef.current += Date.now() - pausedAtRef.current;
     pausedAtRef.current = null;
-    recorder.resume();
+    worklet.port.postMessage({ type: 'resume' });
     setRecordingState('recording');
   };
 
-  const stopRecording = () => {
-    const recorder = mediaRecorderRef.current;
-    if (!recorder || recorder.state === 'inactive') return;
-    recorder.stop();
+  const stopRecording = async () => {
+    const worklet = recorderWorkletRef.current;
+    if (!worklet || stopInProgressRef.current) return;
+    stopInProgressRef.current = true;
+
+    try {
+      const stopped = new Promise<void>((resolve) => {
+        workletStoppedResolveRef.current = resolve;
+      });
+      worklet.port.postMessage({ type: 'stop' });
+      await Promise.race([
+        stopped,
+        new Promise<void>((resolve) => window.setTimeout(resolve, 500)),
+      ]);
+
+      const sampleCount = pcmSampleCountRef.current;
+      const sampleRate = pcmSampleRateRef.current;
+      const blob = createPcm16WavBlob(pcmChunksRef.current, sampleRate, sampleCount);
+      const stoppedAt = new Date();
+      setPendingAudio({
+        blob,
+        filename: `recording-${stoppedAt.toISOString().replace(/[:.]/g, '-')}.wav`,
+        contentType: 'audio/wav',
+        source: 'recorded',
+        durationSeconds: sampleCount / sampleRate,
+      });
+      setTitle((current) => current || `Recording ${stoppedAt.toLocaleString()}`);
+      setRecordedAt(toDatetimeLocalValue(stoppedAt));
+      setRecordingState('idle');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Could not finish WAV recording';
+      toast({ title: 'Recording failed', description: message, variant: 'destructive' });
+    } finally {
+      workletStoppedResolveRef.current = null;
+      await releaseRecordingResources();
+      stopInProgressRef.current = false;
+    }
   };
 
   const handleImportFile = (file: File | undefined) => {
@@ -444,7 +514,7 @@ const Recordings = () => {
               </div>
               <div>
                 <CardTitle className="text-lg">Recorder</CardTitle>
-                <CardDescription>Browser microphone recording with local preview before upload</CardDescription>
+                <CardDescription>Uncompressed WAV recording with local preview before upload</CardDescription>
               </div>
             </div>
           </CardHeader>
@@ -664,7 +734,7 @@ const Recordings = () => {
                           {recording.metadata.chords}
                         </pre>
                       )}
-                      <audio controls preload="none" className="w-full max-w-2xl" src={`/api/recordings/${recording.id}/file?format=mp3`} />
+                      <audio controls preload="none" className="w-full max-w-2xl" src={`/api/recordings/${recording.id}/file`} />
                       {recording.tags.length > 0 && (
                         <div className="flex flex-wrap gap-1.5">
                           {recording.tags.map((tagName) => (

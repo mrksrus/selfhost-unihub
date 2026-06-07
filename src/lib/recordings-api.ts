@@ -114,8 +114,8 @@ export const recordingsApi = {
     return response.data.upload;
   },
 
-  async completeUpload(uploadId: string): Promise<Recording> {
-    const response = await api.post<{ recording: Recording }>(`/recordings/uploads/${uploadId}/complete`);
+  async completeUpload(uploadId: string, payload: { sha256?: string } = {}): Promise<Recording> {
+    const response = await api.post<{ recording: Recording }>(`/recordings/uploads/${uploadId}/complete`, payload);
     if (response.error || !response.data?.recording) throw new Error(response.error || 'Could not complete upload');
     return response.data.recording;
   },

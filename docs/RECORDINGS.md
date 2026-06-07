@@ -7,11 +7,11 @@ files, then store them in UniHub with metadata and tags.
 
 Frontend capabilities:
 
-- microphone recording through `MediaRecorder`
+- mono 16-bit PCM WAV microphone recording through `AudioWorklet`
 - pause/resume while recording
 - local playback before upload
 - import existing audio files
-- server-side MP3 playback and export
+- original-format playback and server-side MP3 export
 - tags, search, edit, delete, download
 - optional category, explicit recorded date, and manual Music chords
 
@@ -19,6 +19,7 @@ Backend capabilities:
 
 - chunked uploads
 - resumable offset validation within one upload session
+- optional SHA-256 upload integrity verification
 - MP3 conversion through `ffmpeg`
 - byte-range file streaming
 - tag normalization/linking
@@ -71,6 +72,10 @@ fields; V1 uses `metadata.chords` for Music recordings.
 | Max title length | 255 characters |
 | Max description length | 5000 characters |
 
+New microphone recordings use uncompressed mono WAV at the browser audio
+context's sample rate, normally 44.1 or 48 kHz. Storage use is approximately
+5-6 MB per minute.
+
 ## Upload Protocol
 
 ### 1. Start Upload
@@ -83,8 +88,8 @@ Example payload:
 {
   "title": "Meeting notes",
   "description": "Sprint planning",
-  "original_filename": "meeting.webm",
-  "content_type": "audio/webm",
+  "original_filename": "meeting.wav",
+  "content_type": "audio/wav",
   "total_bytes": 1048576,
   "duration_seconds": 300.5,
   "source": "recorded",
@@ -126,11 +131,10 @@ The server verifies:
 - temp file size matches declared total
 - temp path is under the recordings root
 
-It then moves the file into the final user directory, inserts the recording row,
-links tags, and deletes the upload row in one transaction.
-
-Browser microphone recordings are converted to MP3 before the recording row is
-created. Imported files retain their original format.
+It verifies the optional SHA-256 checksum, then moves the original file into the
+final user directory, inserts the recording row, links tags, and deletes the
+upload row in one transaction. Browser microphone recordings and imported files
+both retain their original bytes and format.
 
 ## API Endpoints
 
@@ -160,7 +164,7 @@ File route query parameters:
 | Parameter | Behavior |
 | --- | --- |
 | `download=1` | Return `Content-Disposition: attachment`; otherwise stream inline |
-| `format=mp3` | Return MP3 audio; legacy files are converted and cached without deleting the original |
+| `format=mp3` | Return MP3 audio; files are converted and cached without deleting the original |
 
 ## Cleanup
 
@@ -188,6 +192,7 @@ Recording files are also deleted when:
 - There is no malware scanning.
 - There is no per-user storage quota beyond per-recording size limits.
 - Browser recording support depends on the user's browser and device permissions.
+- Browser recording requires `AudioWorklet`, available in modern secure-context browsers.
 - Chunk upload state is stored in MySQL, but partial uploads expire after 24 hours.
 - The production image includes `ffmpeg`; local API development also requires it
-  for microphone upload completion and MP3 playback/export.
+  for MP3 export.

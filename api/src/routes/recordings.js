@@ -67,12 +67,12 @@ module.exports = {
     }
   },
 
-  'POST /api/recordings/uploads/:id/complete': async (req, userId) => {
+  'POST /api/recordings/uploads/:id/complete': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
       const uploadId = getUploadId(req);
       if (!uploadId) return { error: 'Invalid upload id', status: 400 };
-      return await completeRecordingUpload(userId, uploadId);
+      return await completeRecordingUpload(userId, uploadId, body || {});
     } catch (error) {
       console.error('Complete recording upload error:', error);
       return { error: error.message || 'Failed to complete recording upload', status: 500 };

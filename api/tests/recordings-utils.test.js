@@ -7,6 +7,7 @@ const {
   isPathUnderRoot,
   normalizeCategory,
   normalizeMetadata,
+  normalizeSha256,
   normalizeTags,
   replaceFilenameExtension,
   serializeRecording,
@@ -68,9 +69,16 @@ test('recording MP3 helpers identify formats and keep conversion paths under the
   assert.equal(replaceFilenameExtension('meeting.webm', '.mp3'), 'meeting.mp3');
   assert.equal(
     getConvertedMp3Path('/app/uploads/recordings/user-1/recording.webm'),
-    '/app/uploads/recordings/user-1/recording.converted.mp3'
+    '/app/uploads/recordings/user-1/recording.converted-v2.mp3'
   );
   assert.throws(() => getConvertedMp3Path('/tmp/recording.webm'), /Invalid recording path/);
+});
+
+test('normalizeSha256 accepts complete hexadecimal SHA-256 values only', () => {
+  const hash = 'A'.repeat(64);
+  assert.equal(normalizeSha256(hash), hash.toLowerCase());
+  assert.equal(normalizeSha256('a'.repeat(63)), null);
+  assert.equal(normalizeSha256('z'.repeat(64)), null);
 });
 
 test('recording chunk limit stays below request body budget', () => {
