@@ -594,24 +594,6 @@ const Settings = () => {
     }
   };
 
-  const handleDownloadBackupJob = async (job: BackupJob) => {
-    try {
-      const { blob, filename } = await api.getBlob(`/backup/jobs/${job.id}/download`);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = filename || `unihub-backup-${job.id}.zip`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(url);
-      await refetchBackupJobs();
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
-      toast({ title: 'Failed to download backup', description: message, variant: 'destructive' });
-    }
-  };
-
   const handleDeleteBackupJob = async (job: BackupJob) => {
     try {
       const response = await api.delete(`/backup/jobs/${job.id}`);
@@ -1175,9 +1157,14 @@ const Settings = () => {
                       </div>
                       <div className="flex gap-2">
                         {job.status === 'ready' && (
-                          <Button variant="outline" size="sm" onClick={() => handleDownloadBackupJob(job)}>
-                            <Download className="h-4 w-4 mr-2" />
-                            Download
+                          <Button variant="outline" size="sm" asChild>
+                            <a
+                              href={api.getDownloadUrl(`/backup/jobs/${encodeURIComponent(job.id)}/download`)}
+                              download={`unihub-backup-${job.id}.zip`}
+                            >
+                              <Download className="h-4 w-4 mr-2" />
+                              Download
+                            </a>
                           </Button>
                         )}
                         <Button variant="ghost" size="sm" onClick={() => handleDeleteBackupJob(job)}>

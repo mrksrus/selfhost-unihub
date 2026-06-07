@@ -67,6 +67,10 @@ class ApiClient {
     this.csrfToken = token;
   }
 
+  getDownloadUrl(endpoint: string): string {
+    return this.resolveUrl(endpoint);
+  }
+
   private resolveUrl(endpoint: string): string {
     if (/^https?:\/\//i.test(endpoint)) {
       throw new Error('Absolute API URLs are not allowed.');

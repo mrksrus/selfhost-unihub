@@ -12,6 +12,13 @@ describe('api client security', () => {
     expect(response.error).toBe('Absolute API URLs are not allowed.');
   });
 
+  it('builds validated native download URLs without fetching the file into memory', () => {
+    expect(api.getDownloadUrl('/backup/jobs/job-id/download')).toBe('/api/backup/jobs/job-id/download');
+    expect(() => api.getDownloadUrl('https://evil.example.com/steal')).toThrow(
+      'Absolute API URLs are not allowed.'
+    );
+  });
+
   it('sends cookie credentials and CSRF header without Authorization bearer token', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
