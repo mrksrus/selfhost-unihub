@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const {
+  backupFromZipFile,
   backupFromZipBuffer,
   canonicalJson,
   normalizeBackupImportSections,
@@ -148,6 +149,50 @@ test('backupFromZipBuffer accepts restorable backup ZIP with file checksums', as
   const parsed = backupFromZipBuffer(await fs.readFile(zipPath));
   assert.equal(parsed.backup.app, 'unihub');
   assert.equal(parsed.fileBuffersByPath.get('files/mail-attachments/attachment-1-invoice.pdf').toString('utf8'), 'attachment bytes');
+
+  const fileBacked = await backupFromZipFile(zipPath);
+  assert.equal(fileBacked.backup.app, 'unihub');
+  assert.deepEqual(fileBacked.manifest.sections, undefined);
+  assert.equal(
+    fileBacked.fileSourcesByPath.get('files/mail-attachments/attachment-1-invoice.pdf').size,
+    fileBuffer.length
+  );
+});
+
+test('backupFromZipFile preserves section backup metadata', async () => {
+  const { writeZip } = require('../src/services/export-jobs');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-section-'));
+  const zipPath = path.join(dir, 'mail-backup.zip');
+  const backup = {
+    app: 'unihub',
+    version: 1,
+    format: 'unihub-restorable-backup',
+    format_version: 1,
+    data: { mail_accounts: [], emails: [] },
+    files: [],
+  };
+  const dataBuffer = Buffer.from(JSON.stringify(backup), 'utf8');
+  await writeZip([
+    {
+      name: 'manifest.json',
+      data: JSON.stringify({
+        app: 'unihub',
+        version: 1,
+        format: 'unihub-restorable-backup',
+        format_version: 1,
+        sections: ['mail'],
+      }),
+    },
+    { name: 'data/backup.json', data: dataBuffer },
+    {
+      name: 'checksums.json',
+      data: JSON.stringify({ entries: { 'data/backup.json': sha256Buffer(dataBuffer) } }),
+    },
+  ], zipPath);
+
+  const parsed = await backupFromZipFile(zipPath);
+  assert.deepEqual(parsed.manifest.sections, ['mail']);
+  assert.deepEqual(Object.keys(parsed.backup.data), ['mail_accounts', 'emails']);
 });
 
 test('backupFromZipBuffer accepts archives written with legacy truncated filenames', async () => {

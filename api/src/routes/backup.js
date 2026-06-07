@@ -1,7 +1,11 @@
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../state');
-const { importBackupForUser, importBackupZipBufferForUser } = require('../services/backup');
+const {
+  importBackupForUser,
+  importBackupZipBufferForUser,
+  importBackupZipFileForUser,
+} = require('../services/backup');
 const {
   startDataExportJob,
   listDataExportJobs,
@@ -11,10 +15,24 @@ const {
   serializeJob,
 } = require('../services/export-jobs');
 
+const BACKUP_UPLOAD_ROOT = path.resolve('/app/uploads/backups/imports');
+
 function getBackupJobId(req) {
   const parts = new URL(req.url, `http://${req.headers.host}`).pathname.split('/').filter(Boolean);
   const index = parts.indexOf('jobs');
   return index === -1 ? null : parts[index + 1] || null;
+}
+
+function isTemporaryBackupUpload(req, body) {
+  const contentType = String(req.headers['content-type'] || '').toLowerCase();
+  if (
+    !body?.filePath
+    || (!contentType.includes('application/zip') && !contentType.includes('application/octet-stream'))
+  ) {
+    return false;
+  }
+  const filePath = path.resolve(body.filePath);
+  return filePath.startsWith(`${BACKUP_UPLOAD_ROOT}${path.sep}`);
 }
 
 module.exports = {
@@ -114,9 +132,11 @@ module.exports = {
         calendar_mode: url.searchParams.get('calendar_mode') || body?.calendar_mode || body?.calendarMode || 'merge_same_name',
         credentials_mode: url.searchParams.get('credentials_mode') || body?.credentials_mode || body?.credentialsMode || 'keep_existing',
       };
-      const result = Buffer.isBuffer(body)
-        ? await importBackupZipBufferForUser(userId, body, options)
-        : await importBackupForUser(userId, body?.backup || body, options);
+      const result = isTemporaryBackupUpload(req, body)
+        ? await importBackupZipFileForUser(userId, body.filePath, options)
+        : Buffer.isBuffer(body)
+          ? await importBackupZipBufferForUser(userId, body, options)
+          : await importBackupForUser(userId, body?.backup || body, options);
       return { import: result };
     } catch (error) {
       console.error('Backup import error:', error);

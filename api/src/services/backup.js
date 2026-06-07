@@ -2,7 +2,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { finished } = require('stream/promises');
+const { StringDecoder } = require('string_decoder');
+const { finished, pipeline } = require('stream/promises');
 const { db } = require('../state');
 const { MAIL_RAW_STORAGE_ROOT, DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } = require('./mail');
 const { RECORDINGS_ROOT } = require('./recordings');
@@ -49,6 +50,42 @@ async function sha256File(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
     const stream = fs.createReadStream(filePath);
+    stream.on('data', chunk => hash.update(chunk));
+    stream.on('error', reject);
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
+}
+
+function isFileRangeSource(value) {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && typeof value.filePath === 'string'
+    && Number.isSafeInteger(value.start)
+    && Number.isSafeInteger(value.size)
+    && value.start >= 0
+    && value.size >= 0
+  );
+}
+
+function createFileRangeStream(source) {
+  if (!isFileRangeSource(source)) {
+    throw new Error('Invalid backup file source.');
+  }
+  if (source.size === 0) return null;
+  return fs.createReadStream(source.filePath, {
+    start: source.start,
+    end: source.start + source.size - 1,
+  });
+}
+
+async function sha256FileSource(source) {
+  if (Buffer.isBuffer(source)) return sha256Buffer(source);
+  if (!isFileRangeSource(source)) throw new Error('Invalid backup file source.');
+  const hash = crypto.createHash('sha256');
+  const stream = createFileRangeStream(source);
+  if (!stream) return hash.digest('hex');
+  return new Promise((resolve, reject) => {
     stream.on('data', chunk => hash.update(chunk));
     stream.on('error', reject);
     stream.on('end', () => resolve(hash.digest('hex')));
@@ -482,7 +519,10 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full') {
   }
 }
 
-function validateBackupPayload(backup, { fileBuffersByPath = null } = {}) {
+function validateBackupPayload(backup, {
+  fileBuffersByPath = null,
+  skipFileHashValidation = false,
+} = {}) {
   const errors = [];
   const warnings = [];
   if (!backup || typeof backup !== 'object') {
@@ -506,6 +546,11 @@ function validateBackupPayload(backup, { fileBuffersByPath = null } = {}) {
         errors.push(`File ${file?.kind || 'unknown'}:${file?.id || 'unknown'} is incomplete`);
         continue;
       }
+      if (skipFileHashValidation) continue;
+      if (fileBuffer && !Buffer.isBuffer(fileBuffer)) {
+        errors.push(`File ${file?.kind || 'unknown'}:${file?.id || 'unknown'} has an invalid source`);
+        continue;
+      }
       const buffer = fileBuffer || Buffer.from(String(file.data_base64), 'base64');
       const actualHash = sha256Buffer(buffer);
       if (actualHash !== file.sha256) {
@@ -522,6 +567,26 @@ function validateBackupPayload(backup, { fileBuffersByPath = null } = {}) {
   }
 
   return { valid: errors.length === 0, errors, warnings };
+}
+
+async function validateBackupPayloadFromFileSources(backup, fileSourcesByPath) {
+  const validation = validateBackupPayload(backup, {
+    fileBuffersByPath: fileSourcesByPath,
+    skipFileHashValidation: true,
+  });
+  if (!Array.isArray(backup?.files)) return validation;
+
+  for (const file of backup.files) {
+    if (file?.missing) continue;
+    const source = file?.archive_path ? fileSourcesByPath?.get(file.archive_path) : null;
+    if (!source || !file.sha256) continue;
+    const actualHash = await sha256FileSource(source);
+    if (actualHash !== file.sha256) {
+      validation.errors.push(`Checksum mismatch for file ${file.kind}:${file.id}`);
+    }
+  }
+  validation.valid = validation.errors.length === 0;
+  return validation;
 }
 
 function countBackupRows(backup) {
@@ -849,15 +914,50 @@ async function findExistingRecordingForRestore(connection, row, userId, restored
   return existingByShape[0]?.id || null;
 }
 
-async function writeRestoredFile(userId, file, { fileBuffersByPath = null } = {}) {
-  if (file.missing) return null;
-  const buffer = file.archive_path && fileBuffersByPath
-    ? fileBuffersByPath.get(file.archive_path)
-    : file.data_base64 ? Buffer.from(String(file.data_base64), 'base64') : null;
-  if (!buffer) return null;
-  if (sha256Buffer(buffer) !== file.sha256) {
-    throw new Error(`Checksum mismatch while restoring file ${file.kind}:${file.id}`);
+async function writeFileSource(targetPath, source, expectedHash) {
+  if (Buffer.isBuffer(source)) {
+    if (sha256Buffer(source) !== expectedHash) {
+      throw new Error('Checksum mismatch while restoring backup file.');
+    }
+    await fs.promises.writeFile(targetPath, source, { flag: 'wx' });
+    return;
   }
+  if (!isFileRangeSource(source)) {
+    throw new Error('Backup file source is unavailable.');
+  }
+
+  const hash = crypto.createHash('sha256');
+  const output = fs.createWriteStream(targetPath, { flags: 'wx' });
+  const input = createFileRangeStream(source);
+  try {
+    if (input) {
+      input.on('data', chunk => hash.update(chunk));
+      await pipeline(input, output);
+    } else {
+      output.end();
+      await finished(output);
+    }
+    if (hash.digest('hex') !== expectedHash) {
+      throw new Error('Checksum mismatch while restoring backup file.');
+    }
+  } catch (error) {
+    output.destroy();
+    if (error?.code !== 'EEXIST') {
+      await fs.promises.rm(targetPath, { force: true }).catch(() => {});
+    }
+    throw error;
+  }
+}
+
+async function writeRestoredFile(userId, file, {
+  fileBuffersByPath = null,
+  fileSourcesByPath = fileBuffersByPath,
+} = {}) {
+  if (file.missing) return null;
+  const source = file.archive_path && fileSourcesByPath
+    ? fileSourcesByPath.get(file.archive_path)
+    : file.data_base64 ? Buffer.from(String(file.data_base64), 'base64') : null;
+  if (!source) return null;
   const root = file.kind === 'raw_email'
     ? MAIL_RAW_STORAGE_ROOT
     : file.kind === 'recording' ? RECORDINGS_ROOT : ATTACHMENTS_ROOT;
@@ -868,7 +968,7 @@ async function writeRestoredFile(userId, file, { fileBuffersByPath = null } = {}
   let targetPath = path.join(targetDir, safeFilename);
   for (let attempt = 1; attempt < 100; attempt += 1) {
     try {
-      await fs.promises.writeFile(targetPath, buffer, { flag: 'wx' });
+      await writeFileSource(targetPath, source, file.sha256);
       return targetPath;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
@@ -877,7 +977,7 @@ async function writeRestoredFile(userId, file, { fileBuffersByPath = null } = {}
       targetPath = path.join(targetDir, `${base}-${attempt}${ext}`);
     }
   }
-  await fs.promises.writeFile(targetPath, buffer, { flag: 'wx' });
+  await writeFileSource(targetPath, source, file.sha256);
   return targetPath;
 }
 
@@ -989,6 +1089,222 @@ function backupFromZipBuffer(buffer) {
   return { backup, manifest, checksums, fileBuffersByPath };
 }
 
+async function readFileRange(fileHandle, start, size) {
+  const buffer = Buffer.alloc(size);
+  let offset = 0;
+  while (offset < size) {
+    const { bytesRead } = await fileHandle.read(buffer, offset, size - offset, start + offset);
+    if (bytesRead === 0) throw new Error('Backup ZIP ended unexpectedly.');
+    offset += bytesRead;
+  }
+  return buffer;
+}
+
+function isSafeZipEntryName(name) {
+  if (!name || name.startsWith('/') || name.includes('\\')) return false;
+  return name.split('/').every(part => part && part !== '.' && part !== '..');
+}
+
+async function readZipFileEntries(filePath) {
+  const resolvedPath = path.resolve(filePath);
+  const stat = await fs.promises.stat(resolvedPath);
+  if (!stat.isFile() || stat.size < 22) {
+    throw new Error('Backup file is not a valid ZIP archive.');
+  }
+
+  const fileHandle = await fs.promises.open(resolvedPath, 'r');
+  try {
+    const tailSize = Math.min(stat.size, 65557);
+    const tailStart = stat.size - tailSize;
+    const tail = await readFileRange(fileHandle, tailStart, tailSize);
+    const relativeEocdOffset = findEndOfCentralDirectory(tail);
+    if (relativeEocdOffset < 0) {
+      throw new Error('Backup file is not a valid ZIP archive.');
+    }
+
+    const entryCount = tail.readUInt16LE(relativeEocdOffset + 10);
+    const centralDirectorySize = tail.readUInt32LE(relativeEocdOffset + 12);
+    const centralDirectoryOffset = tail.readUInt32LE(relativeEocdOffset + 16);
+    if (
+      entryCount === 0xffff
+      || centralDirectorySize === 0xffffffff
+      || centralDirectoryOffset === 0xffffffff
+    ) {
+      throw new Error('ZIP64 backups are not supported by this UniHub backup version.');
+    }
+    if (
+      centralDirectoryOffset + centralDirectorySize > stat.size
+      || centralDirectoryOffset + centralDirectorySize > tailStart + relativeEocdOffset
+    ) {
+      throw new Error('Backup ZIP central directory is invalid.');
+    }
+
+    const centralDirectory = await readFileRange(
+      fileHandle,
+      centralDirectoryOffset,
+      centralDirectorySize
+    );
+    const entries = new Map();
+    let offset = 0;
+    for (let index = 0; index < entryCount; index += 1) {
+      if (
+        offset + 46 > centralDirectory.length
+        || centralDirectory.readUInt32LE(offset) !== 0x02014b50
+      ) {
+        throw new Error('Backup ZIP central directory is invalid.');
+      }
+      const flags = centralDirectory.readUInt16LE(offset + 8);
+      const compressionMethod = centralDirectory.readUInt16LE(offset + 10);
+      const compressedSize = centralDirectory.readUInt32LE(offset + 20);
+      const uncompressedSize = centralDirectory.readUInt32LE(offset + 24);
+      const fileNameLength = centralDirectory.readUInt16LE(offset + 28);
+      const extraLength = centralDirectory.readUInt16LE(offset + 30);
+      const commentLength = centralDirectory.readUInt16LE(offset + 32);
+      const localHeaderOffset = centralDirectory.readUInt32LE(offset + 42);
+      const entryEnd = offset + 46 + fileNameLength + extraLength + commentLength;
+      if (entryEnd > centralDirectory.length) {
+        throw new Error('Backup ZIP central directory is invalid.');
+      }
+      const name = centralDirectory
+        .subarray(offset + 46, offset + 46 + fileNameLength)
+        .toString('utf8');
+      offset = entryEnd;
+
+      if (name.endsWith('/')) continue;
+      if (!isSafeZipEntryName(name)) {
+        throw new Error(`Backup ZIP contains an unsafe entry path: ${name || '(empty)'}.`);
+      }
+      if ((flags & 0x0001) !== 0) {
+        throw new Error(`Encrypted ZIP entry ${name} is not supported.`);
+      }
+      if (compressionMethod !== 0) {
+        throw new Error(`Unsupported ZIP compression for ${name}. UniHub backups must use stored entries.`);
+      }
+      if (compressedSize !== uncompressedSize) {
+        throw new Error(`Invalid ZIP size metadata for ${name}.`);
+      }
+      if (entries.has(name)) {
+        throw new Error(`Backup ZIP contains duplicate entry ${name}.`);
+      }
+
+      const localHeader = await readFileRange(fileHandle, localHeaderOffset, 30);
+      if (localHeader.readUInt32LE(0) !== 0x04034b50) {
+        throw new Error(`Invalid ZIP local header for ${name}.`);
+      }
+      const localNameLength = localHeader.readUInt16LE(26);
+      const localExtraLength = localHeader.readUInt16LE(28);
+      const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
+      if (dataStart + compressedSize > centralDirectoryOffset) {
+        throw new Error(`ZIP entry ${name} exceeds archive bounds.`);
+      }
+      entries.set(name, {
+        filePath: resolvedPath,
+        start: dataStart,
+        size: compressedSize,
+      });
+    }
+    if (offset !== centralDirectory.length) {
+      throw new Error('Backup ZIP central directory is invalid.');
+    }
+    return entries;
+  } finally {
+    await fileHandle.close();
+  }
+}
+
+async function readZipTextEntry(source, name, maxSize) {
+  if (!source) return null;
+  if (!isFileRangeSource(source) || source.size > maxSize) {
+    throw new Error(`Backup ZIP entry ${name} is too large.`);
+  }
+
+  const decoder = new StringDecoder('utf8');
+  const hash = crypto.createHash('sha256');
+  let text = '';
+  const stream = createFileRangeStream(source);
+  if (stream) {
+    await new Promise((resolve, reject) => {
+      stream.on('data', chunk => {
+        hash.update(chunk);
+        text += decoder.write(chunk);
+      });
+      stream.on('error', reject);
+      stream.on('end', resolve);
+    });
+  }
+  text += decoder.end();
+  return { text, sha256: hash.digest('hex') };
+}
+
+async function parseJsonZipFileEntry(entries, name, maxSize) {
+  const source = entries.get(name);
+  if (!source) return null;
+  const result = await readZipTextEntry(source, name, maxSize);
+  try {
+    return {
+      value: JSON.parse(result.text),
+      sha256: result.sha256,
+    };
+  } catch {
+    throw new Error(`Backup ZIP contains invalid JSON at ${name}.`);
+  }
+}
+
+async function backupFromZipFile(filePath) {
+  const entries = await readZipFileEntries(filePath);
+  const manifestEntry = await parseJsonZipFileEntry(entries, 'manifest.json', 16 * 1024 * 1024);
+  const checksumsEntry = await parseJsonZipFileEntry(entries, 'checksums.json', 64 * 1024 * 1024);
+  const backupEntry = await parseJsonZipFileEntry(entries, 'data/backup.json', 512 * 1024 * 1024);
+  const manifest = manifestEntry?.value || null;
+  const checksums = checksumsEntry?.value || null;
+  const backup = backupEntry?.value || null;
+  if (!manifest || !backup) {
+    throw new Error('This ZIP is not a restorable UniHub backup. Create a new backup with the Backup buttons.');
+  }
+  if (manifest.app !== 'unihub' || backup.app !== 'unihub') {
+    throw new Error('Backup app must be "unihub".');
+  }
+  if (manifest.format !== ZIP_BACKUP_FORMAT || backup.format !== ZIP_BACKUP_FORMAT) {
+    throw new Error('This ZIP is not a restorable UniHub backup.');
+  }
+  if (
+    checksums?.entries?.['data/backup.json']
+    && backupEntry.sha256 !== checksums.entries['data/backup.json']
+  ) {
+    throw new Error('Checksum mismatch for data/backup.json.');
+  }
+
+  const fileSourcesByPath = new Map();
+  for (const file of backup.files || []) {
+    if (!file.archive_path) continue;
+    let source = entries.get(file.archive_path);
+    if (!source) {
+      const legacyPath = legacyZipWriterPath(file.archive_path);
+      if (legacyPath !== file.archive_path) {
+        source = entries.get(legacyPath);
+      }
+    }
+    if (!source) {
+      throw new Error(`Backup file is missing ${file.archive_path}.`);
+    }
+    if (
+      checksums?.entries?.[file.archive_path]
+      && checksums.entries[file.archive_path] !== file.sha256
+    ) {
+      throw new Error(`Checksum metadata mismatch for ${file.archive_path}.`);
+    }
+    if (
+      file.size_bytes !== null
+      && file.size_bytes !== undefined
+      && Number(file.size_bytes) !== source.size
+    ) {
+      throw new Error(`Size mismatch for ${file.archive_path}.`);
+    }
+    fileSourcesByPath.set(file.archive_path, source);
+  }
+  return { backup, manifest, checksums, fileSourcesByPath };
+}
+
 async function importBackupForUser(userId, backup, {
   mode = 'dry-run',
   sections = 'full',
@@ -996,11 +1312,14 @@ async function importBackupForUser(userId, backup, {
   calendar_mode = 'merge_same_name',
   credentials_mode = 'keep_existing',
   fileBuffersByPath = null,
+  fileSourcesByPath = fileBuffersByPath,
 } = {}) {
   const conflictMode = normalizeConflictMode(conflict_mode);
   const calendarMode = normalizeCalendarMode(calendar_mode);
   const credentialsMode = normalizeCredentialMode(credentials_mode);
-  const validation = validateBackupPayload(backup, { fileBuffersByPath });
+  const validation = fileSourcesByPath && Array.from(fileSourcesByPath.values()).some(isFileRangeSource)
+    ? await validateBackupPayloadFromFileSources(backup, fileSourcesByPath)
+    : validateBackupPayload(backup, { fileBuffersByPath });
   const scopedBackup = scopeBackupForImport(backup, sections);
   const counts = countBackupRows(scopedBackup);
   const conflicts = await countRestoreConflicts(userId, scopedBackup).catch(() => ({}));
@@ -1025,7 +1344,10 @@ async function importBackupForUser(userId, backup, {
   const restoredPaths = new Map();
   const createdRestorePaths = [];
   for (const file of scopedBackup.files || []) {
-    const restoredPath = await writeRestoredFile(userId, file, { fileBuffersByPath });
+    const restoredPath = await writeRestoredFile(userId, file, {
+      fileBuffersByPath,
+      fileSourcesByPath,
+    });
     if (restoredPath) {
       restoredPaths.set(`${file.kind}:${file.id}`, restoredPath);
       createdRestorePaths.push(restoredPath);
@@ -1514,6 +1836,16 @@ async function importBackupZipBufferForUser(userId, buffer, options = {}) {
   });
 }
 
+async function importBackupZipFileForUser(userId, filePath, options = {}) {
+  const { backup, manifest, fileSourcesByPath } = await backupFromZipFile(filePath);
+  const sections = options.sections || manifest.sections || 'full';
+  return importBackupForUser(userId, backup, {
+    ...options,
+    sections,
+    fileSourcesByPath,
+  });
+}
+
 module.exports = {
   BACKUP_VERSION,
   ZIP_BACKUP_FORMAT,
@@ -1531,7 +1863,10 @@ module.exports = {
   buildBackupForUser,
   buildBackupArchiveEntriesForUser,
   readZipEntries,
+  readZipFileEntries,
   backupFromZipBuffer,
+  backupFromZipFile,
   importBackupForUser,
   importBackupZipBufferForUser,
+  importBackupZipFileForUser,
 };

@@ -1,8 +1,18 @@
+const crypto = require('crypto');
 const fs = require('fs');
+const path = require('path');
 const routes = require('./routes');
 const { verifyToken, validateCsrfToken } = require('./auth');
-const { parseBody, parseRawBody, getAllowedOriginForRequest, isRequestBodyTooLarge } = require('./http/request');
+const {
+  parseBody,
+  parseRawBodyToFile,
+  getAllowedOriginForRequest,
+  isRequestBodyTooLarge,
+} = require('./http/request');
 const { parseSingleByteRange } = require('./http/range');
+
+const BACKUP_UPLOAD_MAX_SIZE = (4 * 1024 * 1024 * 1024) - 1;
+const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
 
 // Request handler
 async function handleRequest(req, res) {
@@ -123,6 +133,7 @@ async function handleRequest(req, res) {
     return;
   }
   
+  let temporaryUploadPath = null;
   try {
     const userId = await verifyToken(req);
 
@@ -142,7 +153,7 @@ async function handleRequest(req, res) {
     } else if (routeKey === 'POST /api/recordings/uploads/start') {
       maxBodySize = 50000;
     } else if (routeKey === 'POST /api/backup/import') {
-      maxBodySize = 150 * 1024 * 1024; // Backup archives can include attachments/raw email content.
+      maxBodySize = BACKUP_UPLOAD_MAX_SIZE;
     } else if (routeKey === 'POST /api/mail/send') {
       maxBodySize = 30 * 1024 * 1024; // Allow attachments in compose (base64 JSON payload)
     } else if (
@@ -170,11 +181,15 @@ async function handleRequest(req, res) {
     }
 
     const contentType = String(req.headers['content-type'] || '').toLowerCase();
-    const expectsRawBody = routeKey === 'POST /api/backup/import'
+    const expectsBackupUpload = routeKey === 'POST /api/backup/import'
       && (contentType.includes('application/zip') || contentType.includes('application/octet-stream'));
-    const body = expectsRawBody
-      ? await parseRawBody(req, maxBodySize)
-      : await parseBody(req, maxBodySize);
+    let body;
+    if (expectsBackupUpload) {
+      temporaryUploadPath = path.join(BACKUP_UPLOAD_ROOT, `${crypto.randomUUID()}.zip`);
+      body = await parseRawBodyToFile(req, temporaryUploadPath, maxBodySize);
+    } else {
+      body = await parseBody(req, maxBodySize);
+    }
 
     if (body === null) {
       res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
@@ -272,6 +287,10 @@ async function handleRequest(req, res) {
     console.error('Request error:', error);
     res.writeHead(500, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Internal Server Error' }));
+  } finally {
+    if (temporaryUploadPath) {
+      await fs.promises.rm(temporaryUploadPath, { force: true }).catch(() => {});
+    }
   }
 }
 

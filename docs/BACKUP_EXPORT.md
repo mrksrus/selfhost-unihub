@@ -92,6 +92,11 @@ All endpoints require authentication. State-changing endpoints require CSRF.
 - `calendar_mode=merge_same_name|copy`
 - `credentials_mode=keep_existing|restore`
 
+Backup uploads are streamed to temporary storage under the uploads volume
+instead of being buffered in API memory. The current ZIP32 backup format and
+upload endpoint accept archives up to 4 GB. Full and section backups use the
+same validation and restore path.
+
 `GET /api/backup/export` is deprecated and returns `410 Gone`.
 
 ## Limitations

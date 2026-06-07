@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const { ALLOWED_ORIGINS } = require('../config');
 
 function getRequestContentLength(req) {
@@ -88,6 +90,59 @@ async function parseRawBody(req, maxSize = 1000) {
   });
 }
 
+async function parseRawBodyToFile(req, targetPath, maxSize) {
+  await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+
+  return new Promise((resolve) => {
+    const output = fs.createWriteStream(targetPath, { flags: 'wx' });
+    let currentSize = 0;
+    let settled = false;
+    let failing = false;
+
+    const cleanupPartialFile = async () => {
+      output.destroy();
+      await fs.promises.rm(targetPath, { force: true }).catch(() => {});
+    };
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const fail = () => {
+      if (settled || failing) return;
+      failing = true;
+      req.pause();
+      cleanupPartialFile().finally(() => settle(null));
+    };
+
+    req.on('data', chunk => {
+      if (settled) return;
+      currentSize += chunk.length;
+      if (currentSize > maxSize) {
+        fail();
+        return;
+      }
+      if (!output.write(chunk)) {
+        req.pause();
+        output.once('drain', () => {
+          if (!settled) req.resume();
+        });
+      }
+    });
+    req.on('end', () => {
+      if (!settled) output.end();
+    });
+    req.on('aborted', fail);
+    req.on('error', fail);
+    output.on('error', () => {
+      fail();
+    });
+    output.on('finish', () => {
+      if (!failing) settle({ filePath: targetPath, size: currentSize });
+    });
+  });
+}
+
 function getAllowedOriginForRequest(req) {
   const requestOrigin = req.headers.origin;
   if (!requestOrigin) return null;
@@ -107,5 +162,6 @@ module.exports = {
   isRequestBodyTooLarge,
   parseBody,
   parseRawBody,
+  parseRawBodyToFile,
   getAllowedOriginForRequest,
 };
