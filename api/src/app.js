@@ -6,6 +6,11 @@ const { initDatabase, ensurePerformanceIndexes } = require('./services/database'
 const { syncMailAccount, isAnyMailAccountSyncRunning, runMailServerDeletionPass } = require('./services/mail');
 const { cleanupExpiredRecordingUploads } = require('./services/recordings');
 const { resumePendingDataExportJobs } = require('./services/export-jobs');
+const {
+  resumePendingRestoreJobs,
+  cleanupExpiredRestoreArchives,
+} = require('./services/backup-restore-jobs');
+const { isSectionRestoreActive } = require('./services/restore-locks');
 const { handleRequest } = require('./request-handler');
 
 const MAIL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
@@ -22,6 +27,14 @@ async function start() {
     }
   } catch (error) {
     console.warn('[BACKUP] Could not resume pending backup jobs:', error.message);
+  }
+  try {
+    const resumedRestoreJobs = await resumePendingRestoreJobs();
+    if (resumedRestoreJobs > 0) {
+      console.log(`✓ Resumed ${resumedRestoreJobs} interrupted restore job(s)`);
+    }
+  } catch (error) {
+    console.warn('[BACKUP RESTORE] Could not resume pending restore jobs:', error.message);
   }
   
   const server = http.createServer(handleRequest);
@@ -45,10 +58,11 @@ async function start() {
     periodicMailSyncRunning = true;
     try {
       const [accounts] = await db.execute(
-        'SELECT id, email_address FROM mail_accounts WHERE is_active = TRUE'
+        'SELECT id, user_id, email_address FROM mail_accounts WHERE is_active = TRUE'
       );
       console.log(`\n[${new Date().toISOString()}] Starting periodic mail sync for ${accounts.length} accounts...`);
       for (const account of accounts) {
+        if (await isSectionRestoreActive(account.user_id, 'mail')) continue;
         const result = await syncMailAccount(account.id);
         if (result?.success === false) {
           console.error(`Failed to sync ${account.email_address}:`, result.error || 'Unknown error');
@@ -93,6 +107,17 @@ async function start() {
       console.error('[CLEANUP] Error cleaning expired sessions:', error.message);
     }
   }, 60 * 60 * 1000); // 1 hour
+
+  setInterval(async () => {
+    try {
+      const deleted = await cleanupExpiredRestoreArchives();
+      if (deleted > 0) {
+        console.log(`[CLEANUP] Expired ${deleted} retained backup upload(s)`);
+      }
+    } catch (error) {
+      console.error('[CLEANUP] Error expiring backup uploads:', error.message);
+    }
+  }, 60 * 60 * 1000);
 
   setInterval(async () => {
     try {

@@ -10,9 +10,26 @@ const {
   isRequestBodyTooLarge,
 } = require('./http/request');
 const { parseSingleByteRange } = require('./http/range');
+const { getActiveRestoreSections } = require('./services/restore-locks');
 
-const BACKUP_UPLOAD_MAX_SIZE = (4 * 1024 * 1024 * 1024) - 1;
+const BACKUP_UPLOAD_MAX_SIZE = 5 * 1024 * 1024 * 1024;
 const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
+
+function getRestoreSectionForWrite(pathname) {
+  if (pathname.startsWith('/api/backup/')) return null;
+  if (pathname.startsWith('/api/mail/')) return 'mail';
+  if (pathname.startsWith('/api/calendar/')) return 'calendar';
+  if (pathname.startsWith('/api/contacts')) return 'contacts';
+  if (pathname.startsWith('/api/recordings')) return 'recordings';
+  if (pathname === '/api/settings/clear-contacts') return 'contacts';
+  if (pathname === '/api/settings/clear-calendar') return 'calendar';
+  if (pathname === '/api/settings/clear-mail-accounts') return 'mail';
+  if (pathname === '/api/settings/clear-recordings') return 'recordings';
+  if (pathname === '/api/settings/account') return '*';
+  if (pathname.startsWith('/api/settings/')) return 'settings';
+  if (pathname === '/api/auth/profile') return 'settings';
+  return null;
+}
 
 // Request handler
 async function handleRequest(req, res) {
@@ -81,9 +98,25 @@ async function handleRequest(req, res) {
     routeKey = `${req.method} /api/recordings/:id/file`;
   } else if (routeKey.includes('/api/recordings/')) {
     routeKey = `${req.method} /api/recordings/:id`;
+  } else if (routeKey.includes('/api/backup/restore-jobs/')) {
+    if (url.pathname.endsWith('/unlock')) {
+      routeKey = `${req.method} /api/backup/restore-jobs/:id/unlock`;
+    } else if (url.pathname.endsWith('/start')) {
+      routeKey = `${req.method} /api/backup/restore-jobs/:id/start`;
+    } else if (url.pathname.endsWith('/cancel')) {
+      routeKey = `${req.method} /api/backup/restore-jobs/:id/cancel`;
+    } else {
+      routeKey = `${req.method} /api/backup/restore-jobs/:id`;
+    }
   } else if (routeKey.includes('/api/backup/jobs/')) {
     if (url.pathname.endsWith('/download')) {
       routeKey = `${req.method} /api/backup/jobs/:id/download`;
+    } else if (url.pathname.endsWith('/recovery-password/reveal')) {
+      routeKey = `${req.method} /api/backup/jobs/:id/recovery-password/reveal`;
+    } else if (url.pathname.endsWith('/restore')) {
+      routeKey = `${req.method} /api/backup/jobs/:id/restore`;
+    } else if (url.pathname.endsWith('/cancel')) {
+      routeKey = `${req.method} /api/backup/jobs/:id/cancel`;
     } else {
       routeKey = `${req.method} /api/backup/jobs/:id`;
     }
@@ -144,6 +177,21 @@ async function handleRequest(req, res) {
       return;
     }
 
+    if (userId && ['POST', 'PUT', 'DELETE'].includes(req.method)) {
+      const section = getRestoreSectionForWrite(url.pathname);
+      if (section) {
+        const activeSections = await getActiveRestoreSections(userId);
+        if ((section === '*' && activeSections.size > 0) || activeSections.has(section)) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: `Restore in progress for ${section}. This section is temporarily read-only.`,
+            status: 409,
+          }));
+          return;
+        }
+      }
+    }
+
     // Allow larger bodies for vCard import and bulk operations
     let maxBodySize = 1000; // Default for most endpoints
     if (routeKey === 'POST /api/contacts/import') {
@@ -182,7 +230,11 @@ async function handleRequest(req, res) {
 
     const contentType = String(req.headers['content-type'] || '').toLowerCase();
     const expectsBackupUpload = routeKey === 'POST /api/backup/import'
-      && (contentType.includes('application/zip') || contentType.includes('application/octet-stream'));
+      && (
+        contentType.includes('application/zip')
+        || contentType.includes('application/octet-stream')
+        || contentType.includes('application/vnd.unihub.backup')
+      );
     let body;
     if (expectsBackupUpload) {
       temporaryUploadPath = path.join(BACKUP_UPLOAD_ROOT, `${crypto.randomUUID()}.zip`);

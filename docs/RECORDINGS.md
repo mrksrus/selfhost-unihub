@@ -179,6 +179,21 @@ Recording files are also deleted when:
 - all recordings are cleared from settings
 - the user account is deleted
 
+## Backup and Restore
+
+Recording backups include recording metadata, original stored files, tags, and
+tag links. Validation requires every declared recording file to exist and match
+its SHA-256 checksum.
+
+Restore matches recordings by ID, file checksum, or normalized title/date/size.
+Tags match by normalized name, and links are remapped to the restored recording
+and tag IDs. Keep both creates a new recording ID while preserving its tags.
+
+Files are copied into a restore-job-specific directory and removed if the
+database transaction fails or the job is cancelled.
+
+See [Backup and Restore Guide](BACKUP_RESTORE.md).
+
 ## Security Notes
 
 - All routes are scoped by `user_id`.

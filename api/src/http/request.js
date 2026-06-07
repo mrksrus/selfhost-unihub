@@ -94,7 +94,7 @@ async function parseRawBodyToFile(req, targetPath, maxSize) {
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
 
   return new Promise((resolve) => {
-    const output = fs.createWriteStream(targetPath, { flags: 'wx' });
+    const output = fs.createWriteStream(targetPath, { flags: 'wx', mode: 0o600 });
     let currentSize = 0;
     let settled = false;
     let failing = false;

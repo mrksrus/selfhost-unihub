@@ -1,6 +1,7 @@
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+const BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || ENCRYPTION_KEY;
 const BOOTSTRAP_ADMIN_EMAIL = (process.env.BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
 const BOOTSTRAP_ADMIN_PASSWORD = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
@@ -20,6 +21,7 @@ module.exports = {
   PORT,
   JWT_SECRET,
   ENCRYPTION_KEY,
+  BACKUP_MASTER_KEY,
   BOOTSTRAP_ADMIN_EMAIL,
   BOOTSTRAP_ADMIN_PASSWORD,
   ALLOWED_ORIGINS,

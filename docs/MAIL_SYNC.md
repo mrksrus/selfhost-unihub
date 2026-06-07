@@ -264,6 +264,27 @@ iv_hex:auth_tag_hex:ciphertext_hex
 The password is decrypted only when opening IMAP/SMTP connections or optional
 CalDAV import connections.
 
+## Backup and Restore
+
+Mail section backups include accounts, folders, sender rules, messages, scores,
+attachment metadata/files, raw `.eml` archives, and IMAP identity fields.
+
+Encrypted `.unihub-backup` files carry account credentials in a portable
+credential bundle. On restore, the destination server encrypts them using its
+own `ENCRYPTION_KEY`. Legacy/plain ZIP credentials work only when the destination
+can decrypt the source ciphertext; otherwise newly restored accounts are
+inactive until credentials are entered again.
+
+Mail accounts match by email address first, then ID. Messages match by ID,
+Message-ID, or source folder/UID/UIDVALIDITY. Attachments and child rows are
+remapped when Keep both creates new message IDs.
+
+Server deletion is always restored safely disabled. `mail_server_messages` is
+not included. An active mail restore pauses new sync/deletion work and waits for
+already-running IMAP work to finish.
+
+See [Backup and Restore Guide](BACKUP_RESTORE.md).
+
 ## Security Notes
 
 - Mail account rows are scoped by `user_id`.

@@ -922,18 +922,98 @@ async function ensureSchema() {
     user_id CHAR(36) NOT NULL,
     scope VARCHAR(32) NOT NULL DEFAULT 'full',
     status VARCHAR(32) NOT NULL DEFAULT 'queued',
+    phase VARCHAR(32) NOT NULL DEFAULT 'queued',
     progress INT NOT NULL DEFAULT 0,
+    cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
     requested_sections JSON NULL,
     file_path TEXT NULL,
     file_size BIGINT NULL,
+    file_sha256 CHAR(64) NULL,
+    content_type VARCHAR(128) NULL,
+    encryption_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    backup_uuid CHAR(36) NULL,
     error TEXT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    started_at TIMESTAMP NULL,
     completed_at TIMESTAMP NULL,
     downloaded_at TIMESTAMP NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     INDEX idx_data_export_jobs_user_created (user_id, created_at DESC),
     INDEX idx_data_export_jobs_status (status)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  const backupJobColumns = [
+    ['phase', `ALTER TABLE data_export_jobs ADD COLUMN phase VARCHAR(32) NOT NULL DEFAULT 'queued' AFTER status`],
+    ['cancel_requested', `ALTER TABLE data_export_jobs ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT FALSE AFTER progress`],
+    ['file_sha256', `ALTER TABLE data_export_jobs ADD COLUMN file_sha256 CHAR(64) NULL AFTER file_size`],
+    ['content_type', `ALTER TABLE data_export_jobs ADD COLUMN content_type VARCHAR(128) NULL AFTER file_sha256`],
+    ['encryption_enabled', `ALTER TABLE data_export_jobs ADD COLUMN encryption_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER content_type`],
+    ['backup_uuid', `ALTER TABLE data_export_jobs ADD COLUMN backup_uuid CHAR(36) NULL AFTER encryption_enabled`],
+    ['started_at', `ALTER TABLE data_export_jobs ADD COLUMN started_at TIMESTAMP NULL AFTER updated_at`],
+  ];
+  for (const [columnName, alterSql] of backupJobColumns) {
+    await ensureColumn('data_export_jobs', columnName, alterSql, { required: true });
+  }
+  await db.execute(
+    `UPDATE data_export_jobs
+     SET encryption_enabled = FALSE,
+         content_type = COALESCE(content_type, 'application/zip')
+     WHERE backup_uuid IS NULL
+       AND file_path IS NOT NULL
+       AND file_path LIKE '%.zip'`
+  );
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS backup_restore_jobs (
+    id CHAR(36) PRIMARY KEY,
+    user_id CHAR(36) NOT NULL,
+    source_type VARCHAR(32) NOT NULL DEFAULT 'upload',
+    source_export_job_id CHAR(36) NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'uploaded',
+    operation VARCHAR(32) NOT NULL DEFAULT 'validate',
+    phase VARCHAR(32) NOT NULL DEFAULT 'uploaded',
+    progress INT NOT NULL DEFAULT 0,
+    cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+    requested_sections JSON NULL,
+    conflict_mode VARCHAR(32) NOT NULL DEFAULT 'keep_existing',
+    calendar_mode VARCHAR(32) NOT NULL DEFAULT 'merge_same_name',
+    credentials_mode VARCHAR(32) NOT NULL DEFAULT 'keep_existing',
+    archive_path TEXT NULL,
+    archive_size BIGINT NULL,
+    archive_sha256 CHAR(64) NULL,
+    backup_uuid CHAR(36) NULL,
+    is_encrypted BOOLEAN NOT NULL DEFAULT FALSE,
+    validation_result JSON NULL,
+    result_counts JSON NULL,
+    error TEXT NULL,
+    attempt_count INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    started_at TIMESTAMP NULL,
+    completed_at TIMESTAMP NULL,
+    expires_at TIMESTAMP NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_backup_restore_jobs_user_created (user_id, created_at DESC),
+    INDEX idx_backup_restore_jobs_status (status),
+    INDEX idx_backup_restore_jobs_backup_uuid (backup_uuid)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS backup_archive_keys (
+    backup_uuid CHAR(36) NOT NULL,
+    user_id CHAR(36) NOT NULL,
+    export_job_id CHAR(36) NULL,
+    restore_job_id CHAR(36) NULL,
+    server_wrapped_key LONGTEXT NOT NULL,
+    recovery_password_ciphertext LONGTEXT NULL,
+    recovery_password_revealed_at TIMESTAMP NULL,
+    expires_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (backup_uuid, user_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_backup_archive_keys_export (export_job_id),
+    INDEX idx_backup_archive_keys_restore (restore_job_id),
+    INDEX idx_backup_archive_keys_expiry (expires_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
   
   // Initialize signup mode with a secure default. Existing installs that still

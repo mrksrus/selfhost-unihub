@@ -141,7 +141,7 @@ Safety checks:
 - deactivating a user deletes their sessions
 
 The storage overview returns aggregate counts and byte totals for mail
-attachments, raw mail archives, recordings, and generated exports. It also
+attachments, raw mail archives, recordings, and generated backup archives. It also
 splits those byte totals per user account. It does not return message subjects,
 filenames, contact records, or backup contents.
 
@@ -180,6 +180,28 @@ These routes are for the current user and require CSRF:
 
 Account deletion clears auth and CSRF cookies after deleting the user.
 
+During an active background restore, writes to affected sections return
+`409 Restore in progress`. Reads and unaffected sections remain available.
+Account deletion is blocked while any restore section is active.
+
+## Backup Data Management
+
+The Data Management tab also exposes generated backup and durable restore jobs:
+
+- encrypted-by-default full and section backups
+- background progress with start/end times
+- cooperative Stop controls
+- direct restore from a retained generated backup
+- upload-once validation for `.zip` and `.unihub-backup`
+- recovery-password input for portable encrypted uploads
+- retry and deletion for retained restore jobs
+
+Backup and restore job ownership is scoped to the signed-in user. Generated
+archives remain until manually deleted. Uploaded archives expire after seven
+days and are deleted after a successful restore.
+
+See [Backup and Restore Guide](BACKUP_RESTORE.md).
+
 ## Global Search
 
 `GET /api/search?q=<query>&limit=<n>` searches across:
@@ -212,6 +234,9 @@ Behavior:
 - All admin actions are server-side role checked.
 - Account/user destructive actions also remove related files where the service
   owns those paths.
+- Recovery passwords and uploaded backups must be transferred over HTTPS.
+- `BACKUP_MASTER_KEY`, when configured, is separate from JWT signing and protects
+  server-side automatic backup unlocking.
 
 ## Limitations
 

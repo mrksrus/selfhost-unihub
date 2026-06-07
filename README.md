@@ -1,5 +1,11 @@
 # UniHub - Self-Hosted Productivity Suite
 
+<p align="center">
+  <img src="https://img.shields.io/badge/NOTICE-FULLY%20AI--CODED-red?style=for-the-badge" alt="Notice: Fully AI-Coded">
+</p>
+
+<p align="center" style="color: #d1242f;"><strong>IMPORTANT: This project is fully AI-coded.</strong></p>
+
 > Disclaimer: UniHub is a learning/hobby project. It has not had a professional
 > security review and should not be treated as production-ready software without
 > your own review, testing, backups, and monitoring.
@@ -17,7 +23,7 @@ management, and a PWA shell in one installable browser app.
 | Calendar and ToDo | Local calendar accounts, multiple calendars, visibility/color settings, attendees, RSVP state, reminders, subtasks, standalone to-dos |
 | CalDAV import | Optional CalDAV discovery/import when adding a mail account; imports supported non-recurring events into calendar tables |
 | Recordings | Browser recording/import, chunked upload, tags, search/filter, audio streaming/download |
-| Backups/exports | JSON backup/import API plus async ZIP export jobs for selected sections |
+| Backups | Encrypted-by-default full/section backups, one-time recovery passwords, portable account credentials, background validation/restore, cancellation, and server-retained restore points |
 | Admin | Bootstrap admin, signup mode control, account approval/deactivation, role changes, password resets, user deletion |
 | Security baseline | HttpOnly cookie auth, CSRF tokens, 2FA, rate limiting, strict mail TLS by default, SSRF checks for mail/CalDAV hosts, sandboxed email HTML |
 | PWA | Installable frontend, app manifest/icons, service worker caching, background notification checks |
@@ -40,8 +46,8 @@ Browser -> Nginx :80 -> Node.js API :4000 -> MySQL
                                   -> /app/uploads volume
 ```
 
-The API auto-creates and migrates tables on startup. Uploaded files and generated
-exports are stored below `/app/uploads`, which is mounted as the `uploads_data`
+The API auto-creates and migrates tables on startup. Uploaded files, generated
+backups, and retained restore uploads are stored below `/app/uploads`, which is mounted as the `uploads_data`
 Docker volume by default.
 
 ## Deployment
@@ -62,6 +68,7 @@ Required `.env` values:
 | `UNIHUB_MYSQL_ROOT_PASSWORD` | MySQL root password |
 | `UNIHUB_JWT_SECRET` | Long random JWT signing secret |
 | `UNIHUB_ENCRYPTION_KEY` | Long random key used to encrypt stored mail/calendar credentials and 2FA secrets |
+| `UNIHUB_BACKUP_MASTER_KEY` | Optional separate key for automatic server-side backup unlocking; defaults to `UNIHUB_ENCRYPTION_KEY` |
 | `UNIHUB_BOOTSTRAP_ADMIN_EMAIL` | First admin email, used only when the users table is empty |
 | `UNIHUB_BOOTSTRAP_ADMIN_PASSWORD` | First admin password, minimum 12 characters |
 
@@ -102,10 +109,17 @@ Persistent data is split across:
 | `/app/uploads/attachments` | Email attachments and inline images |
 | `/app/uploads/mail-raw` | Raw `.eml` snapshots for imported messages |
 | `/app/uploads/recordings` | Uploaded/imported audio files |
-| `/app/uploads/backups` | Generated ZIP export jobs |
+| `/app/uploads/backups` | Generated backups and retained restore uploads |
 
-UniHub has manual export/import APIs, but it does not schedule database or volume
-backups for you. Back up both Docker volumes.
+UniHub creates manual restorable backups, but it does not schedule infrastructure
+backups for you. Back up both Docker volumes. Server-retained backups are
+convenient restore points, not protection from loss of the server or uploads volume.
+
+Encrypted backups use `.unihub-backup`, are portable to another UniHub server
+with their one-time recovery password, and can carry mail/calendar credentials
+without depending on the destination server's original encryption key. See the
+[Backup and Restore Guide](docs/BACKUP_RESTORE.md) before relying on backups for
+recovery.
 
 ## Local Development
 
@@ -151,7 +165,7 @@ node --test api/tests/*.test.js
 | [Contacts](docs/CONTACTS.md) | Contact schema, vCard import/export, duplicate merge |
 | [Calendar](docs/CALENDAR.md) | Calendar/to-do data model, local calendars, CalDAV import, endpoints |
 | [Recordings](docs/RECORDINGS.md) | Audio upload protocol, tags, storage, limits |
-| [Backup and Export](docs/BACKUP_EXPORT.md) | JSON backup/import and async ZIP export jobs |
+| [Backup and Restore Guide](docs/BACKUP_RESTORE.md) | Backup contents, encryption, recovery passwords, merge rules, background jobs, retention, API, and troubleshooting |
 
 ## Known Limitations
 
@@ -159,6 +173,7 @@ node --test api/tests/*.test.js
 - Rate limiting is in-memory and resets on container restart.
 - The app is designed for a single app container, not horizontal scaling.
 - No scheduled backup system is included.
+- The current backup payload uses ZIP32 internally; ZIP64 archives are not supported.
 - Email verification is not implemented for user signup.
 - Security/audit logging is minimal.
 - Mail sync does not propagate provider-side deletes and does not sync drafts.

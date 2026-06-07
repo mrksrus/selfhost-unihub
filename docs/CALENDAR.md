@@ -178,6 +178,26 @@ Recurring events and recurrence exceptions are skipped by the simple parser.
 - CalDAV host policy blocks private/local addresses unless explicitly trusted.
 - CalDAV credentials are encrypted with the shared `ENCRYPTION_KEY`.
 
+## Backup and Restore
+
+Calendar/ToDo backups include calendar accounts, calendars, events, ToDos,
+subtasks, attendees, external references, provider metadata, and supported
+account credentials.
+
+Same-name local calendars, including the default `Local` calendar, merge by
+default. Restore can instead create restored copies. Events and child rows are
+matched/remapped so subtasks, attendees, and external references continue to
+point to the correct restored event.
+
+Encrypted backups carry CalDAV passwords and stored access/refresh tokens in a
+portable protected credential bundle. The destination server re-encrypts them
+with its own `ENCRYPTION_KEY`.
+
+Calendar writes are temporarily read-only only while a restore containing the
+calendar section is queued/running.
+
+See [Backup and Restore Guide](BACKUP_RESTORE.md).
+
 ## Limitations
 
 - Calendar API account creation is local-only.

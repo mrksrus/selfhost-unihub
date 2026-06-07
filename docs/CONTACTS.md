@@ -151,6 +151,20 @@ frontend supports it.
 - State-changing routes require CSRF validation.
 - Import size is capped by the request handler.
 
+## Backup and Restore
+
+Contact backups preserve all supported contact fields, including secondary
+emails/phones, company, job title, notes, avatar URL, and favorite state.
+
+Restore matches contacts by ID, normalized email, then normalized name with
+phone/email fallback. Keep existing avoids duplicate creation by default;
+Replace matching updates matched rows; Keep both creates a new contact ID.
+
+The contact section is read-only only while a restore containing contacts is
+queued/running.
+
+See [Backup and Restore Guide](BACKUP_RESTORE.md).
+
 ## Limitations
 
 - vCard 3.0 is the primary supported format.

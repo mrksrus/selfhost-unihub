@@ -12,6 +12,7 @@ const { db } = require('../state');
 const { debugLog } = require('../logger');
 const { decrypt } = require('../security/encryption');
 const { TRUSTED_MAIL_HOSTS } = require('../config');
+const { isSectionRestoreActive } = require('./restore-locks');
 
 const writeFile = promisify(fs.writeFile);
 const mkdir = promisify(fs.mkdir);
@@ -1035,6 +1036,9 @@ async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SER
     );
     const account = accounts[0];
     if (!account) return { accountId: normalizedAccountId, skipped: true, reason: 'not_enabled_or_grace_pending' };
+    if (await isSectionRestoreActive(account.user_id, 'mail')) {
+      return { accountId: normalizedAccountId, skipped: true, reason: 'mail_restore_running' };
+    }
 
     const config = buildImapConnectionConfig(account);
     if (!config) return { accountId: normalizedAccountId, success: false, error: 'No password configured for this account' };
@@ -1629,6 +1633,9 @@ async function syncMailAccountOnce(accountId) {
     }
     
     const account = accounts[0];
+    if (await isSectionRestoreActive(account.user_id, 'mail')) {
+      return { success: false, skipped: true, error: 'Mail restore in progress' };
+    }
     const lastSyncedAt = account.last_synced_at;
     const syncFetchLimit = normalizeSyncFetchLimit(account.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT;
     const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;

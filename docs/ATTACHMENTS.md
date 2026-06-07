@@ -141,6 +141,26 @@ The mail sync service also stores raw imported email source below:
 Those `.eml` files are used by backup/restore workflows and are cleaned up during
 account deletion where applicable.
 
+## Backup and Restore
+
+Mail backups include:
+
+- each `email_attachments` metadata row
+- each present attachment file
+- each present raw `.eml` archive
+- SHA-256 metadata used during validation and copy
+
+Restore writes files into a job-specific directory below the appropriate user
+storage root, verifies checksums while copying, and stores the new path in the
+restored database row. Failed or cancelled restores remove files created by that
+job.
+
+An attachment or raw archive that was already missing when the backup was
+created is reported as a warning. A file declared present in the backup but
+missing or checksum-invalid causes validation to fail.
+
+See [Backup and Restore Guide](BACKUP_RESTORE.md).
+
 ## Limitations
 
 - No inline preview UI for regular attachments.

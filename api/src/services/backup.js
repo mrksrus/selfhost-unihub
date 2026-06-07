@@ -3,8 +3,13 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { StringDecoder } = require('string_decoder');
-const { finished, pipeline } = require('stream/promises');
+const { finished } = require('stream/promises');
 const { db } = require('../state');
+const { encrypt, decrypt } = require('../security/encryption');
+const {
+  encryptPortableCredentialBundle,
+  decryptPortableCredentialBundle,
+} = require('./backup-container');
 const { MAIL_RAW_STORAGE_ROOT, DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } = require('./mail');
 const { RECORDINGS_ROOT } = require('./recordings');
 
@@ -46,14 +51,14 @@ function sha256Buffer(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
-async function sha256File(filePath) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const stream = fs.createReadStream(filePath);
-    stream.on('data', chunk => hash.update(chunk));
-    stream.on('error', reject);
-    stream.on('end', () => resolve(hash.digest('hex')));
-  });
+async function sha256File(filePath, checkCancelled = null) {
+  const hash = crypto.createHash('sha256');
+  const stream = fs.createReadStream(filePath);
+  for await (const chunk of stream) {
+    if (checkCancelled) await checkCancelled();
+    hash.update(chunk);
+  }
+  return hash.digest('hex');
 }
 
 function isFileRangeSource(value) {
@@ -160,7 +165,14 @@ function isPathUnderRoot(filePath, rootPath) {
   return resolvedPath === resolvedRoot || resolvedPath.startsWith(`${resolvedRoot}${path.sep}`);
 }
 
-async function readBackupFileEntry({ kind, id, storagePath, rootPath, includeData = true }) {
+async function readBackupFileEntry({
+  kind,
+  id,
+  storagePath,
+  rootPath,
+  includeData = true,
+  checkCancelled = null,
+}) {
   if (!storagePath || !isPathUnderRoot(storagePath, rootPath)) return null;
   try {
     const sourcePath = path.resolve(storagePath);
@@ -170,7 +182,7 @@ async function readBackupFileEntry({ kind, id, storagePath, rootPath, includeDat
       kind,
       id,
       filename: path.basename(sourcePath),
-      sha256: await sha256File(sourcePath),
+      sha256: await sha256File(sourcePath, checkCancelled),
       size_bytes: stat.size,
     };
     if (includeData) {
@@ -237,7 +249,7 @@ function jsonBuffer(value) {
 
 async function writeBackupJsonFile(value, targetPath) {
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
-  const stream = fs.createWriteStream(targetPath, { flags: 'wx' });
+  const stream = fs.createWriteStream(targetPath, { flags: 'wx', mode: 0o600 });
   let pending = '';
   let streamError = null;
   stream.on('error', error => {
@@ -323,7 +335,11 @@ function normalizeArchiveFileEntry(file) {
   return metadata;
 }
 
-async function buildBackupForUser(userId, { includeFileData = true } = {}) {
+async function buildBackupForUser(userId, {
+  includeFileData = true,
+  portableCredentialKey = null,
+  checkCancelled = null,
+} = {}) {
   const [
     [userRows],
     [userSettings],
@@ -370,32 +386,38 @@ async function buildBackupForUser(userId, { includeFileData = true } = {}) {
 
   const fileEntries = [];
   for (const attachment of attachments || []) {
+    if (checkCancelled) await checkCancelled();
     const entry = await readBackupFileEntry({
       kind: 'email_attachment',
       id: attachment.id,
       storagePath: attachment.storage_path,
       rootPath: ATTACHMENTS_ROOT,
       includeData: includeFileData,
+      checkCancelled,
     });
     if (entry) fileEntries.push(entry);
   }
   for (const email of emails || []) {
+    if (checkCancelled) await checkCancelled();
     const entry = await readBackupFileEntry({
       kind: 'raw_email',
       id: email.id,
       storagePath: email.raw_storage_path,
       rootPath: MAIL_RAW_STORAGE_ROOT,
       includeData: includeFileData,
+      checkCancelled,
     });
     if (entry) fileEntries.push(entry);
   }
   for (const recording of recordings || []) {
+    if (checkCancelled) await checkCancelled();
     const entry = await readBackupFileEntry({
       kind: 'recording',
       id: recording.id,
       storagePath: recording.storage_path,
       rootPath: RECORDINGS_ROOT,
       includeData: includeFileData,
+      checkCancelled,
     });
     if (entry) fileEntries.push(entry);
   }
@@ -421,28 +443,83 @@ async function buildBackupForUser(userId, { includeFileData = true } = {}) {
     recording_tag_links: normalizeRows(recordingTagLinks),
   };
 
+  let portableCredentials = null;
+  if (portableCredentialKey) {
+    const credentialBundle = {
+      mail_accounts: [],
+      calendar_accounts: [],
+    };
+    for (const account of data.mail_accounts) {
+      const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
+      if (password !== null) {
+        credentialBundle.mail_accounts.push({ id: account.id, password });
+      }
+      account.encrypted_password = null;
+    }
+    for (const account of data.calendar_accounts) {
+      const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
+      const accessToken = account.encrypted_access_token ? decrypt(account.encrypted_access_token) : null;
+      const refreshToken = account.encrypted_refresh_token ? decrypt(account.encrypted_refresh_token) : null;
+      if (password !== null || accessToken !== null || refreshToken !== null) {
+        credentialBundle.calendar_accounts.push({
+          id: account.id,
+          password,
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+      }
+      account.encrypted_password = null;
+      account.encrypted_access_token = null;
+      account.encrypted_refresh_token = null;
+    }
+    portableCredentials = encryptPortableCredentialBundle(credentialBundle, portableCredentialKey);
+  }
+
   const backup = {
     app: 'unihub',
     version: BACKUP_VERSION,
     exported_at: new Date().toISOString(),
     warnings: [
       'Backups can contain encrypted account credentials and private email content. Store them securely.',
-      'Encrypted account credentials only restore on deployments using the same ENCRYPTION_KEY.',
+      portableCredentialKey
+        ? 'Account credentials are protected by this backup and can be re-encrypted by another UniHub server.'
+        : 'Encrypted account credentials only restore on deployments using the same ENCRYPTION_KEY.',
     ],
     data,
     files: fileEntries,
+    portable_credentials: portableCredentials,
   };
   return backup;
 }
 
-async function buildBackupArchiveEntriesForUser(userId, sections = 'full') {
-  const fullBackup = await buildBackupForUser(userId, { includeFileData: false });
+async function buildBackupArchiveEntriesForUser(userId, sections = 'full', {
+  portableCredentialKey = null,
+  checkCancelled = null,
+} = {}) {
+  const fullBackup = await buildBackupForUser(userId, {
+    includeFileData: false,
+    portableCredentialKey,
+    checkCancelled,
+  });
   const scopedBackup = scopeBackupForImport(fullBackup, sections);
+  if (portableCredentialKey && scopedBackup.portable_credentials) {
+    const credentials = decryptPortableCredentialBundle(
+      scopedBackup.portable_credentials,
+      portableCredentialKey
+    );
+    const mailAccountIds = new Set((scopedBackup.data.mail_accounts || []).map(account => account.id));
+    const calendarAccountIds = new Set((scopedBackup.data.calendar_accounts || []).map(account => account.id));
+    scopedBackup.portable_credentials = encryptPortableCredentialBundle({
+      mail_accounts: (credentials.mail_accounts || []).filter(item => mailAccountIds.has(item.id)),
+      calendar_accounts: (credentials.calendar_accounts || []).filter(item => calendarAccountIds.has(item.id)),
+    }, portableCredentialKey);
+  }
   const archiveFiles = [];
   const fileEntries = [];
   const missingFiles = [];
 
   for (const file of scopedBackup.files || []) {
+    if (checkCancelled) await checkCancelled();
     if (file?.missing) {
       missingFiles.push(`${file.kind}:${file.id}`);
       archiveFiles.push(normalizeArchiveFileEntry(file));
@@ -483,7 +560,7 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full') {
       generated_at: new Date().toISOString(),
       algorithm: 'sha256',
       entries: {
-        'data/backup.json': await sha256File(dataPath),
+        'data/backup.json': await sha256File(dataPath, checkCancelled),
       },
     };
     for (const file of archiveFiles) {
@@ -502,7 +579,9 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full') {
       missing_files: missingFiles,
       warnings: [
         ...(backupPayload.warnings || []),
-        'Mail/calendar credentials are encrypted and only restore on deployments with the same ENCRYPTION_KEY.',
+        portableCredentialKey
+          ? 'Mail/calendar credentials are portable only while this encrypted backup can be unlocked.'
+          : 'Mail/calendar credentials are encrypted and only restore on deployments with the same ENCRYPTION_KEY.',
         'Mail server deletion is always disabled after restore.',
       ],
     };
@@ -516,6 +595,88 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full') {
   } catch (error) {
     await fs.promises.rm(dataPath, { force: true }).catch(() => {});
     throw error;
+  }
+}
+
+function prepareCredentialsForRestore(backup, portableCredentialKey, warnings) {
+  const data = backup?.data || {};
+  const portableBundle = backup?.portable_credentials;
+  if (portableBundle) {
+    if (!portableCredentialKey) {
+      throw new Error('This backup contains protected portable credentials but no backup key is available.');
+    }
+    const credentials = decryptPortableCredentialBundle(portableBundle, portableCredentialKey);
+    const mailById = new Map((credentials.mail_accounts || []).map(item => [item.id, item]));
+    const calendarById = new Map((credentials.calendar_accounts || []).map(item => [item.id, item]));
+    for (const account of data.mail_accounts || []) {
+      const item = mailById.get(account.id);
+      account.encrypted_password = item?.password !== null && item?.password !== undefined
+        ? encrypt(item.password)
+        : null;
+      if (!account.encrypted_password) account.is_active = false;
+    }
+    for (const account of data.calendar_accounts || []) {
+      const item = calendarById.get(account.id);
+      account.encrypted_password = item?.password !== null && item?.password !== undefined
+        ? encrypt(item.password)
+        : null;
+      account.encrypted_access_token = item?.access_token !== null && item?.access_token !== undefined
+        ? encrypt(item.access_token)
+        : null;
+      account.encrypted_refresh_token = item?.refresh_token !== null && item?.refresh_token !== undefined
+        ? encrypt(item.refresh_token)
+        : null;
+      if (
+        account.provider !== 'local'
+        && !account.encrypted_password
+        && !account.encrypted_access_token
+        && !account.encrypted_refresh_token
+      ) {
+        account.is_active = false;
+      }
+    }
+    return;
+  }
+
+  let unavailableCredentials = 0;
+  for (const account of data.mail_accounts || []) {
+    if (!account.encrypted_password) {
+      account.is_active = false;
+      continue;
+    }
+    const password = decrypt(account.encrypted_password);
+    if (password === null) {
+      account.encrypted_password = null;
+      account.is_active = false;
+      unavailableCredentials += 1;
+    } else {
+      account.encrypted_password = encrypt(password);
+    }
+  }
+  for (const account of data.calendar_accounts || []) {
+    for (const field of ['encrypted_password', 'encrypted_access_token', 'encrypted_refresh_token']) {
+      if (!account[field]) continue;
+      const value = decrypt(account[field]);
+      if (value === null) {
+        account[field] = null;
+        unavailableCredentials += 1;
+      } else {
+        account[field] = encrypt(value);
+      }
+    }
+    if (
+      account.provider !== 'local'
+      && !account.encrypted_password
+      && !account.encrypted_access_token
+      && !account.encrypted_refresh_token
+    ) {
+      account.is_active = false;
+    }
+  }
+  if (unavailableCredentials > 0) {
+    warnings.push(
+      `${unavailableCredentials} legacy account credential value(s) could not be decrypted on this server. Affected accounts were restored inactive.`
+    );
   }
 }
 
@@ -914,12 +1075,13 @@ async function findExistingRecordingForRestore(connection, row, userId, restored
   return existingByShape[0]?.id || null;
 }
 
-async function writeFileSource(targetPath, source, expectedHash) {
+async function writeFileSource(targetPath, source, expectedHash, { checkCancelled = null } = {}) {
+  if (checkCancelled) await checkCancelled();
   if (Buffer.isBuffer(source)) {
     if (sha256Buffer(source) !== expectedHash) {
       throw new Error('Checksum mismatch while restoring backup file.');
     }
-    await fs.promises.writeFile(targetPath, source, { flag: 'wx' });
+    await fs.promises.writeFile(targetPath, source, { flag: 'wx', mode: 0o600 });
     return;
   }
   if (!isFileRangeSource(source)) {
@@ -927,12 +1089,22 @@ async function writeFileSource(targetPath, source, expectedHash) {
   }
 
   const hash = crypto.createHash('sha256');
-  const output = fs.createWriteStream(targetPath, { flags: 'wx' });
+  const output = fs.createWriteStream(targetPath, { flags: 'wx', mode: 0o600 });
   const input = createFileRangeStream(source);
   try {
     if (input) {
-      input.on('data', chunk => hash.update(chunk));
-      await pipeline(input, output);
+      for await (const chunk of input) {
+        if (checkCancelled) await checkCancelled();
+        hash.update(chunk);
+        if (!output.write(chunk)) {
+          await new Promise((resolve, reject) => {
+            output.once('drain', resolve);
+            output.once('error', reject);
+          });
+        }
+      }
+      output.end();
+      await finished(output);
     } else {
       output.end();
       await finished(output);
@@ -952,6 +1124,8 @@ async function writeFileSource(targetPath, source, expectedHash) {
 async function writeRestoredFile(userId, file, {
   fileBuffersByPath = null,
   fileSourcesByPath = fileBuffersByPath,
+  restoreJobId = null,
+  checkCancelled = null,
 } = {}) {
   if (file.missing) return null;
   const source = file.archive_path && fileSourcesByPath
@@ -961,14 +1135,16 @@ async function writeRestoredFile(userId, file, {
   const root = file.kind === 'raw_email'
     ? MAIL_RAW_STORAGE_ROOT
     : file.kind === 'recording' ? RECORDINGS_ROOT : ATTACHMENTS_ROOT;
-  const targetDir = path.join(root, String(userId));
+  const targetDir = restoreJobId
+    ? path.join(root, String(userId), 'restores', sanitizeArchivePathPart(restoreJobId))
+    : path.join(root, String(userId));
   const safeId = sanitizeArchivePathPart(file.id || crypto.randomUUID());
   const safeFilename = `${safeId}-${sanitizeArchivePathPart(file.filename || safeId)}`;
   await fs.promises.mkdir(targetDir, { recursive: true });
   let targetPath = path.join(targetDir, safeFilename);
   for (let attempt = 1; attempt < 100; attempt += 1) {
     try {
-      await writeFileSource(targetPath, source, file.sha256);
+      await writeFileSource(targetPath, source, file.sha256, { checkCancelled });
       return targetPath;
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error;
@@ -977,7 +1153,7 @@ async function writeRestoredFile(userId, file, {
       targetPath = path.join(targetDir, `${base}-${attempt}${ext}`);
     }
   }
-  await writeFileSource(targetPath, source, file.sha256);
+  await writeFileSource(targetPath, source, file.sha256, { checkCancelled });
   return targetPath;
 }
 
@@ -1313,6 +1489,11 @@ async function importBackupForUser(userId, backup, {
   credentials_mode = 'keep_existing',
   fileBuffersByPath = null,
   fileSourcesByPath = fileBuffersByPath,
+  portableCredentialKey = null,
+  checkCancelled = null,
+  onProgress = null,
+  restoreJobId = null,
+  beforeCommit = null,
 } = {}) {
   const conflictMode = normalizeConflictMode(conflict_mode);
   const calendarMode = normalizeCalendarMode(calendar_mode);
@@ -1340,13 +1521,22 @@ async function importBackupForUser(userId, backup, {
     };
   }
 
+  prepareCredentialsForRestore(scopedBackup, portableCredentialKey, validation.warnings);
   const data = scopedBackup.data || {};
   const restoredPaths = new Map();
   const createdRestorePaths = [];
-  for (const file of scopedBackup.files || []) {
+  const scopedFiles = scopedBackup.files || [];
+  for (let fileIndex = 0; fileIndex < scopedFiles.length; fileIndex += 1) {
+    const file = scopedFiles[fileIndex];
+    if (checkCancelled) await checkCancelled();
+    if (onProgress) {
+      await onProgress('files', 40 + Math.round((fileIndex / Math.max(scopedFiles.length, 1)) * 5));
+    }
     const restoredPath = await writeRestoredFile(userId, file, {
       fileBuffersByPath,
       fileSourcesByPath,
+      restoreJobId,
+      checkCancelled,
     });
     if (restoredPath) {
       restoredPaths.set(`${file.kind}:${file.id}`, restoredPath);
@@ -1364,8 +1554,15 @@ async function importBackupForUser(userId, backup, {
     const emailIdMap = new Map();
     const recordingIdMap = new Map();
     const recordingTagIdMap = new Map();
+    const checkRestoreCancelled = async () => {
+      if (checkCancelled) await checkCancelled();
+    };
+    const reportRestoreProgress = async (phase, progress) => {
+      if (onProgress) await onProgress(phase, progress);
+    };
 
     const backupUser = data.user;
+    await reportRestoreProgress('settings', 46);
     if (backupUser && typeof backupUser === 'object' && conflictMode === 'replace') {
       await connection.execute(
         `UPDATE users
@@ -1378,6 +1575,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const setting of data.user_settings || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(setting, userId);
       if (conflictMode === 'keep_existing') {
         const [existingSetting] = await connection.execute(
@@ -1395,6 +1593,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const folder of data.mail_folders || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(folder, userId);
       if (conflictMode === 'keep_existing') {
         const [existingFolder] = await connection.execute(
@@ -1411,7 +1610,9 @@ async function importBackupForUser(userId, backup, {
       );
     }
 
+    await reportRestoreProgress('contacts', 50);
     for (const contact of data.contacts || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(contact, userId);
       const existingContactId = await findExistingContactForRestore(connection, row, userId);
       const targetContactId = chooseTargetId(row.id, existingContactId, conflictMode);
@@ -1424,7 +1625,9 @@ async function importBackupForUser(userId, backup, {
       );
     }
 
+    await reportRestoreProgress('calendar', 55);
     for (const account of data.calendar_accounts || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(account, userId);
       const existingAccountId = await findExistingCalendarAccountForRestore(connection, row, userId);
       const targetAccountId = chooseTargetId(row.id, existingAccountId, conflictMode, { canKeepBoth: true });
@@ -1483,6 +1686,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const calendar of data.calendar_calendars || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(calendar, userId);
       const targetAccountId = calendarAccountIdMap.get(row.account_id) || row.account_id;
       const existingCalendarId = await findExistingCalendarForRestore(connection, row, userId, targetAccountId, calendarMode);
@@ -1502,6 +1706,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const event of data.calendar_events || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(event, userId);
       const targetCalendarId = row.calendar_id ? calendarIdMap.get(row.calendar_id) || row.calendar_id : null;
       const existingEventId = await findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId);
@@ -1517,6 +1722,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const subtask of data.calendar_event_subtasks || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(subtask, userId);
       const targetEventId = calendarEventIdMap.get(row.event_id) || row.event_id;
       const [existingSubtask] = await connection.execute(
@@ -1534,6 +1740,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const attendee of data.calendar_event_attendees || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(attendee, userId);
       const targetEventId = calendarEventIdMap.get(row.event_id) || row.event_id;
       if (conflictMode === 'keep_existing') {
@@ -1553,6 +1760,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const ref of data.calendar_event_external_refs || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(ref, userId);
       const targetEventId = calendarEventIdMap.get(row.event_id) || row.event_id;
       const targetCalendarId = calendarIdMap.get(row.calendar_id) || row.calendar_id;
@@ -1573,7 +1781,9 @@ async function importBackupForUser(userId, backup, {
       );
     }
 
+    await reportRestoreProgress('mail', 70);
     for (const account of data.mail_accounts || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(account, userId);
       const [existingByEmail] = await connection.execute(
         'SELECT id FROM mail_accounts WHERE user_id = ? AND email_address = ? LIMIT 1',
@@ -1605,11 +1815,11 @@ async function importBackupForUser(userId, backup, {
            SET email_address = ?, display_name = ?, provider = ?, username = ?, imap_host = ?, imap_port = ?,
                smtp_host = ?, smtp_port = ?, encrypted_password = CASE WHEN ? THEN ? ELSE encrypted_password END,
                sync_fetch_limit = ?, allow_self_signed = ?,
-               trusted_imap_fingerprint256 = ?, trusted_smtp_fingerprint256 = ?, is_active = ?, last_synced_at = ?,
+               trusted_imap_fingerprint256 = ?, trusted_smtp_fingerprint256 = ?, is_active = COALESCE(?, is_active), last_synced_at = ?,
                delete_emails_on_server = FALSE, server_delete_enabled_at = NULL,
                server_delete_grace_until = NULL, server_delete_last_run_at = NULL
            WHERE id = ? AND user_id = ?`,
-          [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, shouldRestoreCredentials ? 1 : 0, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, normalizeMysqlDateTime(row.last_synced_at), targetAccountId, userId]
+          [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, shouldRestoreCredentials ? 1 : 0, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, shouldRestoreCredentials ? (row.is_active === false ? 0 : 1) : null, normalizeMysqlDateTime(row.last_synced_at), targetAccountId, userId]
         );
       } else {
         await connection.execute(
@@ -1625,6 +1835,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const rule of data.mail_sender_rules || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(rule, userId);
       const targetMailAccountId = row.mail_account_id ? mailAccountIdMap.get(row.mail_account_id) || row.mail_account_id : null;
       const [existingRule] = await connection.execute(
@@ -1648,6 +1859,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const email of data.emails || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(email, userId);
       const targetMailAccountId = mailAccountIdMap.get(row.mail_account_id) || row.mail_account_id;
       const existingEmailId = await findExistingEmailForRestore(connection, row, userId, targetMailAccountId);
@@ -1664,6 +1876,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const attachment of data.email_attachments || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(attachment, userId);
       const targetEmailId = emailIdMap.get(row.email_id) || row.email_id;
       const existingAttachmentId = await findExistingAttachmentForRestore(connection, row, userId, targetEmailId);
@@ -1679,6 +1892,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const score of data.mail_email_scores || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(score, userId);
       const targetEmailId = emailIdMap.get(row.email_id) || row.email_id;
       if (conflictMode === 'keep_existing') {
@@ -1728,7 +1942,9 @@ async function importBackupForUser(userId, backup, {
       );
     }
 
+    await reportRestoreProgress('recordings', 90);
     for (const recording of data.recordings || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(recording, userId);
       const storagePath = restoredPaths.get(`recording:${row.id}`);
       if (!storagePath) continue;
@@ -1772,6 +1988,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const tag of data.recording_tags || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(tag, userId);
       if (!row.name) continue;
       const [existingByName] = await connection.execute(
@@ -1790,6 +2007,7 @@ async function importBackupForUser(userId, backup, {
     }
 
     for (const link of data.recording_tag_links || []) {
+      await checkRestoreCancelled();
       const row = overwriteUserId(link, userId);
       if (!recordingIdMap.has(row.recording_id) || !recordingTagIdMap.has(row.tag_id)) continue;
       const targetRecordingId = recordingIdMap.get(row.recording_id);
@@ -1802,8 +2020,7 @@ async function importBackupForUser(userId, backup, {
       );
     }
 
-    await connection.commit();
-    return {
+    const result = {
       dry_run: false,
       valid: true,
       warnings: validation.warnings,
@@ -1817,6 +2034,10 @@ async function importBackupForUser(userId, backup, {
         credentials_mode: credentialsMode,
       },
     };
+    if (onProgress) await onProgress('commit', 99);
+    if (beforeCommit) await beforeCommit(connection, result);
+    await connection.commit();
+    return result;
   } catch (error) {
     await connection.rollback();
     await Promise.all(createdRestorePaths.map(filePath => fs.promises.rm(filePath, { force: true }).catch(() => {})));
@@ -1869,4 +2090,5 @@ module.exports = {
   importBackupForUser,
   importBackupZipBufferForUser,
   importBackupZipFileForUser,
+  prepareCredentialsForRestore,
 };
