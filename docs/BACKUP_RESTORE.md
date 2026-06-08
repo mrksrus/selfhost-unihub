@@ -175,6 +175,10 @@ Job states include:
 The Data Management page shows the phase, progress, file size, encryption state,
 start time, finish time, and errors.
 
+Backup-job API responses expose `recovery_password_available`,
+`recovery_password_revealed`, and `server_unlock_available` separately so clients
+do not infer one-time password state from a missing ciphertext value.
+
 Stop requests are cooperative. UniHub checks cancellation while collecting
 files, hashing, writing the ZIP, and encrypting chunks. Partial output is
 removed.
@@ -452,9 +456,10 @@ permissions where the host filesystem honors POSIX modes.
 - Download important backups off-server.
 - Back up MySQL and `/app/uploads` independently.
 
-The upload request cap is 5 GiB. The current inner archive is a stored ZIP32
-format, so practical restorable backups must remain below ZIP32 size/offset and
-entry-count limits. ZIP64 is not currently supported.
+The upload request cap is 3900 MiB. The current inner archive is a stored ZIP32
+format. Backup creation rejects per-file size, archive size/offset, and
+entry-count overflow before writing invalid ZIP metadata. ZIP64 is not currently
+supported.
 
 ## Troubleshooting
 

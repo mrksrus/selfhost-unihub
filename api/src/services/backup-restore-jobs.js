@@ -16,6 +16,7 @@ const {
   unwrapDataKeyFromServer,
   wrapDataKeyForServer,
 } = require('./backup-container');
+const { pruneArchiveKeyIfUnreferenced } = require('./backup-archive-keys');
 const {
   isAnyMailAccountSyncRunning,
   isAnyMailServerDeleteRunning,
@@ -313,13 +314,7 @@ async function cleanupSuccessfulUpload(job) {
     await fs.promises.rm(job.archive_path, { force: true }).catch(() => {});
   }
   await updateRestoreJob(job.id, { archive_path: null, expires_at: null });
-  if (job.backup_uuid) {
-    await db.execute(
-      `DELETE FROM backup_archive_keys
-       WHERE backup_uuid = ? AND user_id = ? AND export_job_id IS NULL`,
-      [job.backup_uuid, job.user_id]
-    );
-  }
+  await pruneArchiveKeyIfUnreferenced(job.user_id, job.backup_uuid);
 }
 
 async function discardInvalidUpload(job) {
@@ -327,14 +322,8 @@ async function discardInvalidUpload(job) {
   if (job.archive_path) {
     await fs.promises.rm(job.archive_path, { force: true }).catch(() => {});
   }
-  if (job.backup_uuid) {
-    await db.execute(
-      `DELETE FROM backup_archive_keys
-       WHERE backup_uuid = ? AND user_id = ? AND export_job_id IS NULL`,
-      [job.backup_uuid, job.user_id]
-    );
-  }
   await updateRestoreJob(job.id, { archive_path: null, expires_at: null });
+  await pruneArchiveKeyIfUnreferenced(job.user_id, job.backup_uuid);
 }
 
 async function runRestoreJob(jobId) {
@@ -528,17 +517,20 @@ async function unlockRestoreJob(userId, jobId, password) {
   }
   await db.execute(
     `INSERT INTO backup_archive_keys
-       (backup_uuid, user_id, restore_job_id, server_wrapped_key, expires_at)
-     VALUES (?, ?, ?, ?, ?)
+       (backup_uuid, user_id, server_wrapped_key, expires_at)
+     VALUES (?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
        user_id = VALUES(user_id),
-       restore_job_id = VALUES(restore_job_id),
+       restore_job_id = NULL,
        server_wrapped_key = VALUES(server_wrapped_key),
-       expires_at = VALUES(expires_at)`,
+       expires_at = CASE
+         WHEN export_job_id IS NULL
+           THEN GREATEST(COALESCE(expires_at, VALUES(expires_at)), VALUES(expires_at))
+         ELSE expires_at
+       END`,
     [
       job.backup_uuid,
       userId,
-      jobId,
       wrapDataKeyForServer(unlocked.dataKey, job.backup_uuid),
       job.expires_at,
     ]
@@ -622,14 +614,8 @@ async function deleteRestoreJob(userId, jobId) {
   if (job.source_type === 'upload' && job.archive_path) {
     await fs.promises.rm(job.archive_path, { force: true }).catch(() => {});
   }
-  if (job.backup_uuid) {
-    await db.execute(
-      `DELETE FROM backup_archive_keys
-       WHERE backup_uuid = ? AND user_id = ? AND export_job_id IS NULL`,
-      [job.backup_uuid, userId]
-    );
-  }
   await db.execute('DELETE FROM backup_restore_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
+  await pruneArchiveKeyIfUnreferenced(userId, job.backup_uuid);
   return { deleted: true };
 }
 
@@ -678,18 +664,12 @@ async function cleanupExpiredRestoreArchives() {
   );
   for (const job of rows || []) {
     await fs.promises.rm(job.archive_path, { force: true }).catch(() => {});
-    if (job.backup_uuid) {
-      await db.execute(
-        `DELETE FROM backup_archive_keys
-         WHERE backup_uuid = ? AND user_id = ? AND export_job_id IS NULL`,
-        [job.backup_uuid, job.user_id]
-      );
-    }
     await updateRestoreJob(job.id, {
       status: 'expired',
       phase: 'expired',
       archive_path: null,
     });
+    await pruneArchiveKeyIfUnreferenced(job.user_id, job.backup_uuid);
   }
   return rows.length;
 }

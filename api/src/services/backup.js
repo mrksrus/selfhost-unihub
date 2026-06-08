@@ -552,6 +552,7 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full', {
     warnings: scopedBackup.warnings,
     data: scopedBackup.data,
     files: archiveFiles,
+    portable_credentials: scopedBackup.portable_credentials || null,
   };
   const dataPath = path.join(os.tmpdir(), `unihub-backup-data-${crypto.randomUUID()}.json`);
   try {

@@ -116,7 +116,7 @@ Important:
 
 - Existing restorable UniHub `.zip` backups remain accepted.
 - Encrypted `.unihub-backup` files are portable using their recovery password.
-- The upload request limit is 5 GiB.
+- The upload request limit is 3900 MiB.
 - The inner archive currently uses ZIP32. ZIP64 is not yet supported, so very
   large backups may still exceed archive size, offset, or entry-count limits.
 - Only one restore is processed globally at a time.

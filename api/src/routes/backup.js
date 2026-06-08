@@ -104,8 +104,16 @@ module.exports = {
       const job = await getDataExportJob(userId, jobId);
       if (!job) return { error: 'Backup job not found', status: 404 };
       if (job.status !== 'ready' || !job.file_path) return { error: 'Backup is not ready', status: 409 };
-      if (job.encryption_enabled && job.recovery_password_available) {
-        return { error: 'Reveal and save the recovery password before the first download', status: 409 };
+      if (job.encryption_enabled) {
+        if (job.recovery_password_available) {
+          return { error: 'Reveal and save the recovery password before the first download', status: 409 };
+        }
+        if (!job.recovery_password_revealed) {
+          return {
+            error: 'Recovery password metadata is missing. Create a new encrypted backup before downloading.',
+            status: 409,
+          };
+        }
       }
       if (!isBackupPathUnderRoot(job.file_path)) return { error: 'Invalid backup path', status: 500 };
       const filePath = path.resolve(job.file_path);
@@ -135,9 +143,12 @@ module.exports = {
     try {
       await connection.beginTransaction();
       const [rows] = await connection.execute(
-        `SELECT jobs.backup_uuid, jobs.status, keys.recovery_password_ciphertext
+        `SELECT jobs.backup_uuid, jobs.status,
+                archive_keys.recovery_password_ciphertext,
+                archive_keys.recovery_password_revealed_at,
+                archive_keys.server_wrapped_key
          FROM data_export_jobs jobs
-         INNER JOIN backup_archive_keys keys ON keys.export_job_id = jobs.id
+         LEFT JOIN backup_archive_keys archive_keys ON archive_keys.export_job_id = jobs.id
          WHERE jobs.id = ? AND jobs.user_id = ?
          FOR UPDATE`,
         [jobId, userId]
@@ -153,7 +164,9 @@ module.exports = {
       }
       if (!row.recovery_password_ciphertext) {
         await connection.rollback();
-        return { error: 'Recovery password has already been revealed', status: 410 };
+        return row.recovery_password_revealed_at
+          ? { error: 'Recovery password has already been revealed', status: 410 }
+          : { error: 'Recovery password metadata is missing. Create a new encrypted backup.', status: 409 };
       }
       const password = revealProtectedRecoveryPassword(
         row.recovery_password_ciphertext,

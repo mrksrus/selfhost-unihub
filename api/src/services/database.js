@@ -76,6 +76,14 @@ async function ensureColumn(tableName, columnName, alterSql, { required = false 
   }
 }
 
+async function ensureIndex(tableName, indexName, alterSql) {
+  const [indexes] = await db.execute(`SHOW INDEX FROM ${quoteIdentifier(tableName)}`);
+  if (Array.isArray(indexes) && indexes.some(index => index.Key_name === indexName)) return false;
+  await db.execute(alterSql);
+  console.log(`[DB] Added index ${tableName}.${indexName}`);
+  return true;
+}
+
 async function initDatabase() {
   if (isPlaceholderSecret(JWT_SECRET)) {
     console.error('✗ Missing or placeholder JWT_SECRET. Set a strong random JWT secret before starting.');
@@ -1015,6 +1023,17 @@ async function ensureSchema() {
     INDEX idx_backup_archive_keys_restore (restore_job_id),
     INDEX idx_backup_archive_keys_expiry (expires_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  await ensureIndex(
+    'data_export_jobs',
+    'idx_data_export_jobs_user_backup',
+    'ALTER TABLE data_export_jobs ADD INDEX idx_data_export_jobs_user_backup (user_id, backup_uuid)'
+  );
+  await ensureIndex(
+    'backup_restore_jobs',
+    'idx_backup_restore_jobs_user_backup',
+    'ALTER TABLE backup_restore_jobs ADD INDEX idx_backup_restore_jobs_user_backup (user_id, backup_uuid)'
+  );
   
   // Initialize signup mode with a secure default. Existing installs that still
   // have the old implicit "open" default are closed once, then admin choices

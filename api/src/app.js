@@ -23,7 +23,7 @@ async function start() {
   try {
     const resumedBackupJobs = await resumePendingDataExportJobs();
     if (resumedBackupJobs > 0) {
-      console.log(`✓ Resumed ${resumedBackupJobs} pending backup job(s)`);
+      console.log(`✓ Reconciled ${resumedBackupJobs} pending backup job(s)`);
     }
   } catch (error) {
     console.warn('[BACKUP] Could not resume pending backup jobs:', error.message);

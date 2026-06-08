@@ -13,6 +13,7 @@ import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/lib/api';
+import { getBackupDownloadAction } from '@/lib/backup';
 import { calendarQueryKeys } from '@/lib/calendar-api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import {
@@ -109,6 +110,8 @@ type BackupJob = {
   encryption_enabled: boolean;
   backup_uuid: string | null;
   recovery_password_available: boolean;
+  recovery_password_revealed: boolean;
+  server_unlock_available: boolean;
   error: string | null;
   created_at: string;
   updated_at: string;
@@ -790,10 +793,19 @@ const Settings = () => {
   };
 
   const handleBackupDownload = (job: BackupJob) => {
-    if (job.encryption_enabled && job.recovery_password_available) {
+    const action = getBackupDownloadAction(job);
+    if (action === 'reveal_password') {
       setRecoveryDialogJob(job);
       setRecoveryPassword(null);
       setRecoveryPasswordSaved(false);
+      return;
+    }
+    if (action === 'missing_password_metadata') {
+      toast({
+        title: 'Recovery password unavailable',
+        description: 'This encrypted backup is missing its recovery-password metadata. Create a new backup.',
+        variant: 'destructive',
+      });
       return;
     }
     startBackupDownload(job);

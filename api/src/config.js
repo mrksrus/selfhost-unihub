@@ -16,6 +16,7 @@ const TRUSTED_MAIL_HOSTS = (process.env.TRUSTED_MAIL_HOSTS || '')
 const CALENDAR_MULTI_ENABLED = process.env.CALENDAR_MULTI_ENABLED !== 'false';
 const AUTH_COOKIE_NAME = 'auth-token';
 const MIN_PASSWORD_LENGTH = 12;
+const BACKUP_UPLOAD_MAX_SIZE = 3900 * 1024 * 1024;
 
 module.exports = {
   PORT,
@@ -30,4 +31,5 @@ module.exports = {
   CALENDAR_MULTI_ENABLED,
   AUTH_COOKIE_NAME,
   MIN_PASSWORD_LENGTH,
+  BACKUP_UPLOAD_MAX_SIZE,
 };

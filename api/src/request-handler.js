@@ -11,8 +11,8 @@ const {
 } = require('./http/request');
 const { parseSingleByteRange } = require('./http/range');
 const { getActiveRestoreSections } = require('./services/restore-locks');
+const { BACKUP_UPLOAD_MAX_SIZE } = require('./config');
 
-const BACKUP_UPLOAD_MAX_SIZE = 5 * 1024 * 1024 * 1024;
 const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
 
 function getRestoreSectionForWrite(pathname) {

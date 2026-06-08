@@ -9,10 +9,17 @@ const {
   wrapDataKeyForServer,
   protectRecoveryPassword,
 } = require('./backup-container');
+const { pruneArchiveKeyIfUnreferenced } = require('./backup-archive-keys');
 
 const BACKUPS_ROOT = '/app/uploads/backups';
 const activeExportJobs = new Set();
 const EXPORT_SECTIONS = new Set(['contacts', 'calendar', 'todo', 'mail', 'recordings', 'settings']);
+const ZIP32_MAX_VALUE = 0xffffffff;
+const ZIP32_MAX_ENTRIES = 0xfffe;
+const ZIP32_MAX_FILENAME_BYTES = 0xffff;
+let exportWorkerRunning = false;
+let exportWorkerScheduled = false;
+let exportWorkerNeedsRun = false;
 
 class BackupJobCancelledError extends Error {
   constructor() {
@@ -107,6 +114,10 @@ async function prepareZipEntry(entry, checkCancelled = null) {
   const filePath = entry.filePath ? path.resolve(entry.filePath) : null;
   if (filePath) {
     const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) throw new Error(`Backup source is not a regular file: ${name}`);
+    if (!Number.isSafeInteger(stat.size) || stat.size > ZIP32_MAX_VALUE) {
+      throw new Error(`Backup file ${name} exceeds the ZIP32 per-file size limit.`);
+    }
     return {
       name,
       filePath,
@@ -116,6 +127,9 @@ async function prepareZipEntry(entry, checkCancelled = null) {
     };
   }
   const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(String(entry.data || ''), 'utf8');
+  if (data.length > ZIP32_MAX_VALUE) {
+    throw new Error(`Backup entry ${name} exceeds the ZIP32 per-file size limit.`);
+  }
   return {
     name,
     data,
@@ -129,6 +143,9 @@ async function writeZip(entries, targetPath, {
   checkCancelled = null,
   onProgress = null,
 } = {}) {
+  if (entries.length > ZIP32_MAX_ENTRIES) {
+    throw new Error(`Backup contains ${entries.length} entries, exceeding the ZIP32 entry limit.`);
+  }
   await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
   const prepared = [];
   for (let index = 0; index < entries.length; index += 1) {
@@ -144,8 +161,14 @@ async function writeZip(entries, targetPath, {
       if (checkCancelled) await checkCancelled();
       const entry = prepared[index];
       const filename = Buffer.from(entry.name, 'utf8');
+      if (filename.length > ZIP32_MAX_FILENAME_BYTES) {
+        throw new Error(`Backup entry name ${entry.name} exceeds the ZIP32 filename limit.`);
+      }
       const { dosTime, dosDate } = dosDateTime(entry.modifiedAt);
       const localOffset = writer.offset();
+      if (localOffset > ZIP32_MAX_VALUE) {
+        throw new Error('Backup exceeds the ZIP32 archive offset limit.');
+      }
       const local = Buffer.alloc(30);
       local.writeUInt32LE(0x04034b50, 0);
       local.writeUInt16LE(20, 4);
@@ -162,6 +185,9 @@ async function writeZip(entries, targetPath, {
       await writer.write(filename);
       if (entry.filePath) await writer.pipeFrom(entry.filePath, checkCancelled);
       else await writer.write(entry.data);
+      if (writer.offset() > ZIP32_MAX_VALUE) {
+        throw new Error('Backup exceeds the ZIP32 archive size limit.');
+      }
       centralDirectory.push({ entry, filename, dosTime, dosDate, localOffset });
       if (onProgress) await onProgress('write', index + 1, prepared.length);
     }
@@ -190,6 +216,13 @@ async function writeZip(entries, targetPath, {
       await writer.write(item.filename);
     }
     const centralSize = writer.offset() - centralStart;
+    if (
+      centralStart > ZIP32_MAX_VALUE
+      || centralSize > ZIP32_MAX_VALUE
+      || writer.offset() + 22 > ZIP32_MAX_VALUE
+    ) {
+      throw new Error('Backup exceeds the ZIP32 archive size or central-directory limit.');
+    }
     const end = Buffer.alloc(22);
     end.writeUInt32LE(0x06054b50, 0);
     end.writeUInt16LE(0, 4);
@@ -250,6 +283,8 @@ function serializeJob(row) {
     encryption_enabled: Boolean(row.encryption_enabled),
     backup_uuid: row.backup_uuid || null,
     recovery_password_available: Boolean(row.recovery_password_available),
+    recovery_password_revealed: Boolean(row.recovery_password_revealed),
+    server_unlock_available: Boolean(row.server_unlock_available),
     error: row.error || null,
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
@@ -426,34 +461,92 @@ async function startDataExportJob(userId, { sections, scope, encrypt = true } = 
       encrypt === false ? 0 : 1,
     ]
   );
-  setTimeout(() => {
-    runDataExportJob(jobId).catch((error) => console.error('[BACKUP] Job runner crashed:', error));
-  }, 20);
+  scheduleDataExportWorker();
   const [rows] = await db.execute('SELECT * FROM data_export_jobs WHERE id = ? AND user_id = ? LIMIT 1', [jobId, userId]);
   return serializeJob(rows[0]);
 }
 
-async function resumePendingDataExportJobs() {
-  const [rows] = await db.execute(
-    `SELECT id FROM data_export_jobs
-     WHERE status IN ('queued', 'running', 'cancelling')
-     ORDER BY created_at ASC
-     LIMIT 25`
-  );
-  for (const row of rows || []) {
-    setTimeout(() => {
-      runDataExportJob(row.id).catch((error) => console.error('[BACKUP] Resumed job runner crashed:', error));
-    }, 20);
+async function pumpDataExportJobs(runJob = runDataExportJob) {
+  if (exportWorkerRunning) {
+    exportWorkerNeedsRun = true;
+    return;
   }
-  return rows.length;
+  exportWorkerRunning = true;
+  try {
+    while (true) {
+      const [rows] = await db.execute(
+        `SELECT id FROM data_export_jobs
+         WHERE status = 'queued'
+         ORDER BY created_at ASC
+         LIMIT 1`
+      );
+      if (!rows.length) break;
+      await runJob(rows[0].id);
+    }
+  } finally {
+    exportWorkerRunning = false;
+    if (exportWorkerNeedsRun) {
+      exportWorkerNeedsRun = false;
+      scheduleDataExportWorker();
+    }
+  }
+}
+
+function scheduleDataExportWorker() {
+  exportWorkerNeedsRun = true;
+  if (exportWorkerRunning || exportWorkerScheduled) return;
+  exportWorkerScheduled = true;
+  setTimeout(() => {
+    exportWorkerScheduled = false;
+    exportWorkerNeedsRun = false;
+    pumpDataExportJobs().catch((error) => console.error('[BACKUP] Export worker crashed:', error));
+  }, 20);
+}
+
+async function resumePendingDataExportJobs({ schedule = true } = {}) {
+  const [pendingRows] = await db.execute(
+    `SELECT COUNT(*) AS pending_jobs
+     FROM data_export_jobs
+     WHERE status IN ('queued', 'running', 'cancelling')`
+  );
+  await db.execute(
+    `DELETE archive_keys
+     FROM backup_archive_keys archive_keys
+     INNER JOIN data_export_jobs jobs ON jobs.id = archive_keys.export_job_id
+     WHERE jobs.status IN ('running', 'cancelling')`
+  );
+  await db.execute(
+    `UPDATE data_export_jobs
+     SET status = 'cancelled',
+         phase = 'cancelled',
+         progress = 100,
+         error = NULL,
+         completed_at = UTC_TIMESTAMP()
+     WHERE status IN ('queued', 'running', 'cancelling')
+       AND (cancel_requested = TRUE OR status = 'cancelling')`
+  );
+  await db.execute(
+    `UPDATE data_export_jobs
+     SET status = 'queued',
+         phase = 'queued',
+         progress = 0,
+         error = NULL,
+         cancel_requested = FALSE,
+         completed_at = NULL
+     WHERE status = 'running'`
+  );
+  if (schedule) scheduleDataExportWorker();
+  return Number(pendingRows[0]?.pending_jobs) || 0;
 }
 
 async function listDataExportJobs(userId) {
   const [rows] = await db.execute(
     `SELECT jobs.*,
-            (keys.recovery_password_ciphertext IS NOT NULL) AS recovery_password_available
+            (archive_keys.recovery_password_ciphertext IS NOT NULL) AS recovery_password_available,
+            (archive_keys.recovery_password_revealed_at IS NOT NULL) AS recovery_password_revealed,
+            (archive_keys.server_wrapped_key IS NOT NULL) AS server_unlock_available
      FROM data_export_jobs jobs
-     LEFT JOIN backup_archive_keys keys ON keys.export_job_id = jobs.id
+     LEFT JOIN backup_archive_keys archive_keys ON archive_keys.export_job_id = jobs.id
      WHERE jobs.user_id = ?
      ORDER BY jobs.created_at DESC
      LIMIT 25`,
@@ -465,9 +558,11 @@ async function listDataExportJobs(userId) {
 async function getDataExportJob(userId, jobId) {
   const [rows] = await db.execute(
     `SELECT jobs.*,
-            (keys.recovery_password_ciphertext IS NOT NULL) AS recovery_password_available
+            (archive_keys.recovery_password_ciphertext IS NOT NULL) AS recovery_password_available,
+            (archive_keys.recovery_password_revealed_at IS NOT NULL) AS recovery_password_revealed,
+            (archive_keys.server_wrapped_key IS NOT NULL) AS server_unlock_available
      FROM data_export_jobs jobs
-     LEFT JOIN backup_archive_keys keys ON keys.export_job_id = jobs.id
+     LEFT JOIN backup_archive_keys archive_keys ON archive_keys.export_job_id = jobs.id
      WHERE jobs.id = ? AND jobs.user_id = ?
      LIMIT 1`,
     [jobId, userId]
@@ -489,23 +584,25 @@ async function deleteDataExportJob(userId, jobId) {
   }
   const [activeRestore] = await db.execute(
     `SELECT id FROM backup_restore_jobs
-     WHERE source_export_job_id = ? AND status IN ('uploaded', 'validating', 'validated', 'queued', 'running', 'cancelling')
+     WHERE source_export_job_id = ? AND user_id = ?
+       AND status IN ('uploaded', 'validating', 'validated', 'queued', 'running', 'cancelling')
      LIMIT 1`,
-    [jobId]
+    [jobId, userId]
   );
   if (activeRestore.length) {
     return { error: 'This backup is currently used by a restore job', status: 409 };
   }
+  await db.execute(
+    `UPDATE backup_restore_jobs
+     SET source_export_job_id = NULL, archive_path = NULL
+     WHERE source_export_job_id = ? AND user_id = ?`,
+    [jobId, userId]
+  );
   if (job.file_path && isBackupPathUnderRoot(job.file_path)) {
     await fs.promises.rm(path.resolve(job.file_path), { force: true }).catch(() => {});
   }
-  if (job.backup_uuid) {
-    await db.execute(
-      'DELETE FROM backup_archive_keys WHERE backup_uuid = ? AND user_id = ?',
-      [job.backup_uuid, userId]
-    );
-  }
   await db.execute('DELETE FROM data_export_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
+  await pruneArchiveKeyIfUnreferenced(userId, job.backup_uuid);
   return { deleted: true };
 }
 
@@ -540,8 +637,13 @@ module.exports = {
   parseRequestedSections,
   crc32Buffer,
   writeZip,
+  ZIP32_MAX_VALUE,
+  ZIP32_MAX_ENTRIES,
+  ZIP32_MAX_FILENAME_BYTES,
   startDataExportJob,
   runDataExportJob,
+  pumpDataExportJobs,
+  scheduleDataExportWorker,
   resumePendingDataExportJobs,
   listDataExportJobs,
   getDataExportJob,
