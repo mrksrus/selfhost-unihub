@@ -104,6 +104,7 @@ System app folders created per user:
 
 - `inbox`
 - `sent`
+- `drafts`
 - `archive`
 - `trash`
 - `important`
@@ -228,6 +229,10 @@ System folders cannot be deleted.
 | POST | `/api/mail/emails/bulk-update` | Bulk read/star updates |
 | GET | `/api/mail/unread-counts` | Unread counts by folder and optionally account |
 | GET | `/api/mail/attachments/:id` | Authenticated attachment download |
+| POST | `/api/mail/drafts` | Create an app-local draft |
+| PUT | `/api/mail/drafts/:id` | Update an app-local draft |
+| DELETE | `/api/mail/drafts/:id` | Delete an app-local draft and its attachments |
+| POST | `/api/mail/drafts/:id/send` | Send an app-local draft and remove it after SMTP succeeds |
 | POST | `/api/mail/sync` | Manual sync for one account |
 | POST | `/api/mail/sync/background` | Non-blocking background sync trigger |
 | POST | `/api/mail/send` | Send mail through SMTP |
@@ -238,7 +243,8 @@ System folders cannot be deleted.
 ## SMTP Sending
 
 `POST /api/mail/send` sends with strict TLS by default and saves a local copy in
-the `sent` folder.
+the `sent` folder. Drafts are app-local rows in the `drafts` folder with
+`is_draft = true`; they are not synchronized to provider draft folders.
 
 Compose attachment limits:
 
@@ -298,7 +304,7 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 ## Limitations
 
 - Provider-side delete sync is not implemented.
-- Draft sync is not implemented.
+- Provider-side draft sync is not implemented.
 - App folder moves are local and are not propagated to provider folders.
 - First full imports can be slow for large mailboxes.
 - There is no malware scanning for downloaded or uploaded attachments.

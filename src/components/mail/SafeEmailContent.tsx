@@ -27,7 +27,7 @@ export function SafeEmailContent({ emailId, bodyHtml, bodyText }: SafeEmailConte
         srcDoc={srcDoc}
         sandbox="allow-popups allow-popups-to-escape-sandbox"
         referrerPolicy="no-referrer"
-        className="w-full min-h-[380px] border border-border rounded-md bg-background"
+        className="h-[min(70dvh,720px)] min-h-[320px] w-full border border-border rounded-md bg-background"
       />
     );
   }

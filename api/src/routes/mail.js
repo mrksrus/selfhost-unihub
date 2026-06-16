@@ -35,6 +35,8 @@ const { createCalDavAccountForMail } = require('../services/caldav');
 const readFile = promisify(fs.readFile);
 const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
 const MAIL_LIST_PREVIEW_LENGTH = 240;
+const MAIL_DRAFT_FOLDER = 'drafts';
+const MAIL_ATTACHMENT_UPLOAD_ROOT = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments';
 
 function startMailSyncInBackground(accountId, label = accountId) {
   if (isAnyMailAccountSyncRunning()) {
@@ -90,6 +92,202 @@ async function validateUserMailFolder(userId, folderSlug) {
     return { error: 'Folder not found', status: 404 };
   }
   return { folder: normalizedSlug };
+}
+
+function extractMailRouteId(req, offsetFromEnd = 1) {
+  const parts = req.url.split('?')[0].split('/').filter(Boolean);
+  return parts[parts.length - offsetFromEnd] || null;
+}
+
+function htmlToDraftText(value) {
+  return String(value || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+function normalizeDraftRecipients(value) {
+  return String(value || '')
+    .split(',')
+    .map(part => {
+      const trimmed = part.trim();
+      const match = trimmed.match(/^(.+?)\s*<(.+?)>$/);
+      return (match ? match[2] : trimmed).trim();
+    })
+    .filter(Boolean);
+}
+
+function formatDraftRecipients(value) {
+  const recipients = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? JSON.parse(value || '[]')
+      : [];
+  return recipients.filter(Boolean).join(', ');
+}
+
+async function loadMailAccountForDraft(userId, accountId) {
+  const normalizedAccountId = String(accountId || '').trim();
+  if (!normalizedAccountId) return null;
+  const [accounts] = await db.execute(
+    'SELECT id, user_id, email_address, display_name FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
+    [normalizedAccountId, userId]
+  );
+  return accounts[0] || null;
+}
+
+function normalizeDraftAttachmentPayload(attachments) {
+  if (attachments === undefined) return null;
+  if (!Array.isArray(attachments)) {
+    const error = new Error('attachments must be an array');
+    error.status = 400;
+    throw error;
+  }
+  if (attachments.length > 20) {
+    const error = new Error('Too many attachments (max 20)');
+    error.status = 400;
+    throw error;
+  }
+
+  let totalBytes = 0;
+  return attachments.map((attachment, index) => {
+    if (!attachment || typeof attachment !== 'object') {
+      const error = new Error(`Invalid attachment at index ${index}`);
+      error.status = 400;
+      throw error;
+    }
+    const filename = String(attachment.filename || `attachment-${index + 1}`);
+    const contentType = String(attachment.contentType || attachment.content_type || 'application/octet-stream');
+    const dataBase64 = String(attachment.dataBase64 || '');
+    const content = Buffer.from(dataBase64, 'base64');
+    if (!dataBase64 || content.length === 0) {
+      const error = new Error(`Attachment "${filename}" is empty`);
+      error.status = 400;
+      throw error;
+    }
+    if (content.length > 15 * 1024 * 1024) {
+      const error = new Error(`Attachment "${filename}" exceeds 15MB limit`);
+      error.status = 400;
+      throw error;
+    }
+    totalBytes += content.length;
+    return { filename, contentType, content };
+  }).map((attachment) => {
+    if (totalBytes > 25 * 1024 * 1024) {
+      const error = new Error('Total attachment size exceeds 25MB limit');
+      error.status = 400;
+      throw error;
+    }
+    return attachment;
+  });
+}
+
+async function storeDraftAttachments({ userId, emailId, attachments }) {
+  const normalizedAttachments = normalizeDraftAttachmentPayload(attachments);
+  if (!normalizedAttachments || normalizedAttachments.length === 0) return 0;
+
+  const uploadsDir = path.join(MAIL_ATTACHMENT_UPLOAD_ROOT, userId);
+  await fs.promises.mkdir(uploadsDir, { recursive: true });
+
+  let count = 0;
+  for (const attachment of normalizedAttachments) {
+    const attachmentId = crypto.randomUUID();
+    const safeFilename = attachment.filename.replace(/[^a-zA-Z0-9._-]/g, '_') || `attachment-${attachmentId}`;
+    const storagePath = path.join(uploadsDir, `${emailId}-${attachmentId}-${safeFilename}`);
+    await fs.promises.writeFile(storagePath, attachment.content);
+    await db.execute(
+      'INSERT INTO email_attachments (id, email_id, user_id, filename, content_type, size_bytes, storage_path, content_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        attachmentId,
+        emailId,
+        userId,
+        attachment.filename,
+        attachment.contentType,
+        attachment.content.length,
+        storagePath,
+        null,
+      ]
+    );
+    count += 1;
+  }
+  return count;
+}
+
+async function loadDraftEmail(userId, draftId) {
+  const [rows] = await db.execute(
+    'SELECT * FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE LIMIT 1',
+    [draftId, userId]
+  );
+  if (!rows.length) return null;
+  const draft = rows[0];
+  const [attachments] = await db.execute(
+    'SELECT id, filename, content_type, size_bytes FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
+    [draftId, userId]
+  );
+  return {
+    ...draft,
+    to_addresses: typeof draft.to_addresses === 'string' ? JSON.parse(draft.to_addresses || '[]') : draft.to_addresses,
+    is_read: !!draft.is_read,
+    is_starred: !!draft.is_starred,
+    is_draft: !!draft.is_draft,
+    has_attachments: !!draft.has_attachments,
+    attachments: attachments || [],
+  };
+}
+
+async function replaceDraftAttachments({ userId, emailId, keepAttachmentIds, attachments }) {
+  const shouldReplace = Array.isArray(keepAttachmentIds) || attachments !== undefined;
+  if (!shouldReplace) return;
+
+  const keepIds = new Set((keepAttachmentIds || []).map(id => String(id)));
+  const [existing] = await db.execute(
+    'SELECT id, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?',
+    [emailId, userId]
+  );
+  const removable = (existing || []).filter(row => !keepIds.has(String(row.id)));
+  if (removable.length > 0) {
+    const placeholders = removable.map(() => '?').join(',');
+    await db.execute(
+      `DELETE FROM email_attachments WHERE id IN (${placeholders}) AND email_id = ? AND user_id = ?`,
+      [...removable.map(row => row.id), emailId, userId]
+    );
+    await deleteStoredAttachmentFiles(removable.map(row => row.storage_path));
+  }
+
+  if (attachments !== undefined) {
+    await storeDraftAttachments({ userId, emailId, attachments });
+  }
+
+  const [countRows] = await db.execute(
+    'SELECT COUNT(*) AS total FROM email_attachments WHERE email_id = ? AND user_id = ?',
+    [emailId, userId]
+  );
+  await db.execute(
+    'UPDATE emails SET has_attachments = ? WHERE id = ? AND user_id = ?',
+    [(Number(countRows[0]?.total) || 0) > 0 ? 1 : 0, emailId, userId]
+  );
+}
+
+async function deleteDraftWithFiles(userId, draftId) {
+  const draft = await loadDraftEmail(userId, draftId);
+  if (!draft) return { error: 'Draft not found', status: 404 };
+  const [attachments] = await db.execute(
+    'SELECT storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?',
+    [draftId, userId]
+  );
+  await db.execute('DELETE FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE', [draftId, userId]);
+  const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
+  return {
+    deleted: true,
+    deletedAttachmentFiles: fileResult.deletedFiles,
+    failedAttachmentFiles: fileResult.failedFiles,
+  };
 }
 
 async function buildHostTrustConfirmationResponse({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError }) {
@@ -891,6 +1089,183 @@ module.exports = {
       return { error: 'Failed to delete mail account', status: 500 };
     }
   },
+
+  'POST /api/mail/drafts': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const account = await loadMailAccountForDraft(userId, body?.account_id);
+      if (!account) return { error: 'Account not found', status: 404 };
+
+      const draftId = crypto.randomUUID();
+      const isHtml = body?.isHtml !== false;
+      const draftBody = String(body?.body_html ?? body?.body ?? '');
+      const bodyText = isHtml ? htmlToDraftText(draftBody) : draftBody;
+      const bodyHtml = isHtml ? draftBody : null;
+      const toAddresses = normalizeDraftRecipients(body?.to);
+      const subject = String(body?.subject ?? '');
+
+      await ensureDefaultMailFoldersForUser(userId);
+      await db.execute(
+        `INSERT INTO emails
+          (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses,
+           body_text, body_html, has_attachments, received_at, folder, is_read, is_draft)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, UTC_TIMESTAMP(), ?, TRUE, TRUE)`,
+        [
+          draftId,
+          userId,
+          account.id,
+          `<draft-${draftId}@unihub.local>`,
+          subject || null,
+          account.email_address,
+          account.display_name || null,
+          JSON.stringify(toAddresses),
+          bodyText || null,
+          bodyHtml,
+          MAIL_DRAFT_FOLDER,
+        ]
+      );
+
+      if (body?.attachments !== undefined) {
+        await storeDraftAttachments({ userId, emailId: draftId, attachments: body.attachments });
+        const [countRows] = await db.execute(
+          'SELECT COUNT(*) AS total FROM email_attachments WHERE email_id = ? AND user_id = ?',
+          [draftId, userId]
+        );
+        await db.execute(
+          'UPDATE emails SET has_attachments = ? WHERE id = ? AND user_id = ?',
+          [(Number(countRows[0]?.total) || 0) > 0 ? 1 : 0, draftId, userId]
+        );
+      }
+
+      return { draft: await loadDraftEmail(userId, draftId) };
+    } catch (error) {
+      console.error('Create draft error:', error);
+      return { error: error.message || 'Failed to save draft', status: error.status || 500 };
+    }
+  },
+
+  'PUT /api/mail/drafts/:id': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const draftId = extractMailRouteId(req);
+      const current = await loadDraftEmail(userId, draftId);
+      if (!current) return { error: 'Draft not found', status: 404 };
+
+      let account = null;
+      if (body?.account_id !== undefined && body.account_id !== current.mail_account_id) {
+        account = await loadMailAccountForDraft(userId, body.account_id);
+        if (!account) return { error: 'Account not found', status: 404 };
+      }
+
+      const updates = ['received_at = UTC_TIMESTAMP()', 'folder = ?', 'is_draft = TRUE', 'is_read = TRUE'];
+      const params = [MAIL_DRAFT_FOLDER];
+
+      if (account) {
+        updates.push('mail_account_id = ?', 'from_address = ?', 'from_name = ?');
+        params.push(account.id, account.email_address, account.display_name || null);
+      }
+      if (body?.to !== undefined) {
+        updates.push('to_addresses = ?');
+        params.push(JSON.stringify(normalizeDraftRecipients(body.to)));
+      }
+      if (body?.subject !== undefined) {
+        updates.push('subject = ?');
+        params.push(String(body.subject || '') || null);
+      }
+      if (body?.body !== undefined || body?.body_html !== undefined) {
+        const isHtml = body?.isHtml !== false;
+        const draftBody = String(body.body_html ?? body.body ?? '');
+        updates.push('body_text = ?', 'body_html = ?');
+        params.push(isHtml ? htmlToDraftText(draftBody) || null : draftBody || null, isHtml ? draftBody : null);
+      }
+
+      params.push(draftId, userId);
+      await db.execute(
+        `UPDATE emails SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_draft = TRUE`,
+        params
+      );
+
+      await replaceDraftAttachments({
+        userId,
+        emailId: draftId,
+        keepAttachmentIds: body?.existing_attachment_ids,
+        attachments: body?.attachments,
+      });
+
+      return { draft: await loadDraftEmail(userId, draftId) };
+    } catch (error) {
+      console.error('Update draft error:', error);
+      return { error: error.message || 'Failed to update draft', status: error.status || 500 };
+    }
+  },
+
+  'DELETE /api/mail/drafts/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      return await deleteDraftWithFiles(userId, extractMailRouteId(req));
+    } catch (error) {
+      console.error('Delete draft error:', error);
+      return { error: error.message || 'Failed to delete draft', status: 500 };
+    }
+  },
+
+  'POST /api/mail/drafts/:id/send': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const draftId = extractMailRouteId(req, 2);
+      const draft = await loadDraftEmail(userId, draftId);
+      if (!draft) return { error: 'Draft not found', status: 404 };
+
+      const account = await loadMailAccountForDraft(userId, draft.mail_account_id);
+      if (!account) return { error: 'Account not found', status: 404 };
+
+      const to = formatDraftRecipients(draft.to_addresses);
+      if (!to) return { error: 'Draft needs at least one recipient before sending', status: 400 };
+
+      const [attachmentRows] = await db.execute(
+        'SELECT filename, content_type, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
+        [draftId, userId]
+      );
+      const attachments = [];
+      for (const attachment of attachmentRows || []) {
+        if (!attachment.storage_path) continue;
+        const content = await readFile(attachment.storage_path);
+        attachments.push({
+          filename: attachment.filename,
+          contentType: attachment.content_type || 'application/octet-stream',
+          dataBase64: content.toString('base64'),
+        });
+      }
+
+      const bodyContent = draft.body_html || draft.body_text || (attachments.length > 0 ? '<p></p>' : '');
+      if (!bodyContent && attachments.length === 0) {
+        return { error: 'Draft needs a message or attachment before sending', status: 400 };
+      }
+
+      const result = await sendEmail(draft.mail_account_id, {
+        to,
+        subject: draft.subject || '(No subject)',
+        body: bodyContent,
+        isHtml: !!draft.body_html || attachments.length > 0,
+        attachments,
+      });
+      const deleteResult = await deleteDraftWithFiles(userId, draftId);
+
+      return {
+        success: true,
+        messageId: result.messageId,
+        deletedAttachmentFiles: deleteResult.deletedAttachmentFiles || 0,
+        failedAttachmentFiles: deleteResult.failedAttachmentFiles || 0,
+      };
+    } catch (error) {
+      console.error('Send draft error:', error);
+      return { error: error.message || 'Failed to send draft', status: error.status || 500 };
+    }
+  },
   
   // Emails endpoints
   'GET /api/mail/emails': async (req, userId) => {
@@ -1002,6 +1377,7 @@ module.exports = {
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
         is_read: !!email.is_read,
         is_starred: !!email.is_starred,
+        is_draft: !!email.is_draft,
       }));
       return { 
         emails: parsedEmails,
@@ -1045,6 +1421,7 @@ module.exports = {
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
         is_read: !!email.is_read,
         is_starred: !!email.is_starred,
+        is_draft: !!email.is_draft,
       };
       
       // Fetch attachments (exclude inline attachments from list - they're embedded in HTML)

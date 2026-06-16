@@ -69,6 +69,12 @@ async function handleRequest(req, res) {
     const parts = url.pathname.split('/').filter(Boolean);
     req.params.slug = parts[parts.length - 1] || null;
     routeKey = `${req.method} /api/mail/folders/:slug`;
+  } else if (routeKey.includes('/api/mail/drafts/')) {
+    if (url.pathname.endsWith('/send')) {
+      routeKey = `${req.method} /api/mail/drafts/:id/send`;
+    } else {
+      routeKey = `${req.method} /api/mail/drafts/:id`;
+    }
   } else if (routeKey.includes('/api/mail/accounts/')) {
     routeKey = `${req.method} /api/mail/accounts/:id`;
   } else if (routeKey.includes('/api/mail/attachments/')) {
@@ -202,7 +208,11 @@ async function handleRequest(req, res) {
       maxBodySize = 50000;
     } else if (routeKey === 'POST /api/backup/import') {
       maxBodySize = BACKUP_UPLOAD_MAX_SIZE;
-    } else if (routeKey === 'POST /api/mail/send') {
+    } else if (
+      routeKey === 'POST /api/mail/send' ||
+      routeKey === 'POST /api/mail/drafts' ||
+      routeKey === 'PUT /api/mail/drafts/:id'
+    ) {
       maxBodySize = 30 * 1024 * 1024; // Allow attachments in compose (base64 JSON payload)
     } else if (
       routeKey === 'POST /api/calendar/accounts' ||

@@ -41,13 +41,14 @@ const MAIL_RAW_STORAGE_ROOT = '/app/uploads/mail-raw';
 const MAIL_FOLDER_DEFINITIONS = [
   { slug: 'inbox', displayName: 'Inbox', position: 10 },
   { slug: 'sent', displayName: 'Sent', position: 20 },
-  { slug: 'archive', displayName: 'Archive', position: 30 },
-  { slug: 'trash', displayName: 'Trash', position: 40 },
-  { slug: 'important', displayName: 'Important', position: 50 },
-  { slug: 'marketing', displayName: 'Marketing', position: 60 },
-  { slug: 'scam', displayName: 'Scam', position: 70 },
-  { slug: 'unknown', displayName: 'Unknown', position: 80 },
-  { slug: 'twofactor_notifications', displayName: '2FA / Notifications', position: 90 },
+  { slug: 'drafts', displayName: 'Drafts', position: 30 },
+  { slug: 'archive', displayName: 'Archive', position: 40 },
+  { slug: 'trash', displayName: 'Trash', position: 50 },
+  { slug: 'important', displayName: 'Important', position: 60 },
+  { slug: 'marketing', displayName: 'Marketing', position: 70 },
+  { slug: 'scam', displayName: 'Scam', position: 80 },
+  { slug: 'unknown', displayName: 'Unknown', position: 90 },
+  { slug: 'twofactor_notifications', displayName: '2FA / Notifications', position: 100 },
 ];
 const ALLOWED_MAIL_FOLDER_SET = new Set(MAIL_FOLDER_DEFINITIONS.map(folder => folder.slug));
 const SYSTEM_MAIL_FOLDER_SET = new Set(MAIL_FOLDER_DEFINITIONS.map(folder => folder.slug));

@@ -20,6 +20,7 @@ import {
   DropdownMenu, 
   DropdownMenuContent, 
   DropdownMenuItem, 
+  DropdownMenuSeparator,
   DropdownMenuTrigger 
 } from '@/components/ui/dropdown-menu';
 import {
@@ -34,6 +35,7 @@ import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
 import { 
   Plus, 
@@ -74,7 +76,8 @@ import {
   Link as LinkIcon,
   Image as ImageIcon,
   Palette,
-  UserPlus
+  UserPlus,
+  FileText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format } from 'date-fns';
@@ -191,6 +194,7 @@ interface Email {
   folder: string;
   is_read: boolean;
   is_starred: boolean;
+  is_draft?: boolean;
   received_at: string;
   has_attachments?: boolean;
   attachments?: EmailAttachment[];
@@ -259,6 +263,7 @@ const mailProviders = [
 const systemFolders = [
   { id: 'inbox', label: 'Inbox', icon: Inbox },
   { id: 'sent', label: 'Sent', icon: Send },
+  { id: 'drafts', label: 'Drafts', icon: FileText },
   { id: 'starred', label: 'Starred', icon: Star },
   { id: 'archive', label: 'Archive', icon: Archive },
   { id: 'trash', label: 'Trash', icon: Trash2 },
@@ -344,6 +349,19 @@ const isComposeHtmlEmpty = (value: string) =>
     .replace(/&nbsp;/g, ' ')
     .trim();
 
+const isComposeMeaningful = (
+  form: { to: string; subject: string; body: string },
+  newAttachmentsCount: number,
+  existingAttachmentsCount = 0
+) =>
+  Boolean(
+    form.to.trim() ||
+    form.subject.trim() ||
+    !isComposeHtmlEmpty(form.body) ||
+    newAttachmentsCount > 0 ||
+    existingAttachmentsCount > 0
+  );
+
 const getServerDeleteStatus = (account: MailAccount) => {
   if (!account.delete_emails_on_server) return null;
   const counts = account.server_delete_counts;
@@ -382,6 +400,7 @@ const MailPage = () => {
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [pendingHostTrust, setPendingHostTrust] = useState<PendingHostTrust | null>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
+  const [folderToDelete, setFolderToDelete] = useState<MailFolder | null>(null);
   const [newFolderName, setNewFolderName] = useState('');
   const [editingFolderSlug, setEditingFolderSlug] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState('');
@@ -393,6 +412,14 @@ const MailPage = () => {
   const [composeReturnTo, setComposeReturnTo] = useState<string | null>(null);
   const [focusedRecipientInput, setFocusedRecipientInput] = useState<string | null>(null);
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
+  const [existingDraftAttachments, setExistingDraftAttachments] = useState<EmailAttachment[]>([]);
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+  const [isComposeDirty, setIsComposeDirty] = useState(false);
+  const [attachmentsDirty, setAttachmentsDirty] = useState(false);
+  const [isDraftSaving, setIsDraftSaving] = useState(false);
+  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
+  const [composeClosePromptOpen, setComposeClosePromptOpen] = useState(false);
+  const [draftToDelete, setDraftToDelete] = useState<Email | null>(null);
   const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
   const inlineComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
   const dialogComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
@@ -819,7 +846,67 @@ const MailPage = () => {
     },
   });
 
+  const setEmailReadStatus = useMutation({
+    mutationFn: async ({ id, is_read }: { id: string; is_read: boolean }) => {
+      const response = await api.put(`/mail/emails/${id}/read`, { is_read });
+      if (response.error) throw new Error(response.error);
+      return { id, is_read };
+    },
+    onSuccess: ({ id, is_read }) => {
+      if (selectedEmail?.id === id) {
+        setSelectedEmail({ ...selectedEmail, is_read });
+      }
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to update read status', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const openDraftForCompose = React.useCallback(async (draftOrFallback: Email) => {
+    try {
+      const response = await api.get<{ email: Email }>(`/mail/emails/${draftOrFallback.id}`);
+      if (response.error) {
+        toast({ title: 'Failed to load draft', description: response.error, variant: 'destructive' });
+        return;
+      }
+      const draft = response.data?.email || draftOrFallback;
+      setSelectedEmail(null);
+      setComposeMode('new');
+      setActiveDraftId(draft.id);
+      setExistingDraftAttachments(draft.attachments || []);
+      setComposeAttachments([]);
+      setAttachmentsDirty(false);
+      setIsComposeDirty(false);
+      setDraftSavedAt(draft.received_at || new Date().toISOString());
+      setComposeForm({
+        to: draft.to_addresses?.join(', ') || '',
+        subject: draft.subject || '',
+        body: draft.body_html || (draft.body_text ? plainTextToHtml(draft.body_text) : ''),
+      });
+      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount !== draft.mail_account_id) {
+        setSelectedAccount(draft.mail_account_id);
+      }
+      setIsReplying(false);
+      setIsComposeOpen(true);
+    } catch (error) {
+      toast({
+        title: 'Failed to load draft',
+        description: error instanceof Error ? error.message : 'Could not open draft',
+        variant: 'destructive',
+      });
+    }
+  }, [selectedAccount, toast]);
+
   const loadEmailForReader = React.useCallback(async (emailId: string, fallbackEmail?: Email) => {
+    if (fallbackEmail?.is_draft || fallbackEmail?.folder === 'drafts') {
+      await openDraftForCompose(fallbackEmail);
+      return;
+    }
+
     if (fallbackEmail && !fallbackEmail.is_read) {
       markAsRead.mutate(fallbackEmail.id);
     }
@@ -833,6 +920,10 @@ const MailPage = () => {
 
       if (response.data?.email) {
         const fetchedEmail = response.data.email;
+        if (fetchedEmail.is_draft || fetchedEmail.folder === 'drafts') {
+          await openDraftForCompose(fetchedEmail);
+          return;
+        }
         if (!fetchedEmail.is_read) {
           markAsRead.mutate(fetchedEmail.id);
           setSelectedEmail({ ...fetchedEmail, is_read: true });
@@ -853,7 +944,7 @@ const MailPage = () => {
         toast({ title: 'Failed to load email', variant: 'destructive' });
       }
     }
-  }, [markAsRead, toast]);
+  }, [markAsRead, openDraftForCompose, toast]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -887,18 +978,37 @@ const MailPage = () => {
 
   // Bulk operations mutations
   const bulkDelete = useMutation({
-    mutationFn: async (emailIds: string[]) => {
+    mutationFn: async ({ emailIds }: { emailIds: string[]; restoreFolders: Record<string, string> }) => {
       const response = await api.post('/mail/emails/bulk-delete', { email_ids: emailIds });
       if (response.error) throw new Error(response.error);
       return emailIds.length;
     },
-    onSuccess: (count) => {
+    onSuccess: (count, variables) => {
       queryClient.invalidateQueries({ queryKey: ['emails'] });
       queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       setSelectedEmails(new Set());
-      toast({ title: `✓ Moved ${count} email(s) to trash` });
+      toast({
+        title: `Moved ${count} email(s) to trash`,
+        action: (
+          <ToastAction
+            altText="Undo move to trash"
+            onClick={() => {
+              const byFolder = Object.entries(variables.restoreFolders).reduce<Record<string, string[]>>((acc, [emailId, folder]) => {
+                if (!folder || folder === 'trash') return acc;
+                acc[folder] = [...(acc[folder] || []), emailId];
+                return acc;
+              }, {});
+              Object.entries(byFolder).forEach(([folder, emailIds]) => {
+                bulkMove.mutate({ emailIds, folder });
+              });
+            }}
+          >
+            Undo
+          </ToastAction>
+        ),
+      });
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to delete emails', description: error.message, variant: 'destructive' });
@@ -1011,6 +1121,15 @@ const MailPage = () => {
     },
   });
 
+  const createTrashMovePayload = React.useCallback((emailIds: string[]) => {
+    const restoreFolders: Record<string, string> = {};
+    for (const id of emailIds) {
+      const source = emails.find(email => email.id === id) || (selectedEmail?.id === id ? selectedEmail : null);
+      restoreFolders[id] = source?.folder || selectedFolder || 'inbox';
+    }
+    return { emailIds, restoreFolders };
+  }, [emails, selectedEmail, selectedFolder]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1026,7 +1145,7 @@ const MailPage = () => {
       // Delete selected emails
       if (e.key === 'Delete' && selectedEmails.size > 0) {
         e.preventDefault();
-        bulkDelete.mutate(Array.from(selectedEmails));
+        bulkDelete.mutate(createTrashMovePayload(Array.from(selectedEmails)));
       }
 
       // Select all (Ctrl+A or Cmd+A)
@@ -1045,7 +1164,7 @@ const MailPage = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedEmails, emails, bulkDelete]);
+  }, [selectedEmails, emails, bulkDelete, createTrashMovePayload]);
 
   // Handle email selection
   const handleEmailSelect = (emailId: string, e: React.MouseEvent) => {
@@ -1084,7 +1203,7 @@ const MailPage = () => {
       setSelectedEmails(new Set(emails.map(e => e.id)));
     }
   };
-  
+
   // Sync mail mutation
   const syncMail = useMutation({
     mutationFn: async (account_id: string) => {
@@ -1138,7 +1257,7 @@ const MailPage = () => {
     },
     onSuccess: () => {
       toast({ title: '✓ Email sent successfully' });
-      closeComposeFlow();
+      closeComposeFlow({ force: true });
     },
     onError: (error: Error) => {
       toast({ 
@@ -1295,10 +1414,25 @@ const MailPage = () => {
 
       return next;
     });
+    setAttachmentsDirty(true);
+    setIsComposeDirty(true);
   };
 
   const removeComposeAttachment = (attachmentId: string) => {
     setComposeAttachments(prev => prev.filter(att => att.id !== attachmentId));
+    setAttachmentsDirty(true);
+    setIsComposeDirty(true);
+  };
+
+  const removeExistingDraftAttachment = (attachmentId: string) => {
+    setExistingDraftAttachments(prev => prev.filter(att => att.id !== attachmentId));
+    setAttachmentsDirty(true);
+    setIsComposeDirty(true);
+  };
+
+  const updateComposeForm = (patch: Partial<typeof composeForm>, dirty = true) => {
+    setComposeForm(prev => ({ ...prev, ...patch }));
+    if (dirty) setIsComposeDirty(true);
   };
 
   const resetComposeState = () => {
@@ -1306,11 +1440,23 @@ const MailPage = () => {
     setComposeForm({ to: '', subject: '', body: '' });
     setFocusedRecipientInput(null);
     setComposeAttachments([]);
+    setExistingDraftAttachments([]);
+    setActiveDraftId(null);
+    setIsComposeDirty(false);
+    setAttachmentsDirty(false);
+    setIsDraftSaving(false);
+    setDraftSavedAt(null);
     setIsAttachmentDragOver(false);
     setIsReplying(false);
   };
 
-  const closeComposeFlow = () => {
+  const closeComposeFlow = (options: { force?: boolean } = {}) => {
+    const hasUnsavedWork = (isComposeDirty || attachmentsDirty) &&
+      isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length);
+    if (!options.force && hasUnsavedWork) {
+      setComposeClosePromptOpen(true);
+      return;
+    }
     const target = composeReturnTo;
     setIsComposeOpen(false);
     resetComposeState();
@@ -1328,6 +1474,7 @@ const MailPage = () => {
         .join(', ');
       return { ...prev, to: `${nextValue}, ` };
     });
+    setIsComposeDirty(true);
   };
 
   const renderRecipientInput = (inputId: string) => {
@@ -1347,7 +1494,7 @@ const MailPage = () => {
           type="text"
           placeholder="recipient@example.com"
           value={composeForm.to}
-          onChange={(e) => setComposeForm({ ...composeForm, to: e.target.value })}
+          onChange={(e) => updateComposeForm({ to: e.target.value })}
           onFocus={() => setFocusedRecipientInput(inputId)}
           onBlur={() => window.setTimeout(() => setFocusedRecipientInput((current) => current === inputId ? null : current), 100)}
           autoComplete="off"
@@ -1378,7 +1525,7 @@ const MailPage = () => {
     );
   };
 
-  const fileToBase64 = (file: File) =>
+  const fileToBase64 = React.useCallback((file: File) =>
     new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => {
@@ -1391,7 +1538,142 @@ const MailPage = () => {
       };
       reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
       reader.readAsDataURL(file);
-    });
+    }), []);
+
+  const buildAttachmentPayload = React.useCallback(async () =>
+    Promise.all(
+      composeAttachments.map(async ({ file }) => ({
+        filename: file.name,
+        contentType: file.type || 'application/octet-stream',
+        size: file.size,
+        dataBase64: await fileToBase64(file),
+      }))
+    ), [composeAttachments, fileToBase64]);
+
+  const saveCurrentDraft = React.useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean } = {}) => {
+    if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
+      if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
+      return null;
+    }
+    if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) {
+      return null;
+    }
+
+    setIsDraftSaving(true);
+    try {
+      const includeAttachments = options.includeAttachments ?? attachmentsDirty;
+      const payload: {
+        account_id: string;
+        to: string;
+        subject: string;
+        body: string;
+        isHtml: boolean;
+        existing_attachment_ids?: string[];
+        attachments?: Array<{ filename: string; contentType: string; size: number; dataBase64: string }>;
+      } = {
+        account_id: selectedAccount,
+        to: composeForm.to,
+        subject: composeForm.subject,
+        body: composeForm.body || '<p></p>',
+        isHtml: true,
+      };
+
+      if (includeAttachments) {
+        payload.existing_attachment_ids = existingDraftAttachments.map(attachment => attachment.id);
+        payload.attachments = await buildAttachmentPayload();
+      }
+
+      const response = activeDraftId
+        ? await api.put<{ draft: Email }>(`/mail/drafts/${activeDraftId}`, payload)
+        : await api.post<{ draft: Email }>('/mail/drafts', payload);
+
+      if (response.error || !response.data?.draft) {
+        throw new Error(response.error || 'Failed to save draft');
+      }
+
+      const savedDraft = response.data.draft;
+      setActiveDraftId(savedDraft.id);
+      setExistingDraftAttachments(savedDraft.attachments || []);
+      if (includeAttachments) {
+        setComposeAttachments([]);
+        setAttachmentsDirty(false);
+      }
+      setIsComposeDirty(false);
+      setDraftSavedAt(new Date().toISOString());
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+      if (!options.quiet) toast({ title: 'Draft saved' });
+      return savedDraft;
+    } catch (error) {
+      if (!options.quiet) {
+        toast({
+          title: 'Failed to save draft',
+          description: error instanceof Error ? error.message : 'Could not save the draft',
+          variant: 'destructive',
+        });
+      }
+      throw error;
+    } finally {
+      setIsDraftSaving(false);
+    }
+  }, [
+    activeDraftId,
+    attachmentsDirty,
+    buildAttachmentPayload,
+    composeAttachments,
+    composeForm,
+    existingDraftAttachments,
+    queryClient,
+    selectedAccount,
+    toast,
+  ]);
+
+  React.useEffect(() => {
+    if (!isComposeDirty || !selectedAccount || selectedAccount === ALL_ACCOUNTS) return;
+    if (!isComposeOpen && !isReplying) return;
+    if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) return;
+
+    const timeout = window.setTimeout(() => {
+      saveCurrentDraft({ quiet: true }).catch(() => {
+        // Explicit saves and sends surface errors. Autosave should not interrupt typing.
+      });
+    }, 1500);
+
+    return () => window.clearTimeout(timeout);
+  }, [
+    composeAttachments.length,
+    composeForm,
+    existingDraftAttachments.length,
+    isComposeDirty,
+    isComposeOpen,
+    isReplying,
+    saveCurrentDraft,
+    selectedAccount,
+  ]);
+
+  const deleteDraftById = async (draftId: string) => {
+    const response = await api.delete(`/mail/drafts/${draftId}`);
+    if (response.error) throw new Error(response.error);
+    queryClient.invalidateQueries({ queryKey: ['emails'] });
+    queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+    queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+  };
+
+  const discardCurrentCompose = async () => {
+    try {
+      if (activeDraftId) {
+        await deleteDraftById(activeDraftId);
+      }
+      setComposeClosePromptOpen(false);
+      closeComposeFlow({ force: true });
+    } catch (error) {
+      toast({
+        title: 'Failed to discard draft',
+        description: error instanceof Error ? error.message : 'Could not discard the draft',
+        variant: 'destructive',
+      });
+    }
+  };
 
   const handleComposeAttachmentInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -1409,6 +1691,7 @@ const MailPage = () => {
 
   const updateComposeBodyFromEditor = (editorRef: React.RefObject<HTMLDivElement>) => {
     setComposeForm(prev => ({ ...prev, body: editorRef.current?.innerHTML || '' }));
+    setIsComposeDirty(true);
   };
 
   const applyComposeCommand = (editorRef: React.RefObject<HTMLDivElement>, command: string, value?: string) => {
@@ -1502,7 +1785,7 @@ const MailPage = () => {
         contentEditable
         suppressContentEditableWarning
         data-placeholder="Write your message..."
-        className={`p-3 text-sm outline-none [&:empty:before]:content-[attr(data-placeholder)] [&:empty:before]:text-muted-foreground [&_a]:text-accent [&_a]:underline [&_img]:max-w-full [&_img]:rounded-md [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6 ${editorClassName}`}
+        className={`p-3 text-sm outline-none overflow-y-auto overscroll-contain break-words [&:empty:before]:content-[attr(data-placeholder)] [&:empty:before]:text-muted-foreground [&_a]:text-accent [&_a]:underline [&_img]:max-w-full [&_img]:rounded-md [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6 ${editorClassName}`}
         onInput={() => updateComposeBodyFromEditor(editorRef)}
         onBlur={() => updateComposeBodyFromEditor(editorRef)}
       />
@@ -1557,8 +1840,26 @@ const MailPage = () => {
         </div>
       </div>
 
-      {composeAttachments.length > 0 && (
+      {(existingDraftAttachments.length > 0 || composeAttachments.length > 0) && (
         <div className="space-y-2">
+          {existingDraftAttachments.map((attachment) => (
+            <div key={attachment.id} className="flex items-center justify-between gap-2 rounded border border-border px-3 py-2">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{attachment.filename}</p>
+                <p className="text-xs text-muted-foreground">{formatAttachmentSize(attachment.size_bytes)}</p>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0"
+                onClick={() => removeExistingDraftAttachment(attachment.id)}
+                title="Remove attachment"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          ))}
           {composeAttachments.map(({ id, file }) => (
             <div key={id} className="flex items-center justify-between gap-2 rounded border border-border px-3 py-2">
               <div className="min-w-0">
@@ -1588,24 +1889,34 @@ const MailPage = () => {
       toast({ title: 'Please select an account', variant: 'destructive' });
       return;
     }
+    if (!composeForm.to.trim()) {
+      toast({ title: 'Please enter a recipient', variant: 'destructive' });
+      return;
+    }
     if (isComposeHtmlEmpty(composeForm.body) && composeAttachments.length === 0) {
       toast({ title: 'Please enter a message or add an attachment', variant: 'destructive' });
       return;
     }
 
     try {
-      const attachmentPayload = await Promise.all(
-        composeAttachments.map(async ({ file }) => ({
-          filename: file.name,
-          contentType: file.type || 'application/octet-stream',
-          size: file.size,
-          dataBase64: await fileToBase64(file),
-        }))
-      );
+      if (activeDraftId) {
+        const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
+        const draftId = savedDraft?.id || activeDraftId;
+        const response = await api.post(`/mail/drafts/${draftId}/send`);
+        if (response.error) throw new Error(response.error);
+        toast({ title: '✓ Email sent successfully' });
+        queryClient.invalidateQueries({ queryKey: ['emails'] });
+        queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+        closeComposeFlow({ force: true });
+        return;
+      }
+
+      const attachmentPayload = await buildAttachmentPayload();
 
       sendEmailMutation.mutate({
         account_id: selectedAccount,
-        ...composeForm,
+        to: composeForm.to,
+        subject: composeForm.subject.trim() || '(No subject)',
         body: composeForm.body || '<p></p>',
         isHtml: true,
         attachments: attachmentPayload,
@@ -1630,7 +1941,7 @@ const MailPage = () => {
     : false;
 
   return (
-    <div className="flex h-[calc(100vh-0px)] overflow-hidden relative">
+    <div className="relative flex h-full min-h-0 overflow-hidden">
       {/* Mobile Sidebar Overlay */}
       {isMobile && mobileSidebarOpen && (
         <div 
@@ -2034,10 +2345,10 @@ const MailPage = () => {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* Header */}
-        <div className="h-14 border-b border-border flex items-center justify-between px-4 gap-4">
-          <div className="flex items-center gap-2 flex-1 min-w-0">
+        <div className="min-h-14 border-b border-border flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
             {isMobile && (
               <Button
                 variant="ghost"
@@ -2087,7 +2398,7 @@ const MailPage = () => {
                   <Mail className="h-4 w-4 mr-2" />
                   {showUnreadOnly ? 'Unread Only' : 'All'}
                 </Button>
-                <div className="relative flex-1 max-w-md ml-4">
+                <div className="relative order-last w-full min-w-[180px] sm:order-none sm:ml-4 sm:max-w-md sm:flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     type="text"
@@ -2111,7 +2422,50 @@ const MailPage = () => {
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {selectedEmails.size > 0 && (
+            {selectedEmails.size > 0 && isMobile && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon" title="Selection actions">
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="max-h-[70vh] overflow-y-auto">
+                  <DropdownMenuItem onClick={() => bulkMarkRead.mutate({ emailIds: Array.from(selectedEmails), is_read: true })}>
+                    <CheckCircle2 className="h-4 w-4 mr-2" />
+                    Mark read
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => bulkMarkRead.mutate({ emailIds: Array.from(selectedEmails), is_read: false })}>
+                    <Mail className="h-4 w-4 mr-2" />
+                    Mark unread
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => bulkStar.mutate({ emailIds: Array.from(selectedEmails), is_starred: true })}>
+                    <Star className="h-4 w-4 mr-2" />
+                    Star
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  {folders
+                    .filter((folder) => movableFolderIds.includes(folder.id) && folder.id !== selectedFolder)
+                    .map((folder) => (
+                      <DropdownMenuItem
+                        key={folder.id}
+                        onClick={() => bulkMove.mutate({ emailIds: Array.from(selectedEmails), folder: folder.id })}
+                      >
+                        <folder.icon className="h-4 w-4 mr-2" />
+                        Move to {folder.label}
+                      </DropdownMenuItem>
+                    ))}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onClick={() => bulkDelete.mutate(createTrashMovePayload(Array.from(selectedEmails)))}
+                    className="text-destructive focus:text-destructive"
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            {selectedEmails.size > 0 && !isMobile && (
               <>
                 <Button
                   variant="outline"
@@ -2121,6 +2475,15 @@ const MailPage = () => {
                 >
                   <CheckCircle2 className="h-4 w-4 mr-2" />
                   Mark Read
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => bulkMarkRead.mutate({ emailIds: Array.from(selectedEmails), is_read: false })}
+                  disabled={bulkMarkRead.isPending}
+                >
+                  <Mail className="h-4 w-4 mr-2" />
+                  Mark Unread
                 </Button>
                 <Button
                   variant="outline"
@@ -2159,7 +2522,7 @@ const MailPage = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => bulkDelete.mutate(Array.from(selectedEmails))}
+                  onClick={() => bulkDelete.mutate(createTrashMovePayload(Array.from(selectedEmails)))}
                   disabled={bulkDelete.isPending}
                   className="text-destructive hover:text-destructive"
                 >
@@ -2441,12 +2804,16 @@ const MailPage = () => {
           <button
             className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2 text-destructive"
             onClick={() => {
-              bulkDelete.mutate([contextMenuEmail.email.id]);
+              if (contextMenuEmail.email.is_draft || contextMenuEmail.email.folder === 'drafts') {
+                setDraftToDelete(contextMenuEmail.email);
+              } else {
+                bulkDelete.mutate(createTrashMovePayload([contextMenuEmail.email.id]));
+              }
               setContextMenuEmail(null);
             }}
           >
             <Trash2 className="h-4 w-4" />
-            Delete
+            {contextMenuEmail.email.is_draft || contextMenuEmail.email.folder === 'drafts' ? 'Delete draft' : 'Delete'}
           </button>
         </div>
         </>
@@ -2479,25 +2846,37 @@ const MailPage = () => {
         <div className="fixed inset-0 z-50 bg-background">
           <div className="flex flex-col h-full">
             {/* Header */}
-            <div className="border-b border-border p-4 flex items-center justify-between">
-              <div className="flex items-center gap-4">
+            <div className="shrink-0 border-b border-border p-3 sm:p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-4">
                 <Button
                   variant="ghost"
                   size="icon"
                   onClick={() => {
+                    if (isReplying && (isComposeDirty || attachmentsDirty)) {
+                      closeComposeFlow();
+                      return;
+                    }
                     setSelectedEmail(null);
                     resetComposeState();
                   }}
                 >
                   <ArrowLeft className="h-5 w-5" />
                 </Button>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => {
+                      if ((isReplying || isComposeOpen) && (isComposeDirty || attachmentsDirty) && isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) {
+                        setComposeClosePromptOpen(true);
+                        return;
+                      }
                       setComposeMode('reply');
                       setComposeAttachments([]);
+                      setExistingDraftAttachments([]);
+                      setActiveDraftId(null);
+                      setAttachmentsDirty(false);
+                      setIsComposeDirty(false);
                       if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
@@ -2520,8 +2899,16 @@ const MailPage = () => {
                     variant="outline"
                     size="sm"
                     onClick={() => {
+                      if ((isReplying || isComposeOpen) && (isComposeDirty || attachmentsDirty) && isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) {
+                        setComposeClosePromptOpen(true);
+                        return;
+                      }
                       setComposeMode('forward');
                       setComposeAttachments([]);
+                      setExistingDraftAttachments([]);
+                      setActiveDraftId(null);
+                      setAttachmentsDirty(false);
+                      setIsComposeDirty(false);
                       if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
@@ -2542,13 +2929,33 @@ const MailPage = () => {
                   </Button>
                 </div>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => toggleStar.mutate({ id: selectedEmail.id, is_starred: !selectedEmail.is_starred })}
-              >
-                <Star className={`h-5 w-5 ${selectedEmail.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />
-              </Button>
+              <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setEmailReadStatus.mutate({ id: selectedEmail.id, is_read: !selectedEmail.is_read })}
+                  disabled={setEmailReadStatus.isPending}
+                >
+                  {selectedEmail.is_read ? (
+                    <>
+                      <Mail className="h-4 w-4 mr-2" />
+                      Mark unread
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-4 w-4 mr-2" />
+                      Mark read
+                    </>
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => toggleStar.mutate({ id: selectedEmail.id, is_starred: !selectedEmail.is_starred })}
+                >
+                  <Star className={`h-5 w-5 ${selectedEmail.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />
+                </Button>
+              </div>
             </div>
             
             {/* Email Content */}
@@ -2670,9 +3077,9 @@ const MailPage = () => {
 
             {/* Desktop: Inline Compose Editor */}
             {!isMobile && isReplying && (
-              <div className="border-t border-border bg-card">
-                <div className="p-4 max-w-4xl mx-auto">
-                  <div className="flex items-center justify-between mb-4">
+              <div className="max-h-[52vh] shrink-0 border-t border-border bg-card">
+                <div className="mx-auto flex h-full max-w-4xl flex-col p-4">
+                  <div className="mb-4 flex shrink-0 items-center justify-between">
                     <h2 className="text-lg font-semibold">
                       {composeMode === 'reply' ? 'Reply' : composeMode === 'forward' ? 'Forward' : 'Compose'}
                     </h2>
@@ -2680,44 +3087,51 @@ const MailPage = () => {
                       variant="ghost"
                       size="sm"
                       onClick={() => {
-                        resetComposeState();
+                        closeComposeFlow();
                       }}
                     >
                       <X className="h-4 w-4" />
                     </Button>
                   </div>
-                  <form onSubmit={handleSendEmail} className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="compose-to-inline">To</Label>
-                      {renderRecipientInput('compose-to-inline')}
+                  <form onSubmit={handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                    <div className="grid shrink-0 gap-3 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="compose-to-inline">To</Label>
+                        {renderRecipientInput('compose-to-inline')}
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="compose-subject-inline">Subject</Label>
+                        <Input
+                          id="compose-subject-inline"
+                          placeholder="Enter subject"
+                          value={composeForm.subject}
+                          onChange={(e) => updateComposeForm({ subject: e.target.value })}
+                        />
+                      </div>
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="compose-subject-inline">Subject</Label>
-                      <Input 
-                        id="compose-subject-inline"
-                        placeholder="Enter subject"
-                        value={composeForm.subject}
-                        onChange={(e) => setComposeForm({ ...composeForm, subject: e.target.value })}
-                        required
-                      />
+                    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-3">
+                      <div className="space-y-2">
+                        <Label htmlFor="compose-body-inline">Message</Label>
+                        {renderRichComposeEditor('compose-body-inline', inlineComposeEditorRef, 'h-[220px] min-h-[180px]')}
+                      </div>
+                      {renderComposeAttachmentsSection('compose-attachments-inline')}
                     </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="compose-body-inline">Message</Label>
-                      {renderRichComposeEditor('compose-body-inline', inlineComposeEditorRef, 'min-h-[300px]')}
-                    </div>
-                    {renderComposeAttachmentsSection('compose-attachments-inline')}
-                    <div className="flex justify-end gap-3">
+                    <div className="flex shrink-0 justify-end gap-3 border-t border-border pt-3">
+                      <Button type="button" variant="secondary" onClick={() => saveCurrentDraft({ includeAttachments: true })} disabled={isDraftSaving || sendEmailMutation.isPending}>
+                        {isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        Save draft
+                      </Button>
                       <Button 
                         type="button" 
                         variant="outline" 
                         onClick={() => {
-                          resetComposeState();
+                          closeComposeFlow();
                         }}
                       >
                         Cancel
                       </Button>
-                      <Button type="submit" disabled={sendEmailMutation.isPending}>
-                        {sendEmailMutation.isPending ? (
+                      <Button type="submit" disabled={sendEmailMutation.isPending || isDraftSaving}>
+                        {sendEmailMutation.isPending || isDraftSaving ? (
                           <>
                             <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                             Sending...
@@ -2815,7 +3229,7 @@ const MailPage = () => {
                         type="button"
                         size="icon"
                         variant="ghost"
-                        onClick={() => deleteFolder.mutate(folder.slug)}
+                        onClick={() => setFolderToDelete(folder)}
                         disabled={folder.is_system || deleteFolder.isPending}
                         title="Delete folder"
                       >
@@ -2830,19 +3244,119 @@ const MailPage = () => {
         </DialogContent>
       </Dialog>
 
+      <AlertDialog open={composeClosePromptOpen} onOpenChange={setComposeClosePromptOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Save this draft?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This message has unsaved changes. Save it as a draft, discard it, or keep editing.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(event) => {
+                event.preventDefault();
+                void discardCurrentCompose();
+              }}
+            >
+              Discard
+            </AlertDialogAction>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                saveCurrentDraft({ includeAttachments: true })
+                  .then(() => {
+                    setComposeClosePromptOpen(false);
+                    closeComposeFlow({ force: true });
+                  })
+                  .catch(() => {});
+              }}
+            >
+              {isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              Save draft
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!folderToDelete} onOpenChange={(open) => !open && setFolderToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete folder?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Messages and routing rules in {folderToDelete?.display_name || 'this folder'} will move back to Inbox.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (folderToDelete) {
+                  deleteFolder.mutate(folderToDelete.slug);
+                  setFolderToDelete(null);
+                }
+              }}
+            >
+              Delete folder
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={!!draftToDelete} onOpenChange={(open) => !open && setDraftToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete draft?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This draft and its attachments will be removed from UniHub.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (!draftToDelete) return;
+                deleteDraftById(draftToDelete.id)
+                  .then(() => {
+                    toast({ title: 'Draft deleted' });
+                    if (activeDraftId === draftToDelete.id) closeComposeFlow({ force: true });
+                    setDraftToDelete(null);
+                  })
+                  .catch((error) => {
+                    toast({
+                      title: 'Failed to delete draft',
+                      description: error instanceof Error ? error.message : 'Could not delete draft',
+                      variant: 'destructive',
+                    });
+                  });
+              }}
+            >
+              Delete draft
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Compose Dialog - Mobile or New Message */}
       <Dialog open={isComposeOpen} onOpenChange={(open) => {
         if (open) setIsComposeOpen(true);
         else closeComposeFlow();
       }}>
-        <DialogContent className={`${isMobile ? 'max-w-full h-[95vh] max-h-[95vh] flex flex-col p-4 translate-y-[-47.5%] top-[47.5%] rounded-t-lg rounded-b-none' : 'sm:max-w-2xl'}`}>
-          <DialogHeader className="shrink-0">
+        <DialogContent className={`${isMobile ? 'max-w-full h-[calc(100dvh-5.5rem)] max-h-[calc(100dvh-5.5rem)] translate-y-[-50%] rounded-t-lg rounded-b-none' : 'sm:max-w-3xl max-h-[90dvh]'} !flex flex-col overflow-hidden p-0`}>
+          <DialogHeader className="shrink-0 border-b border-border px-4 py-3 pr-10">
             <DialogTitle>
               {composeMode === 'reply' ? 'Reply' : composeMode === 'forward' ? 'Forward' : 'New Message'}
             </DialogTitle>
+            <DialogDescription className={activeDraftId || isDraftSaving || draftSavedAt ? undefined : 'sr-only'}>
+              {isDraftSaving ? 'Saving draft...' : draftSavedAt ? `Draft saved ${format(new Date(draftSavedAt), 'HH:mm')}` : 'Compose email message'}
+            </DialogDescription>
           </DialogHeader>
-          <form onSubmit={handleSendEmail} className={`space-y-4 mt-4 ${isMobile ? 'flex-1 flex flex-col min-h-0 overflow-hidden' : ''}`}>
-            <div className={`space-y-4 ${isMobile ? 'shrink-0' : ''}`}>
+          <form onSubmit={handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="shrink-0 space-y-4 px-4 py-3">
               <div className="space-y-2">
                 <Label>From</Label>
                 <Select
@@ -2871,24 +3385,33 @@ const MailPage = () => {
                   id="compose-subject"
                   placeholder="Enter subject"
                   value={composeForm.subject}
-                  onChange={(e) => setComposeForm({ ...composeForm, subject: e.target.value })}
-                  required
+                  onChange={(e) => updateComposeForm({ subject: e.target.value })}
                 />
               </div>
             </div>
-            <div className={`space-y-2 ${isMobile ? 'flex-1 flex flex-col min-h-0' : ''}`}>
-              <Label htmlFor="compose-body">Message</Label>
-              {renderRichComposeEditor('compose-body', dialogComposeEditorRef, isMobile ? 'flex-1 min-h-[200px]' : 'min-h-[200px]')}
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3">
+              <div className="flex min-h-0 flex-col space-y-2">
+                <Label htmlFor="compose-body">Message</Label>
+                {renderRichComposeEditor(
+                  'compose-body',
+                  dialogComposeEditorRef,
+                  isMobile ? 'h-[36dvh] min-h-[180px]' : 'h-[min(44vh,420px)] min-h-[220px]'
+                )}
+              </div>
+              {renderComposeAttachmentsSection('compose-attachments-dialog')}
             </div>
-            {renderComposeAttachmentsSection('compose-attachments-dialog')}
-            <div className={`flex justify-end gap-3 ${isMobile ? 'shrink-0 pt-4 border-t border-border' : ''}`}>
+            <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border bg-background px-4 py-3">
+              <Button type="button" variant="secondary" onClick={() => saveCurrentDraft({ includeAttachments: true })} disabled={isDraftSaving || sendEmailMutation.isPending}>
+                {isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Save draft
+              </Button>
               <Button type="button" variant="outline" onClick={() => {
                 closeComposeFlow();
               }}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={sendEmailMutation.isPending}>
-                {sendEmailMutation.isPending ? (
+              <Button type="submit" disabled={sendEmailMutation.isPending || isDraftSaving}>
+                {sendEmailMutation.isPending || isDraftSaving ? (
                   <>
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     Sending...

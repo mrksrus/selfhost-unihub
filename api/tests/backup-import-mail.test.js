@@ -107,6 +107,7 @@ test('backup import maps restored mail to existing account and email sync identi
         imap_uid: 42,
         imap_uidvalidity: 123,
         is_read: true,
+        is_draft: true,
         received_at: '2026-05-15T09:00:00.000Z',
       }],
       email_attachments: [{
@@ -136,9 +137,11 @@ test('backup import maps restored mail to existing account and email sync identi
   const emailWrite = calls.find(call => call.sql.includes('INSERT INTO emails'));
   assert.equal(emailWrite.params[0], 'existing-email');
   assert.equal(emailWrite.params[2], 'existing-account');
+  assert.equal(emailWrite.params[12], 'inbox');
   assert.equal(emailWrite.params[13], 'INBOX');
   assert.equal(emailWrite.params[14], 42);
   assert.equal(emailWrite.params[15], 123);
+  assert.equal(emailWrite.params[20], 1);
   assert.equal(emailWrite.params[22], '2026-05-15 09:00:00');
 
   const attachmentWrite = calls.find(call => call.sql.includes('INSERT INTO email_attachments'));
