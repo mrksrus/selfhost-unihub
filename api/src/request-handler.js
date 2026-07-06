@@ -14,6 +14,30 @@ const { getActiveRestoreSections } = require('./services/restore-locks');
 const { BACKUP_UPLOAD_MAX_SIZE } = require('./config');
 
 const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
+const PUBLIC_ROUTE_KEYS = new Set([
+  'GET /health',
+  'GET /api/auth/signup-mode',
+  'POST /api/auth/signup',
+  'POST /api/auth/signin',
+  'POST /api/auth/2fa/login',
+  'GET /api/backup/export',
+]);
+
+function sanitizeHeaderFilename(filename) {
+  const sanitized = String(filename || 'download')
+    .replace(/[\r\n"\\]/g, '_')
+    .replace(/[^\x20-\x7E]/g, '_')
+    .trim();
+  return sanitized || 'download';
+}
+
+function buildContentDisposition(dispositionType, filename) {
+  const safeDispositionType = dispositionType === 'inline' ? 'inline' : 'attachment';
+  const rawFilename = String(filename || 'download').replace(/[\r\n]/g, ' ').trim() || 'download';
+  const safeFilename = sanitizeHeaderFilename(rawFilename);
+  const encodedFilename = encodeURIComponent(rawFilename);
+  return `${safeDispositionType}; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`;
+}
 
 function getRestoreSectionForWrite(pathname) {
   if (pathname.startsWith('/api/backup/')) return null;
@@ -175,6 +199,11 @@ async function handleRequest(req, res) {
   let temporaryUploadPath = null;
   try {
     const userId = await verifyToken(req);
+    if (!userId && !PUBLIC_ROUTE_KEYS.has(routeKey)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized', status: 401 }));
+      return;
+    }
 
     // Validate CSRF token for authenticated state-changing requests
     if (userId && !validateCsrfToken(req, res)) {
@@ -279,9 +308,7 @@ async function handleRequest(req, res) {
     if (result.__raw) {
       const filename = result.__filename || 'download';
       const dispositionType = result.__disposition === 'inline' ? 'inline' : 'attachment';
-      // Properly encode filename for Content-Disposition header (RFC 5987)
-      const encodedFilename = encodeURIComponent(filename);
-      const contentDisposition = `${dispositionType}; filename="${filename}"; filename*=UTF-8''${encodedFilename}`;
+      const contentDisposition = buildContentDisposition(dispositionType, filename);
       
       res.writeHead(200, {
         'Content-Type': result.__contentType || 'application/octet-stream',
@@ -295,8 +322,7 @@ async function handleRequest(req, res) {
     if (result.__streamPath) {
       const filename = result.__filename || 'download';
       const dispositionType = result.__disposition === 'inline' ? 'inline' : 'attachment';
-      const encodedFilename = encodeURIComponent(filename);
-      const contentDisposition = `${dispositionType}; filename="${filename}"; filename*=UTF-8''${encodedFilename}`;
+      const contentDisposition = buildContentDisposition(dispositionType, filename);
       const contentLength = result.__contentLength === undefined || result.__contentLength === null
         ? null
         : Number(result.__contentLength);

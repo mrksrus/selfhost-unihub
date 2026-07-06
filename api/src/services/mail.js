@@ -1883,6 +1883,8 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
       text: isHtml ? undefined : body,
       html: isHtml ? body : undefined,
       attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
+      disableFileAccess: true,
+      disableUrlAccess: true,
     });
     // #region agent log
     debugLog('server.js:199', 'SMTP sendMail success', { messageId: info.messageId }, 'H5');
