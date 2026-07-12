@@ -667,6 +667,13 @@ async function ensureSchema() {
     // Ignore if the column is already compatible or ALTER is unsupported.
   }
   try {
+    // Sent and draft messages are authored locally and must never contribute to unread badges.
+    // This repairs messages created before explicit read-state inserts were introduced.
+    await db.execute("UPDATE emails SET is_read = TRUE WHERE is_read = FALSE AND folder IN ('sent', 'drafts')");
+  } catch (e) {
+    // Keep startup available when the legacy emails table is unavailable.
+  }
+  try {
     await db.execute('CREATE INDEX idx_emails_imap_uid ON emails(mail_account_id, source_folder, imap_uid)');
   } catch (e) {
     // Ignore duplicate index errors.

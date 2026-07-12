@@ -493,10 +493,18 @@ const MailPage = () => {
     });
   }, [mailFolders]);
 
-  const folderFilters = React.useMemo(
-    () => [{ id: ALL_MAIL, label: 'All mail', icon: Mail }, ...folders],
-    [folders]
-  );
+  const folderFilters = React.useMemo(() => {
+    // Starred is a virtual IMAP flag view, not a physical mailbox row.
+    const starred = systemFolders.find(folder => folder.id === 'starred')!;
+    const listedFolders = folders.filter(folder => folder.id !== 'starred');
+    const insertAfter = listedFolders.findIndex(folder => folder.id === 'drafts') + 1;
+    const orderedFolders = [
+      ...listedFolders.slice(0, Math.max(insertAfter, 0)),
+      starred,
+      ...listedFolders.slice(Math.max(insertAfter, 0)),
+    ];
+    return [{ id: ALL_MAIL, label: 'All mail', icon: Mail }, ...orderedFolders];
+  }, [folders]);
 
   const movableFolderIds = React.useMemo(
     () => folders.map(folder => folder.id).filter(folderId => folderId !== 'starred'),
@@ -572,7 +580,7 @@ const MailPage = () => {
     queryFn: async () => {
       if (!selectedAccount) return { total: 0 };
 
-      const folder = selectedFolder === 'starred' ? 'inbox' : selectedFolder;
+      const folder = selectedFolder;
       const params = new URLSearchParams({
         limit: '1',
         offset: '0',
@@ -622,7 +630,7 @@ const MailPage = () => {
     queryFn: async () => {
       if (!selectedAccount) return { emails: [], pagination: null };
       
-      const folder = selectedFolder === 'starred' ? 'inbox' : selectedFolder;
+      const folder = selectedFolder;
       const offset = (emailPage - 1) * emailsPerPage;
       const params = new URLSearchParams({
         limit: String(emailsPerPage),
@@ -2062,7 +2070,9 @@ const MailPage = () => {
                   <Plus className="h-4 w-4" />
                 </Button>
               </DialogTrigger>
-              <DialogContent className={pendingHostTrust ? 'max-w-2xl max-h-[85vh] overflow-y-auto' : undefined}>
+              <DialogContent className={pendingHostTrust
+                ? 'w-[calc(100vw-1rem)] max-w-2xl max-h-[calc(100dvh-1rem)] overflow-y-auto p-4 sm:max-h-[85vh] sm:p-6'
+                : 'w-[calc(100vw-1rem)] max-w-lg max-h-[calc(100dvh-1rem)] overflow-y-auto p-4 sm:max-h-[85vh] sm:p-6'}>
                 <DialogHeader>
                   <DialogTitle>
                     {pendingHostTrust ? 'Confirm Mail Server Authenticity' : editingAccount ? 'Edit Mail Account' : 'Add Mail Account'}

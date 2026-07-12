@@ -12,6 +12,7 @@ const {
   SYSTEM_MAIL_FOLDER_SET,
   normalizeMailFolderSlug,
   normalizeMailFolderDisplayName,
+  createRemoteMailFolderForUserAccounts,
   loadMailFoldersForUser,
   mailFolderExists,
   toBooleanFlag,
@@ -338,6 +339,8 @@ module.exports = {
         [userId]
       );
       const position = Number(positionRows[0]?.max_position || 90) + 10;
+      // Create the IMAP mailbox first so a folder shown by UniHub always exists remotely.
+      const remoteFolder = await createRemoteMailFolderForUserAccounts(userId, displayName);
       const folderId = crypto.randomUUID();
       await db.execute(
         `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
@@ -345,7 +348,7 @@ module.exports = {
         [folderId, userId, requestedSlug, displayName, position]
       );
       const folders = await getMailFolderRowsWithCounts(userId);
-      return { folder: folders.find(folder => folder.slug === requestedSlug) || null, folders };
+      return { folder: folders.find(folder => folder.slug === requestedSlug) || null, folders, remoteFolder };
     } catch (error) {
       console.error('Create mail folder error:', error);
       return { error: 'Failed to create mail folder', status: 500 };
@@ -1285,7 +1288,9 @@ module.exports = {
       const where = ['user_id = ?'];
       params = [userId];
       
-      if (hasFolderFilter) {
+      if (folder === 'starred') {
+        where.push('is_starred = 1');
+      } else if (hasFolderFilter) {
         where.push('folder = ?');
         params.push(folder);
       }

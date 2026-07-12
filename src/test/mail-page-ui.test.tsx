@@ -152,6 +152,16 @@ describe('MailPage UI regressions', () => {
     expect(screen.getByRole('button', { name: /mark unread/i })).toBeInTheDocument();
   });
 
+  it('keeps Starred available as a virtual flag view when no Starred mailbox exists', async () => {
+    renderMailPage([inboxEmail]);
+
+    fireEvent.click(await screen.findByRole('button', { name: /starred/i }));
+
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith(expect.stringContaining('folder=starred'));
+    });
+  });
+
   it('opens draft rows in compose instead of the reader', async () => {
     renderMailPage([draftEmail]);
 

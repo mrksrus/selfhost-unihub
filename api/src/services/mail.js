@@ -58,6 +58,7 @@ const MAIL_FOLDER_SLUG_MAX_LENGTH = 64;
 const MAIL_SYNC_FOLDER_CANDIDATES = [
   { slug: 'inbox', names: ['INBOX'] },
   { slug: 'sent', names: ['Sent', 'Sent Items', 'Sent Mail', '[Gmail]/Sent Mail', '[Google Mail]/Sent Mail'] },
+  { slug: 'drafts', names: ['Drafts', '[Gmail]/Drafts', '[Google Mail]/Drafts'] },
   { slug: 'archive', names: ['Archive', 'Archives', '[Gmail]/All Mail', '[Google Mail]/All Mail'] },
   { slug: 'trash', names: ['Trash', 'Deleted Items', 'Deleted Messages', '[Gmail]/Trash', '[Google Mail]/Trash'] },
 ];
@@ -535,6 +536,39 @@ async function listAvailableImapFolders(connection) {
   }
 }
 
+function isProviderManagedImapFolder(folderName) {
+  return String(folderName || '').trim().startsWith('[');
+}
+
+async function registerCustomImapFoldersForUser(userId, availableFolders, connection = db) {
+  if (!userId) return [];
+  await ensureDefaultMailFoldersForUser(userId, connection);
+  const standardNames = new Set(MAIL_SYNC_FOLDER_CANDIDATES.flatMap(candidate => candidate.names.map(name => name.toLowerCase())));
+  const registered = [];
+
+  for (const rawFolderName of availableFolders || []) {
+    const displayName = normalizeMailFolderDisplayName(rawFolderName);
+    const slug = normalizeMailFolderSlug(displayName);
+    if (!displayName || !slug || isProviderManagedImapFolder(displayName) || standardNames.has(displayName.toLowerCase())) continue;
+    const [existing] = await connection.execute(
+      'SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1',
+      [userId, slug]
+    );
+    if (existing.length > 0) continue;
+    const [positionRows] = await connection.execute(
+      'SELECT COALESCE(MAX(position), 100) AS max_position FROM mail_folders WHERE user_id = ?',
+      [userId]
+    );
+    await connection.execute(
+      `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
+       VALUES (?, ?, ?, ?, FALSE, ?)`,
+      [crypto.randomUUID(), userId, slug, displayName, Number(positionRows[0]?.max_position || 100) + 10]
+    );
+    registered.push({ slug, displayName });
+  }
+  return registered;
+}
+
 function pickImapSyncFolders(availableFolders) {
   const normalizedAvailable = new Map((availableFolders || []).map((folderName) => [
     String(folderName).toLowerCase(),
@@ -556,6 +590,13 @@ function pickImapSyncFolders(availableFolders) {
 
   if (!picked.some(folder => folder.dbFolderName === 'inbox')) {
     picked.unshift({ folderName: 'INBOX', dbFolderName: 'inbox' });
+  }
+  for (const rawFolderName of availableFolders || []) {
+    const folderName = String(rawFolderName || '').trim();
+    const slug = normalizeMailFolderSlug(folderName);
+    if (!folderName || !slug || isProviderManagedImapFolder(folderName) || seenNames.has(folderName.toLowerCase())) continue;
+    picked.push({ folderName, dbFolderName: slug });
+    seenNames.add(folderName.toLowerCase());
   }
   return picked;
 }
@@ -1012,6 +1053,81 @@ function buildImapConnectionConfig(account) {
   };
 }
 
+function createImapBox(connection, folderName) {
+  return new Promise((resolve, reject) => {
+    if (typeof connection?.imap?.addBox !== 'function') {
+      reject(new Error('The configured IMAP client does not support remote folder creation.'));
+      return;
+    }
+    connection.imap.addBox(folderName, error => error ? reject(error) : resolve());
+  });
+}
+
+async function ensureCustomImapFoldersForUser(userId, connection, availableFolders, dbConnection = db) {
+  if (!userId || !connection) return { created: 0, failed: [] };
+  const [localFolders] = await dbConnection.execute(
+    'SELECT display_name FROM mail_folders WHERE user_id = ? AND is_system = FALSE ORDER BY position ASC, display_name ASC',
+    [userId]
+  );
+  const existingNames = new Set((availableFolders || []).map(name => String(name).trim().toLowerCase()));
+  const failed = [];
+  let created = 0;
+  for (const folder of localFolders || []) {
+    const displayName = normalizeMailFolderDisplayName(folder.display_name);
+    if (!displayName || existingNames.has(displayName.toLowerCase())) continue;
+    try {
+      await createImapBox(connection, displayName);
+      existingNames.add(displayName.toLowerCase());
+      created += 1;
+    } catch (error) {
+      failed.push({ displayName, error: error.message || String(error) });
+    }
+  }
+  return { created, failed };
+}
+
+async function createRemoteMailFolderForUserAccounts(userId, folderName) {
+  const displayName = normalizeMailFolderDisplayName(folderName);
+  if (!userId || !displayName) return { created: 0, existing: 0, accounts: [] };
+  const [accounts] = await db.execute(
+    'SELECT * FROM mail_accounts WHERE user_id = ? AND is_active = TRUE',
+    [userId]
+  );
+  const results = [];
+  for (const account of accounts || []) {
+    let connection = null;
+    try {
+      const config = buildImapConnectionConfig(account);
+      if (!config) throw new Error('No password configured');
+      connection = await imaps.connect(config);
+      const availableFolders = await listAvailableImapFolders(connection);
+      if (availableFolders.some(name => String(name).toLowerCase() === displayName.toLowerCase())) {
+        results.push({ accountId: account.id, status: 'existing' });
+      } else {
+        await createImapBox(connection, displayName);
+        results.push({ accountId: account.id, status: 'created' });
+      }
+    } catch (error) {
+      results.push({ accountId: account.id, status: 'failed', error: error.message || String(error) });
+    } finally {
+      if (connection) {
+        try { connection.end(); } catch { /* already closed */ }
+      }
+    }
+  }
+  const failures = results.filter(result => result.status === 'failed');
+  if (failures.length) {
+    const error = new Error(`Folder was not created on ${failures.length} connected mail account(s): ${failures.map(result => result.error).join('; ')}`);
+    error.remoteResults = results;
+    throw error;
+  }
+  return {
+    created: results.filter(result => result.status === 'created').length,
+    existing: results.filter(result => result.status === 'existing').length,
+    accounts: results,
+  };
+}
+
 async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SERVER_DELETE_BATCH_SIZE } = {}) {
   const normalizedAccountId = normalizeMailAccountId(accountId);
   if (!normalizedAccountId || activeMailServerDeleteAccounts.has(normalizedAccountId)) {
@@ -1311,6 +1427,8 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
         const item = messageResults[0]; // Should only be one result
         console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] ✓ Downloaded UID ${uid}`);
         const fullEmail = buildRawEmailFromImapParts(item);
+        const imapFlags = Array.isArray(item?.attributes?.flags) ? item.attributes.flags : [];
+        const isRead = dbFolderName === 'sent' || dbFolderName === 'drafts' || imapFlags.includes('\\Seen');
         
         if (!fullEmail || fullEmail.trim().length === 0) {
           if (processedCount <= 5) {
@@ -1406,8 +1524,8 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
           await db.execute(
             `INSERT INTO emails
               (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html,
-               has_attachments, received_at, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               has_attachments, received_at, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256, is_read)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
               emailId,
               account.user_id,
@@ -1427,6 +1545,7 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
               uidValidity,
               rawArchive.rawStoragePath,
               rawArchive.rawSha256,
+              isRead ? 1 : 0,
             ]
           );
         } catch (dbError) {
@@ -1668,7 +1787,15 @@ async function syncMailAccountOnce(accountId) {
       console.error('[SYNC] IMAP connection error (handled, sync may fail):', err.message);
     });
     
-    const availableFolders = await listAvailableImapFolders(connection);
+    let availableFolders = await listAvailableImapFolders(connection);
+    const ensuredFolders = await ensureCustomImapFoldersForUser(account.user_id, connection, availableFolders);
+    if (ensuredFolders.created > 0) {
+      availableFolders = await listAvailableImapFolders(connection);
+    }
+    if (ensuredFolders.failed.length > 0) {
+      console.warn(`[SYNC] Could not create ${ensuredFolders.failed.length} local custom folder(s) remotely for ${account.email_address}`);
+    }
+    await registerCustomImapFoldersForUser(account.user_id, availableFolders);
     const foldersToSync = pickImapSyncFolders(availableFolders);
     console.log(`[SYNC] Folder plan for ${account.email_address}: ${foldersToSync.map(folder => `${folder.folderName}->${folder.dbFolderName}`).join(', ')}`);
 
@@ -1902,7 +2029,7 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
       });
       
       await db.execute(
-        'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html, has_attachments, received_at, folder) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html, has_attachments, received_at, folder, is_read) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
           emailId,
           account.user_id,
@@ -1917,6 +2044,7 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
           smtpAttachments.length > 0 ? 1 : 0,
           new Date(),
           'sent',
+          1,
         ]
       );
 
@@ -2013,7 +2141,11 @@ module.exports = {
   saveRawEmailSource,
   flattenImapBoxes,
   listAvailableImapFolders,
+  registerCustomImapFoldersForUser,
   pickImapSyncFolders,
+  createImapBox,
+  ensureCustomImapFoldersForUser,
+  createRemoteMailFolderForUserAccounts,
   getCurrentBoxUidValidity,
   buildRawEmailFromImapParts,
   loadExistingImportedUidSet,

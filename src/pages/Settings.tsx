@@ -218,6 +218,7 @@ const Settings = () => {
   });
   const [ruleSaving, setRuleSaving] = useState(false);
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
+  const [ruleSorting, setRuleSorting] = useState(false);
   const [backupCreating, setBackupCreating] = useState(false);
   const [backupImporting, setBackupImporting] = useState(false);
   const [backupEncryptionEnabled, setBackupEncryptionEnabled] = useState(true);
@@ -951,6 +952,34 @@ const Settings = () => {
       toast({ title: 'Failed to delete rule', description: message, variant: 'destructive' });
     } finally {
       setRuleSaving(false);
+    }
+  };
+
+  const applySenderRulesNow = async () => {
+    setRuleSorting(true);
+    try {
+      const response = await api.post<{ scanned: number; matched: number; applied: number }>('/mail/sender-rules/backfill', {
+        mode: 'apply',
+        limit: 5000,
+      });
+      if (response.error) {
+        toast({ title: 'Could not sort mail', description: response.error, variant: 'destructive' });
+        return;
+      }
+      const result = response.data;
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+      await refetchMailSenderCandidates();
+      toast({
+        title: 'Mail sorted',
+        description: `${result?.applied ?? 0} of ${result?.scanned ?? 0} inbox emails matched your current rules.`,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Could not sort mail', description: message, variant: 'destructive' });
+    } finally {
+      setRuleSorting(false);
     }
   };
 
@@ -1958,10 +1987,16 @@ const Settings = () => {
                     </CardDescription>
                   </div>
                 </div>
-                <Button variant="outline" size="sm" onClick={() => refetchMailSenderCandidates()} disabled={mailSenderCandidatesLoading}>
-                  {mailSenderCandidatesLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                  Refresh
-                </Button>
+                <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                  <Button variant="outline" size="sm" onClick={applySenderRulesNow} disabled={ruleSorting}>
+                    {ruleSorting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    Sort now
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => refetchMailSenderCandidates()} disabled={mailSenderCandidatesLoading}>
+                    {mailSenderCandidatesLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    Refresh
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
