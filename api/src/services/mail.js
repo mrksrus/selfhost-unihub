@@ -540,36 +540,83 @@ function isProviderManagedImapFolder(folderName) {
   return String(folderName || '').trim().startsWith('[');
 }
 
-async function registerCustomImapFoldersForUser(userId, availableFolders, connection = db) {
+function isVirtualMailFolderName(folderName) {
+  return String(folderName || '').trim().toLowerCase() === 'starred';
+}
+
+async function allocateCollisionSafeMailFolderSlug(userId, displayName, connection = db) {
+  const baseSlug = normalizeMailFolderSlug(displayName);
+  if (!baseSlug) return '';
+  const [rows] = await connection.execute(
+    'SELECT slug FROM mail_folders WHERE user_id = ? AND slug LIKE ?',
+    [userId, `${baseSlug.slice(0, MAIL_FOLDER_SLUG_MAX_LENGTH - 3)}%`]
+  );
+  const used = new Set((rows || []).map(row => row.slug));
+  if (!used.has(baseSlug)) return baseSlug;
+  for (let suffix = 2; suffix < 100000; suffix += 1) {
+    const candidate = `${baseSlug.slice(0, MAIL_FOLDER_SLUG_MAX_LENGTH - String(suffix).length - 1)}_${suffix}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  throw new Error('Unable to allocate a unique mail folder slug');
+}
+
+async function registerCustomImapFoldersForUser(userId, accountId, availableFolders, connection = db) {
   if (!userId) return [];
   await ensureDefaultMailFoldersForUser(userId, connection);
   const standardNames = new Set(MAIL_SYNC_FOLDER_CANDIDATES.flatMap(candidate => candidate.names.map(name => name.toLowerCase())));
   const registered = [];
 
   for (const rawFolderName of availableFolders || []) {
-    const displayName = normalizeMailFolderDisplayName(rawFolderName);
-    const slug = normalizeMailFolderSlug(displayName);
-    if (!displayName || !slug || isProviderManagedImapFolder(displayName) || standardNames.has(displayName.toLowerCase())) continue;
-    const [existing] = await connection.execute(
-      'SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1',
-      [userId, slug]
+    // Keep the remote identity lossless; only the label shown in the UI is normalized.
+    const remoteName = String(rawFolderName || '').trim();
+    const displayName = normalizeMailFolderDisplayName(remoteName);
+    if (!remoteName || !displayName || isVirtualMailFolderName(remoteName) || isProviderManagedImapFolder(remoteName) || standardNames.has(remoteName.toLowerCase())) continue;
+    const [mapped] = await connection.execute(
+      `SELECT f.id, f.slug, f.display_name
+       FROM mail_folder_remote_boxes b
+       JOIN mail_folders f ON f.id = b.folder_id
+       WHERE f.user_id = ? AND b.mail_account_id = ? AND b.remote_name = ? LIMIT 1`,
+      [userId, accountId, remoteName]
     );
-    if (existing.length > 0) continue;
+    if (mapped.length > 0) {
+      registered.push({ slug: mapped[0].slug, displayName, remoteName });
+      continue;
+    }
+    // Migrate an unambiguous legacy local folder; otherwise allocate a distinct UI slug.
+    const [sameName] = await connection.execute(
+      `SELECT id, slug FROM mail_folders f
+       WHERE f.user_id = ? AND f.is_system = FALSE AND f.display_name = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM mail_folder_remote_boxes b
+           WHERE b.folder_id = f.id AND b.remote_name <> ?
+         )
+       ORDER BY f.created_at ASC LIMIT 1`,
+      [userId, displayName, remoteName]
+    );
+    const folderId = sameName[0]?.id || crypto.randomUUID();
+    const slug = sameName[0]?.slug || await allocateCollisionSafeMailFolderSlug(userId, displayName, connection);
     const [positionRows] = await connection.execute(
       'SELECT COALESCE(MAX(position), 100) AS max_position FROM mail_folders WHERE user_id = ?',
       [userId]
     );
+    if (!sameName.length) {
+      await connection.execute(
+        `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
+         VALUES (?, ?, ?, ?, FALSE, ?)`,
+        [folderId, userId, slug, displayName, Number(positionRows[0]?.max_position || 100) + 10]
+      );
+    }
     await connection.execute(
-      `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
-       VALUES (?, ?, ?, ?, FALSE, ?)`,
-      [crypto.randomUUID(), userId, slug, displayName, Number(positionRows[0]?.max_position || 100) + 10]
+      `INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name)
+       VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE remote_name = VALUES(remote_name)`,
+      [folderId, accountId, remoteName]
     );
-    registered.push({ slug, displayName });
+    registered.push({ slug, displayName, remoteName });
   }
   return registered;
 }
 
-function pickImapSyncFolders(availableFolders) {
+function pickImapSyncFolders(availableFolders, customFolderSlugs = new Map()) {
   const normalizedAvailable = new Map((availableFolders || []).map((folderName) => [
     String(folderName).toLowerCase(),
     String(folderName),
@@ -593,8 +640,8 @@ function pickImapSyncFolders(availableFolders) {
   }
   for (const rawFolderName of availableFolders || []) {
     const folderName = String(rawFolderName || '').trim();
-    const slug = normalizeMailFolderSlug(folderName);
-    if (!folderName || !slug || isProviderManagedImapFolder(folderName) || seenNames.has(folderName.toLowerCase())) continue;
+    const slug = customFolderSlugs.get(folderName);
+    if (!folderName || !slug || isVirtualMailFolderName(folderName) || isProviderManagedImapFolder(folderName) || seenNames.has(folderName.toLowerCase())) continue;
     picked.push({ folderName, dbFolderName: slug });
     seenNames.add(folderName.toLowerCase());
   }
@@ -1088,7 +1135,7 @@ async function ensureCustomImapFoldersForUser(userId, connection, availableFolde
 
 async function createRemoteMailFolderForUserAccounts(userId, folderName) {
   const displayName = normalizeMailFolderDisplayName(folderName);
-  if (!userId || !displayName) return { created: 0, existing: 0, accounts: [] };
+  if (!userId || !displayName) return { status: 'complete', retryable: false, created: 0, existing: 0, accounts: [] };
   const [accounts] = await db.execute(
     'SELECT * FROM mail_accounts WHERE user_id = ? AND is_active = TRUE',
     [userId]
@@ -1102,26 +1149,22 @@ async function createRemoteMailFolderForUserAccounts(userId, folderName) {
       connection = await imaps.connect(config);
       const availableFolders = await listAvailableImapFolders(connection);
       if (availableFolders.some(name => String(name).toLowerCase() === displayName.toLowerCase())) {
-        results.push({ accountId: account.id, status: 'existing' });
+        results.push({ accountId: account.id, remoteName: displayName, status: 'existing' });
       } else {
         await createImapBox(connection, displayName);
-        results.push({ accountId: account.id, status: 'created' });
+        results.push({ accountId: account.id, remoteName: displayName, status: 'created' });
       }
     } catch (error) {
-      results.push({ accountId: account.id, status: 'failed', error: error.message || String(error) });
+      results.push({ accountId: account.id, remoteName: displayName, status: 'failed', retryable: true, error: error.message || String(error) });
     } finally {
       if (connection) {
         try { connection.end(); } catch { /* already closed */ }
       }
     }
   }
-  const failures = results.filter(result => result.status === 'failed');
-  if (failures.length) {
-    const error = new Error(`Folder was not created on ${failures.length} connected mail account(s): ${failures.map(result => result.error).join('; ')}`);
-    error.remoteResults = results;
-    throw error;
-  }
   return {
+    status: results.some(result => result.status === 'failed') ? 'partial' : 'complete',
+    retryable: results.some(result => result.status === 'failed'),
     created: results.filter(result => result.status === 'created').length,
     existing: results.filter(result => result.status === 'existing').length,
     accounts: results,
@@ -1787,16 +1830,12 @@ async function syncMailAccountOnce(accountId) {
       console.error('[SYNC] IMAP connection error (handled, sync may fail):', err.message);
     });
     
-    let availableFolders = await listAvailableImapFolders(connection);
-    const ensuredFolders = await ensureCustomImapFoldersForUser(account.user_id, connection, availableFolders);
-    if (ensuredFolders.created > 0) {
-      availableFolders = await listAvailableImapFolders(connection);
-    }
-    if (ensuredFolders.failed.length > 0) {
-      console.warn(`[SYNC] Could not create ${ensuredFolders.failed.length} local custom folder(s) remotely for ${account.email_address}`);
-    }
-    await registerCustomImapFoldersForUser(account.user_id, availableFolders);
-    const foldersToSync = pickImapSyncFolders(availableFolders);
+    const availableFolders = await listAvailableImapFolders(connection);
+    // Sync only boxes explicitly registered from this account. Never infer an
+    // identity from a lossy UI slug or recreate a locally deleted mailbox.
+    const registeredFolders = await registerCustomImapFoldersForUser(account.user_id, accountId, availableFolders);
+    const customFolderSlugs = new Map(registeredFolders.map(folder => [folder.remoteName, folder.slug]));
+    const foldersToSync = pickImapSyncFolders(availableFolders, customFolderSlugs);
     console.log(`[SYNC] Folder plan for ${account.email_address}: ${foldersToSync.map(folder => `${folder.folderName}->${folder.dbFolderName}`).join(', ')}`);
 
     const folderResults = [];
@@ -2103,6 +2142,7 @@ module.exports = {
   MAIL_SENDER_RULE_MATCH_TYPES,
   normalizeMailFolderSlug,
   normalizeMailFolderDisplayName,
+  allocateCollisionSafeMailFolderSlug,
   getSystemMailFolderDisplayName,
   loadMailFoldersForUser,
   mailFolderExists,

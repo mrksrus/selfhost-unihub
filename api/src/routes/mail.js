@@ -12,6 +12,7 @@ const {
   SYSTEM_MAIL_FOLDER_SET,
   normalizeMailFolderSlug,
   normalizeMailFolderDisplayName,
+  allocateCollisionSafeMailFolderSlug,
   createRemoteMailFolderForUserAccounts,
   loadMailFoldersForUser,
   mailFolderExists,
@@ -93,6 +94,38 @@ async function validateUserMailFolder(userId, folderSlug) {
     return { error: 'Folder not found', status: 404 };
   }
   return { folder: normalizedSlug };
+}
+
+async function persistRemoteMailFolderBoxes(folderId, remoteFolder, connection) {
+  for (const account of remoteFolder?.accounts || []) {
+    if (account.status === 'failed') continue;
+    await connection.execute(
+      `INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name)
+       VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE remote_name = VALUES(remote_name)`,
+      [folderId, account.accountId, account.remoteName]
+    );
+  }
+}
+
+function encodeSenderRuleBackfillCursor(email) {
+  const receivedAt = String(email?.received_at_cursor || '');
+  const id = String(email?.id || '');
+  return receivedAt && id ? Buffer.from(JSON.stringify({ receivedAt, id })).toString('base64url') : null;
+}
+
+function decodeSenderRuleBackfillCursor(value) {
+  if (!value) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));
+    const receivedAt = String(cursor?.receivedAt || '');
+    const id = String(cursor?.id || '');
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(receivedAt) || !id || id.length > 128) throw new Error('invalid cursor');
+    return { receivedAt, id };
+  } catch {
+    const error = new Error('Invalid backfill cursor');
+    error.status = 400;
+    throw error;
+  }
 }
 
 function extractMailRouteId(req, offsetFromEnd = 1) {
@@ -329,26 +362,41 @@ module.exports = {
       if (requestedSlug === 'all' || requestedSlug === 'starred') {
         return { error: 'Folder slug is reserved', status: 400 };
       }
-      const [existing] = await db.execute(
-        'SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1',
-        [userId, requestedSlug]
+      const [sameName] = await db.execute(
+        'SELECT id FROM mail_folders WHERE user_id = ? AND LOWER(display_name) = LOWER(?) LIMIT 1',
+        [userId, displayName]
       );
-      if (existing.length > 0) return { error: 'Folder already exists', status: 409 };
+      if (sameName.length > 0) return { error: 'Folder already exists', status: 409 };
+      const [existing] = await db.execute('SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, requestedSlug]);
+      const slug = existing.length > 0
+        ? await allocateCollisionSafeMailFolderSlug(userId, displayName)
+        : requestedSlug;
       const [positionRows] = await db.execute(
         'SELECT COALESCE(MAX(position), 90) AS max_position FROM mail_folders WHERE user_id = ?',
         [userId]
       );
       const position = Number(positionRows[0]?.max_position || 90) + 10;
-      // Create the IMAP mailbox first so a folder shown by UniHub always exists remotely.
+      // Remote creation may be partially successful. Persist successes so retrying is safe.
       const remoteFolder = await createRemoteMailFolderForUserAccounts(userId, displayName);
       const folderId = crypto.randomUUID();
-      await db.execute(
-        `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
-         VALUES (?, ?, ?, ?, FALSE, ?)`,
-        [folderId, userId, requestedSlug, displayName, position]
-      );
+      const connection = await db.getConnection();
+      try {
+        await connection.beginTransaction();
+        await connection.execute(
+          `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
+           VALUES (?, ?, ?, ?, FALSE, ?)`,
+          [folderId, userId, slug, displayName, position]
+        );
+        await persistRemoteMailFolderBoxes(folderId, remoteFolder, connection);
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
       const folders = await getMailFolderRowsWithCounts(userId);
-      return { folder: folders.find(folder => folder.slug === requestedSlug) || null, folders, remoteFolder };
+      return { folder: folders.find(folder => folder.slug === slug) || null, folders, remoteFolder };
     } catch (error) {
       console.error('Create mail folder error:', error);
       return { error: 'Failed to create mail folder', status: 500 };
@@ -366,6 +414,9 @@ module.exports = {
       );
       if (!folders.length) return { error: 'Folder not found', status: 404 };
       const folder = folders[0];
+      if (!folder.is_system && (Object.prototype.hasOwnProperty.call(body || {}, 'display_name') || Object.prototype.hasOwnProperty.call(body || {}, 'name'))) {
+        return { error: 'Renaming synced custom folders is not supported; create a new folder instead.', status: 409 };
+      }
       const updates = [];
       const params = [];
       if (Object.prototype.hasOwnProperty.call(body || {}, 'display_name') || Object.prototype.hasOwnProperty.call(body || {}, 'name')) {
@@ -404,10 +455,7 @@ module.exports = {
       if (folders[0].is_system || SYSTEM_MAIL_FOLDER_SET.has(slug)) {
         return { error: 'System folders cannot be deleted', status: 400 };
       }
-      await db.execute('UPDATE emails SET folder = ? WHERE user_id = ? AND folder = ?', ['inbox', userId, slug]);
-      await db.execute('UPDATE mail_sender_rules SET target_folder = ? WHERE user_id = ? AND target_folder = ?', ['inbox', userId, slug]);
-      await db.execute('DELETE FROM mail_folders WHERE user_id = ? AND slug = ?', [userId, slug]);
-      return { deleted: true, folders: await getMailFolderRowsWithCounts(userId) };
+      return { error: 'Deleting synced custom folders is not supported; keep the folder or delete it in your mail provider.', status: 409 };
     } catch (error) {
       console.error('Delete mail folder error:', error);
       return { error: 'Failed to delete mail folder', status: 500 };
@@ -539,6 +587,7 @@ module.exports = {
     try {
       const accountId = String(body?.account_id || '').trim() || null;
       const applyChanges = body?.mode === 'apply' || body?.apply === true;
+      const cursor = decodeSenderRuleBackfillCursor(body?.cursor);
       const requestedLimit = Number.parseInt(String(body?.limit ?? '1000'), 10);
       const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 5000) : 1000;
       if (accountId) {
@@ -551,14 +600,22 @@ module.exports = {
         where.push('e.mail_account_id = ?');
         params.push(accountId);
       }
-      const [emails] = await db.execute(
-        `SELECT e.id, e.mail_account_id, e.from_address, e.folder
+      if (cursor) {
+        where.push('(e.received_at < ? OR (e.received_at = ? AND e.id < ?))');
+        params.push(cursor.receivedAt, cursor.receivedAt, cursor.id);
+      }
+      const [emailRows] = await db.execute(
+        `SELECT e.id, e.mail_account_id, e.from_address, e.folder,
+                DATE_FORMAT(e.received_at, '%Y-%m-%d %H:%i:%s.%f') AS received_at_cursor
          FROM emails e
          WHERE ${where.join(' AND ')}
-         ORDER BY e.received_at DESC
-         LIMIT ${limit}`,
+         ORDER BY e.received_at DESC, e.id DESC
+         LIMIT ${limit + 1}`,
         params
       );
+      const hasMore = (emailRows || []).length > limit;
+      const emails = (emailRows || []).slice(0, limit);
+      const nextCursor = hasMore ? encodeSenderRuleBackfillCursor(emails[emails.length - 1]) : null;
       const perAccountRules = new Map();
       const updates = [];
       for (const email of emails || []) {
@@ -586,15 +643,29 @@ module.exports = {
         }
       }
       if (applyChanges && updates.length > 0) {
-        for (const item of updates) {
-          await db.execute('UPDATE emails SET folder = ? WHERE id = ? AND user_id = ?', [item.next_folder, item.email_id, userId]);
+        const connection = await db.getConnection();
+        try {
+          await connection.beginTransaction();
+          for (const item of updates) {
+            await connection.execute('UPDATE emails SET folder = ? WHERE id = ? AND user_id = ?', [item.next_folder, item.email_id, userId]);
+          }
+          await connection.commit();
+        } catch (error) {
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
         }
       }
       return {
         dry_run: !applyChanges,
-        scanned: (emails || []).length,
+        scanned: emails.length,
         matched: updates.length,
         applied: applyChanges ? updates.length : 0,
+        complete: !hasMore,
+        has_more: hasMore,
+        next_cursor: nextCursor,
+        remaining: hasMore ? 'More inbox messages remain; continue sorting to process the next batch.' : null,
         updates: updates.slice(0, 200),
       };
     } catch (error) {

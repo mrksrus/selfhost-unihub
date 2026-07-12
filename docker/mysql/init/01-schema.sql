@@ -273,6 +273,21 @@ CREATE TABLE IF NOT EXISTS mail_folders (
     INDEX idx_mail_folders_order (user_id, position)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Canonical IMAP mailbox identities. A UI folder can map to one mailbox per
+-- account; binary names prevent lossy normalization collisions.
+CREATE TABLE IF NOT EXISTS mail_folder_remote_boxes (
+    folder_id CHAR(36) NOT NULL,
+    mail_account_id CHAR(36) NOT NULL,
+    remote_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (folder_id, mail_account_id),
+    UNIQUE KEY unique_mail_folder_remote_box (mail_account_id, remote_name),
+    FOREIGN KEY (folder_id) REFERENCES mail_folders(id) ON DELETE CASCADE,
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE,
+    INDEX idx_mail_folder_remote_boxes_account (mail_account_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Sender/domain categorization rules for future automatic routing
 CREATE TABLE IF NOT EXISTS mail_sender_rules (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),

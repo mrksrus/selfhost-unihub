@@ -219,6 +219,7 @@ const Settings = () => {
   const [ruleSaving, setRuleSaving] = useState(false);
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
   const [ruleSorting, setRuleSorting] = useState(false);
+  const [ruleSortCursor, setRuleSortCursor] = useState<string | null>(null);
   const [backupCreating, setBackupCreating] = useState(false);
   const [backupImporting, setBackupImporting] = useState(false);
   const [backupEncryptionEnabled, setBackupEncryptionEnabled] = useState(true);
@@ -958,22 +959,26 @@ const Settings = () => {
   const applySenderRulesNow = async () => {
     setRuleSorting(true);
     try {
-      const response = await api.post<{ scanned: number; matched: number; applied: number }>('/mail/sender-rules/backfill', {
+      const response = await api.post<{ scanned: number; matched: number; applied: number; complete?: boolean; has_more?: boolean; next_cursor?: string | null; remaining?: string | null }>('/mail/sender-rules/backfill', {
         mode: 'apply',
         limit: 5000,
+        cursor: ruleSortCursor || undefined,
       });
       if (response.error) {
         toast({ title: 'Could not sort mail', description: response.error, variant: 'destructive' });
         return;
       }
       const result = response.data;
+      setRuleSortCursor(result?.complete === false && result?.next_cursor ? result.next_cursor : null);
       queryClient.invalidateQueries({ queryKey: ['emails'] });
       queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
       queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
       await refetchMailSenderCandidates();
       toast({
-        title: 'Mail sorted',
-        description: `${result?.applied ?? 0} of ${result?.scanned ?? 0} inbox emails matched your current rules.`,
+        title: result?.complete === false ? 'Mail sorting incomplete' : 'Mail sorted',
+        description: result?.complete === false
+          ? `${result?.applied ?? 0} matching emails sorted from this batch of ${result?.scanned ?? 0}. ${result.remaining || 'More inbox messages remain; continue sorting to process the next batch.'}`
+          : `${result?.applied ?? 0} of ${result?.scanned ?? 0} inbox emails matched your current rules.`,
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
@@ -1990,7 +1995,7 @@ const Settings = () => {
                 <div className="flex shrink-0 flex-wrap justify-end gap-2">
                   <Button variant="outline" size="sm" onClick={applySenderRulesNow} disabled={ruleSorting}>
                     {ruleSorting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                    Sort now
+                    {ruleSortCursor ? 'Continue sorting' : 'Sort now'}
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => refetchMailSenderCandidates()} disabled={mailSenderCandidatesLoading}>
                     {mailSenderCandidatesLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}

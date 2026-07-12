@@ -13,7 +13,7 @@ test('mail sync includes standard and custom IMAP folders while ignoring provide
     'Drafts',
     'Projects/2026',
     '[Gmail]/All Mail',
-  ]);
+  ], new Map([['Projects/2026', 'projects_2026']]));
 
   assert.deepEqual(plan, [
     { folderName: 'INBOX', dbFolderName: 'inbox' },
