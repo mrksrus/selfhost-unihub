@@ -41,6 +41,7 @@ function getHttpErrorMessage(status: number, statusText: string) {
   if (status === 403) return 'Request rejected by the server. Refresh the app and try again.';
   if (status === 404) return 'The requested API endpoint was not found.';
   if (status === 408 || status === 504) return `The server or proxy did not respond in time (${status}).`;
+  if (status === 413) return 'The request is too large for the server or proxy (413). Reduce the attachment size and try again.';
   if (status === 502 || status === 503) return `The API is temporarily unavailable (${status}). Check that the server is running.`;
   if (status >= 500) return `The server returned an internal error (${status}).`;
   if (status >= 400) return `Request failed (${status}${statusText ? ` ${statusText}` : ''}).`;
@@ -51,6 +52,9 @@ function getUnexpectedResponseMessage(response: Response, contentType: string) {
   const received = contentType || 'no content type';
   if (response.ok) {
     return `The server responded, but not with JSON (${received}). Check proxy or server routing.`;
+  }
+  if (response.status === 413) {
+    return getHttpErrorMessage(response.status, response.statusText);
   }
   return `${getHttpErrorMessage(response.status, response.statusText)} The response was not JSON (${received}).`;
 }

@@ -41,4 +41,22 @@ describe('api client security', () => {
     });
     expect((requestInit.headers as Record<string, string>).Authorization).toBeUndefined();
   });
+
+  it('explains proxy upload rejections instead of reporting only a JSON error', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 413,
+      statusText: 'Request Entity Too Large',
+      headers: {
+        get: () => 'text/html',
+      },
+      text: async () => '<html><body>413 Request Entity Too Large</body></html>',
+    }) as unknown as typeof fetch);
+
+    const response = await api.post('/mail/send', { attachments: [] });
+
+    expect(response.status).toBe(413);
+    expect(response.error).toContain('request is too large');
+    expect(response.error).not.toContain('not JSON');
+  });
 });

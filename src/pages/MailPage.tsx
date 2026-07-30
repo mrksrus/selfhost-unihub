@@ -279,6 +279,9 @@ type FolderMode = string;
 
 const ALL_ACCOUNTS: AccountMode = 'all';
 const ALL_MAIL: FolderMode = 'all';
+const MAIL_ATTACHMENT_MAX_COUNT = 20;
+const MAIL_ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024;
+const MAIL_ATTACHMENTS_TOTAL_MAX_BYTES = 25 * 1024 * 1024;
 
 const initialAccountForm: AccountFormState = {
   email_address: '',
@@ -361,6 +364,29 @@ const isComposeMeaningful = (
     newAttachmentsCount > 0 ||
     existingAttachmentsCount > 0
   );
+
+const validateComposeAttachments = (
+  existingAttachments: Array<{ filename: string; size: number }>,
+  newFiles: File[]
+) => {
+  const combinedCount = existingAttachments.length + newFiles.length;
+  if (combinedCount > MAIL_ATTACHMENT_MAX_COUNT) {
+    return `You can attach at most ${MAIL_ATTACHMENT_MAX_COUNT} files.`;
+  }
+
+  const oversizedFile = newFiles.find(file => file.size > MAIL_ATTACHMENT_MAX_BYTES);
+  if (oversizedFile) {
+    return `"${oversizedFile.name}" is larger than the 15 MB attachment limit.`;
+  }
+
+  const totalBytes = existingAttachments.reduce((total, attachment) => total + attachment.size, 0)
+    + newFiles.reduce((total, file) => total + file.size, 0);
+  if (totalBytes > MAIL_ATTACHMENTS_TOTAL_MAX_BYTES) {
+    return 'Attachments exceed the 25 MB total limit.';
+  }
+
+  return null;
+};
 
 const getServerDeleteStatus = (account: MailAccount) => {
   if (!account.delete_emails_on_server) return null;
@@ -1409,19 +1435,45 @@ const MailPage = () => {
     const incomingFiles = Array.from(files || []);
     if (incomingFiles.length === 0) return;
 
-    setComposeAttachments(prev => {
-      const existingKeys = new Set(prev.map(a => `${a.file.name}:${a.file.size}:${a.file.lastModified}`));
-      const next = [...prev];
-
-      for (const file of incomingFiles) {
-        const key = `${file.name}:${file.size}:${file.lastModified}`;
-        if (existingKeys.has(key)) continue;
-        next.push({ id: crypto.randomUUID(), file });
-        existingKeys.add(key);
-      }
-
-      return next;
+    const existingKeys = new Set(
+      composeAttachments.map(attachment =>
+        `${attachment.file.name}:${attachment.file.size}:${attachment.file.lastModified}`
+      )
+    );
+    const uniqueIncomingFiles = incomingFiles.filter(file => {
+      const key = `${file.name}:${file.size}:${file.lastModified}`;
+      if (existingKeys.has(key)) return false;
+      existingKeys.add(key);
+      return true;
     });
+    if (uniqueIncomingFiles.length === 0) return;
+
+    const validationError = validateComposeAttachments(
+      [
+        ...existingDraftAttachments.map(attachment => ({
+          filename: attachment.filename,
+          size: attachment.size_bytes,
+        })),
+        ...composeAttachments.map(attachment => ({
+          filename: attachment.file.name,
+          size: attachment.file.size,
+        })),
+      ],
+      uniqueIncomingFiles
+    );
+    if (validationError) {
+      toast({
+        title: 'Attachment not added',
+        description: validationError,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setComposeAttachments(prev => [
+      ...prev,
+      ...uniqueIncomingFiles.map(file => ({ id: crypto.randomUUID(), file })),
+    ]);
     setAttachmentsDirty(true);
     setIsComposeDirty(true);
   };

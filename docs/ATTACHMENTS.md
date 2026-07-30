@@ -107,7 +107,7 @@ Limits enforced by the backend:
 - max 20 attachments
 - max 15 MB per attachment after base64 decode
 - max 25 MB total decoded attachment bytes
-- route request body cap: 30 MB
+- route request body cap: 40 MB (allows for base64 expansion and message text)
 
 Sent attachments are written to the same attachment root and linked to the local
 sent-mail copy.

@@ -17,6 +17,9 @@ const CALENDAR_MULTI_ENABLED = process.env.CALENDAR_MULTI_ENABLED !== 'false';
 const AUTH_COOKIE_NAME = 'auth-token';
 const MIN_PASSWORD_LENGTH = 12;
 const BACKUP_UPLOAD_MAX_SIZE = 3900 * 1024 * 1024;
+// A 25 MiB attachment payload expands to roughly 33.4 MiB when base64 encoded.
+// Leave room for JSON metadata and the message body as well.
+const MAIL_COMPOSE_REQUEST_MAX_SIZE = 40 * 1024 * 1024;
 
 module.exports = {
   PORT,
@@ -32,4 +35,5 @@ module.exports = {
   AUTH_COOKIE_NAME,
   MIN_PASSWORD_LENGTH,
   BACKUP_UPLOAD_MAX_SIZE,
+  MAIL_COMPOSE_REQUEST_MAX_SIZE,
 };

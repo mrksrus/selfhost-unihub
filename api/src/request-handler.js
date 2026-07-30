@@ -11,7 +11,10 @@ const {
 } = require('./http/request');
 const { parseSingleByteRange } = require('./http/range');
 const { getActiveRestoreSections } = require('./services/restore-locks');
-const { BACKUP_UPLOAD_MAX_SIZE } = require('./config');
+const {
+  BACKUP_UPLOAD_MAX_SIZE,
+  MAIL_COMPOSE_REQUEST_MAX_SIZE,
+} = require('./config');
 
 const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
 const PUBLIC_ROUTE_KEYS = new Set([
@@ -242,7 +245,7 @@ async function handleRequest(req, res) {
       routeKey === 'POST /api/mail/drafts' ||
       routeKey === 'PUT /api/mail/drafts/:id'
     ) {
-      maxBodySize = 30 * 1024 * 1024; // Allow attachments in compose (base64 JSON payload)
+      maxBodySize = MAIL_COMPOSE_REQUEST_MAX_SIZE;
     } else if (
       routeKey === 'POST /api/calendar/accounts' ||
       routeKey === 'PUT /api/calendar/accounts/:id'

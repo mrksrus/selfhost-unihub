@@ -251,7 +251,7 @@ Compose attachment limits:
 - maximum 20 attachments
 - maximum 15 MB per attachment
 - maximum 25 MB total attachment bytes
-- request body cap is 30 MB to allow base64 JSON overhead
+- request body cap is 40 MB to allow base64 JSON overhead and message text
 
 SMTP port behavior:
 
