@@ -3,7 +3,6 @@ import { useAuth } from '@/contexts/useAuth';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Egg, Heart, Sparkles } from 'lucide-react';
 
@@ -223,13 +222,30 @@ const deriveMood = (stats: PetStats): Mood => {
   return 'critical';
 };
 
-const formatDuration = (ms: number) => {
-  const clamped = Math.max(0, ms);
-  const totalHours = Math.floor(clamped / (60 * 60 * 1000));
-  const days = Math.floor(totalHours / 24);
-  const hours = totalHours % 24;
-  if (days === 0) return `${hours}h`;
-  return `${days}d ${hours}h`;
+const NEED_CLUES: Record<keyof PetStats, { label: string; strong: string; okay: string; low: string; critical: string }> = {
+  hunger: { label: 'Appetite', strong: 'Looks completely satisfied', okay: 'Seems comfortably fed', low: 'Keeps searching for a snack', critical: 'Looks desperately hungry' },
+  hygiene: { label: 'Coat', strong: 'Looks spotless and bright', okay: 'Looks tidy enough', low: 'Could use a little cleaning', critical: 'Looks very uncomfortable and dirty' },
+  energy: { label: 'Energy', strong: 'Bounces with energy', okay: 'Moves at an easy pace', low: 'Yawns and moves slowly', critical: 'Can barely keep its eyes open' },
+  affection: { label: 'Trust', strong: 'Stays happily by your side', okay: 'Seems at ease with you', low: 'Keeps a cautious distance', critical: 'Looks lonely and withdrawn' },
+  joy: { label: 'Spirit', strong: 'Cannot contain its excitement', okay: 'Seems quietly content', low: 'Looks bored and restless', critical: 'Has lost interest in everything' },
+  health: { label: 'Vitality', strong: 'Looks remarkably vigorous', okay: 'Appears steady and well', low: 'Seems a little under the weather', critical: 'Looks worryingly frail' },
+};
+
+const describePetNeed = (key: keyof PetStats, value: number) => {
+  const clue = NEED_CLUES[key];
+  if (value >= 78) return { label: clue.label, text: clue.strong, tone: 'bg-emerald-500' };
+  if (value >= 52) return { label: clue.label, text: clue.okay, tone: 'bg-sky-500' };
+  if (value >= 28) return { label: clue.label, text: clue.low, tone: 'bg-amber-500' };
+  return { label: clue.label, text: clue.critical, tone: 'bg-rose-500' };
+};
+
+const lifeChapterHint = (stage: LifeStage) => {
+  if (stage === 'egg') return 'A new story is waiting beneath the shell.';
+  if (stage === 'hatchling') return 'Everything is new; small moments matter.';
+  if (stage === 'young') return 'Its personality is beginning to settle.';
+  if (stage === 'adult') return 'It has found its stride, with many stories still unwritten.';
+  if (stage === 'elder') return 'Its pace is gentler now. Treasure the quiet visits.';
+  return 'Its time with you has become a memory.';
 };
 
 const stageLabel = (state: PetState) => {
@@ -464,8 +480,6 @@ const TamagotchiGame = () => {
     setState(createInitialState());
   };
 
-  const now = Date.now();
-
   return (
     <Card className="border-accent/20 shadow-sm">
       <CardHeader>
@@ -474,7 +488,7 @@ const TamagotchiGame = () => {
           Pocket Pet (Idle Lifecycle)
         </CardTitle>
         <CardDescription>
-          Time continues in the background. Your pet matures over roughly two months, then eventually dies of age with natural variance.
+          Time continues in the background. Watch its behavior, learn its rhythms, and care without a countdown.
         </CardDescription>
       </CardHeader>
 
@@ -517,9 +531,9 @@ const TamagotchiGame = () => {
               </p>
             )}
 
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-muted-foreground">Lifecycle clock</div>
-              <Progress value={clamp(((now - state.createdAt) / (state.lifecycle.lifespanEndsAt - state.createdAt)) * 100)} />
+            <div className="rounded-md border bg-background/70 p-3">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">Life chapter</div>
+              <p className="mt-1 text-xs leading-relaxed text-foreground">{lifeChapterHint(state.lifeStage)}</p>
             </div>
           </div>
 
@@ -538,26 +552,28 @@ const TamagotchiGame = () => {
               </div>
             )}
 
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {([
-                ['Hunger', state.stats.hunger],
-                ['Hygiene', state.stats.hygiene],
-                ['Energy', state.stats.energy],
-                ['Affection', state.stats.affection],
-                ['Joy', state.stats.joy],
-                ['Health', state.stats.health],
-              ] as const).map(([label, value]) => (
-                <div key={label} className="rounded-md border p-2.5 bg-background">
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-muted-foreground">{label}</span>
-                    <span className="font-medium">{Math.round(value)}</span>
-                  </div>
-                  <Progress value={value} className="h-2" />
-                </div>
-              ))}
+            <div>
+              <p className="mb-2 text-xs font-medium text-muted-foreground">What you notice</p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                {(Object.keys(state.stats) as Array<keyof PetStats>).map((key) => {
+                  const clue = describePetNeed(key, state.stats[key]);
+                  return (
+                    <div key={key} className="rounded-md border bg-background p-2.5">
+                      <div className="flex items-start gap-2.5">
+                        <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${clue.tone}`} aria-hidden="true" />
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{clue.label}</p>
+                          <p className="mt-0.5 text-xs leading-relaxed text-foreground">{clue.text}</p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="mt-2 text-[11px] text-muted-foreground">There are no meters here—your companion will show you what it needs.</p>
             </div>
 
-            <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-2">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
               <Button disabled={isActionBlocked || !state.eggType || state.lifeStage === 'deceased'} onClick={() => handleCareAction('Fed and watered. The pet settles a bit.', { hunger: 10, joy: 2, health: 1 }, 5)}>
                 Feed
               </Button>
@@ -577,7 +593,7 @@ const TamagotchiGame = () => {
 
             {isActionBlocked && state.lifeStage !== 'deceased' && (
               <p className="text-xs text-muted-foreground">
-                Next care action available in {formatDuration(state.nextActionAt - now)}.
+                Your companion is still settling after that. Give it a little time before the next care action.
               </p>
             )}
 

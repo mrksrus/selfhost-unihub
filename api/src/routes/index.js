@@ -9,4 +9,5 @@ module.exports = {
   ...require('./calendar'),
   ...require('./mail'),
   ...require('./admin'),
+  ...require('./games'),
 };

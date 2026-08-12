@@ -25,6 +25,18 @@ CREATE TABLE IF NOT EXISTS users (
     INDEX idx_users_active (is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Shared Tetris leaderboard (one personal best per user)
+CREATE TABLE IF NOT EXISTS tetris_scores (
+    user_id CHAR(36) PRIMARY KEY,
+    score INT UNSIGNED NOT NULL DEFAULT 0,
+    `lines` INT UNSIGNED NOT NULL DEFAULT 0,
+    level INT UNSIGNED NOT NULL DEFAULT 1,
+    achieved_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_tetris_scores_ranking (score DESC, `lines` DESC, achieved_at ASC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- User sessions table
 CREATE TABLE IF NOT EXISTS sessions (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),

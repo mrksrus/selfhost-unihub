@@ -337,8 +337,7 @@ export const JumpGame = () => {
             ref={canvasRef}
             width={1200}
             height={320}
-            className="w-full h-[240px] md:h-[320px] block cursor-pointer"
-            onClick={handleCanvasClick}
+            className="block h-[180px] w-full cursor-pointer touch-manipulation sm:h-[240px] md:h-[320px]"
             onPointerDown={handleCanvasClick}
             tabIndex={0}
             onKeyDown={(e) => handleGameInput(e.code)}

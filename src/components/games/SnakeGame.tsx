@@ -255,17 +255,17 @@ const SnakeGame = () => {
         <div className="sm:hidden pt-1">
           <div className="mx-auto grid w-[176px] grid-cols-3 gap-2">
             <div />
-            <Button variant="secondary" size="icon" onClick={() => setDirectionSafe('up')} aria-label="Move up">
+            <Button className="h-12 w-12 touch-manipulation" variant="secondary" size="icon" onClick={() => setDirectionSafe('up')} aria-label="Move up">
               <ArrowUp className="h-4 w-4" />
             </Button>
             <div />
-            <Button variant="secondary" size="icon" onClick={() => setDirectionSafe('left')} aria-label="Move left">
+            <Button className="h-12 w-12 touch-manipulation" variant="secondary" size="icon" onClick={() => setDirectionSafe('left')} aria-label="Move left">
               <ArrowLeft className="h-4 w-4" />
             </Button>
-            <Button variant="secondary" size="icon" onClick={() => setDirectionSafe('down')} aria-label="Move down">
+            <Button className="h-12 w-12 touch-manipulation" variant="secondary" size="icon" onClick={() => setDirectionSafe('down')} aria-label="Move down">
               <ArrowDown className="h-4 w-4" />
             </Button>
-            <Button variant="secondary" size="icon" onClick={() => setDirectionSafe('right')} aria-label="Move right">
+            <Button className="h-12 w-12 touch-manipulation" variant="secondary" size="icon" onClick={() => setDirectionSafe('right')} aria-label="Move right">
               <ArrowRight className="h-4 w-4" />
             </Button>
           </div>

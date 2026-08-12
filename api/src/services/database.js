@@ -205,6 +205,17 @@ async function ensureSchema() {
     INDEX idx_sessions_expires (expires_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+  // One row per user keeps the shared leaderboard bounded and inexpensive.
+  await db.execute(`CREATE TABLE IF NOT EXISTS tetris_scores (
+    user_id CHAR(36) PRIMARY KEY,
+    score INT UNSIGNED NOT NULL DEFAULT 0,
+    \`lines\` INT UNSIGNED NOT NULL DEFAULT 0,
+    level INT UNSIGNED NOT NULL DEFAULT 1,
+    achieved_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_tetris_scores_ranking (score DESC, \`lines\` DESC, achieved_at ASC)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   await db.execute(`CREATE TABLE IF NOT EXISTS two_factor_challenges (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
     user_id CHAR(36) NOT NULL,

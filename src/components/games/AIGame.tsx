@@ -1306,7 +1306,7 @@ const AIGame = () => {
         )}
 
         {state.gridSize > 12 && (
-          <div className="flex items-center justify-between rounded-md border bg-background/70 px-3 py-2 text-xs">
+          <div className="flex flex-col items-start gap-2 rounded-md border bg-background/70 px-3 py-2 text-xs sm:flex-row sm:items-center sm:justify-between">
             <div className="text-muted-foreground">
               {shouldUseCamera
                 ? `Focused view centered near your position (${cameraWindow}×${cameraWindow}).`
@@ -1318,7 +1318,7 @@ const AIGame = () => {
           </div>
         )}
 
-        <div className="relative rounded-lg border bg-muted/20 p-2">
+        <div className="relative overflow-auto overscroll-contain rounded-lg border bg-muted/20 p-2">
           <div
             className="grid gap-1 mx-auto"
             style={{
@@ -1440,17 +1440,17 @@ const AIGame = () => {
         <div className="sm:hidden sticky bottom-0 z-10 -mx-4 mt-1 border-t bg-background/95 px-4 pb-2 pt-2 backdrop-blur">
           <div className="mx-auto grid w-[176px] grid-cols-3 gap-2">
             <div />
-            <Button variant="secondary" size="icon" onClick={() => handleDirection('up')} aria-label="Move up">
+            <Button className="h-12 w-12 touch-manipulation" variant="secondary" size="icon" onClick={() => handleDirection('up')} aria-label="Move up">
               <ArrowUp className="h-4 w-4" />
             </Button>
             <div />
-            <Button variant="secondary" size="icon" onClick={() => handleDirection('left')} aria-label="Move left">
+            <Button className="h-12 w-12 touch-manipulation" variant="secondary" size="icon" onClick={() => handleDirection('left')} aria-label="Move left">
               <ArrowLeft className="h-4 w-4" />
             </Button>
-            <Button variant="secondary" size="icon" onClick={() => handleDirection('down')} aria-label="Move down">
+            <Button className="h-12 w-12 touch-manipulation" variant="secondary" size="icon" onClick={() => handleDirection('down')} aria-label="Move down">
               <ArrowDown className="h-4 w-4" />
             </Button>
-            <Button variant="secondary" size="icon" onClick={() => handleDirection('right')} aria-label="Move right">
+            <Button className="h-12 w-12 touch-manipulation" variant="secondary" size="icon" onClick={() => handleDirection('right')} aria-label="Move right">
               <ArrowRight className="h-4 w-4" />
             </Button>
           </div>
