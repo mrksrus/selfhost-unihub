@@ -122,6 +122,17 @@ describe('MailPage UI regressions', () => {
     localStorage.clear();
   });
 
+  it('keeps account selection above a scrollable folder list', async () => {
+    renderMailPage();
+
+    const accountsRegion = await screen.findByRole('region', { name: 'Mail accounts' });
+    const folderNav = screen.getByRole('navigation', { name: 'Mail folders' });
+
+    expect(accountsRegion.compareDocumentPosition(folderNav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(accountsRegion).toHaveClass('shrink-0', 'max-h-[40%]', 'overflow-y-auto');
+    expect(folderNav).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
+  });
+
   it('shows a save/discard prompt when closing a dirty compose', async () => {
     const { container } = renderMailPage();
 

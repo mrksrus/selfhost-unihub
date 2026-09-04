@@ -2013,10 +2013,10 @@ const MailPage = () => {
       {/* Sidebar */}
       <div className={
         isMobile
-          ? `fixed left-0 top-0 h-full w-56 z-50 transform transition-transform duration-200 border-r border-border bg-card flex flex-col ${
+          ? `fixed left-0 top-0 h-full min-h-0 w-56 z-50 transform overflow-hidden transition-transform duration-200 border-r border-border bg-card flex flex-col ${
               mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'
             }`
-          : `${sidebarCollapsed ? 'w-16' : 'w-64'} border-r border-border bg-card flex flex-col transition-all duration-200`
+          : `${sidebarCollapsed ? 'w-16' : 'w-64'} h-full min-h-0 overflow-hidden border-r border-border bg-card flex flex-col transition-all duration-200`
       }>
         {/* Compose Button */}
         <div className={`p-4 flex items-center gap-2 ${(sidebarCollapsed && !isMobile) ? 'flex-col' : ''}`}>
@@ -2051,58 +2051,8 @@ const MailPage = () => {
           </Button>
         </div>
 
-        {/* Folders */}
-        <div className={`px-4 pb-2 flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'justify-between'}`}>
-          {(!sidebarCollapsed || isMobile) && (
-            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              Folders
-            </span>
-          )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`}
-            onClick={() => setFolderDialogOpen(true)}
-            title="Manage folders"
-          >
-            <FolderOpen className="h-4 w-4" />
-          </Button>
-        </div>
-        <nav className="px-2 space-y-1">
-          {folderFilters.map((folder) => (
-            <button
-              key={folder.id}
-              onClick={() => {
-                setSelectedFolder(folder.id);
-                if (isMobile) setMobileSidebarOpen(false);
-              }}
-              className={`relative w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
-                selectedFolder === folder.id
-                  ? 'bg-accent/10 text-accent font-medium'
-                  : 'text-muted-foreground hover:bg-muted'
-              }`}
-              title={(sidebarCollapsed && !isMobile) ? folder.label : undefined}
-            >
-              <folder.icon className="h-4 w-4 shrink-0" />
-              {(!sidebarCollapsed || isMobile) && (
-                <>
-                  <span className="flex-1 text-left">{folder.label}</span>
-                  {folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
-                    <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent/10 px-1.5 py-0.5 text-xs font-semibold text-accent">
-                      {unreadByFolder[folder.id]}
-                    </span>
-                  )}
-                </>
-              )}
-              {(sidebarCollapsed && !isMobile) && folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
-                <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-accent" />
-              )}
-            </button>
-          ))}
-        </nav>
-
         {/* Accounts */}
-        <div className="flex-1 overflow-auto mt-6">
+        <div role="region" aria-label="Mail accounts" className="shrink-0 max-h-[40%] overflow-y-auto">
           <div className={`px-4 pb-2 flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'justify-between'}`}>
             {(!sidebarCollapsed || isMobile) && (
               <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
@@ -2403,6 +2353,58 @@ const MailPage = () => {
               </>
             )}
           </div>
+        </div>
+
+        {/* Folders */}
+        <div className="flex min-h-0 flex-1 flex-col pt-6">
+          <div className={`px-4 pb-2 flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'justify-between'}`}>
+            {(!sidebarCollapsed || isMobile) && (
+              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                Folders
+              </span>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`}
+              onClick={() => setFolderDialogOpen(true)}
+              title="Manage folders"
+            >
+              <FolderOpen className="h-4 w-4" />
+            </Button>
+          </div>
+          <nav aria-label="Mail folders" className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 space-y-1">
+            {folderFilters.map((folder) => (
+              <button
+                key={folder.id}
+                onClick={() => {
+                  setSelectedFolder(folder.id);
+                  if (isMobile) setMobileSidebarOpen(false);
+                }}
+                className={`relative w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
+                  selectedFolder === folder.id
+                    ? 'bg-accent/10 text-accent font-medium'
+                    : 'text-muted-foreground hover:bg-muted'
+                }`}
+                title={(sidebarCollapsed && !isMobile) ? folder.label : undefined}
+              >
+                <folder.icon className="h-4 w-4 shrink-0" />
+                {(!sidebarCollapsed || isMobile) && (
+                  <>
+                    <span className="flex-1 text-left">{folder.label}</span>
+                    {folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
+                      <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent/10 px-1.5 py-0.5 text-xs font-semibold text-accent">
+                        {unreadByFolder[folder.id]}
+                      </span>
+                    )}
+                  </>
+                )}
+                {(sidebarCollapsed && !isMobile) && folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
+                  <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-accent" />
+                )}
+              </button>
+            ))}
+          </nav>
         </div>
       </div>
 
