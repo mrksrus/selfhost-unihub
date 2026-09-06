@@ -6,7 +6,7 @@ import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { contactsQueryOptions } from '@/lib/contacts-api';
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -267,6 +267,7 @@ const MailPage = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const location = useLocation();
   const isMobile = useIsMobile();
   const [selectedAccount, setSelectedAccount] = useState<AccountMode | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
@@ -633,15 +634,14 @@ const MailPage = () => {
   }), [loadEmail, markAsRead, openDraftForCompose, toast]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(location.search);
     const emailId = params.get('email');
     if (!emailId) return;
 
     void loadEmailForReader(emailId);
     params.delete('email');
-    const nextQuery = params.toString();
-    window.history.replaceState({}, '', `${window.location.pathname}${nextQuery ? `?${nextQuery}` : ''}`);
-  }, [loadEmailForReader]);
+    navigate({ pathname: location.pathname, search: params.toString(), hash: location.hash }, { replace: true });
+  }, [loadEmailForReader, location.pathname, location.search, location.hash, navigate]);
 
   const createContactFromEmail = useMutation({
     mutationFn: async (email: Email) => {

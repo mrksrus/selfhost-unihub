@@ -78,7 +78,7 @@ function resetRateLimit(ip) {
   rateLimitStore.delete(ip);
 }
 
-// Clean up expired rate-limit entries every hour
+// Clean up expired rate-limit entries without keeping a stopped server alive.
 setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of rateLimitStore) {
@@ -86,7 +86,7 @@ setInterval(() => {
       rateLimitStore.delete(ip);
     }
   }
-}, 3600000);
+}, 3600000).unref();
 
 // CSRF token validation
 function validateCsrfToken(req, res) {

@@ -27,7 +27,7 @@ export default function UpdatePrompt() {
         <h2 className="font-semibold">UniHub update ready</h2>
         <Button type="button" variant="ghost" size="icon" aria-label="Dismiss update notice" onClick={() => setAvailable(false)}><X className="h-4 w-4" /></Button>
       </div>
-      <p className="text-sm text-muted-foreground">Save your edits and finish any uploads before refreshing. You can keep working until then.</p>
+      <p className="text-sm text-muted-foreground">Save your edits and finish any uploads before refreshing this tab. Your other open tabs can keep working until you refresh them.</p>
       {failed && <p role="alert" className="text-sm text-destructive">The update could not be applied. Check your connection and try again.</p>}
       <Button type="button" disabled={updating} onClick={() => {
         setUpdating(true);

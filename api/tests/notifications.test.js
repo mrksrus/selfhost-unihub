@@ -102,7 +102,35 @@ test('new mail enqueue trusts committed ID and not old sender date; excludes his
   assert.equal(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1', suppressNotifications: true }, connection), null);
   assert.equal(writes.length, 0);
   assert.ok(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1' }, connection));
-  assert.ok(writes.some(call => call.sql.includes('notification_events')));
+  const payload = JSON.parse(writes.find(call => call.sql.includes('notification_events')).values[5]);
+  assert.equal(payload.url, '/mail?email=new-1');
+  assert.equal(payload.dedupeKey, 'mail:new-1');
+});
+test('calendar, todo and due reminder payloads link to the exact event without changing delivery keys', async () => {
+  const now = new Date();
+  const writes = [];
+  let event;
+  const connection = {
+    beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {},
+    async execute(sql, values) {
+      if (sql.startsWith('SELECT e.*')) return [[event]];
+      if (sql.startsWith('SELECT p.id')) return [[{ id: 'device-1' }]];
+      if (sql.startsWith('INSERT IGNORE INTO notification_events')) writes.push(JSON.parse(values[5]));
+      return [{ affectedRows: 1 }];
+    },
+  };
+  const service = loadService({});
+  for (const todoOnly of [false, true]) {
+    event = { id: todoOnly ? 'todo-1' : 'event-1', user_id: 'u1', title: 'Meeting', is_todo_only: todoOnly, start_time: now, due_at: now, minutes: 0, reminders: [0] };
+    await service.enqueueCalendarNotification({ userId: 'u1', eventId: event.id }, connection);
+    await service.testInternals.enqueueDueReminders(connection, now);
+    const [created, reminder] = writes.splice(0);
+    const route = todoOnly ? '/todo' : '/calendar';
+    assert.equal(created.url, `${route}?event=${event.id}`);
+    assert.equal(reminder.url, created.url);
+    assert.equal(created.dedupeKey, `${todoOnly ? 'todo' : 'calendar'}:${event.id}`);
+    assert.equal(reminder.dedupeKey, reminderKey(event, 0));
+  }
 });
 test('subscription endpoints require a live session and are scoped on removal', async () => {
   const calls = [];

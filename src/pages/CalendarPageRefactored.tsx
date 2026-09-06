@@ -4,6 +4,7 @@ import { addDays, addMonths, eachDayOfInterval, endOfDay, endOfMonth, endOfWeek,
 import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Edit, Loader2, MapPin, Plus, Trash2 } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
+import { useNotificationEventLink } from '@/hooks/use-notification-event-link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -417,6 +418,15 @@ const CalendarPage = () => {
       attendee_emails: '',
     });
   };
+
+  useNotificationEventLink((event) => {
+    const date = new Date(event.start_time);
+    setCurrentDate(date);
+    setSelectedDate(date);
+    const calendarId = event.calendar_id;
+    if (calendarId) setSelectedCalendarIds((ids) => ids.includes(calendarId) ? ids : [...ids, calendarId]);
+    openEventDialog(event);
+  });
 
   const shiftPeriod = (direction: -1 | 1) => {
     if (viewMode === 'month') {

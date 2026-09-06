@@ -248,6 +248,11 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   }
   if (path === '/calendar/accounts') return {data:{accounts:snapshot.calendarAccounts}};
   if (path === '/calendar/calendars') return {data:{calendars:snapshot.calendars.filter(row=>!params.get('account_id')||row.account_id===params.get('account_id'))}};
+  const eventMatch = path.match(/^\/calendar\/events\/([^/]+)$/);
+  if (eventMatch) {
+    const event = snapshot.events.find(row => row.id === decodeURIComponent(eventMatch[1]));
+    return event ? { data: { event } } : { error: 'This event is not in your offline snapshot.', status: 404 };
+  }
   if (path === '/calendar/events') {
     const ids=(params.get('calendar_ids')||'').split(',').map(id=>id.trim()).filter(Boolean);
     const calendars = new Map(snapshot.calendars.map(row=>[row.id,row]));

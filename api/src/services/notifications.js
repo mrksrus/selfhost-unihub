@@ -142,7 +142,7 @@ async function enqueueMailNotification({ userId, emailId, suppressNotifications 
   const email = rows[0];
   if (!email || email.is_draft || email.is_read || EXCLUDED_MAIL_FOLDERS.has(email.folder)) return null;
   return enqueueEvent({ userId, dedupeKey: `mail:${email.id}`, kind: 'mail', sourceId: email.id, title: 'New Email',
-    body: `${email.from_name || email.from_address || 'Unknown sender'}: ${email.subject || '(No subject)'}`, url: '/mail',
+    body: `${email.from_name || email.from_address || 'Unknown sender'}: ${email.subject || '(No subject)'}`, url: `/mail?email=${encodeURIComponent(email.id)}`,
     data: { emailId: email.id }, expiresAt: new Date(Date.now() + 86400000) }, connection);
 }
 async function enqueueCalendarNotification({ userId, eventId }, connection = db) {
@@ -162,7 +162,7 @@ async function enqueueCalendarNotification({ userId, eventId }, connection = db)
   const kind = event.is_todo_only ? 'todo' : 'calendar';
   return enqueueEvent({ userId, dedupeKey: `${kind}:${event.id}`, kind, sourceId: event.id,
     title: event.is_todo_only ? 'New ToDo' : 'New Calendar Event', body: event.title,
-    url: event.is_todo_only ? '/todo' : '/calendar', data: { eventId: event.id }, expiresAt: new Date(Date.now() + 86400000) }, connection);
+    url: `${event.is_todo_only ? '/todo' : '/calendar'}?event=${encodeURIComponent(event.id)}`, data: { eventId: event.id }, expiresAt: new Date(Date.now() + 86400000) }, connection);
 }
 async function enqueueTestNotification(userId, endpoint) {
   if (!await subscriptionStatus(userId, endpoint)) throw new Error('Enable notifications on this device first');
@@ -220,7 +220,7 @@ async function enqueueDueReminders(connection, now, activeRestores = new Map()) 
       const data = { eventId: event.id, reminderMinutes: event.minutes, dedupeKey: reminderKey(event, event.minutes) };
       if (reminderIsCurrent(event, data, now.getTime())) await enqueueEvent({ userId: event.user_id, dedupeKey: data.dedupeKey, kind: 'reminder', sourceId: event.id,
         title: event.title, body: event.minutes === 0 ? 'Event is starting now' : `Event starts in ${event.minutes} minutes`,
-        url: event.is_todo_only ? '/todo' : '/calendar', data, expiresAt: new Date(asUtcDate(event.due_at).getTime() + REMINDER_GRACE_MS) }, connection);
+        url: `${event.is_todo_only ? '/todo' : '/calendar'}?event=${encodeURIComponent(event.id)}`, data, expiresAt: new Date(asUtcDate(event.due_at).getTime() + REMINDER_GRACE_MS) }, connection);
       await connection.execute('UPDATE notification_reminders SET queued_at = ? WHERE event_id = ? AND minutes = ?', [now, event.id, event.minutes]);
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; }

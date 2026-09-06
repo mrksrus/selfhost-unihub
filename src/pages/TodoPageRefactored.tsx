@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
+import { useNotificationEventLink } from '@/hooks/use-notification-event-link';
 import { CheckCircle2, Clock, XCircle, Edit, Loader2, Plus, X, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -273,6 +274,8 @@ const TodoPage = () => {
     });
     setIsTimeMoveDialogOpen(true);
   };
+
+  useNotificationEventLink(openChangeDialog);
 
   const handleChangeSubmit = (e: FormEvent) => {
     e.preventDefault();

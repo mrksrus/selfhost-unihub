@@ -65,3 +65,39 @@ test('malformed notification URLs fall back to the app without throwing', () => 
   assert.equal(fixture.context.safeTargetUrl('https://['), 'https://unihub.test/dashboard');
   assert.equal(fixture.context.safeTargetUrl({ malicious: true }), 'https://unihub.test/dashboard');
 });
+
+test('legacy item IDs become exact same-origin notification links without changing deduplication', async () => {
+  const fixture = worker();
+  for (const [url, idKey, query] of [['/mail', 'emailId', 'email'], ['/calendar', 'eventId', 'event'], ['/todo', 'eventId', 'event']]) {
+    const data = { ...payload, url, [idKey]: 'item-1', dedupeKey: `stable:${url}:item-1` };
+    await fixture.context.deliverNotification(data);
+    const notification = fixture.shown.at(-1);
+    assert.equal(notification.options.data.url, `https://unihub.test${url}?${query}=item-1`);
+    assert.equal(notification.options.tag, data.dedupeKey);
+    assert.equal(fixture.delivered.has(`user-1:${data.dedupeKey}`), true);
+  }
+  assert.equal(fixture.context.notificationTargetUrl({ url: 'https://attacker.test/mail', emailId: 'secret' }), 'https://unihub.test/dashboard');
+  const target = new URL(fixture.context.notificationTargetUrl({ url: '/mail', emailId: 'id&redirect=https://attacker.test' }));
+  assert.equal(target.origin, 'https://unihub.test');
+  assert.equal(target.searchParams.get('email'), 'id&redirect=https://attacker.test');
+  assert.equal(target.searchParams.has('redirect'), false);
+});
+
+test('clicks navigate or open the exact item and never open a previous account notification', async () => {
+  const fixture = worker();
+  const visited = [];
+  const client = { url: 'https://unihub.test/dashboard',
+    async navigate(url) { visited.push(url); return this; }, async focus() { visited.push('focused'); } };
+  fixture.context.self.clients.matchAll = async () => [client];
+  fixture.context.self.clients.openWindow = async url => visited.push(url);
+  const click = data => new Promise((resolve, reject) => fixture.listeners.notificationclick({
+    notification: { close() {}, data }, waitUntil: task => task.then(resolve, reject),
+  }));
+  await click({ userId: 'user-1', url: '/mail', emailId: 'mail-1' });
+  assert.deepEqual(visited.splice(0), ['https://unihub.test/mail?email=mail-1', 'focused']);
+  fixture.context.self.clients.matchAll = async () => [];
+  await click({ userId: 'user-1', url: '/todo', eventId: 'todo-1' });
+  assert.deepEqual(visited.splice(0), ['https://unihub.test/todo?event=todo-1']);
+  await click({ userId: 'user-2', url: '/calendar', eventId: 'private-event' });
+  assert.equal(visited.length, 0);
+});

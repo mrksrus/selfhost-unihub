@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MailPage from '@/pages/MailPage';
 import { api } from '@/lib/api';
+import { setOfflineMode } from '@/lib/offline';
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -94,7 +95,7 @@ function setupApi(emails = [inboxEmail]) {
   vi.mocked(api.delete).mockResolvedValue({ data: { deleted: true } });
 }
 
-function renderMailPage(emails = [inboxEmail]) {
+function renderMailPage(emails = [inboxEmail], initialEntry = '/mail') {
   setupApi(emails);
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -105,7 +106,7 @@ function renderMailPage(emails = [inboxEmail]) {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <MailPage />
       </MemoryRouter>
     </QueryClientProvider>
@@ -120,6 +121,16 @@ describe('MailPage UI regressions', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    setOfflineMode(false);
+  });
+
+  it('opens notification mail outside the visible list without marking saved offline mail read', async () => {
+    setOfflineMode(true);
+    renderMailPage([], '/mail?email=email-1');
+    expect(await screen.findByText('Inbox body')).toBeInTheDocument();
+    expect(api.get).toHaveBeenCalledWith('/mail/emails/email-1', expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(api.put).not.toHaveBeenCalled();
+    expect(api.post).not.toHaveBeenCalled();
   });
 
   it('keeps account selection above a scrollable folder list', async () => {

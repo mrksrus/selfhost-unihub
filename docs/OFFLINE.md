@@ -24,7 +24,7 @@ Dark mode displays HTML mail in a readable text view by default. **Original emai
 
 ## Updates
 
-A new application version displays **UniHub update ready**. Save drafts and calendar edits and finish uploads before choosing **Saved — refresh now**. The update notice does not itself reload an active editor. A failed update keeps the notice available for retry.
+A new application version displays **UniHub update ready**. Save drafts and calendar edits and finish uploads before choosing **Saved — refresh now**. The update notice does not itself reload an active editor. Refresh consent applies to this tab; other open tabs keep their current input and can refresh later. A failed update keeps the notice available for retry.
 
 ## Implementation and tests
 

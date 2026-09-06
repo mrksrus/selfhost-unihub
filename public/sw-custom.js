@@ -72,6 +72,14 @@ function safeTargetUrl(input) {
     return url.origin === self.location.origin ? url.toString() : `${self.location.origin}/dashboard`;
   } catch { return `${self.location.origin}/dashboard`; }
 }
+function notificationTargetUrl(data) {
+  const url = new URL(safeTargetUrl(data?.url));
+  // Older queued payloads and offline reminders stored the item ID separately.
+  const parameter = url.pathname === '/mail' ? 'email' : ['/calendar', '/todo'].includes(url.pathname) ? 'event' : null;
+  const id = parameter === 'email' ? data?.emailId : data?.eventId;
+  if (parameter && typeof id === 'string' && id.length > 0 && id.length <= 128) url.searchParams.set(parameter, id);
+  return url.toString();
+}
 async function bindAuthenticatedUser(userId) {
   if (typeof userId !== 'string' || userId.length > 64) return false;
   const currentUser = await readStore('meta', 'userId');
@@ -99,7 +107,7 @@ async function deliverNotification(payload) {
     body: String(payload.body || '').slice(0, 400),
     icon: '/icons/icon-192x192.png', badge: '/icons/icon-72x72.png',
     tag: payload.dedupeKey, renotify: false,
-    data: { url: safeTargetUrl(payload.url), userId: activeUser, eventId: payload.eventId, emailId: payload.emailId },
+    data: { url: notificationTargetUrl(payload), userId: activeUser, eventId: payload.eventId, emailId: payload.emailId },
   });
   // Suppression and failures never acknowledge delivery. Shared worker storage deduplicates tabs and transports.
   await markDelivered(key);
@@ -138,12 +146,15 @@ self.addEventListener('notificationclick', event => {
   event.notification.close();
   event.waitUntil((async () => {
     if (await readStore('meta', 'userId') !== event.notification.data?.userId) return;
-    const targetUrl = safeTargetUrl(event.notification.data?.url);
+    const targetUrl = notificationTargetUrl(event.notification.data);
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of clients) {
       if (new URL(client.url).origin !== self.location.origin) continue;
-      if (client.url !== targetUrl && 'navigate' in client) await client.navigate(targetUrl);
-      return client.focus();
+      if (client.url === targetUrl) return client.focus();
+      if ('navigate' in client) {
+        const navigated = await client.navigate(targetUrl).catch(() => null);
+        if (navigated) return navigated.focus();
+      }
     }
     return self.clients.openWindow(targetUrl);
   })());

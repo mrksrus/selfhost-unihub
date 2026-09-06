@@ -5,10 +5,10 @@ This release adds the requested black, white and blue appearance, server-driven 
 ## Changes
 
 - Dark mode defaults to black backgrounds, white text and blue accents. Light/System remain available in Settings. HTML mail has a dark reading view and an explicit original-format option.
-- Notifications use persistent encrypted VAPID keys, per-device subscriptions, a transactional outbox, retries and service-worker delivery. Calendar reminders survive restarts and revalidate edits/cancellations. Enable and test notifications in Settings.
+- Notifications use persistent encrypted VAPID keys, per-device subscriptions, a transactional outbox, retries and service-worker delivery. Calendar reminders survive restarts and revalidate edits/cancellations and restores. Notification links open the specific item. Enable and test notifications in Settings.
 - Offline reading saves the latest 100 full non-draft emails across accounts, all contacts and calendar entries in a bounded 32 MiB snapshot. The offline view is read-only; attachments remain online. Snapshot ownership and clearing are enforced across tabs and in-flight requests.
 - Private query state is isolated per signed-in user. Generic service-worker API caches are removed. Temporary network errors and confirmed session revocation are handled separately.
-- Routes and games load lazily. The main production JavaScript bundle decreased from 1,061.79 kB (310.01 kB gzip) to approximately 609.20 kB (195.55 kB gzip). Service-worker precaching still downloads the offline-capable chunks during installation.
+- Routes and games load lazily. The main production JavaScript bundle decreased from 1,061.79 kB (310.01 kB gzip) to approximately 610.92 kB (196.21 kB gzip). Service-worker precaching still downloads the offline-capable chunks during installation.
 - Mail search is debounced and cancellable; stale reader responses cannot reopen or replace a later selection. Shared query invalidation refreshes lists, counts and dashboard previews.
 - Backup status polling runs only for active jobs in the active tab. Contact pagination no longer silently stops at 2,000 records.
 - Default folder creation preserves renamed/reordered system folders. A 1,000-message routing fixture now uses three SQL calls to load its folder/rule context instead of 11,000 repeated calls.
@@ -26,3 +26,9 @@ After upgrading over HTTPS, open Settings and enable notifications on each devic
 Enable Offline reading separately on each device, and wait for the saved timestamp. App updates prompt before reload so you can save edits first.
 
 See [PWA notifications](PWA.md), [Offline reading and appearance](OFFLINE.md), and [Mail sync](MAIL_SYNC.md).
+
+## Validation
+
+The refactor is covered by frontend state/lifecycle tests and API regression tests, including optional MySQL tests. CI uses MySQL 8 for real SQL, production schema initialization/reinitialization, stable encrypted VAPID identity and session-revocation cascades. A built-container smoke test checks Node 24, Nginx/API health, authentication/CSRF, isolated recording storage, byte/range downloads, MP3 conversion and cleanup before publication.
+
+The black/blue sign-in layout was checked at desktop and phone widths. A real two-tab service-worker update test confirmed that the requesting tab refreshes while the other retains its unsaved input and can refresh later. Actual minimized/locked-screen delivery still needs verification on the intended phone/browser; CI does not simulate its OS policies.

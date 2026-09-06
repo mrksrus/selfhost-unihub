@@ -67,6 +67,7 @@ export interface CalendarCalendar {
 
 export interface CalendarEvent {
   id: string;
+  user_id: string;
   calendar_id: string | null;
   title: string;
   description: string | null;
@@ -140,6 +141,13 @@ export const calendarQueryKeys = {
 };
 
 export const calendarApi = {
+  async fetchEvent(id: string, signal?: AbortSignal): Promise<CalendarEvent> {
+    const response = await api.get<{ event: CalendarEvent }>(`/calendar/events/${encodeURIComponent(id)}`, { signal });
+    if (response.error) throw new Error(response.error);
+    if (!response.data?.event || response.data.event.id !== id) throw new Error('Event not found');
+    return normalizeEvent(response.data.event);
+  },
+
   async fetchEvents(filters: CalendarEventFilters = {}): Promise<CalendarEvent[]> {
     const query = buildEventsQuery(filters);
     const endpoint = query ? `/calendar/events?${query}` : '/calendar/events';

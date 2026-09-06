@@ -66,6 +66,8 @@ describe('offline endpoint parity', () => {
     expect(data('/calendar/events?include_todos=true&respect_auto_todo=true&include_done=false').events).toHaveLength(2);
     expect(data('/calendar/events?calendar_ids=hidden').events).toMatchObject([{ id: 'hidden' }]);
     expect(data('/calendar/events?range_start=2026-09-07T00:00:00Z').events).toEqual([]);
+    expect(data('/calendar/events/event').event).toMatchObject({ id: 'event', subtasks: [{ id: 'subtask' }], attendees: [{ email: 'guest@example.test' }] });
+    expect(resolveOfflineEndpoint(snapshot(), '/calendar/events/not-saved')).toMatchObject({ status: 404 });
   });
 });
 

@@ -461,6 +461,19 @@ module.exports = {
     }
   },
 
+  'GET /api/calendar/events/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const id = getCalendarEventIdFromReq(req);
+    if (!id) return { error: 'Invalid event id', status: 400 };
+    try {
+      const event = await getCalendarEventWithSubtasks(userId, id);
+      return event ? { event } : { error: 'Event not found', status: 404 };
+    } catch (error) {
+      console.error('Get calendar event error:', error);
+      return { error: 'Failed to get calendar event', status: 500 };
+    }
+  },
+
   'PUT /api/calendar/events/:id': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
