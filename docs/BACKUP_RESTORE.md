@@ -58,6 +58,8 @@ It does not restore:
 - roles or admin privileges
 - active/inactive user state
 - sessions, JWTs, or CSRF tokens
+- device push subscriptions, delivery state or the server's VAPID identity
+- browser theme choices or the device's offline snapshot
 - 2FA secrets or recovery codes
 - mail server-deletion queue rows
 - unrelated users
@@ -113,8 +115,9 @@ BACKUP_MASTER_KEY
 If `BACKUP_MASTER_KEY` is unset, UniHub falls back to `ENCRYPTION_KEY`.
 `JWT_SECRET` is never used for backup encryption.
 
-Deleting the generated backup also deletes its server-wrapped key. After that,
-the downloaded file requires its recovery password.
+Deleting a generated backup removes its server-wrapped key only when no other
+backup or retained restore archive for that user references the same backup UUID.
+Once that key is removed, the downloaded file requires its recovery password.
 
 ### Recovery Password
 
@@ -135,7 +138,8 @@ If the password is lost:
 - a retained backup can still be restored automatically on its source server
   while its backup record and server-wrapped key exist
 - a downloaded backup cannot be restored elsewhere
-- deleting the source backup record removes the remaining automatic-unlock key
+- deleting the last backup or retained restore archive referencing that backup
+  removes the remaining automatic-unlock key
 
 Store the backup and password separately where practical.
 
@@ -387,8 +391,9 @@ During mail restore:
 | Successful uploaded restore | Archive deleted after completion |
 | Restore-job history | Retained until manually deleted |
 
-Deleting a restore job removes its retained uploaded archive and any
-restore-specific unlock key. Running jobs must be stopped before deletion.
+Deleting a restore job removes its retained uploaded archive. Its unlock key is
+removed when no other backup or retained restore archive for that user still
+references the same backup UUID. Running jobs must be stopped before deletion.
 
 ## API Reference
 
@@ -405,7 +410,7 @@ All endpoints require authentication. State-changing endpoints require CSRF.
 | `POST` | `/api/backup/jobs/:id/recovery-password/reveal` | Reveal the generated password once |
 | `POST` | `/api/backup/jobs/:id/restore` | Create a validation job from a retained backup |
 | `POST` | `/api/backup/jobs/:id/cancel` | Request cooperative cancellation |
-| `DELETE` | `/api/backup/jobs/:id` | Delete backup file, row, and server unlock key |
+| `DELETE` | `/api/backup/jobs/:id` | Delete backup file and row; remove its unlock key when no references remain |
 
 ### Restore Jobs
 

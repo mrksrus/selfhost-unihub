@@ -93,5 +93,7 @@ fi
 
 docker exec "$container_name" node -e 'if(process.versions.node.split(".")[0]!=="24")process.exit(1);console.log("Runtime Node.js",process.version)'
 docker exec "$container_name" ffmpeg -version
+docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of ["LICENSE","LICENSING.md","THIRD_PARTY_NOTICES.md","frontend-dependency-notices.txt","alpine-packages.txt","ffmpeg-license.txt"]){if(!fs.statSync("/app/licenses/"+name).size)throw Error("Empty license notice: "+name)}'
+[[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}' "$container_name")" == 'PolyForm-Noncommercial-1.0.0' ]]
 UNIHUB_SMOKE_CONTAINER="$container_name" node "$script_dir/container-smoke.mjs"
 echo 'Container smoke passed: production startup, health, auth/cookies/CSRF, user isolation, WAV upload/download/range, MP3 conversion, and deletion.'

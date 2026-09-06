@@ -8,6 +8,7 @@ RUN npm ci
 
 COPY . .
 RUN npm run build
+RUN node scripts/collect-frontend-notices.mjs /build/frontend-dependency-notices.txt
 
 # ── Stage 2: Production image (Nginx + Node.js API) ───────────────
 FROM node:24-alpine
@@ -19,12 +20,21 @@ RUN apk add --no-cache nginx wget netcat-openbsd mariadb-client ffmpeg \
 # ── Set up the API ─────────────────────────────────────────────────
 WORKDIR /app
 
+# This label identifies UniHub's project code; bundled components retain their licenses.
+LABEL org.opencontainers.image.licenses="PolyForm-Noncommercial-1.0.0"
+COPY LICENSE LICENSING.md THIRD_PARTY_NOTICES.md /app/licenses/
+COPY licenses/third-party /app/licenses/third-party
+COPY --from=frontend-builder /build/frontend-dependency-notices.txt /app/licenses/
+
 COPY api/package*.json ./api/
 RUN cd api && npm ci --omit=dev \
     && apk del .build-deps
 
 COPY api/*.js ./api/
 COPY api/src ./api/src
+
+RUN apk info -v > /app/licenses/alpine-packages.txt \
+    && ffmpeg -L > /app/licenses/ffmpeg-license.txt 2>&1
 
 # ── Set up Nginx for the frontend ─────────────────────────────────
 COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf

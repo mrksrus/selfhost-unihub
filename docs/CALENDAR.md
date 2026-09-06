@@ -115,6 +115,7 @@ The backend refuses to delete the last calendar in an account.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/calendar/events` | List events |
+| GET | `/api/calendar/events/:id` | Load one owned event/to-do, including subtasks and attendees |
 | POST | `/api/calendar/events` | Create event or to-do |
 | PUT | `/api/calendar/events/:id` | Update event fields and attendees |
 | PUT | `/api/calendar/events/:id/todo-status` | Update `todo_status`, optionally moving time |
@@ -135,6 +136,21 @@ Event query parameters:
 Supported event payload fields include `title`, `description`, `start_time`,
 `end_time`, `all_day`, `location`, `color`, `recurrence`, `reminder_minutes`,
 `reminders`, `is_todo_only`, `calendar_id`, and `attendees`.
+
+## Notifications and Offline Reading
+
+Enabled devices receive Web Push for new events/to-dos and due reminders. The
+server persists reminder schedules, checks due work every 30 seconds, and
+rechecks visibility, cancellation and completion before delivery. Notification
+links use `/calendar?event=<id>` or `/todo?event=<id>` and open the referenced
+item after an owner-scoped detail request, even when it falls outside the
+currently displayed calendar range. See [PWA notifications](PWA.md) for delivery
+timing and platform limits.
+
+Opt-in offline snapshots contain calendar accounts, calendars, events/to-dos,
+attendees and subtasks. The offline view applies calendar visibility, date and
+to-do filters to the saved records and remains read-only. Dark mode preserves
+existing calendar colors; defaults for newly created calendars use blue.
 
 ### Subtasks
 

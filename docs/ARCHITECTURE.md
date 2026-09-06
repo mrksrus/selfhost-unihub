@@ -53,8 +53,15 @@ normalized in `request-handler.js`.
 | `src/App.tsx` | Main router |
 | `src/pages/` | Page-level views |
 | `src/components/` | Layout, UI, game, mail, and PWA components |
-| `src/contexts/AuthContext.tsx` | Auth state and CSRF token wiring |
-| `src/lib/api.ts` | Cookie-based API client |
+| `src/contexts/AuthContext.tsx` | Session validation, cross-tab account changes, CSRF, and offline viewing identity |
+| `src/components/SessionQueryProvider.tsx` | Private query cache lifetime tied to the signed-in account |
+| `src/lib/api.ts` | Cookie-based API client, request cancellation, and network-failure-only offline reads |
+| `src/lib/mail-api.ts`, `src/hooks/use-mail-queries.ts` | Shared mail types, query keys, and invalidation |
+| `src/hooks/use-mail-reader.ts` | Cancelled/stale reader requests and online read-state updates |
+| `src/lib/contacts-api.ts` | Complete paginated contacts loading shared by contacts and composition |
+| `src/components/settings/BackupSettings.tsx` | Lazy Data Management view and active-job polling |
+| `src/lib/offline.ts` | Device snapshot storage, account/epoch isolation, and read-only response resolution |
+| `src/lib/pwa-update.ts` | Service-worker activation with separate refresh consent for each tab |
 | `src/lib/calendar-api.ts` | Calendar-specific API helpers |
 | `src/test/` | Vitest frontend tests |
 
@@ -71,6 +78,13 @@ Main routes:
 - `/settings`
 - `/admin/users`
 - `/admin/settings`
+
+Routes and individual game implementations load in separate chunks. Account
+changes unmount the previous private query cache and cancel its requests before
+rendering the next account. Mail search is debounced, and a reader request that
+finishes after selection changes cannot replace the selected message. The Data
+Management view polls only active backup/restore jobs while its tab is visible;
+terminal jobs and password-waiting jobs do not keep a polling loop running.
 
 ## Request Handling
 
@@ -244,9 +258,21 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 
 ## Service Worker and PWA
 
-The frontend uses vite-plugin-pwa for an installable shell and a prompted update flow. Routes and games load lazily; Workbox still precaches the offline-capable chunks, so startup savings do not imply smaller total installation downloads.
+The frontend uses vite-plugin-pwa for an installable shell and a prompted update
+flow. The client overrides the plugin's automatic reload callback: worker
+activation is shared, but each tab must explicitly request its own refresh.
+Native worker activation/controller events complete the requesting tab's update,
+with a bounded timeout and retry if activation fails. Routes and games load
+lazily; Workbox still precaches the offline-capable chunks, so startup savings do
+not imply smaller total installation downloads.
 
-All private API requests use NetworkOnly. The custom worker removes obsolete API caches on activation and owns Web Push display, persistent per-user deduplication and safe click navigation. The API persists encrypted VAPID identity, session-bound subscriptions, a transactional notification outbox and indexed reminder schedules in MySQL. One job loop processes notifications every 30 seconds.
+The service worker does not cache API responses; API GET routes use NetworkOnly.
+The custom worker removes obsolete API caches on activation and owns Web Push
+display, persistent per-user deduplication and same-origin click navigation.
+Mail, calendar and to-do notification links open the referenced item after
+owner-scoped loading. The API persists encrypted VAPID identity, session-bound
+subscriptions, a transactional notification outbox and indexed reminder
+schedules in MySQL. One job loop processes notifications every 30 seconds.
 
 Opt-in offline reading uses a separate versioned IndexedDB snapshot with explicit account/epoch ownership. It contains the latest 100 full emails, all contacts and events, bounded to 32 MiB; it is not an authentication-response cache. Account changes and explicit clearing invalidate pending saves across tabs. See [PWA](PWA.md) and [Offline reading](OFFLINE.md).
 

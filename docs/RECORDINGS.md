@@ -132,9 +132,11 @@ The server verifies:
 - temp path is under the recordings root
 
 It verifies the optional SHA-256 checksum, then moves the original file into the
-final user directory, inserts the recording row, links tags, and deletes the
-upload row in one transaction. Browser microphone recordings and imported files
-both retain their original bytes and format.
+final user directory. A database transaction inserts the recording row, links
+tags, and deletes the upload row. If that transaction fails, the error handler
+removes the moved file; the filesystem move itself is not transactional. Browser
+microphone recordings and imported files both retain their original bytes and
+format.
 
 ## API Endpoints
 

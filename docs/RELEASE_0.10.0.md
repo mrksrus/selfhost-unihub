@@ -1,6 +1,6 @@
 # UniHub 0.10.0
 
-This release adds the requested black, white and blue appearance, server-driven Web Push, opt-in offline reading, and a focused mail/state refactor.
+This release adds a black, white and blue appearance, server-driven Web Push, opt-in offline reading, and a focused mail/state refactor.
 
 ## Changes
 
@@ -16,6 +16,10 @@ This release adds the requested black, white and blue appearance, server-driven 
 - Builds now enforce TypeScript checking. Node 24 is used in both Docker stages and CI. Image publication is gated by tests and a container smoke test.
 
 ## Upgrade
+
+**0.9.23.0 is the checked upgrade baseline.** The changes are designed for an in-place upgrade using the existing database, uploads and keys. The subsequent 0.10.1 validation adds a populated 0.9.23.0 schema migration/restart test; earlier 0.9.x versions and locally modified schemas are not all runtime-verified. Rehearse those upgrades on an isolated copy first. See the [upgrade guide](UPGRADING.md) for the procedure and exact validation scope.
+
+**Keep a matching pre-upgrade database/uploads/configuration backup. An image-only downgrade is not a verified rollback path.** Preserve the Compose project/volume mappings and encryption keys; changing them can make data appear missing or credentials unreadable.
 
 Volumes and required environment variables remain unchanged. MySQL readiness now allows up to five minutes (300 seconds) for slower hosts, and startup continues immediately after an authenticated check succeeds. The probe uses the same driver and DATABASE_URL/MYSQL_* configuration as the API. The application image and supplied Compose health checks allow 360 seconds for startup. Update older Compose files that explicitly set a 120-second readiness budget or shorter health-check grace period; pulling the image alone cannot override an explicit Compose environment setting. Custom timing overrides remain supported.
 

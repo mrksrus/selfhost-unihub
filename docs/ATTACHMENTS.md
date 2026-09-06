@@ -45,18 +45,16 @@ Table: `email_attachments`
 
 ## IMAP Sync Processing
 
-For each parsed attachment:
+An import stages the raw message and all parsed attachments before committing
+the message metadata. Each attachment receives an ID and sanitized storage
+filename. Inline `cid:` references are rewritten to authenticated attachment
+URLs in the stored HTML.
 
-1. Generate an attachment UUID.
-2. Sanitize the filename for filesystem use.
-3. Write the content to `/app/uploads/attachments/<userId>/`.
-4. Insert an `email_attachments` row.
-5. If the attachment has `contentId`/`cid`, replace matching `cid:` URLs in the
-   email HTML body with `/api/mail/attachments/<attachmentId>`.
-6. If inline replacements changed the HTML, update `emails.body_html`.
-
-Individual attachment write failures are logged and skipped. The parent email
-sync continues.
+The message, attachment rows, import-complete flag and eligible queue entries
+commit in one database transaction. A failed attachment write leaves the import
+incomplete and retryable; it is not silently accepted as a complete message.
+Rollback removes newly staged files. An uncertain commit preserves the files
+because their metadata may already have committed. See [Mail sync](MAIL_SYNC.md).
 
 ## Download Endpoint
 
@@ -68,7 +66,7 @@ Behavior:
 2. Selects the attachment by `id` and `user_id`.
 3. Resolves the stored path.
 4. Rejects paths outside `/app/uploads/attachments`.
-5. Reads the file and returns it as a raw response.
+5. Checks the file and streams it from disk; disconnects close the stream.
 6. Normalizes common MIME types from filename when stored content type is generic.
 
 The request handler sets `Content-Disposition: attachment` for raw attachment
@@ -81,11 +79,14 @@ HTML email content is rendered by
 `src/components/mail/SafeEmailContent.tsx` inside:
 
 ```tsx
-<iframe sandbox="" srcDoc={html} />
+<iframe sandbox="allow-popups allow-popups-to-escape-sandbox" srcDoc={html} />
 ```
 
-An empty sandbox blocks scripts, forms, popups, and same-origin access. When
-HTML is unavailable, the component renders plain text in a preformatted block.
+The sandbox blocks scripts, forms and same-origin access while allowing links
+to open separate windows. Remote image loading requires approval scoped to the
+selected email. Dark mode first offers a plain-text reading view extracted in
+an inert template; the original HTML view is an explicit option. When HTML is
+unavailable, the component renders the plain-text body.
 
 Regular attachments are listed below the email body. Clicking one calls
 `api.getBlob('/mail/attachments/<id>')` with cookie credentials.

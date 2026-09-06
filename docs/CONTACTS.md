@@ -57,15 +57,18 @@ require `X-CSRF-Token`.
 
 ### List Query Parameters
 
-`GET /api/contacts?q=alice&group=all&limit=200`
+`GET /api/contacts?q=alice&group=all&limit=200&offset=0`
 
 | Parameter | Behavior |
 | --- | --- |
 | `q` | Search first name, last name, all email fields, all phone fields, and company |
 | `group` | `all`, `name_only`, or `number_or_email_only` |
 | `limit` | 1-2000, default 2000 |
+| `offset` | Starting row offset, default 0 |
 
-Results are ordered by favorite status, then first name, then last name.
+The response contains `contacts`, `has_more`, and `offset`. Results are ordered
+by favorite status, then first name, last name, and ID for stable page ordering.
+Fetch the next offset while `has_more` is true to retrieve the full result set.
 
 ## vCard Import
 
@@ -139,6 +142,12 @@ The contacts page provides:
 - vCard import/export
 - duplicate merge actions
 - clickable `mailto:` and `tel:` links
+
+The shared contact loader follows every API page, so lists above 2,000 contacts
+are not truncated. Group tabs, search and duplicate previews operate on the
+complete loaded list. The mail composer reuses the same account-scoped contact
+cache when address suggestions are needed. Offline snapshots also contain all
+contacts within the device snapshot size limit.
 
 The user preference `email_link_behavior` controls whether email links open the
 system mail client (`mailto`) or UniHub mail composition (`internal`) where the

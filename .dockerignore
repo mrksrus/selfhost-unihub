@@ -9,3 +9,6 @@ supabase
 data
 docker/mysql
 *.md
+*.local
+!LICENSING.md
+!THIRD_PARTY_NOTICES.md

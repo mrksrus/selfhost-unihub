@@ -37,6 +37,24 @@ CSRF is skipped for:
 The frontend stores the CSRF token in memory via `src/lib/api.ts`; it does not
 store auth tokens in localStorage.
 
+The background-sync exception remains for older clients. The current service
+worker does not poll mail; the server schedules mail discovery and sends Web
+Push notifications.
+
+## Browser Session State
+
+Private React Query data belongs to the current account. Sign-in, sign-out and
+account changes notify other tabs; the previous account's query cache is
+unmounted and pending requests are cancelled before another account renders.
+Provisional authentication checks do not erase the service worker's notification
+deduplication state. Sign-out revokes the device subscription while the current
+session is still available, then clears local identity and offline data.
+
+An explicitly saved offline snapshot can reopen a read-only local viewing
+identity after a network failure. It is not a cached `/auth/me` response or a
+server session. Confirmed invalid sessions clear it; reconnection requires
+server validation before writes resume. See [Offline reading](OFFLINE.md).
+
 ## Rate Limiting
 
 Sign-in, signup, and 2FA login failures use an in-memory per-IP limiter:
@@ -165,6 +183,13 @@ Supported preferences:
 
 Unknown preference keys are ignored. Invalid values are rejected.
 
+General Settings also contains browser/device preferences: **Appearance**
+(Dark by default, Light or System), **Offline reading**, and **Notifications**.
+Theme selection and offline copies belong to the browser profile; notification
+permission and the subscription belong to the device/browser and signed-in
+account. These are separate from the account preferences stored in
+`user_settings`.
+
 ## User Data Management Endpoints
 
 These routes are for the current user and require CSRF:
@@ -199,6 +224,11 @@ The Data Management tab also exposes generated backup and durable restore jobs:
 Backup and restore job ownership is scoped to the signed-in user. Generated
 archives remain until manually deleted. Uploaded archives expire after seven
 days and are deleted after a successful restore.
+
+Data Management loads its backup/restore view when first opened. Status polling
+runs only while that Settings tab is active and a job is queued, running,
+validating or cancelling. It stops for completed jobs and jobs waiting for a
+password or restore confirmation.
 
 See [Backup and Restore Guide](BACKUP_RESTORE.md).
 

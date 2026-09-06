@@ -13,7 +13,7 @@ outbound mail through SMTP. The mail system includes:
 - raw `.eml` archiving
 - attachment storage and inline `cid:` rewriting
 - optional delayed server-side deletion after safe local import
-- manual, periodic, and service-worker background sync triggers
+- manual and server-scheduled background sync, independent of open browser tabs
 
 ## Components
 
@@ -163,9 +163,10 @@ notifications in the same transaction as the new message.
 Existing installations receive `import_complete = FALSE` on older rows and no
 preexisting per-folder checkpoint. The first upgraded sync therefore scans and
 revalidates provider history once. This can take longer than an ordinary sync,
-but later passes use UID progress and skip complete messages. Restored imports
-also default to incomplete and are eligible for repair without resetting an
-existing folder checkpoint.
+but later passes use UID progress and skip complete messages. Newly inserted
+restored imports also default to incomplete and are eligible for repair without
+resetting an existing folder checkpoint. Replacing an existing row through
+restore retains that row's current import-complete flag.
 
 Fetching one UID at a time bounds simultaneous message memory use. A failed
 message does not discard successful imports. If a database connection fails while
