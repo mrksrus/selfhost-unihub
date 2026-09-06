@@ -96,4 +96,16 @@ docker exec "$container_name" ffmpeg -version
 docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of ["LICENSE","LICENSING.md","THIRD_PARTY_NOTICES.md","frontend-dependency-notices.txt","alpine-packages.txt","ffmpeg-license.txt"]){if(!fs.statSync("/app/licenses/"+name).size)throw Error("Empty license notice: "+name)}'
 [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}' "$container_name")" == 'PolyForm-Noncommercial-1.0.0' ]]
 UNIHUB_SMOKE_CONTAINER="$container_name" node "$script_dir/container-smoke.mjs"
-echo 'Container smoke passed: production startup, health, auth/cookies/CSRF, user isolation, WAV upload/download/range, MP3 conversion, and deletion.'
+docker exec -i -e UNIHUB_API_ROOT=/app/api "$container_name" node < "$script_dir/../api/tests/helpers/audio-conversion-smoke.cjs"
+# Only the disposable container created above is affected. The container must
+# exit if its API dies so the deployment's restart policy can recover it.
+api_pid="$(docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of fs.readdirSync("/proc")){if(!/^\d+$/.test(name))continue;try{const args=fs.readFileSync(`/proc/${name}/cmdline`,"utf8").split("\0");if(args.includes("/app/api/server.js")){console.log(name);process.exit(0)}}catch{}}process.exit(1)')"
+[[ "$api_pid" =~ ^[0-9]+$ ]] || { echo 'Could not identify disposable container API process.' >&2; exit 1; }
+docker exec "$container_name" kill -TERM "$api_pid"
+for ((attempt=0; attempt<20; attempt++)); do
+  [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] && break
+  sleep 1
+done
+[[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] || { echo 'Container stayed running after API death.' >&2; exit 1; }
+[[ "$(docker inspect --format '{{.State.ExitCode}}' "$container_name")" == 1 ]] || { echo 'Container did not report essential service failure.' >&2; exit 1; }
+echo 'Container smoke passed: startup, health, authentication, isolation, malformed requests, audio round-trip, and essential-service recovery.'

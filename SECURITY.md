@@ -6,9 +6,9 @@ The project treats security findings as engineering work: review the affected pa
 
 ## Review and verification
 
-The 0.10 refactor included AI review of authentication and user isolation, request parsing, mail/CalDAV host validation, notification subscriptions and delivery, offline storage ownership, and backup/import consistency.
+The 0.10 refactor and 0.10.2 security update included AI review of authentication and user isolation, request parsing, mail/CalDAV host validation, notification subscriptions and delivery, offline storage ownership, and backup/import consistency.
 
-Release CI runs API and frontend tests, lint, TypeScript checks and a production build. MySQL integration tests exercise the database, and the built-container smoke test covers startup, authentication cookies and CSRF, user isolation, file upload/download/ranges and recording conversion. Release notes identify checks performed and device behavior that still needs validation.
+Release CI runs API and frontend tests, lint, TypeScript checks and a production build. MySQL integration tests exercise the database, and the built-container smoke test covers startup, authentication cookies and CSRF, user isolation, file upload/download/ranges and recording conversion. Regression coverage includes two-user backup restores, checked outbound connection targets, CalDAV origin boundaries, proxy/account login limits, atomic 2FA sessions and supervised service shutdown. Release notes identify checks performed and device behavior that still needs validation.
 
 ## Reporting a vulnerability
 

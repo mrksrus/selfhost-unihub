@@ -108,7 +108,7 @@ export const recordingsApi = {
     return response.data.upload;
   },
 
-  async uploadChunk(uploadId: string, payload: { offset: number; data_base64: string }): Promise<RecordingUpload> {
+  async uploadChunk(uploadId: string, payload: { offset: number; data_base64: string; sha256?: string }): Promise<RecordingUpload> {
     const response = await api.post<{ upload: RecordingUpload }>(`/recordings/uploads/${uploadId}/chunk`, payload);
     if (response.error || !response.data?.upload) throw new Error(response.error || 'Could not upload chunk');
     return response.data.upload;

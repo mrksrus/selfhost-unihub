@@ -1,7 +1,8 @@
 const crypto = require('crypto');
 const { db } = require('../state');
 const { encrypt } = require('../security/encryption');
-const { assessMailHost } = require('./mail');
+const { resolveMailConnectionTarget } = require('../security/outbound-network');
+const { parseCalDavUrl, resolveCalDavUrl, davRequest } = require('../security/caldav-transport');
 const {
   CALENDAR_PROVIDER_DEFAULT_CAPABILITIES,
   serializeCalendarAccount,
@@ -47,10 +48,6 @@ function splitDavResponses(xml) {
   return responses;
 }
 
-function resolveUrl(baseUrl, href) {
-  return new URL(href, baseUrl).toString();
-}
-
 function normalizeCalDavDiscoveryUrl({ emailAddress, imapHost, explicitUrl }) {
   if (explicitUrl) return String(explicitUrl).trim();
   const emailDomain = String(emailAddress || '').split('@').pop();
@@ -59,76 +56,18 @@ function normalizeCalDavDiscoveryUrl({ emailAddress, imapHost, explicitUrl }) {
   return `https://${host}/.well-known/caldav`;
 }
 
-function getUrlHostAndPort(urlString) {
-  const url = new URL(urlString);
-  return {
-    host: url.hostname,
-    port: Number(url.port) || (url.protocol === 'https:' ? 443 : 80),
-  };
-}
-
 async function validateDavUrlPolicy(urlString) {
-  const parsed = new URL(urlString);
-  if (parsed.protocol !== 'https:') {
-    return { error: 'CalDAV URL must use HTTPS', status: 400 };
-  }
-  const { host, port } = getUrlHostAndPort(urlString);
-  const assessment = await assessMailHost(host, port);
-  if (assessment.blocked) {
-    return {
-      error: 'CalDAV host resolves to a private/local address. Add it to TRUSTED_MAIL_HOSTS if this is intentional.',
-      status: 400,
-    };
-  }
-  return { accepted: true };
-}
-
-function basicAuth(username, password) {
-  return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
-}
-
-async function davRequest(urlString, { method = 'PROPFIND', username, password, body, depth = '0' }) {
-  await validateDavUrlPolicy(urlString).then((result) => {
-    if (result.error) {
-      const error = new Error(result.error);
-      error.status = result.status;
-      throw error;
-    }
-  });
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
   try {
-    const response = await fetch(urlString, {
-      method,
-      redirect: 'follow',
-      headers: {
-        Authorization: basicAuth(username, password),
-        Depth: depth,
-        'Content-Type': 'application/xml; charset=utf-8',
-        Accept: 'application/xml,text/xml,*/*',
-      },
-      body,
-      signal: controller.signal,
-    });
-    const text = await response.text();
-    if (!response.ok && response.status !== 207) {
-      const error = new Error(`CalDAV request failed (${response.status})`);
-      error.status = response.status;
-      error.responseText = text.slice(0, 500);
-      throw error;
-    }
-    return {
-      status: response.status,
-      url: response.url || urlString,
-      text,
-    };
-  } finally {
-    clearTimeout(timeout);
+    const url = parseCalDavUrl(urlString);
+    await resolveMailConnectionTarget(url.hostname);
+    return { accepted: true };
+  } catch (error) {
+    return { error: error.message, status: 400 };
   }
 }
 
 async function discoverCalDavCalendars({ discoveryUrl, username, password }) {
+  const credentialOrigin = parseCalDavUrl(discoveryUrl).origin;
   const principalBody = `<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
   <d:prop>
@@ -136,19 +75,19 @@ async function discoverCalDavCalendars({ discoveryUrl, username, password }) {
     <cs:calendar-home-set />
   </d:prop>
 </d:propfind>`;
-  const first = await davRequest(discoveryUrl, { username, password, body: principalBody, depth: '0' });
+  const first = await davRequest(discoveryUrl, { username, password, body: principalBody, depth: '0', credentialOrigin });
   let currentUrl = first.url;
   let principalHref = getNestedHref(first.text, 'current-user-principal');
   let calendarHomeHref = getNestedHref(first.text, 'calendar-home-set');
 
   if (!calendarHomeHref && principalHref) {
-    const principalUrl = resolveUrl(currentUrl, principalHref);
-    const principal = await davRequest(principalUrl, { username, password, body: principalBody, depth: '0' });
+    const principalUrl = resolveCalDavUrl(principalHref, currentUrl, credentialOrigin);
+    const principal = await davRequest(principalUrl, { username, password, body: principalBody, depth: '0', credentialOrigin });
     currentUrl = principal.url;
     calendarHomeHref = getNestedHref(principal.text, 'calendar-home-set');
   }
 
-  const calendarHomeUrl = calendarHomeHref ? resolveUrl(currentUrl, calendarHomeHref) : currentUrl;
+  const calendarHomeUrl = calendarHomeHref ? resolveCalDavUrl(calendarHomeHref, currentUrl, credentialOrigin) : currentUrl;
   const calendarListBody = `<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:" xmlns:cs="http://calendarserver.org/ns/">
   <d:prop>
@@ -158,7 +97,7 @@ async function discoverCalDavCalendars({ discoveryUrl, username, password }) {
     <cs:getctag />
   </d:prop>
 </d:propfind>`;
-  const home = await davRequest(calendarHomeUrl, { username, password, body: calendarListBody, depth: '1' });
+  const home = await davRequest(calendarHomeUrl, { username, password, body: calendarListBody, depth: '1', credentialOrigin });
   const responses = splitDavResponses(home.text);
   const calendars = responses
     .map((response) => {
@@ -167,7 +106,7 @@ async function discoverCalDavCalendars({ discoveryUrl, username, password }) {
       if (!href || !new RegExp(`<${tagPattern('calendar')}[\\s/>]`, 'i').test(resourceType)) return null;
       return {
         href,
-        url: resolveUrl(home.url, href),
+        url: resolveCalDavUrl(href, home.url, credentialOrigin),
         displayName: getFirstTag(response, 'displayname') || 'Calendar',
         ctag: getFirstTag(response, 'getctag') || null,
       };
@@ -269,7 +208,7 @@ function parseSimpleVevents(calendarData) {
   return events;
 }
 
-async function fetchCalendarEvents({ calendarUrl, username, password }) {
+async function fetchCalendarEvents({ calendarUrl, username, password, credentialOrigin }) {
   const now = Date.now();
   const start = new Date(now - CALDAV_SYNC_WINDOW_PAST_DAYS * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -293,7 +232,7 @@ async function fetchCalendarEvents({ calendarUrl, username, password }) {
     </c:comp-filter>
   </c:filter>
 </c:calendar-query>`;
-  const result = await davRequest(calendarUrl, { method: 'REPORT', username, password, body, depth: '1' });
+  const result = await davRequest(calendarUrl, { method: 'REPORT', username, password, body, depth: '1', credentialOrigin });
   return splitDavResponses(result.text).flatMap((response) => {
     const href = getFirstTag(response, 'href');
     const etag = getFirstTag(response, 'getetag');
@@ -434,6 +373,7 @@ async function createCalDavAccountForMail({
       );
       const events = await fetchCalendarEvents({
         calendarUrl: calendar.url,
+        credentialOrigin: discoveryUrl,
         username: username || emailAddress,
         password,
       }).catch((error) => {

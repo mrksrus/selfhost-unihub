@@ -1,8 +1,10 @@
 const crypto = require('crypto');
-const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { db } = require('../state');
+const { inspectRecordingAudio } = require('./recording-audio');
+const { createAudioConversionQueue } = require('./audio-conversion-queue');
+const { MAX_CONVERTED_BYTES, runAudioConversion } = require('./audio-transcode');
 
 const RECORDINGS_ROOT = '/app/uploads/recordings';
 const MAX_RECORDING_BYTES = 500 * 1024 * 1024;
@@ -10,6 +12,7 @@ const MAX_CHUNK_BYTES = 768 * 1024;
 const UPLOAD_TTL_HOURS = 24;
 const RECORDING_CATEGORIES = new Set(['none', 'music', 'journal', 'memory', 'reminder']);
 const mp3ConversionJobs = new Map();
+const mp3ConversionQueue = createAudioConversionQueue();
 
 function sanitizeFilename(value, fallback = 'recording') {
   const cleaned = String(value || fallback)
@@ -114,16 +117,6 @@ function parseMetadataJson(value) {
   return normalizeMetadata(value);
 }
 
-function extensionForContentType(contentType, originalFilename = '') {
-  const filenameExt = path.extname(originalFilename || '').toLowerCase();
-  if (filenameExt && filenameExt.length <= 12) return filenameExt;
-  if (contentType.includes('mpeg') || contentType.includes('mp3')) return '.mp3';
-  if (contentType.includes('mp4') || contentType.includes('m4a')) return '.m4a';
-  if (contentType.includes('ogg')) return '.ogg';
-  if (contentType.includes('wav')) return '.wav';
-  return '.webm';
-}
-
 function isMp3Audio(contentType, filename = '') {
   const normalizedType = String(contentType || '').toLowerCase();
   return normalizedType.includes('mpeg')
@@ -192,47 +185,12 @@ async function transcodeAudioToMp3(inputPath, outputPath) {
   const temporaryOutput = `${resolvedOutput}.${crypto.randomUUID()}.tmp.mp3`;
 
   try {
-    await new Promise((resolve, reject) => {
-      const child = spawn('ffmpeg', [
-        '-nostdin',
-        '-hide_banner',
-        '-loglevel', 'error',
-        '-y',
-        '-fflags', '+genpts+discardcorrupt',
-        '-i', resolvedInput,
-        '-map', '0:a:0',
-        '-vn',
-        '-map_metadata', '-1',
-        '-af', 'asetpts=N/SR/TB',
-        '-codec:a', 'libmp3lame',
-        '-q:a', '2',
-        temporaryOutput,
-      ], {
-        stdio: ['ignore', 'ignore', 'pipe'],
-      });
-
-      let stderr = '';
-      child.stderr.on('data', (chunk) => {
-        if (stderr.length < 16000) stderr += chunk.toString();
-      });
-      child.on('error', (error) => {
-        if (error.code === 'ENOENT') {
-          reject(new Error('MP3 conversion is unavailable because ffmpeg is not installed'));
-          return;
-        }
-        reject(error);
-      });
-      child.on('close', (code) => {
-        if (code === 0) {
-          resolve();
-          return;
-        }
-        reject(new Error(stderr.trim() || `ffmpeg exited with code ${code}`));
-      });
-    });
+    const { demuxer } = await inspectRecordingAudio(resolvedInput);
+    await runAudioConversion(resolvedInput, temporaryOutput, demuxer);
 
     const stat = await fs.promises.stat(temporaryOutput);
     if (stat.size <= 0) throw new Error('MP3 conversion produced an empty file');
+    if (stat.size >= MAX_CONVERTED_BYTES) throw new Error('MP3 export exceeds the conversion size limit. Download the original recording instead.');
     await fs.promises.rename(temporaryOutput, resolvedOutput);
   } catch (error) {
     await fs.promises.rm(temporaryOutput, { force: true }).catch(() => {});
@@ -259,7 +217,7 @@ async function ensureRecordingMp3(recording) {
 
   let conversion = mp3ConversionJobs.get(convertedPath);
   if (!conversion) {
-    conversion = transcodeAudioToMp3(sourcePath, convertedPath)
+    conversion = mp3ConversionQueue.enqueue(String(recording.user_id), () => transcodeAudioToMp3(sourcePath, convertedPath))
       .finally(() => mp3ConversionJobs.delete(convertedPath));
     mp3ConversionJobs.set(convertedPath, conversion);
   }
@@ -398,7 +356,7 @@ async function getRecordingForUser(userId, recordingId) {
 
 async function startRecordingUpload(userId, input = {}) {
   const totalBytes = Number(input.total_bytes);
-  if (!Number.isFinite(totalBytes) || totalBytes <= 0) {
+  if (!Number.isSafeInteger(totalBytes) || totalBytes <= 0) {
     return { error: 'total_bytes must be a positive number', status: 400 };
   }
   if (totalBytes > MAX_RECORDING_BYTES) {
@@ -482,6 +440,12 @@ async function appendRecordingUploadChunk(userId, uploadId, input = {}) {
   }
   if (!buffer.length) return { error: 'Chunk is empty', status: 400 };
   if (buffer.length > MAX_CHUNK_BYTES) return { error: 'Chunk exceeds max size', status: 413 };
+  if (input.sha256 !== undefined) {
+    const expectedHash = normalizeSha256(input.sha256);
+    if (!expectedHash || crypto.createHash('sha256').update(buffer).digest('hex') !== expectedHash) {
+      return { error: 'Recording chunk failed its integrity check. Please retry the upload.', status: 409 };
+    }
+  }
 
   const nextBytes = Number(upload.bytes_received) + buffer.length;
   if (nextBytes > Number(upload.total_bytes)) {
@@ -528,9 +492,10 @@ async function completeRecordingUpload(userId, uploadId, input = {}) {
 
   const recordingId = crypto.randomUUID();
   const finalDir = path.join(RECORDINGS_ROOT, String(userId));
-  const storedContentType = upload.content_type;
-  const storedFilename = upload.original_filename;
-  const ext = extensionForContentType(storedContentType, storedFilename);
+  const audioFormat = await inspectRecordingAudio(upload.temp_path);
+  const storedContentType = audioFormat.contentType;
+  const storedFilename = replaceFilenameExtension(upload.original_filename, audioFormat.extension);
+  const ext = audioFormat.extension;
   const finalPath = path.join(finalDir, `${recordingId}${ext}`);
   await fs.promises.mkdir(finalDir, { recursive: true });
   await fs.promises.rename(path.resolve(upload.temp_path), finalPath);

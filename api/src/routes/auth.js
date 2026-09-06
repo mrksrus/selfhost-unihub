@@ -3,15 +3,13 @@ const { db } = require('../state');
 const { MIN_PASSWORD_LENGTH } = require('../config');
 const {
   getClientIP,
-  isRateLimited,
+  consumeAuthAttempt,
   getSignupMode,
-  recordFailedAttempt,
   hashPassword,
   verifyPassword,
   generateToken,
   generateCsrfToken,
   getSessionExpiry,
-  resetRateLimit,
   setAuthCookie,
   setCsrfCookie,
   getAuthTokenFromRequest,
@@ -31,17 +29,18 @@ const {
   deleteTwoFactorLoginChallenge,
 } = require('../services/two-factor');
 
-async function createSessionResponse(user, res) {
+async function createSessionResponse(user, res, connection = db, afterCommit = null) {
   const token = generateToken(user.id);
   const csrfToken = generateCsrfToken();
   const expiresAt = getSessionExpiry();
-  await db.execute(
+  await connection.execute(
     'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
     [user.id, token, expiresAt]
   );
 
-  setAuthCookie(res, token);
-  setCsrfCookie(res, csrfToken);
+  const sendCookies = () => { setAuthCookie(res, token); setCsrfCookie(res, csrfToken); };
+  if (afterCommit) afterCommit.push(sendCookies);
+  else sendCookies();
   return {
     csrfToken,
     user: {
@@ -57,6 +56,19 @@ async function createSessionResponse(user, res) {
 }
 
 
+function checkLoginBudget(res, scope, identity) {
+  const retryAfter = consumeAuthAttempt(scope, identity);
+  if (!retryAfter) return null;
+  res?.setHeader('Retry-After', String(retryAfter));
+  return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
+}
+
+function validCredentials(email, password) {
+  return typeof email === 'string' && email.trim().length > 0 && email.length <= 254
+    && typeof password === 'string' && password.length > 0 && password.length <= 1024;
+}
+
+
 module.exports = {
   // Authentication endpoints
   'GET /api/auth/signup-mode': async () => {
@@ -69,10 +81,8 @@ module.exports = {
 
   'POST /api/auth/signup': async (req, userId, body, res) => {
     const ip = getClientIP(req);
-    const blockedMinutes = isRateLimited(ip);
-    if (blockedMinutes) {
-      return { error: `Too many attempts. Try again in ${blockedMinutes} minutes.`, status: 429 };
-    }
+    const limited = checkLoginBudget(res, 'ip', ip);
+    if (limited) return limited;
 
     // Check signup mode
     const signupMode = await getSignupMode();
@@ -80,8 +90,10 @@ module.exports = {
       return { error: 'Signups are currently disabled. Contact an administrator if you need an account.', status: 403 };
     }
 
-    const { email, password, full_name } = body;
-    if (!email || !password) {
+    const { email, password, full_name } = body || {};
+    const signupLimited = checkLoginBudget(res, 'signup', ip);
+    if (signupLimited) return signupLimited;
+    if (!validCredentials(email, password)) {
       return { error: 'Email and password are required', status: 400 };
     }
     if (String(password).length < MIN_PASSWORD_LENGTH) {
@@ -96,7 +108,6 @@ module.exports = {
       );
       
       if (existing.length > 0) {
-        recordFailedAttempt(ip);
         return { error: 'User already exists', status: 400 };
       }
       
@@ -127,27 +138,23 @@ module.exports = {
         [newUserId, token, expiresAt]
       );
       
-      resetRateLimit(ip);
       const result = { csrfToken, user: { id: newUserId, email, full_name, role: 'user', timezone: null, two_factor_enabled: false } };
       setAuthCookie(res, token);
       setCsrfCookie(res, csrfToken);
       return result;
     } catch (error) {
       console.error('Signup error:', error);
-      recordFailedAttempt(ip);
       return { error: 'Failed to create user', status: 500 };
     }
   },
   
   'POST /api/auth/signin': async (req, userId, body, res) => {
     const ip = getClientIP(req);
-    const blockedMinutes = isRateLimited(ip);
-    if (blockedMinutes) {
-      return { error: `Too many attempts. Try again in ${blockedMinutes} minutes.`, status: 429 };
-    }
+    const limited = checkLoginBudget(res, 'ip', ip);
+    if (limited) return limited;
 
-    const { email, password } = body;
-    if (!email || !password) {
+    const { email, password } = body || {};
+    if (!validCredentials(email, password)) {
       return { error: 'Email and password are required', status: 400 };
     }
     
@@ -167,23 +174,23 @@ module.exports = {
           retries--;
           if (retries === 0) {
             console.error('[AUTH] Database error in signin:', dbError.message);
-            recordFailedAttempt(ip);
             return { error: 'Database connection error. Please try again.', status: 503 };
           }
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       }
       
+      const accountIdentity = users[0]?.id || `unknown:${email.trim().toLowerCase()}`;
+      const accountLimited = checkLoginBudget(res, 'password', accountIdentity);
+      if (accountLimited) return accountLimited;
       if (users.length === 0) {
-        recordFailedAttempt(ip);
         return { error: 'Invalid credentials', status: 401 };
       }
-      
+
       const user = users[0];
       const isValid = await verifyPassword(password, user.password_hash);
       
       if (!isValid) {
-        recordFailedAttempt(ip);
         return { error: 'Invalid credentials', status: 401 };
       }
       
@@ -205,13 +212,11 @@ module.exports = {
       while (retries > 0) {
         try {
           const result = await createSessionResponse(user, res);
-          resetRateLimit(ip);
           return result;
         } catch (dbError) {
           retries--;
           if (retries === 0) {
             console.error('[AUTH] Database error creating session:', dbError.message);
-            recordFailedAttempt(ip);
             return { error: 'Failed to create session. Please try again.', status: 503 };
           }
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -219,49 +224,54 @@ module.exports = {
       }
     } catch (error) {
       console.error('Signin error:', error);
-      recordFailedAttempt(ip);
       return { error: 'Failed to sign in', status: 500 };
     }
   },
 
   'POST /api/auth/2fa/login': async (req, userId, body, res) => {
     const ip = getClientIP(req);
-    const blockedMinutes = isRateLimited(ip);
-    if (blockedMinutes) {
-      return { error: `Too many attempts. Try again in ${blockedMinutes} minutes.`, status: 429 };
-    }
+    const limited = checkLoginBudget(res, 'ip', ip);
+    if (limited) return limited;
 
     const challengeToken = String(body?.challenge_token || '').trim();
     const code = String(body?.code || '').trim();
-    if (!challengeToken || !code) {
+    if (!/^[a-f0-9]{64}$/.test(challengeToken) || !code || code.length > 32) {
       return { error: 'Challenge token and authentication code are required', status: 400 };
     }
 
+    let connection;
     try {
-      const challengeUser = await consumeTwoFactorLoginChallenge(challengeToken);
-      if (!challengeUser || !challengeUser.is_active) {
-        recordFailedAttempt(ip);
+      connection = await db.getConnection();
+      await connection.beginTransaction();
+      const challengeUser = await consumeTwoFactorLoginChallenge(challengeToken, connection, { lock: true });
+      if (!challengeUser || !challengeUser.is_active || !challengeUser.two_factor_enabled) {
+        await connection.rollback();
         return { error: 'Two-factor challenge expired. Sign in again.', status: 401 };
       }
-
-      const verification = await verifyUserSecondFactor(challengeUser, code);
+      const accountLimited = checkLoginBudget(res, 'secondFactor', challengeUser.id);
+      if (accountLimited) { await connection.rollback(); return accountLimited; }
+      const verification = await verifyUserSecondFactor(challengeUser, code, connection);
       if (!verification.ok) {
-        recordFailedAttempt(ip);
+        await connection.rollback();
         return { error: 'Invalid authentication code', status: 401 };
       }
 
-      await deleteTwoFactorLoginChallenge(challengeToken);
-      resetRateLimit(ip);
-      const result = await createSessionResponse(challengeUser, res);
+      await deleteTwoFactorLoginChallenge(challengeToken, connection);
+      const afterCommit = [];
+      const result = await createSessionResponse(challengeUser, res, connection, afterCommit);
+      await connection.commit();
+      afterCommit.forEach(apply => apply());
       return {
         ...result,
         usedRecoveryCode: !!verification.usedRecoveryCode,
         recoveryCodesRemaining: verification.recoveryCodesRemaining,
       };
     } catch (error) {
+      if (connection) await connection.rollback().catch(() => {});
       console.error('2FA login error:', error);
-      recordFailedAttempt(ip);
       return { error: 'Failed to verify authentication code', status: 500 };
+    } finally {
+      connection?.release();
     }
   },
 
@@ -322,8 +332,10 @@ module.exports = {
     }
   },
 
-  'POST /api/auth/2fa/disable': async (req, userId, body) => {
+  'POST /api/auth/2fa/disable': async (req, userId, body, res) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
+    const limited = checkLoginBudget(res, 'secondFactor', userId);
+    if (limited) return limited;
     const { current_password, code } = body || {};
     if (!current_password || !code) {
       return { error: 'Current password and authentication code are required', status: 400 };
@@ -348,8 +360,10 @@ module.exports = {
     }
   },
 
-  'POST /api/auth/2fa/recovery-codes/regenerate': async (req, userId, body) => {
+  'POST /api/auth/2fa/recovery-codes/regenerate': async (req, userId, body, res) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
+    const limited = checkLoginBudget(res, 'secondFactor', userId);
+    if (limited) return limited;
     const code = String(body?.code || '').trim();
     if (!code) return { error: 'Authentication code is required', status: 400 };
 

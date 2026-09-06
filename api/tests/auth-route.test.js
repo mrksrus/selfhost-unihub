@@ -55,15 +55,13 @@ test('password change invalidates all sessions and clears auth cookies', async (
   });
   setRequireStub(authPath, {
     getClientIP: () => '127.0.0.1',
-    isRateLimited: () => null,
+    consumeAuthAttempt: () => null,
     getSignupMode: async () => 'disabled',
-    recordFailedAttempt: () => {},
     hashPassword: async () => 'new-hash',
     verifyPassword: async () => true,
     generateToken: () => 'jwt-token',
     generateCsrfToken: () => 'csrf-token',
     getSessionExpiry: () => new Date('2030-01-01T00:00:00.000Z'),
-    resetRateLimit: () => {},
     setAuthCookie: () => {},
     setCsrfCookie: () => {},
     getAuthTokenFromRequest: () => 'current-token',
@@ -123,15 +121,13 @@ test('public signup mode endpoint defaults to disabled', async (t) => {
   setRequireStub(statePath, { db: { execute: async () => [[]] } });
   setRequireStub(authPath, {
     getClientIP: () => '127.0.0.1',
-    isRateLimited: () => null,
+    consumeAuthAttempt: () => null,
     getSignupMode: async () => 'disabled',
-    recordFailedAttempt: () => {},
     hashPassword: async () => 'hash',
     verifyPassword: async () => true,
     generateToken: () => 'jwt-token',
     generateCsrfToken: () => 'csrf-token',
     getSessionExpiry: () => new Date('2030-01-01T00:00:00.000Z'),
-    resetRateLimit: () => {},
     setAuthCookie: () => {},
     setCsrfCookie: () => {},
     getAuthTokenFromRequest: () => null,

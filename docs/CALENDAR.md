@@ -185,6 +185,14 @@ Flow:
 
 Recurring events and recurrence exceptions are skipped by the simple parser.
 
+Every CalDAV connection uses a DNS-checked address with the original TLS
+hostname. Redirects and discovered URLs must stay on the explicitly configured
+HTTPS origin (same hostname and port). A provider that redirects to another
+server requires the final server URL to be configured explicitly; credentials
+are never forwarded there automatically. Requests allow at most five redirects,
+20 seconds total and 16 MiB of response data. Blocked restored account settings
+remain inactive with warnings.
+
 ## Security Notes
 
 - All queries are scoped by `user_id`.

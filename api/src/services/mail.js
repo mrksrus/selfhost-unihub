@@ -3,7 +3,6 @@ require('../imap-patch');
 const imaps = require('imap-simple');
 const { simpleParser } = require('mailparser');
 const nodemailer = require('nodemailer');
-const dns = require('dns').promises;
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
@@ -11,7 +10,7 @@ const { promisify } = require('util');
 const { db } = require('../state');
 const { debugLog } = require('../logger');
 const { decrypt } = require('../security/encryption');
-const { TRUSTED_MAIL_HOSTS } = require('../config');
+const { normalizeNetworkHost, isTrustedMailHost, isPublicNetworkAddress, resolveNetworkHost, resolveMailConnectionTarget } = require('../security/outbound-network');
 const { isSectionRestoreActive } = require('./restore-locks');
 const { normalizeComposerAttachments } = require('./mail-attachments');
 const { loadFolderSyncState, buildFolderSearchCriteria, saveFolderSyncState } = require('./mail-sync-state');
@@ -112,7 +111,7 @@ async function mailFolderExists(userId, slug, connection = db) {
 }
 
 function normalizeHost(host) {
-  return String(host || '').trim().toLowerCase();
+  return normalizeNetworkHost(host);
 }
 
 function normalizeSyncFetchLimit(value, fallbackValue = DEFAULT_MAIL_SYNC_FETCH_LIMIT) {
@@ -260,12 +259,6 @@ function isKnownMailProviderHost(host) {
   return KNOWN_MAIL_HOST_SUFFIXES.some(suffix => normalizedHost === suffix || normalizedHost.endsWith(`.${suffix}`));
 }
 
-function hostInAllowlist(host) {
-  const normalizedHost = normalizeHost(host);
-  if (!normalizedHost) return false;
-  return TRUSTED_MAIL_HOSTS.some(allowed => normalizedHost === allowed || normalizedHost.endsWith(`.${allowed}`));
-}
-
 function toBooleanFlag(value) {
   return value === true || value === 1 || value === '1';
 }
@@ -310,38 +303,10 @@ function isTlsTrustError(errorOrMessage) {
   );
 }
 
-function isPrivateIPv4(ip) {
-  const parts = ip.split('.').map(Number);
-  if (parts.length !== 4 || parts.some(Number.isNaN)) return false;
-  if (parts[0] === 10) return true;
-  if (parts[0] === 127) return true;
-  if (parts[0] === 192 && parts[1] === 168) return true;
-  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
-  if (parts[0] === 169 && parts[1] === 254) return true;
-  return false;
-}
-
-function isPrivateIPv6(ip) {
-  const normalized = ip.toLowerCase();
-  return (
-    normalized === '::1' ||
-    normalized.startsWith('fc') ||
-    normalized.startsWith('fd') ||
-    normalized.startsWith('fe80:')
-  );
-}
-
-function isPrivateOrLocalIP(ip) {
-  const version = net.isIP(ip);
-  if (version === 4) return isPrivateIPv4(ip);
-  if (version === 6) return isPrivateIPv6(ip);
-  return false;
-}
-
 async function assessMailHost(host, port) {
   const normalizedHost = normalizeHost(host);
   const knownProvider = isKnownMailProviderHost(normalizedHost);
-  const allowlisted = hostInAllowlist(normalizedHost);
+  const allowlisted = isTrustedMailHost(normalizedHost);
   const reasons = [];
 
   if (!knownProvider && !allowlisted) {
@@ -351,17 +316,13 @@ async function assessMailHost(host, port) {
   let resolvedAddresses = [];
   let resolveError = null;
   try {
-    if (net.isIP(normalizedHost)) {
-      resolvedAddresses = [normalizedHost];
-    } else if (normalizedHost) {
-      const lookup = await dns.lookup(normalizedHost, { all: true, verbatim: true });
-      resolvedAddresses = lookup.map(entry => entry.address);
-    }
+    resolvedAddresses = (await resolveNetworkHost(normalizedHost)).map(entry => entry.address);
   } catch (error) {
     resolveError = error.message;
   }
 
-  const privateAddresses = resolvedAddresses.filter(isPrivateOrLocalIP);
+  if (resolveError) reasons.push('dns_resolution_failed');
+  const privateAddresses = resolvedAddresses.filter(address => !isPublicNetworkAddress(address));
   if (privateAddresses.length > 0 && !allowlisted) {
     reasons.push('private_or_local_address');
   }
@@ -372,7 +333,7 @@ async function assessMailHost(host, port) {
     knownProvider,
     allowlisted,
     unknownProvider: !knownProvider && !allowlisted,
-    blocked: privateAddresses.length > 0 && !allowlisted,
+    blocked: !!resolveError || (privateAddresses.length > 0 && !allowlisted),
     reasons,
     resolvedAddresses,
     privateAddresses,
@@ -394,8 +355,8 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
   const warnings = [];
   if (imapAssessment.unknownProvider) warnings.push(`IMAP host "${imapAssessment.host}" is not a known provider.`);
   if (smtpAssessment.unknownProvider) warnings.push(`SMTP host "${smtpAssessment.host}" is not a known provider.`);
-  if (imapAssessment.blocked) warnings.push(`IMAP host "${imapAssessment.host}" resolves to a private/local address.`);
-  if (smtpAssessment.blocked) warnings.push(`SMTP host "${smtpAssessment.host}" resolves to a private/local address.`);
+  if (imapAssessment.blocked) warnings.push(`IMAP host "${imapAssessment.host}" could not be safely resolved to an allowed address.`);
+  if (smtpAssessment.blocked) warnings.push(`SMTP host "${smtpAssessment.host}" could not be safely resolved to an allowed address.`);
   if (imapTlsError) {
     warnings.push(`IMAP certificate for "${imapAssessment.host}" could not be verified by the mail login (${imapTlsError}).`);
   }
@@ -408,8 +369,8 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
       warnings,
       assessments,
       certificates: {
-        imap: { error: 'Blocked before certificate check because the host resolves to a private/local address.' },
-        smtp: { error: 'Blocked before certificate check because the host resolves to a private/local address.' },
+        imap: { error: 'Blocked before certificate check because the host could not be safely resolved to an allowed address.' },
+        smtp: { error: 'Blocked before certificate check because the host could not be safely resolved to an allowed address.' },
       },
     };
   }
@@ -443,7 +404,7 @@ async function validateMailHostPolicy({ imap_host, imap_port, smtp_host, smtp_po
 
   if (mailHostTrust.blocked) {
     return {
-      error: 'Mail host blocked because it resolves to a private/local address. Ask the host administrator to add it to TRUSTED_MAIL_HOSTS if this is intentional.',
+      error: 'Mail host blocked because it could not be safely resolved to an allowed address. Ask the host administrator to add it to TRUSTED_MAIL_HOSTS if this is intentional.',
       status: 400,
       mailHostTrust,
     };
@@ -978,24 +939,25 @@ async function isMailServerDeletionStillEnabled(accountId) {
   return new Date(account.server_delete_grace_until).getTime() <= Date.now();
 }
 
-function buildImapConnectionConfig(account) {
+async function buildImapConnectionConfig(account, { keepalive = true } = {}) {
   const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
   if (!password) return null;
   const imapPort = account.imap_port || 993;
+  const target = await resolveMailConnectionTarget(account.imap_host);
   return {
     imap: {
       user: account.username || account.email_address,
       password,
-      host: account.imap_host,
+      host: target.address,
       port: imapPort,
       tls: true,
       tlsOptions: {
         rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
-        servername: account.imap_host,
+        servername: net.isIP(target.hostname) ? undefined : target.hostname,
       },
       connTimeout: 60000,
       authTimeout: 30000,
-      keepalive: true,
+      keepalive,
     },
   };
 }
@@ -1044,7 +1006,7 @@ async function createRemoteMailFolderForUserAccounts(userId, folderName) {
   for (const account of accounts || []) {
     let connection = null;
     try {
-      const config = buildImapConnectionConfig(account);
+      const config = await buildImapConnectionConfig(account);
       if (!config) throw new Error('No password configured');
       connection = await imaps.connect(config);
       const availableFolders = await listAvailableImapFolders(connection);
@@ -1100,7 +1062,7 @@ async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SER
       return { accountId: normalizedAccountId, skipped: true, reason: 'mail_restore_running' };
     }
 
-    const config = buildImapConnectionConfig(account);
+    const config = await buildImapConnectionConfig(account);
     if (!config) return { accountId: normalizedAccountId, success: false, error: 'No password configured for this account' };
 
     const safeLimit = Math.min(Math.max(Number(limit) || MAIL_SERVER_DELETE_BATCH_SIZE, 1), 500);
@@ -1321,28 +1283,9 @@ async function testImapConnection(account) {
   let connection = null;
   const imapPort = account.imap_port || 993;
   try {
-    const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
-    if (!password) {
-      return { success: false, error: 'No password configured' };
-    }
-    
-    const config = {
-      imap: {
-        user: account.username || account.email_address,
-        password,
-        host: account.imap_host,
-        port: imapPort,
-        tls: true,
-        tlsOptions: { 
-          rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
-          servername: account.imap_host,
-        },
-        connTimeout: 60000,
-        authTimeout: 30000,
-        keepalive: false,
-      },
-    };
-    
+    const config = await buildImapConnectionConfig(account, { keepalive: false });
+    if (!config) return { success: false, error: 'No password configured' };
+
     connection = await imaps.connect(config);
     connection.on('error', (err) => {
       console.error('[ACCOUNT] IMAP connection error (handled):', err.message);
@@ -1408,29 +1351,9 @@ async function syncMailAccountOnce(accountId) {
     }
     const lastSyncedAt = account.last_synced_at;
     const syncFetchLimit = normalizeSyncFetchLimit(account.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT;
-    const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
-    if (!password) {
-      return { success: false, error: 'No password configured for this account' };
-    }
-    
-    const imapPort = account.imap_port || 993;
-    const config = {
-      imap: {
-        user: account.username || account.email_address,
-        password,
-        host: account.imap_host,
-        port: imapPort,
-        tls: true,
-        tlsOptions: { 
-          rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
-          servername: account.imap_host,
-        },
-        connTimeout: 60000,
-        authTimeout: 30000,
-        keepalive: true,
-      },
-    };
-    
+    const config = await buildImapConnectionConfig(account);
+    if (!config) return { success: false, error: 'No password configured for this account' };
+
     console.log(`[SYNC] Connecting to ${account.email_address}...`);
     connection = await imaps.connect(config);
     connection.on('error', (err) => {
@@ -1589,10 +1512,11 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
     const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
     if (!password) throw new Error('No password configured');
 
-    const smtpPort = account.smtp_port || 587;
+    const smtpPort = Number(account.smtp_port) || 587;
+    const target = await resolveMailConnectionTarget(account.smtp_host);
     // Port 465 uses implicit SSL/TLS, port 587 uses STARTTLS
     const transporter = nodemailer.createTransport({
-      host: account.smtp_host,
+      host: target.address,
       port: smtpPort,
       secure: smtpPort === 465, // Implicit SSL/TLS for port 465
       requireTLS: smtpPort !== 465, // Require STARTTLS on explicit-TLS SMTP ports
@@ -1602,7 +1526,7 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
       },
       tls: {
         rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
-        servername: account.smtp_host, // SNI support for proper TLS handshake
+        servername: net.isIP(target.hostname) ? undefined : target.hostname, // Preserve hostname verification after DNS pinning
       },
       connectionTimeout: 60000, // Connection timeout: 60 seconds
       greetingTimeout: 30000, // Greeting timeout: 30 seconds
@@ -1738,13 +1662,9 @@ module.exports = {
   createMailRoutingContext,
   ensureDefaultMailFoldersForUser,
   isKnownMailProviderHost,
-  hostInAllowlist,
   toBooleanFlag,
   isSelfSignedTlsError,
   isTlsTrustError,
-  isPrivateIPv4,
-  isPrivateIPv6,
-  isPrivateOrLocalIP,
   assessMailHost,
   buildMailHostTrustResult,
   validateMailHostPolicy,

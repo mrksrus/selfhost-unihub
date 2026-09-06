@@ -103,10 +103,16 @@ Review these before exposing UniHub outside your LAN:
 | Setting | Default in compose | Notes |
 | --- | --- | --- |
 | `ALLOWED_ORIGINS` | Example localhost and placeholder domain | Replace with your real browser origin, such as `https://hub.example.com` |
-| `TRUST_PROXY_HEADERS` | `true` | Use only behind a trusted reverse proxy that sets `X-Real-IP` / `X-Forwarded-For` |
+| `TRUST_PROXY_HEADERS` | `true` | Read `X-Forwarded-For` only through explicitly trusted proxy addresses |
+| `TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | Bundled proxy only; set `UNIHUB_TRUSTED_PROXY_CIDRS` in Compose `.env` to include your actual HTTPS proxy address/CIDR |
 | `TRUSTED_MAIL_HOSTS` | `mail.example.com` | Optional comma-separated host allowlist for private/local mail or CalDAV hosts |
 | `MYSQL_STARTUP_MAX_WAIT_SECONDS` | `300` | Wait up to five minutes for MySQL; continue immediately after an authenticated readiness check succeeds |
 | `CALENDAR_MULTI_ENABLED` | enabled unless set to `false` | Controls calendar account/calendar APIs |
+
+For an additional HTTPS proxy, see the [trusted-proxy configuration](docs/AUTH_ADMIN_SETTINGS.md#trusted-proxies).
+Only include proxy addresses you control, and restrict direct access to the app's
+published port when the proxy is meant to be the public entry point. Successful
+sign-in never clears another account's attempt budget.
 
 The application image and Compose health checks allow 360 seconds for startup.
 Keep that grace period longer than the readiness budget if you increase the wait
@@ -182,9 +188,9 @@ npm --prefix api test
 ## Documentation
 
 See the [upgrade guide](docs/UPGRADING.md) before replacing an existing deployment,
-the [0.10.1 release notes](docs/RELEASE_0.10.1.md) for licensing and upgrade
-validation, and the [0.10.0 release notes](docs/RELEASE_0.10.0.md) for the feature
-release.
+the [0.10.2 release notes](docs/RELEASE_0.10.2.md) for security corrections and
+recording efficiency, the [0.10.1 release notes](docs/RELEASE_0.10.1.md) for
+licensing, and the [0.10.0 release notes](docs/RELEASE_0.10.0.md) for the feature release.
 
 | Document | Covers |
 | --- | --- |

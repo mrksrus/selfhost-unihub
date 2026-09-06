@@ -20,6 +20,13 @@ Node.js API
   api/server.js -> api/src/app.js -> api/src/request-handler.js -> api/src/routes/*
 ```
 
+The entrypoint waits up to 300 seconds for an authenticated MySQL connection,
+continuing immediately when it succeeds. It then starts a small Node.js service
+supervisor as the container's main process. The supervisor starts the API and
+nginx, forwards shutdown signals, and exits with failure if either service stops.
+The existing Docker restart policy can then recover the whole app. The default
+360-second health startup grace remains unchanged.
+
 Nginx uses long `/api/` proxy timeouts because mail sync and large backup uploads
 can take time. Backup validation and restore themselves run as durable
 background jobs and do not depend on the proxy connection after job creation.
@@ -29,6 +36,7 @@ background jobs and do not depend on the proxy connection after job creation.
 | Path | Purpose |
 | --- | --- |
 | `api/server.js` | Starts the API |
+| `api/src/service-supervisor.js` | Supervises API/nginx and essential-service failure |
 | `api/src/app.js` | Initializes DB, starts HTTP server, schedules background jobs |
 | `api/src/request-handler.js` | CORS, auth, CSRF, body parsing, route dispatch |
 | `api/src/routes/` | Route handlers grouped by feature |
@@ -40,6 +48,8 @@ background jobs and do not depend on the proxy connection after job creation.
 | `api/src/services/offline.js` | Owner-scoped, size-bounded offline snapshots |
 | `api/src/services/notifications.js` | Durable notification events, delivery state and reminder worker |
 | `api/src/security/encryption.js` | AES-256-GCM helpers |
+| `api/src/security/client-ip.js`, `login-limits.js` | Explicit proxy trust and separate IP/account attempt budgets |
+| `api/src/security/outbound-network.js`, `caldav-transport.js` | Checked-address connections and same-origin CalDAV credentials |
 | `api/tests/` | Backend `node:test` coverage |
 
 The API is a vanilla Node.js HTTP server. There is no Express router; routes are
@@ -104,6 +114,8 @@ Every request passes through `handleRequest`:
 JSON API responses use `Cache-Control: no-store`. Authenticated mail attachments,
 recordings and backup archives reuse the file-stream response contract, including
 byte ranges. Client disconnects destroy the corresponding stream.
+Request URL parsing is inside the outer error boundary. Malformed Host headers
+or request targets return HTTP 400 without terminating the API.
 
 ## Authentication and CSRF
 
@@ -283,7 +295,11 @@ Important boundaries in the current code:
 - all feature rows include `user_id` and routes scope queries by current user
 - admin routes require `role = 'admin'`
 - delete/deactivate/demote operations protect the last active admin
-- mail and CalDAV host checks block private/local addresses unless trusted
+- mail and CalDAV connections use DNS-checked IPs, block private/special addresses
+  unless administrator-allowlisted, and preserve TLS hostname verification
+- CalDAV credentials remain on the configured HTTPS origin through discovery
+  and redirects
+- restore writes are owner-scoped, new IDs are generated and parent links checked
 - email HTML is rendered in a sandboxed iframe
 - file download/stream routes validate paths stay under expected upload roots
 - backup uploads are streamed to owner-only files instead of buffered in memory

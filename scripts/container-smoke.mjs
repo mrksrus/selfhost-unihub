@@ -51,6 +51,11 @@ try {
   assert.equal(health.data.health, 'ok'); assert.equal(health.data.database, 'ok');
   const directHealth = await fetch('http://localhost:4000/health', { signal: AbortSignal.timeout(5000) });
   assert.equal(directHealth.status, 200); assert.equal((await directHealth.json()).database, 'ok');
+  for (const url of [base + '/api/auth/signup-mode', 'http://localhost:4000/api/auth/signup-mode']) {
+    const malformed = await fetch(url, { headers: { Host: '%' }, signal: AbortSignal.timeout(5000) });
+    assert.equal(malformed.status, 400, 'Malformed Host must be rejected without killing the backend');
+  }
+  assert.equal((await fetch(base + '/health', { signal: AbortSignal.timeout(5000) })).status, 200);
   const shell = await fetch(base + '/', { signal: AbortSignal.timeout(5000) });
   assert.equal(shell.status, 200); assert.match(shell.headers.get('content-type'), /text\/html/);
   assert.match(await shell.text(), /<div id="root"><\/div>/);

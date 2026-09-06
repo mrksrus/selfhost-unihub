@@ -262,6 +262,18 @@ New accounts use portable backup credentials when available.
 
 ## Matching and Merge Rules
 
+All matches are restricted to the restoring user's data. An imported ID is a
+reference inside the backup, never permission to update a row belonging to
+someone else. New objects receive fresh IDs; child references are remapped to
+their restored parents. Updates include the owner in their database condition.
+Missing, foreign or inconsistent parent references reject the restore and roll
+back its changes. This applies to all three conflict modes.
+
+Restored mail and CalDAV settings are checked against the destination server's
+network policy. An account with blocked or unresolved hosts is restored inactive
+with a warning. Configure an administrator-approved private host in
+`TRUSTED_MAIL_HOSTS`, or correct the account settings, before enabling it.
+
 ### Settings and Profile
 
 - settings match by `setting_key`
@@ -317,6 +329,8 @@ present raw archive.
 - tags match by normalized name
 - tag links are remapped
 - recording files must exist and pass checksum validation
+- recording signatures must identify supported audio; restored content types
+  are derived from those bytes, not trusted from backup metadata
 
 ## Background Restore and Safety
 

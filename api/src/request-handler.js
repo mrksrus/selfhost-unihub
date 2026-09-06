@@ -58,10 +58,37 @@ function getRestoreSectionForWrite(pathname) {
   return null;
 }
 
-// Request handler
+function requestUrl(req) {
+  const host = req.headers.host;
+  try {
+    if (typeof host !== 'string' || !host || /[\s/\\?#@]/.test(host)) throw new Error();
+    new URL(`http://${host}`);
+    if (typeof req.url !== 'string' || !req.url.startsWith('/') || req.url.startsWith('//') || req.url.includes('\\')) throw new Error();
+    // Routing does not depend on the client's Host value.
+    return new URL(req.url, 'http://unihub.invalid');
+  } catch {
+    throw Object.assign(new Error('Invalid request address'), { status: 400 });
+  }
+}
+
+// Enclose parsing, routing and headers as well as the asynchronous route body.
+// A malformed request must never become an unhandled rejected HTTP callback.
 async function handleRequest(req, res) {
+  try {
+    await dispatchRequest(req, res);
+  } catch (error) {
+    const status = error?.status === 400 ? 400 : 500;
+    if (status === 500) console.error('Request dispatch error:', error.message);
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) { res.destroy(); return; }
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: status === 400 ? 'Invalid request address' : 'Internal Server Error' }));
+  }
+}
+
+async function dispatchRequest(req, res) {
   res.setHeader('Cache-Control', 'no-store');
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  const url = requestUrl(req);
   let routeKey = `${req.method} ${url.pathname}`;
   req.params = {};
   

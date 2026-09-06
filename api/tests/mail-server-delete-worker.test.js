@@ -43,7 +43,7 @@ test('server deletion worker stops after setting is disabled between messages', 
           user_id: 'user-1',
           email_address: 'person@example.com',
           username: 'person@example.com',
-          imap_host: 'imap.example.com',
+          imap_host: '93.184.216.34', // Public literal; the mocked transport never connects.
           imap_port: 993,
           encrypted_password: 'encrypted-secret',
           allow_self_signed: 0,

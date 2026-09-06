@@ -44,6 +44,9 @@ services:
       ALLOWED_ORIGINS: "http://localhost:3000,https://mydomain.domain.com"
       # ── Trust proxy headers only when behind a trusted reverse proxy ──
       TRUST_PROXY_HEADERS: "true"
+      # Include the bundled loopback proxy plus only your actual HTTPS proxy's
+      # address/CIDR. Never trust all private networks or 0.0.0.0/0.
+      TRUSTED_PROXY_CIDRS: ${UNIHUB_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128}
       # ── Optional allowlist for self-hosted mail domains/IP hostnames ──
       TRUSTED_MAIL_HOSTS: mail.example.com
     depends_on:

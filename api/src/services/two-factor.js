@@ -131,7 +131,7 @@ function parseRecoveryHashes(value) {
 
 async function verifyRecoveryCode(code, recoveryHashes) {
   const normalized = normalizeRecoveryCode(code);
-  if (!normalized || !Array.isArray(recoveryHashes) || recoveryHashes.length === 0) {
+  if (!/^[A-Z0-9]{5}-[A-Z0-9]{5}$/.test(normalized) || !Array.isArray(recoveryHashes) || recoveryHashes.length === 0) {
     return { ok: false, nextHashes: recoveryHashes || [] };
   }
 
@@ -184,7 +184,7 @@ async function disableTwoFactor(userId) {
   );
 }
 
-async function verifyUserSecondFactor(userRow, code) {
+async function verifyUserSecondFactor(userRow, code, connection = db) {
   if (!userRow?.two_factor_enabled) return { ok: true, usedRecoveryCode: false };
 
   const secret = userRow.encrypted_two_factor_secret ? decrypt(userRow.encrypted_two_factor_secret) : null;
@@ -196,10 +196,11 @@ async function verifyUserSecondFactor(userRow, code) {
   const recoveryResult = await verifyRecoveryCode(code, recoveryHashes);
   if (!recoveryResult.ok) return { ok: false, usedRecoveryCode: false };
 
-  await db.execute(
-    'UPDATE users SET two_factor_recovery_codes = ? WHERE id = ?',
-    [JSON.stringify(recoveryResult.nextHashes), userRow.id]
+  const [result] = await connection.execute(
+    'UPDATE users SET two_factor_recovery_codes = ? WHERE id = ? AND two_factor_enabled = TRUE AND two_factor_recovery_codes = CAST(? AS JSON)',
+    [JSON.stringify(recoveryResult.nextHashes), userRow.id, JSON.stringify(recoveryHashes)]
   );
+  if (result.affectedRows !== 1) return { ok: false, usedRecoveryCode: false };
   return { ok: true, usedRecoveryCode: true, recoveryCodesRemaining: recoveryResult.nextHashes.length };
 }
 
@@ -224,23 +225,23 @@ async function createTwoFactorLoginChallenge(userId, req) {
   return token;
 }
 
-async function consumeTwoFactorLoginChallenge(token) {
+async function consumeTwoFactorLoginChallenge(token, connection = db, { lock = false } = {}) {
   const tokenHash = hashChallengeToken(token);
-  const [rows] = await db.execute(
-    `SELECT c.id, c.user_id, u.email, u.full_name, u.avatar_url, u.role, u.timezone, u.is_active,
+  const [rows] = await connection.execute(
+    `SELECT u.id, c.id AS challenge_id, c.user_id, u.email, u.full_name, u.avatar_url, u.role, u.timezone, u.is_active,
             u.two_factor_enabled, u.encrypted_two_factor_secret, u.two_factor_recovery_codes
      FROM two_factor_challenges c
      INNER JOIN users u ON u.id = c.user_id
      WHERE c.token_hash = ? AND c.expires_at >= UTC_TIMESTAMP()
-     LIMIT 1`,
+     LIMIT 1${lock ? ' FOR UPDATE' : ''}`,
     [tokenHash]
   );
   if (rows.length === 0) return null;
   return rows[0];
 }
 
-async function deleteTwoFactorLoginChallenge(token) {
-  await db.execute('DELETE FROM two_factor_challenges WHERE token_hash = ?', [hashChallengeToken(token)]);
+async function deleteTwoFactorLoginChallenge(token, connection = db) {
+  await connection.execute('DELETE FROM two_factor_challenges WHERE token_hash = ?', [hashChallengeToken(token)]);
 }
 
 module.exports = {

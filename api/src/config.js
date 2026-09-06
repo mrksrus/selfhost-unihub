@@ -9,6 +9,8 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .map(origin => origin.trim())
   .filter(Boolean);
 const TRUST_PROXY_HEADERS = process.env.TRUST_PROXY_HEADERS === 'true';
+const TRUSTED_PROXY_CIDRS = (process.env.TRUSTED_PROXY_CIDRS || '127.0.0.1/32,::1/128')
+  .split(',').map(value => value.trim()).filter(Boolean);
 const TRUSTED_MAIL_HOSTS = (process.env.TRUSTED_MAIL_HOSTS || '')
   .split(',')
   .map(host => host.trim().toLowerCase())
@@ -30,6 +32,7 @@ module.exports = {
   BOOTSTRAP_ADMIN_PASSWORD,
   ALLOWED_ORIGINS,
   TRUST_PROXY_HEADERS,
+  TRUSTED_PROXY_CIDRS,
   TRUSTED_MAIL_HOSTS,
   CALENDAR_MULTI_ENABLED,
   AUTH_COOKIE_NAME,

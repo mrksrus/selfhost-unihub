@@ -10,8 +10,12 @@ const {
   encryptPortableCredentialBundle,
   decryptPortableCredentialBundle,
 } = require('./backup-container');
-const { MAIL_RAW_STORAGE_ROOT, DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } = require('./mail');
+const { MAIL_RAW_STORAGE_ROOT, DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit, validateMailHostPolicy } = require('./mail');
+const { validateDavUrlPolicy } = require('./caldav');
+const { resolveCalDavUrl } = require('../security/caldav-transport');
 const { RECORDINGS_ROOT } = require('./recordings');
+const { chooseTargetId, writeOwnedRow, resolveOwnedReference, assertOwnedRelationship, validateRestoreRows } = require('./backup-ownership');
+const { AUDIO_HEADER_BYTES, identifyRecordingAudio, inspectRecordingAudio } = require('./recording-audio');
 
 const BACKUP_VERSION = 1;
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
@@ -694,6 +698,7 @@ function validateBackupPayload(backup, {
   if (backup.version !== BACKUP_VERSION) errors.push(`Unsupported backup version: ${backup.version}`);
   if (!backup.data || typeof backup.data !== 'object') errors.push('Backup data section is missing');
   if (!Array.isArray(backup.files)) errors.push('Backup files section must be an array');
+  errors.push(...validateRestoreRows(backup.data));
 
   if (Array.isArray(backup.files)) {
     for (const file of backup.files) {
@@ -714,6 +719,9 @@ function validateBackupPayload(backup, {
         continue;
       }
       const buffer = fileBuffer || Buffer.from(String(file.data_base64), 'base64');
+      if (file.kind === 'recording' && !identifyRecordingAudio(buffer.subarray(0, AUDIO_HEADER_BYTES))) {
+        errors.push(`Recording ${file.id} is not supported audio`);
+      }
       const actualHash = sha256Buffer(buffer);
       if (actualHash !== file.sha256) {
         errors.push(`Checksum mismatch for file ${file.kind}:${file.id}`);
@@ -745,6 +753,19 @@ async function validateBackupPayloadFromFileSources(backup, fileSourcesByPath) {
     const actualHash = await sha256FileSource(source);
     if (actualHash !== file.sha256) {
       validation.errors.push(`Checksum mismatch for file ${file.kind}:${file.id}`);
+    }
+    if (file.kind === 'recording') {
+      let header;
+      if (Buffer.isBuffer(source)) header = source.subarray(0, AUDIO_HEADER_BYTES);
+      else {
+        const handle = await fs.promises.open(source.filePath, 'r');
+        try {
+          header = Buffer.alloc(Math.min(source.size, AUDIO_HEADER_BYTES));
+          const { bytesRead } = await handle.read(header, 0, header.length, source.start);
+          header = header.subarray(0, bytesRead);
+        } finally { await handle.close(); }
+      }
+      if (!identifyRecordingAudio(header)) validation.errors.push(`Recording ${file.id} is not supported audio`);
     }
   }
   validation.valid = validation.errors.length === 0;
@@ -870,9 +891,30 @@ function overwriteUserId(row, userId) {
   return { ...row, user_id: userId };
 }
 
-function chooseTargetId(originalId, existingId, conflictMode, { canKeepBoth = true } = {}) {
-  if (existingId && conflictMode === 'keep_both' && canKeepBoth) return crypto.randomUUID();
-  return existingId || originalId;
+async function checkRestoredAccountPolicy(row, kind, warnings) {
+  let error;
+  const calendarProvider = row.provider || 'local';
+  if (kind === 'mail') {
+    const result = await validateMailHostPolicy(row);
+    if (!result.accepted) error = result.error || 'Mail host policy rejected this account';
+  } else if (calendarProvider !== 'local') {
+    if (calendarProvider !== 'caldav') error = 'Unsupported calendar provider';
+    else {
+      const urls = [row.discovery_url, row.base_url].filter(Boolean);
+      if (!urls.length) error = 'Calendar account has no valid connection URL';
+      for (const url of urls) {
+        try { resolveCalDavUrl(url, urls[0], urls[0]); }
+        catch (policyError) { error = policyError.message; break; }
+        const result = await validateDavUrlPolicy(url);
+        if (!result.accepted) { error = result.error || 'Calendar host policy rejected this account'; break; }
+      }
+    }
+  }
+  if (error) {
+    row.is_active = false;
+    warnings.push(`Restored ${kind} account ${row.id} is inactive: ${error}`);
+  }
+  return !error;
 }
 
 function shouldWriteExisting(existingId, targetId, conflictMode) {
@@ -943,12 +985,12 @@ async function findExistingCalendarAccountForRestore(connection, row, userId) {
 }
 
 async function findExistingCalendarForRestore(connection, row, userId, targetAccountId, calendarMode) {
-  const [existingById] = await connection.execute('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
+  const [existingById] = await connection.execute('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ? AND account_id = ? LIMIT 1', [row.id, userId, targetAccountId]);
   if (existingById.length) return existingById[0].id;
   if (row.external_id) {
     const [existingByExternal] = await connection.execute(
-      'SELECT id FROM calendar_calendars WHERE account_id = ? AND external_id = ? LIMIT 1',
-      [targetAccountId, row.external_id]
+      'SELECT id FROM calendar_calendars WHERE account_id = ? AND external_id = ? AND user_id = ? LIMIT 1',
+      [targetAccountId, row.external_id, userId]
     );
     if (existingByExternal.length) return existingByExternal[0].id;
   }
@@ -964,7 +1006,7 @@ async function findExistingCalendarForRestore(connection, row, userId, targetAcc
 }
 
 async function findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId) {
-  const [existingById] = await connection.execute('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
+  const [existingById] = await connection.execute('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? AND calendar_id <=> ? LIMIT 1', [row.id, userId, targetCalendarId]);
   if (existingById.length) return existingById[0].id;
   const startTime = normalizeMysqlDateTime(row.start_time);
   const endTime = normalizeMysqlDateTime(row.end_time);
@@ -983,8 +1025,8 @@ async function findExistingCalendarEventForRestore(connection, row, userId, targ
 
 async function findExistingEmailForRestore(connection, row, userId, targetMailAccountId) {
   const [existingById] = await connection.execute(
-    'SELECT id FROM emails WHERE id = ? AND user_id = ? LIMIT 1',
-    [row.id, userId]
+    'SELECT id FROM emails WHERE id = ? AND user_id = ? AND mail_account_id = ? LIMIT 1',
+    [row.id, userId, targetMailAccountId]
   );
   if (existingById.length > 0) return existingById[0].id;
 
@@ -1021,8 +1063,8 @@ async function findExistingEmailForRestore(connection, row, userId, targetMailAc
 
 async function findExistingAttachmentForRestore(connection, row, userId, targetEmailId) {
   const [existingById] = await connection.execute(
-    'SELECT id FROM email_attachments WHERE id = ? AND user_id = ? LIMIT 1',
-    [row.id, userId]
+    'SELECT id FROM email_attachments WHERE id = ? AND user_id = ? AND email_id = ? LIMIT 1',
+    [row.id, userId, targetEmailId]
   );
   if (existingById.length > 0) return existingById[0].id;
 
@@ -1585,29 +1627,26 @@ async function importBackupForUser(userId, backup, {
         );
         if (existingSetting.length) continue;
       }
-      await connection.execute(
-        `INSERT INTO user_settings (user_id, setting_key, setting_value)
-         VALUES (?, ?, ?)
-         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-        [row.user_id, row.setting_key, row.setting_value]
+      await writeOwnedRow(connection, userId, 'user_settings',
+        ['user_id', 'setting_key', 'setting_value'],
+        [row.user_id, row.setting_key, row.setting_value],
+        ['setting_value']
       );
     }
 
     for (const folder of data.mail_folders || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(folder, userId);
-      if (conflictMode === 'keep_existing') {
-        const [existingFolder] = await connection.execute(
-          'SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1',
-          [row.user_id, row.slug]
-        );
-        if (existingFolder.length) continue;
-      }
-      await connection.execute(
-        `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), is_system = VALUES(is_system), position = VALUES(position)`,
-        [row.id, row.user_id, row.slug, row.display_name, row.is_system ? 1 : 0, row.position || 0]
+      const [existingFolder] = await connection.execute(
+        'SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1',
+        [row.user_id, row.slug]
+      );
+      if (existingFolder.length && conflictMode !== 'replace') continue;
+      const targetFolderId = chooseTargetId(row.id, existingFolder[0]?.id, conflictMode, { canKeepBoth: false });
+      await writeOwnedRow(connection, userId, 'mail_folders',
+        ['id', 'user_id', 'slug', 'display_name', 'is_system', 'position'],
+        [targetFolderId, row.user_id, row.slug, row.display_name, row.is_system ? 1 : 0, row.position || 0],
+        ['display_name', 'is_system', 'position']
       );
     }
 
@@ -1618,11 +1657,10 @@ async function importBackupForUser(userId, backup, {
       const existingContactId = await findExistingContactForRestore(connection, row, userId);
       const targetContactId = chooseTargetId(row.id, existingContactId, conflictMode);
       if (!shouldWriteExisting(existingContactId, targetContactId, conflictMode)) continue;
-      await connection.execute(
-        `INSERT INTO contacts (id, user_id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes, avatar_url, is_favorite)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE first_name = VALUES(first_name), last_name = VALUES(last_name), email = VALUES(email), email2 = VALUES(email2), email3 = VALUES(email3), phone = VALUES(phone), phone2 = VALUES(phone2), phone3 = VALUES(phone3), company = VALUES(company), job_title = VALUES(job_title), notes = VALUES(notes), avatar_url = VALUES(avatar_url), is_favorite = VALUES(is_favorite)`,
-        [targetContactId, row.user_id, row.first_name || '', row.last_name || null, row.email || null, row.email2 || null, row.email3 || null, row.phone || null, row.phone2 || null, row.phone3 || null, row.company || null, row.job_title || null, row.notes || null, row.avatar_url || null, row.is_favorite ? 1 : 0]
+      await writeOwnedRow(connection, userId, 'contacts',
+        ['id', 'user_id', 'first_name', 'last_name', 'email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'company', 'job_title', 'notes', 'avatar_url', 'is_favorite'],
+        [targetContactId, row.user_id, row.first_name || '', row.last_name || null, row.email || null, row.email2 || null, row.email3 || null, row.phone || null, row.phone2 || null, row.phone3 || null, row.company || null, row.job_title || null, row.notes || null, row.avatar_url || null, row.is_favorite ? 1 : 0],
+        ['first_name', 'last_name', 'email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'company', 'job_title', 'notes', 'avatar_url', 'is_favorite']
       );
     }
 
@@ -1634,32 +1672,13 @@ async function importBackupForUser(userId, backup, {
       const targetAccountId = chooseTargetId(row.id, existingAccountId, conflictMode, { canKeepBoth: true });
       calendarAccountIdMap.set(row.id, targetAccountId);
       if (!shouldWriteExisting(existingAccountId, targetAccountId, conflictMode)) continue;
+      await checkRestoredAccountPolicy(row, 'calendar', validation.warnings);
       const shouldRestoreCredentials = !existingAccountId || credentialsMode === 'restore' || targetAccountId !== existingAccountId;
       const encryptedPassword = shouldRestoreCredentials ? row.encrypted_password || null : null;
       const encryptedAccessToken = shouldRestoreCredentials ? row.encrypted_access_token || null : null;
       const encryptedRefreshToken = shouldRestoreCredentials ? row.encrypted_refresh_token || null : null;
-      await connection.execute(
-        `INSERT INTO calendar_accounts
-           (id, user_id, provider, account_email, display_name, username, encrypted_password, discovery_url, base_url,
-            encrypted_access_token, encrypted_refresh_token, token_expires_at, provider_config, capabilities,
-            is_active, sync_status, sync_error, last_synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           account_email = VALUES(account_email),
-           display_name = VALUES(display_name),
-           username = VALUES(username),
-           encrypted_password = CASE WHEN ? THEN VALUES(encrypted_password) ELSE encrypted_password END,
-           discovery_url = VALUES(discovery_url),
-           base_url = VALUES(base_url),
-           encrypted_access_token = CASE WHEN ? THEN VALUES(encrypted_access_token) ELSE encrypted_access_token END,
-           encrypted_refresh_token = CASE WHEN ? THEN VALUES(encrypted_refresh_token) ELSE encrypted_refresh_token END,
-           token_expires_at = VALUES(token_expires_at),
-           provider_config = VALUES(provider_config),
-           capabilities = VALUES(capabilities),
-           is_active = VALUES(is_active),
-           sync_status = VALUES(sync_status),
-           sync_error = VALUES(sync_error),
-           last_synced_at = VALUES(last_synced_at)`,
+      await writeOwnedRow(connection, userId, 'calendar_accounts',
+        ['id', 'user_id', 'provider', 'account_email', 'display_name', 'username', 'encrypted_password', 'discovery_url', 'base_url', 'encrypted_access_token', 'encrypted_refresh_token', 'token_expires_at', 'provider_config', 'capabilities', 'is_active', 'sync_status', 'sync_error', 'last_synced_at'],
         [
           targetAccountId,
           row.user_id,
@@ -1675,21 +1694,34 @@ async function importBackupForUser(userId, backup, {
           normalizeMysqlDateTime(row.token_expires_at),
           row.provider_config ? (typeof row.provider_config === 'string' ? row.provider_config : JSON.stringify(row.provider_config)) : null,
           row.capabilities ? (typeof row.capabilities === 'string' ? row.capabilities : JSON.stringify(row.capabilities)) : null,
-          row.is_active === false ? 0 : 1,
+          row.is_active === false || row.is_active === 0 ? 0 : 1,
           row.sync_status || null,
           row.sync_error || null,
           normalizeMysqlDateTime(row.last_synced_at),
-          shouldRestoreCredentials ? 1 : 0,
-          shouldRestoreCredentials ? 1 : 0,
-          shouldRestoreCredentials ? 1 : 0,
-        ]
+        ],
+        ['account_email', 'display_name', 'username', 'encrypted_password', 'discovery_url', 'base_url', 'encrypted_access_token', 'encrypted_refresh_token', 'token_expires_at', 'provider_config', 'capabilities', 'is_active', 'sync_status', 'sync_error', 'last_synced_at'].filter(column => shouldRestoreCredentials || !['encrypted_password', 'encrypted_access_token', 'encrypted_refresh_token'].includes(column))
       );
     }
 
     for (const calendar of data.calendar_calendars || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(calendar, userId);
-      const targetAccountId = calendarAccountIdMap.get(row.account_id) || row.account_id;
+      const targetAccountId = await resolveOwnedReference(connection, userId, 'calendar_accounts', row.account_id, calendarAccountIdMap);
+      if (row.external_id) {
+        const [accounts] = await connection.execute(
+          'SELECT provider, discovery_url, base_url FROM calendar_accounts WHERE id = ? AND user_id = ?', [targetAccountId, userId]
+        );
+        const account = accounts[0];
+        if (account?.provider === 'caldav') {
+          try {
+            const origin = account.discovery_url || account.base_url;
+            resolveCalDavUrl(row.external_id, account.base_url || origin, origin);
+          } catch (error) {
+            await connection.execute('UPDATE calendar_accounts SET is_active = FALSE WHERE id = ? AND user_id = ?', [targetAccountId, userId]);
+            validation.warnings.push(`Restored calendar account ${targetAccountId} is inactive: ${error.message}`);
+          }
+        }
+      }
       const existingCalendarId = await findExistingCalendarForRestore(connection, row, userId, targetAccountId, calendarMode);
       const canKeepBothCalendar = !(row.external_id && existingCalendarId);
       const targetCalendarId = chooseTargetId(row.id, existingCalendarId, conflictMode, { canKeepBoth: canKeepBothCalendar });
@@ -1698,87 +1730,86 @@ async function importBackupForUser(userId, backup, {
       const calendarName = targetCalendarId !== existingCalendarId && conflictMode === 'keep_both' && existingCalendarId
         ? `${row.name || 'Calendar'} (Restored)`
         : row.name || 'Calendar';
-      await connection.execute(
-        `INSERT INTO calendar_calendars (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary, sync_token)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE name = VALUES(name), external_id = VALUES(external_id), color = VALUES(color), is_visible = VALUES(is_visible), auto_todo_enabled = VALUES(auto_todo_enabled), read_only = VALUES(read_only), is_primary = VALUES(is_primary), sync_token = VALUES(sync_token)`,
-        [targetCalendarId, row.user_id, targetAccountId, calendarName, row.external_id || null, row.color || '#22c55e', row.is_visible === false ? 0 : 1, row.auto_todo_enabled === false ? 0 : 1, row.read_only ? 1 : 0, row.is_primary ? 1 : 0, row.sync_token || null]
+      await writeOwnedRow(connection, userId, 'calendar_calendars',
+        ['id', 'user_id', 'account_id', 'name', 'external_id', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'sync_token'],
+        [targetCalendarId, row.user_id, targetAccountId, calendarName, row.external_id || null, row.color || '#22c55e', row.is_visible === false ? 0 : 1, row.auto_todo_enabled === false ? 0 : 1, row.read_only ? 1 : 0, row.is_primary ? 1 : 0, row.sync_token || null],
+        ['name', 'external_id', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'sync_token']
       );
     }
 
     for (const event of data.calendar_events || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(event, userId);
-      const targetCalendarId = row.calendar_id ? calendarIdMap.get(row.calendar_id) || row.calendar_id : null;
+      const targetCalendarId = await resolveOwnedReference(connection, userId, 'calendar_calendars', row.calendar_id, calendarIdMap, { nullable: true });
       const existingEventId = await findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId);
       const targetEventId = chooseTargetId(row.id, existingEventId, conflictMode);
       calendarEventIdMap.set(row.id, targetEventId);
       if (!shouldWriteExisting(existingEventId, targetEventId, conflictMode)) continue;
-      await connection.execute(
-        `INSERT INTO calendar_events (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, todo_status, is_todo_only, done_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE calendar_id = VALUES(calendar_id), title = VALUES(title), description = VALUES(description), start_time = VALUES(start_time), end_time = VALUES(end_time), all_day = VALUES(all_day), location = VALUES(location), color = VALUES(color), recurrence = VALUES(recurrence), reminder_minutes = VALUES(reminder_minutes), reminders = VALUES(reminders), todo_status = VALUES(todo_status), is_todo_only = VALUES(is_todo_only), done_at = VALUES(done_at)`,
-        [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at)]
+      await writeOwnedRow(connection, userId, 'calendar_events',
+        ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at'],
+        [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at)],
+        ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at']
       );
     }
 
     for (const subtask of data.calendar_event_subtasks || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(subtask, userId);
-      const targetEventId = calendarEventIdMap.get(row.event_id) || row.event_id;
-      const [existingSubtask] = await connection.execute(
-        'SELECT id FROM calendar_event_subtasks WHERE id = ? AND user_id = ? LIMIT 1',
-        [row.id, userId]
+      const targetEventId = await resolveOwnedReference(connection, userId, 'calendar_events', row.event_id, calendarEventIdMap);
+      let [existingSubtask] = await connection.execute(
+        'SELECT id FROM calendar_event_subtasks WHERE id = ? AND user_id = ? AND event_id = ? LIMIT 1',
+        [row.id, userId, targetEventId]
       );
+      if (!existingSubtask.length) {
+        [existingSubtask] = await connection.execute(
+          'SELECT id FROM calendar_event_subtasks WHERE user_id = ? AND event_id = ? AND title = ? AND position = ? LIMIT 1',
+          [userId, targetEventId, row.title || '', row.position || 0]
+        );
+      }
       if (existingSubtask.length && conflictMode === 'keep_existing') continue;
-      const targetSubtaskId = existingSubtask.length && conflictMode === 'keep_both' ? crypto.randomUUID() : row.id;
-      await connection.execute(
-        `INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE title = VALUES(title), is_done = VALUES(is_done), position = VALUES(position)`,
-        [targetSubtaskId, targetEventId, row.user_id, row.title || '', row.is_done ? 1 : 0, row.position || 0]
+      const targetSubtaskId = chooseTargetId(row.id, existingSubtask[0]?.id, conflictMode);
+      await writeOwnedRow(connection, userId, 'calendar_event_subtasks',
+        ['id', 'event_id', 'user_id', 'title', 'is_done', 'position'],
+        [targetSubtaskId, targetEventId, row.user_id, row.title || '', row.is_done ? 1 : 0, row.position || 0],
+        ['title', 'is_done', 'position']
       );
     }
 
     for (const attendee of data.calendar_event_attendees || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(attendee, userId);
-      const targetEventId = calendarEventIdMap.get(row.event_id) || row.event_id;
-      if (conflictMode === 'keep_existing') {
-        const [existingAttendee] = await connection.execute(
-          'SELECT id FROM calendar_event_attendees WHERE event_id = ? AND email = ? LIMIT 1',
-          [targetEventId, row.email]
-        );
-        if (existingAttendee.length) continue;
-      }
-      const targetAttendeeId = conflictMode === 'keep_both' ? crypto.randomUUID() : row.id;
-      await connection.execute(
-        `INSERT INTO calendar_event_attendees (id, user_id, event_id, email, display_name, response_status, is_organizer, optional_attendee, comment)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), response_status = VALUES(response_status), is_organizer = VALUES(is_organizer), optional_attendee = VALUES(optional_attendee), comment = VALUES(comment)`,
-        [targetAttendeeId, row.user_id, targetEventId, row.email, row.display_name || null, row.response_status || 'needsAction', row.is_organizer ? 1 : 0, row.optional_attendee ? 1 : 0, row.comment || null]
+      const targetEventId = await resolveOwnedReference(connection, userId, 'calendar_events', row.event_id, calendarEventIdMap);
+      const [existingAttendee] = await connection.execute(
+        'SELECT id FROM calendar_event_attendees WHERE event_id = ? AND email = ? AND user_id = ? LIMIT 1',
+        [targetEventId, row.email, userId]
+      );
+      if (existingAttendee.length && conflictMode !== 'replace') continue;
+      const targetAttendeeId = chooseTargetId(row.id, existingAttendee[0]?.id, conflictMode, { canKeepBoth: false });
+      await writeOwnedRow(connection, userId, 'calendar_event_attendees',
+        ['id', 'user_id', 'event_id', 'email', 'display_name', 'response_status', 'is_organizer', 'optional_attendee', 'comment'],
+        [targetAttendeeId, row.user_id, targetEventId, row.email, row.display_name || null, row.response_status || 'needsAction', row.is_organizer ? 1 : 0, row.optional_attendee ? 1 : 0, row.comment || null],
+        ['display_name', 'response_status', 'is_organizer', 'optional_attendee', 'comment']
       );
     }
 
     for (const ref of data.calendar_event_external_refs || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(ref, userId);
-      const targetEventId = calendarEventIdMap.get(row.event_id) || row.event_id;
-      const targetCalendarId = calendarIdMap.get(row.calendar_id) || row.calendar_id;
-      const targetAccountId = calendarAccountIdMap.get(row.account_id) || row.account_id;
-      if (conflictMode === 'keep_existing') {
-        const [existingRef] = await connection.execute(
-          'SELECT id FROM calendar_event_external_refs WHERE account_id = ? AND external_event_id = ? LIMIT 1',
-          [targetAccountId, row.external_event_id]
-        );
-        if (existingRef.length) continue;
-      }
-      const targetRefId = conflictMode === 'keep_both' ? crypto.randomUUID() : row.id;
-      await connection.execute(
-        `INSERT INTO calendar_event_external_refs (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, external_updated_at, last_synced_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE event_id = VALUES(event_id), calendar_id = VALUES(calendar_id), provider = VALUES(provider), external_etag = VALUES(external_etag), external_updated_at = VALUES(external_updated_at), last_synced_at = VALUES(last_synced_at)`,
-        [targetRefId, row.user_id, targetEventId, targetCalendarId, targetAccountId, row.provider, row.external_event_id, row.external_etag || null, normalizeMysqlDateTime(row.external_updated_at), normalizeMysqlDateTime(row.last_synced_at)]
+      const targetEventId = await resolveOwnedReference(connection, userId, 'calendar_events', row.event_id, calendarEventIdMap);
+      const targetCalendarId = await resolveOwnedReference(connection, userId, 'calendar_calendars', row.calendar_id, calendarIdMap);
+      const targetAccountId = await resolveOwnedReference(connection, userId, 'calendar_accounts', row.account_id, calendarAccountIdMap);
+      await assertOwnedRelationship(connection, userId, 'calendar_events', targetEventId, 'calendar_id', targetCalendarId);
+      await assertOwnedRelationship(connection, userId, 'calendar_calendars', targetCalendarId, 'account_id', targetAccountId);
+      const [existingRef] = await connection.execute(
+        'SELECT id FROM calendar_event_external_refs WHERE account_id = ? AND external_event_id = ? AND user_id = ? LIMIT 1',
+        [targetAccountId, row.external_event_id, userId]
+      );
+      if (existingRef.length && conflictMode !== 'replace') continue;
+      const targetRefId = chooseTargetId(row.id, existingRef[0]?.id, conflictMode, { canKeepBoth: false });
+      await writeOwnedRow(connection, userId, 'calendar_event_external_refs',
+        ['id', 'user_id', 'event_id', 'calendar_id', 'account_id', 'provider', 'external_event_id', 'external_etag', 'external_updated_at', 'last_synced_at'],
+        [targetRefId, row.user_id, targetEventId, targetCalendarId, targetAccountId, row.provider, row.external_event_id, row.external_etag || null, normalizeMysqlDateTime(row.external_updated_at), normalizeMysqlDateTime(row.last_synced_at)],
+        ['event_id', 'calendar_id', 'provider', 'external_etag', 'external_updated_at', 'last_synced_at']
       );
     }
 
@@ -1793,9 +1824,11 @@ async function importBackupForUser(userId, backup, {
       const [existingById] = existingByEmail.length
         ? [existingByEmail]
         : await connection.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
-      const targetAccountId = existingById[0]?.id || row.id;
+      const targetAccountId = chooseTargetId(row.id, existingById[0]?.id, conflictMode, { canKeepBoth: false });
       mailAccountIdMap.set(row.id, targetAccountId);
       const syncFetchLimit = normalizeSyncFetchLimit(row.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT;
+      const policyAccepted = existingById.length && conflictMode === 'keep_existing'
+        ? true : await checkRestoredAccountPolicy(row, 'mail', validation.warnings);
 
       if (existingById.length) {
         if (conflictMode === 'keep_existing') {
@@ -1820,7 +1853,7 @@ async function importBackupForUser(userId, backup, {
                delete_emails_on_server = FALSE, server_delete_enabled_at = NULL,
                server_delete_grace_until = NULL, server_delete_last_run_at = NULL
            WHERE id = ? AND user_id = ?`,
-          [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, shouldRestoreCredentials ? 1 : 0, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, shouldRestoreCredentials ? (row.is_active === false ? 0 : 1) : null, normalizeMysqlDateTime(row.last_synced_at), targetAccountId, userId]
+          [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, shouldRestoreCredentials ? 1 : 0, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, !policyAccepted ? 0 : shouldRestoreCredentials ? (row.is_active === false || row.is_active === 0 ? 0 : 1) : null, normalizeMysqlDateTime(row.last_synced_at), targetAccountId, userId]
         );
       } else {
         await connection.execute(
@@ -1830,7 +1863,7 @@ async function importBackupForUser(userId, backup, {
               server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
               allow_self_signed, trusted_imap_fingerprint256, trusted_smtp_fingerprint256, is_active, last_synced_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, NULL, NULL, NULL, ?, ?, ?, ?, ?)`,
-          [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false ? 0 : 1, normalizeMysqlDateTime(row.last_synced_at)]
+          [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false || row.is_active === 0 ? 0 : 1, normalizeMysqlDateTime(row.last_synced_at)]
         );
       }
     }
@@ -1838,7 +1871,7 @@ async function importBackupForUser(userId, backup, {
     for (const rule of data.mail_sender_rules || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(rule, userId);
-      const targetMailAccountId = row.mail_account_id ? mailAccountIdMap.get(row.mail_account_id) || row.mail_account_id : null;
+      const targetMailAccountId = await resolveOwnedReference(connection, userId, 'mail_accounts', row.mail_account_id, mailAccountIdMap, { nullable: true });
       const [existingRule] = await connection.execute(
         `SELECT id FROM mail_sender_rules
          WHERE user_id = ?
@@ -1850,78 +1883,57 @@ async function importBackupForUser(userId, backup, {
         [row.user_id, targetMailAccountId, row.match_type, row.match_value, row.target_folder || 'inbox']
       );
       if (existingRule.length && conflictMode === 'keep_existing') continue;
-      const targetRuleId = existingRule.length && conflictMode === 'keep_both' ? crypto.randomUUID() : row.id;
-      await connection.execute(
-        `INSERT INTO mail_sender_rules (id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE mail_account_id = VALUES(mail_account_id), match_type = VALUES(match_type), match_value = VALUES(match_value), target_folder = VALUES(target_folder), priority = VALUES(priority), is_active = VALUES(is_active)`,
-        [targetRuleId, row.user_id, targetMailAccountId, row.match_type, row.match_value, row.target_folder || 'inbox', row.priority || 100, row.is_active === false ? 0 : 1]
+      const targetRuleId = chooseTargetId(row.id, existingRule[0]?.id, conflictMode);
+      await writeOwnedRow(connection, userId, 'mail_sender_rules',
+        ['id', 'user_id', 'mail_account_id', 'match_type', 'match_value', 'target_folder', 'priority', 'is_active'],
+        [targetRuleId, row.user_id, targetMailAccountId, row.match_type, row.match_value, row.target_folder || 'inbox', row.priority || 100, row.is_active === false ? 0 : 1],
+        ['mail_account_id', 'match_type', 'match_value', 'target_folder', 'priority', 'is_active']
       );
     }
 
     for (const email of data.emails || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(email, userId);
-      const targetMailAccountId = mailAccountIdMap.get(row.mail_account_id) || row.mail_account_id;
+      const targetMailAccountId = await resolveOwnedReference(connection, userId, 'mail_accounts', row.mail_account_id, mailAccountIdMap);
       const existingEmailId = await findExistingEmailForRestore(connection, row, userId, targetMailAccountId);
       const targetEmailId = chooseTargetId(row.id, existingEmailId, conflictMode);
       emailIdMap.set(row.id, targetEmailId);
       const rawPath = restoredPaths.get(`raw_email:${row.id}`) || null;
       if (!shouldWriteExisting(existingEmailId, targetEmailId, conflictMode)) continue;
-      await connection.execute(
-        `INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, body_text, body_html, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256, is_read, is_starred, is_draft, has_attachments, received_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE subject = VALUES(subject), from_address = VALUES(from_address), from_name = VALUES(from_name), to_addresses = VALUES(to_addresses), cc_addresses = VALUES(cc_addresses), bcc_addresses = VALUES(bcc_addresses), body_text = VALUES(body_text), body_html = VALUES(body_html), folder = VALUES(folder), source_folder = VALUES(source_folder), imap_uid = VALUES(imap_uid), imap_uidvalidity = VALUES(imap_uidvalidity), raw_storage_path = VALUES(raw_storage_path), raw_sha256 = VALUES(raw_sha256), is_read = VALUES(is_read), is_starred = VALUES(is_starred), is_draft = VALUES(is_draft), has_attachments = VALUES(has_attachments), received_at = VALUES(received_at)`,
-        [targetEmailId, row.user_id, targetMailAccountId, row.message_id || null, row.subject || null, row.from_address || 'unknown', row.from_name || null, typeof row.to_addresses === 'string' ? row.to_addresses : JSON.stringify(row.to_addresses || []), row.cc_addresses ? (typeof row.cc_addresses === 'string' ? row.cc_addresses : JSON.stringify(row.cc_addresses)) : null, row.bcc_addresses ? (typeof row.bcc_addresses === 'string' ? row.bcc_addresses : JSON.stringify(row.bcc_addresses)) : null, row.body_text || null, row.body_html || null, row.folder || 'inbox', row.source_folder || null, row.imap_uid || null, row.imap_uidvalidity || null, rawPath, rawPath ? row.raw_sha256 || null : null, row.is_read ? 1 : 0, row.is_starred ? 1 : 0, row.is_draft ? 1 : 0, row.has_attachments ? 1 : 0, normalizeMysqlDateTime(row.received_at, new Date())]
+      await writeOwnedRow(connection, userId, 'emails',
+        ['id', 'user_id', 'mail_account_id', 'message_id', 'subject', 'from_address', 'from_name', 'to_addresses', 'cc_addresses', 'bcc_addresses', 'body_text', 'body_html', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'raw_storage_path', 'raw_sha256', 'is_read', 'is_starred', 'is_draft', 'has_attachments', 'received_at'],
+        [targetEmailId, row.user_id, targetMailAccountId, row.message_id || null, row.subject || null, row.from_address || 'unknown', row.from_name || null, typeof row.to_addresses === 'string' ? row.to_addresses : JSON.stringify(row.to_addresses || []), row.cc_addresses ? (typeof row.cc_addresses === 'string' ? row.cc_addresses : JSON.stringify(row.cc_addresses)) : null, row.bcc_addresses ? (typeof row.bcc_addresses === 'string' ? row.bcc_addresses : JSON.stringify(row.bcc_addresses)) : null, row.body_text || null, row.body_html || null, row.folder || 'inbox', row.source_folder || null, row.imap_uid || null, row.imap_uidvalidity || null, rawPath, rawPath ? row.raw_sha256 || null : null, row.is_read ? 1 : 0, row.is_starred ? 1 : 0, row.is_draft ? 1 : 0, row.has_attachments ? 1 : 0, normalizeMysqlDateTime(row.received_at, new Date())],
+        ['subject', 'from_address', 'from_name', 'to_addresses', 'cc_addresses', 'bcc_addresses', 'body_text', 'body_html', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'raw_storage_path', 'raw_sha256', 'is_read', 'is_starred', 'is_draft', 'has_attachments', 'received_at']
       );
     }
 
     for (const attachment of data.email_attachments || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(attachment, userId);
-      const targetEmailId = emailIdMap.get(row.email_id) || row.email_id;
+      const targetEmailId = await resolveOwnedReference(connection, userId, 'emails', row.email_id, emailIdMap);
       const existingAttachmentId = await findExistingAttachmentForRestore(connection, row, userId, targetEmailId);
       const targetAttachmentId = chooseTargetId(row.id, existingAttachmentId, conflictMode);
       const storagePath = restoredPaths.get(`email_attachment:${row.id}`) || null;
       if (!shouldWriteExisting(existingAttachmentId, targetAttachmentId, conflictMode)) continue;
-      await connection.execute(
-        `INSERT INTO email_attachments (id, email_id, user_id, filename, content_type, size_bytes, storage_path, content_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE filename = VALUES(filename), content_type = VALUES(content_type), size_bytes = VALUES(size_bytes), storage_path = VALUES(storage_path), content_id = VALUES(content_id)`,
-        [targetAttachmentId, targetEmailId, row.user_id, row.filename || 'attachment', row.content_type || 'application/octet-stream', row.size_bytes || 0, storagePath, row.content_id || null]
+      await writeOwnedRow(connection, userId, 'email_attachments',
+        ['id', 'email_id', 'user_id', 'filename', 'content_type', 'size_bytes', 'storage_path', 'content_id'],
+        [targetAttachmentId, targetEmailId, row.user_id, row.filename || 'attachment', row.content_type || 'application/octet-stream', row.size_bytes || 0, storagePath, row.content_id || null],
+        ['filename', 'content_type', 'size_bytes', 'storage_path', 'content_id']
       );
     }
 
     for (const score of data.mail_email_scores || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(score, userId);
-      const targetEmailId = emailIdMap.get(row.email_id) || row.email_id;
-      if (conflictMode === 'keep_existing') {
-        const [existingScore] = await connection.execute(
-          'SELECT id FROM mail_email_scores WHERE email_id = ? AND score_version = ? LIMIT 1',
-          [targetEmailId, row.score_version || 'v1']
-        );
-        if (existingScore.length) continue;
-      }
-      const targetScoreId = conflictMode === 'keep_both' ? crypto.randomUUID() : row.id;
-      await connection.execute(
-        `INSERT INTO mail_email_scores
-           (id, email_id, user_id, score_version, total_score, risk_level, spf_result, dkim_result, dmarc_result,
-            language_risk_score, sender_reputation_score, source_risk_score, classifier_confidence, reasons, metadata, scored_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           total_score = VALUES(total_score),
-           risk_level = VALUES(risk_level),
-           spf_result = VALUES(spf_result),
-           dkim_result = VALUES(dkim_result),
-           dmarc_result = VALUES(dmarc_result),
-           language_risk_score = VALUES(language_risk_score),
-           sender_reputation_score = VALUES(sender_reputation_score),
-           source_risk_score = VALUES(source_risk_score),
-           classifier_confidence = VALUES(classifier_confidence),
-           reasons = VALUES(reasons),
-           metadata = VALUES(metadata),
-           scored_at = VALUES(scored_at)`,
+      const targetEmailId = await resolveOwnedReference(connection, userId, 'emails', row.email_id, emailIdMap);
+      const [existingScore] = await connection.execute(
+        'SELECT id FROM mail_email_scores WHERE email_id = ? AND score_version = ? AND user_id = ? LIMIT 1',
+        [targetEmailId, row.score_version || 'v1', userId]
+      );
+      if (existingScore.length && conflictMode !== 'replace') continue;
+      const targetScoreId = chooseTargetId(row.id, existingScore[0]?.id, conflictMode, { canKeepBoth: false });
+      await writeOwnedRow(connection, userId, 'mail_email_scores',
+        ['id', 'email_id', 'user_id', 'score_version', 'total_score', 'risk_level', 'spf_result', 'dkim_result', 'dmarc_result', 'language_risk_score', 'sender_reputation_score', 'source_risk_score', 'classifier_confidence', 'reasons', 'metadata', 'scored_at'],
         [
           targetScoreId,
           targetEmailId,
@@ -1939,7 +1951,8 @@ async function importBackupForUser(userId, backup, {
           row.reasons ? (typeof row.reasons === 'string' ? row.reasons : JSON.stringify(row.reasons)) : null,
           row.metadata ? (typeof row.metadata === 'string' ? row.metadata : JSON.stringify(row.metadata)) : null,
           normalizeMysqlDateTime(row.scored_at, new Date()),
-        ]
+        ],
+        ['total_score', 'risk_level', 'spf_result', 'dkim_result', 'dmarc_result', 'language_risk_score', 'sender_reputation_score', 'source_risk_score', 'classifier_confidence', 'reasons', 'metadata', 'scored_at']
       );
     }
 
@@ -1949,33 +1962,20 @@ async function importBackupForUser(userId, backup, {
       const row = overwriteUserId(recording, userId);
       const storagePath = restoredPaths.get(`recording:${row.id}`);
       if (!storagePath) continue;
+      const audio = await inspectRecordingAudio(storagePath);
       const existingRecordingId = await findExistingRecordingForRestore(connection, row, userId, storagePath);
       const targetRecordingId = chooseTargetId(row.id, existingRecordingId, conflictMode);
       recordingIdMap.set(row.id, targetRecordingId);
       if (!shouldWriteExisting(existingRecordingId, targetRecordingId, conflictMode)) continue;
-      await connection.execute(
-        `INSERT INTO recordings
-           (id, user_id, title, description, original_filename, content_type, size_bytes, duration_seconds, storage_path, source, category, recorded_at, metadata, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           title = VALUES(title),
-           description = VALUES(description),
-           original_filename = VALUES(original_filename),
-           content_type = VALUES(content_type),
-           size_bytes = VALUES(size_bytes),
-           duration_seconds = VALUES(duration_seconds),
-           storage_path = VALUES(storage_path),
-           source = VALUES(source),
-           category = VALUES(category),
-           recorded_at = VALUES(recorded_at),
-           metadata = VALUES(metadata)`,
+      await writeOwnedRow(connection, userId, 'recordings',
+        ['id', 'user_id', 'title', 'description', 'original_filename', 'content_type', 'size_bytes', 'duration_seconds', 'storage_path', 'source', 'category', 'recorded_at', 'metadata', 'created_at'],
         [
           targetRecordingId,
           row.user_id,
           row.title || row.original_filename || 'Recording',
           row.description || null,
           row.original_filename || null,
-          row.content_type || 'application/octet-stream',
+          audio.contentType,
           Number(row.size_bytes) || 0,
           row.duration_seconds ?? null,
           storagePath,
@@ -1984,7 +1984,8 @@ async function importBackupForUser(userId, backup, {
           normalizeMysqlDateTime(row.recorded_at, row.created_at || new Date()),
           row.metadata ? (typeof row.metadata === 'string' ? row.metadata : JSON.stringify(row.metadata)) : null,
           normalizeMysqlDateTime(row.created_at, new Date()),
-        ]
+        ],
+        ['title', 'description', 'original_filename', 'content_type', 'size_bytes', 'duration_seconds', 'storage_path', 'source', 'category', 'recorded_at', 'metadata']
       );
     }
 
@@ -1996,28 +1997,25 @@ async function importBackupForUser(userId, backup, {
         'SELECT id FROM recording_tags WHERE user_id = ? AND name = ? LIMIT 1',
         [userId, row.name]
       );
-      const targetTagId = existingByName[0]?.id || row.id;
+      const targetTagId = chooseTargetId(row.id, existingByName[0]?.id, conflictMode, { canKeepBoth: false });
       recordingTagIdMap.set(row.id, targetTagId);
       if (existingByName.length && conflictMode === 'keep_existing') continue;
-      await connection.execute(
-        `INSERT INTO recording_tags (id, user_id, name, color)
-         VALUES (?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE color = VALUES(color)`,
-        [targetTagId, row.user_id, row.name, row.color || null]
+      await writeOwnedRow(connection, userId, 'recording_tags',
+        ['id', 'user_id', 'name', 'color'],
+        [targetTagId, row.user_id, row.name, row.color || null],
+        ['color']
       );
     }
 
     for (const link of data.recording_tag_links || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(link, userId);
-      if (!recordingIdMap.has(row.recording_id) || !recordingTagIdMap.has(row.tag_id)) continue;
-      const targetRecordingId = recordingIdMap.get(row.recording_id);
-      const targetTagId = recordingTagIdMap.get(row.tag_id);
-      await connection.execute(
-        `INSERT INTO recording_tag_links (recording_id, tag_id, user_id)
-         VALUES (?, ?, ?)
-         ON DUPLICATE KEY UPDATE user_id = VALUES(user_id)`,
-        [targetRecordingId, targetTagId, row.user_id]
+      const targetRecordingId = await resolveOwnedReference(connection, userId, 'recordings', row.recording_id, recordingIdMap);
+      const targetTagId = await resolveOwnedReference(connection, userId, 'recording_tags', row.tag_id, recordingTagIdMap);
+      await writeOwnedRow(connection, userId, 'recording_tag_links',
+        ['recording_id', 'tag_id', 'user_id'],
+        [targetRecordingId, targetTagId, row.user_id],
+        ['user_id']
       );
     }
 

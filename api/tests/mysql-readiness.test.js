@@ -84,12 +84,12 @@ test('a stalled handshake/query is destroyed at its per-attempt deadline', async
   assert.equal(cleared, 'deadline');
 });
 
-test('container entrypoint waits for the readiness helper before launching the API', { timeout: 10000 }, async (t) => {
+test('container entrypoint waits for readiness before launching the service supervisor', { timeout: 10000 }, async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-readiness-'));
   await fs.writeFile(path.join(directory, 'node'), `#!/bin/sh
 case "$1" in
   /app/api/src/mysql-readiness.js) echo PROBE_WAITING; IFS= read -r gate; [ "$gate" = ready ] || exit 1; echo PROBE_READY ;;
-  /app/api/server.js) echo API_LAUNCHED; exec sleep 60 ;;
+  /app/api/src/service-supervisor.js) echo SUPERVISOR_LAUNCHED; exec sleep 60 ;;
 esac
 `, { mode: 0o755 });
   await fs.writeFile(path.join(directory, 'nginx'), '#!/bin/sh\n[ "$1" = -t ] || echo NGINX_LAUNCHED\n', { mode: 0o755 });
@@ -111,11 +111,10 @@ esac
     child.stdout.on('data', check);
   });
   await until('PROBE_WAITING');
-  assert.equal(output.includes('Starting Node.js API'), false);
-  assert.equal(output.includes('API_LAUNCHED'), false);
+  assert.equal(output.includes('SUPERVISOR_LAUNCHED'), false);
   child.stdin.end('ready\n');
-  await until('NGINX_LAUNCHED');
-  assert.ok(output.indexOf('PROBE_READY') < output.indexOf('Starting Node.js API'));
+  await until('SUPERVISOR_LAUNCHED');
+  assert.ok(output.indexOf('PROBE_READY') < output.indexOf('SUPERVISOR_LAUNCHED'));
 });
 
 test('readiness authenticates against the configured MySQL CI service', { skip: !process.env.MYSQL_TEST_HOST }, async () => {

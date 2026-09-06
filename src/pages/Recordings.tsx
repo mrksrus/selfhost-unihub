@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { createPcm16WavBlob } from '@/lib/wav';
+import { uploadRecordingChunks } from '@/lib/recording-upload';
+import { RecordingPlayer } from '@/components/recordings/RecordingPlayer';
 import {
   recordingCategories,
   recordingCategoryLabels,
@@ -97,12 +99,6 @@ function filenameWithoutExtension(filename: string) {
   return filename.replace(/\.[^.]+$/, '').trim() || 'Recording';
 }
 
-async function sha256Hex(bytes: Uint8Array) {
-  if (!window.crypto?.subtle) return undefined;
-  const digest = await window.crypto.subtle.digest('SHA-256', new Uint8Array(bytes).buffer);
-  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
-}
-
 function toDatetimeLocalValue(value: string | Date | null | undefined) {
   if (!value) return '';
   const date = value instanceof Date ? value : new Date(value);
@@ -121,16 +117,6 @@ function formatRecordedAt(value: string | null | undefined) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'No recording date';
   return date.toLocaleString();
-}
-
-function uint8ToBase64(bytes: Uint8Array) {
-  let binary = '';
-  const stride = 0x8000;
-  for (let index = 0; index < bytes.length; index += stride) {
-    const chunk = bytes.subarray(index, index + stride);
-    binary += String.fromCharCode(...chunk);
-  }
-  return window.btoa(binary);
 }
 
 function saveBlob(blob: Blob, filename: string) {
@@ -218,7 +204,7 @@ const Recordings = () => {
       const now = recordingState === 'paused' && pausedAtRef.current ? pausedAtRef.current : Date.now();
       const elapsed = Math.max(0, now - startedAtRef.current - pausedMsRef.current);
       setElapsedSeconds(elapsed / 1000);
-    }, 250);
+    }, 1000);
     return () => window.clearInterval(timer);
   }, [recordingState]);
 
@@ -243,14 +229,12 @@ const Recordings = () => {
   const uploadAudio = useMutation({
     mutationFn: async (audio: PendingAudio) => {
       setUploadProgress(0);
-      const bytes = new Uint8Array(await audio.blob.arrayBuffer());
-      const sha256 = await sha256Hex(bytes);
       const start = await recordingsApi.startUpload({
         title: title.trim() || filenameWithoutExtension(audio.filename),
         description: description.trim(),
         original_filename: audio.filename,
         content_type: audio.contentType || audio.blob.type || 'audio/webm',
-        total_bytes: bytes.byteLength,
+        total_bytes: audio.blob.size,
         duration_seconds: audio.durationSeconds,
         source: audio.source,
         category,
@@ -261,16 +245,14 @@ const Recordings = () => {
 
       const uploadId = start.id;
       const chunkSize = Math.min(start.max_chunk_bytes || CHUNK_SIZE, CHUNK_SIZE);
-      for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
-        const chunk = bytes.subarray(offset, offset + chunkSize);
-        await recordingsApi.uploadChunk(uploadId, {
-          offset,
-          data_base64: uint8ToBase64(chunk),
-        });
-        setUploadProgress(Math.round(((offset + chunk.byteLength) / bytes.byteLength) * 100));
-      }
+      await uploadRecordingChunks(
+        audio.blob,
+        chunkSize,
+        chunk => recordingsApi.uploadChunk(uploadId, chunk),
+        setUploadProgress,
+      );
 
-      return recordingsApi.completeUpload(uploadId, { sha256 });
+      return recordingsApi.completeUpload(uploadId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
@@ -339,15 +321,20 @@ const Recordings = () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
+          channelCount: 1,
           autoGainControl: false,
           echoCancellation: false,
           noiseSuppression: false,
         },
       });
-      const audioContext = new AudioContextClass({
-        sampleRate: 44100,
-      });
       streamRef.current = stream;
+      // Keep the microphone's rate where available so capture does not need an
+      // extra resampling step. WAV records the actual context rate in its header.
+      const sampleRate = stream.getAudioTracks()[0]?.getSettings().sampleRate;
+      const audioContext = new AudioContextClass({
+        ...(sampleRate ? { sampleRate } : {}),
+        latencyHint: 'balanced',
+      });
       audioContextRef.current = audioContext;
       await audioContext.audioWorklet.addModule('/audio-recorder-worklet.js');
       const source = audioContext.createMediaStreamSource(stream);
@@ -426,14 +413,27 @@ const Recordings = () => {
         workletStoppedResolveRef.current = resolve;
       });
       worklet.port.postMessage({ type: 'stop' });
+      let stopTimer: ReturnType<typeof setTimeout> | undefined;
+      let stopConfirmed = true;
       await Promise.race([
         stopped,
-        new Promise<void>((resolve) => window.setTimeout(resolve, 500)),
+        new Promise<void>((resolve) => {
+          stopTimer = setTimeout(() => { stopConfirmed = false; resolve(); }, 5000);
+        }),
       ]);
+      clearTimeout(stopTimer);
+      // Detach before creating the Blob so late messages cannot add samples to a
+      // preview that has already been finalized. Keep captured audio on timeout.
+      worklet.port.onmessage = null;
+      if (!stopConfirmed) {
+        toast({ title: 'Please check the recording preview', description: 'The recorder took too long to stop. The final moment of audio may be missing.', variant: 'destructive' });
+      }
 
       const sampleCount = pcmSampleCountRef.current;
       const sampleRate = pcmSampleRateRef.current;
       const blob = createPcm16WavBlob(pcmChunksRef.current, sampleRate, sampleCount);
+      pcmChunksRef.current = [];
+      pcmSampleCountRef.current = 0;
       const stoppedAt = new Date();
       setPendingAudio({
         blob,
@@ -450,6 +450,7 @@ const Recordings = () => {
       toast({ title: 'Recording failed', description: message, variant: 'destructive' });
     } finally {
       workletStoppedResolveRef.current = null;
+      setRecordingState('idle');
       await releaseRecordingResources();
       stopInProgressRef.current = false;
     }
@@ -457,7 +458,7 @@ const Recordings = () => {
 
   const handleImportFile = (file: File | undefined) => {
     if (!file) return;
-    if (!file.type.startsWith('audio/') && !/\.(mp3|m4a|wav|ogg|webm)$/i.test(file.name)) {
+    if (!file.type.startsWith('audio/') && !/\.(mp3|m4a|mp4|wav|ogg|webm|flac|aac|aiff|aif)$/i.test(file.name)) {
       toast({ title: 'Please choose an audio file', variant: 'destructive' });
       return;
     }
@@ -636,7 +637,7 @@ const Recordings = () => {
               </div>
               <div>
                 <CardTitle className="text-lg">Import Audio</CardTitle>
-                <CardDescription>MP3, M4A, WAV, OGG, or WebM</CardDescription>
+                <CardDescription>MP3, M4A, WAV, OGG, WebM, FLAC, AAC, or AIFF</CardDescription>
               </div>
             </div>
           </CardHeader>
@@ -644,7 +645,7 @@ const Recordings = () => {
             <input
               ref={fileInputRef}
               type="file"
-              accept="audio/*,.mp3,.m4a,.wav,.ogg,.webm"
+              accept="audio/*,.mp3,.m4a,.mp4,.wav,.ogg,.webm,.flac,.aac,.aiff,.aif"
               className="hidden"
               onChange={(event) => handleImportFile(event.target.files?.[0])}
             />
@@ -734,7 +735,7 @@ const Recordings = () => {
                           {recording.metadata.chords}
                         </pre>
                       )}
-                      <audio controls preload="none" className="w-full max-w-2xl" src={`/api/recordings/${recording.id}/file`} />
+                      <RecordingPlayer id={recording.id} />
                       {recording.tags.length > 0 && (
                         <div className="flex flex-wrap gap-1.5">
                           {recording.tags.map((tagName) => (

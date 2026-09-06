@@ -71,10 +71,28 @@ fields; V1 uses `metadata.chords` for Music recordings.
 | Max tag length | 80 characters |
 | Max title length | 255 characters |
 | Max description length | 5000 characters |
+| Concurrent MP3 conversions | 1 per app container |
+| Waiting MP3 conversions | 4 total; 2 active/waiting requests per user |
+| MP3 queue wait | 60 seconds, then retry response |
+| MP3 conversion deadline | 15 minutes |
+| MP3 output ceiling | 500 MiB |
 
 New microphone recordings use uncompressed mono WAV at the browser audio
 context's sample rate, normally 44.1 or 48 kHz. Storage use is approximately
 5-6 MB per minute.
+
+Capture uses the microphone's reported sample rate where available and batches
+4,096 samples per worklet message. Pause and stop flush the remaining samples.
+This reduces browser messaging and avoids forcing a 44.1 kHz conversion. The
+recording timer updates once per second. These changes reduce overhead; actual
+microphone quality still depends on the browser, device and audio drivers.
+
+Saving and normal playback use the original audio. The player offers **Try MP3
+playback** only if original playback fails, and conversion starts only when the
+user selects it. MP3 exports are cached and never replace the original. Encoding
+and decoding each use one thread; the bounded conversion queue prevents several
+exports from competing for CPU at once. Busy or expired queue requests return
+HTTP 429 so the user can retry.
 
 ## Upload Protocol
 
@@ -114,12 +132,16 @@ Payload:
 ```json
 {
   "offset": 0,
-  "data_base64": "..."
+  "data_base64": "...",
+  "sha256": "optional-64-character-hex-checksum-of-this-chunk"
 }
 ```
 
 The server requires `offset` to match the current `bytes_received`. Incorrect
 offsets return 409, which prevents accidental out-of-order writes.
+If provided, the chunk checksum must match before any bytes are appended. The
+browser reads and hashes one 512 KiB slice at a time, avoiding full-file buffer
+copies. The older optional whole-upload checksum remains supported.
 
 ### 3. Complete Upload
 
@@ -130,6 +152,7 @@ The server verifies:
 - uploaded bytes match declared total
 - temp file size matches declared total
 - temp path is under the recordings root
+- file signature identifies supported WAV, MP3, M4A/MP4, Ogg, WebM, FLAC, AAC or AIFF
 
 It verifies the optional SHA-256 checksum, then moves the original file into the
 final user directory. A database transaction inserts the recording row, links
@@ -137,6 +160,10 @@ tags, and deletes the upload row. If that transaction fails, the error handler
 removes the moved file; the filesystem move itself is not transactional. Browser
 microphone recordings and imported files both retain their original bytes and
 format.
+Stored content type and extension come from the detected signature, not the
+supplied filename or MIME type. This is format identification, not malware
+scanning or a complete decode check. MP3 conversion restricts the decoder to
+that detected format and disallows network input protocols.
 
 ## API Endpoints
 
@@ -186,6 +213,8 @@ Recording files are also deleted when:
 Recording backups include recording metadata, original stored files, tags, and
 tag links. Validation requires every declared recording file to exist and match
 its SHA-256 checksum.
+Restore additionally checks the audio signature before storing a canonical
+audio content type. Unsupported files reject the restore transaction.
 
 Restore matches recordings by ID, file checksum, or normalized title/date/size.
 Tags match by normalized name, and links are remapped to the restored recording

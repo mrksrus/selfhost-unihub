@@ -33,6 +33,7 @@ test('backup import maps restored mail to existing account and email sync identi
     MAIL_RAW_STORAGE_ROOT: '/tmp/unihub-test-mail-raw',
     DEFAULT_MAIL_SYNC_FETCH_LIMIT: 'all',
     normalizeSyncFetchLimit: (value, fallback = 'all') => value || fallback,
+    validateMailHostPolicy: async () => ({ accepted: true }),
   });
 
   const connection = {
@@ -45,6 +46,7 @@ test('backup import maps restored mail to existing account and email sync identi
       if (sql.includes('SELECT id FROM mail_accounts WHERE user_id = ? AND email_address = ?')) {
         return [[{ id: 'existing-account' }]];
       }
+      if (sql.startsWith('SELECT `id` FROM `emails`')) return [[{ id: 'existing-email' }]];
       if (sql.includes('SELECT id FROM emails WHERE id = ? AND user_id = ?')) {
         return [[]];
       }
@@ -134,15 +136,17 @@ test('backup import maps restored mail to existing account and email sync identi
   assert.match(accountWrite.sql, /delete_emails_on_server = FALSE/);
   assert.match(accountWrite.sql, /server_delete_grace_until = NULL/);
 
-  const emailWrite = calls.find(call => call.sql.includes('INSERT INTO emails'));
-  assert.equal(emailWrite.params[0], 'existing-email');
-  assert.equal(emailWrite.params[2], 'existing-account');
-  assert.equal(emailWrite.params[12], 'inbox');
-  assert.equal(emailWrite.params[13], 'INBOX');
-  assert.equal(emailWrite.params[14], 42);
-  assert.equal(emailWrite.params[15], 123);
-  assert.equal(emailWrite.params[20], 1);
-  assert.equal(emailWrite.params[22], '2026-05-15 09:00:00');
+  const emailWrite = calls.find(call => call.sql.startsWith('UPDATE `emails`'));
+  const columns = [...emailWrite.sql.matchAll(/`(\w+)` = \?/g)].map(match => match[1]);
+  const values = Object.fromEntries(columns.map((column, index) => [column, emailWrite.params[index]]));
+  assert.equal(values.id, 'existing-email');
+  assert.equal(emailWrite.params.at(-1), 'new-user');
+  assert.equal(values.folder, 'inbox');
+  assert.equal(values.source_folder, 'INBOX');
+  assert.equal(values.imap_uid, 42);
+  assert.equal(values.imap_uidvalidity, 123);
+  assert.equal(values.is_draft, 1);
+  assert.equal(values.received_at, '2026-05-15 09:00:00');
 
   const attachmentWrite = calls.find(call => call.sql.includes('INSERT INTO email_attachments'));
   assert.equal(attachmentWrite.params[1], 'existing-email');

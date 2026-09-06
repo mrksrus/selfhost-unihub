@@ -66,7 +66,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.1`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.2`, then run from the existing
 deployment directory:
 
 ```bash
@@ -106,3 +106,28 @@ recorded old image. Do not point old and new apps at the same writable data.
 Version 0.10.1 also introduces the [licensing policy](../LICENSING.md): free
 noncommercial use and separately agreed paid commercial use. Earlier releases
 retain the permissions supplied with them.
+
+## 0.10.2 security update
+
+Upgrade existing 0.10.x installations in place with the same database, uploads
+and keys. This patch adds no database migration and does not rewrite existing
+recordings or IDs. The populated 0.9.23.0 upgrade regression remains part of CI.
+
+Configure `UNIHUB_TRUSTED_PROXY_CIDRS` if an extra HTTPS proxy sits in front of
+UniHub; see [Authentication](AUTH_ADMIN_SETTINGS.md#trusted-proxies). An image
+pull alone does not add a new environment variable to an existing container.
+Mail/CalDAV servers resolving to private addresses need the administrator's
+existing `TRUSTED_MAIL_HOSTS` exception. Failed DNS lookups now stop a connection.
+CalDAV discovery will not send credentials to another origin; providers that
+redirect across origins require an explicitly configured final server URL.
+
+Legacy backup formats remain supported. Newly imported rows receive fresh IDs
+unless matched to existing data owned by the restoring user. Foreign or
+inconsistent parent references are rejected instead of being linked. Restored
+mail/calendar settings that cannot pass network policy are kept inactive with
+a warning, so a restore does not silently initiate an unsafe connection.
+
+New audio uploads/restores accept recognized WAV, MP3, M4A/MP4 audio, Ogg, WebM,
+FLAC, AAC and AIFF signatures; arbitrary file types labeled as audio are rejected.
+Existing stored originals are retained. MP3 export is bounded and may ask you to
+retry when another conversion is busy. See [0.10.2 release notes](RELEASE_0.10.2.md).

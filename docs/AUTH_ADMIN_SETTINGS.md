@@ -18,6 +18,8 @@ Every authenticated request verifies:
 3. non-expired session
 4. active user account
 
+Each new JWT has a random `jti`, so simultaneous logins cannot collide on the
+unique stored token. Existing tokens without this field remain valid.
 Expired sessions are deleted hourly.
 
 ## CSRF Protection
@@ -57,14 +59,46 @@ server validation before writes resume. See [Offline reading](OFFLINE.md).
 
 ## Rate Limiting
 
-Sign-in, signup, and 2FA login failures use an in-memory per-IP limiter:
+Authentication uses bounded in-memory attempt budgets, consumed before expensive verification:
 
-- 5 failed attempts
-- 300 minute block
-- successful auth resets the IP entry
+| Budget | Limit |
+| --- | --- |
+| All public authentication requests per resolved client IP | 60 per minute |
+| Password checks per existing user ID | 10 per 10 minutes |
+| Second-factor checks per user ID | 10 per 10 minutes |
+| Signup requests per client IP | 10 per hour |
 
-When `TRUST_PROXY_HEADERS=true`, client IP is taken from `X-Real-IP` or
-`X-Forwarded-For`. Only enable that behind a trusted reverse proxy.
+Success does not clear any budget. Password and second-factor budgets are
+separate; a fresh password login cannot reset second-factor guesses. Account
+budgets follow the database user ID, including email case variants. A limited
+request returns HTTP 429 with `Retry-After` in seconds. The previous five-hour
+blanket IP lockout is removed. Shared-IP users keep separate account budgets;
+a high-volume network burst can still hit the short one-minute IP budget.
+Counters reset on app restart; this release targets a single app container.
+
+### Trusted proxies
+
+`TRUST_PROXY_HEADERS=true` enables a right-to-left walk of `X-Forwarded-For`,
+starting at the actual socket peer. Only hops listed in `TRUSTED_PROXY_CIDRS`
+are trusted. The first untrusted address is the client; earlier supplied values
+are ignored. `X-Real-IP` is not used. IPv4-mapped and equivalent IPv6 spellings
+are normalized. Invalid proxy configuration prevents startup.
+
+The default trusts `127.0.0.1/32,::1/128`, covering nginx bundled in this image.
+If an additional HTTPS proxy connects from `172.20.0.8`, set the following in
+the Compose `.env`, retaining the loopback entries:
+
+```dotenv
+UNIHUB_TRUSTED_PROXY_CIDRS=127.0.0.1/32,::1/128,172.20.0.8/32
+```
+
+Replace that example with the actual proxy address or tightly scoped proxy
+network you control. Compose maps this to the runtime `TRUSTED_PROXY_CIDRS`.
+Do not trust all private networks or `0.0.0.0/0`. The outer proxy must append or
+replace forwarded headers with the real connecting client, and direct access
+to the backend should be restricted to that proxy where appropriate. Without
+an explicitly trusted outer proxy, its IP remains the network-budget identity;
+account limits still remain separate.
 
 ## Signup Flow
 
@@ -98,7 +132,9 @@ Public endpoint:
 6. otherwise creates a session and sets auth/CSRF cookies
 
 `POST /api/auth/2fa/login` consumes the challenge token and accepts either a
-TOTP code or a recovery code.
+TOTP code or a recovery code. Challenge consumption, recovery-code removal and
+session insertion commit together; errors roll them back. Concurrent reuse of
+one challenge creates at most one session. Cookies are sent only after commit.
 
 ## Two-Factor Authentication
 

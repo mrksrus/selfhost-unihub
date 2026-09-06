@@ -81,6 +81,14 @@ Before saving an account, the backend:
 Self-hosted mail servers that resolve to private/local addresses must be listed
 in `TRUSTED_MAIL_HOSTS`.
 
+The same policy is enforced immediately before every IMAP/SMTP connection,
+including background work. DNS errors fail closed. Every returned address is
+checked, and the socket connects directly to a checked IP while TLS verifies the
+original hostname. There is no second DNS lookup between validation and use.
+Private, link-local, reserved and special-use addresses are blocked unless the
+administrator explicitly trusts the host. Restored accounts whose hosts fail
+this policy remain inactive with a warning.
+
 ## Sync Triggers
 
 | Trigger | Endpoint/process | Behavior |

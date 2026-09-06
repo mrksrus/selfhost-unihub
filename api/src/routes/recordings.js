@@ -75,7 +75,7 @@ module.exports = {
       return await completeRecordingUpload(userId, uploadId, body || {});
     } catch (error) {
       console.error('Complete recording upload error:', error);
-      return { error: error.message || 'Failed to complete recording upload', status: 500 };
+      return { error: error.message || 'Failed to complete recording upload', status: error.status || 500 };
     }
   },
 
@@ -115,7 +115,7 @@ module.exports = {
       };
     } catch (error) {
       console.error('Download recording error:', error);
-      return { error: 'Failed to load recording file', status: 500 };
+      return { error: error.status ? error.message : 'Failed to load recording file', status: error.status || 500 };
     }
   },
 

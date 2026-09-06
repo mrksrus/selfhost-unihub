@@ -21,6 +21,7 @@ test('backup import preserves calendar event field order and MySQL values', asyn
   let revision = 0;
   let transactionRevision = 0;
   let rollbacks = 0;
+  const stored = new Map();
 
   t.after(() => {
     if (originalBackup) require.cache[backupPath] = originalBackup;
@@ -50,6 +51,20 @@ test('backup import preserves calendar event field order and MySQL values', asyn
         `Prepared statement parameter mismatch:\n${sql}`
       );
       calls.push({ sql, params });
+      const insert = sql.match(/^INSERT INTO (\w+) \((.*?)\) VALUES/);
+      if (insert) {
+        const columns = insert[2].replace(/`/g, '').split(', ');
+        const row = Object.fromEntries(columns.map((column, index) => [column, params[index]]));
+        stored.set(insert[1] + ':' + row.id, row);
+      }
+      const owned = sql.match(/^SELECT `?id`? FROM `(\w+)` WHERE/);
+      if (owned) {
+        const row = stored.get(owned[1] + ':' + params[0]);
+        if (!row || row.user_id !== params[1]) return [[]];
+        if (sql.includes('`calendar_id` <=>') && row.calendar_id !== params[2]) return [[]];
+        if (sql.includes('`account_id` <=>') && row.account_id !== params[2]) return [[]];
+        return [[{ id: row.id }]];
+      }
       if (sql.startsWith('UPDATE notification_config SET reminder_revision')) transactionRevision++;
       return [[]];
     },
@@ -143,11 +158,17 @@ test('backup import preserves calendar event field order and MySQL values', asyn
   });
 
   assert.equal(result.valid, true);
+  const accountId = calls.find(call => call.sql.includes('INSERT INTO calendar_accounts')).params[0];
+  const calendarId = calls.find(call => call.sql.includes('INSERT INTO calendar_calendars')).params[0];
+  assert.notEqual(accountId, 'calendar-account');
+  assert.notEqual(calendarId, 'calendar');
   const eventWrite = calls.find(call => call.sql.includes('INSERT INTO calendar_events'));
+  assert.notEqual(eventWrite.params[0], 'event');
+  const eventId = eventWrite.params[0];
   assert.deepEqual(eventWrite.params, [
-    'event',
+    eventId,
     'new-user',
-    'calendar',
+    calendarId,
     'Restored event',
     'Description from backup',
     '2026-05-22 07:37:15',
@@ -165,8 +186,8 @@ test('backup import preserves calendar event field order and MySQL values', asyn
 
   const subtaskWrite = calls.find(call => call.sql.includes('INSERT INTO calendar_event_subtasks'));
   assert.deepEqual(subtaskWrite.params, [
-    'subtask',
-    'event',
+    subtaskWrite.params[0],
+    eventId,
     'new-user',
     'Restored subtask',
     1,
@@ -175,9 +196,9 @@ test('backup import preserves calendar event field order and MySQL values', asyn
 
   const attendeeWrite = calls.find(call => call.sql.includes('INSERT INTO calendar_event_attendees'));
   assert.deepEqual(attendeeWrite.params, [
-    'attendee',
+    attendeeWrite.params[0],
     'new-user',
-    'event',
+    eventId,
     'person@example.com',
     'Person',
     'accepted',
@@ -188,11 +209,11 @@ test('backup import preserves calendar event field order and MySQL values', asyn
 
   const externalRefWrite = calls.find(call => call.sql.includes('INSERT INTO calendar_event_external_refs'));
   assert.deepEqual(externalRefWrite.params, [
-    'external-ref',
+    externalRefWrite.params[0],
     'new-user',
-    'event',
-    'calendar',
-    'calendar-account',
+    eventId,
+    calendarId,
+    accountId,
     'caldav',
     'external-event',
     '"etag"',
@@ -202,7 +223,7 @@ test('backup import preserves calendar event field order and MySQL values', asyn
   assert.equal(revision, 1, 'a committed calendar restore triggers a reminder rescan');
 
   // Calendar visibility can change without any event field or timestamp changing.
-  const visibilityOnly = { ...backup, data: { calendar_calendars: backup.data.calendar_calendars } };
+  const visibilityOnly = { ...backup, data: { calendar_calendars: [{ ...backup.data.calendar_calendars[0], id: calendarId, account_id: accountId }] } };
   await importBackupForUser('new-user', visibilityOnly, { mode: 'apply', sections: 'calendar' });
   assert.equal(revision, 2, 'visibility-only restores also trigger a rescan');
 

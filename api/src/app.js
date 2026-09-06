@@ -42,7 +42,13 @@ async function start() {
     console.warn('[BACKUP RESTORE] Could not resume pending restore jobs:', error.message);
   }
   
-  const server = http.createServer(handleRequest);
+  const server = http.createServer((req, res) => {
+    // Last-resort boundary, including failures while writing an error response.
+    handleRequest(req, res).catch(error => {
+      console.error('HTTP response failed:', error.message);
+      res.destroy();
+    });
+  });
   
   server.listen(PORT, () => {
     console.log(`✓ UniHub API server running on port ${PORT}`);

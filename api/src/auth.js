@@ -5,8 +5,11 @@ const { db } = require('./state');
 const {
   JWT_SECRET,
   TRUST_PROXY_HEADERS,
+  TRUSTED_PROXY_CIDRS,
   AUTH_COOKIE_NAME,
 } = require('./config');
+const { createClientIpResolver } = require('./security/client-ip');
+const { consumeAuthAttempt } = require('./security/login-limits');
 
 // Password hashing
 async function hashPassword(password) {
@@ -27,7 +30,7 @@ function generateToken(userId) {
   return jwt.sign(
     { userId, sub: userId },
     JWT_SECRET,
-    { expiresIn: '21d' }
+    { expiresIn: '21d', jwtid: crypto.randomUUID() }
   );
 }
 
@@ -37,56 +40,10 @@ function getSessionExpiry() {
   return expiresAt;
 }
 
-// ── Rate limiting (in-memory) ──────────────────────────────────────
-const rateLimitStore = new Map();
-const RATE_LIMIT_MAX_ATTEMPTS = 5;
-const RATE_LIMIT_BLOCK_MS = 300 * 60 * 1000; // 300 minutes
-
-function getClientIP(req) {
-  if (TRUST_PROXY_HEADERS) {
-    return req.headers['x-real-ip'] ||
-      (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
-      req.socket?.remoteAddress ||
-      'unknown';
-  }
-  return req.socket?.remoteAddress || 'unknown';
-}
-
-function isRateLimited(ip) {
-  const now = Date.now();
-  const entry = rateLimitStore.get(ip);
-  if (!entry) return null;
-  if (entry.blockedUntil > now) {
-    return Math.ceil((entry.blockedUntil - now) / 60000);
-  }
-  if (entry.blockedUntil > 0) {
-    rateLimitStore.delete(ip);
-  }
-  return null;
-}
-
-function recordFailedAttempt(ip) {
-  const entry = rateLimitStore.get(ip) || { failures: 0, blockedUntil: 0 };
-  entry.failures++;
-  if (entry.failures >= RATE_LIMIT_MAX_ATTEMPTS) {
-    entry.blockedUntil = Date.now() + RATE_LIMIT_BLOCK_MS;
-  }
-  rateLimitStore.set(ip, entry);
-}
-
-function resetRateLimit(ip) {
-  rateLimitStore.delete(ip);
-}
-
-// Clean up expired rate-limit entries without keeping a stopped server alive.
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, entry] of rateLimitStore) {
-    if (entry.blockedUntil > 0 && entry.blockedUntil < now) {
-      rateLimitStore.delete(ip);
-    }
-  }
-}, 3600000).unref();
+const getClientIP = createClientIpResolver({
+  trustProxyHeaders: TRUST_PROXY_HEADERS,
+  trustedProxyCidrs: TRUSTED_PROXY_CIDRS,
+});
 
 // CSRF token validation
 function validateCsrfToken(req, res) {
@@ -267,9 +224,7 @@ module.exports = {
   generateToken,
   getSessionExpiry,
   getClientIP,
-  isRateLimited,
-  recordFailedAttempt,
-  resetRateLimit,
+  consumeAuthAttempt,
   validateCsrfToken,
   appendSetCookie,
   parseCookies,

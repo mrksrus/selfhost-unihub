@@ -85,9 +85,9 @@ test('normalizes legacy initial sync limits to all', () => {
 
 test('host policy validation does not require certificate probes for public custom hosts', async () => {
   const result = await validateMailHostPolicy({
-    imap_host: '203.0.113.10',
+    imap_host: '93.184.216.34',
     imap_port: 993,
-    smtp_host: '203.0.113.10',
+    smtp_host: '93.184.216.34',
     smtp_port: 587,
   });
 
@@ -100,9 +100,9 @@ test('host policy validation does not require certificate probes for public cust
 
 test('IMAP TLS verification failures produce host trust confirmation details', async () => {
   const result = await buildMailHostTrustResult({
-    imap_host: '203.0.113.10',
+    imap_host: '93.184.216.34',
     imap_port: 993,
-    smtp_host: '203.0.113.10',
+    smtp_host: '93.184.216.34',
     smtp_port: 587,
     imapTlsError: 'self-signed certificate',
   });
