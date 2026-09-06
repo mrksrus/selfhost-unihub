@@ -28,7 +28,7 @@ services:
       MYSQL_HOST: unihub-mysql
       MYSQL_PORT: "3306"
       # ── Startup timing controls used by docker/start.sh ───────────────
-      MYSQL_STARTUP_MAX_WAIT_SECONDS: "120"
+      MYSQL_STARTUP_MAX_WAIT_SECONDS: "300"
       MYSQL_STARTUP_CHECK_INTERVAL_SECONDS: "5"
       UNIHUB_API_START_DELAY_SECONDS: "2"
       # ── Required: set a strong, random secret ──────────────────────
@@ -53,7 +53,7 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 90s   # Reduced since MySQL startup is optimized
+      start_period: 360s  # Covers the five-minute MySQL wait plus API startup
     networks:
       - unihub-network
     volumes:

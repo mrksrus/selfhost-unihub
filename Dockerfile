@@ -42,8 +42,8 @@ RUN chmod +x /app/start.sh
 
 EXPOSE 80
 
-# Start-period must exceed the 120s MySQL wait in start.sh before nginx listens on 80
-HEALTHCHECK --interval=30s --timeout=5s --start-period=180s --retries=3 \
+# Allow the 300s MySQL readiness window plus API startup before reporting failures.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=360s --retries=3 \
   CMD wget -q -O /dev/null http://localhost/health || exit 1
 
 CMD ["/app/start.sh"]

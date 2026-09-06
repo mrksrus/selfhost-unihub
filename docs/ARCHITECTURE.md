@@ -112,6 +112,13 @@ serve UniHub through HTTPS.
 - `DATABASE_URL`, or
 - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`
 
+Before launching the API, `docker/start.sh` runs an authenticated `SELECT 1`
+through mysql2 using that same configuration. It retries for up to 300 seconds
+by default and continues immediately when the database is ready.
+`MYSQL_STARTUP_MAX_WAIT_SECONDS` and `MYSQL_STARTUP_CHECK_INTERVAL_SECONDS`
+override the budget and retry interval. Application image and Compose health
+checks allow 360 seconds for startup, including slow database recovery.
+
 Startup behavior:
 
 1. Refuse missing or placeholder `JWT_SECRET`, `ENCRYPTION_KEY`, and DB password.

@@ -94,8 +94,13 @@ Review these before exposing UniHub outside your LAN:
 | `ALLOWED_ORIGINS` | Example localhost and placeholder domain | Replace with your real browser origin, such as `https://hub.example.com` |
 | `TRUST_PROXY_HEADERS` | `true` | Use only behind a trusted reverse proxy that sets `X-Real-IP` / `X-Forwarded-For` |
 | `TRUSTED_MAIL_HOSTS` | `mail.example.com` | Optional comma-separated host allowlist for private/local mail or CalDAV hosts |
-| `MYSQL_STARTUP_MAX_WAIT_SECONDS` | `120` | How long the container waits for MySQL readiness |
+| `MYSQL_STARTUP_MAX_WAIT_SECONDS` | `300` | Wait up to five minutes for MySQL; continue immediately after an authenticated readiness check succeeds |
 | `CALENDAR_MULTI_ENABLED` | enabled unless set to `false` | Controls calendar account/calendar APIs |
+
+The application image and Compose health checks allow 360 seconds for startup.
+Keep that grace period longer than the readiness budget if you increase the wait
+setting. Existing deployments with an explicit `120` must set it to `300` in
+Compose; pulling a new image cannot override that environment setting.
 
 Set up HTTPS at your reverse proxy. The app image serves plain HTTP internally.
 When `NODE_ENV=production`, auth and CSRF cookies use the `Secure` flag, so the

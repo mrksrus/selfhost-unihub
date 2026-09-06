@@ -35,7 +35,7 @@ async function probeDatabase(config, {
 }
 
 async function waitForDatabase(config, {
-  maxWaitMs = 120000,
+  maxWaitMs = 300000,
   intervalMs = 5000,
   probe = probeDatabase,
   now = () => performance.now(),
@@ -65,7 +65,7 @@ async function waitForDatabase(config, {
 
 if (require.main === module) {
   Promise.resolve().then(() => waitForDatabase(getDatabaseConfig(), {
-    maxWaitMs: seconds(process.env.MYSQL_STARTUP_MAX_WAIT_SECONDS, 120, true) * 1000,
+    maxWaitMs: seconds(process.env.MYSQL_STARTUP_MAX_WAIT_SECONDS, 300, true) * 1000,
     intervalMs: seconds(process.env.MYSQL_STARTUP_CHECK_INTERVAL_SECONDS, 5) * 1000,
   })).then(ready => { process.exitCode = ready ? 0 : 1; }).catch(() => {
     console.error('⚠ MySQL readiness could not load the API database configuration; continuing to API startup...');

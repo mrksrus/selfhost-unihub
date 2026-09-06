@@ -24,7 +24,7 @@ test('readiness uses the API DATABASE_URL precedence and configured credentials 
   assert.deepEqual(calls, [{ ...selected, timezone: '+00:00', connectTimeout: 2500 }, 'SELECT 1', 'destroyed']);
 });
 
-test('a slow database retains the full default 120-second budget and exits only after SELECT1 succeeds', async () => {
+test('a slow database retains the full default five-minute budget and exits only after SELECT1 succeeds', async () => {
   let elapsed = 0;
   let attempts = 0;
   const logs = [];
@@ -32,13 +32,13 @@ test('a slow database retains the full default 120-second budget and exits only 
     now: () => elapsed, sleep: async ms => { elapsed += ms; }, log: line => logs.push(line),
     probe: async () => {
       attempts++;
-      if (elapsed < 110000) throw Object.assign(new Error('Not ready yet'), { code: 'ECONNREFUSED' });
+      if (elapsed < 290000) throw Object.assign(new Error('Not ready yet'), { code: 'ECONNREFUSED' });
     },
   });
   assert.equal(ready, true);
-  assert.equal(elapsed, 110000);
-  assert.equal(attempts, 23);
-  assert.match(logs[0], /up to 120s/);
+  assert.equal(elapsed, 290000);
+  assert.equal(attempts, 59);
+  assert.match(logs[0], /up to 300s/);
   assert.equal(logs.filter(line => line.includes('MySQL is ready!')).length, 1);
   assert.equal(logs.some(line => line.includes('continuing anyway')), false);
 });
@@ -61,8 +61,9 @@ test('failed authentication never becomes readiness and retries stop at the actu
   assert.deepEqual(timeouts, [1000]);
   assert.equal(logs.some(line => line.includes('MySQL is ready!') || line.includes(config.password)), false);
   assert.match(logs.at(-1), /MySQL took longer than expected/);
-  assert.equal(seconds(undefined, 120, true), 120);
-  assert.equal(seconds('0', 120, true), 0);
+  assert.equal(seconds(undefined, 300, true), 300);
+  assert.equal(seconds('60', 300, true), 60, 'explicit wait overrides remain honored');
+  assert.equal(seconds('0', 300, true), 0);
   assert.equal(seconds('0', 5), 5);
 });
 
