@@ -169,7 +169,7 @@ describe('MailPage UI regressions', () => {
     fireEvent.click(await screen.findByRole('button', { name: /starred/i }));
 
     await waitFor(() => {
-      expect(api.get).toHaveBeenCalledWith(expect.stringContaining('folder=starred'));
+      expect(api.get).toHaveBeenCalledWith(expect.stringContaining('folder=starred'), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     });
   });
 

@@ -353,7 +353,7 @@ const applyPassiveChanges = (state: PetState): PetState => {
       }
     }
 
-    const allowance = STAGE_FAILURE_ALLOWANCE[next.lifeStage === 'deceased' ? 'elder' : next.lifeStage];
+    const allowance = STAGE_FAILURE_ALLOWANCE[next.lifeStage];
     if (next.hiddenFailures > allowance) {
       next.failureEvents = addFailure(next.failureEvents, 'Complication event: untreated problems escalated.');
       next.stats.health = clamp(next.stats.health - 20);

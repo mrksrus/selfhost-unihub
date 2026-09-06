@@ -1,612 +1,150 @@
-// Custom service worker code for UniHub PWA.
-// This file is loaded by the VitePWA-generated service worker.
+// Delivery is driven by server Web Push. Periodic sync is not an alarm clock.
+const NOTIFICATION_DB = 'unihub-notifications-v2';
+const MAX_DELIVERED = 1000;
+let deliveryQueue = Promise.resolve();
+let databasePromise;
 
-const NOTIFICATION_STATE_CACHE = 'unihub-notification-state-v1';
-const NOTIFICATION_STATE_URL = '/__unihub_notification_state__.json';
-const BACKGROUND_NOTIFICATION_SYNC_TAG = 'unihub-notification-check';
-const MAIL_PERIODIC_SYNC_TAG = 'check-emails-periodic';
-const CALENDAR_PERIODIC_SYNC_TAG = 'check-calendar-periodic';
-const NOTIFICATION_SYNC_TAGS = new Set([
-  BACKGROUND_NOTIFICATION_SYNC_TAG,
-  MAIL_PERIODIC_SYNC_TAG,
-  CALENDAR_PERIODIC_SYNC_TAG,
-  'check-emails',
-  'check-calendar',
-]);
-
-const MAIL_NOTIFICATION_FETCH_LIMIT = 50;
-const MAIL_BACKGROUND_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
-const MAX_TRACKED_EMAIL_IDS = 200;
-const MAX_TRACKED_CALENDAR_EVENT_IDS = 500;
-const MAX_TRACKED_TODO_IDS = 500;
-const MAX_STORED_REMINDERS = 1000;
-const MAIL_NEW_GRACE_MS = 5 * 60 * 1000;
-const CALENDAR_NEW_GRACE_MS = 5 * 60 * 1000;
-const TODO_NEW_GRACE_MS = 5 * 60 * 1000;
-const CALENDAR_LOOKAHEAD_MS = 7 * 24 * 60 * 60 * 1000;
-const CALENDAR_REMINDER_LOOKBACK_MS = 2 * 60 * 60 * 1000;
-const REMINDER_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_NOTIFICATIONS_PER_CHECK = 10;
-const EXCLUDED_NOTIFICATION_FOLDERS = new Set(['sent', 'trash', 'archive']);
-
-let notificationCheckPromise = null;
-
-self.addEventListener('sync', (event) => {
-  if (!NOTIFICATION_SYNC_TAGS.has(event.tag)) return;
-  console.log('[SW] Background sync triggered:', event.tag);
-  event.waitUntil(handleBackgroundNotificationEvent(event.tag));
+function openNotificationDatabase() {
+  if (!databasePromise) databasePromise = new Promise((resolve, reject) => {
+    const request = indexedDB.open(NOTIFICATION_DB, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      db.createObjectStore('meta');
+      const delivered = db.createObjectStore('delivered', { keyPath: 'key' });
+      delivered.createIndex('shownAt', 'shownAt');
+    };
+    request.onsuccess = () => {
+      request.result.onversionchange = () => { request.result.close(); databasePromise = null; };
+      resolve(request.result);
+    };
+    request.onerror = () => { databasePromise = null; reject(request.error); };
+  });
+  return databasePromise;
+}
+async function readStore(storeName, key) {
+  const db = await openNotificationDatabase();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(storeName).objectStore(storeName).get(key);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function setUser(userId) {
+  const db = await openNotificationDatabase();
+  const previousUser = await readStore('meta', 'userId');
+  if (previousUser === userId) return;
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(['meta', 'delivered'], 'readwrite');
+    tx.objectStore('meta').put(userId || null, 'userId');
+    tx.objectStore('delivered').clear();
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+  const notifications = await self.registration.getNotifications();
+  notifications.forEach(notification => notification.close());
+}
+async function markDelivered(key) {
+  const db = await openNotificationDatabase();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('delivered', 'readwrite');
+    const store = tx.objectStore('delivered');
+    store.put({ key, shownAt: Date.now() });
+    const count = store.count();
+    count.onsuccess = () => {
+      let excess = count.result - MAX_DELIVERED;
+      const cursor = store.index('shownAt').openCursor();
+      cursor.onsuccess = () => {
+        if (excess-- > 0 && cursor.result) { cursor.result.delete(); cursor.result.continue(); }
+      };
+    };
+    tx.oncomplete = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function enqueueDelivery(task) {
+  const next = deliveryQueue.then(task);
+  deliveryQueue = next.catch(() => {});
+  return next;
+}
+function safeTargetUrl(input) {
+  try {
+    const url = new URL(typeof input === 'string' ? input : '/dashboard', self.location.origin);
+    return url.origin === self.location.origin ? url.toString() : `${self.location.origin}/dashboard`;
+  } catch { return `${self.location.origin}/dashboard`; }
+}
+async function bindAuthenticatedUser(userId) {
+  if (typeof userId !== 'string' || userId.length > 64) return false;
+  const currentUser = await readStore('meta', 'userId');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch('/api/auth/me?background=1', { credentials: 'include', cache: 'no-store', signal: controller.signal, headers: { Accept: 'application/json', 'X-Background-Sync': '1' } });
+    if (!response.ok) return false;
+    const data = await response.json();
+    if (data?.user?.id !== userId) return false;
+    await setUser(userId);
+    return true;
+  } catch {
+    // Offline clients may retain the already bound account, but cannot claim a new identity.
+    return currentUser === userId;
+  } finally { clearTimeout(timeout); }
+}
+async function deliverNotification(payload) {
+  if (!payload || payload.version !== 1 || typeof payload.userId !== 'string' || typeof payload.dedupeKey !== 'string' || payload.dedupeKey.length > 512) return false;
+  const activeUser = await readStore('meta', 'userId');
+  if (activeUser !== payload.userId) return false;
+  const key = `${activeUser}:${payload.dedupeKey}`;
+  if (await readStore('delivered', key)) return false;
+  await self.registration.showNotification(String(payload.title || 'UniHub').slice(0, 120), {
+    body: String(payload.body || '').slice(0, 400),
+    icon: '/icons/icon-192x192.png', badge: '/icons/icon-72x72.png',
+    tag: payload.dedupeKey, renotify: false,
+    data: { url: safeTargetUrl(payload.url), userId: activeUser, eventId: payload.eventId, emailId: payload.emailId },
+  });
+  // Suppression and failures never acknowledge delivery. Shared worker storage deduplicates tabs and transports.
+  await markDelivered(key);
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  clients.forEach(client => client.postMessage({ type: 'NOTIFICATION_DATA_CHANGED', userId: activeUser, kind: payload.kind }));
+  return true;
+}
+self.addEventListener('activate', event => {
+  event.waitUntil(Promise.all(['local-api-cache', 'api-cache', 'unihub-notification-state-v1'].map(name => caches.delete(name))));
 });
-
-self.addEventListener('periodicsync', (event) => {
-  if (!NOTIFICATION_SYNC_TAGS.has(event.tag)) return;
-  console.log('[SW] Periodic sync triggered:', event.tag);
-  event.waitUntil(handleBackgroundNotificationEvent(event.tag));
+self.addEventListener('push', event => {
+  event.waitUntil(enqueueDelivery(async () => {
+    try { return await deliverNotification(event.data?.json()); }
+    catch (error) { console.error('[SW] Push delivery failed:', error.name); throw error; }
+  }));
 });
-
-self.addEventListener('message', (event) => {
-  console.log('[SW] Message received:', event.data);
-
-  if (event.data?.type === 'SHOW_NOTIFICATION') {
-    const { title, options } = event.data;
-    event.waitUntil(showNotification(title, options));
-  } else if (event.data?.type === 'REGISTER_SYNC') {
-    event.waitUntil(registerOneShotSync(event.data.tag));
-  } else if (event.data?.type === 'RUN_NOTIFICATION_CHECKS') {
-    event.waitUntil(runNotificationChecks(event.data.reason || 'message', {
-      suppressNotifications: event.data.suppressNotifications !== false,
-    }));
-  } else if (event.data?.type === 'RESET_NOTIFICATION_STATE') {
-    event.waitUntil(resetNotificationState());
-  }
+self.addEventListener('message', event => {
+  const task = enqueueDelivery(async () => {
+    if (event.data?.type === 'SET_NOTIFICATION_USER') {
+      return bindAuthenticatedUser(event.data.userId);
+    }
+    if (event.data?.type === 'RESET_NOTIFICATION_STATE') {
+      await setUser(null);
+      await caches.delete('unihub-notification-state-v1');
+      return true;
+    }
+    if (event.data?.type === 'DELIVER_LOCAL_NOTIFICATION') return deliverNotification(event.data.payload);
+    return false;
+  });
+  event.waitUntil(task.then(shown => event.ports?.[0]?.postMessage({ ok: true, shown }), () => event.ports?.[0]?.postMessage({ ok: false })));
 });
-
-self.addEventListener('notificationclick', (event) => {
-  console.log('[SW] Notification clicked:', event.notification.tag);
+// Retired installations may have a pending one-shot/periodic registration. Do not poll or consume reminders.
+self.addEventListener('sync', event => event.waitUntil(Promise.resolve()));
+self.addEventListener('periodicsync', event => event.waitUntil(Promise.resolve()));
+self.addEventListener('notificationclick', event => {
   event.notification.close();
-
-  const tag = event.notification.tag || '';
-  const fallbackUrl = tag.includes('todo')
-    ? '/todo'
-    : tag.includes('calendar')
-    ? '/calendar'
-    : '/mail';
-  const requestedUrl = event.notification.data?.url || fallbackUrl;
-  const targetUrl = new URL(requestedUrl, self.location.origin).toString();
-
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (clients) => {
-      for (const client of clients) {
-        if (client.url.includes(self.location.origin) && 'focus' in client) {
-          if ('navigate' in client && client.url !== targetUrl) {
-            await client.navigate(targetUrl);
-          }
-          return client.focus();
-        }
-      }
-      if (self.clients.openWindow) {
-        return self.clients.openWindow(targetUrl);
-      }
-    })
-  );
+  event.waitUntil((async () => {
+    if (await readStore('meta', 'userId') !== event.notification.data?.userId) return;
+    const targetUrl = safeTargetUrl(event.notification.data?.url);
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of clients) {
+      if (new URL(client.url).origin !== self.location.origin) continue;
+      if (client.url !== targetUrl && 'navigate' in client) await client.navigate(targetUrl);
+      return client.focus();
+    }
+    return self.clients.openWindow(targetUrl);
+  })());
 });
-
-async function handleBackgroundNotificationEvent(reason) {
-  const clients = await getWindowClients();
-  const hasVisibleWindow = hasVisibleClient(clients);
-  if (hasVisibleWindow) {
-    clients.forEach((client) => {
-      client.postMessage({ type: 'CHECK_EMAILS' });
-      client.postMessage({ type: 'CHECK_CALENDAR' });
-    });
-  }
-
-  return runNotificationChecks(reason, {
-    suppressNotifications: hasVisibleWindow,
-  });
-}
-
-async function registerOneShotSync(tag) {
-  if (!tag || !('sync' in self.registration)) return false;
-  try {
-    await self.registration.sync.register(tag);
-    return true;
-  } catch (error) {
-    console.error('[SW] Failed to register sync:', error);
-    return false;
-  }
-}
-
-async function runNotificationChecks(reason, options = {}) {
-  if (notificationCheckPromise) {
-    return notificationCheckPromise;
-  }
-
-  notificationCheckPromise = runNotificationChecksOnce(reason, options)
-    .catch((error) => {
-      console.error('[SW] Notification check failed:', error);
-    })
-    .finally(() => {
-      notificationCheckPromise = null;
-    });
-
-  return notificationCheckPromise;
-}
-
-async function runNotificationChecksOnce(reason, options) {
-  const authContext = await getCurrentAuthContext();
-  if (!authContext?.userId) {
-    await resetNotificationState();
-    return;
-  }
-
-  const suppressNotifications = !!options.suppressNotifications;
-  const state = await loadNotificationState(authContext.userId);
-  const now = Date.now();
-  state.lastRunAt = now;
-  state.lastRunReason = reason;
-
-  const results = await Promise.allSettled([
-    checkMailNotifications(state, now, suppressNotifications),
-    checkCalendarNotifications(state, now, suppressNotifications),
-  ]);
-
-  results.forEach((result) => {
-    if (result.status === 'rejected') {
-      console.error('[SW] Notification check task failed:', result.reason);
-    }
-  });
-
-  await saveNotificationState(state);
-}
-
-async function getCurrentAuthContext() {
-  try {
-    const data = await fetchJson('/api/auth/me?background=1', {
-      'X-Background-Sync': '1',
-    });
-    return {
-      userId: data?.user?.id || null,
-    };
-  } catch (error) {
-    console.log('[SW] Auth check failed for background notifications:', error.message || error);
-    return null;
-  }
-}
-
-async function checkMailNotifications(state, now, suppressNotifications) {
-  await triggerBackgroundMailSync();
-
-  const data = await fetchJson(`/api/mail/emails?limit=${MAIL_NOTIFICATION_FETCH_LIMIT}&offset=0&include_count=false`);
-  const emails = Array.isArray(data?.emails) ? data.emails : [];
-  const relevantEmails = emails.filter((email) => !EXCLUDED_NOTIFICATION_FOLDERS.has(email.folder));
-
-  if (!state.lastMailCheckedAt) {
-    state.knownEmailIds = relevantEmails.map((email) => email.id).slice(0, MAX_TRACKED_EMAIL_IDS);
-    state.lastMailCheckedAt = now;
-    return;
-  }
-
-  const knownIds = new Set(Array.isArray(state.knownEmailIds) ? state.knownEmailIds : []);
-  const freshnessThreshold = Math.max(0, state.lastMailCheckedAt - MAIL_NEW_GRACE_MS);
-  const newEmails = relevantEmails.filter((email) => {
-    if (!email?.id || knownIds.has(email.id)) return false;
-    const receivedAtMs = Date.parse(email.received_at);
-    return Number.isFinite(receivedAtMs) && receivedAtMs >= freshnessThreshold;
-  });
-
-  state.knownEmailIds = unique([
-    ...relevantEmails.map((email) => email.id).filter(Boolean),
-    ...(state.knownEmailIds || []),
-  ]).slice(0, MAX_TRACKED_EMAIL_IDS);
-  state.lastMailCheckedAt = now;
-
-  if (suppressNotifications || newEmails.length === 0) return;
-  if (await hasVisibleClientForPath('/mail')) return;
-
-  const firstEmail = newEmails[0];
-  const title = newEmails.length === 1 ? 'New Email' : 'New Emails';
-  const body = newEmails.length === 1
-    ? `${getSenderLabel(firstEmail)}: ${firstEmail.subject || '(No subject)'}`
-    : `${newEmails.length} new emails received`;
-
-  await showNotification(title, {
-    body,
-    tag: 'mail-new-email',
-    renotify: true,
-    requireInteraction: false,
-    data: {
-      url: '/mail',
-      emailIds: newEmails.map((email) => email.id),
-    },
-  });
-}
-
-async function triggerBackgroundMailSync() {
-  try {
-    const response = await fetch('/api/mail/sync/background', {
-      method: 'POST',
-      credentials: 'include',
-      cache: 'no-store',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'X-Background-Sync': '1',
-      },
-      body: JSON.stringify({
-        min_age_ms: MAIL_BACKGROUND_SYNC_MIN_AGE_MS,
-      }),
-    });
-
-    if (!response.ok) {
-      console.log('[SW] Background mail sync trigger failed:', response.status);
-    }
-  } catch (error) {
-    console.log('[SW] Background mail sync trigger failed:', error.message || error);
-  }
-}
-
-async function checkCalendarNotifications(state, now, suppressNotifications) {
-  state.deliveredReminderKeys = pruneReminderStore(state.deliveredReminderKeys || {}, now);
-
-  const query = new URLSearchParams({
-    include_todos: 'true',
-    include_done: 'false',
-    visible_only: 'true',
-    range_start: new Date(now - CALENDAR_REMINDER_LOOKBACK_MS).toISOString(),
-    range_end: new Date(now + CALENDAR_LOOKAHEAD_MS).toISOString(),
-  });
-  const data = await fetchJson(`/api/calendar/events?${query.toString()}`);
-  const events = Array.isArray(data?.events) ? data.events : [];
-
-  await checkCalendarReminders(state, events, now, suppressNotifications);
-  await checkNewTodoNotifications(state, events, now, suppressNotifications);
-  await checkNewCalendarEvents(state, events, now, suppressNotifications);
-}
-
-async function checkCalendarReminders(state, events, now, suppressNotifications) {
-  const deliveredReminderKeys = state.deliveredReminderKeys || {};
-  let shownCount = 0;
-
-  for (const event of events) {
-    if (!event || event.todo_status === 'done' || event.todo_status === 'cancelled') continue;
-
-    const eventStartMs = Date.parse(event.start_time);
-    if (!Number.isFinite(eventStartMs)) continue;
-
-    const reminderMinutesList = getReminderMinutes(event);
-    for (const reminderMinutes of reminderMinutesList) {
-      if (shownCount >= MAX_NOTIFICATIONS_PER_CHECK) return;
-
-      const reminderKey = getReminderKey(event, reminderMinutes);
-      if (deliveredReminderKeys[reminderKey]) continue;
-
-      const reminderTimeMs = eventStartMs - reminderMinutes * 60 * 1000;
-      const isDue = reminderTimeMs <= now && now - reminderTimeMs <= CALENDAR_REMINDER_LOOKBACK_MS;
-      if (!isDue) continue;
-
-      if (suppressNotifications) {
-        deliveredReminderKeys[reminderKey] = now;
-        continue;
-      }
-
-      const shown = await showNotification(event.title || 'Calendar Reminder', {
-        body: getReminderLeadText(reminderMinutes),
-        tag: `calendar-${event.id}`,
-        renotify: true,
-        requireInteraction: false,
-        data: {
-          url: getCalendarNotificationPath(event),
-          eventId: event.id,
-          reminderMinutes,
-        },
-      });
-
-      if (shown) {
-        deliveredReminderKeys[reminderKey] = now;
-        shownCount += 1;
-      }
-    }
-  }
-}
-
-async function checkNewCalendarEvents(state, events, now, suppressNotifications) {
-  const relevantEvents = events.filter((event) => (
-    event?.id &&
-    !event.is_todo_only &&
-    event.todo_status !== 'done' &&
-    event.todo_status !== 'cancelled'
-  ));
-
-  if (!state.lastCalendarCheckedAt) {
-    state.knownCalendarEventIds = relevantEvents.map((event) => event.id).slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS);
-    state.lastCalendarCheckedAt = now;
-    return;
-  }
-
-  const knownIds = new Set(Array.isArray(state.knownCalendarEventIds) ? state.knownCalendarEventIds : []);
-  const freshnessThreshold = Math.max(0, state.lastCalendarCheckedAt - CALENDAR_NEW_GRACE_MS);
-  const newEvents = relevantEvents.filter((event) => {
-    if (knownIds.has(event.id)) return false;
-    const createdAtMs = Date.parse(event.created_at);
-    return Number.isFinite(createdAtMs) && createdAtMs >= freshnessThreshold;
-  });
-
-  state.knownCalendarEventIds = unique([
-    ...relevantEvents.map((event) => event.id),
-    ...(state.knownCalendarEventIds || []),
-  ]).slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS);
-  state.lastCalendarCheckedAt = now;
-
-  if (suppressNotifications || newEvents.length === 0) return;
-  if (await hasVisibleClientForPath('/calendar')) return;
-
-  const firstEvent = newEvents[0];
-  const title = newEvents.length === 1 ? 'New Calendar Event' : 'New Calendar Events';
-  const body = newEvents.length === 1
-    ? [firstEvent.title, getCalendarEventStartText(firstEvent)].filter(Boolean).join(' - ')
-    : `${newEvents.length} new calendar events added`;
-
-  await showNotification(title, {
-    body,
-    tag: 'calendar-new-events',
-    renotify: true,
-    requireInteraction: false,
-    data: {
-      url: '/calendar',
-      eventIds: newEvents.map((event) => event.id),
-    },
-  });
-}
-
-async function checkNewTodoNotifications(state, events, now, suppressNotifications) {
-  const relevantTodos = events.filter((event) => (
-    event?.id &&
-    event.is_todo_only &&
-    event.todo_status !== 'done' &&
-    event.todo_status !== 'cancelled'
-  ));
-
-  if (!state.lastTodoCheckedAt) {
-    state.knownTodoIds = relevantTodos.map((event) => event.id).slice(0, MAX_TRACKED_TODO_IDS);
-    state.lastTodoCheckedAt = now;
-    return;
-  }
-
-  const knownIds = new Set(Array.isArray(state.knownTodoIds) ? state.knownTodoIds : []);
-  const freshnessThreshold = Math.max(0, state.lastTodoCheckedAt - TODO_NEW_GRACE_MS);
-  const newTodos = relevantTodos.filter((event) => {
-    if (knownIds.has(event.id)) return false;
-    const createdAtMs = Date.parse(event.created_at);
-    return Number.isFinite(createdAtMs) && createdAtMs >= freshnessThreshold;
-  });
-
-  state.knownTodoIds = unique([
-    ...relevantTodos.map((event) => event.id),
-    ...(state.knownTodoIds || []),
-  ]).slice(0, MAX_TRACKED_TODO_IDS);
-  state.lastTodoCheckedAt = now;
-
-  if (suppressNotifications || newTodos.length === 0) return;
-  if (await hasVisibleClientForPath('/todo')) return;
-
-  const firstTodo = newTodos[0];
-  const title = newTodos.length === 1 ? 'New ToDo' : 'New ToDos';
-  const body = newTodos.length === 1
-    ? getTodoNotificationBody(firstTodo)
-    : `${newTodos.length} new ToDo items added`;
-
-  await showNotification(title, {
-    body,
-    tag: 'todo-new-items',
-    renotify: true,
-    requireInteraction: false,
-    data: {
-      url: '/todo',
-      eventIds: newTodos.map((event) => event.id),
-    },
-  });
-}
-
-async function fetchJson(endpoint, headers = {}) {
-  const response = await fetch(endpoint, {
-    method: 'GET',
-    credentials: 'include',
-    cache: 'no-store',
-    headers: {
-      Accept: 'application/json',
-      ...headers,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (!contentType.includes('application/json')) {
-    throw new Error('Server returned non-JSON response');
-  }
-
-  return response.json();
-}
-
-function createDefaultState(userId) {
-  return {
-    version: 1,
-    userId,
-    knownEmailIds: [],
-    knownCalendarEventIds: [],
-    knownTodoIds: [],
-    deliveredReminderKeys: {},
-    lastMailCheckedAt: 0,
-    lastCalendarCheckedAt: 0,
-    lastTodoCheckedAt: 0,
-    lastRunAt: 0,
-    lastRunReason: null,
-  };
-}
-
-async function loadNotificationState(userId) {
-  try {
-    const cache = await caches.open(NOTIFICATION_STATE_CACHE);
-    const response = await cache.match(NOTIFICATION_STATE_URL);
-    if (!response) return createDefaultState(userId);
-
-    const state = await response.json();
-    if (!state || state.userId !== userId) {
-      return createDefaultState(userId);
-    }
-
-    return {
-      ...createDefaultState(userId),
-      ...state,
-      knownEmailIds: Array.isArray(state.knownEmailIds) ? state.knownEmailIds.slice(0, MAX_TRACKED_EMAIL_IDS) : [],
-      knownCalendarEventIds: Array.isArray(state.knownCalendarEventIds)
-        ? state.knownCalendarEventIds.slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS)
-        : [],
-      knownTodoIds: Array.isArray(state.knownTodoIds) ? state.knownTodoIds.slice(0, MAX_TRACKED_TODO_IDS) : [],
-      deliveredReminderKeys: state.deliveredReminderKeys && typeof state.deliveredReminderKeys === 'object'
-        ? state.deliveredReminderKeys
-        : {},
-    };
-  } catch (error) {
-    console.error('[SW] Failed to load notification state:', error);
-    return createDefaultState(userId);
-  }
-}
-
-async function saveNotificationState(state) {
-  try {
-    state.knownEmailIds = unique(state.knownEmailIds || []).slice(0, MAX_TRACKED_EMAIL_IDS);
-    state.knownCalendarEventIds = unique(state.knownCalendarEventIds || []).slice(0, MAX_TRACKED_CALENDAR_EVENT_IDS);
-    state.knownTodoIds = unique(state.knownTodoIds || []).slice(0, MAX_TRACKED_TODO_IDS);
-    state.deliveredReminderKeys = pruneReminderStore(state.deliveredReminderKeys || {}, Date.now());
-
-    const cache = await caches.open(NOTIFICATION_STATE_CACHE);
-    await cache.put(NOTIFICATION_STATE_URL, new Response(JSON.stringify(state), {
-      headers: {
-        'Content-Type': 'application/json',
-        'Cache-Control': 'no-store',
-      },
-    }));
-  } catch (error) {
-    console.error('[SW] Failed to save notification state:', error);
-  }
-}
-
-async function resetNotificationState() {
-  try {
-    await caches.delete(NOTIFICATION_STATE_CACHE);
-  } catch (error) {
-    console.error('[SW] Failed to reset notification state:', error);
-  }
-}
-
-async function showNotification(title, options = {}) {
-  try {
-    if (!self.registration?.showNotification) return false;
-    await self.registration.showNotification(title, {
-      ...options,
-      icon: options.icon || '/icons/icon-512x512.png',
-      badge: options.badge || '/favicon.ico',
-      tag: options.tag || 'unihub-notification',
-      requireInteraction: options.requireInteraction ?? false,
-      silent: options.silent ?? false,
-      data: options.data || {},
-    });
-    return true;
-  } catch (error) {
-    console.error('[SW] Failed to show notification:', error);
-    return false;
-  }
-}
-
-async function getWindowClients() {
-  return self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-}
-
-function hasVisibleClient(clients) {
-  return clients.some((client) => {
-    const visibilityState = client.visibilityState || (client.focused ? 'visible' : 'hidden');
-    return visibilityState === 'visible';
-  });
-}
-
-async function hasVisibleClientForPath(pathPrefix) {
-  const clients = await getWindowClients();
-  return clients.some((client) => {
-    try {
-      const url = new URL(client.url);
-      const visibilityState = client.visibilityState || (client.focused ? 'visible' : 'hidden');
-      return url.origin === self.location.origin &&
-        url.pathname.startsWith(pathPrefix) &&
-        visibilityState === 'visible';
-    } catch {
-      return false;
-    }
-  });
-}
-
-function unique(values) {
-  return Array.from(new Set(values.filter(Boolean)));
-}
-
-function pruneReminderStore(store, now) {
-  return Object.fromEntries(
-    Object.entries(store)
-      .filter(([, timestamp]) => Number.isFinite(timestamp) && timestamp >= now - REMINDER_RETENTION_MS)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, MAX_STORED_REMINDERS)
-  );
-}
-
-function getSenderLabel(email) {
-  return (email.from_name || email.from_address || 'Unknown sender').trim();
-}
-
-function getReminderMinutes(event) {
-  const source = Array.isArray(event.reminders) && event.reminders.length > 0
-    ? event.reminders
-    : (typeof event.reminder_minutes === 'number' ? [event.reminder_minutes] : []);
-
-  return unique(
-    source
-      .map((value) => Number(value))
-      .filter((value) => Number.isFinite(value) && value >= 0)
-  ).sort((a, b) => b - a);
-}
-
-function getReminderKey(event, reminderMinutes) {
-  return `${event.id}:${event.start_time}:${reminderMinutes}`;
-}
-
-function getReminderLeadText(reminderMinutes) {
-  if (reminderMinutes <= 0) return 'Event is starting now';
-  if (reminderMinutes % 1440 === 0) {
-    const days = reminderMinutes / 1440;
-    return `Event starts in ${days} day${days === 1 ? '' : 's'}`;
-  }
-  if (reminderMinutes % 60 === 0) {
-    const hours = reminderMinutes / 60;
-    return `Event starts in ${hours} hour${hours === 1 ? '' : 's'}`;
-  }
-  return `Event starts in ${reminderMinutes} minute${reminderMinutes === 1 ? '' : 's'}`;
-}
-
-function getCalendarNotificationPath(event) {
-  return event.is_todo_only ? '/todo' : '/calendar';
-}
-
-function getCalendarEventStartText(event) {
-  const start = new Date(event.start_time);
-  if (!Number.isFinite(start.getTime())) return '';
-  const options = event.all_day
-    ? { dateStyle: 'medium' }
-    : { dateStyle: 'medium', timeStyle: 'short' };
-  return `Starts ${start.toLocaleString(undefined, options)}`;
-}
-
-function getTodoNotificationBody(event) {
-  const description = event.description?.trim();
-  return description || event.title || 'New ToDo item added';
-}

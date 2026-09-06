@@ -13,6 +13,8 @@ const { debugLog } = require('../logger');
 const { decrypt } = require('../security/encryption');
 const { TRUSTED_MAIL_HOSTS } = require('../config');
 const { isSectionRestoreActive } = require('./restore-locks');
+const { normalizeComposerAttachments } = require('./mail-attachments');
+const { loadFolderSyncState, buildFolderSearchCriteria, saveFolderSyncState } = require('./mail-sync-state');
 
 const writeFile = promisify(fs.writeFile);
 const mkdir = promisify(fs.mkdir);
@@ -187,9 +189,9 @@ async function loadActiveMailSenderRules(userId, mailAccountId = null, connectio
   return Array.isArray(rules) ? rules : [];
 }
 
-function pickBestMailSenderRuleMatch(rules, mailAccountId, senderEmail, senderDomain) {
+function sortMailSenderRules(rules, mailAccountId) {
   const accountId = String(mailAccountId || '').trim() || null;
-  const sortedRules = [...(rules || [])].sort((a, b) => {
+  return [...(rules || [])].sort((a, b) => {
     const aAccountScore = a.mail_account_id && accountId && a.mail_account_id === accountId ? 0 : 1;
     const bAccountScore = b.mail_account_id && accountId && b.mail_account_id === accountId ? 0 : 1;
     if (aAccountScore !== bAccountScore) return aAccountScore - bAccountScore;
@@ -204,8 +206,10 @@ function pickBestMailSenderRuleMatch(rules, mailAccountId, senderEmail, senderDo
     if (aCreated !== bCreated) return aCreated - bCreated;
     return String(a.id || '').localeCompare(String(b.id || ''));
   });
+}
 
-  for (const rule of sortedRules) {
+function pickBestMailSenderRuleMatch(rules, mailAccountId, senderEmail, senderDomain, sorted = false) {
+  for (const rule of sorted ? rules : sortMailSenderRules(rules, mailAccountId)) {
     const isEmailMatch = rule.match_type === 'email' && senderEmail && rule.match_value === senderEmail;
     const isDomainMatch = rule.match_type === 'domain' && senderDomain && rule.match_value === senderDomain;
     if (isEmailMatch || isDomainMatch) return rule;
@@ -213,15 +217,22 @@ function pickBestMailSenderRuleMatch(rules, mailAccountId, senderEmail, senderDo
   return null;
 }
 
-async function resolveMailSenderTargetFolder({ userId, mailAccountId = null, fromAddress = '', fallbackFolder = 'inbox', rules = null, connection = db }) {
+async function createMailRoutingContext(userId, mailAccountId, connection = db) {
+  const folders = await loadMailFoldersForUser(userId, connection);
+  const rules = await loadActiveMailSenderRules(userId, mailAccountId, connection);
+  return { userId, mailAccountId, folders: new Set(folders.map(folder => folder.slug)), rules: sortMailSenderRules(rules, mailAccountId) };
+}
+
+async function resolveMailSenderTargetFolder({ userId, mailAccountId = null, fromAddress = '', fallbackFolder = 'inbox', rules = null, routingContext = null, connection = db }) {
   const senderEmail = normalizeSenderEmail(fromAddress);
   const senderDomain = normalizeSenderDomain(fromAddress);
-  const activeRules = Array.isArray(rules) ? rules : await loadActiveMailSenderRules(userId, mailAccountId, connection);
-  const winningRule = pickBestMailSenderRuleMatch(activeRules, mailAccountId, senderEmail, senderDomain);
+  const context = routingContext?.userId === userId && routingContext?.mailAccountId === mailAccountId ? routingContext : null;
+  const activeRules = context ? context.rules : Array.isArray(rules) ? rules : await loadActiveMailSenderRules(userId, mailAccountId, connection);
+  const winningRule = pickBestMailSenderRuleMatch(activeRules, mailAccountId, senderEmail, senderDomain, !!context);
   let resolvedFolder = fallbackFolder || 'inbox';
   if (winningRule?.target_folder) {
     const targetFolder = normalizeMailFolderSlug(winningRule.target_folder);
-    if (await mailFolderExists(userId, targetFolder, connection)) {
+    if (context ? context.folders.has(targetFolder) : await mailFolderExists(userId, targetFolder, connection)) {
       resolvedFolder = targetFolder;
     }
   }
@@ -235,17 +246,12 @@ async function resolveMailSenderTargetFolder({ userId, mailAccountId = null, fro
 
 async function ensureDefaultMailFoldersForUser(userId, connection = db) {
   if (!userId) return;
-  for (const folder of MAIL_FOLDER_DEFINITIONS) {
-    await connection.execute(
+  await connection.execute(
       `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
-       VALUES (?, ?, ?, ?, TRUE, ?)
-       ON DUPLICATE KEY UPDATE
-         display_name = VALUES(display_name),
-         is_system = TRUE,
-         position = VALUES(position)`,
-      [crypto.randomUUID(), userId, folder.slug, folder.displayName, folder.position]
+       VALUES ${MAIL_FOLDER_DEFINITIONS.map(() => '(?, ?, ?, ?, TRUE, ?)').join(', ')}
+       ON DUPLICATE KEY UPDATE id = id`,
+      MAIL_FOLDER_DEFINITIONS.flatMap(folder => [crypto.randomUUID(), userId, folder.slug, folder.displayName, folder.position])
     );
-  }
 }
 
 function isKnownMailProviderHost(host) {
@@ -450,7 +456,7 @@ async function validateMailHostPolicy({ imap_host, imap_port, smtp_host, smtp_po
 }
 
 function isAttachmentPathUnderUploads(storagePath) {
-  const uploadsRoot = path.resolve('/app/uploads/attachments');
+  const uploadsRoot = path.resolve(process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments');
   const resolvedPath = path.resolve(storagePath || '');
   return resolvedPath === uploadsRoot || resolvedPath.startsWith(`${uploadsRoot}${path.sep}`);
 }
@@ -730,34 +736,10 @@ function extractEmailAddresses(addressObject) {
   return addressObject.value.map(address => address.address).filter(Boolean);
 }
 
-function parseJsonArray(value) {
-  if (Array.isArray(value)) return value;
-  if (typeof value !== 'string') return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function isUnknownSender(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return !normalized || normalized === 'unknown' || normalized === 'unknown sender';
-}
-
-function bodyLooksLikeHeaderDump(value) {
-  const normalized = String(value || '').trimStart().toLowerCase();
-  return normalized.startsWith('content-type:')
-    || normalized.startsWith('date:')
-    || normalized.startsWith('from:')
-    || /^[-\w]+:\s+.+\r?\n[-\w]+:/m.test(normalized);
-}
-
 async function findExistingImportedEmail({ connection = db, messageId, accountId, folderName, uid, uidValidity }) {
   const [byMessageId] = await connection.execute(
     `SELECT id, message_id, from_address, from_name, to_addresses, body_text, body_html, received_at,
-            source_folder, imap_uid, imap_uidvalidity, raw_storage_path
+            source_folder, imap_uid, imap_uidvalidity, raw_storage_path, import_complete
      FROM emails
      WHERE message_id = ? AND mail_account_id = ?
      LIMIT 1`,
@@ -769,103 +751,18 @@ async function findExistingImportedEmail({ connection = db, messageId, accountId
   const params = [accountId, folderName, uid];
   let query = `
     SELECT id, message_id, from_address, from_name, to_addresses, body_text, body_html, received_at,
-           source_folder, imap_uid, imap_uidvalidity, raw_storage_path
+           source_folder, imap_uid, imap_uidvalidity, raw_storage_path, import_complete
     FROM emails
     WHERE mail_account_id = ? AND source_folder = ? AND imap_uid = ?`;
 
   if (uidValidity !== null && uidValidity !== undefined) {
-    query += ' AND (imap_uidvalidity = ? OR imap_uidvalidity IS NULL)';
+    query += ' AND imap_uidvalidity = ?';
     params.push(uidValidity);
   }
 
   query += ' ORDER BY created_at ASC LIMIT 1';
   const [byUid] = await connection.execute(query, params);
   return byUid[0] || null;
-}
-
-async function repairExistingImportedEmail({
-  existingEmail,
-  account,
-  messageId,
-  fullEmail,
-  parsed,
-  fromAddress,
-  fromName,
-  toAddresses,
-  processedHtml,
-  folderName,
-  uid,
-  uidValidity,
-}) {
-  const updates = [];
-  const params = [];
-  let rawStoragePath = existingEmail.raw_storage_path || null;
-
-  if (messageId && existingEmail.message_id !== messageId) {
-    updates.push('message_id = ?');
-    params.push(messageId);
-  }
-
-  if (isUnknownSender(existingEmail.from_address) && !isUnknownSender(fromAddress)) {
-    updates.push('from_address = ?');
-    params.push(fromAddress);
-    updates.push('from_name = ?');
-    params.push(fromName);
-  } else if (!existingEmail.from_name && fromName) {
-    updates.push('from_name = ?');
-    params.push(fromName);
-  }
-
-  if (toAddresses.length > 0 && parseJsonArray(existingEmail.to_addresses).length === 0) {
-    updates.push('to_addresses = ?');
-    params.push(JSON.stringify(toAddresses));
-  }
-
-  if (bodyLooksLikeHeaderDump(existingEmail.body_text) && (parsed.text || processedHtml)) {
-    updates.push('body_text = ?');
-    params.push(parsed.text || null);
-    updates.push('body_html = ?');
-    params.push(processedHtml || null);
-    if (parsed.date) {
-      updates.push('received_at = ?');
-      params.push(parsed.date);
-    }
-  }
-
-  updates.push('source_folder = COALESCE(source_folder, ?)');
-  params.push(folderName);
-  updates.push('imap_uid = COALESCE(imap_uid, ?)');
-  params.push(uid);
-  updates.push('imap_uidvalidity = COALESCE(imap_uidvalidity, ?)');
-  params.push(uidValidity);
-
-  if (!existingEmail.raw_storage_path) {
-    try {
-      const rawArchive = await saveRawEmailSource({
-        userId: account.user_id,
-        emailId: existingEmail.id,
-        messageId,
-        rawEmail: fullEmail,
-      });
-      rawStoragePath = rawArchive.rawStoragePath || rawStoragePath;
-      updates.push('raw_storage_path = COALESCE(raw_storage_path, ?)');
-      params.push(rawArchive.rawStoragePath);
-      updates.push('raw_sha256 = COALESCE(raw_sha256, ?)');
-      params.push(rawArchive.rawSha256);
-    } catch (rawError) {
-      console.error(`[SYNC] Failed to archive raw existing email UID ${uid}:`, rawError.message);
-    }
-  }
-
-  if (updates.length === 0) return { rawStoragePath };
-  params.push(existingEmail.id, account.user_id);
-  await db.execute(
-    `UPDATE emails
-     SET ${updates.join(', ')}
-     WHERE id = ? AND user_id = ?`,
-    params
-  );
-  return { rawStoragePath };
 }
 
 function chunkArray(values, chunkSize) {
@@ -889,10 +786,12 @@ async function loadExistingImportedUidSet({ connection = db, accountId, folderNa
       FROM emails
       WHERE mail_account_id = ?
         AND source_folder = ?
-        AND imap_uid IN (${placeholders})`;
+        AND imap_uid IN (${placeholders})
+        AND import_complete = TRUE
+        AND raw_storage_path IS NOT NULL`;
 
     if (uidValidity !== null && uidValidity !== undefined) {
-      query += ' AND (imap_uidvalidity = ? OR imap_uidvalidity IS NULL)';
+      query += ' AND imap_uidvalidity = ?';
       params.push(uidValidity);
     }
 
@@ -950,10 +849,11 @@ async function recordMailServerMessageForDeletion({
 async function seedMailServerDeletionQueueForAccount({ userId, accountId, connection = db }) {
   if (!userId || !accountId) return { queued: 0 };
   const [emails] = await connection.execute(
-    `SELECT id, source_folder, imap_uid, imap_uidvalidity, raw_storage_path
+    `SELECT id, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, import_complete
      FROM emails
      WHERE user_id = ?
        AND mail_account_id = ?
+       AND import_complete = TRUE
        AND source_folder IS NOT NULL
        AND TRIM(source_folder) <> ''
        AND imap_uid IS NOT NULL
@@ -1210,6 +1110,10 @@ async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SER
        WHERE mail_account_id = ?
          AND user_id = ?
          AND delete_status = 'pending'
+         AND EXISTS (
+           SELECT 1 FROM emails e WHERE e.id = mail_server_messages.email_id
+             AND e.user_id = mail_server_messages.user_id AND e.import_complete = TRUE
+         )
        ORDER BY created_at ASC
        LIMIT ${safeLimit}`,
       [normalizedAccountId, account.user_id]
@@ -1333,376 +1237,79 @@ async function runMailServerDeletionPass({ accountId = null, limit = MAIL_SERVER
 // ── Mail sync and send functions ──────────────────────────────────
 
 // Helper function to sync a specific folder
-async function syncMailFolder(connection, account, accountId, folderName, dbFolderName, lastSyncedAt = null, syncFetchLimit = DEFAULT_MAIL_SYNC_FETCH_LIMIT) {
+async function syncMailFolder(connection, account, accountId, folderName, dbFolderName, lastSyncedAt = null) {
+  let state;
   try {
-    console.log(`[SYNC] Opening ${folderName}...`);
-    try {
-      await connection.openBox(folderName);
-    } catch (openError) {
-      // Folder doesn't exist or can't be opened - return early without affecting connection state
-      console.log(`[SYNC] Could not open folder ${folderName}: ${openError.message}`);
-      return { newEmails: 0, processed: 0, failed: 0, total: 0, error: openError.message };
-    }
+    await connection.openBox(folderName);
     const uidValidity = getCurrentBoxUidValidity(connection);
-    
-    // "all" applies to the first import only. After that, every sync is incremental.
-    let searchCriteria = ['ALL'];
-    if (lastSyncedAt) {
-      // Use SINCE to only get emails since last sync (subtract 1 day for safety margin)
-      const sinceDate = new Date(lastSyncedAt);
-      sinceDate.setDate(sinceDate.getDate() - 1); // 1 day margin for timezone/server differences
-      // Format date as ISO string for IMAP SINCE search (nested array format required)
-      const sinceDateStr = sinceDate.toISOString();
-      searchCriteria = [['SINCE', sinceDateStr]];
-      console.log(`[SYNC] Using optimized search: emails since ${sinceDateStr} (last sync: ${lastSyncedAt})`);
-    } else if (syncFetchLimit === 'all') {
-      console.log('[SYNC] First sync - fetching full mailbox history');
-    } else {
-      console.log(`[SYNC] First sync - fetching last ${syncFetchLimit} emails`);
+    state = await loadFolderSyncState(db, accountId, folderName, uidValidity);
+    const searchResults = await connection.search(buildFolderSearchCriteria(state), {});
+    if (!Array.isArray(searchResults)) throw new Error('Mail provider returned unexpected message IDs');
+    const listedUids = searchResults.map(item => item?.attributes?.uid);
+    if (listedUids.some(uid => !Number.isSafeInteger(uid) || uid <= 0)) {
+      throw new Error('Mail provider returned malformed message IDs; checkpoint was not advanced');
     }
-    
-    // Search for emails (either all or since last sync)
-    let searchResults;
-    try {
-      searchResults = await connection.search(searchCriteria, {});
-    } catch (searchError) {
-      const errorPrefix = !lastSyncedAt && syncFetchLimit === 'all' ? 'Unable to resolve full mailbox history' : 'Unable to search mailbox';
-      return { newEmails: 0, processed: 0, failed: 0, total: 0, error: `${errorPrefix}: ${searchError.message}` };
-    }
-
-    if (!Array.isArray(searchResults)) {
-      return {
-        newEmails: 0,
-        processed: 0,
-        failed: 0,
-        total: 0,
-        error: 'Mail provider returned unexpected search results while listing message IDs.',
-      };
-    }
-
-    const allUids = searchResults
-      .map(msg => msg && msg.attributes ? msg.attributes.uid : null)
-      .filter(uid => typeof uid === 'number' && Number.isFinite(uid));
-    console.log(`[SYNC] Found ${allUids.length} messages in ${folderName}${lastSyncedAt ? ' since last sync' : ''}`);
-    
-    if (searchResults.length > 0 && allUids.length === 0) {
-      return {
-        newEmails: 0,
-        processed: 0,
-        failed: 0,
-        total: 0,
-        error: 'Mail provider returned malformed message IDs; sync stopped to avoid inconsistent imports.',
-      };
-    }
-
-    if (allUids.length === 0) {
-      return { newEmails: 0, processed: 0, failed: 0, total: 0 };
-    }
-    
-    // For incremental syncs, process all found UIDs. For first sync, apply account sync limit.
-    let uidsToProcess = allUids;
-    const requestedCount = lastSyncedAt ? 'incremental' : syncFetchLimit;
-    if (!lastSyncedAt && syncFetchLimit !== 'all') {
-      const limitNumber = Number.parseInt(syncFetchLimit, 10);
-      const safeLimit = Number.isFinite(limitNumber) && limitNumber > 0
-        ? limitNumber
-        : 500;
-      uidsToProcess = allUids.slice(-safeLimit);
-      console.log(`[SYNC] First sync limit requested: ${safeLimit}, available: ${allUids.length}, selected: ${uidsToProcess.length}`);
-    } else if (!lastSyncedAt && syncFetchLimit === 'all') {
-      console.log(`[SYNC] First sync limit requested: all, available: ${allUids.length}, selected: ${uidsToProcess.length}`);
-    }
-
-    const knownUidSet = await loadExistingImportedUidSet({
-      connection: db,
-      accountId,
-      folderName,
-      uids: uidsToProcess,
-      uidValidity,
-    });
-    if (knownUidSet.size > 0) {
-      uidsToProcess = uidsToProcess.filter(uid => !knownUidSet.has(uid));
-      console.log(`[SYNC] Skipping ${knownUidSet.size} already imported UID(s) in ${folderName}; ${uidsToProcess.length} UID(s) still need download`);
-    }
-
-    console.log(`[SYNC] Will fetch ${uidsToProcess.length} emails from ${folderName}${lastSyncedAt ? ' (new since last sync)' : ''}...`);
-    
-    if (uidsToProcess.length === 0) {
-      return { newEmails: 0, processed: 0, failed: 0, total: allUids.length, requestedCount, selectedCount: 0 };
-    }
-    
-    const fetchOptions = {
-      bodies: [IMAP_FULL_MESSAGE_BODY],
-      markSeen: false,
-      struct: true,
-    };
-    
-    let newEmailsCount = 0;
-    let processedCount = 0;
-    let failedCount = 0;
-    const routingRules = await loadActiveMailSenderRules(account.user_id, accountId, db);
-    const uploadsRoot = '/app/uploads/attachments';
-    const uploadsDir = path.join(uploadsRoot, account.user_id);
-    
-    // Sequentially download each email individually using the actual UIDs
-    for (let i = 0; i < uidsToProcess.length; i++) {
-      const uid = uidsToProcess[i];
-      processedCount++;
-      
-      console.log(`[SYNC] Downloading email ${processedCount}/${uidsToProcess.length} (UID: ${uid})...`);
-      
+    // IMAP n:* may include the current highest UID when n exceeds it.
+    const newUids = listedUids.filter(uid => !state.incremental || uid > state.lastUid);
+    const [retryRows] = await db.execute(
+      `SELECT imap_uid FROM emails WHERE mail_account_id = ? AND source_folder = ?
+       AND import_complete = FALSE AND imap_uid IS NOT NULL
+       AND (imap_uidvalidity = ? OR imap_uidvalidity IS NULL)`,
+      [accountId, folderName, uidValidity]
+    );
+    const retryUids = retryRows.map(row => Number(row.imap_uid)).filter(uid => Number.isSafeInteger(uid) && uid > 0);
+    const allUids = [...new Set([...newUids, ...retryUids])].sort((a, b) => a - b);
+    const known = await loadExistingImportedUidSet({ accountId, folderName, uids: allUids, uidValidity });
+    const pending = allUids.filter(uid => !known.has(uid));
+    const routingContext = pending.length ? await createMailRoutingContext(account.user_id, accountId) : null;
+    let newEmails = 0;
+    let failed = 0;
+    for (const uid of pending) {
       try {
-        // Ensure uid is a number, not an object
-        if (typeof uid !== 'number') {
-          console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] Invalid UID type: ${typeof uid}, skipping`);
-          failedCount++;
-          continue;
+        const messages = await connection.search([['UID', uid]], { bodies: [IMAP_FULL_MESSAGE_BODY], markSeen: false, struct: true });
+        let existingEmail = null;
+        const item = messages?.[0];
+        let fullEmail;
+        if (!item) {
+          // An older import can have a valid raw archive but missing attachment
+          // rows even after its provider copy was removed. Repair from that copy.
+          existingEmail = await findExistingImportedEmail({ messageId: null, accountId, folderName, uid, uidValidity });
+          if (!existingEmail || !isUsableRawEmailArchive(existingEmail.raw_storage_path)) continue;
+          fullEmail = await fs.promises.readFile(existingEmail.raw_storage_path, 'utf8');
+        } else {
+          fullEmail = buildRawEmailFromImapParts(item);
         }
-        
-        // Fetch single email by UID using search with UID criteria (this is the working method)
-        const messageResults = await connection.search([['UID', uid]], fetchOptions);
-        
-        if (!messageResults || messageResults.length === 0) {
-          console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] UID ${uid}: Not found, skipping`);
-          continue;
-        }
-        
-        const item = messageResults[0]; // Should only be one result
-        console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] ✓ Downloaded UID ${uid}`);
-        const fullEmail = buildRawEmailFromImapParts(item);
-        const imapFlags = Array.isArray(item?.attributes?.flags) ? item.attributes.flags : [];
-        const isRead = dbFolderName === 'sent' || dbFolderName === 'drafts' || imapFlags.includes('\\Seen');
-        
-        if (!fullEmail || fullEmail.trim().length === 0) {
-          if (processedCount <= 5) {
-            console.log(`[SYNC] Skipping empty email (UID: ${uid})`);
-          }
-          continue;
-        }
-        
+        if (!fullEmail || !fullEmail.trim()) throw new Error(`Empty message body for UID ${uid}`);
         const parsed = await simpleParser(fullEmail);
-        const messageId = parsed.messageId || (dbFolderName === 'inbox' ? `${accountId}-${uid}` : `${accountId}-${folderName}-${uid}`);
+        const messageId = parsed.messageId || existingEmail?.message_id || `${accountId}-${folderName}-${uidValidity ?? 'unknown'}-${uid}`;
         const { fromAddress, fromName } = extractSenderFromParsedEmail(parsed);
         const toAddresses = extractEmailAddresses(parsed.to);
-        const hasAttachments = parsed.attachments && parsed.attachments.length > 0;
-        let attachmentCount = 0;
-        let processedHtml = parsed.html || null;
-        
-        // Preserve existing local folder moves by never reclassifying an email that is already imported.
-        const existingEmail = await findExistingImportedEmail({
-          messageId,
-          accountId,
-          folderName,
-          uid,
-          uidValidity,
-          connection: db,
-        });
-        if (existingEmail) {
-          let repairedRawStoragePath = existingEmail.raw_storage_path || null;
-          try {
-            const repairResult = await repairExistingImportedEmail({
-              existingEmail,
-              account,
-              messageId,
-              fullEmail,
-              parsed,
-              fromAddress,
-              fromName,
-              toAddresses,
-              processedHtml,
-              folderName,
-              uid,
-              uidValidity,
-            });
-            repairedRawStoragePath = repairResult?.rawStoragePath || repairedRawStoragePath;
-          } catch (rawError) {
-            console.error(`[SYNC] Failed to update existing email UID ${uid}:`, rawError.message);
-          }
-          await recordMailServerMessageForDeletion({
-            userId: account.user_id,
-            accountId,
-            emailId: existingEmail.id,
-            sourceFolder: folderName,
-            imapUid: uid,
-            imapUidValidity: uidValidity,
-            rawStoragePath: repairedRawStoragePath,
-          });
-          if (processedCount <= 5) {
-            console.log(`[SYNC] Email already exists (UID: ${uid}, messageId: ${messageId}), skipping`);
-          }
+        existingEmail ||= await findExistingImportedEmail({ messageId, accountId, folderName, uid, uidValidity });
+        if (toBooleanFlag(existingEmail?.import_complete) && isUsableRawEmailArchive(existingEmail.raw_storage_path)) {
+          await recordMailServerMessageForDeletion({ userId: account.user_id, accountId, emailId: existingEmail.id,
+            sourceFolder: folderName, imapUid: uid, imapUidValidity: uidValidity, rawStoragePath: existingEmail.raw_storage_path });
           continue;
         }
-        
-        if (hasAttachments) {
-          try {
-            await mkdir(uploadsDir, { recursive: true });
-          } catch (err) {
-            if (err.code !== 'EEXIST') {
-              console.error(`[SYNC] Failed to create uploads directory:`, err.message);
-            }
-          }
-        }
-        
-        const emailId = crypto.randomUUID();
-        let rawArchive = { rawStoragePath: null, rawSha256: null };
-        try {
-          rawArchive = await saveRawEmailSource({
-            userId: account.user_id,
-            emailId,
-            messageId,
-            rawEmail: fullEmail,
-          });
-        } catch (rawError) {
-          console.error(`[SYNC] Failed to archive raw email UID ${uid}:`, rawError.message);
-        }
-        const routeResult = await resolveMailSenderTargetFolder({
-          userId: account.user_id,
-          mailAccountId: accountId,
-          fromAddress,
-          fallbackFolder: dbFolderName || 'inbox',
-          rules: routingRules,
-          connection: db,
-        });
-        try {
-          await db.execute(
-            `INSERT INTO emails
-              (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html,
-               has_attachments, received_at, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256, is_read)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              emailId,
-              account.user_id,
-              accountId,
-              messageId,
-              parsed.subject || '(No subject)',
-              fromAddress,
-              fromName,
-              JSON.stringify(toAddresses),
-              parsed.text || null,
-              processedHtml,
-              hasAttachments ? 1 : 0,
-              parsed.date || new Date(),
-              routeResult.folder || 'inbox',
-              folderName,
-              uid,
-              uidValidity,
-              rawArchive.rawStoragePath,
-              rawArchive.rawSha256,
-              isRead ? 1 : 0,
-            ]
-          );
-        } catch (dbError) {
-          console.error(`[SYNC] Database error saving email UID ${uid}:`, dbError.message);
-          console.error(`[SYNC] Error details:`, dbError.code, dbError.sqlState);
-          throw dbError; // Re-throw to be caught by outer catch
-        }
-
-        await recordMailServerMessageForDeletion({
-          userId: account.user_id,
-          accountId,
-          emailId,
-          sourceFolder: folderName,
-          imapUid: uid,
-          imapUidValidity: uidValidity,
-          rawStoragePath: rawArchive.rawStoragePath,
-        });
-        
-        // Process attachments
-        if (hasAttachments) {
-          for (const attachment of parsed.attachments) {
-            try {
-              const attachmentId = crypto.randomUUID();
-              const filename = attachment.filename || attachment.cid || `attachment-${attachmentId}`;
-              const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-              const storagePath = path.join(uploadsDir, `${emailId}-${attachmentId}-${safeFilename}`);
-              const isInline = !!(attachment.contentId || attachment.cid);
-              const cid = attachment.contentId || attachment.cid;
-              
-              const content = attachment.content;
-              let sizeBytes = 0;
-              
-              if (Buffer.isBuffer(content)) {
-                await writeFile(storagePath, content);
-                sizeBytes = content.length;
-              } else if (typeof content === 'string') {
-                const buffer = Buffer.from(content, 'utf8');
-                await writeFile(storagePath, buffer);
-                sizeBytes = buffer.length;
-              } else if (content && typeof content.pipe === 'function') {
-                const chunks = [];
-                for await (const chunk of content) {
-                  chunks.push(chunk);
-                }
-                const buffer = Buffer.concat(chunks);
-                await writeFile(storagePath, buffer);
-                sizeBytes = buffer.length;
-              } else {
-                const buffer = Buffer.from(String(content));
-                await writeFile(storagePath, buffer);
-                sizeBytes = buffer.length;
-              }
-              
-              await db.execute(
-                'INSERT INTO email_attachments (id, email_id, user_id, filename, content_type, size_bytes, storage_path, content_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                [
-                  attachmentId,
-                  emailId,
-                  account.user_id,
-                  filename,
-                  attachment.contentType || attachment.contentDisposition?.type || 'application/octet-stream',
-                  attachment.size || sizeBytes,
-                  storagePath,
-                  cid || null,
-                ]
-              );
-              
-              if (isInline && cid && processedHtml) {
-                const attachmentUrl = `/api/mail/attachments/${attachmentId}`;
-                const escapedCid = cid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const patterns = [
-                  new RegExp(`cid:${escapedCid}`, 'gi'),
-                  new RegExp(`"cid:${escapedCid}"`, 'gi'),
-                  new RegExp(`'cid:${escapedCid}'`, 'gi'),
-                ];
-                patterns.forEach(pattern => {
-                  processedHtml = processedHtml.replace(pattern, attachmentUrl);
-                });
-              }
-              
-              attachmentCount++;
-            } catch (attachError) {
-              console.error(`[SYNC] Failed to save attachment:`, attachError.message);
-            }
-          }
-          
-          if (processedHtml !== (parsed.html || null)) {
-            await db.execute('UPDATE emails SET body_html = ? WHERE id = ?', [processedHtml, emailId]);
-          }
-        }
-        
-        newEmailsCount++;
-        const attachMsg = attachmentCount > 0 ? ` (${attachmentCount} attachment${attachmentCount > 1 ? 's' : ''})` : '';
-        console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] ✓ Stored email: "${parsed.subject || '(No subject)'}" from ${fromAddress}${attachMsg} (${newEmailsCount} new so far)`);
-      } catch (emailError) {
-        failedCount++;
-        // Log error for every email (since we're downloading individually)
-        console.log(`[SYNC] [${processedCount}/${uidsToProcess.length}] ✗ Failed to process UID ${uid}:`, emailError.message);
-        if (emailError.stack && failedCount <= 5) {
-          console.error(`[SYNC] Stack trace:`, emailError.stack.substring(0, 300));
-        }
-        continue;
+        const routeResult = await resolveMailSenderTargetFolder({ userId: account.user_id, mailAccountId: accountId,
+          fromAddress, fallbackFolder: dbFolderName || 'inbox', routingContext });
+        const flags = Array.isArray(item?.attributes?.flags) ? item.attributes.flags : [];
+        const result = await require('./mail-import').persistImportedMessage({ db, account, accountId, folderName, uid, uidValidity,
+          existingEmail, messageId, fullEmail, parsed, fromAddress, fromName, toAddresses,
+          folder: routeResult.folder, isRead: ['sent', 'drafts'].includes(dbFolderName) || flags.includes('\\Seen'),
+          archiveRaw: saveRawEmailSource, enqueueDeletion: recordMailServerMessageForDeletion,
+          suppressNotifications: !lastSyncedAt || !state.incremental });
+        if (result.isNew) newEmails += 1;
+      } catch (error) {
+        failed += 1;
+        console.error(`[SYNC] Could not import ${folderName} UID ${uid}; will retry:`, error.message);
       }
     }
-    
-    console.log(`[SYNC] Completed: ${newEmailsCount} new emails stored, ${failedCount} failed, ${processedCount} processed`);
-    return {
-      newEmails: newEmailsCount,
-      processed: processedCount,
-      failed: failedCount,
-      total: allUids.length,
-      requestedCount,
-      selectedCount: uidsToProcess.length,
-    };
+    if (failed === 0) {
+      await saveFolderSyncState(db, accountId, folderName, uidValidity, newUids.reduce((max, uid) => Math.max(max, uid), state.lastUid));
+    }
+    return { newEmails, processed: pending.length, failed, total: allUids.length,
+      selectedCount: pending.length, requestedCount: state.incremental ? 'incremental' : 'all',
+      ...(failed ? { error: `${failed} message(s) failed; folder checkpoint retained for retry` } : {}) };
   } catch (error) {
     console.error(`[SYNC] Error syncing ${folderName}:`, error.message);
     return { newEmails: 0, processed: 0, failed: 0, total: 0, error: error.message };
@@ -1864,23 +1471,6 @@ async function syncMailAccountOnce(accountId) {
       }
     }
     
-    const inboxResult = folderResults.find(result => result.dbFolderName === 'inbox') || folderResults[0] || {};
-    if (inboxResult.error) {
-      return {
-        success: false,
-        error: inboxResult.error,
-        details: `Processed ${inboxResult.processed || 0} of ${inboxResult.selectedCount || 0} selected emails before stopping.`,
-        newEmails: inboxResult.newEmails || 0,
-        totalFound: inboxResult.total || 0,
-      };
-    }
-
-    // Update last synced
-    await db.execute(
-      'UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ?',
-      [accountId]
-    );
-    
     const totals = folderResults.reduce((acc, result) => {
       acc.newEmails += result.newEmails || 0;
       acc.totalFound += result.total || 0;
@@ -1888,6 +1478,20 @@ async function syncMailAccountOnce(accountId) {
       acc.failed += result.failed || 0;
       return acc;
     }, { newEmails: 0, totalFound: 0, processed: 0, failed: 0 });
+    const failedFolder = folderResults.find(result => result.error || result.failed > 0);
+    if (failedFolder) {
+      return {
+        success: false,
+        error: failedFolder.error || 'Some messages could not be imported',
+        details: 'Completed messages are retained; unsuccessful folders will retry on the next sync.',
+        newEmails: totals.newEmails,
+        totalFound: totals.totalFound,
+        folders: folderResults,
+      };
+    }
+
+    await db.execute('UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
+
     const resultMsg = `Synced ${account.email_address}: ${totals.newEmails} new emails across ${folderResults.length} folder(s) (${totals.totalFound} available, ${totals.processed} processed, ${totals.failed} failed; limit=${syncFetchLimit})`;
     console.log(`[SYNC] ✓ ${resultMsg}`);
     
@@ -2008,39 +1612,9 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
     debugLog('server.js:189', 'Before SMTP sendMail', { smtpHost: account.smtp_host, smtpPort: account.smtp_port, from: account.email_address, to }, 'H5');
     // #endregion
 
-    const normalizedAttachments = Array.isArray(attachments) ? attachments : [];
-    if (normalizedAttachments.length > 20) {
-      throw new Error('Too many attachments (max 20)');
-    }
-
-    let totalAttachmentBytes = 0;
-    const smtpAttachments = normalizedAttachments.map((attachment, index) => {
-      if (!attachment || typeof attachment !== 'object') {
-        throw new Error(`Invalid attachment at index ${index}`);
-      }
-
-      const filename = String(attachment.filename || `attachment-${index + 1}`);
-      const contentType = String(attachment.contentType || 'application/octet-stream');
-      const dataBase64 = String(attachment.dataBase64 || '');
-      if (!dataBase64) {
-        throw new Error(`Attachment "${filename}" is empty`);
-      }
-      const contentBuffer = Buffer.from(dataBase64, 'base64');
-      if (contentBuffer.length > 15 * 1024 * 1024) {
-        throw new Error(`Attachment "${filename}" exceeds 15MB limit`);
-      }
-
-      totalAttachmentBytes += contentBuffer.length;
-      return {
-        filename,
-        contentType,
-        content: contentBuffer,
-      };
-    });
-
-    if (totalAttachmentBytes > 25 * 1024 * 1024) {
-      throw new Error('Total attachment size exceeds 25MB limit');
-    }
+    const smtpAttachments = normalizeComposerAttachments(attachments).map(attachment => ({
+      filename: attachment.filename, contentType: attachment.contentType, content: attachment.content,
+    }));
 
     const info = await transporter.sendMail({
       from: `${account.display_name || account.email_address} <${account.email_address}>`,
@@ -2161,6 +1735,7 @@ module.exports = {
   loadActiveMailSenderRules,
   pickBestMailSenderRuleMatch,
   resolveMailSenderTargetFolder,
+  createMailRoutingContext,
   ensureDefaultMailFoldersForUser,
   isKnownMailProviderHost,
   hostInAllowlist,

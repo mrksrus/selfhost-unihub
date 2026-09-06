@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ComponentType } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -15,15 +15,15 @@ import {
   X,
   Zap,
 } from 'lucide-react';
-import ReactionTimerGame from '@/components/games/ReactionTimerGame';
-import FocusBreathingGame from '@/components/games/FocusBreathingGame';
-import JumpGame from '@/components/games/JumpGame';
-import AIGame from '@/components/games/AIGame';
-import TetrisGame from '@/components/games/TetrisGame';
-import SnakeGame from '@/components/games/SnakeGame';
-import TamagotchiGame from '@/components/games/TamagotchiGame';
-import EchoSequenceGame from '@/components/games/EchoSequenceGame';
-import SignalMazeGame from '@/components/games/SignalMazeGame';
+const ReactionTimerGame = lazy(() => import('@/components/games/ReactionTimerGame'));
+const FocusBreathingGame = lazy(() => import('@/components/games/FocusBreathingGame'));
+const JumpGame = lazy(() => import('@/components/games/JumpGame'));
+const AIGame = lazy(() => import('@/components/games/AIGame'));
+const TetrisGame = lazy(() => import('@/components/games/TetrisGame'));
+const SnakeGame = lazy(() => import('@/components/games/SnakeGame'));
+const TamagotchiGame = lazy(() => import('@/components/games/TamagotchiGame'));
+const EchoSequenceGame = lazy(() => import('@/components/games/EchoSequenceGame'));
+const SignalMazeGame = lazy(() => import('@/components/games/SignalMazeGame'));
 import { getAIGameCardSummary, type AIGameCardSummary } from '@/components/games/ai-game/persistence';
 
 type GameId =
@@ -197,11 +197,11 @@ const Games = () => {
   return (
     <div className="mx-auto max-w-7xl space-y-7 px-4 py-5 sm:px-6 sm:py-7 lg:px-8">
       <header className="relative overflow-hidden rounded-2xl border bg-slate-950 px-5 py-7 text-white shadow-lg sm:px-8 sm:py-9">
-        <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-teal-400/20 blur-3xl" />
+        <div className="absolute -right-16 -top-20 h-56 w-56 rounded-full bg-blue-400/20 blur-3xl" />
         <div className="absolute -bottom-20 left-1/3 h-44 w-44 rounded-full bg-indigo-500/20 blur-3xl" />
         <div className="relative max-w-2xl space-y-3">
           <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs text-slate-200">
-            <Sparkles className="h-3.5 w-3.5 text-teal-300" />
+            <Sparkles className="h-3.5 w-3.5 text-blue-300" />
             Nine tiny ways to reset
           </div>
           <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Take a better break.</h1>
@@ -259,7 +259,7 @@ const Games = () => {
             </nav>
           </div>
           <main className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-3 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-5 sm:py-5">
-            <div className="mx-auto max-w-6xl">{renderGame(activeGameId)}</div>
+            <div className="mx-auto max-w-6xl"><Suspense fallback={<p role="status" className="p-6 text-muted-foreground">Loading game…</p>}>{renderGame(activeGameId)}</Suspense></div>
           </main>
         </div>
       )}

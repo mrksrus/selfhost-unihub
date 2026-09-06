@@ -89,7 +89,7 @@ const CalendarPage = () => {
     end_time: '',
     all_day: false,
     location: '',
-    color: '#22c55e',
+    color: '#2563eb',
     reminders: [0] as number[],
     attendee_emails: '',
   });
@@ -103,7 +103,7 @@ const CalendarPage = () => {
   const [calendarForm, setCalendarForm] = useState({
     account_id: '',
     name: '',
-    color: '#22c55e',
+    color: '#2563eb',
     auto_todo_enabled: true,
   });
 
@@ -393,7 +393,7 @@ const CalendarPage = () => {
         end_time: format(end, "yyyy-MM-dd'T'HH:mm"),
         all_day: false,
         location: '',
-        color: '#22c55e',
+        color: '#2563eb',
         reminders: [0],
         attendee_emails: '',
       });
@@ -412,7 +412,7 @@ const CalendarPage = () => {
       end_time: '',
       all_day: false,
       location: '',
-      color: '#22c55e',
+      color: '#2563eb',
       reminders: [0],
       attendee_emails: '',
     });

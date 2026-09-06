@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { StringDecoder } = require('string_decoder');
 const { ALLOWED_ORIGINS } = require('../config');
 
 function getRequestContentLength(req) {
@@ -16,8 +17,9 @@ function isRequestBodyTooLarge(req, maxSize) {
 
 // Parse JSON body (configurable max size, default 1000 chars)
 async function parseBody(req, maxSize = 1000) {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let body = '';
+    const decoder = new StringDecoder('utf8');
     let currentSize = 0;
     let tooLarge = false;
     let settled = false;
@@ -38,15 +40,17 @@ async function parseBody(req, maxSize = 1000) {
         settle(null);
         return;
       }
-      body += chunk.toString();
+      body += decoder.write(chunk);
     });
     req.on('end', () => {
       if (settled) return;
+      body += decoder.end();
       if (tooLarge || body.length > maxSize) { settle(null); return; }
       try {
         settle(body ? JSON.parse(body) : {});
       } catch {
-        settle({});
+        settled = true;
+        reject(Object.assign(new Error('Invalid JSON request body'), { status: 400 }));
       }
     });
     req.on('error', () => {

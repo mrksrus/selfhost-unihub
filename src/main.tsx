@@ -2,12 +2,7 @@ import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import App from "./App.tsx";
 import "./index.css";
-import {
-  BACKGROUND_NOTIFICATION_SYNC_TAG,
-  NOTIFICATION_CHECK_INTERVAL_MS,
-  initServiceWorker,
-  registerPeriodicSync,
-} from "./utils/service-worker";
+import { initServiceWorker } from "./utils/service-worker";
 
 // Register service worker
 const updateSW = registerSW({
@@ -17,15 +12,19 @@ const updateSW = registerSW({
     // Initialize our service worker utilities
     if (registration) {
       initServiceWorker();
-      registerPeriodicSync(BACKGROUND_NOTIFICATION_SYNC_TAG, NOTIFICATION_CHECK_INTERVAL_MS).catch(console.error);
     }
   },
   onNeedRefresh() {
-    console.log('[SW] Update available');
+    window.__unihubUpdateAvailable = true;
+    window.dispatchEvent(new Event('unihub-update-available'));
   },
   onOfflineReady() {
-    console.log('[SW] App ready to work offline');
+    console.log('[SW] Application shell cached');
   },
+});
+
+window.addEventListener('unihub-apply-update', () => {
+  void updateSW(true).catch(() => window.dispatchEvent(new Event('unihub-update-failed')));
 });
 
 createRoot(document.getElementById("root")!).render(<App />);

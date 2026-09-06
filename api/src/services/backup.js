@@ -2036,6 +2036,11 @@ async function importBackupForUser(userId, backup, {
       },
     };
     if (onProgress) await onProgress('commit', 99);
+    if (scopedBackup.import_sections.includes('calendar')) {
+      // A long restore can commit event timestamps older than the reminder scan
+      // cursor. Visibility-only restores also leave event timestamps unchanged.
+      await connection.execute('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
+    }
     if (beforeCommit) await beforeCommit(connection, result);
     await connection.commit();
     return result;

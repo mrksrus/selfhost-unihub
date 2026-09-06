@@ -596,7 +596,7 @@ const isHazardActive = (hazard: HazardTile, tickCount: number, stormCycle: boole
   return cycleTick % 3 === 0;
 };
 
-const resolveCollision = (state: GameState, wallsSet: Set<string>, random: RandomSource) => {
+const resolveCollision = (state: GameState, wallsSet: Set<string>, random: RandomSource): GameState => {
   const collided = state.enemies.some((enemy) => toKey(enemy.position) === toKey(state.player));
   if (!collided) return state;
 
@@ -630,7 +630,7 @@ const resolveCollision = (state: GameState, wallsSet: Set<string>, random: Rando
   return { ...state, status: 'lost' };
 };
 
-const resolveHazardDamage = (state: GameState, wallsSet: Set<string>, random: RandomSource) => {
+const resolveHazardDamage = (state: GameState, wallsSet: Set<string>, random: RandomSource): GameState => {
   const stormCycle = state.floorEvents.includes('storm_cycle');
   const playerOnActiveHazard = state.hazards.some(
     (hazard) => toKey(hazard.position) === toKey(state.player) && isHazardActive(hazard, state.tickCount, stormCycle)
@@ -655,7 +655,7 @@ const resolveTargetCollection = (
   moved: boolean,
   blocked: boolean,
   random: RandomSource
-) => {
+): GameState => {
   const collectedTarget = toKey(state.player) === toKey(state.target);
   const moveEvent: MoveEffectEvent = {
     random: random.next,

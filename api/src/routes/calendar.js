@@ -79,7 +79,7 @@ module.exports = {
           accountId,
           body.default_calendar_name?.trim() || 'Default',
           'local-default',
-          body.default_calendar_color || '#22c55e',
+          body.default_calendar_color || '#2563eb',
         ]
       );
 
@@ -213,7 +213,7 @@ module.exports = {
           accountId,
           body.name.trim(),
           body.external_id || null,
-          body.color || '#22c55e',
+          body.color || '#2563eb',
           body.is_visible === false ? 0 : 1,
           body.auto_todo_enabled === false ? 0 : 1,
           0,
@@ -247,7 +247,7 @@ module.exports = {
       }
       if (Object.prototype.hasOwnProperty.call(body, 'color')) {
         updates.push('color = ?');
-        params.push(body.color || '#22c55e');
+        params.push(body.color || '#2563eb');
       }
       if (Object.prototype.hasOwnProperty.call(body, 'is_visible')) {
         updates.push('is_visible = ?');
@@ -270,6 +270,9 @@ module.exports = {
 
       params.push(id, userId);
       await db.execute(`UPDATE calendar_calendars SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      if (Object.prototype.hasOwnProperty.call(body, 'is_visible')) {
+        await db.execute('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
+      }
       const [rows] = await db.execute('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
       return { calendar: serializeCalendarCalendar(rows[0]) };
     } catch (error) {
@@ -414,31 +417,42 @@ module.exports = {
       }
 
       const eventId = crypto.randomUUID();
-      await db.execute(
-        `INSERT INTO calendar_events
-          (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          eventId,
-          userId,
-          calendarId,
-          title.trim(),
-          description || null,
-          start,
-          end,
-          !!all_day,
-          location?.trim() || null,
-          color || '#22c55e',
-          recurrence || null,
-          reminder_minutes ?? null,
-          reminders ? JSON.stringify(reminders) : null,
-          !!is_todo_only,
-        ]
-      );
-      if (Array.isArray(body.attendees)) {
-        await replaceEventAttendees(userId, eventId, body.attendees);
-      }
+      const connection = await db.getConnection();
+      try {
+        await connection.beginTransaction();
+        await connection.execute(
+          `INSERT INTO calendar_events
+            (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            eventId,
+            userId,
+            calendarId,
+            title.trim(),
+            description || null,
+            start,
+            end,
+            !!all_day,
+            location?.trim() || null,
+            color || '#2563eb',
+            recurrence || null,
+            reminder_minutes ?? null,
+            reminders ? JSON.stringify(reminders) : null,
+            !!is_todo_only,
+          ]
+        );
+        if (Array.isArray(body.attendees)) {
+          await replaceEventAttendees(userId, eventId, body.attendees, connection);
+        }
 
+        await require('../services/notifications').enqueueCalendarNotification({ userId, eventId }, connection);
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
       const event = await getCalendarEventWithSubtasks(userId, eventId);
       return { event };
     } catch (error) {
@@ -499,7 +513,7 @@ module.exports = {
       }
       if (Object.prototype.hasOwnProperty.call(body, 'color')) {
         updates.push('color = ?');
-        params.push(body.color || '#22c55e');
+        params.push(body.color || '#2563eb');
       }
       if (Object.prototype.hasOwnProperty.call(body, 'recurrence')) {
         updates.push('recurrence = ?');

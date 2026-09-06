@@ -59,4 +59,16 @@ describe('api client security', () => {
     expect(response.error).toContain('request is too large');
     expect(response.error).not.toContain('not JSON');
   });
+  it('forwards AbortSignal and preserves cancellation as a rejected request', async () => {
+    const controller = new AbortController();
+    const cancelled = new DOMException('Cancelled', 'AbortError');
+    const fetchMock = vi.fn().mockImplementation(async (_url, options) => {
+      expect(options.signal).toBe(controller.signal);
+      controller.abort();
+      throw cancelled;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(api.get('/contacts', { signal: controller.signal })).rejects.toBe(cancelled);
+  });
+
 });

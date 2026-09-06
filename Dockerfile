@@ -1,5 +1,5 @@
 # ── Stage 1: Build the React frontend ──────────────────────────────
-FROM node:20-alpine AS frontend-builder
+FROM node:24-alpine AS frontend-builder
 
 WORKDIR /build
 
@@ -10,7 +10,7 @@ COPY . .
 RUN npm run build
 
 # ── Stage 2: Production image (Nginx + Node.js API) ───────────────
-FROM node:20-alpine
+FROM node:24-alpine
 
 # Install runtime services plus ffmpeg for recording conversion and temporary build deps for native node modules
 RUN apk add --no-cache nginx wget netcat-openbsd mariadb-client ffmpeg \

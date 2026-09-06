@@ -33,6 +33,12 @@ background jobs and do not depend on the proxy connection after job creation.
 | `api/src/request-handler.js` | CORS, auth, CSRF, body parsing, route dispatch |
 | `api/src/routes/` | Route handlers grouped by feature |
 | `api/src/services/` | Database, mail, calendar, backup creation/encryption/restore workers, recordings, 2FA logic |
+| `api/src/services/mail-attachments.js` | Attachment validation, staging and inline references |
+| `api/src/services/mail-drafts.js` | Atomic draft replacements |
+| `api/src/services/mail-import.js` | Complete-message transactions and durable queue insertion |
+| `api/src/services/mail-sync-state.js` | Per-folder UID progress and resets |
+| `api/src/services/offline.js` | Owner-scoped, size-bounded offline snapshots |
+| `api/src/services/notifications.js` | Durable notification events, delivery state and reminder worker |
 | `api/src/security/encryption.js` | AES-256-GCM helpers |
 | `api/tests/` | Backend `node:test` coverage |
 
@@ -77,9 +83,13 @@ Every request passes through `handleRequest`:
 5. Verify auth from the session cookie or bearer token.
 6. Validate CSRF for authenticated state-changing requests.
 7. Enforce endpoint-specific body size limits.
-8. Parse JSON bodies or stream backup uploads directly to persisted storage.
+8. Decode chunked JSON with a UTF-8 decoder, rejecting malformed JSON with HTTP 400, or stream backup uploads directly to persisted storage.
 9. Dispatch to the route handler.
 10. Serialize JSON, raw downloads, stream downloads, redirects, or HTML responses.
+
+JSON API responses use `Cache-Control: no-store`. Authenticated mail attachments,
+recordings and backup archives reuse the file-stream response contract, including
+byte ranges. Client disconnects destroy the corresponding stream.
 
 ## Authentication and CSRF
 
@@ -111,6 +121,11 @@ Startup behavior:
 5. Create the first admin from bootstrap env vars when no users exist.
 6. Backfill local calendar account/calendar ownership.
 
+Additive mail migrations create `emails.import_complete` and `mail_sync_state`.
+Old imported messages are revalidated once; subsequent progress is recorded per
+account and exact provider folder, with UIDVALIDITY resets and failed-UID retries.
+No container configuration change is needed for these application migrations.
+
 The schema migration style is intentionally idempotent: create tables if missing,
 then attempt additive column/index migrations.
 
@@ -134,6 +149,7 @@ The Docker Compose file mounts `/app/uploads` as `uploads_data`.
 
 | Interval | Job |
 | --- | --- |
+| 30 seconds | Reconcile due reminders and process durable notification deliveries |
 | 10 minutes | Periodic mail sync for active accounts when no sync is running |
 | 1 minute | Process eligible mail-server deletion queue rows |
 | 1 hour | Delete expired sessions |
@@ -153,6 +169,38 @@ At startup:
 Backup creation and restore processing are serialized by in-process workers.
 Restore status and options are durable in MySQL, so browser closure and proxy
 timeouts do not terminate work.
+
+## Mail Persistence
+
+Default folders are inserted in one batch without overwriting user display names
+or positions. A sync/backfill routing context loads rule precedence and target
+folder membership once for that operation.
+
+An imported message stages its raw source and attachments before opening a short
+metadata transaction. The transaction marks the message complete and inserts
+attachment, server-deletion and eligible notification rows together. Failures
+retain the folder checkpoint for retry. Existing local read/star/folder changes
+survive content repair. Draft replacements follow the same stage/commit/cleanup
+ordering. See [Mail Sync](MAIL_SYNC.md) for upgrade and recovery behavior.
+
+## Offline Snapshot Endpoint
+
+`GET /api/offline/snapshot` requires a current authenticated session. One
+repeatable-read transaction collects all of that user's contacts, calendar
+entries/todos, subtasks, attendees, calendar/account display data, and the latest
+100 non-draft email bodies. Deleted rows disappear on the next complete snapshot.
+
+Explicit column projections exclude credentials, provider configuration, sync
+tokens, raw-message paths and attachment storage paths. Attachment metadata marks
+files unavailable offline. SQL size preflights reject oversized selected sections
+before transferring their contents to Node; the final serialized snapshot must
+fit 32 MiB. The operation returns a complete snapshot or an error and never writes
+a partial server-side snapshot. The client is responsible for atomically
+replacing its previous device copy.
+
+The ordinary contacts API returns stable pages with `offset` and `has_more`, using
+an ID tie-breaker after favorite/name ordering. The offline snapshot bypasses
+that page limit so users with more than 2,000 contacts receive their entire list.
 
 ## Backup Architecture
 
@@ -189,16 +237,11 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 
 ## Service Worker and PWA
 
-The frontend uses `vite-plugin-pwa` with:
+The frontend uses vite-plugin-pwa for an installable shell and a prompted update flow. Routes and games load lazily; Workbox still precaches the offline-capable chunks, so startup savings do not imply smaller total installation downloads.
 
-- app manifest and icons
-- auto-update service worker registration
-- network-only handling for mail email/attachment GETs
-- short-lived network-first caching for other GET `/api/` calls
-- custom notification/background-sync code from `public/sw-custom.js`
+All private API requests use NetworkOnly. The custom worker removes obsolete API caches on activation and owns Web Push display, persistent per-user deduplication and safe click navigation. The API persists encrypted VAPID identity, session-bound subscriptions, a transactional notification outbox and indexed reminder schedules in MySQL. One job loop processes notifications every 30 seconds.
 
-The custom service worker checks auth, triggers background mail sync when data is
-stale, and checks upcoming calendar reminders/events.
+Opt-in offline reading uses a separate versioned IndexedDB snapshot with explicit account/epoch ownership. It contains the latest 100 full emails, all contacts and events, bounded to 32 MiB; it is not an authentication-response cache. Account changes and explicit clearing invalidate pending saves across tabs. See [PWA](PWA.md) and [Offline reading](OFFLINE.md).
 
 ## Security Boundaries
 

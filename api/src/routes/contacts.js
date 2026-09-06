@@ -24,6 +24,9 @@ module.exports = {
       const limitNum = parseInt(url.searchParams.get('limit') || '2000', 10);
       const limit = Number.isInteger(limitNum) && limitNum >= 1 ? Math.min(limitNum, 2000) : 2000;
 
+      const offsetNum = Number.parseInt(url.searchParams.get('offset') || '0', 10);
+      const offset = Number.isSafeInteger(offsetNum) && offsetNum >= 0 ? Math.min(offsetNum, 10000000) : 0;
+
       // Only select fields needed on the contacts screen to reduce payload size.
       let query = 'SELECT id, user_id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes, avatar_url, is_favorite FROM contacts WHERE user_id = ?';
       const params = [userId];
@@ -45,11 +48,11 @@ module.exports = {
       }
 
       // LIMIT as literal (mysql2 stmt_execute rejects placeholder for LIMIT); value validated 1–2000
-      query += ` ORDER BY is_favorite DESC, first_name ASC, last_name ASC LIMIT ${limit}`;
+      query += ` ORDER BY is_favorite DESC, first_name ASC, last_name ASC, id ASC LIMIT ${limit + 1} OFFSET ${offset}`;
 
       const [rows] = await db.execute(query, params);
       const contacts = Array.isArray(rows) ? rows : [];
-      return { contacts };
+      return { contacts: contacts.slice(0, limit), has_more: contacts.length > limit, offset };
     } catch (error) {
       console.error('[GET /api/contacts] Error:', error.message || error);
       return { error: 'Failed to get contacts', status: 500 };

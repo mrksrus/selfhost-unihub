@@ -14,6 +14,8 @@ export interface AuthContextType {
   user: User | null;
   session: { authenticated: true } | null;
   loading: boolean;
+  isOffline?: boolean;
+  offlineSavedAt?: string;
   setUser: (user: User | null) => void;
   signUp: (email: string, password: string, fullName: string) => Promise<{ error: Error | null; requiresApproval?: boolean }>;
   signIn: (email: string, password: string) => Promise<{ error: Error | null; requires2fa?: boolean; challengeToken?: string }>;

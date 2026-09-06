@@ -36,6 +36,25 @@ test('parseBody resolves immediately when a chunked body exceeds the limit', asy
   assert.equal(await parsed, null);
 });
 
+test('parseBody preserves Unicode at every byte boundary', async () => {
+  const expected = { title: 'Café 🎵 中文', note: 'Grüße' };
+  const bytes = Buffer.from(JSON.stringify(expected));
+  for (let split = 1; split < bytes.length; split += 1) {
+    const req = new PassThrough();
+    const parsed = parseBody(req);
+    req.write(bytes.subarray(0, split));
+    req.end(bytes.subarray(split));
+    assert.deepEqual(await parsed, expected);
+  }
+});
+
+test('parseBody rejects malformed JSON with a distinct 400 error', async () => {
+  const req = new PassThrough();
+  const parsed = parseBody(req);
+  req.end('{"title":');
+  await assert.rejects(parsed, { status: 400, message: 'Invalid JSON request body' });
+});
+
 test('parseRawBody returns binary request data', async () => {
   const req = new PassThrough();
   req.headers = {};

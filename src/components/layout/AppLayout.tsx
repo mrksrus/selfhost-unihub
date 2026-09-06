@@ -1,3 +1,4 @@
+import OfflineBanner from '@/components/offline/OfflineBanner';
 import { Outlet, Navigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
 import { useBackgroundNotificationChecks } from '@/hooks/use-background-notification-checks';
@@ -34,6 +35,7 @@ const AppLayout = () => {
       </div>
       <MobileHeader />
       <main className="flex-1 overflow-auto w-full pb-mobile-nav md:pb-0 min-w-0">
+        <OfflineBanner />
         <Outlet />
       </main>
       <GlobalCommandPalette />

@@ -177,7 +177,7 @@ const Auth = () => {
     <div className="flex min-h-screen">
       {/* Left Panel - Branding */}
       <div className="hidden lg:flex lg:w-1/2 bg-gradient-hero relative overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_hsl(172_66%_40%_/_0.15),_transparent_50%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_hsl(221_83%_53%_/_0.15),_transparent_50%)]" />
         <div className="relative z-10 flex flex-col justify-center px-12 xl:px-20">
           <motion.div
             initial={{ opacity: 0, y: 20 }}

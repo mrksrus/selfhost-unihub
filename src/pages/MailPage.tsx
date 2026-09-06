@@ -1,3 +1,9 @@
+import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
+import { useMailReader } from '@/hooks/use-mail-reader';
+import { invalidateMailQueries, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
+import { useMailAccounts, useMailFolders, useMailUnreadCounts, useMailList } from '@/hooks/use-mail-queries';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
+import { contactsQueryOptions } from '@/lib/contacts-api';
 import React, { useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
@@ -84,34 +90,6 @@ import { format } from 'date-fns';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { SafeEmailContent } from '@/components/mail/SafeEmailContent';
 
-interface MailAccount {
-  id: string;
-  email_address: string;
-  display_name: string | null;
-  provider: string;
-  username?: string | null;
-  imap_host?: string | null;
-  imap_port?: number | null;
-  smtp_host?: string | null;
-  smtp_port?: number | null;
-  is_active: boolean;
-  last_synced_at: string | null;
-  sync_fetch_limit?: string;
-  delete_emails_on_server?: boolean;
-  server_delete_enabled_at?: string | null;
-  server_delete_grace_until?: string | null;
-  server_delete_last_run_at?: string | null;
-  server_delete_running?: boolean;
-  server_delete_counts?: {
-    pending: number;
-    failed: number;
-    deleted: number;
-    missing: number;
-    skipped: number;
-  };
-  unread_count?: number;
-}
-
 interface AccountFormState {
   email_address: string;
   display_name: string;
@@ -175,31 +153,6 @@ type MailHostTrustError = Error & {
   mailHostTrust?: MailHostTrustResult;
 };
 
-interface EmailAttachment {
-  id: string;
-  filename: string;
-  content_type: string;
-  size_bytes: number;
-}
-
-interface Email {
-  id: string;
-  mail_account_id: string;
-  subject: string | null;
-  from_address: string;
-  from_name: string | null;
-  to_addresses: string[];
-  body_text: string | null;
-  body_html: string | null;
-  folder: string;
-  is_read: boolean;
-  is_starred: boolean;
-  is_draft?: boolean;
-  received_at: string;
-  has_attachments?: boolean;
-  attachments?: EmailAttachment[];
-}
-
 interface ComposeAttachment {
   id: string;
   file: File;
@@ -219,30 +172,6 @@ interface AddMailAccountResponse {
 interface MailSyncResponse {
   message?: string;
   newEmails?: number;
-}
-
-interface MailUnreadCountsResponse {
-  unreadByFolder?: Record<string, number>;
-  unreadByFolderAccount?: Record<string, Record<string, number>>;
-}
-
-interface MailFolder {
-  id: string;
-  slug: string;
-  display_name: string;
-  is_system: boolean;
-  position: number;
-  total_count?: number;
-  unread_count?: number;
-}
-
-interface MailContact {
-  id: string;
-  first_name: string;
-  last_name: string | null;
-  email: string | null;
-  email2: string | null;
-  email3: string | null;
 }
 
 interface ContactEmailSuggestion {
@@ -279,9 +208,6 @@ type FolderMode = string;
 
 const ALL_ACCOUNTS: AccountMode = 'all';
 const ALL_MAIL: FolderMode = 'all';
-const MAIL_ATTACHMENT_MAX_COUNT = 20;
-const MAIL_ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024;
-const MAIL_ATTACHMENTS_TOTAL_MAX_BYTES = 25 * 1024 * 1024;
 
 const initialAccountForm: AccountFormState = {
   email_address: '',
@@ -298,21 +224,6 @@ const initialAccountForm: AccountFormState = {
   try_calendar_sync: false,
   caldav_url: '',
 };
-
-const escapeHtml = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-
-const plainTextToHtml = (value: string) =>
-  escapeHtml(value || '')
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.replace(/\n/g, '<br>'))
-    .map((paragraph) => `<p>${paragraph || '<br>'}</p>`)
-    .join('');
 
 const getContactDisplayName = (contact: MailContact) =>
   [contact.first_name, contact.last_name].filter(Boolean).join(' ').trim();
@@ -337,57 +248,6 @@ const deriveContactNameFromEmail = (email: Email) => {
   };
 };
 
-const sanitizeReturnTo = (value: string | null) => {
-  if (!value) return null;
-  if (!value.startsWith('/') || value.startsWith('//') || /^https?:\/\//i.test(value)) return null;
-  if (value.startsWith('/auth')) return null;
-  return value;
-};
-
-const isComposeHtmlEmpty = (value: string) =>
-  !value
-    .replace(/<style[\s\S]*?<\/style>/gi, '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .trim();
-
-const isComposeMeaningful = (
-  form: { to: string; subject: string; body: string },
-  newAttachmentsCount: number,
-  existingAttachmentsCount = 0
-) =>
-  Boolean(
-    form.to.trim() ||
-    form.subject.trim() ||
-    !isComposeHtmlEmpty(form.body) ||
-    newAttachmentsCount > 0 ||
-    existingAttachmentsCount > 0
-  );
-
-const validateComposeAttachments = (
-  existingAttachments: Array<{ filename: string; size: number }>,
-  newFiles: File[]
-) => {
-  const combinedCount = existingAttachments.length + newFiles.length;
-  if (combinedCount > MAIL_ATTACHMENT_MAX_COUNT) {
-    return `You can attach at most ${MAIL_ATTACHMENT_MAX_COUNT} files.`;
-  }
-
-  const oversizedFile = newFiles.find(file => file.size > MAIL_ATTACHMENT_MAX_BYTES);
-  if (oversizedFile) {
-    return `"${oversizedFile.name}" is larger than the 15 MB attachment limit.`;
-  }
-
-  const totalBytes = existingAttachments.reduce((total, attachment) => total + attachment.size, 0)
-    + newFiles.reduce((total, file) => total + file.size, 0);
-  if (totalBytes > MAIL_ATTACHMENTS_TOTAL_MAX_BYTES) {
-    return 'Attachments exceed the 25 MB total limit.';
-  }
-
-  return null;
-};
-
 const getServerDeleteStatus = (account: MailAccount) => {
   if (!account.delete_emails_on_server) return null;
   const counts = account.server_delete_counts;
@@ -410,7 +270,7 @@ const MailPage = () => {
   const isMobile = useIsMobile();
   const [selectedAccount, setSelectedAccount] = useState<AccountMode | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
-  const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
+  const { selectedEmail, setSelectedEmail, isReaderLoading, closeReader, loadEmail } = useMailReader();
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [composeMode, setComposeMode] = useState<'new' | 'reply' | 'forward'>('new');
@@ -422,6 +282,7 @@ const MailPage = () => {
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const debouncedSearch = useDebouncedValue(searchQuery.trim());
   const [emailPage, setEmailPage] = useState(1);
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [pendingHostTrust, setPendingHostTrust] = useState<PendingHostTrust | null>(null);
@@ -476,34 +337,9 @@ const MailPage = () => {
     }
   }, [composeForm.body, isComposeOpen, isReplying]);
 
-  // Fetch mail accounts
-  const { data: accounts = [], isLoading: accountsLoading } = useQuery({
-    queryKey: ['mail-accounts'],
-    queryFn: async () => {
-      const response = await api.get<{ accounts: MailAccount[] }>('/mail/accounts');
-      if (response.error) throw new Error(response.error);
-      return response.data?.accounts || [];
-    },
-  });
-
-  const { data: contactsForCompose = [] } = useQuery({
-    queryKey: ['contacts', 'mail-autocomplete'],
-    queryFn: async () => {
-      const response = await api.get<{ contacts: MailContact[] }>('/contacts?limit=2000');
-      if (response.error) throw new Error(response.error);
-      return response.data?.contacts || [];
-    },
-    staleTime: 5 * 60 * 1000,
-  });
-
-  const { data: mailFolders = [] } = useQuery({
-    queryKey: ['mail-folders'],
-    queryFn: async () => {
-      const response = await api.get<{ folders: MailFolder[] }>('/mail/folders');
-      if (response.error) throw new Error(response.error);
-      return response.data?.folders || [];
-    },
-  });
+  const { data: accounts = [], isLoading: accountsLoading } = useMailAccounts();
+  const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
+  const { data: mailFolders = [] } = useMailFolders();
 
   const folders = React.useMemo(() => {
     const systemBySlug = new Map(systemFolders.map(folder => [folder.id, folder]));
@@ -537,26 +373,7 @@ const MailPage = () => {
     [folders]
   );
 
-  const { data: unreadCountsData } = useQuery({
-    queryKey: ['mail-unread-counts', selectedAccount],
-    queryFn: async () => {
-      if (!selectedAccount) return { unreadByFolder: {} } as MailUnreadCountsResponse;
-
-      const params = new URLSearchParams();
-      if (selectedAccount !== ALL_ACCOUNTS) {
-        params.set('account_id', selectedAccount);
-      }
-      params.set('include_by_account', 'true');
-
-      const query = params.toString();
-      const response = await api.get<MailUnreadCountsResponse>(
-        `/mail/unread-counts${query ? `?${query}` : ''}`
-      );
-      if (response.error) throw new Error(response.error);
-      return response.data || { unreadByFolder: {} };
-    },
-    enabled: !!selectedAccount,
-  });
+  const { data: unreadCountsData } = useMailUnreadCounts(selectedAccount);
 
   const unreadByFolder = unreadCountsData?.unreadByFolder || {};
 
@@ -595,106 +412,11 @@ const MailPage = () => {
   // Reset to page 1 when search query or unread filter changes
   useEffect(() => {
     setEmailPage(1);
-  }, [searchQuery, showUnreadOnly]);
+  }, [debouncedSearch, showUnreadOnly]);
 
-  // Fetch email count for smart refresh (only refetch emails when count changes)
-  const emailsPerPage = 50;
-  const previousEmailCount = React.useRef<number | null>(null);
-  
-  const { data: emailCountData } = useQuery({
-    queryKey: ['email-count', selectedAccount, selectedFolder],
-    queryFn: async () => {
-      if (!selectedAccount) return { total: 0 };
-
-      const folder = selectedFolder;
-      const params = new URLSearchParams({
-        limit: '1',
-        offset: '0',
-        include_count: 'true',
-      });
-
-      if (selectedAccount !== ALL_ACCOUNTS) {
-        params.set('account_id', selectedAccount);
-      }
-      if (folder !== ALL_MAIL) {
-        params.set('folder', folder);
-      }
-      if (selectedFolder === 'starred') {
-        params.set('is_starred', 'true');
-      }
-
-      const response = await api.get<{ emails: Email[]; pagination?: { total: number } }>(
-        `/mail/emails?${params.toString()}`
-      );
-      if (response.error) return { total: 0 };
-      return { total: response.data?.pagination?.total || 0 };
-    },
-    enabled: !!selectedAccount,
-    refetchInterval: 60000, // Check count periodically without competing with folder navigation
-    refetchIntervalInBackground: false,
-    staleTime: 0,
-  });
-
-  // Track when count changes and invalidate emails query
-  React.useEffect(() => {
-    const currentCount = emailCountData?.total || 0;
-    if (previousEmailCount.current !== null && currentCount !== previousEmailCount.current && currentCount > previousEmailCount.current) {
-      console.log(`[MailPage] Email count changed: ${previousEmailCount.current} -> ${currentCount}, invalidating emails query`);
-      queryClient.invalidateQueries({ queryKey: ['emails', selectedAccount, selectedFolder] });
-    }
-    previousEmailCount.current = currentCount;
-  }, [emailCountData?.total, selectedAccount, selectedFolder, queryClient]);
-  
-  // Reset count when account or folder changes
-  React.useEffect(() => {
-    previousEmailCount.current = null;
-  }, [selectedAccount, selectedFolder]);
-
-  // Fetch paginated emails with server-side filters
-  const { data: emailsData, isLoading: emailsLoading } = useQuery({
-    queryKey: ['emails', selectedAccount, selectedFolder, emailPage, searchQuery, showUnreadOnly],
-    queryFn: async () => {
-      if (!selectedAccount) return { emails: [], pagination: null };
-      
-      const folder = selectedFolder;
-      const offset = (emailPage - 1) * emailsPerPage;
-      const params = new URLSearchParams({
-        limit: String(emailsPerPage),
-        offset: String(offset),
-      });
-
-      if (selectedAccount !== ALL_ACCOUNTS) {
-        params.set('account_id', selectedAccount);
-      }
-      if (folder !== ALL_MAIL) {
-        params.set('folder', folder);
-      }
-
-      if (showUnreadOnly) {
-        params.set('is_read', 'false');
-      }
-
-      if (selectedFolder === 'starred') {
-        params.set('is_starred', 'true');
-      }
-
-      const trimmedSearch = searchQuery.trim();
-      if (trimmedSearch) {
-        params.set('search', trimmedSearch);
-      }
-      
-      const response = await api.get<{ emails: Email[]; pagination?: { total: number; limit: number; offset: number; page: number; totalPages: number } }>(
-        `/mail/emails?${params.toString()}`
-      );
-      if (response.error) throw new Error(response.error);
-
-      return {
-        emails: response.data?.emails || [],
-        pagination: response.data?.pagination || null,
-      };
-    },
-    enabled: !!selectedAccount,
-    staleTime: 60000, // Consider data fresh for 60 seconds (will be invalidated when count changes)
+  const { data: emailsData, isLoading: emailsLoading } = useMailList({
+    account: selectedAccount, folder: selectedFolder, page: emailPage,
+    search: debouncedSearch, unreadOnly: showUnreadOnly,
   });
 
   const emails = React.useMemo(() => emailsData?.emails ?? [], [emailsData?.emails]);
@@ -726,14 +448,6 @@ const MailPage = () => {
     Boolean((error as MailHostTrustError).requiresHostTrustConfirmation && (error as MailHostTrustError).mailHostTrust)
   );
   
-  // Debug logging
-  React.useEffect(() => {
-    if (selectedAccount && !emailsLoading) {
-      console.log(`[MailPage] Emails loaded: ${emails.length} emails for account ${selectedAccount}, folder ${selectedFolder}`);
-      console.log(`[MailPage] Pagination:`, pagination);
-    }
-  }, [emails.length, selectedAccount, selectedFolder, emailsLoading, pagination]);
-
   // Add mail account mutation (backend verifies host safety, certificate trust, then IMAP auth)
   const addAccount = useMutation({
     mutationFn: async (account: AccountFormState & { accept_host_trust?: boolean }) => {
@@ -862,7 +576,7 @@ const MailPage = () => {
       if (selectedEmail && selectedEmail.id === variables.id) {
         setSelectedEmail({ ...selectedEmail, is_starred: variables.is_starred });
       }
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      void invalidateMailQueries(queryClient);
     },
   });
 
@@ -873,10 +587,7 @@ const MailPage = () => {
       if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
-      queryClient.invalidateQueries({ queryKey: ['stats'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      void invalidateMailQueries(queryClient);
     },
   });
 
@@ -890,95 +601,36 @@ const MailPage = () => {
       if (selectedEmail?.id === id) {
         setSelectedEmail({ ...selectedEmail, is_read });
       }
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
-      queryClient.invalidateQueries({ queryKey: ['stats'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      void invalidateMailQueries(queryClient);
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to update read status', description: error.message, variant: 'destructive' });
     },
   });
 
-  const openDraftForCompose = React.useCallback(async (draftOrFallback: Email) => {
-    try {
-      const response = await api.get<{ email: Email }>(`/mail/emails/${draftOrFallback.id}`);
-      if (response.error) {
-        toast({ title: 'Failed to load draft', description: response.error, variant: 'destructive' });
-        return;
-      }
-      const draft = response.data?.email || draftOrFallback;
-      setSelectedEmail(null);
-      setComposeMode('new');
-      setActiveDraftId(draft.id);
-      setExistingDraftAttachments(draft.attachments || []);
-      setComposeAttachments([]);
-      setAttachmentsDirty(false);
-      setIsComposeDirty(false);
-      setDraftSavedAt(draft.received_at || new Date().toISOString());
-      setComposeForm({
-        to: draft.to_addresses?.join(', ') || '',
-        subject: draft.subject || '',
-        body: draft.body_html || (draft.body_text ? plainTextToHtml(draft.body_text) : ''),
-      });
-      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount !== draft.mail_account_id) {
-        setSelectedAccount(draft.mail_account_id);
-      }
-      setIsReplying(false);
-      setIsComposeOpen(true);
-    } catch (error) {
-      toast({
-        title: 'Failed to load draft',
-        description: error instanceof Error ? error.message : 'Could not open draft',
-        variant: 'destructive',
-      });
-    }
-  }, [selectedAccount, toast]);
+  const openDraftForCompose = React.useCallback((draft: Email) => {
+    setComposeMode('new');
+    setActiveDraftId(draft.id);
+    setExistingDraftAttachments(draft.attachments || []);
+    setComposeAttachments([]);
+    setAttachmentsDirty(false);
+    setIsComposeDirty(false);
+    setDraftSavedAt(draft.received_at || new Date().toISOString());
+    setComposeForm({
+      to: draft.to_addresses?.join(', ') || '',
+      subject: draft.subject || '',
+      body: draft.body_html || (draft.body_text ? plainTextToHtml(draft.body_text) : ''),
+    });
+    setSelectedAccount(draft.mail_account_id);
+    setIsReplying(false);
+    setIsComposeOpen(true);
+  }, []);
 
-  const loadEmailForReader = React.useCallback(async (emailId: string, fallbackEmail?: Email) => {
-    if (fallbackEmail?.is_draft || fallbackEmail?.folder === 'drafts') {
-      await openDraftForCompose(fallbackEmail);
-      return;
-    }
-
-    if (fallbackEmail && !fallbackEmail.is_read) {
-      markAsRead.mutate(fallbackEmail.id);
-    }
-
-    try {
-      const response = await api.get<{ email: Email }>(`/mail/emails/${emailId}`);
-      if (response.error) {
-        toast({ title: 'Failed to load email', description: response.error, variant: 'destructive' });
-        return;
-      }
-
-      if (response.data?.email) {
-        const fetchedEmail = response.data.email;
-        if (fetchedEmail.is_draft || fetchedEmail.folder === 'drafts') {
-          await openDraftForCompose(fetchedEmail);
-          return;
-        }
-        if (!fetchedEmail.is_read) {
-          markAsRead.mutate(fetchedEmail.id);
-          setSelectedEmail({ ...fetchedEmail, is_read: true });
-        } else {
-          setSelectedEmail(fetchedEmail);
-        }
-        return;
-      }
-
-      if (fallbackEmail) {
-        setSelectedEmail(fallbackEmail.is_read ? fallbackEmail : { ...fallbackEmail, is_read: true });
-      }
-    } catch (error) {
-      console.error('Error loading email:', error);
-      if (fallbackEmail) {
-        setSelectedEmail(fallbackEmail.is_read ? fallbackEmail : { ...fallbackEmail, is_read: true });
-      } else {
-        toast({ title: 'Failed to load email', variant: 'destructive' });
-      }
-    }
-  }, [markAsRead, openDraftForCompose, toast]);
+  const loadEmailForReader = React.useCallback((emailId: string) => loadEmail(emailId, {
+    onDraft: openDraftForCompose,
+    onMarkRead: (id) => markAsRead.mutate(id),
+    onError: (message) => toast({ title: 'Failed to load email', description: message, variant: 'destructive' }),
+  }), [loadEmail, markAsRead, openDraftForCompose, toast]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1018,10 +670,7 @@ const MailPage = () => {
       return emailIds.length;
     },
     onSuccess: (count, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
-      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({
         title: `Moved ${count} email(s) to trash`,
@@ -1055,9 +704,7 @@ const MailPage = () => {
       if (response.error) throw new Error(response.error);
     },
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({ title: `✓ Moved ${variables.emailIds.length} email(s) to ${variables.folder}` });
     },
@@ -1073,10 +720,7 @@ const MailPage = () => {
       return response.data;
     },
     onSuccess: (data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
-      queryClient.invalidateQueries({ queryKey: ['stats'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({ 
         title: `✓ Marked ${variables.emailIds.length} email(s) as ${variables.is_read ? 'read' : 'unread'}`,
@@ -1098,7 +742,7 @@ const MailPage = () => {
       if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
     },
   });
@@ -1144,9 +788,7 @@ const MailPage = () => {
       return slug;
     },
     onSuccess: (slug) => {
-      queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+      void invalidateMailQueries(queryClient);
       if (selectedFolder === slug) setSelectedFolder('inbox');
       toast({ title: 'Folder deleted', description: 'Messages and rules were moved back to Inbox.' });
     },
@@ -1248,9 +890,7 @@ const MailPage = () => {
       return response.data ?? {};
     },
     onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
-      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      void invalidateMailQueries(queryClient);
       
       const msg = data.message || `${data.newEmails || 0} new emails`;
       toast({ 
@@ -1660,8 +1300,7 @@ const MailPage = () => {
       }
       setIsComposeDirty(false);
       setDraftSavedAt(new Date().toISOString());
-      queryClient.invalidateQueries({ queryKey: ['emails'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+      void invalidateMailQueries(queryClient);
       if (!options.quiet) toast({ title: 'Draft saved' });
       return savedDraft;
     } catch (error) {
@@ -1714,9 +1353,7 @@ const MailPage = () => {
   const deleteDraftById = async (draftId: string) => {
     const response = await api.delete(`/mail/drafts/${draftId}`);
     if (response.error) throw new Error(response.error);
-    queryClient.invalidateQueries({ queryKey: ['emails'] });
-    queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
-    queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+    void invalidateMailQueries(queryClient);
   };
 
   const discardCurrentCompose = async () => {
@@ -1965,8 +1602,7 @@ const MailPage = () => {
         const response = await api.post(`/mail/drafts/${draftId}/send`);
         if (response.error) throw new Error(response.error);
         toast({ title: '✓ Email sent successfully' });
-        queryClient.invalidateQueries({ queryKey: ['emails'] });
-        queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+        void invalidateMailQueries(queryClient);
         closeComposeFlow({ force: true });
         return;
       }
@@ -2673,7 +2309,7 @@ const MailPage = () => {
                       if ((e.target as HTMLElement).closest('.email-checkbox')) {
                         return;
                       }
-                      await loadEmailForReader(email.id, email);
+                      await loadEmailForReader(email.id);
                     }}
                     onContextMenu={(e) => {
                       e.preventDefault();
@@ -2814,6 +2450,8 @@ const MailPage = () => {
         </div>
       </div>
 
+      {isReaderLoading && <div role="status" className="fixed bottom-24 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-md border bg-card p-3 shadow-lg"><Loader2 className="h-4 w-4 animate-spin" />Loading email…<Button size="sm" variant="ghost" onClick={closeReader}>Cancel</Button></div>}
+
       {/* Context Menu */}
       {contextMenuEmail && (
         <>
@@ -2920,7 +2558,7 @@ const MailPage = () => {
                       closeComposeFlow();
                       return;
                     }
-                    setSelectedEmail(null);
+                    closeReader();
                     resetComposeState();
                   }}
                 >

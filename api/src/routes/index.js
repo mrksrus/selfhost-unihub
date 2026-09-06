@@ -10,4 +10,6 @@ module.exports = {
   ...require('./mail'),
   ...require('./admin'),
   ...require('./games'),
+  ...require('./notifications'),
+  ...require('./offline'),
 };

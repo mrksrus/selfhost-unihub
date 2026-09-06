@@ -1,36 +1,40 @@
+import UpdatePrompt from '@/components/pwa/UpdatePrompt';
+import { ThemeProvider } from '@/components/theme/ThemeProvider';
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { lazy, Suspense } from "react";
+import { SessionQueryProvider } from "@/components/SessionQueryProvider";
+import { useAuth } from "@/contexts/useAuth";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import AppLayout from "@/components/layout/AppLayout";
 import InstallPrompt from "@/components/pwa/InstallPrompt";
-import Auth from "./pages/Auth";
-import Dashboard from "./pages/Dashboard";
-import Contacts from "./pages/Contacts";
-import CalendarPage from "./pages/CalendarPage";
-import MailPage from "./pages/MailPage";
-import TodoPage from "./pages/TodoPage";
-import Settings from "./pages/Settings";
-import AdminUsers from "./pages/AdminUsers";
-import NotFound from "./pages/NotFound";
-import Games from "./pages/Games";
-import Recordings from "./pages/Recordings";
-import Music from "./pages/Music";
-import More from "./pages/More";
-import AdminSettings from "./pages/AdminSettings";
-import StartRedirect from "./pages/StartRedirect";
+const Auth = lazy(() => import("./pages/Auth"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Contacts = lazy(() => import("./pages/Contacts"));
+const CalendarPage = lazy(() => import("./pages/CalendarPage"));
+const MailPage = lazy(() => import("./pages/MailPage"));
+const TodoPage = lazy(() => import("./pages/TodoPage"));
+const Settings = lazy(() => import("./pages/Settings"));
+const AdminUsers = lazy(() => import("./pages/AdminUsers"));
+const NotFound = lazy(() => import("./pages/NotFound"));
+const Games = lazy(() => import("./pages/Games"));
+const Recordings = lazy(() => import("./pages/Recordings"));
+const Music = lazy(() => import("./pages/Music"));
+const More = lazy(() => import("./pages/More"));
+const AdminSettings = lazy(() => import("./pages/AdminSettings"));
+const StartRedirect = lazy(() => import("./pages/StartRedirect"));
 
-const queryClient = new QueryClient();
-
-const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <AuthProvider>
+const AuthenticatedApp = () => {
+  const { user } = useAuth();
+  return (
+    <SessionQueryProvider key={user?.id ?? "signed-out"}>
       <TooltipProvider>
         <Toaster />
         <Sonner />
         <BrowserRouter>
+          <Suspense fallback={<div role="status" className="flex min-h-[40vh] items-center justify-center text-muted-foreground">Loading…</div>}>
           <Routes>
             <Route path="/auth" element={<Auth />} />
             <Route element={<AppLayout />}>
@@ -50,11 +54,15 @@ const App = () => (
             </Route>
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </Suspense>
           <InstallPrompt />
+          <UpdatePrompt />
         </BrowserRouter>
       </TooltipProvider>
-    </AuthProvider>
-  </QueryClientProvider>
-);
+    </SessionQueryProvider>
+  );
+};
+
+const App = () => <ThemeProvider><AuthProvider><AuthenticatedApp /></AuthProvider></ThemeProvider>;
 
 export default App;

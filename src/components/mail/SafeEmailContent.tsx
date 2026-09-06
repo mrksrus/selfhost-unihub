@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
 
 interface SafeEmailContentProps {
@@ -13,12 +14,36 @@ function htmlHasRemoteContent(html: string) {
 }
 
 export function SafeEmailContent({ emailId, bodyHtml, bodyText }: SafeEmailContentProps) {
-  const [allowRemoteContent, setAllowRemoteContent] = useState(false);
+  const [remoteContentEmailId, setRemoteContentEmailId] = useState<string | null>(null);
+  const allowRemoteContent = remoteContentEmailId === emailId;
+  const { resolvedTheme } = useTheme();
+  const [originalEmailId, setOriginalEmailId] = useState<string | null>(null);
+  const original = originalEmailId === emailId;
+  const readableText = useMemo(() => {
+    if (bodyText) return bodyText;
+    if (!bodyHtml) return '(No content)';
+    const template = document.createElement('template');
+    template.innerHTML = bodyHtml;
+    const content = template.content;
+    content.querySelectorAll('script, style, noscript, template').forEach(node => node.remove());
+    content.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
+    content.querySelectorAll('p, div, tr, li, h1, h2, h3').forEach(node => node.append('\n'));
+    return content.textContent?.trim() || '(No text content. Open the original email to view it.)';
+  }, [bodyText, bodyHtml]);
   const hasRemoteContent = useMemo(
     () => (bodyHtml ? htmlHasRemoteContent(bodyHtml) : false),
     [bodyHtml]
   );
 
+  if (bodyHtml && resolvedTheme === 'dark' && !original) {
+    return <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 p-3">
+        <span className="text-sm text-muted-foreground">Dark reading view</span>
+        <Button type="button" size="sm" variant="outline" onClick={() => setOriginalEmailId(emailId)}>Original email appearance</Button>
+      </div>
+      <div className="whitespace-pre-wrap break-words text-foreground">{readableText}</div>
+    </div>;
+  }
   if (bodyHtml) {
     const imageSources = allowRemoteContent
       ? "'self' data: blob: http: https:"
@@ -53,6 +78,7 @@ export function SafeEmailContent({ emailId, bodyHtml, bodyText }: SafeEmailConte
 
     return (
       <div className="space-y-3">
+        {resolvedTheme === 'dark' && <Button type="button" size="sm" variant="outline" onClick={() => setOriginalEmailId(null)}>Dark reading view</Button>}
         {hasRemoteContent && !allowRemoteContent && (
           <div className="flex flex-col gap-3 rounded-md border border-border bg-muted/40 p-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-muted-foreground">
@@ -63,7 +89,7 @@ export function SafeEmailContent({ emailId, bodyHtml, bodyText }: SafeEmailConte
               variant="secondary"
               size="sm"
               className="w-full sm:w-auto"
-              onClick={() => setAllowRemoteContent(true)}
+              onClick={() => setRemoteContentEmailId(emailId)}
             >
               Load remote content
             </Button>

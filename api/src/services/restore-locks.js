@@ -39,7 +39,22 @@ async function isSectionRestoreActive(userId, section) {
   return sections.has(section);
 }
 
+async function getActiveRestoreSectionsByUser(connection = db) {
+  const [rows] = await connection.execute(
+    `SELECT user_id, requested_sections FROM backup_restore_jobs
+     WHERE status IN ('queued', 'running', 'cancelling')`
+  );
+  const active = new Map();
+  for (const row of rows) {
+    const sections = active.get(row.user_id) || new Set();
+    for (const section of normalizeSections(row.requested_sections)) sections.add(section);
+    active.set(row.user_id, sections);
+  }
+  return active;
+}
+
 module.exports = {
   getActiveRestoreSections,
   isSectionRestoreActive,
+  getActiveRestoreSectionsByUser,
 };

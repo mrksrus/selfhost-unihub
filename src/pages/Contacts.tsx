@@ -1,3 +1,5 @@
+import { contactsQueryOptions, type Contact } from '@/lib/contacts-api';
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useState, useEffect, useRef, useCallback, useMemo, type MouseEvent } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -48,23 +50,6 @@ import {
 
 type ContactGroup = 'all' | 'name_only' | 'number_or_email_only' | 'duplicates';
 
-interface Contact {
-  id: string;
-  first_name: string;
-  last_name: string | null;
-  email: string | null;
-  email2: string | null;
-  email3: string | null;
-  phone: string | null;
-  phone2: string | null;
-  phone3: string | null;
-  company: string | null;
-  job_title: string | null;
-  notes: string | null;
-  avatar_url: string | null;
-  is_favorite: boolean;
-}
-
 interface MergeDuplicatesResult {
   merged: number;
   removed: number;
@@ -87,17 +72,6 @@ interface MergePreviewResult {
 }
 
 const SEARCH_DEBOUNCE_MS = 300;
-
-function useDebouncedValue<T>(value: T, delay: number): T {
-  const [debouncedValue, setDebouncedValue] = useState<T>(value);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedValue(value), delay);
-    return () => clearTimeout(timer);
-  }, [value, delay]);
-
-  return debouncedValue;
-}
 
 const Contacts = () => {
   const { toast } = useToast();
@@ -157,21 +131,8 @@ const Contacts = () => {
     }
   }, []);
 
-  // Fetch all contacts once, then filter on the client.
-  // This avoids blank lists when server-side group filters drift from UI logic.
-  const { data: allContacts = [], isLoading, error: contactsError } = useQuery({
-    queryKey: ['contacts'],
-    queryFn: async () => {
-      const response = await api.get<{ contacts: Contact[] }>('/contacts');
-      if (response.error) throw new Error(response.error);
-      const list = response.data?.contacts;
-      return Array.isArray(list) ? list : [];
-    },
-    // Cache contacts for a while and avoid refetching on every tab focus/reconnect.
-    staleTime: 5 * 60 * 1000,
-    refetchOnWindowFocus: false,
-    refetchOnReconnect: false,
-  });
+  // Complete the paginated API before applying client group/duplicate semantics.
+  const { data: allContacts = [], isLoading, error: contactsError } = useQuery(contactsQueryOptions);
 
   const duplicateMeta = useMemo(() => {
     const normalizeEmail = (value: string | null | undefined) => (value || '').trim().toLowerCase();

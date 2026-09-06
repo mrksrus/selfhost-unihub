@@ -86,7 +86,7 @@ function serializeCalendarCalendar(row) {
     account_id: row.account_id,
     name: row.name,
     external_id: row.external_id || null,
-    color: row.color || '#22c55e',
+    color: row.color || '#2563eb',
     is_visible: !!row.is_visible,
     auto_todo_enabled: !!row.auto_todo_enabled,
     read_only: !!row.read_only,
@@ -127,7 +127,7 @@ async function ensureDefaultLocalCalendarForUser(userId, connection = db) {
     `INSERT INTO calendar_calendars
       (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
      VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
-    [calendarId, userId, accountId, 'Default', 'local-default', '#22c55e']
+    [calendarId, userId, accountId, 'Default', 'local-default', '#2563eb']
   );
 
   return { accountId, calendarId };

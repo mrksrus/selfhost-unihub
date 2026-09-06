@@ -19,6 +19,8 @@ management, and a PWA shell in one installable browser app.
 | Area | What exists now |
 | --- | --- |
 | Mail | IMAP sync, SMTP send, attachments, app-owned folders, sender routing rules, unread counts, bulk read/star/move/delete, background sync |
+| Appearance | Black dark mode, white text and blue accents by default, with Light/System preferences |
+| Offline reading | Opt-in latest 100 full emails, all contacts and events; read-only per-device snapshots with explicit clearing |
 | Contacts | Search, favorites, import/export vCard 3.0, up to three emails and phone numbers per contact, duplicate preview/merge, bulk delete |
 | Calendar and ToDo | Local calendar accounts, multiple calendars, visibility/color settings, attendees, RSVP state, reminders, subtasks, standalone to-dos |
 | CalDAV import | Optional CalDAV discovery/import when adding a mail account; imports supported non-recurring events into calendar tables |
@@ -26,7 +28,7 @@ management, and a PWA shell in one installable browser app.
 | Backups | Encrypted-by-default full/section backups, one-time recovery passwords, portable account credentials, background validation/restore, cancellation, and server-retained restore points |
 | Admin | Bootstrap admin, signup mode control, account approval/deactivation, role changes, password resets, user deletion |
 | Security baseline | HttpOnly cookie auth, CSRF tokens, 2FA, rate limiting, strict mail TLS by default, SSRF checks for mail/CalDAV hosts, sandboxed email HTML |
-| PWA | Installable frontend, app manifest/icons, service worker caching, background notification checks |
+| PWA | Installable frontend, Web Push notifications, calendar reminders, optional offline reading |
 
 ## Architecture
 
@@ -123,6 +125,8 @@ recovery.
 
 ## Local Development
 
+Use Node.js 24 LTS or newer. Node 24 is the tested container/CI runtime.
+
 Install frontend dependencies:
 
 ```bash
@@ -149,15 +153,20 @@ The backend requires MySQL configuration through either `DATABASE_URL` or
 Useful checks:
 
 ```bash
+npm run typecheck
 npm run lint
 npm run test
+npm run build
 node --test api/tests/*.test.js
 ```
 
 ## Documentation
 
+See the [0.10.0 release notes](docs/RELEASE_0.10.0.md) for migration and notification setup details.
+
 | Document | Covers |
 | --- | --- |
+| [Offline reading and appearance](docs/OFFLINE.md) | Device snapshots, limits, dark reading, and update prompts |
 | [Architecture](docs/ARCHITECTURE.md) | Runtime layout, storage, request handling, scheduled jobs |
 | [Auth, Admin, Settings](docs/AUTH_ADMIN_SETTINGS.md) | Sessions, CSRF, 2FA, signup modes, admin endpoints, preferences, search |
 | [Mail Sync](docs/MAIL_SYNC.md) | IMAP/SMTP behavior, folders, routing rules, TLS/host trust checks |
@@ -166,6 +175,7 @@ node --test api/tests/*.test.js
 | [Calendar](docs/CALENDAR.md) | Calendar/to-do data model, local calendars, CalDAV import, endpoints |
 | [Recordings](docs/RECORDINGS.md) | Audio upload protocol, tags, storage, limits |
 | [Backup and Restore Guide](docs/BACKUP_RESTORE.md) | Backup contents, encryption, recovery passwords, merge rules, background jobs, retention, API, and troubleshooting |
+| [PWA Guide](docs/PWA.md) | Installation, Web Push, device permissions, delivery limits, and notification persistence |
 
 ## Known Limitations
 

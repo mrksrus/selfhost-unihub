@@ -19,6 +19,7 @@ const {
   toBooleanFlag,
   loadActiveMailSenderRules,
   resolveMailSenderTargetFolder,
+  createMailRoutingContext,
   ensureDefaultMailFoldersForUser,
   normalizeSyncFetchLimit,
   seedMailServerDeletionQueueForAccount,
@@ -33,6 +34,7 @@ const {
   deleteStoredAttachmentFiles,
 } = require('../services/mail');
 const { createCalDavAccountForMail } = require('../services/caldav');
+const { saveDraftMutation } = require('../services/mail-drafts');
 
 const readFile = promisify(fs.readFile);
 const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
@@ -176,83 +178,6 @@ async function loadMailAccountForDraft(userId, accountId) {
   return accounts[0] || null;
 }
 
-function normalizeDraftAttachmentPayload(attachments) {
-  if (attachments === undefined) return null;
-  if (!Array.isArray(attachments)) {
-    const error = new Error('attachments must be an array');
-    error.status = 400;
-    throw error;
-  }
-  if (attachments.length > 20) {
-    const error = new Error('Too many attachments (max 20)');
-    error.status = 400;
-    throw error;
-  }
-
-  let totalBytes = 0;
-  return attachments.map((attachment, index) => {
-    if (!attachment || typeof attachment !== 'object') {
-      const error = new Error(`Invalid attachment at index ${index}`);
-      error.status = 400;
-      throw error;
-    }
-    const filename = String(attachment.filename || `attachment-${index + 1}`);
-    const contentType = String(attachment.contentType || attachment.content_type || 'application/octet-stream');
-    const dataBase64 = String(attachment.dataBase64 || '');
-    const content = Buffer.from(dataBase64, 'base64');
-    if (!dataBase64 || content.length === 0) {
-      const error = new Error(`Attachment "${filename}" is empty`);
-      error.status = 400;
-      throw error;
-    }
-    if (content.length > 15 * 1024 * 1024) {
-      const error = new Error(`Attachment "${filename}" exceeds 15MB limit`);
-      error.status = 400;
-      throw error;
-    }
-    totalBytes += content.length;
-    return { filename, contentType, content };
-  }).map((attachment) => {
-    if (totalBytes > 25 * 1024 * 1024) {
-      const error = new Error('Total attachment size exceeds 25MB limit');
-      error.status = 400;
-      throw error;
-    }
-    return attachment;
-  });
-}
-
-async function storeDraftAttachments({ userId, emailId, attachments }) {
-  const normalizedAttachments = normalizeDraftAttachmentPayload(attachments);
-  if (!normalizedAttachments || normalizedAttachments.length === 0) return 0;
-
-  const uploadsDir = path.join(MAIL_ATTACHMENT_UPLOAD_ROOT, userId);
-  await fs.promises.mkdir(uploadsDir, { recursive: true });
-
-  let count = 0;
-  for (const attachment of normalizedAttachments) {
-    const attachmentId = crypto.randomUUID();
-    const safeFilename = attachment.filename.replace(/[^a-zA-Z0-9._-]/g, '_') || `attachment-${attachmentId}`;
-    const storagePath = path.join(uploadsDir, `${emailId}-${attachmentId}-${safeFilename}`);
-    await fs.promises.writeFile(storagePath, attachment.content);
-    await db.execute(
-      'INSERT INTO email_attachments (id, email_id, user_id, filename, content_type, size_bytes, storage_path, content_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        attachmentId,
-        emailId,
-        userId,
-        attachment.filename,
-        attachment.contentType,
-        attachment.content.length,
-        storagePath,
-        null,
-      ]
-    );
-    count += 1;
-  }
-  return count;
-}
-
 async function loadDraftEmail(userId, draftId) {
   const [rows] = await db.execute(
     'SELECT * FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE LIMIT 1',
@@ -273,39 +198,6 @@ async function loadDraftEmail(userId, draftId) {
     has_attachments: !!draft.has_attachments,
     attachments: attachments || [],
   };
-}
-
-async function replaceDraftAttachments({ userId, emailId, keepAttachmentIds, attachments }) {
-  const shouldReplace = Array.isArray(keepAttachmentIds) || attachments !== undefined;
-  if (!shouldReplace) return;
-
-  const keepIds = new Set((keepAttachmentIds || []).map(id => String(id)));
-  const [existing] = await db.execute(
-    'SELECT id, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?',
-    [emailId, userId]
-  );
-  const removable = (existing || []).filter(row => !keepIds.has(String(row.id)));
-  if (removable.length > 0) {
-    const placeholders = removable.map(() => '?').join(',');
-    await db.execute(
-      `DELETE FROM email_attachments WHERE id IN (${placeholders}) AND email_id = ? AND user_id = ?`,
-      [...removable.map(row => row.id), emailId, userId]
-    );
-    await deleteStoredAttachmentFiles(removable.map(row => row.storage_path));
-  }
-
-  if (attachments !== undefined) {
-    await storeDraftAttachments({ userId, emailId, attachments });
-  }
-
-  const [countRows] = await db.execute(
-    'SELECT COUNT(*) AS total FROM email_attachments WHERE email_id = ? AND user_id = ?',
-    [emailId, userId]
-  );
-  await db.execute(
-    'UPDATE emails SET has_attachments = ? WHERE id = ? AND user_id = ?',
-    [(Number(countRows[0]?.total) || 0) > 0 ? 1 : 0, emailId, userId]
-  );
 }
 
 async function deleteDraftWithFiles(userId, draftId) {
@@ -621,15 +513,15 @@ module.exports = {
       for (const email of emails || []) {
         const ruleCacheKey = String(email.mail_account_id || '');
         if (!perAccountRules.has(ruleCacheKey)) {
-          const rules = await loadActiveMailSenderRules(userId, email.mail_account_id || null, db);
-          perAccountRules.set(ruleCacheKey, rules);
+          const context = await createMailRoutingContext(userId, email.mail_account_id || null, db);
+          perAccountRules.set(ruleCacheKey, context);
         }
         const resolved = await resolveMailSenderTargetFolder({
           userId,
           mailAccountId: email.mail_account_id || null,
           fromAddress: email.from_address || '',
           fallbackFolder: 'inbox',
-          rules: perAccountRules.get(ruleCacheKey),
+          routingContext: perAccountRules.get(ruleCacheKey),
           connection: db,
         });
         if (resolved.folder !== 'inbox') {
@@ -980,7 +872,7 @@ module.exports = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const id = req.url.split('/').pop();
+      const id = extractMailRouteId(req);
       const {
         email_address,
         display_name,
@@ -1144,7 +1036,7 @@ module.exports = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const id = req.url.split('/').pop();
+      const id = extractMailRouteId(req);
       const [attachments] = await db.execute(
         `SELECT a.storage_path
          FROM email_attachments a
@@ -1180,7 +1072,9 @@ module.exports = {
       const subject = String(body?.subject ?? '');
 
       await ensureDefaultMailFoldersForUser(userId);
-      await db.execute(
+      await saveDraftMutation({ db, userId, emailId: draftId, isNew: true, body,
+        deleteFiles: deleteStoredAttachmentFiles,
+        mutate: (connection) => connection.execute(
         `INSERT INTO emails
           (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses,
            body_text, body_html, has_attachments, received_at, folder, is_read, is_draft)
@@ -1198,19 +1092,8 @@ module.exports = {
           bodyHtml,
           MAIL_DRAFT_FOLDER,
         ]
-      );
-
-      if (body?.attachments !== undefined) {
-        await storeDraftAttachments({ userId, emailId: draftId, attachments: body.attachments });
-        const [countRows] = await db.execute(
-          'SELECT COUNT(*) AS total FROM email_attachments WHERE email_id = ? AND user_id = ?',
-          [draftId, userId]
-        );
-        await db.execute(
-          'UPDATE emails SET has_attachments = ? WHERE id = ? AND user_id = ?',
-          [(Number(countRows[0]?.total) || 0) > 0 ? 1 : 0, draftId, userId]
-        );
-      }
+        ),
+      });
 
       return { draft: await loadDraftEmail(userId, draftId) };
     } catch (error) {
@@ -1256,16 +1139,11 @@ module.exports = {
       }
 
       params.push(draftId, userId);
-      await db.execute(
-        `UPDATE emails SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_draft = TRUE`,
-        params
-      );
-
-      await replaceDraftAttachments({
-        userId,
-        emailId: draftId,
-        keepAttachmentIds: body?.existing_attachment_ids,
-        attachments: body?.attachments,
+      await saveDraftMutation({ db, userId, emailId: draftId, body,
+        deleteFiles: deleteStoredAttachmentFiles,
+        mutate: (connection) => connection.execute(
+          `UPDATE emails SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_draft = TRUE`, params
+        ),
       });
 
       return { draft: await loadDraftEmail(userId, draftId) };
@@ -1480,7 +1358,7 @@ module.exports = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const id = req.url.split('/').pop();
+      const id = extractMailRouteId(req);
       const [emails] = await db.execute(
         'SELECT * FROM emails WHERE id = ? AND user_id = ?',
         [id, userId]
@@ -1548,16 +1426,17 @@ module.exports = {
       
       // Read file from storage (must stay under attachments root)
       try {
-        const uploadsRoot = path.resolve('/app/uploads/attachments');
+        const uploadsRoot = path.resolve(MAIL_ATTACHMENT_UPLOAD_ROOT);
         const resolvedPath = path.resolve(attachment.storage_path || '');
         if (!resolvedPath.startsWith(`${uploadsRoot}${path.sep}`) && resolvedPath !== uploadsRoot) {
           console.error('[ATTACH] Rejected attachment path outside uploads root:', resolvedPath);
           return { error: 'Invalid attachment path', status: 400 };
         }
 
-        const fileContent = await readFile(resolvedPath);
+        const fileStat = await fs.promises.stat(resolvedPath);
+        if (!fileStat.isFile()) return { error: 'Attachment not found', status: 404 };
         
-        // Return as raw response for download
+        // Reuse the bounded-memory download response used by recordings/backups.
         // Ensure proper content type for PDFs and other common types
         let contentType = attachment.content_type || 'application/octet-stream';
         const filename = attachment.filename || 'download';
@@ -1574,7 +1453,8 @@ module.exports = {
         }
         
         return {
-          __raw: fileContent,
+          __streamPath: resolvedPath,
+          __contentLength: fileStat.size,
           __contentType: contentType,
           __filename: filename,
         };
@@ -1848,7 +1728,7 @@ module.exports = {
       debugLog('server.js:1442', 'POST /mail/send ERROR', { errorMessage: error.message, errorStack: error.stack?.substring(0, 200) }, 'H5');
       // #endregion
       console.error('Send email error:', error);
-      return { error: error.message || 'Failed to send email', status: 500 };
+      return { error: error.message || 'Failed to send email', status: error.status || 500 };
     }
   },
 };

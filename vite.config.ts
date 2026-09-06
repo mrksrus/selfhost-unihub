@@ -15,42 +15,16 @@ export default defineConfig(() => ({
   plugins: [
     react(),
     VitePWA({
-      registerType: "autoUpdate",
+      registerType: "prompt",
       includeAssets: ["favicon.ico", "favicon.svg", "robots.txt"],
       workbox: {
         navigateFallbackDenylist: [
           /^\/api\//,
         ],
-        runtimeCaching: [
-          {
-            urlPattern: ({ url, request }) =>
-              request.method === 'GET' &&
-              (url.pathname.startsWith('/api/mail/emails') || url.pathname.startsWith('/api/mail/attachments')),
-            handler: 'NetworkOnly',
-          },
-          {
-            urlPattern: ({ url, request }) => request.method === 'GET' && url.pathname.startsWith('/api/'),
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'local-api-cache',
-              expiration: {
-                maxEntries: 200,
-                maxAgeSeconds: 60,
-              },
-            },
-          },
-          {
-            urlPattern: /^https:\/\/api\./,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'api-cache',
-              expiration: {
-                maxEntries: 100,
-                maxAgeSeconds: 60,
-              },
-            },
-          },
-        ],
+        runtimeCaching: [{
+          urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
+          handler: 'NetworkOnly',
+        }],
         // Inject custom service worker code
         importScripts: ['/sw-custom.js'],
       },
@@ -60,8 +34,8 @@ export default defineConfig(() => ({
         description: "Your unified productivity suite for Contacts, Calendar, and Mail",
         start_url: "/",
         display: "standalone",
-        background_color: "#f5f7fa",
-        theme_color: "#1a2332",
+        background_color: "#000000",
+        theme_color: "#000000",
         orientation: "any",
         icons: [
           { src: "/icons/icon-512x512.svg", sizes: "any", type: "image/svg+xml", purpose: "any" },

@@ -12,6 +12,7 @@ const {
 } = require('./services/backup-restore-jobs');
 const { isSectionRestoreActive } = require('./services/restore-locks');
 const { handleRequest } = require('./request-handler');
+const { ensureNotificationSchema, processNotificationJobs } = require('./services/notifications');
 
 const MAIL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
 const MAIL_SERVER_DELETE_INTERVAL_MS = 60 * 1000;
@@ -20,6 +21,10 @@ let periodicMailServerDeleteRunning = false;
 
 async function start() {
   await initDatabase();
+  await ensureNotificationSchema();
+  const runNotifications = () => processNotificationJobs().catch(error => console.error('[NOTIFICATIONS] Worker failed:', error.message));
+  void runNotifications();
+  setInterval(runNotifications, 30 * 1000);
   try {
     const resumedBackupJobs = await resumePendingDataExportJobs();
     if (resumedBackupJobs > 0) {

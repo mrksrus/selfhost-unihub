@@ -1,8 +1,10 @@
+import { isOfflineMode, readOfflineResponse } from '@/lib/offline';
+
 // API client for UniHub backend
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
-interface ApiResponse<T> {
+export interface ApiResponse<T> {
   data?: T;
   error?: string;
   status?: number;
@@ -102,6 +104,10 @@ class ApiClient {
 
     // Add CSRF token for state-changing requests (POST, PUT, DELETE)
     const method = options.method?.toUpperCase() || 'GET';
+    const isSessionAction = ['/auth/signin', '/auth/signup', '/auth/2fa/login', '/auth/signout'].includes(endpoint);
+    if (method !== 'GET' && !isSessionAction && (isOfflineMode() || isBrowserOffline())) {
+      return { error: 'Offline mode is read-only. Reconnect and sign in before making changes.' };
+    }
     if (this.csrfToken && ['POST', 'PUT', 'DELETE'].includes(method)) {
       headers['X-CSRF-Token'] = this.csrfToken;
     }
@@ -126,7 +132,7 @@ class ApiClient {
         };
       }
 
-      let data: Record<string, unknown>;
+      let data: unknown;
       try {
         data = await response.json();
       } catch {
@@ -137,31 +143,42 @@ class ApiClient {
       }
 
       if (!response.ok) {
+        if (response.status === 401 && !endpoint.startsWith('/auth/')) {
+          window.dispatchEvent(new Event('unihub:session-expired'));
+        }
+        const errorData = data && typeof data === 'object' ? data as Record<string, unknown> : {};
         return {
-          ...data,
+          ...errorData,
           status: response.status,
-          error: typeof data.error === 'string' ? data.error : getHttpErrorMessage(response.status, response.statusText),
-          details: data.details,
+          error: typeof errorData.error === 'string' ? errorData.error : getHttpErrorMessage(response.status, response.statusText),
+          details: errorData.details,
         };
       }
 
-      return { data };
+      // JSON is untrusted at this boundary; domain APIs validate required fields.
+      return { data: data as T };
     } catch (error) {
+      if (options.signal?.aborted) throw error;
+      if (method === 'GET' && !endpoint.startsWith('/auth/')) {
+        const cached = await readOfflineResponse<T>(endpoint);
+        if (cached) return cached;
+      }
       return {
         error: getNetworkErrorMessage(error),
       };
     }
   }
 
-  async get<T>(endpoint: string): Promise<ApiResponse<T>> {
-    return this.request<T>(endpoint, { method: 'GET' });
+  async get<T>(endpoint: string, options: Pick<RequestInit, 'signal'> = {}): Promise<ApiResponse<T>> {
+    return this.request<T>(endpoint, { ...options, method: 'GET' });
   }
 
-  async getBlob(endpoint: string): Promise<BlobResponse> {
+  async getBlob(endpoint: string, options: Pick<RequestInit, 'signal'> = {}): Promise<BlobResponse> {
     const url = this.resolveUrl(endpoint);
     const headers: HeadersInit = {};
 
     const response = await fetch(url, {
+      ...options,
       method: 'GET',
       headers,
       credentials: 'include',
@@ -212,6 +229,9 @@ class ApiClient {
   }
 
   async uploadBlob<T>(endpoint: string, blob: Blob, contentType = 'application/octet-stream'): Promise<ApiResponse<T>> {
+    if (isOfflineMode() || isBrowserOffline()) {
+      return { error: 'Offline mode is read-only. Reconnect and sign in before uploading.' };
+    }
     let url: string;
     try {
       url = this.resolveUrl(endpoint);

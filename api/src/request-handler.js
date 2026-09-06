@@ -60,6 +60,7 @@ function getRestoreSectionForWrite(pathname) {
 
 // Request handler
 async function handleRequest(req, res) {
+  res.setHeader('Cache-Control', 'no-store');
   const url = new URL(req.url, `http://${req.headers.host}`);
   let routeKey = `${req.method} ${url.pathname}`;
   req.params = {};
@@ -232,7 +233,9 @@ async function handleRequest(req, res) {
 
     // Allow larger bodies for vCard import and bulk operations
     let maxBodySize = 1000; // Default for most endpoints
-    if (routeKey === 'POST /api/contacts/import') {
+    if (url.pathname.startsWith('/api/notifications/')) {
+      maxBodySize = 16384;
+    } else if (routeKey === 'POST /api/contacts/import') {
       maxBodySize = 500000; // vCard import can be large
     } else if (routeKey === 'POST /api/recordings/uploads/:id/chunk') {
       maxBodySize = 1200 * 1024; // Recording chunks are base64 encoded JSON.
@@ -365,6 +368,7 @@ async function handleRequest(req, res) {
         }
         res.end();
       });
+      res.once('close', () => stream.destroy());
       stream.pipe(res);
       return;
     }
@@ -376,8 +380,9 @@ async function handleRequest(req, res) {
     res.end(JSON.stringify(result));
   } catch (error) {
     console.error('Request error:', error);
-    res.writeHead(500, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Internal Server Error' }));
+    const status = error?.status === 400 ? 400 : 500;
+    if (!res.headersSent) res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: status === 400 ? error.message : 'Internal Server Error' }));
   } finally {
     if (temporaryUploadPath) {
       await fs.promises.rm(temporaryUploadPath, { force: true }).catch(() => {});

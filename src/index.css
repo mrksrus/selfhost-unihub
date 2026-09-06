@@ -8,7 +8,7 @@
 
 @layer base {
   :root {
-    /* Core palette - Deep slate with teal accents */
+    /* Core palette - Black, white and blue */
     --background: 220 20% 97%;
     --foreground: 222 47% 11%;
 
@@ -30,8 +30,8 @@
     --muted: 220 14% 96%;
     --muted-foreground: 220 9% 46%;
 
-    /* Accent - Teal */
-    --accent: 172 66% 40%;
+    /* Accent - Blue */
+    --accent: 221 83% 53%;
     --accent-foreground: 0 0% 100%;
 
     /* Semantic colors */
@@ -50,74 +50,72 @@
     /* Borders and inputs */
     --border: 220 13% 91%;
     --input: 220 13% 91%;
-    --ring: 172 66% 40%;
+    --ring: 221 83% 53%;
 
     --radius: 0.625rem;
 
     /* Sidebar - Darker for contrast */
     --sidebar-background: 222 47% 11%;
     --sidebar-foreground: 210 40% 96%;
-    --sidebar-primary: 172 66% 50%;
+    --sidebar-primary: 213 94% 68%;
     --sidebar-primary-foreground: 222 47% 11%;
     --sidebar-accent: 222 47% 18%;
     --sidebar-accent-foreground: 210 40% 96%;
     --sidebar-border: 222 47% 18%;
-    --sidebar-ring: 172 66% 50%;
+    --sidebar-ring: 213 94% 68%;
 
     /* Module colors */
     --contacts-color: 199 89% 48%;
     --calendar-color: 262 83% 58%;
-    --mail-color: 142 71% 45%;
+    --mail-color: 221 83% 53%;
 
     /* Gradients */
     --gradient-primary: linear-gradient(135deg, hsl(222 47% 20%) 0%, hsl(222 47% 30%) 100%);
-    --gradient-accent: linear-gradient(135deg, hsl(172 66% 40%) 0%, hsl(172 66% 50%) 100%);
-    --gradient-hero: linear-gradient(135deg, hsl(222 47% 11%) 0%, hsl(222 47% 20%) 50%, hsl(172 66% 30%) 100%);
+    --gradient-accent: linear-gradient(135deg, hsl(221 83% 53%) 0%, hsl(213 94% 68%) 100%);
+    --gradient-hero: linear-gradient(135deg, hsl(222 47% 11%) 0%, hsl(222 47% 20%) 50%, hsl(221 83% 30%) 100%);
 
     /* Shadows */
     --shadow-sm: 0 1px 2px 0 hsl(222 47% 11% / 0.05);
     --shadow-md: 0 4px 6px -1px hsl(222 47% 11% / 0.1), 0 2px 4px -2px hsl(222 47% 11% / 0.1);
     --shadow-lg: 0 10px 15px -3px hsl(222 47% 11% / 0.1), 0 4px 6px -4px hsl(222 47% 11% / 0.1);
-    --shadow-glow: 0 0 20px hsl(172 66% 40% / 0.3);
+    --shadow-glow: 0 0 20px hsl(221 83% 53% / 0.3);
   }
 
   .dark {
-    --background: 222 47% 7%;
-    --foreground: 210 40% 98%;
-
-    --card: 222 47% 11%;
-    --card-foreground: 210 40% 98%;
-
-    --popover: 222 47% 11%;
-    --popover-foreground: 210 40% 98%;
-
-    --primary: 172 66% 50%;
-    --primary-foreground: 222 47% 11%;
-
-    --secondary: 222 47% 15%;
-    --secondary-foreground: 210 40% 98%;
-
-    --muted: 222 47% 15%;
-    --muted-foreground: 215 20% 65%;
-
-    --accent: 172 66% 40%;
+    color-scheme: dark;
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
+    --card: 0 0% 5%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 9%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 9%;
+    --muted-foreground: 0 0% 70%;
+    --accent: 221 83% 53%;
     --accent-foreground: 0 0% 100%;
-
-    --destructive: 0 62% 30%;
+    --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
-
-    --border: 222 47% 18%;
-    --input: 222 47% 18%;
-    --ring: 172 66% 50%;
-
-    --sidebar-background: 222 47% 5%;
-    --sidebar-foreground: 210 40% 96%;
-    --sidebar-primary: 172 66% 50%;
-    --sidebar-primary-foreground: 222 47% 11%;
-    --sidebar-accent: 222 47% 12%;
-    --sidebar-accent-foreground: 210 40% 96%;
-    --sidebar-border: 222 47% 12%;
-    --sidebar-ring: 172 66% 50%;
+    --border: 0 0% 20%;
+    --input: 0 0% 25%;
+    --ring: 213 94% 68%;
+    --sidebar-background: 0 0% 3%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 221 83% 53%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 10%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 0 0% 18%;
+    --sidebar-ring: 213 94% 68%;
+    --contacts-color: 213 94% 68%;
+    --mail-color: 213 94% 68%;
+    --gradient-primary: linear-gradient(135deg, #101010, #191919);
+    --gradient-accent: linear-gradient(135deg, #2563eb, #60a5fa);
+    --gradient-hero: linear-gradient(135deg, #000 0%, #111 60%, #10254c 100%);
+    --shadow-glow: 0 0 20px hsl(221 83% 53% / 0.2);
   }
 }
 
@@ -177,7 +175,7 @@
 
   /* Glass morphism effects */
   .glass {
-    @apply bg-white/80 dark:bg-slate-900/80 backdrop-blur-lg;
+    @apply bg-card/80 backdrop-blur-lg;
   }
 
   /* Sidebar nav item */

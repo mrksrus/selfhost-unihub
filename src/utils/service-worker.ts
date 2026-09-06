@@ -1,220 +1,140 @@
-// Service Worker utilities for notifications and background sync
+import { api } from '@/lib/api';
 
 export const NOTIFICATION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 export const BACKGROUND_NOTIFICATION_SYNC_TAG = 'unihub-notification-check';
 export const MAIL_PERIODIC_SYNC_TAG = 'check-emails-periodic';
 export const CALENDAR_PERIODIC_SYNC_TAG = 'check-calendar-periodic';
-
-let swRegistration: ServiceWorkerRegistration | null = null;
-let initPromise: Promise<ServiceWorkerRegistration | null> | null = null;
+const ENABLED_PREFIX = 'unihub:push-enabled:';
 let messageListenerAttached = false;
-let permissionRequestPromise: Promise<NotificationPermission | 'unsupported'> | null = null;
+let identityGeneration = 0;
+let registrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 
-interface PeriodicSyncManagerLike {
-  getTags(): Promise<string[]>;
-  register(tag: string, options: { minInterval: number }): Promise<void>;
-}
-
-function attachServiceWorkerMessageListener() {
-  if (messageListenerAttached || !('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.addEventListener('message', handleSWMessage);
-  messageListenerAttached = true;
-}
-
-// Initialize service worker registration
 export async function initServiceWorker(): Promise<ServiceWorkerRegistration | null> {
-  if (!('serviceWorker' in navigator)) {
-    console.log('[SW] Service Workers not supported');
-    return null;
-  }
-
-  if (swRegistration) {
-    attachServiceWorkerMessageListener();
-    return swRegistration;
-  }
-
-  if (!initPromise) {
-    initPromise = navigator.serviceWorker.ready
-      .then((registration) => {
-        swRegistration = registration;
-        attachServiceWorkerMessageListener();
-        console.log('[SW] Service Worker ready');
-        return registration;
-      })
-      .catch((error) => {
-        console.error('[SW] Service Worker registration failed:', error);
-        return null;
-      })
-      .finally(() => {
-        initPromise = null;
-      });
-  }
-
-  return initPromise;
-}
-
-// Handle messages from service worker
-function handleSWMessage(event: MessageEvent) {
-  console.log('[SW] Message from service worker:', event.data);
-
-  if (event.data?.type === 'CHECK_EMAILS') {
-    // Trigger email check (this will be handled by the component)
-    window.dispatchEvent(new CustomEvent('sw-check-emails'));
-  } else if (event.data?.type === 'CHECK_CALENDAR') {
-    // Trigger calendar check (this will be handled by the component)
-    window.dispatchEvent(new CustomEvent('sw-check-calendar'));
-  }
-}
-
-export async function requestNotificationPermission(): Promise<NotificationPermission | 'unsupported'> {
-  if (!('Notification' in window)) {
-    console.log('[SW] Notifications not supported');
-    return 'unsupported';
-  }
-
-  if (Notification.permission !== 'default') {
-    return Notification.permission;
-  }
-
-  if (!permissionRequestPromise) {
-    permissionRequestPromise = Notification.requestPermission()
-      .then((permission) => permission)
-      .catch(() => 'default' as NotificationPermission)
-      .finally(() => {
-        permissionRequestPromise = null;
-      });
-  }
-
-  return permissionRequestPromise;
-}
-
-// Show notification via service worker registration when possible.
-export async function showNotification(title: string, options: NotificationOptions = {}) {
-  const permission = await requestNotificationPermission();
-  if (permission !== 'granted') {
-    console.log('[SW] Notification permission denied');
-    return false;
-  }
-
-  const normalizedOptions: NotificationOptions = {
-    ...options,
-    icon: options.icon || '/icons/icon-512x512.png',
-    badge: options.badge || '/favicon.ico',
-    tag: options.tag || 'unihub-notification',
-    data: options.data || {},
-  };
-
-  const registration = swRegistration || await initServiceWorker();
-  if (registration) {
-    try {
-      await registration.showNotification(title, normalizedOptions);
-      return true;
-    } catch (error) {
-      console.error('[SW] Failed to show notification via registration:', error);
-    }
-  }
-
-  try {
-    new Notification(title, normalizedOptions);
-    return true;
-  } catch (error) {
-    console.error('[SW] Failed to show notification via Notification API:', error);
-  }
-
-  return false;
-}
-
-// Register background sync task
-export async function registerBackgroundSync(tag: string) {
-  if (!('serviceWorker' in navigator)) {
-    console.log('[SW] Service Workers not supported');
-    return false;
-  }
-
-  try {
-    const registration = swRegistration || await initServiceWorker();
-    if (!registration) return false;
-    if ('sync' in registration) {
-      await registration.sync.register(tag);
-      console.log(`[SW] Registered background sync: ${tag}`);
-      return true;
-    }
-  } catch (error) {
-    console.error(`[SW] Failed to register background sync ${tag}:`, error);
-  }
-  return false;
-}
-
-// Register periodic background sync (if supported)
-export async function registerPeriodicSync(tag: string, minInterval: number = NOTIFICATION_CHECK_INTERVAL_MS) {
-  if (!('serviceWorker' in navigator)) {
-    console.log('[SW] Service Workers not supported');
-    return false;
-  }
-
-  try {
-    const registration = swRegistration || await initServiceWorker();
-    if (!registration) return false;
-    const maybePeriodic = registration as ServiceWorkerRegistration & {
-      periodicSync?: PeriodicSyncManagerLike;
-    };
-    const periodicSync = maybePeriodic.periodicSync;
-    if (!periodicSync) return false;
-
-    const tags = await periodicSync.getTags();
-    if (!tags.includes(tag)) {
-      await periodicSync.register(tag, { minInterval });
-      console.log(`[SW] Registered periodic sync: ${tag} (every ${Math.round(minInterval / 60000)} minutes)`);
-    }
-    return true;
-  } catch (error) {
-    console.error(`[SW] Failed to register periodic sync ${tag}:`, error);
-  }
-  return false;
-}
-
-export async function requestBackgroundNotificationCheck(reason = 'client') {
-  if (!('serviceWorker' in navigator)) {
-    return false;
-  }
-
-  try {
-    const registration = swRegistration || await initServiceWorker();
-    const worker = registration?.active || navigator.serviceWorker.controller;
-    if (!worker) return false;
-    worker.postMessage({
-      type: 'RUN_NOTIFICATION_CHECKS',
-      reason,
-      suppressNotifications: true,
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return null;
+  if (!messageListenerAttached) {
+    navigator.serviceWorker.addEventListener('message', event => {
+      if (event.data?.type === 'NOTIFICATION_DATA_CHANGED') {
+        window.dispatchEvent(new CustomEvent('unihub-notification-data', { detail: event.data }));
+      }
     });
-    return true;
-  } catch (error) {
-    console.error('[SW] Failed to request notification check:', error);
-    return false;
+    messageListenerAttached = true;
   }
+  if (!registrationPromise) registrationPromise = new Promise(resolve => {
+    const timeout = window.setTimeout(() => resolve(null), 8000);
+    navigator.serviceWorker.ready.then(registration => { window.clearTimeout(timeout); resolve(registration); });
+  }).then(async registration => {
+    if (registration) {
+      const periodic = (registration as ServiceWorkerRegistration & { periodicSync?: { getTags(): Promise<string[]>; unregister(tag: string): Promise<void> } }).periodicSync;
+      if (periodic) {
+        const tags = await periodic.getTags().catch(() => []);
+        await Promise.all(tags.filter(tag => [BACKGROUND_NOTIFICATION_SYNC_TAG, MAIL_PERIODIC_SYNC_TAG, CALENDAR_PERIODIC_SYNC_TAG].includes(tag)).map(tag => periodic.unregister(tag).catch(() => {})));
+      }
+    }
+    registrationPromise = null;
+    return registration as ServiceWorkerRegistration | null;
+  });
+  return registrationPromise;
 }
-
-export async function resetBackgroundNotificationState() {
-  if (!('serviceWorker' in navigator)) {
-    return false;
-  }
-
-  try {
-    const registration = swRegistration || await initServiceWorker();
-    const worker = registration?.active || navigator.serviceWorker.controller;
-    if (!worker) return false;
-    worker.postMessage({ type: 'RESET_NOTIFICATION_STATE' });
-    return true;
-  } catch (error) {
-    console.error('[SW] Failed to reset notification state:', error);
-    return false;
-  }
-}
-
-// Initialize on module load
-if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-  navigator.serviceWorker.ready.then((registration) => {
-    swRegistration = registration;
-    attachServiceWorkerMessageListener();
+export async function sendNotificationWorkerMessage(message: Record<string, unknown>): Promise<boolean> {
+  const registration = await initServiceWorker();
+  const worker = registration?.active || navigator.serviceWorker?.controller;
+  if (!worker) return false;
+  return new Promise(resolve => {
+    const channel = new MessageChannel();
+    const timeout = window.setTimeout(() => { channel.port1.close(); resolve(false); }, 5000);
+    channel.port1.onmessage = event => {
+      window.clearTimeout(timeout); channel.port1.close();
+      resolve(event.data?.ok === true && event.data?.shown === true);
+    };
+    worker.postMessage(message, [channel.port2]);
   });
 }
+export const setNotificationUser = (userId: string) => sendNotificationWorkerMessage({ type: 'SET_NOTIFICATION_USER', userId });
+export const resetBackgroundNotificationState = () => {
+  identityGeneration++;
+  return sendNotificationWorkerMessage({ type: 'RESET_NOTIFICATION_STATE' });
+};
+export function notificationSupport() {
+  return window.isSecureContext && 'Notification' in window && 'serviceWorker' in navigator && 'PushManager' in window;
+}
+export function pushEnabledForUser(userId: string) {
+  try { return localStorage.getItem(`${ENABLED_PREFIX}${userId}`) === 'true'; } catch { return false; }
+}
+export function setPushEnabledForUser(userId: string, enabled: boolean) {
+  try { localStorage.setItem(`${ENABLED_PREFIX}${userId}`, String(enabled)); } catch { /* device preference is optional */ }
+}
+export async function requestNotificationPermission(): Promise<NotificationPermission | 'unsupported'> {
+  if (!('Notification' in window)) return 'unsupported';
+  // Call this directly from the Enable button, before awaiting service-worker readiness.
+  return Notification.permission === 'default' ? Notification.requestPermission() : Notification.permission;
+}
+function decodeKey(value: string) {
+  return Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=')), char => char.charCodeAt(0));
+}
+export async function enablePushSubscription(userId: string, permission: NotificationPermission | 'unsupported') {
+  const generation = identityGeneration;
+  if (permission !== 'granted') throw new Error('Allow notifications in your browser settings to enable them.');
+  const registration = await initServiceWorker();
+  if (!registration || !('pushManager' in registration)) throw new Error('Notifications require an installed app or supported browser over HTTPS.');
+  const config = await api.get<{ publicKey: string }>('/notifications/config');
+  if (config.error || !config.data?.publicKey) throw new Error(config.error || 'Notification service is unavailable.');
+  const publicKey = decodeKey(config.data.publicKey);
+  let subscription = await registration.pushManager.getSubscription();
+  const existingKey = subscription?.options.applicationServerKey;
+  if (subscription && existingKey && String(new Uint8Array(existingKey)) !== String(publicKey)) { await subscription.unsubscribe(); subscription = null; }
+  subscription ||= await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
+  if (generation !== identityGeneration) throw new Error('Your session changed. Enable notifications again after signing in.');
+  if (!await setNotificationUser(userId)) throw new Error('The app is updating. Refresh and enable notifications again.');
+  const response = await api.post('/notifications/subscription', { subscription: subscription.toJSON() });
+  if (response.error) throw new Error(response.error);
+  if (generation !== identityGeneration) throw new Error('Your session changed. Enable notifications again after signing in.');
+  setPushEnabledForUser(userId, true);
+  return subscription;
+}
+export async function syncPushSubscription(userId: string, signal?: AbortSignal) {
+  const generation = identityGeneration;
+  const cancelled = () => signal?.aborted || generation !== identityGeneration;
+  if (cancelled()) return;
+  const registration = await initServiceWorker();
+  if (cancelled() || !registration) return;
+  if (!await setNotificationUser(userId) || cancelled()) return;
+  if (!pushEnabledForUser(userId) || !notificationSupport() || Notification.permission !== 'granted') return;
+  const subscription = await registration.pushManager.getSubscription();
+  if (!subscription || cancelled()) return;
+  const response = await api.post('/notifications/subscription', { subscription: subscription.toJSON() });
+  if (response.error) throw new Error(response.error);
+}
+export async function revokeDevicePushSubscription() {
+  identityGeneration++;
+  const registration = await initServiceWorker();
+  const subscription = await registration?.pushManager?.getSubscription();
+  try {
+    if (subscription) {
+      const response = await api.post('/notifications/unsubscribe', { endpoint: subscription.endpoint });
+      if (response.error) throw new Error(response.error);
+    }
+  } finally {
+    if (subscription) await subscription.unsubscribe();
+    await resetBackgroundNotificationState();
+  }
+}
+export async function sendTestPush() {
+  const registration = await initServiceWorker();
+  const subscription = await registration?.pushManager?.getSubscription();
+  if (!subscription) throw new Error('Enable notifications on this device first.');
+  const result = await api.post<{ queued: boolean }>('/notifications/test', { endpoint: subscription.endpoint });
+  if (result.error) throw new Error(result.error);
+  return result.data?.queued === true;
+}
+export async function showNotification(title: string, options: NotificationOptions = {}) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return false;
+  const data = options.data || {};
+  if (!data.userId || !data.dedupeKey) return false;
+  return sendNotificationWorkerMessage({ type: 'DELIVER_LOCAL_NOTIFICATION', payload: {
+    version: 1, userId: data.userId, dedupeKey: data.dedupeKey, kind: data.kind || 'reminder', title, body: options.body, url: data.url, eventId: data.eventId,
+  } });
+}
+// Compatibility for installed clients; background delivery now uses server push.
+export async function registerPeriodicSync(_tag: string, _interval?: number) { return false; }
+export async function registerBackgroundSync(_tag: string) { return false; }
+export async function requestBackgroundNotificationCheck(_reason?: string) { return false; }

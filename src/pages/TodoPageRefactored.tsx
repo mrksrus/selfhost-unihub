@@ -57,7 +57,7 @@ const TodoPage = () => {
     start_time: '',
     end_time: '',
     location: '',
-    color: '#22c55e',
+    color: '#2563eb',
     reminders: [0] as number[],
   });
 
@@ -68,7 +68,7 @@ const TodoPage = () => {
     end_time: '',
     all_day: false,
     location: '',
-    color: '#22c55e',
+    color: '#2563eb',
     reminders: [0] as number[],
   });
 
@@ -134,7 +134,7 @@ const TodoPage = () => {
         start_time: '',
         end_time: '',
         location: '',
-        color: '#22c55e',
+        color: '#2563eb',
         reminders: [0],
       });
     },

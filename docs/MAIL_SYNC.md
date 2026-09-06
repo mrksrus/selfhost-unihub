@@ -24,6 +24,10 @@ outbound mail through SMTP. The mail system includes:
 | SMTP sender | `nodemailer` | Send composed mail |
 | Encryption | `api/src/security/encryption.js` | AES-256-GCM encryption for stored credentials |
 | Host policy | `api/src/services/mail.js` | DNS/private-IP checks and known-provider classification |
+| Import persistence | `api/src/services/mail-import.js` | Stage files and commit complete message metadata atomically |
+| Attachment handling | `api/src/services/mail-attachments.js` | Shared validation, file staging and inline CID rewriting |
+| Draft persistence | `api/src/services/mail-drafts.js` | Transactional draft and attachment replacement |
+| Folder checkpoints | `api/src/services/mail-sync-state.js` | Durable per-folder UID progress |
 | Raw archive | filesystem | Stores imported `.eml` source below `/app/uploads/mail-raw` |
 | Attachments | filesystem + DB | Stores regular and inline attachments below `/app/uploads/attachments` |
 
@@ -33,8 +37,10 @@ outbound mail through SMTP. The mail system includes:
 | --- | --- |
 | `mail_accounts` | IMAP/SMTP settings, encrypted password, sync metadata, TLS trust state |
 | `mail_folders` | Per-user app folder catalog |
+| `mail_folder_remote_boxes` | Account-specific mapping from app folders to exact provider folder names |
+| `mail_sync_state` | Folder UIDVALIDITY, last successful UID and initialization state |
 | `mail_sender_rules` | Sender/domain routing rules |
-| `emails` | Local email metadata, bodies, folder, read/star state, raw archive path |
+| `emails` | Local email metadata, bodies, folder, read/star state, raw archive path and `import_complete` state |
 | `mail_server_messages` | Runtime queue for imported IMAP copies eligible for optional server deletion |
 | `email_attachments` | Attachment metadata and storage path |
 | `mail_email_scores` | Reserved schema for future scam/spam scoring |
@@ -95,6 +101,7 @@ The sync service lists provider folders and selects common folder names:
 | --- | --- |
 | `inbox` | `INBOX` |
 | `sent` | `Sent`, `Sent Items`, `Sent Mail`, Gmail sent folders |
+| `drafts` | `Drafts`, Gmail draft folders |
 | `archive` | `Archive`, `Archives`, Gmail all-mail folders |
 | `trash` | `Trash`, `Deleted Items`, `Deleted Messages`, Gmail trash folders |
 
@@ -113,29 +120,58 @@ System app folders created per user:
 - `unknown`
 - `twofactor_notifications`
 
-Users can create additional app-owned folders. These folders are local
-classification targets; UniHub does not create corresponding provider folders.
+Custom provider folders are registered using their exact names and account-specific
+mappings. Creating a custom folder attempts creation on active mail accounts and
+reports partial failures. Renaming or deleting synced custom folders through
+UniHub is currently disabled; change those folders at the provider. Moving
+messages between app folders remains a local classification change.
+
+Missing system folders are inserted in one batch. Existing display names and
+positions are preserved. Sender rules and available folder slugs are loaded once
+per routing operation, avoiding database reads and default-folder writes for each
+matched message.
 
 ## Fetch Strategy
 
 For each selected folder:
 
-1. Open the IMAP folder.
-2. Read current `UIDVALIDITY` when available.
-3. Search all messages on first sync, or `SINCE last_synced_at - 1 day` after that.
-4. Extract numeric UIDs and abort cleanly if the provider returns malformed UID data.
-5. Remove UIDs already stored locally for that account/folder.
-6. Fetch each remaining message one at a time.
-7. Build raw RFC 822 source from IMAP parts.
-8. Parse with `mailparser`.
-9. Detect existing imports by `message_id` or `(account, source_folder, imap_uid)`.
-10. Repair older incomplete rows when possible.
-11. Store the raw `.eml`, metadata, text body, HTML body, and attachment metadata.
-12. Apply sender routing rules before insert.
-13. Update `last_synced_at` after successful folder processing.
+1. Open the folder and read its current `UIDVALIDITY`.
+2. Load its entry in `mail_sync_state`. A new folder, changed UIDVALIDITY, or
+   missing UIDVALIDITY triggers a full UID search. A successfully initialized
+   folder searches UIDs greater than its last successful checkpoint.
+3. Include incomplete local imports below the checkpoint in the retry set.
+4. Validate all returned UIDs before advancing any checkpoint. Filter already
+   complete imports by account, exact source folder, UID and UIDVALIDITY.
+5. Fetch pending UIDs sequentially and parse complete RFC 822 messages with
+   `mailparser`. If an incomplete message is absent from the provider, its
+   guarded local `.eml` archive can supply the content for repair.
+6. Preserve existing local folder/read/star choices when repairing a message.
+   Apply the operation's sender-rule ordering to genuinely new messages.
+7. Stage a raw archive and all attachments, then commit message metadata,
+   attachment rows, `import_complete = TRUE`, and eligible deletion/notification
+   queue rows in one transaction. Failed persistence rolls back metadata and
+   removes uncommitted staged files.
+8. Advance the folder checkpoint only after every selected message succeeds.
+   Completed messages are skipped on retry, while failed older UIDs remain
+   eligible. Update account `last_synced_at` only after the account's folder pass
+   succeeds; it is a status timestamp, not the import cursor.
 
-Fetching one UID at a time is slower, but it limits memory use and lets one bad
-message fail without losing the whole sync.
+A first account import, new-folder baseline, UIDVALIDITY reset, and repairs do not
+produce historical notification floods. Incremental arrivals can enqueue durable
+notifications in the same transaction as the new message.
+
+Existing installations receive `import_complete = FALSE` on older rows and no
+preexisting per-folder checkpoint. The first upgraded sync therefore scans and
+revalidates provider history once. This can take longer than an ordinary sync,
+but later passes use UID progress and skip complete messages. Restored imports
+also default to incomplete and are eligible for repair without resetting an
+existing folder checkpoint.
+
+Fetching one UID at a time bounds simultaneous message memory use. A failed
+message does not discard successful imports. If a database connection fails while
+COMMIT is in flight, staged files are retained because the server may have
+committed their metadata; this favors recoverable orphan files over broken
+references.
 
 ## Optional Server Deletion
 
@@ -147,8 +183,8 @@ The deletion worker:
 
 1. only runs after `server_delete_grace_until`
 2. skips while normal mail sync is running
-3. only queues messages with a stored `source_folder`, IMAP UID, and raw `.eml`
-   archive
+3. only processes complete imports with a stored `source_folder`, IMAP UID, and
+   raw `.eml` archive; incomplete legacy queue entries wait for repair
 4. re-checks the account setting before each message
 5. marks each queue row as `deleted`, `missing`, `failed`, or `skipped`
 
@@ -202,10 +238,10 @@ Rule endpoints:
 | --- | --- | --- |
 | GET | `/api/mail/folders` | List folders with total/unread counts |
 | POST | `/api/mail/folders` | Create app-owned folder |
-| PUT | `/api/mail/folders/:slug` | Rename/reposition folder |
-| DELETE | `/api/mail/folders/:slug` | Delete custom folder; messages/rules move to inbox |
+| PUT | `/api/mail/folders/:slug` | Reposition folders or rename system-folder display labels |
+| DELETE | `/api/mail/folders/:slug` | Reject system deletion or unsupported synced-folder deletion |
 
-System folders cannot be deleted.
+System folders cannot be deleted. Synced custom-folder deletion returns a conflict response.
 
 ### Accounts
 
@@ -252,6 +288,12 @@ Compose attachment limits:
 - maximum 15 MB per attachment
 - maximum 25 MB total attachment bytes
 - request body cap is 40 MB to allow base64 JSON overhead and message text
+
+Draft attachment payloads are validated before draft content changes. Replacements
+retain old files until their metadata transaction commits; invalid replacements
+and database failures preserve the previous draft. Retained plus new attachments
+must fit the same limits. Attachment downloads stream from authenticated,
+path-checked files rather than buffering the entire file in API memory.
 
 SMTP port behavior:
 
@@ -304,7 +346,7 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 ## Limitations
 
 - Provider-side delete sync is not implemented.
-- Provider-side draft sync is not implemented.
+- App-local draft edits/uploads are not propagated to the provider; provider draft folders can be imported for viewing.
 - App folder moves are local and are not propagated to provider folders.
 - First full imports can be slow for large mailboxes.
 - There is no malware scanning for downloaded or uploaded attachments.

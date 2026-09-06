@@ -1,3 +1,4 @@
+import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -36,15 +37,6 @@ const staticActions = [
   { id: 'settings', label: 'Open Settings', href: '/settings', icon: Settings },
 ];
 
-function useDebouncedValue<T>(value: T, delay: number): T {
-  const [debouncedValue, setDebouncedValue] = useState(value);
-  useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedValue(value), delay);
-    return () => window.clearTimeout(timer);
-  }, [value, delay]);
-  return debouncedValue;
-}
-
 function getResultIcon(type: SearchResult['type']) {
   if (type === 'contact') return Users;
   if (type === 'mail') return Mail;
@@ -79,8 +71,8 @@ const GlobalCommandPalette = () => {
 
   const { data: searchResults = [], isFetching } = useQuery({
     queryKey: ['global-search', debouncedQuery],
-    queryFn: async () => {
-      const response = await api.get<{ results: SearchResult[] }>(`/search?q=${encodeURIComponent(debouncedQuery)}&limit=6`);
+    queryFn: async ({ signal }) => {
+      const response = await api.get<{ results: SearchResult[] }>(`/search?q=${encodeURIComponent(debouncedQuery)}&limit=6`, { signal });
       if (response.error) throw new Error(response.error);
       return response.data?.results || [];
     },

@@ -3,6 +3,9 @@ name: Build and Push Docker Image
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
 
 env:
@@ -13,6 +16,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     env:
+      MYSQL_TEST_SCHEMA_SMOKE: "1"
       MYSQL_TEST_HOST: 127.0.0.1
       MYSQL_TEST_PORT: "3306"
       MYSQL_TEST_DATABASE: unihub_test
@@ -46,7 +50,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -55,7 +59,7 @@ jobs:
           npm --prefix api ci
 
       - name: Run API tests
-        run: node --test api/tests/*.test.js
+        run: npm --prefix api test
 
       - name: Run frontend checks
         run: |
@@ -63,27 +67,44 @@ jobs:
           npm run lint
           npm run build
 
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
             type=sha,prefix=
 
-      - name: Build and push image
-        uses: docker/build-push-action@v5
+      - name: Build image for smoke test
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          load: true
+          push: false
+          tags: unihub:ci
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Test container startup, auth and recording round-trip
+        run: bash scripts/container-smoke.sh
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the tested image
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag unihub:ci "$tag"
+            docker push "$tag"
+          done <<< "$IMAGE_TAGS"

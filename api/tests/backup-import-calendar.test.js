@@ -18,6 +18,9 @@ test('backup import preserves calendar event field order and MySQL values', asyn
   const originalState = require.cache[statePath];
   const originalMail = require.cache[mailPath];
   const calls = [];
+  let revision = 0;
+  let transactionRevision = 0;
+  let rollbacks = 0;
 
   t.after(() => {
     if (originalBackup) require.cache[backupPath] = originalBackup;
@@ -36,9 +39,9 @@ test('backup import preserves calendar event field order and MySQL values', asyn
   });
 
   const connection = {
-    beginTransaction: async () => {},
-    commit: async () => {},
-    rollback: async () => {},
+    beginTransaction: async () => { transactionRevision = revision; },
+    commit: async () => { revision = transactionRevision; },
+    rollback: async () => { rollbacks++; transactionRevision = revision; },
     release: () => {},
     execute: async (sql, params = []) => {
       assert.equal(
@@ -47,6 +50,7 @@ test('backup import preserves calendar event field order and MySQL values', asyn
         `Prepared statement parameter mismatch:\n${sql}`
       );
       calls.push({ sql, params });
+      if (sql.startsWith('UPDATE notification_config SET reminder_revision')) transactionRevision++;
       return [[]];
     },
   };
@@ -195,4 +199,17 @@ test('backup import preserves calendar event field order and MySQL values', asyn
     '2026-05-22 08:05:00',
     '2026-05-22 08:06:00',
   ]);
+  assert.equal(revision, 1, 'a committed calendar restore triggers a reminder rescan');
+
+  // Calendar visibility can change without any event field or timestamp changing.
+  const visibilityOnly = { ...backup, data: { calendar_calendars: backup.data.calendar_calendars } };
+  await importBackupForUser('new-user', visibilityOnly, { mode: 'apply', sections: 'calendar' });
+  assert.equal(revision, 2, 'visibility-only restores also trigger a rescan');
+
+  await assert.rejects(importBackupForUser('new-user', backup, {
+    mode: 'apply', sections: 'calendar',
+    beforeCommit: async () => { throw new Error('Restore cancelled before commit'); },
+  }), /Restore cancelled/);
+  assert.equal(rollbacks, 1);
+  assert.equal(revision, 2, 'the revision bump rolls back with a cancelled restore');
 });

@@ -1,3 +1,4 @@
+import { mailQueryKeys } from '@/lib/mail-api';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { addDays, endOfDay, format, isAfter, isBefore, parseISO, startOfDay } from 'date-fns';
@@ -63,7 +64,7 @@ const Dashboard = () => {
   });
 
   const { data: unreadEmails = [] } = useQuery({
-    queryKey: ['dashboard-unread-mail'],
+    queryKey: mailQueryKeys.dashboardUnread,
     queryFn: async () => {
       const response = await api.get<{ emails: EmailSummary[] }>('/mail/emails?limit=5&offset=0&is_read=false&include_count=false');
       if (response.error) throw new Error(response.error);

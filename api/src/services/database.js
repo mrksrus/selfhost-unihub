@@ -331,7 +331,7 @@ async function ensureSchema() {
     account_id CHAR(36) NOT NULL,
     name VARCHAR(255) NOT NULL,
     external_id VARCHAR(500) NULL,
-    color VARCHAR(20) DEFAULT '#22c55e',
+    color VARCHAR(20) DEFAULT '#2563eb',
     is_visible BOOLEAN DEFAULT TRUE,
     auto_todo_enabled BOOLEAN DEFAULT TRUE,
     read_only BOOLEAN DEFAULT FALSE,
@@ -356,7 +356,7 @@ async function ensureSchema() {
     end_time DATETIME NOT NULL,
     all_day BOOLEAN DEFAULT FALSE,
     location VARCHAR(500),
-    color VARCHAR(20) DEFAULT '#22c55e',
+    color VARCHAR(20) DEFAULT '#2563eb',
     recurrence VARCHAR(100),
     reminder_minutes INT,
     reminders JSON DEFAULT NULL COMMENT 'Array of reminder minutes before event: [0, 15, 60] for default + 15min + 1hr before',
@@ -1065,6 +1065,20 @@ async function ensureSchema() {
     'ALTER TABLE backup_restore_jobs ADD INDEX idx_backup_restore_jobs_user_backup (user_id, backup_uuid)'
   );
   
+  // Import completeness and per-folder progress are additive, durable migrations.
+  await ensureColumn('emails', 'import_complete',
+    'ALTER TABLE emails ADD COLUMN import_complete BOOLEAN NOT NULL DEFAULT FALSE', { required: true });
+  await db.execute(`CREATE TABLE IF NOT EXISTS mail_sync_state (
+    mail_account_id CHAR(36) NOT NULL,
+    source_folder VARCHAR(255) NOT NULL,
+    uidvalidity BIGINT NULL,
+    last_uid BIGINT NOT NULL DEFAULT 0,
+    initialized BOOLEAN NOT NULL DEFAULT FALSE,
+    last_synced_at TIMESTAMP NULL,
+    PRIMARY KEY (mail_account_id, source_folder),
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   // Initialize signup mode with a secure default. Existing installs that still
   // have the old implicit "open" default are closed once, then admin choices
   // are left alone after the migration marker is written.
