@@ -17,7 +17,7 @@ This release adds the requested black, white and blue appearance, server-driven 
 
 ## Upgrade
 
-The existing Compose file, volumes and required environment variables remain unchanged. Database migrations are additive. Keep a backup of the database and uploads before upgrading, and retain the existing ENCRYPTION_KEY: it also protects the deployment's new Web Push private key.
+The existing Compose file, volumes and required environment variables remain unchanged. The existing 120-second MySQL readiness window is preserved: startup keeps retrying while the database is unavailable and continues immediately after an authenticated check succeeds. The probe now uses the same driver and DATABASE_URL/MYSQL_* configuration as the API. Database migrations are additive. Keep a backup of the database and uploads before upgrading, and retain the existing ENCRYPTION_KEY: it also protects the deployment's new Web Push private key.
 
 The first mail sync after upgrading revalidates existing imports and establishes per-folder progress, so it can take longer. Historical first imports and UIDVALIDITY resets do not send a flood of notifications. Existing calendar colors are preserved.
 
