@@ -12,8 +12,8 @@
     "bcryptjs": "^3.0.3",
     "imap-simple": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
-    "mailparser": "^3.7.1",
-    "mysql2": "^3.22.3",
+    "mailparser": "3.9.16",
+    "mysql2": "3.23.1",
     "nodemailer": "^9.0.3",
     "web-push": "^3.6.7"
   },

@@ -39,6 +39,10 @@ recording overhead and limits simultaneous audio conversion on older hardware.
   instead of trusting its supplied content type. HTML/playlists cannot be served
   as restored recordings. MP3 conversion uses an explicit supported demuxer and
   file-only input protocols.
+- **Dependencies:** patched mail parsing, MySQL client and other dependencies.
+  React Router moves to the patched v7 declarative router; application routes
+  and deployment requirements stay the same. Dependency audits and the full
+  application checks are rerun with the locked versions used for this image.
 
 ## Recording efficiency
 

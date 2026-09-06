@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
+import http from 'node:http';
 
 const container = process.env.UNIHUB_SMOKE_CONTAINER;
 assert(container?.startsWith('unihub-smoke-'), 'Run through scripts/container-smoke.sh');
@@ -52,8 +53,18 @@ try {
   const directHealth = await fetch('http://localhost:4000/health', { signal: AbortSignal.timeout(5000) });
   assert.equal(directHealth.status, 200); assert.equal((await directHealth.json()).database, 'ok');
   for (const url of [base + '/api/auth/signup-mode', 'http://localhost:4000/api/auth/signup-mode']) {
-    const malformed = await fetch(url, { headers: { Host: '%' }, signal: AbortSignal.timeout(5000) });
-    assert.equal(malformed.status, 400, 'Malformed Host must be rejected without killing the backend');
+    // fetch replaces the Host header; use the HTTP client to send the actual
+    // malformed authority and exercise both nginx and the API boundary.
+    const status = await new Promise((resolve, reject) => {
+      const request = http.request(url, { headers: { Host: '%' }, signal: AbortSignal.timeout(5000) }, response => {
+        response.resume();
+        response.on('error', reject);
+        response.on('end', () => resolve(response.statusCode));
+      });
+      request.on('error', reject);
+      request.end();
+    });
+    assert.equal(status, 400, `Malformed Host must be rejected without killing the backend: ${url}`);
   }
   assert.equal((await fetch(base + '/health', { signal: AbortSignal.timeout(5000) })).status, 200);
   const shell = await fetch(base + '/', { signal: AbortSignal.timeout(5000) });
