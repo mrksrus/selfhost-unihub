@@ -8,37 +8,7 @@ const {
 } = require('../config');
 const { hashPassword } = require('../auth');
 const { backfillCalendarOwnership } = require('./calendar');
-
-function getDatabaseConfig() {
-  if (process.env.DATABASE_URL) {
-    const dbUrl = new URL(process.env.DATABASE_URL);
-    return {
-      host: dbUrl.hostname,
-      port: parseInt(dbUrl.port, 10) || 3306,
-      user: decodeURIComponent(dbUrl.username),
-      password: decodeURIComponent(dbUrl.password),
-      database: dbUrl.pathname.slice(1),
-    };
-  }
-
-  const host = process.env.MYSQL_HOST;
-  const port = process.env.MYSQL_PORT || '3306';
-  const database = process.env.MYSQL_DATABASE;
-  const user = process.env.MYSQL_USER;
-  const password = process.env.MYSQL_PASSWORD;
-
-  if (!host || !database || !user || !password) {
-    return null;
-  }
-
-  return {
-    host,
-    port: parseInt(port, 10) || 3306,
-    user,
-    password,
-    database,
-  };
-}
+const { getDatabaseConfig } = require('./database-config');
 
 function isPlaceholderSecret(value) {
   const normalized = String(value || '').trim().toLowerCase();

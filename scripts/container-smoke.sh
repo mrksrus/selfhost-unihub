@@ -85,6 +85,11 @@ for ((attempt=0; attempt<90; attempt++)); do
   sleep 2
 done
 [[ "$ready" == 1 ]] || { echo 'Container did not become healthy within 180 seconds.' >&2; exit 1; }
+startup_log="$(docker logs "$container_name" 2>&1)"
+if [[ "$startup_log" == *'MySQL took longer than expected'* || "$startup_log" != *'MySQL is ready!'* ]]; then
+  echo 'Database readiness must succeed without exhausting its startup wait.' >&2
+  exit 1
+fi
 
 docker exec "$container_name" node -e 'if(process.versions.node.split(".")[0]!=="24")process.exit(1);console.log("Runtime Node.js",process.version)'
 docker exec "$container_name" ffmpeg -version
