@@ -15,6 +15,7 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       MYSQL_TEST_SCHEMA_SMOKE: "1"
       MYSQL_TEST_HOST: 127.0.0.1
