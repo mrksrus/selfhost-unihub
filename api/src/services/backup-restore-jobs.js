@@ -299,6 +299,9 @@ async function restoreValidatedJob(job) {
         );
       },
     });
+    if (!result.valid || result.errors?.length) {
+      throw new Error(result.errors?.[0] || 'Backup validation failed before restore.');
+    }
     await cleanupSuccessfulUpload(job).catch(error => {
       console.warn('[BACKUP RESTORE] Restore completed but upload cleanup failed:', error.message);
     });
@@ -334,6 +337,34 @@ async function runRestoreJob(jobId) {
     if (job.operation === 'restore') await restoreValidatedJob(job);
     else await validateRestoreJob(job);
   } catch (error) {
+    if (error.backupCommitUncertain) {
+      // The job's completed marker and restored rows share one transaction.
+      // A locking read waits for that transaction to settle, unlike an ordinary
+      // snapshot read which could still see the previous running marker.
+      // If the database is unavailable, throw and retain both files and state;
+      // startup recovery can determine the committed result when it reconnects.
+      const connection = await db.getConnection();
+      let committed;
+      try {
+        await connection.beginTransaction();
+        const [current] = await connection.execute(
+          'SELECT status FROM backup_restore_jobs WHERE id = ? AND user_id = ? FOR UPDATE',
+          [job.id, job.user_id]
+        );
+        committed = current[0]?.status === 'completed';
+        await connection.commit();
+      } catch (confirmationError) {
+        await connection.rollback().catch(() => {});
+        throw confirmationError;
+      } finally {
+        connection.release();
+      }
+      if (committed) {
+        await cleanupJobWork(job);
+        await cleanupSuccessfulUpload(job).catch(() => {});
+        return;
+      }
+    }
     await cleanupJobWork(job);
     await cleanupRestoredFiles(job);
     if (error instanceof RestoreJobCancelledError) {
@@ -710,4 +741,5 @@ module.exports = {
   getActiveRestoreSections,
   isSectionRestoreActive,
   scheduleRestoreWorker,
+  runRestoreJob,
 };

@@ -1,0 +1,446 @@
+{
+  "fixture_schema_version": 1,
+  "provenance": {
+    "tag": "v0.9.23.0",
+    "commit": "e8813669c75ada5bad870d0f9c380083934ed291",
+    "source_sha256": {
+      "api/src/security/encryption.js": "994512c054c832b38f766b50c7840fe732afc6fc21a09f87d3b5aed4ef14aff0",
+      "api/src/services/backup-container.js": "fa36cdea4a4ec44d75686e13c63d189cd668ab356660d07aaf44228bb8bd8f3b",
+      "api/src/services/backup.js": "7957c6b1846ccacedabb18e7ebee6b20d0a84afd6e13cf127639bd7b6998dfe7",
+      "api/src/services/export-jobs.js": "3b8a0e5c22562070a9263894e7a583659933180fd54390f7f3cbcfcd3cd3d90a"
+    },
+    "generator_sha256": "3f4d8dd0ea9f69493d4add7758f8c0c07e313b6f80fc1cdb65ad15dcbde34894",
+    "generated_at": "2026-09-07T14:38:40.524Z",
+    "node": "v26.7.0"
+  },
+  "source_user_id": "09230000-0000-4000-8000-000000000001",
+  "source_encryption_key": "synthetic-legacy-0.9.23-encryption-key-not-a-secret",
+  "source_backup_master_key": "synthetic-legacy-0.9.23-backup-master-not-a-secret",
+  "recovery_password": "Synthetic-0.9.23-Fixture-Recovery-Only-2026",
+  "data_key_hex": "0923092309230923092309230923092309230923092309230923092309230923",
+  "container_version": 1,
+  "format_version": 1,
+  "row_counts": {
+    "user": 1,
+    "user_settings": 1,
+    "contacts": 1,
+    "calendar_accounts": 1,
+    "calendar_calendars": 1,
+    "calendar_events": 1,
+    "calendar_event_subtasks": 1,
+    "calendar_event_attendees": 1,
+    "calendar_event_external_refs": 1,
+    "mail_folders": 1,
+    "mail_sender_rules": 2,
+    "mail_accounts": 2,
+    "emails": 2,
+    "email_attachments": 2,
+    "mail_email_scores": 2,
+    "recordings": 1,
+    "recording_tags": 1,
+    "recording_tag_links": 1
+  },
+  "data": {
+    "user": {
+      "id": "09230000-0000-4000-8000-000000000001",
+      "email": "legacy-owner@example.test",
+      "full_name": "Legacy Grüße Owner",
+      "avatar_url": null,
+      "role": "user",
+      "is_active": 1,
+      "email_verified": 1,
+      "timezone": "Europe/Vienna",
+      "created_at": "2026-01-02T12:34:56.000Z",
+      "updated_at": "2026-01-02T12:34:56.000Z"
+    },
+    "user_settings": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "setting_key": "calendar_preferences",
+        "setting_value": "{\"firstDay\":1,\"custom\":\"Grüße\\nTwo lines\"}"
+      }
+    ],
+    "contacts": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000002",
+        "first_name": "Zoë",
+        "last_name": "Legacy",
+        "email": "zoe@example.test",
+        "email2": "zoe-second@example.test",
+        "phone": "+43 12345",
+        "notes": "Original Unicode Grüße\nSecond line",
+        "is_favorite": 1
+      }
+    ],
+    "calendar_accounts": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-00000000000e",
+        "provider": "caldav",
+        "display_name": "Legacy Calendar Account",
+        "account_email": "legacy-calendar@example.test",
+        "username": "legacy-calendar",
+        "discovery_url": "https://8.8.8.8/dav/",
+        "base_url": "https://8.8.8.8/dav/",
+        "encrypted_password": "22cbebd8e1686a599c721c96:39f6889902004415021ecce67f39a147:f7a3b51af9fe651dbbd55e39f50c2604614eccfeeabe1e38e7813ef684b93d10a8c0",
+        "encrypted_access_token": "57961da4a664538d9f0cff56:85ff758b3551393736efe5b20c4184f9:76a5a3a06760d2663c71fb2583669a4ff7a9e51019a4af4f5ab2a8421d",
+        "encrypted_refresh_token": "b7474fc61a31a950ef38813c:6a40671e7f4407540957b3839685e5b6:f5410d91edf794c7337df817e1c75105a7ca31adf5cb50dd6ef45e6ba2d6",
+        "is_active": 1
+      }
+    ],
+    "calendar_calendars": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-00000000000f",
+        "account_id": "09230000-0000-4000-8000-00000000000e",
+        "name": "Legacy Research",
+        "external_id": "https://8.8.8.8/dav/legacy/",
+        "color": "#2244ff",
+        "is_visible": 1
+      }
+    ],
+    "calendar_events": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000010",
+        "calendar_id": "09230000-0000-4000-8000-00000000000f",
+        "title": "Legacy event Grüße",
+        "description": "Original notes\nSecond line",
+        "start_time": "2030-02-03T10:00:00.000Z",
+        "end_time": "2030-02-03T11:00:00.000Z",
+        "recurrence": "FREQ=WEEKLY;COUNT=3",
+        "reminders": "[10,60]",
+        "reminder_minutes": 10,
+        "todo_status": "todo",
+        "location": "Vienna"
+      }
+    ],
+    "calendar_event_subtasks": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000011",
+        "event_id": "09230000-0000-4000-8000-000000000010",
+        "title": "Legacy completed subtask",
+        "is_done": 1,
+        "position": 2
+      }
+    ],
+    "calendar_event_attendees": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000012",
+        "event_id": "09230000-0000-4000-8000-000000000010",
+        "email": "legacy-attendee@example.test",
+        "display_name": "Legacy Attendee",
+        "response_status": "accepted"
+      }
+    ],
+    "calendar_event_external_refs": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000013",
+        "event_id": "09230000-0000-4000-8000-000000000010",
+        "calendar_id": "09230000-0000-4000-8000-00000000000f",
+        "account_id": "09230000-0000-4000-8000-00000000000e",
+        "provider": "caldav",
+        "external_event_id": "legacy-event.ics",
+        "external_etag": "legacy-etag"
+      }
+    ],
+    "mail_folders": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000003",
+        "slug": "research",
+        "display_name": "Research & Notes",
+        "position": 7,
+        "is_system": 0
+      }
+    ],
+    "mail_sender_rules": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-00000000000a",
+        "mail_account_id": "09230000-0000-4000-8000-000000000004",
+        "match_type": "address",
+        "match_value": "sender@example.test",
+        "target_folder": "research"
+      },
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-00000000000b",
+        "mail_account_id": "09230000-0000-4000-8000-000000000005",
+        "match_type": "address",
+        "match_value": "sender@example.test",
+        "target_folder": "research"
+      }
+    ],
+    "mail_accounts": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000004",
+        "email_address": "legacy-mail-0@example.test",
+        "display_name": "Legacy account 0",
+        "provider": "custom",
+        "username": "legacy-mail-0@example.test",
+        "imap_host": "8.8.8.8",
+        "imap_port": 993,
+        "smtp_host": "9.9.9.9",
+        "smtp_port": 587,
+        "encrypted_password": "daef8f7f08a61526946c3cdb:e8e1f0a3d8633dfa01a98206b688253d:03c22dee9f42c3f5972a2797ef841df344a4559f3f34d5e6928749680fa4f641",
+        "sync_fetch_limit": "all",
+        "is_active": 1,
+        "delete_emails_on_server": 1
+      },
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000005",
+        "email_address": "legacy-mail-1@example.test",
+        "display_name": "Legacy account 1",
+        "provider": "custom",
+        "username": "legacy-mail-1@example.test",
+        "imap_host": "8.8.8.8",
+        "imap_port": 993,
+        "smtp_host": "9.9.9.9",
+        "smtp_port": 587,
+        "encrypted_password": "ea2f2a3de5dea1931f1e507c:d473c1b2fcdcf97cf5b5fb8035927d81:2695ea258292821333a8946b9075cd8a89b958b50bce30506428a4b16cd3f846",
+        "sync_fetch_limit": "all",
+        "is_active": 1,
+        "delete_emails_on_server": 1
+      }
+    ],
+    "emails": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000006",
+        "mail_account_id": "09230000-0000-4000-8000-000000000004",
+        "message_id": "<legacy-0@example.test>",
+        "subject": "Legacy message 0",
+        "from_address": "sender@example.test",
+        "to_addresses": "[\"legacy-mail-0@example.test\"]",
+        "body_text": "Legacy body Grüße 0",
+        "body_html": "<p>Legacy inline Grüße</p><img src=\"/api/mail/attachments/09230000-0000-4000-8000-000000000008\"><img src=\"cid:legacy-inline@example.test\">",
+        "folder": "research",
+        "source_folder": "INBOX/Research",
+        "imap_uid": 22,
+        "imap_uidvalidity": 123,
+        "raw_storage_path": "/app/uploads/mail-raw/09230000-0000-4000-8000-000000000001/legacy-message-0.eml",
+        "raw_sha256": "3bc4ea71535c42dfb0fa67026f619fca2f02ab5be6563ac2de5914bf9db2a649",
+        "received_at": "2026-01-02T12:34:56.000Z",
+        "is_starred": 1,
+        "has_attachments": 1
+      },
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000007",
+        "mail_account_id": "09230000-0000-4000-8000-000000000005",
+        "message_id": "<legacy-1@example.test>",
+        "subject": "Legacy message 1",
+        "from_address": "sender@example.test",
+        "to_addresses": "[\"legacy-mail-1@example.test\"]",
+        "body_text": "Legacy body Grüße 1",
+        "body_html": "<p>Legacy second account Grüße</p>",
+        "folder": "research",
+        "source_folder": "INBOX/Research",
+        "imap_uid": 23,
+        "imap_uidvalidity": 123,
+        "raw_storage_path": "/app/uploads/mail-raw/09230000-0000-4000-8000-000000000001/legacy-message-1.eml",
+        "raw_sha256": "a65adb7b57176690dc6e6b1d334e8fa78e68f5cb62f5927348b962ca7dae2d85",
+        "received_at": "2026-01-02T12:34:56.000Z",
+        "is_starred": 1,
+        "has_attachments": 1
+      }
+    ],
+    "email_attachments": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000008",
+        "email_id": "09230000-0000-4000-8000-000000000006",
+        "filename": "legacy-inline.png",
+        "content_type": "image/png",
+        "size_bytes": 68,
+        "storage_path": "/app/uploads/attachments/09230000-0000-4000-8000-000000000001/legacy-inline.png",
+        "content_id": "legacy-inline@example.test"
+      },
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000009",
+        "email_id": "09230000-0000-4000-8000-000000000007",
+        "filename": "legacy-data.bin",
+        "content_type": "application/octet-stream",
+        "size_bytes": 8,
+        "storage_path": "/app/uploads/attachments/09230000-0000-4000-8000-000000000001/legacy-data.bin",
+        "content_id": "legacy-inline@example.test"
+      }
+    ],
+    "mail_email_scores": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-00000000000c",
+        "email_id": "09230000-0000-4000-8000-000000000006",
+        "score_version": "v1",
+        "total_score": 12.5,
+        "reasons": "[\"legacy synthetic reason\"]",
+        "metadata": "{\"fixture\":true}",
+        "scored_at": "2026-01-02T12:34:56.000Z"
+      },
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-00000000000d",
+        "email_id": "09230000-0000-4000-8000-000000000007",
+        "score_version": "v1",
+        "total_score": 12.5,
+        "reasons": "[\"legacy synthetic reason\"]",
+        "metadata": "{\"fixture\":true}",
+        "scored_at": "2026-01-02T12:34:56.000Z"
+      }
+    ],
+    "recordings": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000014",
+        "title": "Legacy synthetic PCM",
+        "description": "Preserve exact original bytes",
+        "original_filename": "legacy-tone.wav",
+        "content_type": "audio/wav",
+        "size_bytes": 76,
+        "duration_seconds": 0.002,
+        "storage_path": "/app/uploads/recordings/09230000-0000-4000-8000-000000000001/legacy-tone.wav",
+        "source": "recorded",
+        "category": "none",
+        "recorded_at": "2026-01-02T12:34:56.000Z",
+        "metadata": "{\"sampleRate\":8000}"
+      }
+    ],
+    "recording_tags": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "updated_at": "2026-01-02T12:34:56.000Z",
+        "id": "09230000-0000-4000-8000-000000000015",
+        "name": "Legacy Research",
+        "color": "#2244ff"
+      }
+    ],
+    "recording_tag_links": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "created_at": "2026-01-02T12:34:56.000Z",
+        "recording_id": "09230000-0000-4000-8000-000000000014",
+        "tag_id": "09230000-0000-4000-8000-000000000015"
+      }
+    ]
+  },
+  "credentials": {
+    "mail_accounts": [
+      {
+        "id": "09230000-0000-4000-8000-000000000004",
+        "email_address": "legacy-mail-0@example.test",
+        "password": "synthetic-legacy-mail-password-0"
+      },
+      {
+        "id": "09230000-0000-4000-8000-000000000005",
+        "email_address": "legacy-mail-1@example.test",
+        "password": "synthetic-legacy-mail-password-1"
+      }
+    ],
+    "calendar_accounts": [
+      {
+        "id": "09230000-0000-4000-8000-00000000000e",
+        "password": "synthetic-legacy-calendar-password",
+        "access_token": "synthetic-legacy-access-token",
+        "refresh_token": "synthetic-legacy-refresh-token"
+      }
+    ]
+  },
+  "files": [
+    {
+      "kind": "email_attachment",
+      "id": "09230000-0000-4000-8000-000000000008",
+      "filename": "legacy-inline.png",
+      "sha256": "13e1f31ea79fdac2c599cc9b5daff753cb9afd6fe0839a53380a5920b56fc319",
+      "size_bytes": 68,
+      "bytes_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jY4kAAAAASUVORK5CYII="
+    },
+    {
+      "kind": "raw_email",
+      "id": "09230000-0000-4000-8000-000000000006",
+      "filename": "legacy-message-0.eml",
+      "sha256": "3bc4ea71535c42dfb0fa67026f619fca2f02ab5be6563ac2de5914bf9db2a649",
+      "size_bytes": 703,
+      "bytes_base64": "RnJvbTogc2VuZGVyQGV4YW1wbGUudGVzdA0KVG86IGxlZ2FjeS1tYWlsLTBAZXhhbXBsZS50ZXN0DQpNZXNzYWdlLUlEOiA8bGVnYWN5LTBAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogTGVnYWN5IG1lc3NhZ2UgMA0KTUlNRS1WZXJzaW9uOiAxLjANCkNvbnRlbnQtVHlwZTogbXVsdGlwYXJ0L3JlbGF0ZWQ7IGJvdW5kYXJ5PSJsZWdhY3ktZml4dHVyZSINCg0KLS1sZWdhY3ktZml4dHVyZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWw7IGNoYXJzZXQ9dXRmLTgNCg0KPHA+TGVnYWN5IGlubGluZSBHcsO8w59lPC9wPjxpbWcgc3JjPSIvYXBpL21haWwvYXR0YWNobWVudHMvMDkyMzAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDA4Ij48aW1nIHNyYz0iY2lkOmxlZ2FjeS1pbmxpbmVAZXhhbXBsZS50ZXN0Ij4NCg0KLS1sZWdhY3ktZml4dHVyZQ0KQ29udGVudC1UeXBlOiBpbWFnZS9wbmcNCkNvbnRlbnQtSUQ6IDxsZWdhY3ktaW5saW5lQGV4YW1wbGUudGVzdD4NCkNvbnRlbnQtRGlzcG9zaXRpb246IGlubGluZTsgZmlsZW5hbWU9ImxlZ2FjeS1pbmxpbmUucG5nIg0KQ29udGVudC1UcmFuc2Zlci1FbmNvZGluZzogYmFzZTY0DQoNCmlWQk9SdzBLR2dvQUFBQU5TVWhFVWdBQUFBRUFBQUFCQ0FRQUFBQzFIQXdDQUFBQUMwbEVRVlI0Mm1QOC94OEFBd01DQU8ralk0a0FBQUFBU1VWT1JLNUNZSUk9DQotLWxlZ2FjeS1maXh0dXJlLS0NCg=="
+    },
+    {
+      "kind": "email_attachment",
+      "id": "09230000-0000-4000-8000-000000000009",
+      "filename": "legacy-data.bin",
+      "sha256": "6cb0ad98421cdcdbfe206397023c5e78b732469ebfe49671b38e39f7e79fa185",
+      "size_bytes": 8,
+      "bytes_base64": "AP8RgAEKDQA="
+    },
+    {
+      "kind": "raw_email",
+      "id": "09230000-0000-4000-8000-000000000007",
+      "filename": "legacy-message-1.eml",
+      "sha256": "a65adb7b57176690dc6e6b1d334e8fa78e68f5cb62f5927348b962ca7dae2d85",
+      "size_bytes": 536,
+      "bytes_base64": "RnJvbTogc2VuZGVyQGV4YW1wbGUudGVzdA0KVG86IGxlZ2FjeS1tYWlsLTFAZXhhbXBsZS50ZXN0DQpNZXNzYWdlLUlEOiA8bGVnYWN5LTFAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogTGVnYWN5IG1lc3NhZ2UgMQ0KTUlNRS1WZXJzaW9uOiAxLjANCkNvbnRlbnQtVHlwZTogbXVsdGlwYXJ0L3JlbGF0ZWQ7IGJvdW5kYXJ5PSJsZWdhY3ktZml4dHVyZSINCg0KLS1sZWdhY3ktZml4dHVyZQ0KQ29udGVudC1UeXBlOiB0ZXh0L2h0bWw7IGNoYXJzZXQ9dXRmLTgNCg0KPHA+TGVnYWN5IHNlY29uZCBhY2NvdW50IEdyw7zDn2U8L3A+DQoNCi0tbGVnYWN5LWZpeHR1cmUNCkNvbnRlbnQtVHlwZTogYXBwbGljYXRpb24vb2N0ZXQtc3RyZWFtDQpDb250ZW50LUlEOiA8bGVnYWN5LWlubGluZUBleGFtcGxlLnRlc3Q+DQpDb250ZW50LURpc3Bvc2l0aW9uOiBhdHRhY2htZW50OyBmaWxlbmFtZT0ibGVnYWN5LWRhdGEuYmluIg0KQ29udGVudC1UcmFuc2Zlci1FbmNvZGluZzogYmFzZTY0DQoNCkFQOFJnQUVLRFFBPQ0KLS1sZWdhY3ktZml4dHVyZS0tDQo="
+    },
+    {
+      "kind": "recording",
+      "id": "09230000-0000-4000-8000-000000000014",
+      "filename": "legacy-tone.wav",
+      "sha256": "e94d3992c115927ed933204a8ee9fbe1cc3f59cc22019bb72f73f1f7a79c9291",
+      "size_bytes": 76,
+      "bytes_base64": "UklGRkQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSAAAAAAAEkDjQONAAv9Qfzp/pEC3QOcAeD9GPzn/aQB3wOKAg=="
+    }
+  ],
+  "archives": {
+    "plain": {
+      "filename": "plain.zip",
+      "sha256": "575fbd0a261d805acfcaa68bb3ce798cf9db3004d10e577c99cb11eb3a6f677c",
+      "size_bytes": 16945
+    },
+    "encrypted": {
+      "filename": "encrypted.unihub-backup",
+      "sha256": "190f368c8dbf3e728de8e6eea75bb0e71928306da317262e119bc39dcf0bc3df",
+      "size_bytes": 17461
+    }
+  }
+}
