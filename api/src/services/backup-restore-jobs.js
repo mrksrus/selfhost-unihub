@@ -286,6 +286,9 @@ async function restoreValidatedJob(job) {
         await updateRestoreJob(job.id, { phase, progress });
       },
       beforeCommit: async (connection, restoreResult) => {
+        // Publishing phase=commit prevents new cancellation requests. Honor a
+        // request accepted just before that boundary before marking completion.
+        await checkRestoreCancelled(job.id);
         await connection.execute(
           `UPDATE backup_restore_jobs
            SET status = 'completed',

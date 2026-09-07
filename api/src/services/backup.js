@@ -588,6 +588,15 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full', {
       archiveFiles.push({ ...normalizeArchiveFileEntry(file), missing: true });
       continue;
     }
+    if (file.kind === 'recording') {
+      try {
+        await inspectRecordingAudio(file.source_path);
+      } catch {
+        const error = new Error(`Backup cannot include recording ${file.id}: the stored audio is unsupported or unreadable. The original file was kept unchanged; export other sections or repair this recording first.`);
+        error.status = 409;
+        throw error;
+      }
+    }
     const archivePath = getBackupArchivePath(file);
     archiveFiles.push({
       ...normalizeArchiveFileEntry(file),

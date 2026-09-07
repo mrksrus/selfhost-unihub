@@ -18,6 +18,9 @@ The generator loads the exact historical `backup.js`, `export-jobs.js`,
 isolated CommonJS loader. **Their source text is not modified.** It calls the old
 `buildBackupArchiveEntriesForUser`, `writeZip`, and `encryptBackupFile` functions.
 The database dependency supplies synthetic rows for the old exporter's SELECTs.
+Before exporting, it validates those rows against the historical `database.js`
+schema: column names, required values, enum choices, bounded strings, basic
+types, and foreign-key parent records. That schema source hash is also recorded.
 Filesystem calls for `/app/uploads` are redirected to a disposable temporary
 directory, while the original storage paths remain in the exported records.
 The generator makes no mail, calendar, or other network connections and never
@@ -26,6 +29,12 @@ reads or writes a deployed application's uploads.
 This proves the behavior of the exporter at the recorded commit with these
 inputs. It does not claim that every older version or every possible legacy
 database state is covered.
+
+Fixture correction on 7 September 2026: the synthetic sender rule originally
+used `match_type: "address"`, which is not a valid value in the historical
+`ENUM('domain', 'email')`. It now uses `"email"`; both archives were deliberately
+regenerated with the unchanged old exporter. This corrects test input, not a
+production reader or database migration.
 
 ## Files and expected behavior
 

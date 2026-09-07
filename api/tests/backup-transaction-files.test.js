@@ -14,7 +14,7 @@ async function fixture(t, failure) {
   const originalBackup = require.cache[backupPath];
   require.cache[recordingsPath] = { id: recordingsPath, filename: recordingsPath, loaded: true, exports: { RECORDINGS_ROOT: directory } };
   delete require.cache[backupPath];
-  const { importBackupForUser } = require('../src/services/backup');
+  const { importBackupForUser, buildBackupArchiveEntriesForUser } = require('../src/services/backup');
   t.after(async () => {
     setDb(null);
     if (originalRecordings) require.cache[recordingsPath] = originalRecordings;
@@ -49,7 +49,7 @@ async function fixture(t, failure) {
     beforeCommit: failure === 'before' ? async () => { throw new Error('Before-commit failure'); } : null,
   });
   const restoredFile = path.join(directory, 'test-user', 'recording-fixture.wav');
-  return { run, restoredFile, calls, audio };
+  return { run, restoredFile, calls, audio, directory, buildBackupArchiveEntriesForUser };
 }
 
 test('uncertain COMMIT preserves restored files and marks the error for reconciliation', async (t) => {
@@ -71,4 +71,27 @@ test('database connection failure after file staging cleans the staged files', a
   const { run, restoredFile } = await fixture(t, 'acquire');
   await assert.rejects(run(), /Connection unavailable/);
   await assert.rejects(fs.access(restoredFile), { code: 'ENOENT' });
+});
+
+test('new selected recording exports reject unsupported stored audio while other sections remain exportable', async (t) => {
+  const { directory, buildBackupArchiveEntriesForUser } = await fixture(t);
+  const sourcePath = path.join(directory, 'legacy-recording.bin');
+  const original = Buffer.from('<html>old unsupported recording upload</html>');
+  await fs.writeFile(sourcePath, original);
+  const connection = {
+    async query() { return [[]]; }, async commit() {}, async rollback() {}, release() {},
+    async execute(sql) {
+      if (sql.includes('FROM users ')) return [[{ id: 'test-user', email: 'user@example.test' }]];
+      if (sql.includes('FROM recordings ')) return [[{ id: 'legacy-recording', user_id: 'test-user', storage_path: sourcePath }]];
+      return [[]];
+    },
+  };
+  setDb({ getConnection: async () => connection });
+  const contactEntries = await buildBackupArchiveEntriesForUser('test-user', ['contacts']);
+  t.after(async () => {
+    await Promise.all(contactEntries.filter(entry => entry.cleanupAfterWrite).map(entry => fs.rm(entry.filePath, { force: true })));
+  });
+  assert.ok(contactEntries.some(entry => entry.name === 'data/backup.json'));
+  await assert.rejects(buildBackupArchiveEntriesForUser('test-user', ['recordings']), error => error.status === 409 && /stored audio is unsupported or unreadable/.test(error.message));
+  assert.deepEqual(await fs.readFile(sourcePath), original);
 });

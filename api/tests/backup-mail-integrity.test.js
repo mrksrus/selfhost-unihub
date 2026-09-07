@@ -3,7 +3,8 @@ const assert = require('node:assert/strict');
 const { setDb } = require('../src/state');
 const { validateRestoreRows } = require('../src/services/backup-ownership');
 const { buildBackupForUser, remapRestoredInlineAttachments, restoreMailFolderRemoteBox,
-  findExistingEmailForRestore, assertBackupMetadataSize } = require('../src/services/backup');
+  findExistingEmailForRestore, assertBackupMetadataSize, assertBackupFilesComplete,
+  scopeBackupForImport, findExistingAttachmentForRestore, findExistingRecordingForRestore } = require('../src/services/backup');
 const { BACKUP_METADATA_LIMITS } = require('../src/services/backup-format');
 
 test('new backup metadata must fit the same limits enforced by restore readers', () => {
@@ -139,4 +140,45 @@ test('invalid or duplicate provider-folder references are rejected during previe
   assert.deepEqual(validateRestoreRows({ mail_folder_remote_boxes: [row] }), []);
   assert.match(validateRestoreRows({ mail_folder_remote_boxes: [row, { ...row, folder_id: 'different' }] }).join(' '), /duplicate/);
   assert.match(validateRestoreRows({ mail_folder_remote_boxes: [{ ...row, remote_name: 'bad\r\nname' }] }).join(' '), /invalid/);
+});
+
+test('distinct same-name same-size attachments cannot share one restored row', async () => {
+  const candidates = [{ id: 'attachment-one' }, { id: 'attachment-two' }];
+  const connection = { async execute(sql) { return sql.includes('AND filename = ?') ? [candidates] : [[]]; } };
+  const row = { id: 'source', filename: 'image.png', size_bytes: 100 };
+  assert.equal(await findExistingAttachmentForRestore(connection, row, 'user', 'email'), 'attachment-one');
+  assert.equal(await findExistingAttachmentForRestore(connection, row, 'user', 'email', new Set(['attachment-one'])), 'attachment-two');
+  assert.equal(await findExistingAttachmentForRestore(connection, row, 'user', 'email', new Set(['attachment-one', 'attachment-two'])), null);
+});
+
+test('distinct same-name same-size recordings cannot share one restored row', async () => {
+  const candidates = [{ id: 'recording-one' }, { id: 'recording-two' }];
+  const connection = { async execute(sql) { return sql.includes('COALESCE(original_filename') ? [candidates] : [[]]; } };
+  const row = { id: 'source', original_filename: 'recording.wav', size_bytes: 100 };
+  assert.equal(await findExistingRecordingForRestore(connection, row, 'user', '/restored/audio'), 'recording-one');
+  assert.equal(await findExistingRecordingForRestore(connection, row, 'user', '/restored/audio', new Set(['recording-one'])), 'recording-two');
+  assert.equal(await findExistingRecordingForRestore(connection, row, 'user', '/restored/audio', new Set(['recording-one', 'recording-two'])), null);
+});
+
+test('recording title and timestamp identity takes priority over a reused file name', async () => {
+  const calls = [];
+  const connection = { async execute(sql) {
+    calls.push(sql);
+    return sql.includes('LOWER(title)') ? [[{ id: 'correct-recording' }]] : [[]];
+  } };
+  assert.equal(await findExistingRecordingForRestore(connection, {
+    id: 'source', title: 'Journal', recorded_at: '2026-01-01 10:00:00', original_filename: 'recording.wav', size_bytes: 100,
+  }, 'user', '/restored/audio'), 'correct-recording');
+  assert.ok(calls.every(sql => !sql.includes('COALESCE(original_filename')));
+});
+
+test('new selected-section backups reject missing referenced bytes without blocking unrelated sections', () => {
+  const backup = { data: {
+    contacts: [{ id: 'contact' }], recordings: [{ id: 'recording', storage_path: '/missing/audio' }],
+    emails: [{ id: 'mail', raw_storage_path: '/missing/raw' }], email_attachments: [{ id: 'attachment' }],
+  }, files: [{ kind: 'recording', id: 'recording', missing: true }] };
+  assert.throws(() => assertBackupFilesComplete(scopeBackupForImport(backup, ['recordings'])), /missing or unreadable/);
+  assert.throws(() => assertBackupFilesComplete(scopeBackupForImport(backup, ['mail'])), /missing or unreadable/);
+  assert.doesNotThrow(() => assertBackupFilesComplete(scopeBackupForImport(backup, ['contacts'])));
+  assert.doesNotThrow(() => assertBackupFilesComplete({ data: { emails: [{ id: 'draft', is_draft: true }] }, files: [] }));
 });

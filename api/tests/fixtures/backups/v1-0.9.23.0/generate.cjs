@@ -14,6 +14,7 @@ const { execFileSync } = require('node:child_process');
 const TAG = 'v0.9.23.0';
 const COMMIT = 'e8813669c75ada5bad870d0f9c380083934ed291';
 const SOURCE_FILES = [
+  'api/src/services/database.js',
   'api/src/security/encryption.js',
   'api/src/services/backup-container.js',
   'api/src/services/backup.js',
@@ -27,6 +28,54 @@ const timestamp = '2026-01-02T12:34:56.000Z';
 const id = number => '09230000-0000-4000-8000-' + number.toString(16).padStart(12, '0');
 const userId = id(1);
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+
+function validateSyntheticRows(tables, schemaSource) {
+  for (const [table, rows] of Object.entries(tables)) {
+    const definition = new RegExp('CREATE TABLE IF NOT EXISTS ' + table + ' \\(([\\s\\S]*?)\\) ENGINE').exec(schemaSource)?.[1];
+    assert.ok(definition, 'Missing historical schema for ' + table);
+    const columns = new Map([...definition.matchAll(/^\s{4}([a-z_][a-z_0-9]*)\s+([A-Z]+)([^\n]*)/gm)]
+      .map(([, name, type, detail]) => [name, { type, detail }]));
+    for (const row of rows) {
+      // users uses an explicit projection that intentionally excludes its hash.
+      if (table !== 'users') {
+        for (const [name, { detail }] of columns) {
+          if (/\bNOT NULL\b/.test(detail) && !/\bDEFAULT\b/.test(detail)) {
+            assert.notEqual(row[name], undefined, table + '.' + name + ' is required');
+          }
+        }
+      }
+      for (const [name, value] of Object.entries(row)) {
+        const column = columns.get(name);
+        assert.ok(column, 'Unknown historical column ' + table + '.' + name);
+        const label = table + '.' + name;
+        if (value === null) {
+          assert.ok(!/\bNOT NULL\b/.test(column.detail), label + ' cannot be null');
+          continue;
+        }
+        if (column.type === 'ENUM') {
+          const values = [...column.detail.match(/^\((.*?)\)/)[1].matchAll(/'([^']*)'/g)].map(match => match[1]);
+          assert.ok(values.includes(value), label + ' has unsupported historical enum value: ' + value);
+        }
+        if (['CHAR', 'VARCHAR'].includes(column.type)) {
+          const maximum = Number(/^\((\d+)\)/.exec(column.detail)[1]);
+          assert.equal(typeof value, 'string', label + ' must be text');
+          assert.ok([...value].length <= maximum, label + ' exceeds its historical length');
+        }
+        if (column.type === 'BOOLEAN') assert.ok([true, false, 0, 1].includes(value), label + ' must be a boolean');
+        if (['INT', 'BIGINT'].includes(column.type)) assert.ok(Number.isSafeInteger(value), label + ' must be an integer');
+        if (column.type === 'DECIMAL') assert.ok(Number.isFinite(value), label + ' must be a finite number');
+        if (column.type === 'JSON') JSON.parse(value);
+        if (['TIMESTAMP', 'DATETIME'].includes(column.type)) assert.ok(Number.isFinite(Date.parse(value)), label + ' must be a valid date');
+      }
+    }
+    for (const [, column, referencedTable, referencedColumn] of definition.matchAll(/FOREIGN KEY \(([a-z_]+)\) REFERENCES ([a-z_]+)\(([a-z_]+)\)/g)) {
+      for (const row of rows) {
+        if (row[column] === undefined || row[column] === null) continue;
+        assert.ok(tables[referencedTable]?.some(parent => parent[referencedColumn] === row[column]), table + '.' + column + ' has a missing historical parent');
+      }
+    }
+  }
+}
 
 function makeWav() {
   const bytes = Buffer.alloc(76);
@@ -151,7 +200,7 @@ async function main() {
       const rawPath = await addFile('raw_email', emailId, 'legacy-message-' + index + '.eml', raw);
       tables.emails.push(row({ id: emailId, mail_account_id: accountId, message_id: '<legacy-' + index + '@example.test>', subject: 'Legacy message ' + index, from_address: 'sender@example.test', to_addresses: JSON.stringify([address]), body_text: 'Legacy body Grüße ' + index, body_html: bodyHtml, folder: 'research', source_folder: 'INBOX/Research', imap_uid: 22 + index, imap_uidvalidity: 123, raw_storage_path: rawPath, raw_sha256: sha256(raw), received_at: timestamp, is_starred: 1, has_attachments: 1 }));
       tables.email_attachments.push(row({ id: attachmentId, email_id: emailId, filename, content_type: contentType, size_bytes: attachment.length, storage_path: attachmentPath, content_id: 'legacy-inline@example.test' }));
-      tables.mail_sender_rules.push(row({ id: id(10 + index), mail_account_id: accountId, match_type: 'address', match_value: 'sender@example.test', target_folder: 'research' }));
+      tables.mail_sender_rules.push(row({ id: id(10 + index), mail_account_id: accountId, match_type: 'email', match_value: 'sender@example.test', target_folder: 'research' }));
       tables.mail_email_scores.push(row({ id: id(12 + index), email_id: emailId, score_version: 'v1', total_score: 12.5, reasons: JSON.stringify(['legacy synthetic reason']), metadata: JSON.stringify({ fixture: true }), scored_at: timestamp }));
     }
     credentials.calendar_accounts.push({ id: id(14), password: 'synthetic-legacy-calendar-password', access_token: 'synthetic-legacy-access-token', refresh_token: 'synthetic-legacy-refresh-token' });
@@ -171,6 +220,7 @@ async function main() {
     for (const name of ['emails', 'email_attachments', 'recording_tag_links']) {
       for (const item of tables[name]) delete item.updated_at;
     }
+    validateSyntheticRows(tables, sources.get('api/src/services/database.js'));
 
     const plainPath = path.join(__dirname, 'plain.zip');
     const encryptedPath = path.join(__dirname, 'encrypted.unihub-backup');

@@ -95,7 +95,10 @@ is no version selector in the import UI. The manifest and data payload must
 agree on a supported version.
 
 New backup creation fails if a referenced file in the selected sections is
-missing, unreadable or changes while being archived. A contacts-only backup is
+missing, unreadable or changes while being archived. Selected recordings must
+also pass the same supported-audio signature check used by restore; an
+unsupported original is left unchanged and the export reports the problem.
+A contacts-only backup is
 not blocked by a missing recording. Older archives that already describe missing
 files remain readable with warnings; those missing bytes cannot be recovered
 from the archive. Replacement must not remove a good existing file reference

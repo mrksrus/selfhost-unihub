@@ -4,13 +4,14 @@
     "tag": "v0.9.23.0",
     "commit": "e8813669c75ada5bad870d0f9c380083934ed291",
     "source_sha256": {
+      "api/src/services/database.js": "e8657714d7684a9d2d47dacb4f279726f01a12ad20c4f081bb884b11643df507",
       "api/src/security/encryption.js": "994512c054c832b38f766b50c7840fe732afc6fc21a09f87d3b5aed4ef14aff0",
       "api/src/services/backup-container.js": "fa36cdea4a4ec44d75686e13c63d189cd668ab356660d07aaf44228bb8bd8f3b",
       "api/src/services/backup.js": "7957c6b1846ccacedabb18e7ebee6b20d0a84afd6e13cf127639bd7b6998dfe7",
       "api/src/services/export-jobs.js": "3b8a0e5c22562070a9263894e7a583659933180fd54390f7f3cbcfcd3cd3d90a"
     },
-    "generator_sha256": "3f4d8dd0ea9f69493d4add7758f8c0c07e313b6f80fc1cdb65ad15dcbde34894",
-    "generated_at": "2026-09-07T14:38:40.524Z",
+    "generator_sha256": "7728312ebc07e9e61a8059dc4be051e43220c2fa31c5061d254c8c1e6554216c",
+    "generated_at": "2026-09-07T14:58:13.768Z",
     "node": "v26.7.0"
   },
   "source_user_id": "09230000-0000-4000-8000-000000000001",
@@ -88,9 +89,9 @@
         "username": "legacy-calendar",
         "discovery_url": "https://8.8.8.8/dav/",
         "base_url": "https://8.8.8.8/dav/",
-        "encrypted_password": "22cbebd8e1686a599c721c96:39f6889902004415021ecce67f39a147:f7a3b51af9fe651dbbd55e39f50c2604614eccfeeabe1e38e7813ef684b93d10a8c0",
-        "encrypted_access_token": "57961da4a664538d9f0cff56:85ff758b3551393736efe5b20c4184f9:76a5a3a06760d2663c71fb2583669a4ff7a9e51019a4af4f5ab2a8421d",
-        "encrypted_refresh_token": "b7474fc61a31a950ef38813c:6a40671e7f4407540957b3839685e5b6:f5410d91edf794c7337df817e1c75105a7ca31adf5cb50dd6ef45e6ba2d6",
+        "encrypted_password": "47a2cfda2ab9252f7c13fb45:09308db98cbad06db5e94691b79e696b:f38337f11ec3acaef2582388b81cd6fb480762d3dce4376a4291019df2db8ca51e39",
+        "encrypted_access_token": "f0cf4e839e5ab256851b7a09:dc3aaf5f7bcd3c8c4ea2b9abcf734d6f:277fda032e917dd5356fdfa9f083227303d78017db6ccbeed9be6b42cb",
+        "encrypted_refresh_token": "e861e072afd615da9a388aa4:5ca8e75d9430574940206029a86c4fff:9f6773df43215e35e06f0a4292a97023575275aebe86662b2f8b81294e4e",
         "is_active": 1
       }
     ],
@@ -182,7 +183,7 @@
         "updated_at": "2026-01-02T12:34:56.000Z",
         "id": "09230000-0000-4000-8000-00000000000a",
         "mail_account_id": "09230000-0000-4000-8000-000000000004",
-        "match_type": "address",
+        "match_type": "email",
         "match_value": "sender@example.test",
         "target_folder": "research"
       },
@@ -192,7 +193,7 @@
         "updated_at": "2026-01-02T12:34:56.000Z",
         "id": "09230000-0000-4000-8000-00000000000b",
         "mail_account_id": "09230000-0000-4000-8000-000000000005",
-        "match_type": "address",
+        "match_type": "email",
         "match_value": "sender@example.test",
         "target_folder": "research"
       }
@@ -211,7 +212,7 @@
         "imap_port": 993,
         "smtp_host": "9.9.9.9",
         "smtp_port": 587,
-        "encrypted_password": "daef8f7f08a61526946c3cdb:e8e1f0a3d8633dfa01a98206b688253d:03c22dee9f42c3f5972a2797ef841df344a4559f3f34d5e6928749680fa4f641",
+        "encrypted_password": "9e1ccdc52d407748e48e7ffa:ef25b6c0a7faea0aab086d74b6cead0f:888191f8561f7b4e98e1230d8cf083550709e90d9cf388a68d341e9307585a4d",
         "sync_fetch_limit": "all",
         "is_active": 1,
         "delete_emails_on_server": 1
@@ -229,7 +230,7 @@
         "imap_port": 993,
         "smtp_host": "9.9.9.9",
         "smtp_port": 587,
-        "encrypted_password": "ea2f2a3de5dea1931f1e507c:d473c1b2fcdcf97cf5b5fb8035927d81:2695ea258292821333a8946b9075cd8a89b958b50bce30506428a4b16cd3f846",
+        "encrypted_password": "5c2821252a61800c60c6db31:011125fe1dddaeb41dec39a994fbf37a:beeb25a5365e9f139841428f40ad0372a076e9b9f8c3492c5fe46f35131f534c",
         "sync_fetch_limit": "all",
         "is_active": 1,
         "delete_emails_on_server": 1
@@ -434,13 +435,13 @@
   "archives": {
     "plain": {
       "filename": "plain.zip",
-      "sha256": "575fbd0a261d805acfcaa68bb3ce798cf9db3004d10e577c99cb11eb3a6f677c",
-      "size_bytes": 16945
+      "sha256": "16d6617c54eb5a584ee00aa7643e6b31776bf3bb71afa9a3fb235f3c448db9f2",
+      "size_bytes": 16941
     },
     "encrypted": {
       "filename": "encrypted.unihub-backup",
-      "sha256": "190f368c8dbf3e728de8e6eea75bb0e71928306da317262e119bc39dcf0bc3df",
-      "size_bytes": 17461
+      "sha256": "1be462854450e428084291801f1c91e73934b6409a8f7ba1cb499b2fc8aa16e0",
+      "size_bytes": 17457
     }
   }
 }
