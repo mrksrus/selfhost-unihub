@@ -130,6 +130,15 @@ test('production export and restore jobs round-trip every section through encryp
     originalFiles.set('raw:' + fileKey, raw); originalFiles.set('attachment:' + fileKey, attachment);
     await insert('emails', { id: emailId, user_id: sourceUser, mail_account_id: accountId, message_id: `<roundtrip-${index}@example.test>`, subject: 'Mail ' + index, from_address: 'sender@example.test', to_addresses: JSON.stringify([emailAddress]), body_text: 'Body Grüße ' + index + ':' + copy, body_html: `<p>Grüße ${index}:${copy}</p><img src="/api/mail/attachments/${attachmentId}">`, folder: folderSlug, source_folder: sourceFolder, imap_uid: 22 + index + copy * 10, imap_uidvalidity: 123, raw_storage_path: rawPath, raw_sha256: sha256(raw), received_at: '2030-01-02 12:34:56', is_starred: 1, has_attachments: 1, import_complete: 1 });
     await insert('email_attachments', { id: attachmentId, user_id: sourceUser, email_id: emailId, filename: 'data-' + index + '.bin', content_type: 'application/octet-stream', size_bytes: attachment.length, storage_path: attachmentPath, content_id: 'content-' + index });
+    if (index === 0 && copy === 0) {
+      const secondId = uuid();
+      const secondBytes = Buffer.from(attachment); secondBytes[secondBytes.length - 1] ^= 127;
+      const secondPath = path.join(sourceRoot, 'attachments', sourceUser, secondId + '.bin');
+      await fs.writeFile(secondPath, secondBytes);
+      // Same name and byte count are not proof that two attachments are equal.
+      await insert('email_attachments', { id: secondId, user_id: sourceUser, email_id: emailId, filename: 'data-0.bin', content_type: 'application/octet-stream', size_bytes: secondBytes.length, storage_path: secondPath, content_id: 'second-content-0' });
+      await pool.execute('UPDATE emails SET body_html = CONCAT(body_html, ?) WHERE id = ?', [`<img src="/api/mail/attachments/${secondId}">`, emailId]);
+    }
     await insert('mail_email_scores', { id: uuid(), user_id: sourceUser, email_id: emailId, score_version: 'v1', total_score: 12.5, reasons: JSON.stringify(['synthetic reason']), metadata: JSON.stringify({ test: true }) });
     }
   }
@@ -140,13 +149,19 @@ test('production export and restore jobs round-trip every section through encryp
   await insert('calendar_event_subtasks', { id: uuid(), user_id: sourceUser, event_id: eventId, title: 'Keep this task', is_done: 1, position: 2 });
   await insert('calendar_event_attendees', { id: uuid(), user_id: sourceUser, event_id: eventId, email: 'attendee@example.test', display_name: 'Attendee', response_status: 'accepted' });
   await insert('calendar_event_external_refs', { id: uuid(), user_id: sourceUser, event_id: eventId, calendar_id: calendarId, account_id: calendarAccountId, provider: 'caldav', external_event_id: 'event.ics', external_etag: 'etag-one' });
-  const recordingId = uuid(), tagId = uuid();
-  const audio = wav();
-  const audioPath = path.join(sourceRoot, 'recordings', sourceUser, recordingId + '.wav');
-  await fs.mkdir(path.dirname(audioPath), { recursive: true }); await fs.writeFile(audioPath, audio);
-  await insert('recordings', { id: recordingId, user_id: sourceUser, title: 'Synthetic PCM', description: 'Keep original audio bytes', original_filename: 'tone.wav', content_type: 'audio/wav', size_bytes: audio.length, duration_seconds: 0.002, storage_path: audioPath, source: 'recorded', category: 'none', recorded_at: '2030-01-01 10:00:00', metadata: JSON.stringify({ sampleRate: 8000 }) });
+  const tagId = uuid();
+  const audioByTitle = new Map();
   await insert('recording_tags', { id: tagId, user_id: sourceUser, name: 'Research', color: '#2244ff' });
-  await insert('recording_tag_links', { user_id: sourceUser, recording_id: recordingId, tag_id: tagId });
+  for (let index = 0; index < 2; index++) {
+    const recordingId = uuid();
+    const audio = wav(); audio[audio.length - 1] ^= index;
+    const title = 'Synthetic PCM ' + index;
+    audioByTitle.set(title, audio);
+    const audioPath = path.join(sourceRoot, 'recordings', sourceUser, recordingId + '.wav');
+    await fs.mkdir(path.dirname(audioPath), { recursive: true }); await fs.writeFile(audioPath, audio);
+    await insert('recordings', { id: recordingId, user_id: sourceUser, title, description: 'Keep original audio bytes', original_filename: 'tone.wav', content_type: 'audio/wav', size_bytes: audio.length, duration_seconds: 0.002, storage_path: audioPath, source: 'recorded', category: 'none', recorded_at: '2030-01-01 10:00:00', metadata: JSON.stringify({ sampleRate: 8000 }) });
+    await insert('recording_tag_links', { user_id: sourceUser, recording_id: recordingId, tag_id: tagId });
+  }
   const original = await snapshot(sourceUser);
   const unrelated = await snapshot(unrelatedUser);
   const exportJobs = source('services/export-jobs');
@@ -167,7 +182,7 @@ test('production export and restore jobs round-trip every section through encryp
   const encrypted = await exportArchive(true);
   const legacy = await exportArchive(false);
   const legacyParsed = await source('services/backup').backupFromZipFile(legacy.file_path);
-  assert.equal(legacyParsed.manifest.file_count, 9);
+  assert.equal(legacyParsed.manifest.file_count, 11);
   assert.deepEqual(legacyParsed.manifest.missing_files, []);
   assert.equal(legacyParsed.backup.data.contacts.length, 1, 'Other users must not appear in an export');
   assert.deepEqual(await snapshot(sourceUser), original, 'Export must not mutate source rows');
@@ -184,6 +199,22 @@ test('production export and restore jobs round-trip every section through encryp
     assert.equal(files.some(filename => filename.startsWith(started.id)), false, 'Remove unusable archive and temporary ZIP');
     const [[keys]] = await pool.execute('SELECT COUNT(*) AS total FROM backup_archive_keys WHERE export_job_id = ?', [started.id]);
     assert.equal(keys.total, 0, 'Remove unusable archive key metadata');
+  });
+  await t.test('a missing selected recording fails export clearly while an unrelated section can still export', async () => {
+    const originalPath = original.recordings[0].storage_path;
+    const heldPath = originalPath + '.held-by-test';
+    await fs.rename(originalPath, heldPath);
+    try {
+      const started = await exportJobs.startDataExportJob(sourceUser, { sections: 'full', encrypt: true });
+      const failed = await waitFor(() => exportJobs.getDataExportJob(sourceUser, started.id), job => job?.status === 'failed', 'Missing selected file rejection', { allowFailure: true });
+      assert.match(failed.error, /referenced file.*missing|missing.*referenced file/i);
+      assert.equal(failed.file_path, null);
+      const partial = await exportJobs.startDataExportJob(sourceUser, { sections: ['contacts'], encrypt: false });
+      const ready = await waitFor(() => exportJobs.getDataExportJob(sourceUser, partial.id), job => job?.status === 'ready', 'Unrelated contacts export');
+      const parsed = await source('services/backup').backupFromZipFile(ready.file_path);
+      assert.equal(parsed.backup.data.contacts.length, original.contacts.length);
+      assert.equal(parsed.backup.data.recordings, undefined);
+    } finally { await fs.rename(heldPath, originalPath); }
   });
 
   async function uploadAndRestore(runtime, userId, archive, conflictMode = 'replace', { wrongPasswordFirst = false } = {}) {
@@ -243,9 +274,17 @@ test('production export and restore jobs round-trip every section through encryp
       const fileKey = account.email_address + ':' + email.source_folder;
       const raw = await fs.readFile(email.raw_storage_path);
       assert.deepEqual(raw, originalFiles.get('raw:' + fileKey)); assert.equal(sha256(raw), email.raw_sha256);
-      const attachment = restored.email_attachments.find(row => row.email_id === email.id);
-      assert.deepEqual(await fs.readFile(attachment.storage_path), originalFiles.get('attachment:' + fileKey));
-      assert.ok(email.body_html.includes(`/api/mail/attachments/${attachment.id}`), 'Inline image URL follows the newly allocated attachment ID');
+      const oldAccount = original.mail_accounts.find(row => row.email_address === account.email_address);
+      const oldEmail = original.emails.find(row => row.mail_account_id === oldAccount.id && row.source_folder === email.source_folder);
+      const oldAttachments = original.email_attachments.filter(row => row.email_id === oldEmail.id);
+      const attachments = restored.email_attachments.filter(row => row.email_id === email.id);
+      assert.equal(attachments.length, oldAttachments.length, 'Same-name, same-size attachments remain separate');
+      for (const attachment of attachments) {
+        const oldAttachment = oldAttachments.find(row => row.content_id === attachment.content_id);
+        assert.ok(oldAttachment);
+        assert.deepEqual(await fs.readFile(attachment.storage_path), await fs.readFile(oldAttachment.storage_path));
+        assert.ok(email.body_html.includes(`/api/mail/attachments/${attachment.id}`), 'Inline image URL follows the newly allocated attachment ID');
+      }
       assert.ok(!original.email_attachments.some(row => email.body_html.includes(row.id)));
       assert.ok(restored.mail_email_scores.some(row => row.email_id === email.id));
       const mapping = restored.mail_folder_remote_boxes.find(row => row.mail_account_id === account.id && row.remote_name === email.source_folder);
@@ -261,9 +300,10 @@ test('production export and restore jobs round-trip every section through encryp
     assert.equal(calendar.account_id, calendarAccount.id); assert.equal(event.calendar_id, calendar.id);
     assert.equal(restored.calendar_event_subtasks[0].event_id, event.id); assert.equal(restored.calendar_event_attendees[0].event_id, event.id);
     assert.equal(ref.event_id, event.id); assert.equal(ref.calendar_id, calendar.id); assert.equal(ref.account_id, calendarAccount.id);
-    assert.deepEqual(await fs.readFile(restored.recordings[0].storage_path), audio);
-    assert.equal(restored.recording_tag_links[0].recording_id, restored.recordings[0].id);
-    assert.equal(restored.recording_tag_links[0].tag_id, restored.recording_tags[0].id);
+    for (const recording of restored.recordings) {
+      assert.deepEqual(await fs.readFile(recording.storage_path), audioByTitle.get(recording.title));
+      assert.ok(restored.recording_tag_links.some(link => link.recording_id === recording.id && link.tag_id === restored.recording_tags[0].id));
+    }
     const [[profile]] = await pool.execute('SELECT full_name, timezone, role FROM users WHERE id = ?', [userId]);
     assert.deepEqual(profile, { full_name: 'Grüße Roundtrip', timezone: 'Europe/Vienna', role: 'user' });
     return restored;
@@ -301,6 +341,7 @@ test('production export and restore jobs round-trip every section through encryp
             if (/UPDATE backup_restore_jobs\s+SET status = 'completed'/.test(sql)) completesRestore = true;
             return connection.execute(sql, params);
           },
+          query: (...args) => connection.query(...args),
           beginTransaction: () => connection.beginTransaction(),
           rollback: () => connection.rollback(),
           release: () => connection.release(),
@@ -330,12 +371,12 @@ test('production export and restore jobs round-trip every section through encryp
     await assertRestored(destination, encryptedUser);
     await uploadAndRestore(destination, encryptedUser, encrypted, 'keep_both');
     const doubled = await snapshot(encryptedUser);
-    assert.equal(doubled.contacts.length, 2); assert.equal(doubled.emails.length, original.emails.length * 2); assert.equal(doubled.recordings.length, 2);
-    assert.equal(doubled.email_attachments.length, original.email_attachments.length * 2); assert.equal(doubled.recording_tag_links.length, 2);
+    assert.equal(doubled.contacts.length, 2); assert.equal(doubled.emails.length, original.emails.length * 2); assert.equal(doubled.recordings.length, original.recordings.length * 2);
+    assert.equal(doubled.email_attachments.length, original.email_attachments.length * 2); assert.equal(doubled.recording_tag_links.length, original.recording_tag_links.length * 2);
     for (const email of doubled.emails) assert.ok(doubled.email_attachments.some(row => row.email_id === email.id));
     for (const recording of doubled.recordings) {
       assert.ok(doubled.recording_tag_links.some(row => row.recording_id === recording.id));
-      assert.deepEqual(await fs.readFile(recording.storage_path), audio);
+      assert.deepEqual(await fs.readFile(recording.storage_path), audioByTitle.get(recording.title));
     }
     for (const event of doubled.calendar_events) assert.ok(doubled.calendar_event_subtasks.some(row => row.event_id === event.id));
   });
@@ -348,6 +389,39 @@ test('production export and restore jobs round-trip every section through encryp
     await service.unlockRestoreJob(userId, created.id, encrypted.password);
     await waitFor(() => service.getRestoreJob(userId, created.id), job => job?.status === 'failed', 'Damaged archive rejection', { allowFailure: true });
     for (const rows of Object.values(await snapshot(userId))) assert.equal(rows.length, 0);
+  });
+  await t.test('a ZIP file changed after validation fails restore without deleting the retained archive', async () => {
+    const userId = await newUser('changed-after-validation');
+    const service = destination('services/backup-restore-jobs');
+    const upload = path.join(directory, uuid() + '.upload');
+    await fs.writeFile(upload, legacy.bytes);
+    const created = await service.createUploadedRestoreJob(userId, upload, { sections: 'full', conflict_mode: 'replace' });
+    const validated = await waitFor(() => service.getRestoreJob(userId, created.id), job => job?.status === 'validated', 'Initial ZIP validation');
+    assert.equal(validated.archive_sha256, sha256(legacy.bytes));
+    const parsed = await destination('services/backup').backupFromZipFile(validated.archive_path);
+    const recording = parsed.backup.files.find(file => file.kind === 'recording');
+    assert.ok(recording);
+    const range = parsed.fileSourcesByPath.get(recording.archive_path);
+    assert.ok(range && range.size > 44, 'Use an actual file-backed WAV entry');
+    // Change one PCM byte, preserving ZIP structure, WAV headers and the
+    // archived checksums/metadata so apply must recheck the payload itself.
+    const handle = await fs.open(validated.archive_path, 'r+');
+    try {
+      const changed = Buffer.alloc(1);
+      const offset = range.start + range.size - 1;
+      await handle.read(changed, 0, 1, offset);
+      changed[0] ^= 1;
+      await handle.write(changed, 0, 1, offset);
+    } finally { await handle.close(); }
+    const started = await service.startRestoreJob(userId, created.id);
+    assert.equal(started.error, undefined);
+    const failed = await waitFor(() => service.getRestoreJob(userId, created.id), job => job?.status === 'failed', 'Changed ZIP rejection', { allowFailure: true });
+    assert.match(failed.error, /checksum/i);
+    assert.equal(failed.archive_path, validated.archive_path, 'A failed apply retains the uploaded archive');
+    assert.equal((await fs.stat(failed.archive_path)).size, legacy.bytes.length);
+    for (const rows of Object.values(await snapshot(userId))) assert.equal(rows.length, 0, 'No section may be partially imported');
+    const [[profile]] = await pool.execute('SELECT full_name FROM users WHERE id = ?', [userId]);
+    assert.equal(profile.full_name, 'changed-after-validation');
   });
   for (const format of ['plain', 'encrypted']) {
     await t.test(`frozen v0.9.23.0 ${format} export restores through the current production job`, async () => {
@@ -433,6 +507,47 @@ test('production export and restore jobs round-trip every section through encryp
       assert.deepEqual(audioBytes, Buffer.from(sourceAudio.bytes_base64, 'base64')); assert.equal(sha256(audioBytes), sourceAudio.sha256);
       assert.equal(restored.recording_tag_links[0].recording_id, restored.recordings[0].id);
       assert.equal(restored.recording_tag_links[0].tag_id, restored.recording_tags[0].id);
+      if (format === 'plain') {
+        // Historical producers represented unavailable files with missing=true.
+        // Construct that valid legacy shape from the genuine fixture's data;
+        // the frozen source archive itself remains untouched.
+        const parsed = await runtime('services/backup').backupFromZipFile(path.join(fixtureDirectory, archive.filename));
+        const payload = structuredClone(parsed.backup);
+        payload.files = payload.files.map(file => ({ kind: file.kind, id: file.id, filename: file.filename, missing: true, sha256: null, size_bytes: 0 }));
+        const dataBytes = Buffer.from(JSON.stringify(payload));
+        const manifest = { ...parsed.manifest, file_count: 0, missing_files: payload.files.map(file => `${file.kind}:${file.id}`) };
+        const missingPath = path.join(directory, uuid() + '-legacy-missing.zip');
+        await runtime('services/export-jobs').writeZip([
+          { name: 'manifest.json', data: JSON.stringify(manifest) },
+          { name: 'data/backup.json', data: dataBytes },
+          { name: 'checksums.json', data: JSON.stringify({ algorithm: 'sha256', entries: { 'data/backup.json': sha256(dataBytes) } }) },
+        ], missingPath);
+        const missingBytes = await fs.readFile(missingPath);
+        const previousFileBytes = new Map();
+        for (const [table, fileColumn] of [['emails', 'raw_storage_path'], ['email_attachments', 'storage_path'], ['recordings', 'storage_path']]) {
+          for (const row of restored[table]) previousFileBytes.set(row[fileColumn], await fs.readFile(row[fileColumn]));
+        }
+        const repeated = await uploadAndRestore(runtime, userId, { bytes: missingBytes, password: null }, 'replace');
+        assert.equal(repeated.status, 'completed');
+        const preserved = await snapshot(userId);
+        for (const [table, fileColumn] of [['emails', 'raw_storage_path'], ['email_attachments', 'storage_path'], ['recordings', 'storage_path']]) {
+          assert.equal(preserved[table].length, restored[table].length);
+          for (const old of restored[table]) {
+            const row = preserved[table].find(item => item.id === old.id);
+            assert.ok(row); assert.equal(row[fileColumn], old[fileColumn], `${table}: incomplete legacy replace retains the existing file path`);
+            assert.deepEqual(await fs.readFile(row[fileColumn]), previousFileBytes.get(old[fileColumn]));
+          }
+        }
+        assert.equal(preserved.recording_tag_links.length, restored.recording_tag_links.length);
+        const emptyUser = await newUser('legacy-missing-recording');
+        const incomplete = await uploadAndRestore(runtime, emptyUser, { bytes: missingBytes, password: null });
+        const incompleteResult = typeof incomplete.result_counts === 'string' ? JSON.parse(incomplete.result_counts) : incomplete.result_counts;
+        assert.match(incompleteResult.warnings.join(' '), /recording.*missing|missing.*recording/i);
+        assert.equal((await rowsFor('contacts', emptyUser)).length, expected.data.contacts.length);
+        assert.equal((await rowsFor('emails', emptyUser)).length, expected.data.emails.length);
+        assert.equal((await rowsFor('recordings', emptyUser)).length, 0);
+        assert.equal((await rowsFor('recording_tag_links', emptyUser)).length, 0, 'Missing tagged audio does not roll back other sections');
+      }
     });
   }
   assert.deepEqual(await snapshot(sourceUser), original, 'Source data remains unchanged through every destination restore');

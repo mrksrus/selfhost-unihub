@@ -609,30 +609,33 @@ async function startRestoreJob(userId, jobId) {
 }
 
 async function cancelRestoreJob(userId, jobId) {
+  // Check the state and request cancellation in one locking write. A previous
+  // read can become stale while the restore commits; overwriting completed
+  // would make restart recovery delete files referenced by committed rows.
+  // Assign status last: MySQL evaluates single-table assignments left to right.
+  const [result] = await db.execute(
+    `UPDATE backup_restore_jobs
+     SET phase = CASE WHEN status IN ('uploaded', 'queued') THEN 'cancelled' ELSE 'cancelling' END,
+         progress = CASE WHEN status IN ('uploaded', 'queued') THEN 100 ELSE progress END,
+         completed_at = CASE WHEN status IN ('uploaded', 'queued') THEN UTC_TIMESTAMP() ELSE completed_at END,
+         cancel_requested = 1,
+         status = CASE WHEN status IN ('uploaded', 'queued') THEN 'cancelled' ELSE 'cancelling' END
+     WHERE id = ? AND user_id = ?
+       AND status IN ('uploaded', 'validating', 'queued', 'running', 'cancelling')
+       AND phase <> 'commit'`,
+    [jobId, userId]
+  );
   const job = await getRestoreJob(userId, jobId);
   if (!job) return { error: 'Restore job not found', status: 404 };
-  if (!BUSY_RESTORE_STATUSES.has(job.status)) {
-    return { error: 'Restore job is not running', status: 409 };
+  if (!result.affectedRows) {
+    return {
+      error: job.phase === 'commit'
+        ? 'Restore is committing and can no longer be stopped'
+        : 'Restore job is not running',
+      status: 409,
+    };
   }
-  if (job.phase === 'commit') {
-    return { error: 'Restore is committing and can no longer be stopped', status: 409 };
-  }
-  if (['uploaded', 'queued'].includes(job.status)) {
-    await updateRestoreJob(jobId, {
-      status: 'cancelled',
-      phase: 'cancelled',
-      progress: 100,
-      cancel_requested: 1,
-      completed_at: new Date(),
-    });
-  } else {
-    await updateRestoreJob(jobId, {
-      status: 'cancelling',
-      phase: 'cancelling',
-      cancel_requested: 1,
-    });
-  }
-  return { job: serializeRestoreJob(await getRestoreJob(userId, jobId)) };
+  return { job: serializeRestoreJob(job) };
 }
 
 async function deleteRestoreJob(userId, jobId) {

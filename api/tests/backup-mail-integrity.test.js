@@ -16,7 +16,9 @@ test('new backup metadata must fit the same limits enforced by restore readers',
 test('backup metadata uses one consistent read-only snapshot including owned remote mappings', async (t) => {
   const calls = [];
   const connection = {
+    async query(sql) { calls.push({ sql }); return [[]]; },
     async execute(sql, params) {
+      assert.match(sql, /^SELECT/);
       calls.push({ sql, params });
       if (sql.includes('FROM users ')) return [[{ id: 'user', email: 'user@example.test' }]];
       if (sql.includes('FROM mail_folder_remote_boxes')) return [[{ folder_id: 'folder', mail_account_id: 'account', remote_name: 'Projects/2026' }]];
@@ -45,6 +47,7 @@ test('backup metadata uses one consistent read-only snapshot including owned rem
 test('snapshot query failure rolls back and releases the dedicated connection', async (t) => {
   const calls = [];
   setDb({ getConnection: async () => ({
+    async query() { return [[]]; },
     async execute(sql) { if (sql.includes('FROM contacts')) throw new Error('read failed'); return [[]]; },
     async commit() { calls.push('commit'); },
     async rollback() { calls.push('rollback'); },

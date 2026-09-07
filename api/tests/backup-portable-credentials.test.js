@@ -60,6 +60,7 @@ test('encrypted archive payload retains the filtered portable credential bundle'
   const refreshToken = encrypt('refresh-token');
   const connection = {
     async commit() {}, async rollback() {}, release() {},
+    async query() { return [[]]; },
     async execute(sql) {
       if (sql.includes('FROM users ')) {
         return [[{
