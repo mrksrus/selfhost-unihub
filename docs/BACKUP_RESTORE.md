@@ -1,9 +1,8 @@
 # Backup and Restore Guide
 
-This guide describes the current development branch, including **unreleased
-backup reliability changes**. Its new backups use data schema 2. Released
-0.10.2 reads schema 1 only; it cannot import these new schema-2 backups. This
-branch reads both versions automatically. See [Backup Format](BACKUP_FORMAT.md)
+This guide describes UniHub **0.10.3 and later**. New backups use data schema 2;
+imports select schema 1 or 2 automatically. UniHub 0.10.2 reads schema 1 only
+and cannot import new schema-2 backups. See [Backup Format](BACKUP_FORMAT.md)
 for the compatibility contract.
 
 ## Purpose

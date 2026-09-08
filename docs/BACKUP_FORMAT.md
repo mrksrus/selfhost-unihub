@@ -1,7 +1,6 @@
 # Backup Format and Compatibility
 
-This document describes the **unreleased backup changes on the current
-development branch**. Creating a backup writes data schema 2; importing selects
+This document describes the backup format introduced in **UniHub 0.10.3**. Creating a backup writes data schema 2; importing selects
 the schema-1 or schema-2 reader automatically. Users do not choose an import
 script or convert files manually.
 
@@ -29,7 +28,7 @@ no database migration, folder reorganization or Docker configuration change.
 
 ## Reader Compatibility
 
-| Backup | Current development reader | Released 0.10.2 reader |
+| Backup | UniHub 0.10.3 reader | Released 0.10.2 reader |
 | --- | --- | --- |
 | Data schema 1, ZIP format 1 | Accepted automatically | Accepted |
 | Data schema 2, ZIP format 1 | Accepted automatically | Rejected as unsupported |

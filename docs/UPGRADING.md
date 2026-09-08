@@ -66,7 +66,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.2`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.3`, then run from the existing
 deployment directory:
 
 ```bash
@@ -132,9 +132,9 @@ FLAC, AAC and AIFF signatures; arbitrary file types labeled as audio are rejecte
 Existing stored originals are retained. MP3 export is bounded and may ask you to
 retry when another conversion is busy. See [0.10.2 release notes](RELEASE_0.10.2.md).
 
-## Unreleased backup reliability changes
+## 0.10.3 backup reliability update
 
-The current development branch adds automatic backup-data version dispatch and
+UniHub 0.10.3 adds automatic backup-data version dispatch and
 writes **schema-2 backups**. This is a backup-file change, not a database
 migration. It does not reorganize existing mail folders, rewrite live mail,
 change Docker configuration or change the five-minute MySQL readiness wait.
