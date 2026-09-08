@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { BACKUP_UPLOAD_MAX_SIZE } = require('../config');
 const { db } = require('../state');
 const { buildBackupArchiveEntriesForUser, sha256File } = require('./backup');
 const {
@@ -48,14 +49,18 @@ function crc32Buffer(buffer, crc = 0 ^ -1) {
   return next;
 }
 
-async function crc32File(filePath, checkCancelled = null) {
+async function inspectZipSource(filePath, checkCancelled = null) {
   const stream = fs.createReadStream(filePath);
+  const hash = crypto.createHash('sha256');
+  let size = 0;
   let crc = 0 ^ -1;
   for await (const chunk of stream) {
     if (checkCancelled) await checkCancelled();
+    size += chunk.length;
+    hash.update(chunk);
     crc = crc32Buffer(chunk, crc);
   }
-  return (crc ^ -1) >>> 0;
+  return { crc32: (crc ^ -1) >>> 0, sha256: hash.digest('hex'), size };
 }
 
 function dosDateTime(date = new Date()) {
@@ -83,25 +88,41 @@ function bufferFromUInt32(value) {
 function getWritableStream(targetPath) {
   const stream = fs.createWriteStream(targetPath, { flags: 'wx', mode: 0o600 });
   let offset = 0;
+  let streamError;
+  // The write callback rejects the operation; the event listener prevents a
+  // disk error from becoming an unhandled event that terminates the API.
+  stream.on('error', error => { streamError = error; });
   return {
     offset: () => offset,
     write(buffer) {
+      if (streamError) return Promise.reject(streamError);
       offset += buffer.length;
       return new Promise((resolve, reject) => {
         stream.write(buffer, error => (error ? reject(error) : resolve()));
       });
     },
-    async pipeFrom(filePath, checkCancelled = null) {
+    async pipeFrom(entry, checkCancelled = null) {
+      const { filePath } = entry;
       const readStream = fs.createReadStream(filePath);
+      const hash = crypto.createHash('sha256');
+      let size = 0;
       for await (const chunk of readStream) {
         if (checkCancelled) await checkCancelled();
+        if (streamError) throw streamError;
+        size += chunk.length;
+        if (size > entry.size) throw new Error(`Backup source changed while archiving: ${entry.name}. Please retry the backup.`);
+        hash.update(chunk);
         offset += chunk.length;
         await new Promise((resolve, reject) => {
           stream.write(chunk, error => (error ? reject(error) : resolve()));
         });
       }
+      if (size !== entry.size || hash.digest('hex') !== entry.sha256) {
+        throw new Error(`Backup source changed while archiving: ${entry.name}. Please retry the backup.`);
+      }
     },
     close() {
+      if (streamError) return Promise.reject(streamError);
       return new Promise((resolve, reject) => {
         stream.end(error => (error ? reject(error) : resolve()));
       });
@@ -118,11 +139,18 @@ async function prepareZipEntry(entry, checkCancelled = null) {
     if (!Number.isSafeInteger(stat.size) || stat.size > ZIP32_MAX_VALUE) {
       throw new Error(`Backup file ${name} exceeds the ZIP32 per-file size limit.`);
     }
+    const integrity = await inspectZipSource(filePath, checkCancelled);
+    if (integrity.size !== stat.size
+        || (entry.expectedSize !== undefined && entry.expectedSize !== integrity.size)
+        || (entry.expectedSha256 !== undefined && entry.expectedSha256 !== integrity.sha256)) {
+      throw new Error(`Backup source changed after collection: ${name}. Please retry the backup.`);
+    }
     return {
       name,
       filePath,
       size: stat.size,
-      crc32: await crc32File(filePath, checkCancelled),
+      crc32: integrity.crc32,
+      sha256: integrity.sha256,
       modifiedAt: stat.mtime,
     };
   }
@@ -183,7 +211,7 @@ async function writeZip(entries, targetPath, {
       local.writeUInt16LE(0, 28);
       await writer.write(local);
       await writer.write(filename);
-      if (entry.filePath) await writer.pipeFrom(entry.filePath, checkCancelled);
+      if (entry.filePath) await writer.pipeFrom(entry, checkCancelled);
       else await writer.write(entry.data);
       if (writer.offset() > ZIP32_MAX_VALUE) {
         throw new Error('Backup exceeds the ZIP32 archive size limit.');
@@ -398,6 +426,9 @@ async function runDataExportJob(jobId) {
       temporaryZipPath = null;
     }
     const stat = await fs.promises.stat(finalPath);
+    if (stat.size > BACKUP_UPLOAD_MAX_SIZE) {
+      throw new Error('Backup exceeds the import upload limit. Export smaller sections so the downloaded archive can be restored.');
+    }
     await updateJob(jobId, {
       status: 'ready',
       phase: 'ready',

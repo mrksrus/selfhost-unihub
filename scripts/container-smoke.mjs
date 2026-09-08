@@ -13,13 +13,13 @@ assert(email && password);
 class Session {
   cookies = new Map();
   csrf = null;
-  async request(method, path, body, { expected = 200, authenticated = true, headers = {}, binary = false } = {}) {
+  async request(method, path, body, { expected = 200, authenticated = true, headers = {}, binary = false, rawBody = false } = {}) {
     const response = await fetch(base + path, {
       method,
       headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(authenticated && this.cookies.size ? { Cookie: [...this.cookies].map(([key, value]) => `${key}=${value}`).join('; ') } : {}),
         ...(authenticated && this.csrf && !['GET', 'HEAD'].includes(method) ? { 'X-CSRF-Token': this.csrf } : {}), ...headers },
-      body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(30000),
+      body: body === undefined ? undefined : rawBody ? body : JSON.stringify(body), signal: AbortSignal.timeout(30000),
     });
     assert.equal(response.status, expected, `${method} ${path} status`);
     for (const cookie of response.headers.getSetCookie()) {
@@ -38,6 +38,17 @@ class Session {
     return { response, data };
   }
 }
+async function waitForJob(session, path, status, { uploadCleaned = false } = {}) {
+  const deadline = Date.now() + 60000;
+  while (Date.now() < deadline) {
+    const { data } = await session.request('GET', path);
+    assert(data.job, `${path} must return a job`);
+    assert.notEqual(data.job.status, 'failed', `${path}: ${data.job.error || 'job failed'}`);
+    if (data.job.status === status && (!uploadCleaned || !data.job.archive_available)) return data.job;
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw new Error(`${path} did not reach ${status} within 60 seconds`);
+}
 function dockerNode(script, extraEnv = {}) {
   return execFileSync('docker', ['exec', ...Object.entries(extraEnv).flatMap(([key, value]) => ['-e', `${key}=${value}`]), container, 'node', '-e', script], { encoding: 'utf8', timeout: 30000 }).trim();
 }
@@ -47,6 +58,8 @@ if(!config.database.endsWith('_test'))throw new Error('Refusing non-test databas
 const primary = new Session();
 let otherId;
 let recordingId;
+let contactId;
+let backupId;
 try {
   const health = await primary.request('GET', '/health', undefined, { authenticated: false });
   assert.equal(health.data.health, 'ok'); assert.equal(health.data.database, 'ok');
@@ -123,6 +136,55 @@ try {
   await other.request('GET', `/api/recordings/${recordingId}/file`, undefined, { expected: 404 });
   await other.request('DELETE', `/api/recordings/${recordingId}`, undefined, { expected: 404 });
 
+  // Exercise the browser's backup workflow through nginx, auth/CSRF, the raw
+  // upload parser and actual job workers. The second synthetic user has no
+  // server-side key for this archive and must supply its recovery password.
+  const contactEmail = `ci-backup-${crypto.randomUUID()}@example.test`;
+  const contact = await primary.request('POST', '/api/contacts', { first_name: 'CI Grüße', last_name: 'Backup', email: contactEmail, notes: 'Preserve this contact\nAnd its second line' });
+  contactId = contact.data.contact.id;
+  const sourceContacts = (await primary.request('GET', '/api/contacts')).data.contacts;
+  const sourceRecordings = (await primary.request('GET', '/api/recordings')).data.recordings;
+  const exported = await primary.request('POST', '/api/backup/jobs', { sections: ['contacts', 'recordings'], encrypt: true }, { expected: 202 });
+  backupId = exported.data.job.id;
+  const readyBackup = await waitForJob(primary, `/api/backup/jobs/${backupId}`, 'ready');
+  await other.request('GET', `/api/backup/jobs/${backupId}`, undefined, { expected: 404 });
+  await primary.request('GET', `/api/backup/jobs/${backupId}/download`, undefined, { expected: 409 });
+  const revealed = await primary.request('POST', `/api/backup/jobs/${backupId}/recovery-password/reveal`, {});
+  const recoveryPassword = revealed.data.recovery_password;
+  assert(typeof recoveryPassword === 'string' && recoveryPassword.length > 16, 'Recovery password must be available exactly once');
+  await primary.request('POST', `/api/backup/jobs/${backupId}/recovery-password/reveal`, {}, { expected: 410 });
+  const archive = await primary.request('GET', `/api/backup/jobs/${backupId}/download`, undefined, { binary: true });
+  assert.match(archive.response.headers.get('content-type'), /application\/vnd\.unihub\.backup/);
+  assert.equal(archive.bytes.length, readyBackup.file_size);
+  assert.equal(crypto.createHash('sha256').update(archive.bytes).digest('hex'), readyBackup.file_sha256);
+  const imported = await other.request('POST', '/api/backup/import?sections=contacts,recordings&conflict_mode=replace', archive.bytes, {
+    expected: 202, rawBody: true, headers: { 'Content-Type': 'application/vnd.unihub.backup' },
+  });
+  const restoreId = imported.data.job.id;
+  assert.equal(imported.data.job.status, 'awaiting_password');
+  await primary.request('GET', `/api/backup/restore-jobs/${restoreId}`, undefined, { expected: 404 });
+  await other.request('POST', `/api/backup/restore-jobs/${restoreId}/unlock`, { password: 'incorrect-ci-recovery-password' }, { expected: 400 });
+  await other.request('POST', `/api/backup/restore-jobs/${restoreId}/unlock`, { password: recoveryPassword }, { expected: 202 });
+  await waitForJob(other, `/api/backup/restore-jobs/${restoreId}`, 'validated');
+  await other.request('POST', `/api/backup/restore-jobs/${restoreId}/start`, {}, { expected: 202 });
+  await waitForJob(other, `/api/backup/restore-jobs/${restoreId}`, 'completed', { uploadCleaned: true });
+  const restoredContacts = (await other.request('GET', '/api/contacts')).data.contacts;
+  const restoredRecordings = (await other.request('GET', '/api/recordings')).data.recordings;
+  assert.equal(restoredContacts.length, sourceContacts.length);
+  assert.equal(restoredRecordings.length, sourceRecordings.length);
+  const restoredContact = restoredContacts.find(item => item.email === contactEmail);
+  assert(restoredContact && restoredContact.id !== contactId);
+  assert.equal(restoredContact.notes, contact.data.contact.notes);
+  const restoredRecording = restoredRecordings.find(item => item.title === completed.data.recording.title);
+  assert(restoredRecording && restoredRecording.id !== recordingId);
+  const restoredAudio = await other.request('GET', `/api/recordings/${restoredRecording.id}/file?download=1`, undefined, { binary: true });
+  assert.deepEqual(restoredAudio.bytes, wav);
+  await primary.request('GET', `/api/recordings/${restoredRecording.id}/file`, undefined, { expected: 404 });
+  await other.request('DELETE', `/api/backup/restore-jobs/${restoreId}`);
+  await primary.request('DELETE', `/api/backup/jobs/${backupId}`); backupId = null;
+  for (const item of restoredRecordings) await other.request('DELETE', `/api/recordings/${item.id}`);
+  await primary.request('DELETE', `/api/contacts/${contactId}`); contactId = null;
+
   const mp3 = await primary.request('GET', `/api/recordings/${recordingId}/file?format=mp3`, undefined, { binary: true });
   assert.match(mp3.response.headers.get('content-type'), /audio\/mpeg/); assert(mp3.bytes.length > 100);
   dockerNode(`const fs=require('fs'),path=require('path');const root='/app/uploads/recordings';
@@ -136,9 +198,11 @@ try {
   recordingId = null;
   await primary.request('POST', '/api/auth/signout', {});
   await primary.request('GET', '/api/auth/me', undefined, { expected: 401 });
-  console.log('HTTP recording/auth/isolation smoke passed.');
+  console.log('HTTP recording/auth/isolation and encrypted backup/restore round-trip smoke passed.');
 } finally {
   if (recordingId) await primary.request('DELETE', `/api/recordings/${recordingId}`).catch(() => {});
+  if (contactId) await primary.request('DELETE', `/api/contacts/${contactId}`).catch(() => {});
+  if (backupId) await primary.request('DELETE', `/api/backup/jobs/${backupId}`).catch(() => {});
   if (otherId) dockerNode(databasePrelude + `(async()=>{const db=await mysql.createConnection(config);try{
     await db.execute('DELETE FROM users WHERE id = ? AND email LIKE ?', [process.env.SMOKE_OTHER_ID,'ci-isolation-%@example.test']);
     }finally{await db.end();}})().catch(error=>{console.error(error.code||error.name);process.exit(1)});`, { SMOKE_OTHER_ID: otherId });

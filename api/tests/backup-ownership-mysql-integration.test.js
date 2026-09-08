@@ -75,6 +75,9 @@ test('MySQL restores colliding backup IDs without changing another user in every
       .replace(/^\s*FOREIGN KEY[^\n]*\n/gm, '').replace(/^\s*FULLTEXT INDEX[^\n]*\n/gm, '').replace(/,\s*\) ENGINE/, '\n  ) ENGINE');
     await connection.execute(sql);
   }
+  // The frozen old schema remains unchanged. This restore security fixture
+  // runs against the current application column added by production migration.
+  await connection.execute('ALTER TABLE emails ADD COLUMN import_complete BOOLEAN NOT NULL DEFAULT FALSE');
   await connection.execute('CREATE TEMPORARY TABLE notification_config (id INT PRIMARY KEY, reminder_revision BIGINT DEFAULT 0)');
   await connection.execute('INSERT INTO notification_config (id) VALUES (1)');
   const victim = crypto.randomUUID();

@@ -66,7 +66,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.2`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.3`, then run from the existing
 deployment directory:
 
 ```bash
@@ -131,3 +131,35 @@ New audio uploads/restores accept recognized WAV, MP3, M4A/MP4 audio, Ogg, WebM,
 FLAC, AAC and AIFF signatures; arbitrary file types labeled as audio are rejected.
 Existing stored originals are retained. MP3 export is bounded and may ask you to
 retry when another conversion is busy. See [0.10.2 release notes](RELEASE_0.10.2.md).
+
+## 0.10.3 backup reliability update
+
+UniHub 0.10.3 adds automatic backup-data version dispatch and
+writes **schema-2 backups**. This is a backup-file change, not a database
+migration. It does not reorganize existing mail folders, rewrite live mail,
+change Docker configuration or change the five-minute MySQL readiness wait.
+Keep the same database, uploads and deployment keys when updating.
+
+This reader accepts schema-1 and schema-2 data. **Released 0.10.2 and earlier
+readers cannot import new schema-2 backups.** Keep an older backup or your
+consistent pre-update MySQL/uploads/configuration copy if you need recovery
+onto an older release. New backup files do not make an image-only downgrade a
+supported rollback method.
+
+The ZIP format and encrypted container remain version 1. `manifest.json`
+identifies the data version and producer; UniHub selects its reader
+automatically, verifies original checksums before translation, and rejects
+unknown versions instead of guessing.
+
+Schema 2 includes the existing account-specific provider-folder mapping table.
+Schema-1 backups never contained those mappings: importing one preserves the
+local folders, email account identities and source-folder names it does contain,
+leaves any existing provider mappings unchanged and reports that limitation.
+No importer can recover data that was omitted from the original archive.
+
+The added regression coverage includes frozen archives produced by the actual
+`v0.9.23.0` exporter and production MySQL export/restore jobs with every supported
+section. Check the CI result for the commit being installed; representative
+fixtures do not verify your own live backup. See [Backup and Restore](BACKUP_RESTORE.md)
+for safe testing, file limits and missing-file handling, and
+[Backup Format](BACKUP_FORMAT.md) for the version contract.

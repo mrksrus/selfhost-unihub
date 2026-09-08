@@ -58,7 +58,9 @@ test('encrypted archive payload retains the filtered portable credential bundle'
   const calendarPassword = encrypt('calendar-password');
   const accessToken = encrypt('access-token');
   const refreshToken = encrypt('refresh-token');
-  setDb({
+  const connection = {
+    async commit() {}, async rollback() {}, release() {},
+    async query() { return [[]]; },
     async execute(sql) {
       if (sql.includes('FROM users ')) {
         return [[{
@@ -91,7 +93,8 @@ test('encrypted archive payload retains the filtered portable credential bundle'
       }
       return [[]];
     },
-  });
+  };
+  setDb({ getConnection: async () => connection });
   t.after(async () => {
     setDb(null);
     await fs.promises.rm(dir, { recursive: true, force: true });

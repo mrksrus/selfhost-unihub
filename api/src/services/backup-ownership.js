@@ -82,6 +82,28 @@ function validateRestoreRows(data) {
       ids.add(row.id);
     }
   }
+  if (data?.mail_folder_remote_boxes !== undefined) {
+    if (!Array.isArray(data.mail_folder_remote_boxes)) {
+      errors.push('Backup mail_folder_remote_boxes must be an array');
+    } else {
+      const pairs = new Set();
+      const names = new Set();
+      for (const row of data.mail_folder_remote_boxes) {
+        if (!row || typeof row !== 'object' || Array.isArray(row)
+          || ![row.folder_id, row.mail_account_id].every(id => typeof id === 'string' && id.length > 0 && id.length <= 36)
+          || typeof row.remote_name !== 'string' || !row.remote_name.trim() || row.remote_name.length > 255
+          || /[\u0000\r\n]/.test(row.remote_name)) {
+          errors.push('Backup has an invalid mail_folder_remote_boxes row');
+          continue;
+        }
+        const pair = JSON.stringify([row.folder_id, row.mail_account_id]);
+        const name = JSON.stringify([row.mail_account_id, row.remote_name]);
+        if (pairs.has(pair) || names.has(name)) errors.push('Backup has duplicate mail folder remote mappings');
+        pairs.add(pair);
+        names.add(name);
+      }
+    }
+  }
   return errors;
 }
 

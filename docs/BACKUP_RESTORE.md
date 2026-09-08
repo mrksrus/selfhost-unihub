@@ -1,5 +1,10 @@
 # Backup and Restore Guide
 
+This guide describes UniHub **0.10.3 and later**. New backups use data schema 2;
+imports select schema 1 or 2 automatically. UniHub 0.10.2 reads schema 1 only
+and cannot import new schema-2 backups. See [Backup Format](BACKUP_FORMAT.md)
+for the compatibility contract.
+
 ## Purpose
 
 UniHub backups are application-level, restorable archives. They preserve the
@@ -14,8 +19,9 @@ strategy should include:
 3. A backup of the uploads volume.
 4. Copies of the deployment configuration and required secrets.
 
-A backup retained only inside `/app/uploads/backups` is convenient for rollback,
-but it is lost if that server or volume is lost.
+A backup retained only inside `/app/uploads/backups` is convenient for account
+restoration, but it is lost if that server or volume is lost. Account restore
+merges selected data; it is not a complete server rollback.
 
 ## Supported Backup Types
 
@@ -49,7 +55,8 @@ A full backup includes all supported sections for the current user:
 - profile display metadata and user settings
 - contacts and all supported contact fields
 - calendar accounts, calendars, events, ToDos, subtasks, attendees, and external references
-- mail accounts, folders, sender rules, emails, scores, attachments, and raw `.eml` archives
+- mail accounts, folders, account-specific provider-folder mappings, sender rules,
+  emails, scores, attachments, and raw `.eml` archives
 - recordings, tags, tag links, and recording files
 
 It does not restore:
@@ -81,8 +88,28 @@ files/recordings/...
 `data/backup.json` and the stored files are the authoritative restore data.
 `checksums.json` contains SHA-256 checksums for validation.
 
-Missing source files are recorded as warnings when the backup is created.
-Checksum-invalid or structurally invalid files fail restore validation.
+`manifest.json` already serves as the version file: it records the data schema,
+ZIP format, producing application version, selected sections and counts. There
+is no version selector in the import UI. The manifest and data payload must
+agree on a supported version.
+
+New backup creation fails if a referenced file in the selected sections is
+missing, unreadable or changes while being archived. Selected recordings must
+also pass the same supported-audio signature check used by restore; an
+unsupported original is left unchanged and the export reports the problem.
+A contacts-only backup is
+not blocked by a missing recording. Older archives that already describe missing
+files remain readable with warnings; those missing bytes cannot be recovered
+from the archive. Replacement must not remove a good existing file reference
+because the older backup lacks its file. Checksum-invalid or structurally invalid
+files fail restore validation.
+
+When an older backup lacks attachment bytes, restore keeps a matched existing
+attachment or creates only its metadata with a warning. When it lacks recording
+audio, restore keeps a matched existing recording; otherwise it skips that
+recording and its tag links with a warning. Other available sections can still
+be restored. Check the result warnings before treating such a restore as
+complete recovery.
 
 ## Encryption Model
 
@@ -167,6 +194,12 @@ created inactive and require credentials to be entered again.
 Backup creation runs as a background job. The browser may navigate away after
 the job starts.
 
+Database rows are collected through one read-only, consistent MySQL snapshot,
+so related records reflect the same database state. Stored files are checked
+against their collected byte lengths and SHA-256 hashes during ZIP creation. A
+changed file causes the export to fail and its partial output to be removed;
+retry after the changing operation finishes.
+
 Job states include:
 
 - `queued`
@@ -220,6 +253,7 @@ Validation checks:
 - container authentication for encrypted backups
 - ZIP structure and safe paths
 - supported UniHub app/format versions
+- matching version metadata in the manifest and data payload
 - required manifest and data files
 - JSON shape
 - file sizes
@@ -230,6 +264,11 @@ Validation checks:
 
 An invalid upload is removed when the failure establishes that the archive
 itself is malformed or corrupted.
+
+Original checksums are verified before translating an older payload into the
+current in-memory shape. Unknown future versions fail with an upgrade message
+before importing rows or writing restored files. Readers and translation rules
+are described in [Backup Format](BACKUP_FORMAT.md).
 
 ## Restore Options
 
@@ -305,10 +344,22 @@ favorite state are included.
 
 - accounts match by email address, then ID
 - folders match by slug
+- provider-folder mappings remap both their folder and mail-account IDs;
+  an existing mapping is never silently reassigned to a different local folder
 - rules match by account, match type/value, and target folder
-- emails match by ID, Message-ID, or IMAP folder/UID/UIDVALIDITY identity
+- emails match by ID, then IMAP folder/UID/UIDVALIDITY identity, then Message-ID
+- separate source email rows remain separate even when their Message-ID repeats
 - attachments match by ID, content ID, or email/filename/size
+- separate source attachments are not merged merely because a name or size repeats
 - attachment and raw-email paths are rewritten to restored files
+- saved HTML attachment URLs follow the new attachment IDs; raw `.eml` bytes
+  remain unchanged
+
+Schema-1 exports did not include `mail_folder_remote_boxes`. The older reader
+preserves local folders, each email's account identity and source-folder name,
+and leaves existing provider mappings unchanged. It cannot reconstruct mappings
+that were never exported and does not guess them from folder names. Schema 2
+adds those mappings without changing how the application's folders behave.
 
 For safety, every restored mail account has:
 
@@ -325,7 +376,8 @@ present raw archive.
 
 ### Recordings
 
-- recordings match by ID, file checksum, or normalized metadata
+- recordings match by ID or recording metadata
+- separate source recordings remain separate when filename and size repeat
 - tags match by normalized name
 - tag links are remapped
 - recording files must exist and pass checksum validation
@@ -355,14 +407,19 @@ Job phases include:
 - commit
 
 Database rows are restored inside one transaction. Job completion is written in
-the same transaction as restored rows. A crash cannot leave committed rows with
-the job still marked as retryable.
+the same transaction as restored rows. If the database connection is lost while
+confirming commit, UniHub retains restored files and checks the durable job
+status before deciding whether the restore committed. It does not assume that
+a lost response means the database rolled back. If confirmation is unavailable,
+it retains the files and job state for recovery after reconnection/restart.
 
 Restored files are written under deterministic job-specific directories.
 Failures or cancellation before commit roll back database changes and remove
 files created by that job.
 
-Cancellation is unavailable once the final commit phase begins.
+Cancellation is unavailable once the final commit phase begins. The database
+update also checks the current phase and status, so a delayed cancellation
+cannot turn a completed restore back into an interrupted job.
 
 On startup UniHub:
 
@@ -475,10 +532,39 @@ permissions where the host filesystem honors POSIX modes.
 - Download important backups off-server.
 - Back up MySQL and `/app/uploads` independently.
 
-The upload request cap is 3900 MiB. The current inner archive is a stored ZIP32
-format. Backup creation rejects per-file size, archive size/offset, and
-entry-count overflow before writing invalid ZIP metadata. ZIP64 is not currently
-supported.
+The upload request cap is **3900 MiB** (about 3.81 GiB), including encryption
+overhead. Export does not mark a larger archive ready. The current inner archive
+is stored ZIP32, without compression or ZIP64 support. It also limits individual
+entries and total ZIP size/offsets to 4 GiB minus one byte, and allows at most
+65,534 entries including metadata.
+
+Metadata limits are the same for export and import:
+
+| ZIP entry | Maximum size |
+| --- | --- |
+| `manifest.json` | 16 MiB |
+| `checksums.json` | 64 MiB |
+| `data/backup.json` | 512 MiB |
+
+Use section backups if a full backup exceeds a limit. A single section can also
+exceed these limits; automatic splitting within a section is not implemented.
+For such datasets, retain consistent MySQL/uploads backups instead of relying
+on an account archive that cannot be created or uploaded.
+
+## Compatibility Test Coverage
+
+The regression suite exercises production export and restore jobs against MySQL
+with synthetic data and isolated uploads directories. It covers all sections,
+file-byte preservation, repeated conflict modes, encrypted recovery under a
+different server key, legacy server-bound credentials, integrity failures and
+restore transaction failure paths.
+
+Frozen plain and encrypted fixtures were produced by the actual exporter from
+tag `v0.9.23.0`, rather than by changing a version number on a current export.
+Their [provenance and expected contents](../api/tests/fixtures/backups/v1-0.9.23.0/README.md)
+are checked in alongside the fixtures. This is representative automated
+coverage, not verification of every historical version or a particular live
+installation. CI results establish whether the suite passed for a given commit.
 
 ## Troubleshooting
 

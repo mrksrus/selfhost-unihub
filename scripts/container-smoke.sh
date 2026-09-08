@@ -108,4 +108,4 @@ for ((attempt=0; attempt<20; attempt++)); do
 done
 [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] || { echo 'Container stayed running after API death.' >&2; exit 1; }
 [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container_name")" == 1 ]] || { echo 'Container did not report essential service failure.' >&2; exit 1; }
-echo 'Container smoke passed: startup, health, authentication, isolation, malformed requests, audio round-trip, and essential-service recovery.'
+echo 'Container smoke passed: startup, health, authentication, isolation, malformed requests, audio and encrypted backup round-trips, and essential-service recovery.'

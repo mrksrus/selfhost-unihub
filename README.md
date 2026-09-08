@@ -188,7 +188,8 @@ npm --prefix api test
 ## Documentation
 
 See the [upgrade guide](docs/UPGRADING.md) before replacing an existing deployment,
-the [0.10.2 release notes](docs/RELEASE_0.10.2.md) for security corrections and
+the [0.10.3 release notes](docs/RELEASE_0.10.3.md) for backup reliability and format
+compatibility, the [0.10.2 release notes](docs/RELEASE_0.10.2.md) for security corrections and
 recording efficiency, the [0.10.1 release notes](docs/RELEASE_0.10.1.md) for
 licensing, and the [0.10.0 release notes](docs/RELEASE_0.10.0.md) for the feature release.
 
