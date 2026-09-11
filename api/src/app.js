@@ -5,11 +5,7 @@ const { db } = require('./state');
 const { initDatabase, ensurePerformanceIndexes } = require('./services/database');
 const { syncMailAccount, isAnyMailAccountSyncRunning, runMailServerDeletionPass } = require('./services/mail');
 const { cleanupExpiredRecordingUploads } = require('./services/recordings');
-const { resumePendingDataExportJobs } = require('./services/export-jobs');
-const {
-  resumePendingRestoreJobs,
-  cleanupExpiredRestoreArchives,
-} = require('./services/backup-restore-jobs');
+const { suspendPendingBackupJobs } = require('./services/backup-availability');
 const { isSectionRestoreActive } = require('./services/restore-locks');
 const { handleRequest } = require('./request-handler');
 const { ensureNotificationSchema, processNotificationJobs } = require('./services/notifications');
@@ -25,23 +21,9 @@ async function start() {
   const runNotifications = () => processNotificationJobs().catch(error => console.error('[NOTIFICATIONS] Worker failed:', error.message));
   void runNotifications();
   setInterval(runNotifications, 30 * 1000);
-  try {
-    const resumedBackupJobs = await resumePendingDataExportJobs();
-    if (resumedBackupJobs > 0) {
-      console.log(`✓ Reconciled ${resumedBackupJobs} pending backup job(s)`);
-    }
-  } catch (error) {
-    console.warn('[BACKUP] Could not resume pending backup jobs:', error.message);
-  }
-  try {
-    const resumedRestoreJobs = await resumePendingRestoreJobs();
-    if (resumedRestoreJobs > 0) {
-      console.log(`✓ Resumed ${resumedRestoreJobs} interrupted restore job(s)`);
-    }
-  } catch (error) {
-    console.warn('[BACKUP RESTORE] Could not resume pending restore jobs:', error.message);
-  }
-  
+  await suspendPendingBackupJobs(db);
+  console.log('[BACKUP] Creation and restore suspended; existing archives retained.');
+
   const server = http.createServer((req, res) => {
     // Last-resort boundary, including failures while writing an error response.
     handleRequest(req, res).catch(error => {
@@ -118,17 +100,6 @@ async function start() {
       console.error('[CLEANUP] Error cleaning expired sessions:', error.message);
     }
   }, 60 * 60 * 1000); // 1 hour
-
-  setInterval(async () => {
-    try {
-      const deleted = await cleanupExpiredRestoreArchives();
-      if (deleted > 0) {
-        console.log(`[CLEANUP] Expired ${deleted} retained backup upload(s)`);
-      }
-    } catch (error) {
-      console.error('[CLEANUP] Error expiring backup uploads:', error.message);
-    }
-  }, 60 * 60 * 1000);
 
   setInterval(async () => {
     try {

@@ -317,3 +317,11 @@ module.exports = {
     }
   },
 };
+
+// Keep the same boundary for direct route dispatch (including internal callers).
+const { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } = require('../services/backup-availability');
+for (const route of DISABLED_BACKUP_ROUTES) {
+  module.exports[route] = async (req, userId) => userId
+    ? { error: BACKUP_DISABLED_MESSAGE, status: 503 }
+    : { error: 'Unauthorized', status: 401 };
+}

@@ -407,6 +407,11 @@ export default function BackupSettings({ active }: { active: boolean }) {
           transition={{ duration: 0.4, delay: 0.33 }}
         >
           <div className="space-y-6">
+          <p role="status" className="rounded-md border border-border p-4 text-sm">
+            Backup creation, import and restore are temporarily disabled while the data model changes.
+            Existing completed backups can still be downloaded. Keep your archive files and recovery passwords.
+            For now, protect your installation with a server backup of the database, uploads and configuration.
+          </p>
           <Card>
             <CardHeader>
               <div className="flex items-center gap-3">
@@ -415,7 +420,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 </div>
                 <div>
                   <CardTitle className="text-lg">Backup</CardTitle>
-                  <CardDescription>Create restorable ZIP backups with app data, mail, attachments, and stored files.</CardDescription>
+                  <CardDescription>Backup history and downloads. Creating new backups is temporarily unavailable.</CardDescription>
                 </div>
               </div>
             </CardHeader>
@@ -429,13 +434,14 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 </div>
                 <Switch
                   id="backupEncryption"
+                  disabled
                   checked={backupEncryptionEnabled}
                   onCheckedChange={setBackupEncryptionEnabled}
                 />
               </div>
 
               <div className="flex flex-wrap gap-3">
-                <Button variant="outline" onClick={() => handleStartBackupJob('full')} disabled={backupCreating}>
+                <Button variant="outline" onClick={() => handleStartBackupJob('full')} disabled>
                   {backupCreating ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
                   Full backup
                 </Button>
@@ -450,7 +456,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                     key={section}
                     variant="outline"
                     onClick={() => handleStartBackupJob([section])}
-                    disabled={backupCreating}
+                    disabled
                   >
                     {label}
                   </Button>
@@ -486,7 +492,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                           </Button>
                         )}
                         {job.status === 'ready' && (
-                          <Button variant="outline" size="sm" onClick={() => handleRestoreStoredBackup(job)}>
+                          <Button variant="outline" size="sm" onClick={() => handleRestoreStoredBackup(job)} disabled>
                             <RotateCcw className="h-4 w-4 mr-2" />
                             Restore
                           </Button>
@@ -538,6 +544,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 <Label htmlFor="backupImportFile">Backup file</Label>
                 <Input
                   id="backupImportFile"
+                  disabled
                   type="file"
                   accept="application/zip,application/vnd.unihub.backup,.zip,.unihub-backup"
                   onChange={(event) => {
@@ -623,19 +630,14 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 <Button
                   variant="outline"
                   onClick={handleUploadBackup}
-                  disabled={!backupImportFile || backupImporting}
+                  disabled
                 >
                   {backupImporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
                   Upload and validate
                 </Button>
                 <Button
                   onClick={() => selectedRestoreJob && handleStartRestoreJob(selectedRestoreJob)}
-                  disabled={
-                    !selectedRestoreJob ||
-                    selectedRestoreJob.status !== 'validated' ||
-                    !selectedRestoreJob.validation_result?.valid ||
-                    Boolean(selectedRestoreJob.validation_result?.errors?.length)
-                  }
+                  disabled
                 >
                   <Play className="h-4 w-4 mr-2" />
                   Restore
@@ -663,7 +665,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                     />
                     <Button
                       onClick={() => handleUnlockRestoreJob(selectedRestoreJob)}
-                      disabled={!restorePassword || backupImporting}
+                      disabled
                     >
                       {backupImporting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                       Unlock
@@ -760,13 +762,13 @@ export default function BackupSettings({ active }: { active: boolean }) {
                       </button>
                       <div className="flex gap-2">
                         {job.status === 'validated' && (
-                          <Button size="sm" onClick={() => handleStartRestoreJob(job)}>
+                          <Button size="sm" onClick={() => handleStartRestoreJob(job)} disabled>
                             <Play className="h-4 w-4 mr-2" />
                             Restore
                           </Button>
                         )}
                         {['failed', 'cancelled'].includes(job.status) && job.archive_available && (
-                          <Button variant="outline" size="sm" onClick={() => handleStartRestoreJob(job)}>
+                          <Button variant="outline" size="sm" onClick={() => handleStartRestoreJob(job)} disabled>
                             <RotateCcw className="h-4 w-4 mr-2" />
                             Retry
                           </Button>

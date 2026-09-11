@@ -15,7 +15,6 @@ const {
   allocateCollisionSafeMailFolderSlug,
   createRemoteMailFolderForUserAccounts,
   loadMailFoldersForUser,
-  mailFolderExists,
   toBooleanFlag,
   loadActiveMailSenderRules,
   resolveMailSenderTargetFolder,
@@ -66,14 +65,14 @@ function isMailSyncFresh(lastSyncedAt, minAgeMs = BACKGROUND_MAIL_SYNC_MIN_AGE_M
   return Date.now() - lastSyncedAtMs < minAgeMs;
 }
 
-async function getMailFolderRowsWithCounts(userId) {
+async function getMailFolderRowsWithCounts(userId, accountId = null) {
   const folders = await loadMailFoldersForUser(userId);
   const [countRows] = await db.execute(
     `SELECT folder, COUNT(*) AS total_count, SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread_count
      FROM emails
-     WHERE user_id = ?
+     WHERE user_id = ? ${accountId ? 'AND mail_account_id = ?' : ''}
      GROUP BY folder`,
-    [userId]
+    accountId ? [userId, accountId] : [userId]
   );
   const countsByFolder = new Map((countRows || []).map(row => [
     row.folder,
@@ -82,7 +81,7 @@ async function getMailFolderRowsWithCounts(userId) {
       unread_count: Number(row.unread_count) || 0,
     },
   ]));
-  return folders.map(folder => ({
+  return folders.filter(folder => !accountId || !folder.mail_account_id || folder.mail_account_id === accountId).map(folder => ({
     ...folder,
     total_count: countsByFolder.get(folder.slug)?.total_count || 0,
     unread_count: countsByFolder.get(folder.slug)?.unread_count || 0,
@@ -92,10 +91,10 @@ async function getMailFolderRowsWithCounts(userId) {
 async function validateUserMailFolder(userId, folderSlug) {
   const normalizedSlug = normalizeMailFolderSlug(folderSlug);
   if (!normalizedSlug) return { error: 'Valid folder is required', status: 400 };
-  if (!(await mailFolderExists(userId, normalizedSlug))) {
-    return { error: 'Folder not found', status: 404 };
-  }
-  return { folder: normalizedSlug };
+  await ensureDefaultMailFoldersForUser(userId);
+  const [rows] = await db.execute('SELECT mail_account_id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, normalizedSlug]);
+  if (!rows.length) return { error: 'Folder not found', status: 404 };
+  return { folder: normalizedSlug, accountId: rows[0].mail_account_id || null };
 }
 
 async function persistRemoteMailFolderBoxes(folderId, remoteFolder, connection) {
@@ -237,7 +236,8 @@ module.exports = {
   'GET /api/mail/folders': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
-      return { folders: await getMailFolderRowsWithCounts(userId) };
+      const accountId = new URL(req.url, 'http://localhost').searchParams.get('account_id') || null;
+      return { folders: await getMailFolderRowsWithCounts(userId, accountId) };
     } catch (error) {
       console.error('List mail folders error:', error);
       return { error: 'Failed to load mail folders', status: 500 };
@@ -247,6 +247,10 @@ module.exports = {
   'POST /api/mail/folders': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
+      const accountId = String(body?.mail_account_id || '').trim();
+      if (!accountId) return { error: 'Select one mail account before creating a folder', status: 400 };
+      const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE LIMIT 1', [accountId, userId]);
+      if (!accounts.length) return { error: 'Active mail account not found', status: 400 };
       const displayName = normalizeMailFolderDisplayName(body?.display_name || body?.name);
       if (!displayName) return { error: 'Folder name is required', status: 400 };
       const requestedSlug = normalizeMailFolderSlug(body?.slug || displayName);
@@ -255,10 +259,15 @@ module.exports = {
         return { error: 'Folder slug is reserved', status: 400 };
       }
       const [sameName] = await db.execute(
-        'SELECT id FROM mail_folders WHERE user_id = ? AND LOWER(display_name) = LOWER(?) LIMIT 1',
-        [userId, displayName]
+        'SELECT id FROM mail_folders WHERE user_id = ? AND (mail_account_id = ? OR is_system = TRUE) AND LOWER(display_name) = LOWER(?) LIMIT 1',
+        [userId, accountId, displayName]
       );
       if (sameName.length > 0) return { error: 'Folder already exists', status: 409 };
+      const [mappedName] = await db.execute(
+        `SELECT f.id FROM mail_folder_remote_boxes b JOIN mail_folders f ON f.id = b.folder_id
+         WHERE f.user_id = ? AND b.mail_account_id = ? AND LOWER(b.remote_name) = LOWER(?) LIMIT 1`,
+        [userId, accountId, displayName]);
+      if (mappedName.length) return { error: 'This provider folder is already represented, possibly under Legacy shared. Choose a different name.', status: 409 };
       const [existing] = await db.execute('SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, requestedSlug]);
       const slug = existing.length > 0
         ? await allocateCollisionSafeMailFolderSlug(userId, displayName)
@@ -269,15 +278,15 @@ module.exports = {
       );
       const position = Number(positionRows[0]?.max_position || 90) + 10;
       // Remote creation may be partially successful. Persist successes so retrying is safe.
-      const remoteFolder = await createRemoteMailFolderForUserAccounts(userId, displayName);
+      const remoteFolder = await createRemoteMailFolderForUserAccounts(userId, displayName, accountId);
       const folderId = crypto.randomUUID();
       const connection = await db.getConnection();
       try {
         await connection.beginTransaction();
         await connection.execute(
-          `INSERT INTO mail_folders (id, user_id, slug, display_name, is_system, position)
-           VALUES (?, ?, ?, ?, FALSE, ?)`,
-          [folderId, userId, slug, displayName, position]
+          `INSERT INTO mail_folders (id, user_id, mail_account_id, slug, display_name, is_system, position)
+           VALUES (?, ?, ?, ?, ?, FALSE, ?)`,
+          [folderId, userId, accountId, slug, displayName, position]
         );
         await persistRemoteMailFolderBoxes(folderId, remoteFolder, connection);
         await connection.commit();
@@ -396,6 +405,9 @@ module.exports = {
       const folderValidation = await validateUserMailFolder(userId, targetFolder);
       if (folderValidation.error) return folderValidation;
       const accountId = String(body?.mail_account_id || '').trim() || null;
+      if (folderValidation.accountId && folderValidation.accountId !== accountId) {
+        return { error: 'This folder requires a rule for its own mail account', status: 400 };
+      }
       if (accountId) {
         const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
         if (!accounts.length) return { error: 'Invalid mail_account_id', status: 400 };
@@ -437,6 +449,9 @@ module.exports = {
       const accountId = body?.mail_account_id !== undefined
         ? (String(body.mail_account_id || '').trim() || null)
         : (existing.mail_account_id || null);
+      if (folderValidation.accountId && folderValidation.accountId !== accountId) {
+        return { error: 'This folder requires a rule for its own mail account', status: 400 };
+      }
       if (accountId) {
         const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
         if (!accounts.length) return { error: 'Invalid mail_account_id', status: 400 };
@@ -1536,12 +1551,29 @@ module.exports = {
       const folderValidation = await validateUserMailFolder(userId, folder);
       if (folderValidation.error) return folderValidation;
       
-      // Update folder for emails
+      // Lock/check the whole selection so a mixed-account move cannot partially succeed.
       const placeholders = email_ids.map(() => '?').join(',');
-      await db.execute(
-        `UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
-        [folderValidation.folder, ...email_ids, userId]
-      );
+      const connection = await db.getConnection();
+      try {
+        await connection.beginTransaction();
+        if (folderValidation.accountId) {
+          const [selected] = await connection.execute(
+            `SELECT mail_account_id FROM emails WHERE id IN (${placeholders}) AND user_id = ? FOR UPDATE`, [...email_ids, userId]);
+          if (selected.some(email => email.mail_account_id !== folderValidation.accountId)) {
+            await connection.rollback();
+            return { error: 'Move cancelled: every selected email must belong to this folder’s mail account. Use a shared folder for mixed accounts.', status: 400 };
+          }
+        }
+        await connection.execute(
+          `UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
+          [folderValidation.folder, ...email_ids, userId]);
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
       
       return { message: `Moved ${email_ids.length} email(s) to ${folderValidation.folder}` };
     } catch (error) {

@@ -135,7 +135,8 @@ Persistent data is split across:
 | `/app/uploads/recordings` | Uploaded/imported audio files |
 | `/app/uploads/backups` | Generated backups and retained restore uploads |
 
-UniHub creates manual restorable backups, but it does not schedule infrastructure
+**In 0.10.4, in-app backup creation, import and restore are temporarily disabled.**
+Existing completed backups can still be downloaded. UniHub does not schedule infrastructure
 backups for you. Back up both Docker volumes. Server-retained backups are
 convenient restore points, not protection from loss of the server or uploads volume.
 
@@ -188,6 +189,7 @@ npm --prefix api test
 ## Documentation
 
 See the [upgrade guide](docs/UPGRADING.md) before replacing an existing deployment,
+the [0.10.4 release notes](docs/RELEASE_0.10.4.md) for account folders and temporary backup suspension,
 the [0.10.3 release notes](docs/RELEASE_0.10.3.md) for backup reliability and format
 compatibility, the [0.10.2 release notes](docs/RELEASE_0.10.2.md) for security corrections and
 recording efficiency, the [0.10.1 release notes](docs/RELEASE_0.10.1.md) for

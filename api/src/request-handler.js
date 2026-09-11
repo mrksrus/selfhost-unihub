@@ -1,3 +1,4 @@
+const { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } = require('./services/backup-availability');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -240,6 +241,13 @@ async function dispatchRequest(req, res) {
     if (userId && !validateCsrfToken(req, res)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'CSRF token validation failed', status: 403 }));
+      return;
+    }
+
+    // Reject before parsing or spooling a potentially huge backup upload.
+    if (DISABLED_BACKUP_ROUTES.has(routeKey)) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: BACKUP_DISABLED_MESSAGE, status: 503 }));
       return;
     }
 

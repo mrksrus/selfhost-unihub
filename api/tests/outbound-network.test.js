@@ -82,7 +82,7 @@ function installMailFixture(t, host) {
 
 async function exerciseMailConnectionPaths(account) {
   await mail.testImapConnection(account);
-  await mail.createRemoteMailFolderForUserAccounts(account.user_id, 'Folder');
+  await mail.createRemoteMailFolderForUserAccounts(account.user_id, 'Folder', account.id);
   await mail.syncMailAccount(account.id);
   await mail.processMailServerDeletionForAccount(account.id);
   await assert.rejects(mail.sendEmail(account.id, { to: 'nobody@example.test', subject: 'Fixture', body: '' }));

@@ -66,7 +66,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.3`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.4`, then run from the existing
 deployment directory:
 
 ```bash
@@ -79,7 +79,8 @@ docker compose ps
 The database service must already be running for this app-only update. Wait for
 authenticated MySQL readiness, schema initialization and a healthy application.
 Then verify sign-in, existing mail bodies/attachments, contacts, calendar data,
-mail synchronization and a sample backup validation.
+mail synchronization. In 0.10.4, application backup creation/import/restore are disabled;
+verify your infrastructure backup instead.
 
 The first upgraded mail sync establishes per-folder UID progress and revalidates
 existing imports. It can take longer and read provider history again; subsequent
@@ -163,3 +164,27 @@ section. Check the CI result for the commit being installed; representative
 fixtures do not verify your own live backup. See [Backup and Restore](BACKUP_RESTORE.md)
 for safe testing, file limits and missing-file handling, and
 [Backup Format](BACKUP_FORMAT.md) for the version contract.
+
+## 0.10.4 account folders and backup suspension
+
+An in-place upgrade from 0.10.3 is supported. This release adds nullable account
+and special-use metadata to `mail_folders`; existing rows are not reassigned.
+No Dockerfile, Compose, volume or secret changes are required for this release.
+The existing five-minute MySQL readiness wait still ends as soon as a connection succeeds.
+
+Old custom folders appear in **Legacy shared**. Expand that section to find
+existing mail, select a specific account to create new folders, and move mail
+manually if desired. An email's source account is never inferred from its To address.
+There are no automatic provider moves, folder deletions or conversions of legacy folders.
+
+**Breaking availability change:** backup creation, upload/import and restore
+return HTTP 503 and are disabled in Settings. Old cached clients cannot bypass
+this. Completed generated archives remain downloadable; keep their recovery
+passwords. Interrupted jobs are marked failed with a suspension explanation;
+archive files are retained and automatic upload expiry is paused. Do not update
+while a backup or restore is in progress. Protect the database, uploads volume
+and configuration with an infrastructure backup before updating.
+
+Do not downgrade after creating account-scoped folders: older app versions do
+not understand their scope. To roll back safely, restore the complete pre-upgrade
+infrastructure snapshot together with its matching application version.

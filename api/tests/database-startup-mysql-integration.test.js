@@ -160,11 +160,70 @@ test('populated v0.9.23.0 upgrades on MySQL 8 and survives a second production s
   for (const savedFolder of fixture.tables.mail_folders) {
     const folder = folders.find(row => row.id === savedFolder.id);
     assert.ok(folder);
+    assert.equal(folder.mail_account_id, null, 'Existing folders must remain shared');
     assert.equal(folder.slug, savedFolder.slug);
     assert.equal(folder.display_name, savedFolder.display_name);
     assert.equal(folder.position, savedFolder.position);
     assert.equal(folder.is_system, Boolean(savedFolder.is_system));
   }
+  await t.test('account folders preserve legacy mappings and reject mixed-account moves atomically', async () => {
+    const userId = fixture.tables.users[0].id;
+    const secondAccount = { ...fixture.tables.mail_accounts[0], id: crypto.randomUUID(), email_address: 'second@example.test' };
+    const addRow = async (table, row) => db.execute(
+      `INSERT INTO ${quoteIdentifier(table)} (${Object.keys(row).map(quoteIdentifier).join(', ')}) VALUES (${Object.keys(row).map(() => '?').join(', ')})`, Object.values(row));
+    await addRow('mail_accounts', secondAccount);
+    const secondEmail = { ...fixture.tables.emails[0], id: crypto.randomUUID(), mail_account_id: secondAccount.id, message_id: '<second-account@example.test>' };
+    await addRow('emails', secondEmail);
+    const { registerCustomImapFoldersForUser } = require('../src/services/mail');
+    const legacy = await registerCustomImapFoldersForUser(userId, mailAccountId, ['INBOX/Research']);
+    assert.equal(legacy[0].slug, 'research');
+    const first = (await registerCustomImapFoldersForUser(userId, mailAccountId, ['Receipts']))[0];
+    const second = (await registerCustomImapFoldersForUser(userId, secondAccount.id, ['Receipts']))[0];
+    assert.notEqual(first.slug, second.slug);
+    assert.equal((await registerCustomImapFoldersForUser(userId, mailAccountId, ['Receipts']))[0].slug, first.slug);
+    const routes = require('../src/routes/mail');
+    const list = await routes['GET /api/mail/folders']({ url: '/api/mail/folders?account_id=' + mailAccountId }, userId);
+    assert(list.folders.some(folder => folder.slug === 'research'));
+    assert(list.folders.some(folder => folder.slug === first.slug && folder.mail_account_id === mailAccountId));
+    assert(!list.folders.some(folder => folder.slug === second.slug));
+    assert.equal((await routes['POST /api/mail/folders']({}, userId, { display_name: 'Unsafe shared' })).status, 400);
+    const [before] = await db.execute('SELECT id, mail_account_id, folder, source_folder, imap_uid FROM emails ORDER BY id');
+    const move = body => routes['POST /api/mail/emails/bulk-move']({}, userId, body);
+    assert.equal((await move({ email_ids: [emailId, secondEmail.id], folder: first.slug })).status, 400);
+    const [after] = await db.execute('SELECT id, mail_account_id, folder, source_folder, imap_uid FROM emails ORDER BY id');
+    assert.deepEqual(after, before);
+    assert.equal((await move({ email_ids: [emailId], folder: first.slug })).error, undefined);
+    assert.equal((await move({ email_ids: [emailId, secondEmail.id], folder: 'research' })).error, undefined);
+    const rule = { match_type: 'domain', match_value: 'example.test', target_folder: first.slug };
+    assert.equal((await routes['POST /api/mail/sender-rules']({}, userId, rule)).status, 400);
+    assert.equal((await routes['POST /api/mail/sender-rules']({}, userId, { ...rule, mail_account_id: secondAccount.id })).status, 400);
+    assert.equal((await routes['POST /api/mail/sender-rules']({}, userId, { ...rule, mail_account_id: mailAccountId })).error, undefined);
+    const [mappings] = await db.execute('SELECT * FROM mail_folder_remote_boxes WHERE folder_id = ?', [fixture.tables.mail_folder_remote_boxes[0].folder_id]);
+    assert.equal(mappings.length, 1);
+    assert.equal(mappings[0].remote_name, 'INBOX/Research');
+    // Another startup must preserve new scopes as well as old shared folders.
+    await getDb().end();
+    setDb(null);
+    await initDatabase();
+    const [[scoped]] = await db.execute('SELECT mail_account_id FROM mail_folders WHERE user_id = ? AND slug = ?', [userId, first.slug]);
+    assert.equal(scoped.mail_account_id, mailAccountId);
+  });
+
+  await t.test('backup suspension releases stale restore locks without deleting archives', async () => {
+    const userId = fixture.tables.users[0].id;
+    const pendingId = crypto.randomUUID();
+    const readyId = crypto.randomUUID();
+    await db.execute(`INSERT INTO data_export_jobs (id, user_id, status, file_path) VALUES (?, ?, 'ready', '/retained/archive.zip')`, [readyId, userId]);
+    await db.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, archive_path, requested_sections) VALUES (?, ?, 'running', '/retained/import.zip', '["mail"]')`, [pendingId, userId]);
+    const { suspendPendingBackupJobs } = require('../src/services/backup-availability');
+    await suspendPendingBackupJobs(db);
+    await suspendPendingBackupJobs(db);
+    const [[pending]] = await db.execute('SELECT status, archive_path FROM backup_restore_jobs WHERE id = ?', [pendingId]);
+    assert.deepEqual(pending, { status: 'failed', archive_path: '/retained/import.zip' });
+    const [[ready]] = await db.execute('SELECT status, file_path FROM data_export_jobs WHERE id = ?', [readyId]);
+    assert.deepEqual(ready, { status: 'ready', file_path: '/retained/archive.zip' });
+    assert.equal((await require('../src/services/restore-locks').getActiveRestoreSections(userId)).size, 0);
+  });
 });
 
 // This fresh-install smoke follows the legacy fixture cleanup in the dedicated CI database.

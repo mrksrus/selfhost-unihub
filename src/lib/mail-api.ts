@@ -64,6 +64,8 @@ export interface MailUnreadCountsResponse {
 
 
 export interface MailFolder {
+  mail_account_id?: string | null;
+  special_use?: string | null;
   id: string;
   slug: string;
   display_name: string;

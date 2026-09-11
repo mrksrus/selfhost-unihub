@@ -24,7 +24,7 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
   });
   // Temporary tables are connection-local and never modify a deployment schema.
   await connection.execute("SET SESSION sql_mode = 'STRICT_TRANS_TABLES'");
-  await connection.execute(`CREATE TEMPORARY TABLE mail_folders (id CHAR(36) PRIMARY KEY, user_id CHAR(36), slug VARCHAR(64),
+  await connection.execute(`CREATE TEMPORARY TABLE mail_folders (id CHAR(36) PRIMARY KEY, user_id CHAR(36), mail_account_id CHAR(36) NULL, special_use VARCHAR(32) NULL, slug VARCHAR(64),
     display_name VARCHAR(128), is_system BOOLEAN, position INT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY(user_id, slug)) ENGINE=InnoDB`);
   await connection.execute(`CREATE TEMPORARY TABLE mail_sync_state (mail_account_id CHAR(36), source_folder VARCHAR(255), uidvalidity BIGINT,

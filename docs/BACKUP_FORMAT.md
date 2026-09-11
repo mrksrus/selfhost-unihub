@@ -1,5 +1,13 @@
 # Backup Format and Compatibility
 
+> **0.10.4 availability:** Backup creation, upload/import, validation and restore
+> are temporarily disabled in the UI and API. Existing completed archives and
+> recovery-password downloads remain available. Pending jobs do not resume on
+> startup; their files are retained, and automatic restore-upload expiry is paused.
+> The format and workflow below document 0.10.3 and retained implementation,
+> not an enabled feature in 0.10.4. Use infrastructure backups of MySQL, uploads
+> and configuration in the meantime. Contact vCard import/export is unaffected.
+
 This document describes the backup format introduced in **UniHub 0.10.3**. Creating a backup writes data schema 2; importing selects
 the schema-1 or schema-2 reader automatically. Users do not choose an import
 script or convert files manually.

@@ -1,6 +1,14 @@
 # Backup and Restore Guide
 
-This guide describes UniHub **0.10.3 and later**. New backups use data schema 2;
+> **0.10.4 availability:** Backup creation, upload/import, validation and restore
+> are temporarily disabled in the UI and API. Existing completed archives and
+> recovery-password downloads remain available. Pending jobs do not resume on
+> startup; their files are retained, and automatic restore-upload expiry is paused.
+> The format and workflow below document 0.10.3 and retained implementation,
+> not an enabled feature in 0.10.4. Use infrastructure backups of MySQL, uploads
+> and configuration in the meantime. Contact vCard import/export is unaffected.
+
+This guide describes UniHub **0.10.3**. New backups use data schema 2;
 imports select schema 1 or 2 automatically. UniHub 0.10.2 reads schema 1 only
 and cannot import new schema-2 backups. See [Backup Format](BACKUP_FORMAT.md)
 for the compatibility contract.
