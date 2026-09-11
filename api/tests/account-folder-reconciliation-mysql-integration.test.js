@@ -77,7 +77,7 @@ test('0.10.3 folder reconciliation and Legacy recovery on MySQL', { skip: !proce
       folder, from_address: 'sender@example.test', to_addresses: JSON.stringify(recipients),
       message_id: `<${name}@fixture.test>`, subject: name, body_text: 'Unchanged body: ' + name,
       source_folder: 'INBOX', imap_uid: Object.keys(messages).length, imap_uidvalidity: 42,
-      is_starred: name === 'important', is_draft: name === 'draft' });
+      is_starred: name === 'important', is_draft: name === 'draft', is_read: ['sent', 'draft'].includes(name) });
   }
   const originalRows = (await pool.execute('SELECT * FROM emails ORDER BY id'))[0];
   await schema.ensureSchema(); await schema.ensureSchema();
@@ -136,6 +136,9 @@ test('0.10.3 folder reconciliation and Legacy recovery on MySQL', { skip: !proce
     assert.equal(restored.filing_account_id, accountB);
     assert.equal(restored.is_legacy, 0);
     assert.equal(restored.imap_uidvalidity, 42);
+    const deletion = await routes['DELETE /api/mail/accounts/:id']({ url: '/api/mail/accounts/' + accountA, params: { id: accountA } }, user);
+    assert.equal(deletion.status, 409, 'Deleting a source account must not erase recovered mail in another account');
+    assert.equal((await read('relay')).id, messages.relay);
     const inbox = await routes['GET /api/mail/emails']({ url: '/api/mail/emails?account_id=' + accountB + '&folder=inbox', headers: { host: 'localhost' } }, user);
     assert(inbox.emails.some(email => email.id === messages.relay));
     const before = await read('ambiguous');

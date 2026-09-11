@@ -30,8 +30,9 @@ choose their receiving account and destination folder, then use **Recover select
 mail**. Source account IDs and IMAP UIDs remain intact; a separate local filing
 account controls where recovered mail appears. This preserves sync identity and
 avoids making a message from one server look as though it originated on another.
-The source account still owns its imported data: deleting that source account
-also deletes its imported messages, including mail filed under another account.
+The source account still owns its imported data. Deleting a source account is
+blocked while it has mail recovered into another account, preventing accidental
+loss through account deletion.
 
 ## Upgrade safeguards and limits
 

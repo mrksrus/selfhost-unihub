@@ -14,9 +14,8 @@ server inventory without repeating message moves.
 `emails.mail_account_id` remains the source identity used by IMAP sync;
 `filing_account_id` is an optional local display/recovery account. `is_legacy`
 marks unresolved/pending messages. List/detail/unread queries use the local
-filing account, and explicit Legacy recovery preserves source UIDs. Recovery is
-local filing, not a transfer of underlying ownership: deleting a source account
-still deletes its imported messages. Migration records are in
+filing account, and explicit Legacy recovery preserves source UIDs. Recovery preserves source ownership. Source-account deletion is blocked while
+mail is filed under another account, preventing cascade deletion of recovered mail. Migration records are in
 `mail_folder_reconciliations`, `mail_folder_recovery_items` and
 `mail_folder_rule_overrides`.
 

@@ -1064,14 +1064,27 @@ module.exports = {
     
     try {
       const id = extractMailRouteId(req);
-      const [attachments] = await db.execute(
-        `SELECT a.storage_path
-         FROM email_attachments a
-         INNER JOIN emails e ON e.id = a.email_id
-         WHERE e.mail_account_id = ? AND e.user_id = ?`,
-        [id, userId]
-      );
-      await db.execute('DELETE FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      const connection = await db.getConnection();
+      let attachments;
+      try {
+        await connection.beginTransaction();
+        await connection.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
+        // Lock source messages against simultaneous Legacy recovery before deciding
+        // whether a cascading account deletion is safe.
+        const [messages] = await connection.execute('SELECT filing_account_id FROM emails WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [id, userId]);
+        if (messages.some(email => email.filing_account_id && email.filing_account_id !== id)) {
+          await connection.rollback();
+          return { error: 'This account is the original source of mail recovered into another account. Deletion is blocked to protect those messages.', status: 409 };
+        }
+        [attachments] = await connection.execute(
+          `SELECT a.storage_path FROM email_attachments a INNER JOIN emails e ON e.id = a.email_id
+           WHERE e.mail_account_id = ? AND e.user_id = ?`, [id, userId]);
+        await connection.execute('DELETE FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally { connection.release(); }
       const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
       return {
         message: 'Mail account deleted',
