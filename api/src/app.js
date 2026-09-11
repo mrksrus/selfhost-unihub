@@ -1,3 +1,4 @@
+const { prepareFolderReconciliation } = require('./services/mail-folder-reconciliation');
 const http = require('http');
 require('./imap-patch');
 const { PORT } = require('./config');
@@ -18,6 +19,7 @@ let periodicMailServerDeleteRunning = false;
 async function start() {
   await initDatabase();
   await ensureNotificationSchema();
+  await prepareFolderReconciliation();
   const runNotifications = () => processNotificationJobs().catch(error => console.error('[NOTIFICATIONS] Worker failed:', error.message));
   void runNotifications();
   setInterval(runNotifications, 30 * 1000);

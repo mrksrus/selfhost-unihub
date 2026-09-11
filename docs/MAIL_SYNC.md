@@ -1,5 +1,25 @@
 # Mail Sync Technical Documentation
 
+## 0.10.5: existing-folder reconciliation
+
+The [0.10.5 migration](RELEASE_0.10.5.md) supersedes the Legacy shared behavior
+below. Existing server-folder mappings and exact display-name matches connect
+without creating provider folders. Local-only messages are filed in a uniquely
+matched To account's Inbox; unresolved mail appears under the Legacy account
+view with its previous folder names. A successful complete LIST is required.
+Each account commits once, with an assignment journal and per-account overrides
+for old sender rules targeting disconnected folders. Later syncs refresh the
+server inventory without repeating message moves.
+
+`emails.mail_account_id` remains the source identity used by IMAP sync;
+`filing_account_id` is an optional local display/recovery account. `is_legacy`
+marks unresolved/pending messages. List/detail/unread queries use the local
+filing account, and explicit Legacy recovery preserves source UIDs. Recovery preserves source ownership. Source-account deletion is blocked while
+mail is filed under another account, preventing cascade deletion of recovered mail. Migration records are in
+`mail_folder_reconciliations`, `mail_folder_recovery_items` and
+`mail_folder_rule_overrides`.
+
+
 ## Overview
 
 UniHub stores mail locally after fetching it from IMAP providers and sends

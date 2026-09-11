@@ -183,7 +183,7 @@ test('populated v0.9.23.0 upgrades on MySQL 8 and survives a second production s
     assert.equal((await registerCustomImapFoldersForUser(userId, mailAccountId, ['Receipts']))[0].slug, first.slug);
     const routes = require('../src/routes/mail');
     const list = await routes['GET /api/mail/folders']({ url: '/api/mail/folders?account_id=' + mailAccountId }, userId);
-    assert(list.folders.some(folder => folder.slug === 'research'));
+    assert(!list.folders.some(folder => folder.slug === 'research'), 'Unverified shared folders stay in Legacy until a successful server check');
     assert(list.folders.some(folder => folder.slug === first.slug && folder.mail_account_id === mailAccountId));
     assert(!list.folders.some(folder => folder.slug === second.slug));
     assert.equal((await routes['POST /api/mail/folders']({}, userId, { display_name: 'Unsafe shared' })).status, 400);
@@ -193,7 +193,7 @@ test('populated v0.9.23.0 upgrades on MySQL 8 and survives a second production s
     const [after] = await db.execute('SELECT id, mail_account_id, folder, source_folder, imap_uid FROM emails ORDER BY id');
     assert.deepEqual(after, before);
     assert.equal((await move({ email_ids: [emailId], folder: first.slug })).error, undefined);
-    assert.equal((await move({ email_ids: [emailId, secondEmail.id], folder: 'research' })).error, undefined);
+    assert.equal((await move({ email_ids: [emailId, secondEmail.id], folder: 'research' })).status, 400);
     const rule = { match_type: 'domain', match_value: 'example.test', target_folder: first.slug };
     assert.equal((await routes['POST /api/mail/sender-rules']({}, userId, rule)).status, 400);
     assert.equal((await routes['POST /api/mail/sender-rules']({}, userId, { ...rule, mail_account_id: secondAccount.id })).status, 400);
