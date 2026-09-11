@@ -1,3 +1,4 @@
+const { folderConnections, FILING_ACCOUNT_SQL } = require('../services/mail-folder-reconciliation');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -70,9 +71,9 @@ async function getMailFolderRowsWithCounts(userId, accountId = null) {
   const [countRows] = await db.execute(
     `SELECT folder, COUNT(*) AS total_count, SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread_count
      FROM emails
-     WHERE user_id = ? ${accountId ? 'AND mail_account_id = ?' : ''}
+     WHERE user_id = ? ${accountId === 'legacy' ? 'AND is_legacy = TRUE' : accountId ? `AND is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?` : ''}
      GROUP BY folder`,
-    accountId ? [userId, accountId] : [userId]
+    accountId && accountId !== 'legacy' ? [userId, accountId] : [userId]
   );
   const countsByFolder = new Map((countRows || []).map(row => [
     row.folder,
@@ -81,8 +82,18 @@ async function getMailFolderRowsWithCounts(userId, accountId = null) {
       unread_count: Number(row.unread_count) || 0,
     },
   ]));
-  return folders.filter(folder => !accountId || !folder.mail_account_id || folder.mail_account_id === accountId).map(folder => ({
+  const links = await folderConnections(userId);
+  const [legacyRows] = await db.execute('SELECT folder, COUNT(*) AS count FROM emails WHERE user_id = ? AND is_legacy = TRUE GROUP BY folder', [userId]);
+  const legacyCounts = new Map(legacyRows.map(row => [row.folder, Number(row.count)]));
+  for (const row of legacyRows) {
+    if (!folders.some(folder => folder.slug === row.folder)) folders.push({ id: `legacy:${row.folder}`, slug: row.folder,
+      display_name: row.folder || '(Unnamed folder)', is_system: false, mail_account_id: null, position: 999 });
+  }
+  return folders.filter(folder => !accountId || (accountId === 'legacy' ? legacyCounts.has(folder.slug)
+    : folder.is_system || folder.mail_account_id === accountId || links.get(folder.slug)?.includes(accountId))).map(folder => ({
     ...folder,
+    connected_account_ids: links.get(folder.slug) || [],
+    legacy_count: legacyCounts.get(folder.slug) || 0,
     total_count: countsByFolder.get(folder.slug)?.total_count || 0,
     unread_count: countsByFolder.get(folder.slug)?.unread_count || 0,
   }));
@@ -92,9 +103,9 @@ async function validateUserMailFolder(userId, folderSlug) {
   const normalizedSlug = normalizeMailFolderSlug(folderSlug);
   if (!normalizedSlug) return { error: 'Valid folder is required', status: 400 };
   await ensureDefaultMailFoldersForUser(userId);
-  const [rows] = await db.execute('SELECT mail_account_id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, normalizedSlug]);
+  const [rows] = await db.execute('SELECT mail_account_id, is_system FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, normalizedSlug]);
   if (!rows.length) return { error: 'Folder not found', status: 404 };
-  return { folder: normalizedSlug, accountId: rows[0].mail_account_id || null };
+  return { folder: normalizedSlug, accountId: rows[0].mail_account_id || null, isSystem: !!rows[0].is_system };
 }
 
 async function persistRemoteMailFolderBoxes(folderId, remoteFolder, connection) {
@@ -466,6 +477,7 @@ module.exports = {
          WHERE id = ? AND user_id = ?`,
         [accountId, parsed.matchType, parsed.matchValue, nextTargetFolder, priority, isActive ? 1 : 0, ruleId, userId]
       );
+      await db.execute('DELETE FROM mail_folder_rule_overrides WHERE rule_id = ?', [ruleId]);
       const [rows] = await db.execute(
         'SELECT id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active, created_at, updated_at FROM mail_sender_rules WHERE id = ? LIMIT 1',
         [ruleId]
@@ -597,7 +609,7 @@ module.exports = {
 
       // Fetch unread email counts per account
       const [unreadRows] = await db.execute(
-        'SELECT mail_account_id, COUNT(*) as unread_count FROM emails WHERE user_id = ? AND is_read = 0 GROUP BY mail_account_id',
+        `SELECT CASE WHEN is_legacy THEN 'legacy' ELSE ${FILING_ACCOUNT_SQL} END AS mail_account_id, COUNT(*) as unread_count FROM emails WHERE user_id = ? AND is_read = 0 GROUP BY 1`,
         [userId]
       );
 
@@ -662,8 +674,8 @@ module.exports = {
       const folderParams = [userId];
 
       if (hasAccountFilter) {
-        folderQuery += ' AND mail_account_id = ?';
-        folderParams.push(accountId);
+        folderQuery += accountId === 'legacy' ? ' AND is_legacy = TRUE' : ` AND is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?`;
+        if (accountId !== 'legacy') folderParams.push(accountId);
       }
       folderQuery += ' GROUP BY folder';
 
@@ -677,16 +689,16 @@ module.exports = {
 
       if (includeByAccount) {
         let accountBreakdownQuery = `
-          SELECT folder, mail_account_id, COUNT(*) AS unread_count
+          SELECT folder, CASE WHEN is_legacy THEN 'legacy' ELSE ${FILING_ACCOUNT_SQL} END AS mail_account_id, COUNT(*) AS unread_count
           FROM emails
           WHERE user_id = ? AND is_read = 0
         `;
         const accountBreakdownParams = [userId];
         if (hasAccountFilter) {
-          accountBreakdownQuery += ' AND mail_account_id = ?';
-          accountBreakdownParams.push(accountId);
+          accountBreakdownQuery += accountId === 'legacy' ? ' AND is_legacy = TRUE' : ` AND is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?`;
+          if (accountId !== 'legacy') accountBreakdownParams.push(accountId);
         }
-        accountBreakdownQuery += ' GROUP BY folder, mail_account_id';
+        accountBreakdownQuery += ' GROUP BY 1, 2';
 
         const [folderAccountRows] = await db.execute(accountBreakdownQuery, accountBreakdownParams);
         const unreadByFolderAccount = {};
@@ -1260,8 +1272,8 @@ module.exports = {
       }
       
       if (hasAccountFilter) {
-        where.push('mail_account_id = ?');
-        params.push(accountId);
+        where.push(accountId === 'legacy' ? 'is_legacy = TRUE' : `is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?`);
+        if (accountId !== 'legacy') params.push(accountId);
       }
 
       if (isReadParam === 'true' || isReadParam === 'false') {
@@ -1299,7 +1311,8 @@ module.exports = {
         SELECT
           id,
           user_id,
-          mail_account_id,
+          mail_account_id AS source_mail_account_id,
+          ${FILING_ACCOUNT_SQL} AS mail_account_id, is_legacy,
           message_id,
           subject,
           from_address,
@@ -1343,6 +1356,9 @@ module.exports = {
       // Parse JSON fields
       const parsedEmails = emails.map(email => ({
         ...email,
+        source_mail_account_id: email.mail_account_id,
+        mail_account_id: email.filing_account_id || email.mail_account_id,
+        is_legacy: !!email.is_legacy,
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
         is_read: !!email.is_read,
         is_starred: !!email.is_starred,
@@ -1551,30 +1567,52 @@ module.exports = {
       const folderValidation = await validateUserMailFolder(userId, folder);
       if (folderValidation.error) return folderValidation;
       
-      // Lock/check the whole selection so a mixed-account move cannot partially succeed.
+      const requestedAccount = String(body.account_id || '').trim() || null;
+      const links = await folderConnections(userId);
+      if (requestedAccount) {
+        const [owned] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [requestedAccount, userId]);
+        if (!owned.length) return { error: 'Receiving account not found', status: 400 };
+      }
       const placeholders = email_ids.map(() => '?').join(',');
       const connection = await db.getConnection();
       try {
         await connection.beginTransaction();
-        if (folderValidation.accountId) {
-          const [selected] = await connection.execute(
-            `SELECT mail_account_id FROM emails WHERE id IN (${placeholders}) AND user_id = ? FOR UPDATE`, [...email_ids, userId]);
-          if (selected.some(email => email.mail_account_id !== folderValidation.accountId)) {
+        const [selected] = await connection.execute(
+          `SELECT id, mail_account_id, filing_account_id, folder, is_legacy FROM emails
+           WHERE id IN (${placeholders}) AND user_id = ? FOR UPDATE`, [...email_ids, userId]);
+        if (selected.length !== new Set(email_ids).size) {
+          await connection.rollback();
+          return { error: 'Some selected emails are unavailable', status: 404 };
+        }
+        for (const email of selected) {
+          const targetAccount = requestedAccount || email.filing_account_id || email.mail_account_id;
+          if ((requestedAccount && !email.is_legacy) || (!requestedAccount && email.is_legacy)
+            || (folderValidation.accountId && folderValidation.accountId !== targetAccount)
+            || (!folderValidation.isSystem && !folderValidation.accountId && !links.get(folderValidation.folder)?.includes(targetAccount))) {
             await connection.rollback();
-            return { error: 'Move cancelled: every selected email must belong to this folder’s mail account. Use a shared folder for mixed accounts.', status: 400 };
+            return { error: 'Move cancelled. Choose a receiving account for Legacy mail and a folder connected to that account.', status: 400 };
           }
         }
-        await connection.execute(
-          `UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
-          [folderValidation.folder, ...email_ids, userId]);
+        if (requestedAccount) {
+          for (const email of selected) {
+            await connection.execute(`INSERT INTO mail_folder_recovery_items
+              (email_id, user_id, source_account_id, original_folder, original_filing_account_id, target_folder, target_account_id, action)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'manual') ON DUPLICATE KEY UPDATE
+              target_folder = VALUES(target_folder), target_account_id = VALUES(target_account_id), action = 'manual'`,
+            [email.id, userId, email.mail_account_id, email.folder, email.filing_account_id, folderValidation.folder, requestedAccount]);
+          }
+          await connection.execute(`UPDATE emails SET folder = ?, filing_account_id = ?, is_legacy = FALSE
+            WHERE id IN (${placeholders}) AND user_id = ?`, [folderValidation.folder, requestedAccount, ...email_ids, userId]);
+        } else {
+          await connection.execute(`UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
+            [folderValidation.folder, ...email_ids, userId]);
+        }
         await connection.commit();
       } catch (error) {
         await connection.rollback();
         throw error;
-      } finally {
-        connection.release();
-      }
-      
+      } finally { connection.release(); }
+
       return { message: `Moved ${email_ids.length} email(s) to ${folderValidation.folder}` };
     } catch (error) {
       console.error('[BULK] Move error:', error);

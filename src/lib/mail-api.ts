@@ -39,6 +39,8 @@ export interface EmailAttachment {
 
 
 export interface Email {
+  is_legacy?: boolean;
+  source_mail_account_id?: string;
   id: string;
   mail_account_id: string;
   subject: string | null;
@@ -64,6 +66,8 @@ export interface MailUnreadCountsResponse {
 
 
 export interface MailFolder {
+  connected_account_ids?: string[];
+  legacy_count?: number;
   mail_account_id?: string | null;
   special_use?: string | null;
   id: string;

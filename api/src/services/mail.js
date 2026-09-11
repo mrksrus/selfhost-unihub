@@ -1,3 +1,4 @@
+const { reconcileAccountFolders } = require('./mail-folder-reconciliation');
 const crypto = require('crypto');
 require('../imap-patch');
 const imaps = require('imap-simple');
@@ -179,12 +180,11 @@ function normalizeMailSenderRuleInput(matchType, matchValue) {
 async function loadActiveMailSenderRules(userId, mailAccountId = null, connection = db) {
   const accountId = String(mailAccountId || '').trim() || null;
   const [rules] = await connection.execute(
-    `SELECT id, user_id, mail_account_id, match_type, LOWER(TRIM(match_value)) AS match_value, target_folder, priority, is_active, created_at, updated_at
-     FROM mail_sender_rules
-     WHERE user_id = ?
-       AND is_active = TRUE
-       AND (mail_account_id IS NULL OR mail_account_id = ?)`,
-    [userId, accountId]
+    `SELECT r.id, r.user_id, r.mail_account_id, r.match_type, LOWER(TRIM(r.match_value)) AS match_value,
+            COALESCE(o.target_folder, r.target_folder) AS target_folder, r.priority, r.is_active, r.created_at, r.updated_at
+     FROM mail_sender_rules r LEFT JOIN mail_folder_rule_overrides o ON o.rule_id = r.id AND o.mail_account_id = ?
+     WHERE r.user_id = ? AND r.is_active = TRUE AND (r.mail_account_id IS NULL OR r.mail_account_id = ?)`,
+    [accountId, userId, accountId]
   );
   return Array.isArray(rules) ? rules : [];
 }
@@ -498,11 +498,15 @@ function flattenImapBoxes(boxes, prefix = '', specialUses = new Map()) {
   return results;
 }
 
-async function listAvailableImapFolders(connection, specialUses = new Map()) {
+async function listAvailableImapFolders(connection, specialUses = new Map(), strict = false) {
   try {
-    if (typeof connection.getBoxes !== 'function') return ['INBOX'];
+    if (typeof connection.getBoxes !== 'function') {
+      if (strict) throw new Error('Server folder listing unavailable');
+      return ['INBOX'];
+    }
     return flattenImapBoxes(await connection.getBoxes(), '', specialUses);
   } catch (error) {
+    if (strict) throw error;
     console.log('[SYNC] Could not list IMAP folders, falling back to INBOX:', error.message);
     return ['INBOX'];
   }
@@ -1372,7 +1376,13 @@ async function syncMailAccountOnce(accountId) {
     });
     
     const specialUses = new Map();
-    const availableFolders = await listAvailableImapFolders(connection, specialUses);
+    const availableFolders = await listAvailableImapFolders(connection, specialUses, true);
+    for (const planned of pickImapSyncFolders(availableFolders)) {
+      if (availableFolders.includes(planned.folderName) && !specialUses.has(planned.folderName)) specialUses.set(planned.folderName, planned.dbFolderName);
+    }
+    await ensureDefaultMailFoldersForUser(account.user_id);
+    const reconciliation = await reconcileAccountFolders(account.user_id, accountId, availableFolders, specialUses);
+    if (!reconciliation.skipped) console.log('[FOLDERS] Reconciliation completed:', accountId, reconciliation);
     // Sync only boxes explicitly registered from this account. Never infer an
     // identity from a lossy UI slug or recreate a locally deleted mailbox.
     const registeredFolders = await registerCustomImapFoldersForUser(account.user_id, accountId, availableFolders, db, specialUses);

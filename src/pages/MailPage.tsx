@@ -207,6 +207,7 @@ type AccountMode = MailAccount['id'] | 'all';
 type FolderMode = string;
 
 const ALL_ACCOUNTS: AccountMode = 'all';
+const LEGACY_ACCOUNT = 'legacy';
 const ALL_MAIL: FolderMode = 'all';
 
 const initialAccountForm: AccountFormState = {
@@ -290,7 +291,8 @@ const MailPage = () => {
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [folderToDelete, setFolderToDelete] = useState<MailFolder | null>(null);
   const [newFolderName, setNewFolderName] = useState('');
-  const [showLegacyFolders, setShowLegacyFolders] = useState(false);
+  const [recoveryAccount, setRecoveryAccount] = useState('');
+  const [recoveryFolder, setRecoveryFolder] = useState('inbox');
   const [editingFolderSlug, setEditingFolderSlug] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState('');
   const [composeForm, setComposeForm] = useState({
@@ -343,9 +345,14 @@ const MailPage = () => {
   const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
   const { data: mailFolders = [] } = useMailFolders();
 
-  const visibleMailFolders = React.useMemo(() => mailFolders.filter(folder =>
-    !folder.mail_account_id || selectedAccount === ALL_ACCOUNTS || folder.mail_account_id === selectedAccount
-  ), [mailFolders, selectedAccount]);
+  const legacyCount = mailFolders.reduce((total, folder) => total + (folder.legacy_count || 0), 0);
+  const visibleMailFolders = React.useMemo(() => mailFolders.filter(folder => {
+    if (selectedAccount === LEGACY_ACCOUNT) return (folder.legacy_count || 0) > 0;
+    if (folder.is_system) return true;
+    const linked = folder.connected_account_ids || [];
+    if (selectedAccount === ALL_ACCOUNTS) return !!folder.mail_account_id || linked.length > 0 || (folder.legacy_count || 0) > 0;
+    return folder.mail_account_id === selectedAccount || linked.includes(selectedAccount || '');
+  }), [mailFolders, selectedAccount]);
 
   const folders = React.useMemo(() => {
     const systemBySlug = new Map(systemFolders.map(folder => [folder.id, folder]));
@@ -357,7 +364,7 @@ const MailPage = () => {
         id: folder.slug,
         label: selectedAccount === ALL_ACCOUNTS && account ? `${folder.display_name} · ${account.email_address}` : folder.display_name,
         icon: folder.special_use === 'junk' ? ShieldAlert : systemFolder?.icon || FolderOpen,
-        legacy: !folder.is_system && !folder.mail_account_id,
+        legacy: false,
         accountId: folder.mail_account_id || null,
       };
     }).sort((a, b) => Number(a.legacy) - Number(b.legacy));
@@ -365,9 +372,9 @@ const MailPage = () => {
 
   useEffect(() => {
     if (mailFolders.length && selectedFolder !== ALL_MAIL && selectedFolder !== 'starred' && !visibleMailFolders.some(folder => folder.slug === selectedFolder)) {
-      setSelectedFolder('inbox');
+      setSelectedFolder(selectedAccount === LEGACY_ACCOUNT ? ALL_MAIL : 'inbox');
     }
-  }, [mailFolders, visibleMailFolders, selectedFolder]);
+  }, [mailFolders, visibleMailFolders, selectedFolder, selectedAccount]);
 
   const folderFilters = React.useMemo(() => {
     // Starred is a virtual IMAP flag view, not a physical mailbox row.
@@ -383,7 +390,7 @@ const MailPage = () => {
   }, [folders]);
 
   const movableFolderIds = React.useMemo(
-    () => folders.filter(folder => !folder.accountId || folder.accountId === selectedAccount).map(folder => folder.id).filter(folderId => folderId !== 'starred'),
+    () => selectedAccount === LEGACY_ACCOUNT ? [] : folders.filter(folder => !folder.accountId || folder.accountId === selectedAccount).map(folder => folder.id).filter(folderId => folderId !== 'starred'),
     [folders, selectedAccount]
   );
 
@@ -398,7 +405,10 @@ const MailPage = () => {
       const lastAccountId = localStorage.getItem('mail_last_selected_account');
       const lastAccount = accounts.find(a => a.id === lastAccountId);
       
-      if (lastAccountId === ALL_ACCOUNTS) {
+      if (lastAccountId === LEGACY_ACCOUNT) {
+        setSelectedAccount(LEGACY_ACCOUNT);
+        setSelectedFolder(ALL_MAIL);
+      } else if (lastAccountId === ALL_ACCOUNTS) {
         setSelectedAccount(ALL_ACCOUNTS);
       } else if (lastAccount) {
         setSelectedAccount(lastAccount.id);
@@ -712,8 +722,8 @@ const MailPage = () => {
   });
 
   const bulkMove = useMutation({
-    mutationFn: async ({ emailIds, folder }: { emailIds: string[]; folder: string }) => {
-      const response = await api.post('/mail/emails/bulk-move', { email_ids: emailIds, folder });
+    mutationFn: async ({ emailIds, folder, accountId }: { emailIds: string[]; folder: string; accountId?: string }) => {
+      const response = await api.post('/mail/emails/bulk-move', { email_ids: emailIds, folder, account_id: accountId });
       if (response.error) throw new Error(response.error);
     },
     onSuccess: (_, variables) => {
@@ -1265,7 +1275,7 @@ const MailPage = () => {
     ), [composeAttachments, fileToBase64]);
 
   const saveCurrentDraft = React.useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean } = {}) => {
-    if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
+    if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) {
       if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
       return null;
     }
@@ -1342,7 +1352,7 @@ const MailPage = () => {
   ]);
 
   React.useEffect(() => {
-    if (!isComposeDirty || !selectedAccount || selectedAccount === ALL_ACCOUNTS) return;
+    if (!isComposeDirty || !selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) return;
     if (!isComposeOpen && !isReplying) return;
     if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) return;
 
@@ -1596,7 +1606,7 @@ const MailPage = () => {
 
   const handleSendEmail = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
+    if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) {
       toast({ title: 'Please select an account', variant: 'destructive' });
       return;
     }
@@ -1643,7 +1653,7 @@ const MailPage = () => {
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
   const selectedFolderData = folders.find((folder) => folder.id === selectedFolder);
   const folderLabel = selectedFolder === ALL_MAIL ? 'All mail' : selectedFolderData?.label || selectedFolder;
-  const accountLabel = selectedAccount === ALL_ACCOUNTS
+  const accountLabel = selectedAccount === LEGACY_ACCOUNT ? 'Legacy — needs review' : selectedAccount === ALL_ACCOUNTS
     ? 'All accounts'
     : selectedAccountData?.display_name || selectedAccountData?.email_address || 'No account selected';
   const senderAlreadyInContacts = selectedEmail
@@ -1938,6 +1948,13 @@ const MailPage = () => {
                     )}
                   </button>
                 </div>
+                <button type="button"
+                  onClick={() => { setSelectedAccount(LEGACY_ACCOUNT); setSelectedFolder(ALL_MAIL); if (isMobile) setMobileSidebarOpen(false); }}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${selectedAccount === LEGACY_ACCOUNT ? 'bg-mail/10 text-mail' : 'text-muted-foreground hover:bg-muted'}`}
+                  title="Legacy: unresolved mail and mail awaiting a successful server folder check">
+                  <FolderOpen className="h-5 w-5 shrink-0" />
+                  {(!sidebarCollapsed || isMobile) && <span>Legacy ({legacyCount})</span>}
+                </button>
                 {accounts.map((account) => (
                   <div key={account.id} className={`relative group ${(sidebarCollapsed && !isMobile) ? 'flex justify-center' : ''}`}>
                     <button
@@ -2024,16 +2041,9 @@ const MailPage = () => {
             </Button>
           </div>
           <nav aria-label="Mail folders" className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 space-y-1">
-            {folderFilters.map((folder, index) => (
+            {folderFilters.map((folder) => (
               <React.Fragment key={folder.id}>
-              {folder.legacy && !folderFilters[index - 1]?.legacy && (
-                <button type="button" className="w-full px-3 py-2 text-left text-xs text-muted-foreground" aria-expanded={showLegacyFolders}
-                  title="Old folders shared across accounts. Their messages and provider mappings are preserved."
-                  onClick={() => setShowLegacyFolders(value => !value)}>
-                  {showLegacyFolders ? '▾' : '▸'} Legacy shared ({folders.filter(item => item.legacy).length})
-                </button>
-              )}
-              {(!folder.legacy || showLegacyFolders || folder.id === selectedFolder) && <button
+              <button
                 onClick={() => {
                   setSelectedFolder(folder.id);
                   if (isMobile) setMobileSidebarOpen(false);
@@ -2059,7 +2069,7 @@ const MailPage = () => {
                 {(sidebarCollapsed && !isMobile) && folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
                   <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-accent" />
                 )}
-              </button>}
+              </button>
               </React.Fragment>
             ))}
           </nav>
@@ -2068,6 +2078,23 @@ const MailPage = () => {
 
       {/* Main Content */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {selectedAccount === LEGACY_ACCOUNT && (
+          <div className="border-b border-border p-3 space-y-2 text-sm">
+            <p>These messages retain their original folders. Some need a receiving account; others await a successful server check. Select messages to recover them. Their original mail source is preserved.</p>
+            {selectedEmails.size > 0 && <div className="flex flex-wrap gap-2">
+              <Select value={recoveryAccount} onValueChange={value => { setRecoveryAccount(value); setRecoveryFolder('inbox'); }}>
+                <SelectTrigger className="w-56"><SelectValue placeholder="Receiving account" /></SelectTrigger>
+                <SelectContent>{accounts.map(account => <SelectItem key={account.id} value={account.id}>{account.email_address}</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={recoveryFolder} onValueChange={setRecoveryFolder}>
+                <SelectTrigger className="w-48"><SelectValue placeholder="Destination folder" /></SelectTrigger>
+                <SelectContent>{mailFolders.filter(folder => folder.is_system || folder.mail_account_id === recoveryAccount || folder.connected_account_ids?.includes(recoveryAccount)).map(folder =>
+                  <SelectItem key={folder.slug} value={folder.slug}>{folder.display_name}</SelectItem>)}</SelectContent>
+              </Select>
+              <Button disabled={!recoveryAccount || bulkMove.isPending} onClick={() => bulkMove.mutate({ emailIds: Array.from(selectedEmails), folder: recoveryFolder, accountId: recoveryAccount })}>Recover selected mail</Button>
+            </div>}
+          </div>
+        )}
         {/* Header */}
         <div className="min-h-14 border-b border-border flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -2256,8 +2283,8 @@ const MailPage = () => {
             <Button 
               variant="ghost" 
               size="icon"
-              onClick={() => selectedAccount && selectedAccount !== ALL_ACCOUNTS && syncMail.mutate(selectedAccount)}
-              disabled={!selectedAccount || selectedAccount === ALL_ACCOUNTS || syncMail.isPending}
+              onClick={() => selectedAccount && selectedAccount !== ALL_ACCOUNTS && selectedAccount !== LEGACY_ACCOUNT && syncMail.mutate(selectedAccount)}
+              disabled={!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT || syncMail.isPending}
               title="Refresh emails"
             >
               <RefreshCw className={`h-4 w-4 ${syncMail.isPending ? 'animate-spin' : ''}`} />
@@ -2601,7 +2628,7 @@ const MailPage = () => {
                       setActiveDraftId(null);
                       setAttachmentsDirty(false);
                       setIsComposeDirty(false);
-                      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
+                      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
                       setComposeForm({
@@ -2633,7 +2660,7 @@ const MailPage = () => {
                       setActiveDraftId(null);
                       setAttachmentsDirty(false);
                       setIsComposeDirty(false);
-                      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS) {
+                      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
                       setComposeForm({
@@ -2881,11 +2908,11 @@ const MailPage = () => {
           <DialogHeader>
             <DialogTitle>Mail folders</DialogTitle>
             <DialogDescription>
-              Select one mail account to create a folder on that account. Moving mail here changes its local grouping only. Legacy shared folders keep their existing contents and provider mappings. Rename or delete provider folders at your mail provider.
+              Select one mail account to create a folder on that account. Moving mail here changes its local grouping only. Existing server folders are connected during sync. Unresolved older mail appears in the Legacy account view. Rename or delete provider folders at your mail provider.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            {(!selectedAccount || selectedAccount === ALL_ACCOUNTS) && <p className="text-sm text-muted-foreground">Choose a mail account in the sidebar before adding a folder.</p>}
+            {(!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) && <p className="text-sm text-muted-foreground">Choose a mail account in the sidebar before adding a folder.</p>}
             <div className="flex gap-2">
               <Input
                 value={newFolderName}
@@ -2898,7 +2925,7 @@ const MailPage = () => {
                   const name = newFolderName.trim();
                   if (name) createFolder.mutate(name);
                 }}
-                disabled={createFolder.isPending || !newFolderName.trim() || !selectedAccount || selectedAccount === ALL_ACCOUNTS}
+                disabled={createFolder.isPending || !newFolderName.trim() || !selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT}
               >
                 <Plus className="h-4 w-4 mr-2" />
                 Add
@@ -2917,7 +2944,7 @@ const MailPage = () => {
                     <div className="min-w-0 flex-1">
                       <p className="font-medium text-sm truncate">{folder.display_name}</p>
                       <p className="text-xs text-muted-foreground">
-                        {folder.total_count || 0} messages • {folder.is_system ? 'system' : folder.mail_account_id ? accounts.find(account => account.id === folder.mail_account_id)?.email_address : 'Legacy shared'}
+                        {folder.total_count || 0} messages • {folder.is_system ? 'system' : folder.mail_account_id ? accounts.find(account => account.id === folder.mail_account_id)?.email_address : 'Shared server folder'}
                       </p>
                     </div>
                   )}
@@ -3085,7 +3112,7 @@ const MailPage = () => {
               <div className="space-y-2">
                 <Label>From</Label>
                 <Select
-                  value={selectedAccount && selectedAccount !== ALL_ACCOUNTS ? selectedAccount : ''}
+                  value={selectedAccount && selectedAccount !== ALL_ACCOUNTS && selectedAccount !== LEGACY_ACCOUNT ? selectedAccount : ''}
                   onValueChange={(value) => setSelectedAccount(value as AccountMode)}
                 >
                   <SelectTrigger>

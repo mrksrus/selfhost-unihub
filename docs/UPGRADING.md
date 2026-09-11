@@ -66,7 +66,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.4`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.5`, then run from the existing
 deployment directory:
 
 ```bash
@@ -188,3 +188,15 @@ and configuration with an infrastructure backup before updating.
 Do not downgrade after creating account-scoped folders: older app versions do
 not understand their scope. To roll back safely, restore the complete pre-upgrade
 infrastructure snapshot together with its matching application version.
+
+## 0.10.3 → 0.10.5 folder reconciliation
+
+Upgrade directly using the same database, uploads and keys; 0.10.4 is not a
+prerequisite. On the first successful folder listing for each account, exact
+server matches connect, uniquely addressed local-only mail goes to its receiving
+Inbox, and uncertain messages retain their folders in the Legacy view. The
+migration does not create provider folders. Local Important/Archive filing is
+included when no server link exists; Inbox/Sent/Drafts/Trash are excluded.
+See [0.10.5 release notes](RELEASE_0.10.5.md) for the rules, manual recovery,
+source-account ownership, auditing and rollback limits. Preserve a complete
+infrastructure snapshot before updating; application backups remain suspended.

@@ -644,6 +644,43 @@ async function ensureSchema() {
     FULLTEXT INDEX ft_emails_search (subject, body_text)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+  await ensureColumn('emails', 'filing_account_id',
+    `ALTER TABLE emails ADD COLUMN filing_account_id CHAR(36) NULL,
+     ADD CONSTRAINT fk_emails_filing_account FOREIGN KEY (filing_account_id) REFERENCES mail_accounts(id) ON DELETE SET NULL`, { required: true });
+  await ensureColumn('emails', 'is_legacy',
+    `ALTER TABLE emails ADD COLUMN is_legacy BOOLEAN NOT NULL DEFAULT FALSE`, { required: true });
+  await db.execute(`CREATE TABLE IF NOT EXISTS mail_folder_reconciliations (
+    mail_account_id CHAR(36) PRIMARY KEY,
+    user_id CHAR(36) NOT NULL,
+    inventory JSON NOT NULL,
+    previous_mappings JSON NOT NULL,
+    completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await db.execute(`CREATE TABLE IF NOT EXISTS mail_folder_recovery_items (
+    email_id CHAR(36) PRIMARY KEY,
+    user_id CHAR(36) NOT NULL,
+    source_account_id CHAR(36) NOT NULL,
+    original_folder VARCHAR(64) NOT NULL,
+    original_filing_account_id CHAR(36) NULL,
+    target_folder VARCHAR(64) NOT NULL,
+    target_account_id CHAR(36) NULL,
+    action VARCHAR(32) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_folder_recovery_user (user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await db.execute(`CREATE TABLE IF NOT EXISTS mail_folder_rule_overrides (
+    rule_id CHAR(36) NOT NULL,
+    mail_account_id CHAR(36) NOT NULL,
+    target_folder VARCHAR(64) NOT NULL,
+    PRIMARY KEY (rule_id, mail_account_id),
+    FOREIGN KEY (rule_id) REFERENCES mail_sender_rules(id) ON DELETE CASCADE,
+    FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
   const emailColumnMigrations = [
     ['source_folder', `ALTER TABLE emails ADD COLUMN source_folder VARCHAR(255) NULL AFTER folder`],
     ['imap_uid', `ALTER TABLE emails ADD COLUMN imap_uid BIGINT NULL AFTER source_folder`],
