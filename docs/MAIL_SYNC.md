@@ -36,7 +36,7 @@ outbound mail through SMTP. The mail system includes:
 | Table | Purpose |
 | --- | --- |
 | `mail_accounts` | IMAP/SMTP settings, encrypted password, sync metadata, TLS trust state |
-| `mail_folders` | Per-user app folder catalog |
+| `mail_folders` | User-owned catalog; new custom folders also have `mail_account_id`, old shared folders keep NULL |
 | `mail_folder_remote_boxes` | Account-specific mapping from app folders to exact provider folder names |
 | `mail_sync_state` | Folder UIDVALIDITY, last successful UID and initialization state |
 | `mail_sender_rules` | Sender/domain routing rules |
@@ -128,11 +128,32 @@ System app folders created per user:
 - `unknown`
 - `twofactor_notifications`
 
-Custom provider folders are registered using their exact names and account-specific
-mappings. Creating a custom folder attempts creation on active mail accounts and
-reports partial failures. Renaming or deleting synced custom folders through
-UniHub is currently disabled; change those folders at the provider. Moving
-messages between app folders remains a local classification change.
+From 0.10.4, newly discovered custom provider folders belong to their mail account.
+The same name on two accounts receives two distinct local slugs. Creating a folder
+requires `mail_account_id` and attempts creation only on that active account.
+A folder already represented by a legacy provider mapping cannot be recreated
+under the same remote name; choose a different name.
+
+All pre-upgrade custom folders remain under **Legacy shared**, collapsed in the
+sidebar by default. Their IDs, slugs, messages, routing rules and provider mappings
+are preserved. Selecting an account shows its new folders plus shared/system
+folders; All Accounts labels new folders with their account address. System views
+such as Inbox still combine accounts in All Accounts.
+
+IMAP special-use attributes recognize localized Sent, Drafts, Archive, All Mail,
+Trash, Important and Junk boxes. Existing mappings take priority over new
+classification: a legacy folder can gain the appropriate icon without moving
+its contents. Newly discovered special boxes use the matching system view;
+Junk remains a distinct account folder. No-select namespace parents are skipped.
+
+Moving messages between app folders remains a **local classification change**;
+it does not issue IMAP MOVE commands. The stored source account and remote
+identity stay unchanged. The server rejects an entire mixed-account selection
+when its target folder belongs to one account. Sender rules targeting an
+account folder must belong to that same account. In All Accounts, the move menu
+only offers shared/system destinations; select one account for its private folders.
+Renaming or deleting synced custom folders through UniHub remains disabled;
+change those folders at the provider.
 
 Missing system folders are inserted in one batch. Existing display names and
 positions are preserved. Sender rules and available folder slugs are loaded once

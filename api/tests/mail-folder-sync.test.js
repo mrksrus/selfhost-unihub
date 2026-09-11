@@ -46,3 +46,26 @@ test('mail sync creates missing local custom folders on a newly connected IMAP a
   assert.deepEqual(added, ['Project Alpha']);
   assert.deepEqual(result, { created: 1, failed: [] });
 });
+
+test('provider special-use attributes survive nesting and existing folder mappings win', () => {
+  const { flattenImapBoxes } = require('../src/services/mail');
+  const roles = new Map();
+  const names = flattenImapBoxes({
+    INBOX: { attribs: [], delimiter: '/' },
+    '[Provider]': { attribs: ['\\Noselect'], delimiter: '/', children: {
+      Gesendet: { attribs: ['\\Sent'] },
+      Entwürfe: { attribs: ['\\Drafts'] },
+      Spam: { attribs: ['\\Junk'] },
+    } },
+  }, '', roles);
+  assert(!names.includes('[Provider]'));
+  assert.equal(roles.get('[Provider]/Gesendet'), 'sent');
+  assert.equal(roles.get('[Provider]/Entwürfe'), 'drafts');
+  assert.equal(roles.get('[Provider]/Spam'), 'junk');
+  const plan = pickImapSyncFolders(names, new Map([
+    ['[Provider]/Gesendet', 'legacy_sent'], ['[Provider]/Entwürfe', 'drafts'], ['[Provider]/Spam', 'spam_2'],
+  ]));
+  assert(plan.some(item => item.folderName === '[Provider]/Gesendet' && item.dbFolderName === 'legacy_sent'));
+  assert(plan.some(item => item.folderName === '[Provider]/Entwürfe' && item.dbFolderName === 'drafts'));
+  assert(plan.some(item => item.folderName === '[Provider]/Spam' && item.dbFolderName === 'spam_2'));
+});

@@ -290,6 +290,7 @@ const MailPage = () => {
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [folderToDelete, setFolderToDelete] = useState<MailFolder | null>(null);
   const [newFolderName, setNewFolderName] = useState('');
+  const [showLegacyFolders, setShowLegacyFolders] = useState(false);
   const [editingFolderSlug, setEditingFolderSlug] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState('');
   const [composeForm, setComposeForm] = useState({
@@ -342,23 +343,35 @@ const MailPage = () => {
   const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
   const { data: mailFolders = [] } = useMailFolders();
 
+  const visibleMailFolders = React.useMemo(() => mailFolders.filter(folder =>
+    !folder.mail_account_id || selectedAccount === ALL_ACCOUNTS || folder.mail_account_id === selectedAccount
+  ), [mailFolders, selectedAccount]);
+
   const folders = React.useMemo(() => {
     const systemBySlug = new Map(systemFolders.map(folder => [folder.id, folder]));
-    if (mailFolders.length === 0) return systemFolders;
-    return mailFolders.map((folder) => {
-      const systemFolder = systemBySlug.get(folder.slug);
+    if (mailFolders.length === 0) return systemFolders.map(folder => ({ ...folder, legacy: false, accountId: null as string | null }));
+    return visibleMailFolders.map((folder) => {
+      const systemFolder = systemBySlug.get(folder.special_use || folder.slug);
+      const account = accounts.find(account => account.id === folder.mail_account_id);
       return {
         id: folder.slug,
-        label: folder.display_name,
-        icon: systemFolder?.icon || FolderOpen,
-        isSystem: folder.is_system,
+        label: selectedAccount === ALL_ACCOUNTS && account ? `${folder.display_name} · ${account.email_address}` : folder.display_name,
+        icon: folder.special_use === 'junk' ? ShieldAlert : systemFolder?.icon || FolderOpen,
+        legacy: !folder.is_system && !folder.mail_account_id,
+        accountId: folder.mail_account_id || null,
       };
-    });
-  }, [mailFolders]);
+    }).sort((a, b) => Number(a.legacy) - Number(b.legacy));
+  }, [mailFolders, visibleMailFolders, selectedAccount, accounts]);
+
+  useEffect(() => {
+    if (mailFolders.length && selectedFolder !== ALL_MAIL && selectedFolder !== 'starred' && !visibleMailFolders.some(folder => folder.slug === selectedFolder)) {
+      setSelectedFolder('inbox');
+    }
+  }, [mailFolders, visibleMailFolders, selectedFolder]);
 
   const folderFilters = React.useMemo(() => {
     // Starred is a virtual IMAP flag view, not a physical mailbox row.
-    const starred = systemFolders.find(folder => folder.id === 'starred')!;
+    const starred = { ...systemFolders.find(folder => folder.id === 'starred')!, legacy: false, accountId: null };
     const listedFolders = folders.filter(folder => folder.id !== 'starred');
     const insertAfter = listedFolders.findIndex(folder => folder.id === 'drafts') + 1;
     const orderedFolders = [
@@ -366,12 +379,12 @@ const MailPage = () => {
       starred,
       ...listedFolders.slice(Math.max(insertAfter, 0)),
     ];
-    return [{ id: ALL_MAIL, label: 'All mail', icon: Mail }, ...orderedFolders];
+    return [{ id: ALL_MAIL, label: 'All mail', icon: Mail, legacy: false, accountId: null }, ...orderedFolders];
   }, [folders]);
 
   const movableFolderIds = React.useMemo(
-    () => folders.map(folder => folder.id).filter(folderId => folderId !== 'starred'),
-    [folders]
+    () => folders.filter(folder => !folder.accountId || folder.accountId === selectedAccount).map(folder => folder.id).filter(folderId => folderId !== 'starred'),
+    [folders, selectedAccount]
   );
 
   const { data: unreadCountsData } = useMailUnreadCounts(selectedAccount);
@@ -749,16 +762,17 @@ const MailPage = () => {
 
   const createFolder = useMutation({
     mutationFn: async (displayName: string) => {
-      const response = await api.post<{ folder: MailFolder }>('/mail/folders', { display_name: displayName });
+      const response = await api.post<{ folder: MailFolder; remoteFolder?: { status: string } }>('/mail/folders', { display_name: displayName, mail_account_id: selectedAccount });
       if (response.error) throw new Error(response.error);
-      return response.data?.folder;
+      return response.data;
     },
-    onSuccess: (folder) => {
+    onSuccess: (result) => {
+      const folder = result?.folder;
       queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
       queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
       if (folder?.slug) setSelectedFolder(folder.slug);
       setNewFolderName('');
-      toast({ title: 'Folder created' });
+      toast({ title: 'Folder created for this account', description: result?.remoteFolder?.status === 'partial' ? 'Saved locally. The mail provider could not create the folder; provider sync is not established yet.' : undefined });
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to create folder', description: error.message, variant: 'destructive' });
@@ -2010,9 +2024,16 @@ const MailPage = () => {
             </Button>
           </div>
           <nav aria-label="Mail folders" className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 space-y-1">
-            {folderFilters.map((folder) => (
-              <button
-                key={folder.id}
+            {folderFilters.map((folder, index) => (
+              <React.Fragment key={folder.id}>
+              {folder.legacy && !folderFilters[index - 1]?.legacy && (
+                <button type="button" className="w-full px-3 py-2 text-left text-xs text-muted-foreground" aria-expanded={showLegacyFolders}
+                  title="Old folders shared across accounts. Their messages and provider mappings are preserved."
+                  onClick={() => setShowLegacyFolders(value => !value)}>
+                  {showLegacyFolders ? '▾' : '▸'} Legacy shared ({folders.filter(item => item.legacy).length})
+                </button>
+              )}
+              {(!folder.legacy || showLegacyFolders || folder.id === selectedFolder) && <button
                 onClick={() => {
                   setSelectedFolder(folder.id);
                   if (isMobile) setMobileSidebarOpen(false);
@@ -2038,7 +2059,8 @@ const MailPage = () => {
                 {(sidebarCollapsed && !isMobile) && folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
                   <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-accent" />
                 )}
-              </button>
+              </button>}
+              </React.Fragment>
             ))}
           </nav>
         </div>
@@ -2859,10 +2881,11 @@ const MailPage = () => {
           <DialogHeader>
             <DialogTitle>Mail folders</DialogTitle>
             <DialogDescription>
-              Create custom folders and manage where local messages are grouped. Deleting a custom folder moves its messages and routing rules back to Inbox.
+              Select one mail account to create a folder on that account. Moving mail here changes its local grouping only. Legacy shared folders keep their existing contents and provider mappings. Rename or delete provider folders at your mail provider.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
+            {(!selectedAccount || selectedAccount === ALL_ACCOUNTS) && <p className="text-sm text-muted-foreground">Choose a mail account in the sidebar before adding a folder.</p>}
             <div className="flex gap-2">
               <Input
                 value={newFolderName}
@@ -2875,14 +2898,14 @@ const MailPage = () => {
                   const name = newFolderName.trim();
                   if (name) createFolder.mutate(name);
                 }}
-                disabled={createFolder.isPending || !newFolderName.trim()}
+                disabled={createFolder.isPending || !newFolderName.trim() || !selectedAccount || selectedAccount === ALL_ACCOUNTS}
               >
                 <Plus className="h-4 w-4 mr-2" />
                 Add
               </Button>
             </div>
             <div className="space-y-2 max-h-[360px] overflow-y-auto">
-              {mailFolders.map((folder) => (
+              {visibleMailFolders.map((folder) => (
                 <div key={folder.slug} className="flex items-center gap-2 rounded-md border border-border px-3 py-2">
                   {editingFolderSlug === folder.slug ? (
                     <Input
@@ -2894,7 +2917,7 @@ const MailPage = () => {
                     <div className="min-w-0 flex-1">
                       <p className="font-medium text-sm truncate">{folder.display_name}</p>
                       <p className="text-xs text-muted-foreground">
-                        {folder.total_count || 0} messages{folder.is_system ? ' • system' : ''}
+                        {folder.total_count || 0} messages • {folder.is_system ? 'system' : folder.mail_account_id ? accounts.find(account => account.id === folder.mail_account_id)?.email_address : 'Legacy shared'}
                       </p>
                     </div>
                   )}
@@ -2922,8 +2945,8 @@ const MailPage = () => {
                           setEditingFolderSlug(folder.slug);
                           setEditingFolderName(folder.display_name);
                         }}
-                        disabled={folder.is_system}
-                        title="Rename folder"
+                        disabled
+                        title="Rename provider folders at your mail provider"
                       >
                         <Edit className="h-4 w-4" />
                       </Button>
@@ -2932,8 +2955,8 @@ const MailPage = () => {
                         size="icon"
                         variant="ghost"
                         onClick={() => setFolderToDelete(folder)}
-                        disabled={folder.is_system || deleteFolder.isPending}
-                        title="Delete folder"
+                        disabled
+                        title="Delete provider folders at your mail provider"
                       >
                         <Trash2 className="h-4 w-4" />
                       </Button>

@@ -562,6 +562,13 @@ async function ensureSchema() {
     INDEX idx_mail_folders_user (user_id),
     INDEX idx_mail_folders_order (user_id, position)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  // Additive upgrade: NULL retains the identity and contents of every legacy shared folder.
+  await ensureColumn('mail_folders', 'mail_account_id',
+    `ALTER TABLE mail_folders ADD COLUMN mail_account_id CHAR(36) NULL,
+     ADD CONSTRAINT fk_mail_folders_account FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE`,
+    { required: true });
+  await ensureColumn('mail_folders', 'special_use',
+    `ALTER TABLE mail_folders ADD COLUMN special_use VARCHAR(32) NULL`, { required: true });
   await db.execute(`CREATE TABLE IF NOT EXISTS mail_folder_remote_boxes (
     folder_id CHAR(36) NOT NULL,
     mail_account_id CHAR(36) NOT NULL,

@@ -1,5 +1,11 @@
 # Architecture Technical Documentation
 
+> In 0.10.4, backup creation/import/restore workers are suspended. Public start,
+> upload and unlock endpoints reject requests before body parsing. Startup marks
+> interrupted jobs failed without deleting archive files. Restore-upload expiry
+> is paused; existing completed backup downloads remain available. Descriptions
+> of backup workers below refer to the retained, inactive implementation.
+
 ## Runtime Topology
 
 The standard deployment uses two Docker containers:
