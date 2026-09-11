@@ -52,12 +52,14 @@ test('0.10.3 folder reconciliation and Legacy recovery on MySQL', { skip: !proce
     folderIds[slug] = id();
     await insert('mail_folders', { id: folderIds[slug], user_id: user, slug, display_name: name, is_system: false });
   }
+  await insert('mail_folders', { id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', user_id: user, slug: 'project_copies', display_name: 'Projects', is_system: false });
   await insert('mail_folder_remote_boxes', { folder_id: folderIds.old_label, mail_account_id: accountA, remote_name: 'Remote/Actual' });
   const rule = id();
   await insert('mail_sender_rules', { id: rule, user_id: user, match_type: 'domain', match_value: 'example.test', target_folder: 'receipts' });
   const messages = {};
   for (const [name, account, folder, recipients] of [
     ['connected', accountA, 'projects', ['relay@private.test']],
+    ['duplicateLabel', accountA, 'project_copies', ['a@example.test']],
     ['sameNameOtherAccount', accountB, 'projects', ['b@example.test']],
     ['toOtherAccount', accountA, 'receipts', ['b@example.test']],
     ['relay', accountA, 'receipts', ['relay@private.test']],
@@ -108,6 +110,7 @@ test('0.10.3 folder reconciliation and Legacy recovery on MySQL', { skip: !proce
     await migration.reconcileAccountFolders(user, accountB, ['INBOX']);
     assert.equal((await read('connected')).folder, 'projects');
     assert.equal((await read('connected')).is_legacy, 0);
+    assert.equal((await read('duplicateLabel')).folder, 'projects');
     assert.equal((await read('mapped')).folder, 'old_label');
     for (const name of ['sameNameOtherAccount', 'toOtherAccount', 'caseSensitive', 'important']) assert.equal((await read(name)).folder, 'inbox');
     assert.equal((await read('toOtherAccount')).filing_account_id, accountB);

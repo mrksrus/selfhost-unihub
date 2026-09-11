@@ -47,6 +47,7 @@ async function reconcileAccountFolders(userId, accountId, inventory, specialUses
     const [folders] = await connection.execute('SELECT * FROM mail_folders WHERE user_id = ? AND mail_account_id IS NULL ORDER BY id FOR UPDATE', [userId]);
     const [mappings] = await connection.execute(`SELECT b.*, f.slug FROM mail_folder_remote_boxes b
       JOIN mail_folders f ON f.id = b.folder_id WHERE b.mail_account_id = ? AND f.user_id = ?`, [accountId, userId]);
+    const previousMappings = JSON.stringify(mappings);
     const counts = { connected: 0, inbox: 0, legacy: 0 };
     for (const folder of folders) {
       if (PROTECTED_FOLDERS.has(folder.slug)) continue;
@@ -58,6 +59,9 @@ async function reconcileAccountFolders(userId, accountId, inventory, specialUses
       if (remoteName && !alreadyLinked) {
         await connection.execute(`INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name)
           VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE remote_name = VALUES(remote_name)`, [folder.id, accountId, remoteName]);
+        const oldIndex = mappings.findIndex(mapping => mapping.folder_id === folder.id);
+        if (oldIndex >= 0) mappings.splice(oldIndex, 1);
+        mappings.push({ folder_id: folder.id, mail_account_id: accountId, remote_name: remoteName, slug: folder.slug });
       }
       // Snapshot old rules' effective destinations per account. Editing a rule
       // later removes its overrides; newly created rules are unaffected.
@@ -99,7 +103,7 @@ async function reconcileAccountFolders(userId, accountId, inventory, specialUses
       }
     }
     await connection.execute(`INSERT INTO mail_folder_reconciliations (mail_account_id, user_id, inventory, previous_mappings)
-      VALUES (?, ?, ?, ?)`, [accountId, userId, JSON.stringify(inventory), JSON.stringify(mappings)]);
+      VALUES (?, ?, ?, ?)`, [accountId, userId, JSON.stringify(inventory), previousMappings]);
     await connection.commit();
     return counts;
   } catch (error) {
