@@ -1,4 +1,6 @@
 const { db } = require('../state');
+const { presentMailFiling } = require('./mail-filing');
+const { folderConnections } = require('./mail-folder-reconciliation');
 const { serializeCalendarEvent, serializeCalendarAccount, serializeCalendarCalendar,
   serializeCalendarSubtask, serializeCalendarAttendee, safeJsonParse } = require('./calendar');
 
@@ -13,9 +15,9 @@ const SECTIONS = {
   attendees: { table: 'calendar_event_attendees', columns: 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', order: 'created_at, id' },
   calendars: { table: 'calendar_calendars', columns: 'id user_id account_id name color is_visible auto_todo_enabled read_only is_primary created_at updated_at', order: 'created_at, id' },
   calendarAccounts: { table: 'calendar_accounts', columns: 'id user_id provider account_email display_name is_active capabilities created_at updated_at', order: 'created_at, id' },
-  mailAccounts: { table: 'mail_accounts', columns: 'id user_id email_address display_name is_active last_synced_at created_at', order: 'created_at, id' },
-  folders: { table: 'mail_folders', columns: 'id user_id slug display_name is_system position', order: 'position, slug' },
-  emails: { table: 'emails', columns: 'id user_id mail_account_id message_id subject from_address from_name to_addresses cc_addresses bcc_addresses body_text body_html folder is_read is_starred is_draft has_attachments received_at created_at',
+  mailAccounts: { table: 'mail_accounts', columns: 'id user_id email_address display_name is_active sync_mode sync_status last_synced_at created_at', order: 'created_at, id' },
+  folders: { table: 'mail_folders', columns: 'id user_id mail_account_id slug display_name is_system position', order: 'position, slug' },
+  emails: { table: 'emails', columns: 'id user_id mail_account_id filing_account_id is_legacy remote_missing message_id subject from_address from_name to_addresses cc_addresses bcc_addresses body_text body_html folder is_read is_starred is_draft has_attachments received_at created_at',
     filter: ' AND is_draft = FALSE', order: 'received_at DESC, id DESC', limit: OFFLINE_MAIL_LIMIT },
 };
 const groupByEvent = rows => {
@@ -78,7 +80,8 @@ async function collectOfflineSnapshot(connection, userId) {
     list.push({ ...attachment, offline_available: false });
     attachmentsByEmail.set(attachment.email_id, list);
   }
-  const emails = data.emails.map(row => ({ ...row, to_addresses: parseRecipients(row.to_addresses),
+  const links = await folderConnections(userId, connection);
+  const emails = data.emails.map(row => ({ ...presentMailFiling(row), to_addresses: parseRecipients(row.to_addresses),
     cc_addresses: parseRecipients(row.cc_addresses), bcc_addresses: parseRecipients(row.bcc_addresses),
     is_read: !!row.is_read, is_starred: !!row.is_starred, is_draft: false, has_attachments: !!row.has_attachments,
     attachments: attachmentsByEmail.get(row.id) || [] }));
@@ -87,7 +90,7 @@ async function collectOfflineSnapshot(connection, userId) {
     calendars: projectRows(data.calendars.map(serializeCalendarCalendar), SECTIONS.calendars),
     calendarAccounts: projectRows(data.calendarAccounts.map(serializeCalendarAccount), SECTIONS.calendarAccounts),
     mailAccounts: data.mailAccounts.map(row => ({ ...row, is_active: !!row.is_active })),
-    folders: data.folders.map(row => ({ ...row, is_system: !!row.is_system })), emails,
+    folders: data.folders.map(row => ({ ...row, is_system: !!row.is_system, connected_account_ids: links.get(row.slug) || [] })), emails,
     limits: { mail: OFFLINE_MAIL_LIMIT, bytes: OFFLINE_MAX_BYTES, attachments: false }, bytes: 0 };
   let measuredBytes;
   while ((measuredBytes = Buffer.byteLength(JSON.stringify(snapshot))) !== snapshot.bytes) snapshot.bytes = measuredBytes;

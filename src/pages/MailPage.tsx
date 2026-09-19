@@ -1,3 +1,6 @@
+import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
+import { useMailAccountSelection } from '@/hooks/use-mail-account-selection';
+import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
 import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { useMailReader } from '@/hooks/use-mail-reader';
 import { invalidateMailQueries, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
@@ -101,6 +104,8 @@ interface AccountFormState {
   imap_port: number;
   smtp_port: number;
   sync_fetch_limit: string;
+  sync_mode: 'download' | 'sync';
+  sync_mode_confirmed: boolean;
   delete_emails_on_server: boolean;
   try_calendar_sync: boolean;
   caldav_url: string;
@@ -203,10 +208,9 @@ const systemFolders = [
   { id: 'twofactor_notifications', label: '2FA / Notifications', icon: Bell },
 ];
 
-type AccountMode = MailAccount['id'] | 'all';
 type FolderMode = string;
 
-const ALL_ACCOUNTS: AccountMode = 'all';
+const ALL_ACCOUNTS = 'all';
 const LEGACY_ACCOUNT = 'legacy';
 const ALL_MAIL: FolderMode = 'all';
 
@@ -221,6 +225,8 @@ const initialAccountForm: AccountFormState = {
   imap_port: 993,
   smtp_port: 587,
   sync_fetch_limit: 'all',
+  sync_mode: 'download',
+  sync_mode_confirmed: false,
   delete_emails_on_server: false,
   try_calendar_sync: false,
   caldav_url: '',
@@ -270,7 +276,7 @@ const MailPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
-  const [selectedAccount, setSelectedAccount] = useState<AccountMode | null>(null);
+  const { accountId: activeMailAccountId, queryAccount: selectedAccount, selectAccount: setSelectedAccount } = useMailAccountSelection();
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
   const { selectedEmail, setSelectedEmail, isReaderLoading, closeReader, loadEmail } = useMailReader();
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
@@ -417,7 +423,7 @@ const MailPage = () => {
         setSelectedAccount(ALL_ACCOUNTS);
       }
     }
-  }, [accounts, selectedAccount]);
+  }, [accounts, selectedAccount, setSelectedAccount]);
 
   // Remember selected account
   useEffect(() => {
@@ -648,7 +654,7 @@ const MailPage = () => {
     setSelectedAccount(draft.mail_account_id);
     setIsReplying(false);
     setIsComposeOpen(true);
-  }, []);
+  }, [setSelectedAccount]);
 
   const loadEmailForReader = React.useCallback((emailId: string) => loadEmail(emailId, {
     onDraft: openDraftForCompose,
@@ -772,7 +778,7 @@ const MailPage = () => {
 
   const createFolder = useMutation({
     mutationFn: async (displayName: string) => {
-      const response = await api.post<{ folder: MailFolder; remoteFolder?: { status: string } }>('/mail/folders', { display_name: displayName, mail_account_id: selectedAccount });
+      const response = await api.post<{ folder: MailFolder; remoteFolder?: { status: string } }>('/mail/folders', { display_name: displayName, mail_account_id: activeMailAccountId });
       if (response.error) throw new Error(response.error);
       return response.data;
     },
@@ -1088,6 +1094,8 @@ const MailPage = () => {
       imap_port: account.imap_port || 993,
       smtp_port: account.smtp_port || 587,
       sync_fetch_limit: account.sync_fetch_limit || 'all',
+      sync_mode: account.sync_mode || 'download',
+      sync_mode_confirmed: false,
       delete_emails_on_server: account.delete_emails_on_server === true,
       try_calendar_sync: false,
       caldav_url: '',
@@ -1275,7 +1283,7 @@ const MailPage = () => {
     ), [composeAttachments, fileToBase64]);
 
   const saveCurrentDraft = React.useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean } = {}) => {
-    if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) {
+    if (!activeMailAccountId) {
       if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
       return null;
     }
@@ -1295,7 +1303,7 @@ const MailPage = () => {
         existing_attachment_ids?: string[];
         attachments?: Array<{ filename: string; contentType: string; size: number; dataBase64: string }>;
       } = {
-        account_id: selectedAccount,
+        account_id: activeMailAccountId,
         to: composeForm.to,
         subject: composeForm.subject,
         body: composeForm.body || '<p></p>',
@@ -1347,12 +1355,12 @@ const MailPage = () => {
     composeForm,
     existingDraftAttachments,
     queryClient,
-    selectedAccount,
+    activeMailAccountId,
     toast,
   ]);
 
   React.useEffect(() => {
-    if (!isComposeDirty || !selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) return;
+    if (!isComposeDirty || !activeMailAccountId) return;
     if (!isComposeOpen && !isReplying) return;
     if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) return;
 
@@ -1372,6 +1380,7 @@ const MailPage = () => {
     isReplying,
     saveCurrentDraft,
     selectedAccount,
+    activeMailAccountId,
   ]);
 
   const deleteDraftById = async (draftId: string) => {
@@ -1606,7 +1615,7 @@ const MailPage = () => {
 
   const handleSendEmail = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) {
+    if (!activeMailAccountId) {
       toast({ title: 'Please select an account', variant: 'destructive' });
       return;
     }
@@ -1634,7 +1643,7 @@ const MailPage = () => {
       const attachmentPayload = await buildAttachmentPayload();
 
       sendEmailMutation.mutate({
-        account_id: selectedAccount,
+        account_id: activeMailAccountId,
         to: composeForm.to,
         subject: composeForm.subject.trim() || '(No subject)',
         body: composeForm.body || '<p></p>',
@@ -1840,20 +1849,16 @@ const MailPage = () => {
                         )}
                       </div>
                     )}
-                    <div className="rounded-md border border-border p-3">
-                      <label className="flex items-start gap-3 text-sm">
-                        <Checkbox
-                          checked={accountForm.delete_emails_on_server}
-                          onCheckedChange={(checked) => setAccountForm({ ...accountForm, delete_emails_on_server: checked === true })}
-                        />
-                        <span>
-                          <span className="font-medium text-foreground">Delete Emails on Server</span>
-                          <span className="block text-muted-foreground">
-                            Off by default. When enabled, UniHub waits 10 minutes before deleting imported server copies; turning it off stops queued deletion.
-                          </span>
-                        </span>
-                      </label>
-                    </div>
+                    <MailAccountModeSettings
+                      mode={accountForm.sync_mode}
+                      deleteOnServer={accountForm.delete_emails_on_server}
+              saveDownloadFirst={editingAccount?.sync_mode === 'sync'}
+                      requiresConfirmation={Boolean(editingAccount && (editingAccount.sync_mode || 'download') !== 'sync')}
+                      confirmed={accountForm.sync_mode_confirmed}
+                      onModeChange={mode => setAccountForm({ ...accountForm, sync_mode: mode, sync_mode_confirmed: false, delete_emails_on_server: false })}
+                      onDeleteChange={enabled => setAccountForm({ ...accountForm, delete_emails_on_server: enabled })}
+                      onConfirmChange={confirmed => setAccountForm({ ...accountForm, sync_mode_confirmed: confirmed })}
+                    />
                     <p className="text-xs text-muted-foreground">
                       Server details are filled from the provider; you can change any value.
                     </p>
@@ -2022,62 +2027,26 @@ const MailPage = () => {
           </div>
         </div>
 
-        {/* Folders */}
-        <div className="flex min-h-0 flex-1 flex-col pt-6">
-          <div className={`px-4 pb-2 flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'justify-between'}`}>
-            {(!sidebarCollapsed || isMobile) && (
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Folders
-              </span>
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`}
-              onClick={() => setFolderDialogOpen(true)}
-              title="Manage folders"
-            >
-              <FolderOpen className="h-4 w-4" />
-            </Button>
-          </div>
-          <nav aria-label="Mail folders" className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 space-y-1">
-            {folderFilters.map((folder) => (
-              <React.Fragment key={folder.id}>
-              <button
-                onClick={() => {
-                  setSelectedFolder(folder.id);
-                  if (isMobile) setMobileSidebarOpen(false);
-                }}
-                className={`relative w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
-                  selectedFolder === folder.id
-                    ? 'bg-accent/10 text-accent font-medium'
-                    : 'text-muted-foreground hover:bg-muted'
-                }`}
-                title={(sidebarCollapsed && !isMobile) ? folder.label : undefined}
-              >
-                <folder.icon className="h-4 w-4 shrink-0" />
-                {(!sidebarCollapsed || isMobile) && (
-                  <>
-                    <span className="flex-1 text-left">{folder.label}</span>
-                    {folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
-                      <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-accent/10 px-1.5 py-0.5 text-xs font-semibold text-accent">
-                        {unreadByFolder[folder.id]}
-                      </span>
-                    )}
-                  </>
-                )}
-                {(sidebarCollapsed && !isMobile) && folder.id !== ALL_MAIL && (unreadByFolder[folder.id] || 0) > 0 && (
-                  <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-accent" />
-                )}
-              </button>
-              </React.Fragment>
-            ))}
-          </nav>
-        </div>
+        <MailFolderNavigation
+          folders={folderFilters}
+          systemIds={systemFolders.map(folder => folder.id)}
+          selectedFolder={selectedFolder}
+          accountLabel={accountLabel}
+          collapsed={sidebarCollapsed && !isMobile}
+          unreadByFolder={unreadByFolder}
+          onSelect={id => { setSelectedFolder(id); if (isMobile) setMobileSidebarOpen(false); }}
+          onManage={() => setFolderDialogOpen(true)}
+        />
       </div>
 
       {/* Main Content */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {accounts.find(account => account.id === selectedAccount)?.sync_mode === 'sync' && (
+          <div className="border-b border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+            Sync from server · {accounts.find(account => account.id === selectedAccount)?.sync_status || 'pending'}.
+            {' '}Local read, star and folder changes may be replaced by the next sync. Missing server messages stay here.
+          </div>
+        )}
         {selectedAccount === LEGACY_ACCOUNT && (
           <div className="border-b border-border p-3 space-y-2 text-sm">
             <p>These messages retain their original folders. Some need a receiving account; others await a successful server check. Select messages to recover them. Their original mail source is preserved.</p>
@@ -2283,8 +2252,8 @@ const MailPage = () => {
             <Button 
               variant="ghost" 
               size="icon"
-              onClick={() => selectedAccount && selectedAccount !== ALL_ACCOUNTS && selectedAccount !== LEGACY_ACCOUNT && syncMail.mutate(selectedAccount)}
-              disabled={!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT || syncMail.isPending}
+              onClick={() => activeMailAccountId && syncMail.mutate(activeMailAccountId)}
+              disabled={!activeMailAccountId || syncMail.isPending}
               title="Refresh emails"
             >
               <RefreshCw className={`h-4 w-4 ${syncMail.isPending ? 'animate-spin' : ''}`} />
@@ -2408,6 +2377,7 @@ const MailPage = () => {
                         <p className={`truncate flex-1 ${!email.is_read ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
                           {email.subject || '(No subject)'}
                         </p>
+                        {email.remote_missing && <span className="shrink-0 rounded border border-border px-1 text-xs text-muted-foreground" title="Not found on the server during the last complete sync">Local copy</span>}
                         {email.has_attachments && (
                           <span title="Has attachments" className="shrink-0">
                             <Paperclip className="h-3.5 w-3.5 text-muted-foreground" />
@@ -2628,7 +2598,7 @@ const MailPage = () => {
                       setActiveDraftId(null);
                       setAttachmentsDirty(false);
                       setIsComposeDirty(false);
-                      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) {
+                      if (!activeMailAccountId) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
                       setComposeForm({
@@ -2660,7 +2630,7 @@ const MailPage = () => {
                       setActiveDraftId(null);
                       setAttachmentsDirty(false);
                       setIsComposeDirty(false);
-                      if (!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) {
+                      if (!activeMailAccountId) {
                         setSelectedAccount(selectedEmail.mail_account_id);
                       }
                       setComposeForm({
@@ -2714,6 +2684,7 @@ const MailPage = () => {
               <div className="max-w-4xl mx-auto space-y-4">
                 <div>
                   <h1 className="text-2xl font-bold mb-4">{selectedEmail.subject || '(No subject)'}</h1>
+                  {selectedEmail.remote_missing && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">Local copy: this email was not found on the server during the last complete sync. Its content and attachments are kept here.</p>}
                   <div className="space-y-2 text-sm text-muted-foreground">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="min-w-0 break-all">
@@ -2912,7 +2883,7 @@ const MailPage = () => {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            {(!selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT) && <p className="text-sm text-muted-foreground">Choose a mail account in the sidebar before adding a folder.</p>}
+            {(!activeMailAccountId) && <p className="text-sm text-muted-foreground">Choose a mail account in the sidebar before adding a folder.</p>}
             <div className="flex gap-2">
               <Input
                 value={newFolderName}
@@ -2925,7 +2896,7 @@ const MailPage = () => {
                   const name = newFolderName.trim();
                   if (name) createFolder.mutate(name);
                 }}
-                disabled={createFolder.isPending || !newFolderName.trim() || !selectedAccount || selectedAccount === ALL_ACCOUNTS || selectedAccount === LEGACY_ACCOUNT}
+                disabled={createFolder.isPending || !newFolderName.trim() || !activeMailAccountId}
               >
                 <Plus className="h-4 w-4 mr-2" />
                 Add
@@ -3112,8 +3083,8 @@ const MailPage = () => {
               <div className="space-y-2">
                 <Label>From</Label>
                 <Select
-                  value={selectedAccount && selectedAccount !== ALL_ACCOUNTS && selectedAccount !== LEGACY_ACCOUNT ? selectedAccount : ''}
-                  onValueChange={(value) => setSelectedAccount(value as AccountMode)}
+                  value={activeMailAccountId || ''}
+                  onValueChange={(value) => setSelectedAccount(value)}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select account" />

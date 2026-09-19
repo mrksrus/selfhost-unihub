@@ -18,11 +18,12 @@ const os = require('node:os');
 const path = require('node:path');
 
 test('normalizeSections returns all sections for full export', () => {
-  assert.deepEqual(normalizeSections('full'), ['contacts', 'calendar', 'todo', 'mail', 'recordings', 'settings']);
+  assert.deepEqual(normalizeSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings', 'games']);
 });
 
-test('normalizeSections drops unknown and duplicate sections', () => {
-  assert.deepEqual(normalizeSections(['mail', 'mail', 'unknown', 'recordings']), ['mail', 'recordings']);
+test('normalizeSections rejects unknown sections and removes duplicates', () => {
+  assert.throws(() => normalizeSections(['mail', 'unknown']), /Unsupported backup section/);
+  assert.deepEqual(normalizeSections(['mail', 'mail', 'recordings']), ['mail', 'recordings']);
 });
 
 test('parseRequestedSections accepts JSON arrays returned as strings', () => {

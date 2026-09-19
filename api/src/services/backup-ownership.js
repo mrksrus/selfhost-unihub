@@ -1,13 +1,7 @@
 const crypto = require('node:crypto');
 
-const TABLE_KEYS = {
-  user_settings: ['user_id', 'setting_key'],
-  contacts: ['id'], mail_folders: ['id'], mail_accounts: ['id'], mail_sender_rules: ['id'],
-  emails: ['id'], email_attachments: ['id'], mail_email_scores: ['id'],
-  calendar_accounts: ['id'], calendar_calendars: ['id'], calendar_events: ['id'],
-  calendar_event_subtasks: ['id'], calendar_event_attendees: ['id'], calendar_event_external_refs: ['id'],
-  recordings: ['id'], recording_tags: ['id'], recording_tag_links: ['recording_id', 'tag_id'],
-};
+const { TABLE_POLICIES } = require('./backup-catalog');
+const TABLE_KEYS = Object.fromEntries(Object.entries(TABLE_POLICIES).filter(([, policy]) => policy.ownership === 'user_id').map(([table, policy]) => [table, policy.keyColumns]));
 
 function identifier(value) {
   if (!/^[a-z_][a-z0-9_]*$/.test(value)) throw new Error('Invalid restore SQL identifier');
@@ -69,6 +63,12 @@ async function assertOwnedRelationship(connection, userId, table, id, column, pa
 
 function validateRestoreRows(data) {
   const errors = [];
+  for (const account of Array.isArray(data?.mail_accounts) ? data.mail_accounts : []) {
+    if (account?.sync_mode !== undefined && !['download', 'sync'].includes(account.sync_mode)) errors.push('Backup has an invalid mail account mode');
+  }
+  for (const email of Array.isArray(data?.emails) ? data.emails : []) {
+    if (email?.remote_missing !== undefined && ![true, false, 0, 1].includes(email.remote_missing)) errors.push('Backup has an invalid remote message state');
+  }
   for (const [table, keys] of Object.entries(TABLE_KEYS)) {
     if (data?.[table] === undefined) continue;
     if (!Array.isArray(data[table])) { errors.push(`Backup ${table} must be an array`); continue; }
@@ -80,6 +80,43 @@ function validateRestoreRows(data) {
         errors.push(`Backup ${table} has an invalid or duplicate ID`);
       }
       ids.add(row.id);
+    }
+  }
+  for (const row of Array.isArray(data?.recording_transcription_jobs) ? data.recording_transcription_jobs : []) {
+    if (row?.status !== 'completed' || row?.transcript_text !== null && typeof row?.transcript_text !== 'string') {
+      errors.push('Only completed recording transcripts can be restored');
+    }
+  }
+  for (const row of Array.isArray(data?.tetris_scores) ? data.tetris_scores : []) {
+    if (!row || !['score', 'lines', 'level'].every(key => Number.isSafeInteger(row[key]) && row[key] >= (key === 'level' ? 1 : 0) && row[key] <= 4294967295)) {
+      errors.push('Backup has an invalid tetris_scores row');
+    }
+  }
+  if (Array.isArray(data?.tetris_scores) && data.tetris_scores.length > 1) errors.push('Backup has duplicate tetris_scores rows');
+  for (const table of ['mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides']) {
+    if (data?.[table] === undefined) continue;
+    if (!Array.isArray(data[table])) { errors.push(`Backup ${table} must be an array`); continue; }
+    const keys = TABLE_POLICIES[table].keyColumns;
+    const seen = new Set();
+    for (const row of data[table]) {
+      if (!row || typeof row !== 'object' || !keys.every(key => typeof row[key] === 'string' && row[key].length > 0 && row[key].length <= 36)) {
+        errors.push(`Backup has an invalid ${table} row`); continue;
+      }
+      const key = JSON.stringify(keys.map(column => row[column]));
+      if (seen.has(key)) errors.push(`Backup has duplicate ${table} rows`);
+      seen.add(key);
+      if (table === 'mail_folder_reconciliations') {
+        for (const field of ['inventory', 'previous_mappings']) {
+          let value = row[field];
+          if (typeof value === 'string') { try { value = JSON.parse(value); } catch { value = null; } }
+          if (!Array.isArray(value) || field === 'inventory' && value.some(item => typeof item !== 'string')
+            || field === 'previous_mappings' && value.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
+            errors.push(`Backup has an invalid reconciliation ${field}`);
+          }
+        }
+      }
+      if (table === 'mail_folder_recovery_items' && (!row.original_folder || !row.target_folder || !row.action)) errors.push('Backup has an invalid recovery journal row');
+      if (table === 'mail_folder_rule_overrides' && (typeof row.target_folder !== 'string' || !row.target_folder || row.target_folder.length > 64)) errors.push('Backup has an invalid rule override destination');
     }
   }
   if (data?.mail_folder_remote_boxes !== undefined) {

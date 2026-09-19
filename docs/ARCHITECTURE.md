@@ -1,10 +1,5 @@
 # Architecture Technical Documentation
 
-> In 0.10.4, backup creation/import/restore workers are suspended. Public start,
-> upload and unlock endpoints reject requests before body parsing. Startup marks
-> interrupted jobs failed without deleting archive files. Restore-upload expiry
-> is paused; existing completed backup downloads remain available. Descriptions
-> of backup workers below refer to the retained, inactive implementation.
 
 ## Runtime Topology
 
@@ -156,7 +151,7 @@ Startup behavior:
 1. Refuse missing or placeholder `JWT_SECRET`, `ENCRYPTION_KEY`, and DB password.
 2. Create a MySQL pool with UTC datetime behavior.
 3. Retry DB connection while MySQL starts.
-4. Create or migrate tables in `ensureSchema`.
+4. Apply missing ordered upgrades through `schema_migrations`, verifying each before recording completion.
 5. Create the first admin from bootstrap env vars when no users exist.
 6. Backfill local calendar account/calendar ownership.
 
@@ -165,8 +160,7 @@ Old imported messages are revalidated once; subsequent progress is recorded per
 account and exact provider folder, with UIDVALIDITY resets and failed-UID retries.
 No container configuration change is needed for these application migrations.
 
-The schema migration style is intentionally idempotent: create tables if missing,
-then attempt additive column/index migrations.
+The historical create/additive steps form a verified baseline. Later upgrades have ordered IDs and completion records; completed repairs do not repeat. Required migration errors stop startup. A declared field inventory is checked against the actual schema. See [Recovery contracts](DATA_RECOVERY.md).
 
 ## Persistent Storage
 
@@ -193,7 +187,7 @@ The Docker Compose file mounts `/app/uploads` as `uploads_data`.
 | 1 minute | Process eligible mail-server deletion queue rows |
 | 1 hour | Delete expired sessions |
 | 1 hour | Delete expired recording upload temp files |
-| 1 hour | Expire retained restore uploads older than seven days |
+| Paused | Restore-upload expiry remains paused; completed restores still clean their upload |
 | 15 minutes | Database pool health logging |
 
 At startup:
@@ -324,3 +318,23 @@ Important boundaries in the current code:
 - Download important application backups off-server. A generated backup retained
   in the uploads volume is not protection against loss of that volume.
 - Place a TLS-terminating reverse proxy in front of the app for real use.
+
+## Mail modes and display privacy
+
+`mail-account-mode.js` validates switches and provider identity. The per-account
+queue in `mail-account-lock.js` serializes settings with sync/deletion workers.
+`mail-server-follow.js` compares complete provider inventories, reconciles verified
+current locations and retains absent copies. Original provider identity remains
+separate from current bindings and local filing. This assumes the standard single
+API process; multiple API replicas require distributed worker coordination.
+
+Migration 3 and the recovery catalog declare mode/current-location fields. Restore
+resets operational progress, disables deletion and rejects conflicting mailbox
+identities. Offline snapshots include mode and the retained-copy marker, excluding
+provider UIDs and credentials. See [mail modes](MAIL_MODES.md).
+
+`email-privacy.ts` builds a display-only sanitized document from inert HTML.
+`SafeEmailContent` owns transient consent and a restricted iframe. A synthetic
+Chromium request check is available through
+`node scripts/email-privacy-browser-check.mjs` when Chromium is installed. It
+intercepts image responses and uses no provider account.

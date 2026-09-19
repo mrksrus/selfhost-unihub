@@ -135,8 +135,10 @@ Persistent data is split across:
 | `/app/uploads/recordings` | Uploaded/imported audio files |
 | `/app/uploads/backups` | Generated backups and retained restore uploads |
 
-**Since 0.10.4, in-app backup creation, import and restore are temporarily disabled.**
-Existing completed backups can still be downloaded. UniHub does not schedule infrastructure
+**In 0.10.6, in-app backup creation, import and restore are enabled again.**
+New schema-3 archives preserve the current mail filing model, completed transcripts
+and server game scores. Older schema-1/2 archives are detected automatically.
+Browser-only game progress is excluded; Data Management describes the scope. UniHub does not schedule infrastructure
 backups for you. Back up both Docker volumes. Server-retained backups are
 convenient restore points, not protection from loss of the server or uploads volume.
 
@@ -190,6 +192,7 @@ npm --prefix api test
 
 See the [upgrade guide](docs/UPGRADING.md) before replacing an existing deployment,
 the [0.10.5 release notes](docs/RELEASE_0.10.5.md) for automatic reconciliation of old folders and Legacy recovery,
+the [0.10.6 release notes](docs/RELEASE_0.10.6.md) for recovery compatibility and safe upgrades,
 the [0.10.4 release notes](docs/RELEASE_0.10.4.md) for account folders and temporary backup suspension,
 the [0.10.3 release notes](docs/RELEASE_0.10.3.md) for backup reliability and format
 compatibility, the [0.10.2 release notes](docs/RELEASE_0.10.2.md) for security corrections and
@@ -198,6 +201,7 @@ licensing, and the [0.10.0 release notes](docs/RELEASE_0.10.0.md) for the featur
 
 | Document | Covers |
 | --- | --- |
+| [Mail account modes](docs/MAIL_MODES.md) | Download, server-following Sync, retention and switching |
 | [Offline reading and appearance](docs/OFFLINE.md) | Device snapshots, limits, dark reading, and update prompts |
 | [Architecture](docs/ARCHITECTURE.md) | Runtime layout, storage, request handling, scheduled jobs |
 | [Auth, Admin, Settings](docs/AUTH_ADMIN_SETTINGS.md) | Sessions, CSRF, 2FA, signup modes, admin endpoints, preferences, search |

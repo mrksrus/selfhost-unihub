@@ -1,3 +1,4 @@
+import { MotionConfig } from 'framer-motion';
 import UpdatePrompt from '@/components/pwa/UpdatePrompt';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
 import { Toaster } from "@/components/ui/toaster";
@@ -63,6 +64,6 @@ const AuthenticatedApp = () => {
   );
 };
 
-const App = () => <ThemeProvider><AuthProvider><AuthenticatedApp /></AuthProvider></ThemeProvider>;
+const App = () => <MotionConfig reducedMotion="user"><ThemeProvider><AuthProvider><AuthenticatedApp /></AuthProvider></ThemeProvider></MotionConfig>;
 
 export default App;

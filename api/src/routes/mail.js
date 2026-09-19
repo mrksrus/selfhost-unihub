@@ -1,4 +1,7 @@
+const { mailAccountModeChange, sameProviderMailbox } = require('../services/mail-account-mode');
+const { withMailAccountLock } = require('../services/mail-account-lock');
 const { folderConnections, FILING_ACCOUNT_SQL } = require('../services/mail-folder-reconciliation');
+const { filingAccountId, presentMailFiling, folderAcceptsAccount } = require('../services/mail-filing');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -27,6 +30,7 @@ const {
   validateMailHostPolicy,
   testImapConnection,
   syncMailAccount,
+  cancelMailAccountSync,
   isAnyMailAccountSyncRunning,
   getRunningMailSyncAccountIds,
   getRunningMailServerDeleteAccountIds,
@@ -90,7 +94,7 @@ async function getMailFolderRowsWithCounts(userId, accountId = null) {
       display_name: row.folder || '(Unnamed folder)', is_system: false, mail_account_id: null, position: 999 });
   }
   return folders.filter(folder => !accountId || (accountId === 'legacy' ? legacyCounts.has(folder.slug)
-    : folder.is_system || folder.mail_account_id === accountId || links.get(folder.slug)?.includes(accountId))).map(folder => ({
+    : folderAcceptsAccount(folder, accountId, links))).map(folder => ({
     ...folder,
     connected_account_ids: links.get(folder.slug) || [],
     legacy_count: legacyCounts.get(folder.slug) || 0,
@@ -513,10 +517,10 @@ module.exports = {
         const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
         if (!accounts.length) return { error: 'Invalid account_id', status: 400 };
       }
-      const where = ['e.user_id = ?', "e.folder = 'inbox'", 'e.from_address IS NOT NULL', "TRIM(e.from_address) <> ''"];
+      const where = ['e.user_id = ?', 'e.is_legacy = FALSE', "e.folder = 'inbox'", 'e.from_address IS NOT NULL', "TRIM(e.from_address) <> ''"];
       const params = [userId];
       if (accountId) {
-        where.push('e.mail_account_id = ?');
+        where.push('COALESCE(e.filing_account_id, e.mail_account_id) = ?');
         params.push(accountId);
       }
       if (cursor) {
@@ -524,10 +528,11 @@ module.exports = {
         params.push(cursor.receivedAt, cursor.receivedAt, cursor.id);
       }
       const [emailRows] = await db.execute(
-        `SELECT e.id, e.mail_account_id, e.from_address, e.folder,
+        `SELECT e.id, e.mail_account_id, e.filing_account_id, e.from_address, e.folder,
                 DATE_FORMAT(e.received_at, '%Y-%m-%d %H:%i:%s.%f') AS received_at_cursor
          FROM emails e
-         WHERE ${where.join(' AND ')}
+         WHERE NOT EXISTS (SELECT 1 FROM mail_accounts a WHERE a.id = e.mail_account_id AND a.sync_mode = 'sync')
+           AND ${where.join(' AND ')}
          ORDER BY e.received_at DESC, e.id DESC
          LIMIT ${limit + 1}`,
         params
@@ -536,22 +541,27 @@ module.exports = {
       const emails = (emailRows || []).slice(0, limit);
       const nextCursor = hasMore ? encodeSenderRuleBackfillCursor(emails[emails.length - 1]) : null;
       const perAccountRules = new Map();
+      const folders = new Map((await loadMailFoldersForUser(userId)).map(folder => [folder.slug, folder]));
+      const links = await folderConnections(userId);
       const updates = [];
+      const originals = new Map(emails.map(email => [email.id, email]));
       for (const email of emails || []) {
-        const ruleCacheKey = String(email.mail_account_id || '');
+        const filingAccount = filingAccountId(email);
+        const ruleCacheKey = String(filingAccount || '');
         if (!perAccountRules.has(ruleCacheKey)) {
-          const context = await createMailRoutingContext(userId, email.mail_account_id || null, db);
+          const context = await createMailRoutingContext(userId, filingAccount, db);
+          context.folders = new Set([...folders.values()].filter(folder => folderAcceptsAccount(folder, filingAccount, links)).map(folder => folder.slug));
           perAccountRules.set(ruleCacheKey, context);
         }
         const resolved = await resolveMailSenderTargetFolder({
           userId,
-          mailAccountId: email.mail_account_id || null,
+          mailAccountId: filingAccount,
           fromAddress: email.from_address || '',
           fallbackFolder: 'inbox',
           routingContext: perAccountRules.get(ruleCacheKey),
           connection: db,
         });
-        if (resolved.folder !== 'inbox') {
+        if (resolved.folder !== 'inbox' && folderAcceptsAccount(folders.get(resolved.folder), filingAccount, links)) {
           updates.push({
             email_id: email.id,
             from_address: email.from_address,
@@ -561,12 +571,20 @@ module.exports = {
           });
         }
       }
+      let applied = 0;
       if (applyChanges && updates.length > 0) {
         const connection = await db.getConnection();
         try {
           await connection.beginTransaction();
           for (const item of updates) {
-            await connection.execute('UPDATE emails SET folder = ? WHERE id = ? AND user_id = ?', [item.next_folder, item.email_id, userId]);
+            const original = originals.get(item.email_id);
+            // Skip messages moved or recovered since this batch was read.
+            const [result] = await connection.execute(`UPDATE emails SET folder = ?
+              WHERE id = ? AND user_id = ? AND folder = ? AND is_legacy = FALSE
+                AND mail_account_id <=> ? AND filing_account_id <=> ?
+                AND NOT EXISTS (SELECT 1 FROM mail_accounts a WHERE a.id = emails.mail_account_id AND a.sync_mode = 'sync')`,
+            [item.next_folder, item.email_id, userId, original.folder, original.mail_account_id, original.filing_account_id ?? null]);
+            applied += result.affectedRows;
           }
           await connection.commit();
         } catch (error) {
@@ -580,7 +598,7 @@ module.exports = {
         dry_run: !applyChanges,
         scanned: emails.length,
         matched: updates.length,
-        applied: applyChanges ? updates.length : 0,
+        applied,
         complete: !hasMore,
         has_more: hasMore,
         next_cursor: nextCursor,
@@ -598,7 +616,7 @@ module.exports = {
     try {
       const [accounts] = await db.execute(
         `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
-                smtp_host, smtp_port, sync_fetch_limit, delete_emails_on_server,
+                smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
                 server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
                 is_active, last_synced_at, created_at
          FROM mail_accounts
@@ -754,7 +772,8 @@ module.exports = {
       const normalizedImapPort = Number(imap_port) || 993;
       const normalizedSmtpPort = Number(smtp_port) || 587;
       const trustAccepted = toBooleanFlag(accept_host_trust);
-      const serverDeleteEnabled = toBooleanFlag(delete_emails_on_server);
+      const modeChange = mailAccountModeChange(null, body);
+      const serverDeleteEnabled = modeChange.deleteEnabled;
 
       console.log(`[ACCOUNT] Checking mail host policy for ${email_address}: IMAP ${imap_host}:${normalizedImapPort}, SMTP ${smtp_host}:${normalizedSmtpPort}`);
       const hostPolicyResult = await validateMailHostPolicy({
@@ -809,10 +828,10 @@ module.exports = {
       await db.execute(
         `INSERT INTO mail_accounts
            (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
-            smtp_host, smtp_port, encrypted_password, sync_fetch_limit, delete_emails_on_server,
+            smtp_host, smtp_port, encrypted_password, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
             server_delete_enabled_at, server_delete_grace_until, allow_self_signed,
             trusted_imap_fingerprint256, trusted_smtp_fingerprint256)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${serverDeleteEnabled ? 'UTC_TIMESTAMP()' : 'NULL'},
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${serverDeleteEnabled ? 'UTC_TIMESTAMP()' : 'NULL'},
                  ${serverDeleteEnabled ? 'DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)' : 'NULL'}, ?, ?, ?)`,
         [
           accountId,
@@ -827,6 +846,8 @@ module.exports = {
           normalizedSmtpPort,
           encryptedPasswordForStorage,
           normalizedSyncFetchLimit,
+          modeChange.mode,
+          modeChange.mode === 'sync' ? 'pending' : 'idle',
           serverDeleteEnabled ? 1 : 0,
           trustAccepted ? 1 : 0,
           null,
@@ -837,7 +858,7 @@ module.exports = {
       
       const [accounts] = await db.execute(
         `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
-                smtp_host, smtp_port, sync_fetch_limit, delete_emails_on_server,
+                smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
                 server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at, is_active
          FROM mail_accounts
          WHERE id = ?`,
@@ -891,7 +912,7 @@ module.exports = {
       };
     } catch (error) {
       console.error('[ACCOUNT] Create mail account error:', error);
-      return { error: error.message || 'Failed to create mail account', status: 500 };
+      return { error: error.message || 'Failed to create mail account', status: error.status || 500 };
     }
   },
   
@@ -920,7 +941,13 @@ module.exports = {
         [id, userId]
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
-      const existingAccount = accounts[0];
+      const requestedMode = mailAccountModeChange(accounts[0], body);
+      if (requestedMode.changed) cancelMailAccountSync(id);
+      return await withMailAccountLock(id, async () => {
+      const [fresh] = await db.execute('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      if (!fresh.length) return { error: 'Account not found', status: 404 };
+      const existingAccount = fresh[0];
+      const modeChange = mailAccountModeChange(existingAccount, body);
 
       const nextEmailAddress = email_address || existingAccount.email_address;
       const nextUsername = username !== undefined ? (username || nextEmailAddress) : (existingAccount.username || nextEmailAddress);
@@ -928,6 +955,10 @@ module.exports = {
       const nextImapPort = Number(imap_port) || Number(existingAccount.imap_port) || 993;
       const nextSmtpHost = smtp_host || existingAccount.smtp_host;
       const nextSmtpPort = Number(smtp_port) || Number(existingAccount.smtp_port) || 587;
+      if (!sameProviderMailbox(existingAccount, { email_address: nextEmailAddress, username: nextUsername, imap_host: nextImapHost, imap_port: nextImapPort })) {
+        const [identified] = await db.execute('SELECT id FROM emails WHERE mail_account_id = ? AND user_id = ? AND (imap_uid IS NOT NULL OR remote_uid IS NOT NULL) LIMIT 1', [id, userId]);
+        if (identified.length) return { error: 'This account already contains imported mail. Add a separate account for a different mailbox or IMAP server to preserve message identity.', status: 409 };
+      }
       const nextEncryptedPassword = encrypted_password ? encrypt(encrypted_password) : existingAccount.encrypted_password;
       const trustAccepted = toBooleanFlag(accept_host_trust);
       const hostSettingsChanged = Boolean(imap_host || imap_port || smtp_host || smtp_port);
@@ -985,11 +1016,15 @@ module.exports = {
       // Build update query dynamically
       const updates = [];
       const params = [];
-      const serverDeleteSettingProvided = Object.prototype.hasOwnProperty.call(body || {}, 'delete_emails_on_server');
-      const requestedServerDeleteEnabled = toBooleanFlag(delete_emails_on_server);
+      const serverDeleteSettingProvided = modeChange.deleteSettingProvided;
+      const requestedServerDeleteEnabled = modeChange.deleteEnabled;
       const currentServerDeleteEnabled = toBooleanFlag(existingAccount.delete_emails_on_server);
       let shouldSeedServerDeleteQueue = false;
       
+      if (modeChange.changed) {
+        updates.push('sync_mode = ?', 'sync_status = ?');
+        params.push(modeChange.mode, modeChange.mode === 'sync' ? 'pending' : 'idle');
+      }
       if (email_address) { updates.push('email_address = ?'); params.push(email_address); }
       if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name || null); }
       if (username !== undefined) { updates.push('username = ?'); params.push(nextUsername); }
@@ -1037,13 +1072,16 @@ module.exports = {
         );
       }
 
+      if (modeChange.changed) {
+        await db.execute("UPDATE mail_server_messages SET delete_status = 'skipped', delete_error = 'Cancelled by mail mode change' WHERE mail_account_id = ? AND user_id = ? AND delete_status IN ('pending', 'failed')", [id, userId]);
+      }
       if (shouldSeedServerDeleteQueue) {
         await seedMailServerDeletionQueueForAccount({ userId, accountId: id });
       }
       
       const [updated] = await db.execute(
         `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
-                smtp_host, smtp_port, sync_fetch_limit, delete_emails_on_server,
+                smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
                 server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at, is_active
          FROM mail_accounts
          WHERE id = ?`,
@@ -1053,9 +1091,10 @@ module.exports = {
       const updatedAccount = updated[0] || null;
       if (updatedAccount) updatedAccount.delete_emails_on_server = toBooleanFlag(updatedAccount.delete_emails_on_server);
       return { account: updatedAccount };
+      });
     } catch (error) {
       console.error('[ACCOUNT] Update error:', error);
-      return { error: error.message || 'Failed to update mail account', status: 500 };
+      return { error: error.message || 'Failed to update mail account', status: error.status || 500 };
     }
   },
   
@@ -1324,8 +1363,7 @@ module.exports = {
         SELECT
           id,
           user_id,
-          mail_account_id AS source_mail_account_id,
-          ${FILING_ACCOUNT_SQL} AS mail_account_id, is_legacy,
+          mail_account_id, filing_account_id, is_legacy, remote_missing,
           message_id,
           subject,
           from_address,
@@ -1368,10 +1406,7 @@ module.exports = {
       
       // Parse JSON fields
       const parsedEmails = emails.map(email => ({
-        ...email,
-        source_mail_account_id: email.mail_account_id,
-        mail_account_id: email.filing_account_id || email.mail_account_id,
-        is_legacy: !!email.is_legacy,
+        ...presentMailFiling(email),
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
         is_read: !!email.is_read,
         is_starred: !!email.is_starred,
@@ -1415,7 +1450,7 @@ module.exports = {
       const email = emails[0];
       // Parse JSON fields
       const parsedEmail = {
-        ...email,
+        ...presentMailFiling(email),
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
         is_read: !!email.is_read,
         is_starred: !!email.is_starred,
@@ -1598,10 +1633,9 @@ module.exports = {
           return { error: 'Some selected emails are unavailable', status: 404 };
         }
         for (const email of selected) {
-          const targetAccount = requestedAccount || email.filing_account_id || email.mail_account_id;
+          const targetAccount = requestedAccount || filingAccountId(email);
           if ((requestedAccount && !email.is_legacy) || (!requestedAccount && email.is_legacy)
-            || (folderValidation.accountId && folderValidation.accountId !== targetAccount)
-            || (!folderValidation.isSystem && !folderValidation.accountId && !links.get(folderValidation.folder)?.includes(targetAccount))) {
+            || !folderAcceptsAccount({ slug: folderValidation.folder, mail_account_id: folderValidation.accountId, is_system: folderValidation.isSystem }, targetAccount, links)) {
             await connection.rollback();
             return { error: 'Move cancelled. Choose a receiving account for Legacy mail and a folder connected to that account.', status: 400 };
           }
@@ -1771,6 +1805,8 @@ module.exports = {
         success: true,
         newEmails: result.newEmails,
         totalFound: result.totalFound,
+        remoteMissing: result.remoteMissing,
+        ambiguous: result.ambiguous,
         message: result.message
       };
     } catch (error) {

@@ -52,6 +52,35 @@ describe('offline endpoint parity', () => {
     expect(data('/mail/unread-counts?include_by_account=true')).toMatchObject({ unreadByFolder: { inbox: 1, archive: 1, starred: 2 }, unreadByFolderAccount: { starred: { 'mail-1': 1, 'mail-2': 1 } } });
     expect(data('/mail/unread-counts?account_id=mail-1')).toEqual({ unreadByFolder: { inbox: 1, starred: 1 } });
   });
+  it('keeps cached folders readable in snapshots saved before folder account metadata existed', () => {
+    expect(data('/mail/folders?account_id=mail-1').folders).toMatchObject([{ slug: 'inbox', total_count: 2, unread_count: 1 }]);
+    expect(data('/mail/folders?account_id=mail-2').folders).toMatchObject([{ slug: 'archive', total_count: 1, unread_count: 1 }]);
+  });
+  it('uses receiving accounts and keeps Legacy counts and folders separate', () => {
+    const saved = snapshot();
+    saved.folders = [
+      { slug: 'inbox', is_system: true },
+      { slug: 'owned', mail_account_id: 'mail-1', is_system: false },
+      { slug: 'connected', is_system: false, connected_account_ids: ['mail-2'] },
+    ];
+    saved.emails = [
+      { id: 'recovered', source_mail_account_id: 'mail-1', mail_account_id: 'mail-2', filing_account_id: 'mail-2', folder: 'connected', is_read: false },
+      { id: 'legacy', mail_account_id: 'mail-1', folder: 'missing', is_legacy: true, is_read: false },
+      { id: 'original', mail_account_id: 'mail-1', folder: 'owned', is_read: false },
+    ];
+    const resolve = (endpoint: string) => resolveOfflineEndpoint(saved, endpoint);
+    expect(resolve('/mail/emails?account_id=mail-2')).toMatchObject({ data: { emails: [{ id: 'recovered', mail_account_id: 'mail-2', source_mail_account_id: 'mail-1' }] } });
+    expect(resolve('/mail/emails/recovered')).toMatchObject({ data: { email: { mail_account_id: 'mail-2', source_mail_account_id: 'mail-1' } } });
+    expect(resolve('/mail/emails?account_id=mail-1')).toMatchObject({ data: { emails: [{ id: 'original' }], pagination: { total: 1 } } });
+    expect(resolve('/mail/emails?account_id=legacy')).toMatchObject({ data: { emails: [{ id: 'legacy', is_legacy: true }], pagination: { total: 1 } } });
+    expect(resolve('/mail/folders?account_id=mail-2')).toEqual({ data: { folders: [
+      { slug: 'inbox', is_system: true, connected_account_ids: [], total_count: 0, unread_count: 0, legacy_count: 0 },
+      { slug: 'connected', is_system: false, connected_account_ids: ['mail-2'], total_count: 1, unread_count: 1, legacy_count: 0 },
+    ] } });
+    expect(resolve('/mail/folders?account_id=legacy')).toMatchObject({ data: { folders: [{ slug: 'missing', total_count: 1, unread_count: 1, legacy_count: 1 }] } });
+    expect(resolve('/mail/accounts')).toMatchObject({ data: { accounts: [{ id: 'mail-1', unread_count: 1 }, { id: 'mail-2', unread_count: 1 }] } });
+    expect(resolve('/mail/unread-counts?include_by_account=true')).toMatchObject({ data: { unreadByFolderAccount: { connected: { 'mail-2': 1 }, missing: { legacy: 1 }, owned: { 'mail-1': 1 } } } });
+  });
   it('counts only upcoming unfinished calendar events in dashboard stats', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-09-06T09:00:00Z'));

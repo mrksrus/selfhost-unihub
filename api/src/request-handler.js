@@ -12,6 +12,7 @@ const {
 } = require('./http/request');
 const { parseSingleByteRange } = require('./http/range');
 const { getActiveRestoreSections } = require('./services/restore-locks');
+const { getRestoreSectionForWrite } = require('./services/backup-catalog');
 const {
   BACKUP_UPLOAD_MAX_SIZE,
   MAIL_COMPOSE_REQUEST_MAX_SIZE,
@@ -43,21 +44,6 @@ function buildContentDisposition(dispositionType, filename) {
   return `${safeDispositionType}; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`;
 }
 
-function getRestoreSectionForWrite(pathname) {
-  if (pathname.startsWith('/api/backup/')) return null;
-  if (pathname.startsWith('/api/mail/')) return 'mail';
-  if (pathname.startsWith('/api/calendar/')) return 'calendar';
-  if (pathname.startsWith('/api/contacts')) return 'contacts';
-  if (pathname.startsWith('/api/recordings')) return 'recordings';
-  if (pathname === '/api/settings/clear-contacts') return 'contacts';
-  if (pathname === '/api/settings/clear-calendar') return 'calendar';
-  if (pathname === '/api/settings/clear-mail-accounts') return 'mail';
-  if (pathname === '/api/settings/clear-recordings') return 'recordings';
-  if (pathname === '/api/settings/account') return '*';
-  if (pathname.startsWith('/api/settings/')) return 'settings';
-  if (pathname === '/api/auth/profile') return 'settings';
-  return null;
-}
 
 function requestUrl(req) {
   const host = req.headers.host;

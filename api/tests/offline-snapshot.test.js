@@ -26,6 +26,11 @@ function fixture({ oversizeTable, failTable } = {}) {
   const calls = [];
   let transactionData = null;
   function select(sql, params) {
+    if (sql.includes('JOIN mail_folder_remote_boxes')) {
+      assert.equal(params[0], 'user-1');
+      assert.match(sql, /JSON_CONTAINS/);
+      return [[{ slug: 'connected', mail_account_id: 'mail-account-2' }]];
+    }
     const table = sql.match(/\bFROM (contacts|calendar_events|calendar_event_subtasks|calendar_event_attendees|calendar_calendars|calendar_accounts|mail_accounts|mail_folders|emails|email_attachments)\b/)[1];
     assert.match(sql, /WHERE user_id = \?/);
     assert.equal(params[0], 'user-1');
@@ -103,4 +108,18 @@ test('snapshot query failure rolls back and unauthenticated snapshot routes neve
   assert.match(result.error, /previous snapshot was kept/);
   assert.ok(f.calls.includes('ROLLBACK'));
   assert.ok(f.calls.includes('RELEASE'));
+});
+
+
+test('offline snapshot preserves filing and Legacy identity and verified folder connections', async () => {
+  const f = fixture();
+  Object.assign(f.data.emails[119], { mail_account_id: 'mail-account-1', filing_account_id: 'mail-account-2', is_legacy: 0 });
+  Object.assign(f.data.emails[118], { mail_account_id: 'mail-account-1', is_legacy: 1, folder: 'missing-folder' });
+  f.data.mail_folders.push({ id: 'folder-2', user_id: 'user-1', slug: 'connected', mail_account_id: 'mail-account-1', is_system: 0 });
+  const snapshot = await collectOfflineSnapshot(f.connection, 'user-1');
+  assert.equal(snapshot.emails[0].mail_account_id, 'mail-account-2');
+  assert.equal(snapshot.emails[0].source_mail_account_id, 'mail-account-1');
+  assert.equal(snapshot.emails[1].is_legacy, true);
+  assert.equal(snapshot.folders[1].mail_account_id, 'mail-account-1');
+  assert.deepEqual(snapshot.folders[1].connected_account_ids, ['mail-account-2']);
 });

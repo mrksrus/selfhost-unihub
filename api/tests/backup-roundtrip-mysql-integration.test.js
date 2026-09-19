@@ -8,7 +8,7 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime');
 
 const uuid = () => crypto.randomUUID();
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-const TABLES = ['user_settings', 'contacts', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links'];
+const TABLES = ['user_settings', 'contacts', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'tetris_scores', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides'];
 
 function wav() {
   const bytes = Buffer.alloc(76);
@@ -90,7 +90,9 @@ test('production export and restore jobs round-trip every section through encryp
   async function rowsFor(table, userId) {
     const [rows] = table === 'mail_folder_remote_boxes'
       ? await pool.execute('SELECT boxes.* FROM mail_folder_remote_boxes boxes JOIN mail_folders folders ON folders.id = boxes.folder_id JOIN mail_accounts accounts ON accounts.id = boxes.mail_account_id WHERE folders.user_id = ? AND accounts.user_id = ?', [userId, userId])
-      : await pool.execute(`SELECT * FROM ${table} WHERE user_id = ?`, [userId]);
+      : table === 'mail_folder_rule_overrides'
+        ? await pool.execute('SELECT o.* FROM mail_folder_rule_overrides o JOIN mail_sender_rules r ON r.id = o.rule_id JOIN mail_accounts a ON a.id = o.mail_account_id WHERE r.user_id = ? AND a.user_id = ?', [userId, userId])
+        : await pool.execute(`SELECT * FROM ${table} WHERE user_id = ?`, [userId]);
     return rows.map(row => ({ ...row })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   }
   async function snapshot(userId) {
@@ -111,7 +113,7 @@ test('production export and restore jobs round-trip every section through encryp
     const accountId = uuid();
     const emailAddress = `mail-${index}@example.test`;
     passwords.set(emailAddress, `synthetic-mail-password-${index}`);
-    await insert('mail_accounts', { id: accountId, user_id: sourceUser, email_address: emailAddress, provider: 'custom', username: emailAddress, imap_host: '8.8.8.8', smtp_host: '9.9.9.9', encrypted_password: sourceCrypto.encrypt(passwords.get(emailAddress)), is_active: 1, delete_emails_on_server: 1 });
+    await insert('mail_accounts', { id: accountId, user_id: sourceUser, email_address: emailAddress, provider: 'custom', username: emailAddress, imap_host: '8.8.8.8', smtp_host: '9.9.9.9', encrypted_password: sourceCrypto.encrypt(passwords.get(emailAddress)), is_active: 1, sync_mode: index ? 'sync' : 'download', sync_status: index ? 'running' : 'idle', delete_emails_on_server: index ? 0 : 1 });
     await insert('mail_sender_rules', { id: uuid(), user_id: sourceUser, mail_account_id: accountId, match_type: 'email', match_value: 'sender@example.test', target_folder: 'research' });
     for (const [copy, sourceFolder] of ['INBOX/Research', 'Archive/Copies'].entries()) {
     const emailId = uuid(), attachmentId = uuid();
@@ -128,7 +130,7 @@ test('production export and restore jobs round-trip every section through encryp
     await fs.mkdir(path.dirname(attachmentPath), { recursive: true });
     await fs.writeFile(rawPath, raw); await fs.writeFile(attachmentPath, attachment);
     originalFiles.set('raw:' + fileKey, raw); originalFiles.set('attachment:' + fileKey, attachment);
-    await insert('emails', { id: emailId, user_id: sourceUser, mail_account_id: accountId, message_id: `<roundtrip-${index}@example.test>`, subject: 'Mail ' + index, from_address: 'sender@example.test', to_addresses: JSON.stringify([emailAddress]), body_text: 'Body Grüße ' + index + ':' + copy, body_html: `<p>Grüße ${index}:${copy}</p><img src="/api/mail/attachments/${attachmentId}">`, folder: folderSlug, source_folder: sourceFolder, imap_uid: 22 + index + copy * 10, imap_uidvalidity: 123, raw_storage_path: rawPath, raw_sha256: sha256(raw), received_at: '2030-01-02 12:34:56', is_starred: 1, has_attachments: 1, import_complete: 1 });
+    await insert('emails', { id: emailId, user_id: sourceUser, mail_account_id: accountId, message_id: `<roundtrip-${index}@example.test>`, subject: 'Mail ' + index, from_address: 'sender@example.test', to_addresses: JSON.stringify([emailAddress]), body_text: 'Body Grüße ' + index + ':' + copy, body_html: `<p>Grüße ${index}:${copy}</p><img src="/api/mail/attachments/${attachmentId}">`, folder: folderSlug, source_folder: sourceFolder, imap_uid: 22 + index + copy * 10, imap_uidvalidity: 123, remote_folder: copy ? 'Moved/Current' : sourceFolder, remote_uid: 100 + index + copy, remote_uidvalidity: 456, remote_missing: copy, raw_storage_path: rawPath, raw_sha256: sha256(raw), received_at: '2030-01-02 12:34:56', is_starred: 1, has_attachments: 1, import_complete: 1 });
     await insert('email_attachments', { id: attachmentId, user_id: sourceUser, email_id: emailId, filename: 'data-' + index + '.bin', content_type: 'application/octet-stream', size_bytes: attachment.length, storage_path: attachmentPath, content_id: 'content-' + index });
     if (index === 0 && copy === 0) {
       const secondId = uuid();
@@ -142,6 +144,22 @@ test('production export and restore jobs round-trip every section through encryp
     await insert('mail_email_scores', { id: uuid(), user_id: sourceUser, email_id: emailId, score_version: 'v1', total_score: 12.5, reasons: JSON.stringify(['synthetic reason']), metadata: JSON.stringify({ test: true }) });
     }
   }
+  const [mailAccounts] = await pool.execute('SELECT * FROM mail_accounts WHERE user_id = ? ORDER BY email_address', [sourceUser]);
+  const [sourceEmails] = await pool.execute('SELECT * FROM emails WHERE user_id = ? ORDER BY body_text', [sourceUser]);
+  await pool.execute('UPDATE mail_folders SET mail_account_id = ?, special_use = ? WHERE id = ?', [mailAccounts[1].id, 'archive', folderIds.research]);
+  await pool.execute('UPDATE emails SET filing_account_id = ? WHERE id = ?', [mailAccounts[1].id, sourceEmails[0].id]);
+  await pool.execute('UPDATE emails SET is_legacy = TRUE WHERE id = ?', [sourceEmails[1].id]);
+  for (const account of mailAccounts) {
+    const mappings = await rowsFor('mail_folder_remote_boxes', sourceUser);
+    await insert('mail_folder_reconciliations', { mail_account_id: account.id, user_id: sourceUser,
+      inventory: JSON.stringify(['INBOX/Research', 'Archive/Copies']),
+      previous_mappings: JSON.stringify(mappings.filter(row => row.mail_account_id === account.id)), completed_at: '2030-01-01 11:00:00' });
+  }
+  await insert('mail_folder_recovery_items', { email_id: sourceEmails[0].id, user_id: sourceUser, source_account_id: mailAccounts[0].id,
+    original_folder: 'old-research', original_filing_account_id: mailAccounts[0].id, target_folder: 'research', target_account_id: mailAccounts[1].id, action: 'manual', created_at: '2030-01-01 11:00:00' });
+  const [rules] = await pool.execute('SELECT id FROM mail_sender_rules WHERE user_id = ? ORDER BY id', [sourceUser]);
+  await insert('mail_folder_rule_overrides', { rule_id: rules[0].id, mail_account_id: mailAccounts[1].id, target_folder: 'research' });
+  await insert('tetris_scores', { user_id: sourceUser, score: 13500, lines: 42, level: 5, achieved_at: '2030-01-01 11:00:00' });
   const calendarAccountId = uuid(), calendarId = uuid(), eventId = uuid();
   await insert('calendar_accounts', { id: calendarAccountId, user_id: sourceUser, provider: 'caldav', display_name: 'Roundtrip calendar', account_email: 'calendar@example.test', username: 'calendar-user', discovery_url: 'https://8.8.8.8/dav/', base_url: 'https://8.8.8.8/dav/', encrypted_password: sourceCrypto.encrypt('synthetic-calendar-password'), encrypted_access_token: sourceCrypto.encrypt('synthetic-access-token'), encrypted_refresh_token: sourceCrypto.encrypt('synthetic-refresh-token'), is_active: 1 });
   await insert('calendar_calendars', { id: calendarId, user_id: sourceUser, account_id: calendarAccountId, name: 'Research Calendar', external_id: 'https://8.8.8.8/dav/calendar/', color: '#2244ff', is_visible: 1 });
@@ -161,6 +179,7 @@ test('production export and restore jobs round-trip every section through encryp
     await fs.mkdir(path.dirname(audioPath), { recursive: true }); await fs.writeFile(audioPath, audio);
     await insert('recordings', { id: recordingId, user_id: sourceUser, title, description: 'Keep original audio bytes', original_filename: 'tone.wav', content_type: 'audio/wav', size_bytes: audio.length, duration_seconds: 0.002, storage_path: audioPath, source: 'recorded', category: 'none', recorded_at: '2030-01-01 10:00:00', metadata: JSON.stringify({ sampleRate: 8000 }) });
     await insert('recording_tag_links', { user_id: sourceUser, recording_id: recordingId, tag_id: tagId });
+    await insert('recording_transcription_jobs', { id: uuid(), user_id: sourceUser, recording_id: recordingId, status: 'completed', provider: 'synthetic', model: 'test', language: 'de', transcript_text: 'Saved Grüße transcript ' + index, created_at: '2030-01-01 11:00:00', updated_at: '2030-01-01 11:01:00' });
   }
   const original = await snapshot(sourceUser);
   const unrelated = await snapshot(unrelatedUser);
@@ -244,7 +263,7 @@ test('production export and restore jobs round-trip every section through encryp
     for (const table of TABLES) {
       assert.equal(restored[table].length, original[table].length, `${table}: preserve every row`);
       for (const row of restored[table]) {
-        if (table !== 'mail_folder_remote_boxes') assert.equal(row.user_id, userId);
+        if (!['mail_folder_remote_boxes', 'mail_folder_rule_overrides'].includes(table)) assert.equal(row.user_id, userId);
         if (row.id) assert.ok(!original[table].some(item => item.id === row.id), `${table}: new owner receives fresh IDs`);
       }
     }
@@ -255,19 +274,53 @@ test('production export and restore jobs round-trip every section through encryp
     };
     compare('contacts', ['first_name', 'last_name', 'email', 'email2', 'phone', 'notes', 'is_favorite']);
     compare('user_settings', ['setting_key', 'setting_value']);
-    compare('mail_folders', ['slug', 'display_name', 'position', 'is_system']);
-    compare('emails', ['message_id', 'subject', 'from_address', 'to_addresses', 'body_text', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'is_starred', 'has_attachments', 'received_at', 'raw_sha256', 'import_complete']);
+    compare('mail_folders', ['slug', 'display_name', 'position', 'is_system', 'special_use']);
+    compare('tetris_scores', ['score', 'lines', 'level', 'achieved_at']);
+    compare('recording_transcription_jobs', ['status', 'provider', 'model', 'language', 'transcript_text', 'created_at', 'updated_at']);
+    compare('mail_folder_reconciliations', ['inventory', 'completed_at']);
+    compare('mail_folder_recovery_items', ['original_folder', 'target_folder', 'action', 'created_at']);
+    compare('emails', ['message_id', 'subject', 'from_address', 'to_addresses', 'body_text', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'is_starred', 'has_attachments', 'received_at', 'raw_sha256', 'import_complete', 'is_legacy', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'remote_missing']);
     compare('calendar_events', ['title', 'description', 'start_time', 'end_time', 'recurrence', 'reminders', 'reminder_minutes', 'todo_status', 'location']);
     compare('calendar_event_subtasks', ['title', 'is_done', 'position']);
     compare('calendar_event_attendees', ['email', 'display_name', 'response_status']);
     compare('mail_email_scores', ['score_version', 'total_score', 'reasons', 'metadata']);
     compare('recordings', ['title', 'description', 'original_filename', 'content_type', 'size_bytes', 'duration_seconds', 'metadata', 'recorded_at']);
     compare('recording_tags', ['name', 'color']);
+    const oldAccountEmail = id => original.mail_accounts.find(row => row.id === id)?.email_address || null;
+    const newAccountEmail = id => restored.mail_accounts.find(row => row.id === id)?.email_address || null;
+    for (const folder of restored.mail_folders) {
+      const old = original.mail_folders.find(row => row.slug === folder.slug);
+      assert.equal(newAccountEmail(folder.mail_account_id), oldAccountEmail(old.mail_account_id));
+    }
+    for (const email of restored.emails) {
+      const old = original.emails.find(row => row.body_text === email.body_text);
+      assert.equal(newAccountEmail(email.filing_account_id), oldAccountEmail(old.filing_account_id));
+    }
+    for (const journal of restored.mail_folder_recovery_items) {
+      const old = original.mail_folder_recovery_items[0];
+      assert.equal(restored.emails.find(row => row.id === journal.email_id).body_text, original.emails.find(row => row.id === old.email_id).body_text);
+      for (const field of ['source_account_id', 'original_filing_account_id', 'target_account_id']) assert.equal(newAccountEmail(journal[field]), oldAccountEmail(old[field]));
+    }
+    for (const marker of restored.mail_folder_reconciliations) {
+      const mappings = typeof marker.previous_mappings === 'string' ? JSON.parse(marker.previous_mappings) : marker.previous_mappings;
+      assert.ok(mappings.every(row => restored.mail_folders.some(folder => folder.id === row.folder_id) && row.mail_account_id === marker.mail_account_id));
+    }
+    for (const override of restored.mail_folder_rule_overrides) {
+      assert.ok(restored.mail_sender_rules.some(row => row.id === override.rule_id));
+      assert.equal(newAccountEmail(override.mail_account_id), oldAccountEmail(original.mail_folder_rule_overrides[0].mail_account_id));
+      assert.equal(override.target_folder, 'research');
+    }
+    for (const transcript of restored.recording_transcription_jobs) {
+      assert.ok(restored.recordings.some(row => row.id === transcript.recording_id));
+      assert.equal(transcript.status, 'completed');
+    }
     const decrypt = runtime('security/encryption').decrypt;
     for (const account of restored.mail_accounts) {
       assert.equal(decrypt(account.encrypted_password), credentialsAvailable ? passwords.get(account.email_address) : null);
       assert.equal(account.is_active, credentialsAvailable ? 1 : 0);
       assert.equal(account.delete_emails_on_server, 0, 'Restore must not reenable server deletion');
+      assert.equal(account.sync_mode, original.mail_accounts.find(row => row.email_address === account.email_address).sync_mode);
+      assert.equal(account.sync_status, account.sync_mode === 'sync' ? 'pending' : 'idle');
       const accountEmails = restored.emails.filter(row => row.mail_account_id === account.id);
       assert.equal(accountEmails.length, 2, 'Same Message-ID in distinct folders must not collapse');
       for (const email of accountEmails) {
@@ -316,6 +369,17 @@ test('production export and restore jobs round-trip every section through encryp
     const restored = await assertRestored(destination, encryptedUser);
     assert.equal(sourceCrypto.decrypt(restored.mail_accounts[0].encrypted_password), null, 'Destination credentials use the destination key');
     assert.equal(destinationCrypto.decrypt(original.mail_accounts[0].encrypted_password), null, 'Source ciphertext cannot be read directly on the destination');
+  });
+  await t.test('restored completion state prevents a new provider LIST from replaying migration moves', async () => {
+    const before = await rowsFor('emails', encryptedUser);
+    const accounts = await rowsFor('mail_accounts', encryptedUser);
+    for (const account of accounts) {
+      const result = await destination('services/mail-folder-reconciliation').reconcileAccountFolders(encryptedUser, account.id,
+        ['INBOX/Research', 'Archive/Copies'], new Map(), pool);
+      assert.equal(result.skipped, true);
+    }
+    await destination('services/mail-folder-reconciliation').prepareFolderReconciliation(pool);
+    assert.deepEqual(await rowsFor('emails', encryptedUser), before);
   });
   await t.test('unencrypted legacy ZIP restores every section with the original deployment key', async () => {
     const userId = await newUser('legacy-same-key');
@@ -379,6 +443,29 @@ test('production export and restore jobs round-trip every section through encryp
       assert.deepEqual(await fs.readFile(recording.storage_path), audioByTitle.get(recording.title));
     }
     for (const event of doubled.calendar_events) assert.ok(doubled.calendar_event_subtasks.some(row => row.event_id === event.id));
+  });
+  await t.test('a same-slug folder owned by another filing account fails atomically in every conflict mode', async () => {
+    const userId = await newUser('folder-scope-collision');
+    const accountId = uuid();
+    await insert('mail_accounts', { id: accountId, user_id: userId, email_address: 'local-only@example.test', provider: 'custom', is_active: 0 });
+    await insert('mail_folders', { id: uuid(), user_id: userId, slug: 'research', display_name: 'Local private folder', is_system: 0, mail_account_id: accountId });
+    const before = await snapshot(userId);
+    for (const conflict_mode of ['keep_existing', 'replace', 'keep_both']) {
+      await assert.rejects(source('services/backup').importBackupForUser(userId, legacyParsed.backup, {
+        mode: 'apply', conflict_mode, fileSourcesByPath: legacyParsed.fileSourcesByPath,
+      }), /folder.*conflict|folder.*different|folder.*account/i);
+      assert.deepEqual(await snapshot(userId), before, 'Folder collision rolls back account and earlier section writes');
+    }
+  });
+  await t.test('kept reconciliation state cannot hide newly restored mail and fails atomically', async () => {
+    const userId = await newUser('kept-inventory-conflict');
+    await uploadAndRestore(destination, userId, encrypted);
+    await pool.execute('UPDATE mail_folder_reconciliations SET inventory = ? WHERE user_id = ?', ['[]', userId]);
+    const before = await snapshot(userId);
+    await assert.rejects(destination('services/backup').importBackupForUser(userId, legacyParsed.backup, {
+      mode: 'apply', conflict_mode: 'keep_both', fileSourcesByPath: legacyParsed.fileSourcesByPath,
+    }), /not available in its filing account/);
+    assert.deepEqual(await snapshot(userId), before);
   });
   await t.test('damaged encrypted archive fails before importing any rows', async () => {
     const userId = await newUser('damaged-destination');
@@ -449,7 +536,7 @@ test('production export and restore jobs round-trip every section through encryp
       assert.equal(restored.mail_folder_remote_boxes.length, 0);
       const result = typeof completed.result_counts === 'string' ? JSON.parse(completed.result_counts) : completed.result_counts;
       assert.match(result.warnings.join(' '), /older backup.*provider.folder mappings/i);
-      const ignored = new Set(['id', 'user_id', 'account_id', 'calendar_id', 'event_id', 'email_id', 'mail_account_id', 'recording_id', 'tag_id', 'created_at', 'updated_at', 'storage_path', 'raw_storage_path', 'encrypted_password', 'encrypted_access_token', 'encrypted_refresh_token', 'delete_emails_on_server', 'server_delete_enabled_at', 'server_delete_grace_until', 'server_delete_last_run_at', 'is_active', 'body_html']);
+      const ignored = new Set(['id', 'user_id', 'account_id', 'calendar_id', 'event_id', 'email_id', 'mail_account_id', 'recording_id', 'tag_id', 'created_at', 'updated_at', 'storage_path', 'raw_storage_path', 'encrypted_password', 'encrypted_access_token', 'encrypted_refresh_token', 'delete_emails_on_server', 'server_delete_enabled_at', 'server_delete_grace_until', 'server_delete_last_run_at', 'is_active', 'body_html', 'sync_status']);
       function normalized(field, value) {
         if (value === null || value === undefined) return value;
         if (field.endsWith('_at') || ['start_time', 'end_time'].includes(field)) return new Date(value).toISOString();
@@ -550,6 +637,48 @@ test('production export and restore jobs round-trip every section through encryp
       }
     });
   }
+  await t.test('equal-shape events and shared-identity contacts remain distinct through repeated schema 3 ZIP restores', async () => {
+    const duplicateSource = await newUser('duplicate-source');
+    for (const label of ['first', 'second']) {
+      const eventId = uuid();
+      await insert('contacts', { id: uuid(), user_id: duplicateSource, first_name: 'Shared', last_name: 'Identity', email: 'shared@example.test', notes: label });
+      await insert('calendar_events', { id: eventId, user_id: duplicateSource, title: 'Equal shape', description: label,
+        start_time: '2026-09-19 10:00:00', end_time: '2026-09-19 11:00:00' });
+      await insert('calendar_event_subtasks', { id: uuid(), event_id: eventId, user_id: duplicateSource, title: 'Same child', position: 0, is_done: label === 'first' });
+      await insert('calendar_event_attendees', { id: uuid(), event_id: eventId, user_id: duplicateSource, email: 'same@example.test', display_name: label });
+    }
+    const archivePath = path.join(directory, 'distinct-rows.zip');
+    await source('services/export-jobs').writeZip(
+      await source('services/backup').buildBackupArchiveEntriesForUser(duplicateSource, ['contacts', 'calendar']), archivePath);
+    for (const conflictMode of ['keep_existing', 'replace']) {
+      const userId = await newUser('duplicate-' + conflictMode);
+      const options = { mode: 'apply', conflict_mode: conflictMode };
+      const readMeaning = async () => {
+        const events = await rowsFor('calendar_events', userId);
+        const subtasks = await rowsFor('calendar_event_subtasks', userId);
+        const attendees = await rowsFor('calendar_event_attendees', userId);
+        const contacts = await rowsFor('contacts', userId);
+        for (const rows of [events, subtasks, attendees, contacts]) assert.equal(rows.length, 2);
+        const meaning = events.map(event => ({ id: event.id, description: event.description,
+          tasks: subtasks.filter(row => row.event_id === event.id).map(row => ({ id: row.id, is_done: row.is_done })),
+          attendees: attendees.filter(row => row.event_id === event.id).map(row => ({ id: row.id, display_name: row.display_name })),
+        })).sort((a, b) => a.description.localeCompare(b.description));
+        for (const event of meaning) {
+          assert.equal(event.tasks.length, 1); assert.equal(event.attendees.length, 1);
+          assert.equal(event.tasks[0].is_done, event.description === 'first' ? 1 : 0);
+          assert.equal(event.attendees[0].display_name, event.description);
+        }
+        return { events: meaning, contacts: contacts.map(row => ({ id: row.id, notes: row.notes })).sort((a, b) => a.notes.localeCompare(b.notes)) };
+      };
+      await destination('services/backup').importBackupZipFileForUser(userId, archivePath, options);
+      const first = await readMeaning();
+      // Force the fallback order to disagree with source order on the next run.
+      await pool.execute('UPDATE calendar_events SET created_at = ? WHERE id = ?', ['2000-01-01 00:00:00', first.events[1].id]);
+      await pool.execute('UPDATE contacts SET created_at = ? WHERE id = ?', ['2000-01-01 00:00:00', first.contacts[1].id]);
+      await destination('services/backup').importBackupZipFileForUser(userId, archivePath, options);
+      assert.deepEqual(await readMeaning(), first);
+    }
+  });
   assert.deepEqual(await snapshot(sourceUser), original, 'Source data remains unchanged through every destination restore');
   assert.deepEqual(await snapshot(unrelatedUser), unrelated, 'An unrelated user remains unchanged through every export and restore');
 });

@@ -29,7 +29,7 @@ const AppLayout = () => {
   }
 
   return (
-    <div className="flex flex-col md:flex-row h-screen overflow-hidden bg-background">
+    <div className="flex flex-col md:flex-row h-dvh overflow-hidden bg-background">
       <div className="hidden md:block">
         <AppSidebar />
       </div>

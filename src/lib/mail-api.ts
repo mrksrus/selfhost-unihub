@@ -14,6 +14,8 @@ export interface MailAccount {
   is_active: boolean;
   last_synced_at: string | null;
   sync_fetch_limit?: string;
+  sync_mode?: 'download' | 'sync';
+  sync_status?: string;
   delete_emails_on_server?: boolean;
   server_delete_enabled_at?: string | null;
   server_delete_grace_until?: string | null;
@@ -39,6 +41,7 @@ export interface EmailAttachment {
 
 
 export interface Email {
+  remote_missing?: boolean;
   is_legacy?: boolean;
   source_mail_account_id?: string;
   id: string;

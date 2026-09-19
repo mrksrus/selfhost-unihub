@@ -10,7 +10,8 @@ function setRequireStub(modulePath, exports) {
   };
 }
 
-test('server deletion worker stops after setting is disabled between messages', async (t) => {
+for (const scenario of ['disabled-between-messages', 'already-sync', 'sync-during-search', 'cancel-during-search']) {
+test(`server deletion worker: ${scenario}`, async (t) => {
   const mailPath = require.resolve('../src/services/mail');
   const statePath = require.resolve('../src/state');
   const encryptionPath = require.resolve('../src/security/encryption');
@@ -40,6 +41,7 @@ test('server deletion worker stops after setting is disabled between messages', 
       if (sql.includes('FROM mail_accounts') && sql.includes('SELECT *')) {
         return [[{
           id: 'account-1',
+          sync_mode: scenario === 'already-sync' ? 'sync' : 'download',
           user_id: 'user-1',
           email_address: 'person@example.com',
           username: 'person@example.com',
@@ -58,7 +60,8 @@ test('server deletion worker stops after setting is disabled between messages', 
       if (sql.includes('SELECT delete_emails_on_server')) {
         enabledChecks++;
         return [[{
-          delete_emails_on_server: enabledChecks === 1 ? 1 : 0,
+          delete_emails_on_server: enabledChecks <= 2 ? 1 : 0,
+          sync_mode: scenario === 'sync-during-search' && enabledChecks >= 2 ? 'sync' : 'download',
           is_active: 1,
           server_delete_grace_until: new Date(Date.now() - 60_000),
         }]];
@@ -96,7 +99,10 @@ test('server deletion worker stops after setting is disabled between messages', 
       },
       on: () => {},
       openBox: async () => {},
-      search: async () => [{}],
+      search: async () => {
+        if (scenario === 'cancel-during-search') require('../src/services/mail').cancelMailAccountSync('account-1');
+        return [{}];
+      },
       end: () => {},
     }),
   });
@@ -104,6 +110,19 @@ test('server deletion worker stops after setting is disabled between messages', 
   const { processMailServerDeletionForAccount } = require('../src/services/mail');
   const result = await processMailServerDeletionForAccount('account-1');
 
+  if (scenario === 'already-sync') {
+    assert.equal(result.skipped, true);
+    assert.deepEqual(imapCalls, []);
+    assert.deepEqual(statusUpdates, []);
+    return;
+  }
+  if (scenario !== 'disabled-between-messages') {
+    assert.equal(result.deleted, 0);
+    assert.equal(result.stopped, true);
+    assert.deepEqual(imapCalls, []);
+    assert.deepEqual(statusUpdates, []);
+    return;
+  }
   assert.equal(result.processed, 1);
   assert.equal(result.deleted, 1);
   assert.equal(result.stopped, true);
@@ -113,3 +132,5 @@ test('server deletion worker stops after setting is disabled between messages', 
     ['expunge', 10],
   ]);
 });
+
+}

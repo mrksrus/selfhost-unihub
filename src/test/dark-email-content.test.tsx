@@ -12,7 +12,7 @@ describe('Dark email reading', () => {
     expect(screen.queryByText('alert(1)')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Original email appearance' }));
     expect(screen.getByTitle('email-a')).toHaveAttribute('sandbox', 'allow-popups allow-popups-to-escape-sandbox');
-    expect(screen.getByTitle('email-a').getAttribute('srcdoc')).toContain("img-src 'self' data: blob:");
+    expect(screen.getByTitle('email-a').getAttribute('srcdoc')).toContain("/api/mail/attachments/ data:");
     fireEvent.click(screen.getByRole('button', { name: 'Dark reading view' }));
     expect(screen.queryByTitle('email-a')).not.toBeInTheDocument();
   });
@@ -21,11 +21,15 @@ describe('Dark email reading', () => {
     const body = '<img src="https://tracker.example/image" />';
     const view = render(<SafeEmailContent emailId="a" bodyHtml={body} bodyText="Mail A" />);
     fireEvent.click(screen.getByRole('button', { name: 'Original email appearance' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Load remote content' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Load remote images' }));
     view.rerender(<SafeEmailContent emailId="b" bodyHtml={body} bodyText="Mail B" />);
     expect(screen.getByText('Mail B')).toBeInTheDocument();
     expect(screen.queryByTitle('email-b')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Original email appearance' }));
-    expect(screen.getByTitle('email-b').getAttribute('srcdoc')).not.toContain("img-src 'self' data: blob: http: https:");
+    expect(screen.getByTitle('email-b').getAttribute('srcdoc')).not.toContain("/api/mail/attachments/ data: http: https:");
+    view.rerender(<SafeEmailContent emailId="a" bodyHtml={body} bodyText="Mail A" />);
+    expect(screen.queryByTitle('email-a')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Original email appearance' }));
+    expect(screen.getByTitle('email-a').getAttribute('srcdoc')).not.toContain("/api/mail/attachments/ data: http: https:");
   });
 });

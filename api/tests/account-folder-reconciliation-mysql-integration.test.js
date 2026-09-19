@@ -31,7 +31,13 @@ test('0.10.3 folder reconciliation and Legacy recovery on MySQL', { skip: !proce
   const schema = runtime('services/database');
   await schema.ensureSchema();
   // Remove the complete 0.10.4/0.10.5 folder delta to populate the 0.10.3 shape.
-  // The rest of ensureSchema is unchanged from the tagged 0.10.3 initializer.
+  // Historical installations have no upgrade ledger. Remove it with the newer
+  // folder delta so this fixture exercises baseline adoption, not schema damage.
+  await pool.query('DROP TABLE schema_migrations');
+  // Migration 3 fields did not exist in 0.10.3. Remove them before taking the
+  // historical snapshot, then verify their initialization separately below.
+  await pool.query('ALTER TABLE mail_accounts DROP COLUMN sync_mode, DROP COLUMN sync_status');
+  await pool.query('ALTER TABLE emails DROP COLUMN remote_folder, DROP COLUMN remote_uid, DROP COLUMN remote_uidvalidity, DROP COLUMN remote_missing');
   await pool.query('DROP TABLE mail_folder_rule_overrides, mail_folder_recovery_items, mail_folder_reconciliations');
   await pool.query('ALTER TABLE emails DROP FOREIGN KEY fk_emails_filing_account, DROP COLUMN filing_account_id, DROP COLUMN is_legacy');
   await pool.query('ALTER TABLE mail_folders DROP FOREIGN KEY fk_mail_folders_account, DROP COLUMN mail_account_id, DROP COLUMN special_use');
@@ -81,6 +87,14 @@ test('0.10.3 folder reconciliation and Legacy recovery on MySQL', { skip: !proce
   }
   const originalRows = (await pool.execute('SELECT * FROM emails ORDER BY id'))[0];
   await schema.ensureSchema(); await schema.ensureSchema();
+  const [remoteIdentities] = await pool.execute('SELECT source_folder, imap_uid, imap_uidvalidity, remote_folder, remote_uid, remote_uidvalidity, remote_missing FROM emails ORDER BY id');
+  assert.equal(remoteIdentities.length, originalRows.length);
+  for (const row of remoteIdentities) {
+    assert.equal(row.remote_folder, row.source_folder);
+    assert.equal(row.remote_uid, row.imap_uid);
+    assert.equal(row.remote_uidvalidity, row.imap_uidvalidity);
+    assert.equal(row.remote_missing, 0);
+  }
   const migration = runtime('services/mail-folder-reconciliation');
   const inventory = ['INBOX', 'Projects', 'Remote/Actual', 'case'];
   const read = async name => (await pool.execute('SELECT * FROM emails WHERE id = ?', [messages[name]]))[0][0];

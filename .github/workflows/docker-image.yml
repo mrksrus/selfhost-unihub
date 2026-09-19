@@ -60,7 +60,7 @@ jobs:
           npm --prefix api ci
 
       - name: Run API tests
-        run: npm --prefix api test
+        run: npm --prefix api run test:ci
 
       - name: Run frontend checks
         run: |

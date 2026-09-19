@@ -148,7 +148,7 @@ test('add mail account keeps server deletion off by default and can enable grace
             smtp_host: latest?.params[8] || 'mail.example.test',
             smtp_port: 587,
             sync_fetch_limit: 'all',
-            delete_emails_on_server: latest?.params[12] || 0,
+            delete_emails_on_server: latest?.params[14] || 0,
             is_active: 1,
           }]];
         }
@@ -205,9 +205,9 @@ test('add mail account keeps server deletion off by default and can enable grace
     { ...baseBody, email_address: 'enabled@example.test', username: 'enabled@example.test', delete_emails_on_server: true }
   );
 
-  assert.equal(inserts[0].params[12], 0);
+  assert.equal(inserts[0].params[14], 0);
   assert.equal(inserts[0].sql.includes('DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)'), false);
-  assert.equal(inserts[1].params[12], 1);
+  assert.equal(inserts[1].params[14], 1);
   assert.match(inserts[1].sql, /DATE_ADD\(UTC_TIMESTAMP\(\), INTERVAL 10 MINUTE\)/);
 });
 
@@ -222,6 +222,8 @@ test('update mail account can disable server deletion without password changes',
   const originalEncryption = require.cache[encryptionPath];
   const updates = [];
   let imapTests = 0;
+  let cancellations = 0;
+  const queueUpdates = [];
 
   t.after(() => {
     if (originalRoute) require.cache[routePath] = originalRoute;
@@ -253,6 +255,8 @@ test('update mail account can disable server deletion without password changes',
             delete_emails_on_server: 1,
           }]];
         }
+        if (sql.includes('UPDATE mail_server_messages')) { queueUpdates.push(sql); return [{ affectedRows: 1 }]; }
+        if (sql.includes('SELECT id FROM emails')) return [[{ id: 'protected-message' }]];
         if (sql.includes('UPDATE mail_accounts SET')) {
           updates.push({ sql, params });
           return [{ affectedRows: 1 }];
@@ -291,6 +295,7 @@ test('update mail account can disable server deletion without password changes',
       imapTests++;
       return { success: true };
     },
+    cancelMailAccountSync: () => { cancellations++; },
     syncMailAccount: async () => ({ success: true }),
     isAnyMailAccountSyncRunning: () => false,
     getRunningMailSyncAccountIds: () => [],
@@ -311,4 +316,23 @@ test('update mail account can disable server deletion without password changes',
   assert.equal(imapTests, 0);
   assert.match(updates[0].sql, /delete_emails_on_server = FALSE/);
   assert.match(updates[0].sql, /server_delete_grace_until = NULL/);
+  const put = body => routes['PUT /api/mail/accounts/:id']({ headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' }, 'user-1', body);
+  assert.equal((await put({ sync_mode: 'sync' })).status, 400);
+  assert.equal(updates.length, 1, 'Unconfirmed switch cannot write');
+  const { withMailAccountLock } = require('../src/services/mail-account-lock');
+  let release;
+  const holding = withMailAccountLock('account-1', () => new Promise(resolve => { release = resolve; }));
+  await new Promise(resolve => setImmediate(resolve));
+  const switching = put({ sync_mode: 'sync', sync_mode_confirmed: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(cancellations, 1);
+  assert.equal(updates.length, 1, 'Mode commit waits for the worker lock');
+  release(); await holding;
+  assert.ok((await switching).account);
+  assert.match(updates[1].sql, /sync_mode = .*sync_status = .*delete_emails_on_server = FALSE/);
+  assert.deepEqual(updates[1].params.slice(0, 2), ['sync', 'pending']);
+  assert.equal(queueUpdates.length, 1);
+  assert.equal((await put({ imap_host: 'different.example.test' })).status, 409);
+  assert.equal(imapTests, 0, 'Identity rejection precedes provider connection');
+
 });

@@ -14,7 +14,8 @@ const { pruneArchiveKeyIfUnreferenced } = require('./backup-archive-keys');
 
 const BACKUPS_ROOT = '/app/uploads/backups';
 const activeExportJobs = new Set();
-const EXPORT_SECTIONS = new Set(['contacts', 'calendar', 'todo', 'mail', 'recordings', 'settings']);
+const { SECTION_POLICIES, normalizeBackupSections } = require('./backup-catalog');
+const EXPORT_SECTIONS = new Set(Object.keys(SECTION_POLICIES));
 const ZIP32_MAX_VALUE = 0xffffffff;
 const ZIP32_MAX_ENTRIES = 0xfffe;
 const ZIP32_MAX_FILENAME_BYTES = 0xffff;
@@ -269,12 +270,7 @@ async function writeZip(entries, targetPath, {
   }
 }
 
-function normalizeSections(sections) {
-  if (!sections || sections === 'full') return Array.from(EXPORT_SECTIONS);
-  const values = Array.isArray(sections) ? sections : String(sections).split(',');
-  const normalized = values.map(value => String(value).trim().toLowerCase()).filter(value => EXPORT_SECTIONS.has(value));
-  return normalized.length ? Array.from(new Set(normalized)) : Array.from(EXPORT_SECTIONS);
-}
+const normalizeSections = normalizeBackupSections;
 
 function parseRequestedSections(value) {
   if (Array.isArray(value)) return normalizeSections(value);

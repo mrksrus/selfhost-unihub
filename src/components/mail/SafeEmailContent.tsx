@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useTheme } from 'next-themes';
 import { Button } from '@/components/ui/button';
+import { emailSrcDoc, prepareEmailHtml } from '@/lib/email-privacy';
 
 interface SafeEmailContentProps {
   emailId: string;
@@ -8,17 +9,20 @@ interface SafeEmailContentProps {
   bodyText: string | null;
 }
 
-function htmlHasRemoteContent(html: string) {
-  return /\b(?:src|srcset|poster|background)\s*=\s*["'][^"']*https?:\/\//i.test(html)
-    || /url\(\s*["']?https?:\/\//i.test(html);
+// A keyed child discards both choices on navigation, including A -> B -> A.
+export function SafeEmailContent(props: SafeEmailContentProps) {
+  return <MessageContent key={props.emailId} {...props} />;
 }
 
-export function SafeEmailContent({ emailId, bodyHtml, bodyText }: SafeEmailContentProps) {
-  const [remoteContentEmailId, setRemoteContentEmailId] = useState<string | null>(null);
-  const allowRemoteContent = remoteContentEmailId === emailId;
+function MessageContent({ emailId, bodyHtml, bodyText }: SafeEmailContentProps) {
+  const [allowRemoteContent, setAllowRemoteContent] = useState(false);
+  const [blockSuspectedTrackers, setBlockSuspectedTrackers] = useState(true);
+  const [original, setOriginal] = useState(false);
   const { resolvedTheme } = useTheme();
-  const [originalEmailId, setOriginalEmailId] = useState<string | null>(null);
-  const original = originalEmailId === emailId;
+  const prepared = useMemo(() => prepareEmailHtml(bodyHtml || '', {
+    allowRemoteImages: allowRemoteContent,
+    blockSuspectedTrackers,
+  }), [bodyHtml, allowRemoteContent, blockSuspectedTrackers]);
   const readableText = useMemo(() => {
     if (bodyText) return bodyText;
     if (!bodyHtml) return '(No content)';
@@ -30,68 +34,35 @@ export function SafeEmailContent({ emailId, bodyHtml, bodyText }: SafeEmailConte
     content.querySelectorAll('p, div, tr, li, h1, h2, h3').forEach(node => node.append('\n'));
     return content.textContent?.trim() || '(No text content. Open the original email to view it.)';
   }, [bodyText, bodyHtml]);
-  const hasRemoteContent = useMemo(
-    () => (bodyHtml ? htmlHasRemoteContent(bodyHtml) : false),
-    [bodyHtml]
-  );
-
   if (bodyHtml && resolvedTheme === 'dark' && !original) {
     return <div className="space-y-3">
       <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 p-3">
         <span className="text-sm text-muted-foreground">Dark reading view</span>
-        <Button type="button" size="sm" variant="outline" onClick={() => setOriginalEmailId(emailId)}>Original email appearance</Button>
+        <Button type="button" size="sm" variant="outline" onClick={() => setOriginal(true)}>Original email appearance</Button>
       </div>
       <div className="whitespace-pre-wrap break-words text-foreground">{readableText}</div>
     </div>;
   }
   if (bodyHtml) {
-    const imageSources = allowRemoteContent
-      ? "'self' data: blob: http: https:"
-      : "'self' data: blob:";
-    const iframeCsp = [
-      "default-src 'none'",
-      `img-src ${imageSources}`,
-      "style-src 'unsafe-inline'",
-      "font-src data:",
-      "media-src 'self' data: blob:",
-      "script-src 'none'",
-      "connect-src 'none'",
-      "object-src 'none'",
-      "base-uri 'none'",
-      "form-action 'none'",
-    ].join('; ');
-    const srcDoc = `<!doctype html>
-<html>
-  <head>
-    <base target="_blank" />
-    <meta name="referrer" content="no-referrer" />
-    <meta http-equiv="Content-Security-Policy" content="${iframeCsp}" />
-    <style>
-      body { margin: 0; padding: 16px; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #111827; background: #fff; overflow-wrap: anywhere; }
-      img { max-width: 100%; height: auto; }
-      table { max-width: 100%; }
-      a { color: #2563eb; }
-    </style>
-  </head>
-  <body>${bodyHtml}</body>
-</html>`;
+    const srcDoc = emailSrcDoc(prepared.html, allowRemoteContent);
 
     return (
       <div className="space-y-3">
-        {resolvedTheme === 'dark' && <Button type="button" size="sm" variant="outline" onClick={() => setOriginalEmailId(null)}>Dark reading view</Button>}
-        {hasRemoteContent && !allowRemoteContent && (
-          <div className="flex flex-col gap-3 rounded-md border border-border bg-muted/40 p-3 sm:flex-row sm:items-center sm:justify-between">
+        {resolvedTheme === 'dark' && <Button type="button" size="sm" variant="outline" onClick={() => setOriginal(false)}>Dark reading view</Button>}
+        {prepared.remoteImages > 0 && (
+          <div className="space-y-3 rounded-md border border-border bg-muted/40 p-3">
             <p className="text-sm text-muted-foreground">
-              Remote images and media are blocked for this email.
+              {allowRemoteContent ? 'Remote images are allowed for this visit to this message.' : 'Remote images are blocked for this email.'}
+              {' '}Loading images can reveal your IP address and open time to their servers.
+              {' '}Re-blocking cannot undo requests already sent. These choices reset when you leave this message.
             </p>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="w-full sm:w-auto"
-              onClick={() => setRemoteContentEmailId(emailId)}
-            >
-              Load remote content
+            <label className="flex items-start gap-2 text-sm">
+              <input type="checkbox" checked={blockSuspectedTrackers} onChange={event => setBlockSuspectedTrackers(event.target.checked)} className="mt-1" />
+              <span>Block suspected tracking images{prepared.suspectedTrackers > 0 ? ` (${prepared.suspectedTrackers} suspected)` : ''}.
+                {' '}Detection can miss trackers or block useful images. Clicked links may still track you.</span>
+            </label>
+            <Button type="button" variant="secondary" size="sm" onClick={() => setAllowRemoteContent(allowed => !allowed)}>
+              {allowRemoteContent ? 'Block remote images again' : 'Load remote images'}
             </Button>
           </div>
         )}

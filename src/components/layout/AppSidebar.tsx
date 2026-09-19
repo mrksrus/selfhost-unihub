@@ -52,7 +52,7 @@ const AppSidebar = () => {
       initial={false}
       animate={{ width: collapsed ? 80 : 280 }}
       transition={{ duration: 0.2 }}
-      className="flex flex-col h-screen bg-sidebar border-r border-sidebar-border"
+      className="flex flex-col h-dvh bg-sidebar border-r border-sidebar-border"
     >
       {/* Logo */}
       <div className="flex items-center justify-between h-16 px-4">
@@ -75,6 +75,8 @@ const AppSidebar = () => {
         <Button
           variant="ghost"
           size="icon"
+          aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
+          aria-expanded={!collapsed}
           onClick={() => setCollapsed(!collapsed)}
           className="text-sidebar-foreground hover:bg-sidebar-accent"
         >
@@ -92,6 +94,8 @@ const AppSidebar = () => {
             <NavLink
               key={item.name}
               to={item.href}
+              aria-label={item.name}
+              title={collapsed ? item.name : undefined}
               className={cn(
                 'sidebar-nav-item',
                 isActive && 'active'
@@ -123,6 +127,8 @@ const AppSidebar = () => {
               <NavLink
                 key={item.name}
                 to={item.href}
+              aria-label={item.name}
+              title={collapsed ? item.name : undefined}
                 className={cn(
                   'sidebar-nav-item',
                   isActive && 'active'
@@ -154,6 +160,7 @@ const AppSidebar = () => {
       <div className="p-3 space-y-1">
         <NavLink
           to="/settings"
+          aria-label="Settings"
           className={cn(
             'sidebar-nav-item',
             location.pathname === '/settings' && 'active'
@@ -177,6 +184,7 @@ const AppSidebar = () => {
         {user?.role === 'admin' && (
           <NavLink
             to="/admin/settings"
+            aria-label="Admin settings"
             className={cn(
               'sidebar-nav-item',
             location.pathname.startsWith('/admin') && 'active'
@@ -243,6 +251,7 @@ const AppSidebar = () => {
                 <Button
                   variant="ghost"
                   size="icon"
+                  aria-label="Sign out"
                   onClick={signOut}
                   className="text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent shrink-0"
                 >

@@ -1,3 +1,4 @@
+const { sameProviderMailbox } = require('./mail-account-mode');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -19,37 +20,16 @@ const { AUDIO_HEADER_BYTES, identifyRecordingAudio, inspectRecordingAudio } = re
 const { BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, BACKUP_METADATA_LIMITS, getBackupProducer,
   normalizeBackupPayload, validateBackupVersionFields, validateArchiveVersionFields } = require('./backup-format');
 
+const { SECTION_POLICIES, TABLE_POLICIES, FILE_POLICIES, normalizeBackupSections } = require('./backup-catalog');
+const { restoreMailRecovery, validateRestoredMailDestinations } = require('./backup-mail-recovery');
+
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
-const BACKUP_IMPORT_SECTIONS = new Set(['settings', 'contacts', 'calendar', 'mail', 'recordings']);
+const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: MAIL_RAW_STORAGE_ROOT, recording: RECORDINGS_ROOT });
 const BACKUP_CONFLICT_MODES = new Set(['keep_existing', 'replace', 'keep_both']);
 const BACKUP_CALENDAR_MODES = new Set(['merge_same_name', 'copy']);
 const BACKUP_CREDENTIAL_MODES = new Set(['keep_existing', 'restore']);
-const BACKUP_IMPORT_SECTION_TABLES = {
-  settings: new Set(['user', 'user_settings']),
-  contacts: new Set(['contacts']),
-  calendar: new Set([
-    'calendar_accounts',
-    'calendar_calendars',
-    'calendar_events',
-    'calendar_event_subtasks',
-    'calendar_event_attendees',
-    'calendar_event_external_refs',
-  ]),
-  mail: new Set([
-    'mail_folders',
-    'mail_folder_remote_boxes',
-    'mail_sender_rules',
-    'mail_accounts',
-    'emails',
-    'email_attachments',
-    'mail_email_scores',
-  ]),
-  recordings: new Set(['recordings', 'recording_tags', 'recording_tag_links']),
-};
-const BACKUP_IMPORT_SECTION_FILE_KINDS = {
-  mail: new Set(['email_attachment', 'raw_email']),
-  recordings: new Set(['recording']),
-};
+const BACKUP_IMPORT_SECTION_TABLES = Object.fromEntries(Object.entries(SECTION_POLICIES).map(([section, policy]) => [section, new Set(policy.tables)]));
+const BACKUP_IMPORT_SECTION_FILE_KINDS = Object.fromEntries(Object.entries(SECTION_POLICIES).map(([section, policy]) => [section, new Set(policy.fileKinds)]));
 
 function sha256Buffer(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
@@ -368,38 +348,37 @@ function assertBackupFilesComplete(backup) {
   }
 }
 
-async function readBackupSnapshot(userId, checkCancelled) {
+async function readBackupSnapshot(userId, sections, checkCancelled) {
   const connection = await db.getConnection();
   try {
     if (checkCancelled) await checkCancelled();
     await connection.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     await connection.query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
-    const rows = await Promise.all([
-      connection.execute('SELECT id, email, full_name, avatar_url, role, is_active, email_verified, timezone, created_at, updated_at FROM users WHERE id = ?', [userId]),
-      connection.execute('SELECT * FROM user_settings WHERE user_id = ? ORDER BY setting_key ASC', [userId]),
-      connection.execute('SELECT * FROM contacts WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM calendar_accounts WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM calendar_calendars WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM calendar_events WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM calendar_event_subtasks WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM calendar_event_attendees WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM calendar_event_external_refs WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM mail_folders WHERE user_id = ? ORDER BY position ASC', [userId]),
-      connection.execute(`SELECT b.* FROM mail_folder_remote_boxes b
-        JOIN mail_folders f ON f.id = b.folder_id
-        JOIN mail_accounts a ON a.id = b.mail_account_id
-        WHERE f.user_id = ? AND a.user_id = ? ORDER BY b.folder_id, b.mail_account_id`, [userId, userId]),
-      connection.execute('SELECT * FROM mail_sender_rules WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM mail_accounts WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM emails WHERE user_id = ? ORDER BY received_at ASC', [userId]),
-      connection.execute('SELECT * FROM email_attachments WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM mail_email_scores WHERE user_id = ? ORDER BY scored_at ASC', [userId]),
-      connection.execute('SELECT * FROM recordings WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-      connection.execute('SELECT * FROM recording_tags WHERE user_id = ? ORDER BY name ASC', [userId]),
-      connection.execute('SELECT * FROM recording_tag_links WHERE user_id = ? ORDER BY created_at ASC', [userId]),
-    ]);
+    const data = {};
+    for (const section of normalizeBackupImportSections(sections)) {
+      for (const table of SECTION_POLICIES[section].tables) {
+        if (checkCancelled) await checkCancelled();
+        const policy = TABLE_POLICIES[table];
+        const columns = policy.columns.map(column => `b.\`${column}\``).join(', ');
+        let from = `${table === 'user' ? 'users' : table} b`;
+        let where = table === 'user' ? 'b.id = ?' : 'b.user_id = ?';
+        let params = [userId];
+        if (table === 'mail_folder_remote_boxes') {
+          from += ' JOIN mail_folders f ON f.id = b.folder_id JOIN mail_accounts a ON a.id = b.mail_account_id';
+          where = 'f.user_id = ? AND a.user_id = ?'; params = [userId, userId];
+        } else if (table === 'mail_folder_rule_overrides') {
+          from += ' JOIN mail_sender_rules r ON r.id = b.rule_id JOIN mail_accounts a ON a.id = b.mail_account_id';
+          where = 'r.user_id = ? AND a.user_id = ?'; params = [userId, userId];
+        }
+        if (table === 'recording_transcription_jobs') where += " AND b.status = 'completed'";
+        const order = policy.keyColumns.map(column => `b.\`${column}\``).join(', ');
+        const [rows] = await connection.execute(`SELECT ${columns} FROM ${from} WHERE ${where} ORDER BY ${order}`, params);
+        if (table === 'user' && !rows.length) throw new Error('User not found');
+        data[table] = table === 'user' ? normalizeRows(rows)[0] : normalizeRows(rows);
+      }
+    }
     await connection.commit();
-    return rows;
+    return data;
   } catch (error) {
     await connection.rollback().catch(() => {});
     throw error;
@@ -412,92 +391,26 @@ async function buildBackupForUser(userId, {
   includeFileData = true,
   portableCredentialKey = null,
   checkCancelled = null,
+  sections = 'full',
 } = {}) {
-  const [
-    [userRows],
-    [userSettings],
-    [contacts],
-    [calendarAccounts],
-    [calendarCalendars],
-    [calendarEvents],
-    [calendarSubtasks],
-    [calendarAttendees],
-    [calendarRefs],
-    [mailFolders],
-    [mailFolderRemoteBoxes],
-    [mailSenderRules],
-    [mailAccounts],
-    [emails],
-    [attachments],
-    [mailEmailScores],
-    [recordings],
-    [recordingTags],
-    [recordingTagLinks],
-  ] = await readBackupSnapshot(userId, checkCancelled);
-
-  if (!userRows.length) {
-    throw new Error('User not found');
-  }
-
+  const data = await readBackupSnapshot(userId, sections, checkCancelled);
   const fileEntries = [];
-  for (const attachment of attachments || []) {
-    if (checkCancelled) await checkCancelled();
-    const entry = await readBackupFileEntry({
-      kind: 'email_attachment',
-      id: attachment.id,
-      storagePath: attachment.storage_path,
-      rootPath: ATTACHMENTS_ROOT,
-      includeData: includeFileData,
-      checkCancelled,
-    });
-    if (entry) fileEntries.push(entry);
+  for (const [kind, policy] of Object.entries(FILE_POLICIES)) {
+    const rootPath = BACKUP_FILE_ROOTS[kind];
+    if (!Object.hasOwn(BACKUP_FILE_ROOTS, kind) || !rootPath) throw new Error(`Unsupported backup file root: ${kind}`);
+    for (const row of data[policy.table] || []) {
+      if (checkCancelled) await checkCancelled();
+      const entry = await readBackupFileEntry({
+        kind,
+        id: row.id,
+        storagePath: row[policy.column],
+        rootPath,
+        includeData: includeFileData,
+        checkCancelled,
+      });
+      if (entry) fileEntries.push(entry);
+    }
   }
-  for (const email of emails || []) {
-    if (checkCancelled) await checkCancelled();
-    const entry = await readBackupFileEntry({
-      kind: 'raw_email',
-      id: email.id,
-      storagePath: email.raw_storage_path,
-      rootPath: MAIL_RAW_STORAGE_ROOT,
-      includeData: includeFileData,
-      checkCancelled,
-    });
-    if (entry) fileEntries.push(entry);
-  }
-  for (const recording of recordings || []) {
-    if (checkCancelled) await checkCancelled();
-    const entry = await readBackupFileEntry({
-      kind: 'recording',
-      id: recording.id,
-      storagePath: recording.storage_path,
-      rootPath: RECORDINGS_ROOT,
-      includeData: includeFileData,
-      checkCancelled,
-    });
-    if (entry) fileEntries.push(entry);
-  }
-
-  const data = {
-    user: normalizeRows(userRows)[0],
-    user_settings: normalizeRows(userSettings),
-    contacts: normalizeRows(contacts),
-    calendar_accounts: normalizeRows(calendarAccounts),
-    calendar_calendars: normalizeRows(calendarCalendars),
-    calendar_events: normalizeRows(calendarEvents),
-    calendar_event_subtasks: normalizeRows(calendarSubtasks),
-    calendar_event_attendees: normalizeRows(calendarAttendees),
-    calendar_event_external_refs: normalizeRows(calendarRefs),
-    mail_folders: normalizeRows(mailFolders),
-    mail_folder_remote_boxes: normalizeRows(mailFolderRemoteBoxes),
-    mail_sender_rules: normalizeRows(mailSenderRules),
-    mail_accounts: normalizeRows(mailAccounts),
-    emails: normalizeRows(emails),
-    email_attachments: normalizeRows(attachments),
-    mail_email_scores: normalizeRows(mailEmailScores),
-    recordings: normalizeRows(recordings),
-    recording_tags: normalizeRows(recordingTags),
-    recording_tag_links: normalizeRows(recordingTagLinks),
-  };
 
   let portableCredentials = null;
   if (portableCredentialKey) {
@@ -505,14 +418,14 @@ async function buildBackupForUser(userId, {
       mail_accounts: [],
       calendar_accounts: [],
     };
-    for (const account of data.mail_accounts) {
+    for (const account of data.mail_accounts || []) {
       const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
       if (password !== null) {
         credentialBundle.mail_accounts.push({ id: account.id, password });
       }
       account.encrypted_password = null;
     }
-    for (const account of data.calendar_accounts) {
+    for (const account of data.calendar_accounts || []) {
       const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
       const accessToken = account.encrypted_access_token ? decrypt(account.encrypted_access_token) : null;
       const refreshToken = account.encrypted_refresh_token ? decrypt(account.encrypted_refresh_token) : null;
@@ -555,6 +468,7 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full', {
 } = {}) {
   const fullBackup = await buildBackupForUser(userId, {
     includeFileData: false,
+    sections,
     portableCredentialKey,
     checkCancelled,
   });
@@ -772,8 +686,22 @@ function validateBackupPayload(backup, {
   const versionValidation = validateBackupVersionFields(backup);
   errors.push(...versionValidation.errors);
   warnings.push(...versionValidation.warnings);
-  if (!backup.data || typeof backup.data !== 'object') errors.push('Backup data section is missing');
+  if (!backup.data || typeof backup.data !== 'object' || Array.isArray(backup.data)) errors.push('Backup data section is missing');
   if (!Array.isArray(backup.files)) errors.push('Backup files section must be an array');
+  for (const [table, rows] of Object.entries(backup.data || {})) {
+    const policy = TABLE_POLICIES[table];
+    if (!policy) { errors.push(`Unsupported backup table: ${table}`); continue; }
+    if (backup.version === 3) {
+      for (const row of table === 'user' ? [rows] : Array.isArray(rows) ? rows : []) {
+        for (const column of Object.keys(row || {})) {
+          if (!policy.columns.includes(column)) errors.push(`Unsupported backup field: ${table}.${column}`);
+        }
+      }
+    }
+  }
+  for (const file of Array.isArray(backup.files) ? backup.files : []) {
+    if (!Object.values(SECTION_POLICIES).some(policy => policy.fileKinds.includes(file?.kind))) errors.push(`Unsupported backup file kind: ${file?.kind}`);
+  }
   errors.push(...validateRestoreRows(backup.data));
 
   if (Array.isArray(backup.files)) {
@@ -803,6 +731,23 @@ function validateBackupPayload(backup, {
         errors.push(`Checksum mismatch for file ${file.kind}:${file.id}`);
       }
     }
+  }
+
+  if (backup.version === 3 && backup.data && Array.isArray(backup.files)) {
+    const files = new Map();
+    for (const file of backup.files) {
+      const key = `${file?.kind}:${file?.id}`;
+      if (files.has(key)) errors.push(`Duplicate backup file: ${key}`);
+      files.set(key, file);
+      if (file?.missing) errors.push(`Schema 3 backup is missing file: ${key}`);
+    }
+    const rows = table => Array.isArray(backup.data[table]) ? backup.data[table] : [];
+    const required = [
+      ...rows('email_attachments').map(row => `email_attachment:${row.id}`),
+      ...rows('recordings').map(row => `recording:${row.id}`),
+      ...rows('emails').filter(row => row.raw_storage_path || row.import_complete === true || row.import_complete === 1).map(row => `raw_email:${row.id}`),
+    ];
+    for (const key of required) if (!files.has(key)) errors.push(`Schema 3 backup has no referenced file: ${key}`);
   }
 
   if (backup.manifest_sha256 && backup.data && Array.isArray(backup.files)) {
@@ -926,17 +871,7 @@ async function countRestoreConflicts(userId, backup) {
   return conflicts;
 }
 
-function normalizeBackupImportSections(sections) {
-  if (!sections || sections === 'full') return Array.from(BACKUP_IMPORT_SECTIONS);
-  const values = Array.isArray(sections) ? sections : String(sections).split(',');
-  const normalized = new Set();
-  for (const value of values) {
-    const section = String(value || '').trim().toLowerCase();
-    if (section === 'todo') normalized.add('calendar');
-    else if (BACKUP_IMPORT_SECTIONS.has(section)) normalized.add(section);
-  }
-  return normalized.size > 0 ? Array.from(normalized) : Array.from(BACKUP_IMPORT_SECTIONS);
-}
+const normalizeBackupImportSections = normalizeBackupSections;
 
 function scopeBackupForImport(backup, sections) {
   const normalizedSections = normalizeBackupImportSections(sections);
@@ -1003,20 +938,29 @@ function isSameCalendarName(a, b) {
   return normalizeIdentifier(a) === normalizeIdentifier(b);
 }
 
-async function findExistingContactForRestore(connection, row, userId) {
-  const [existingById] = await connection.execute('SELECT id FROM contacts WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
-  if (existingById.length) return existingById[0].id;
+function chooseUnclaimedRestoreMatch(rows, claimedIds, source, fields) {
+  const available = rows.filter(row => !claimedIds.has(row.id));
+  const exact = available.find(row => fields.every(field => (row[field] ?? null) === (source[field] ?? null)));
+  return (exact || available[0])?.id || null;
+}
 
+async function findExistingContactForRestore(connection, row, userId, claimedIds = new Set()) {
+  const [existingById] = await connection.execute('SELECT id FROM contacts WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
+  if (existingById.length && !claimedIds.has(existingById[0].id)) return existingById[0].id;
+
+  const identityFields = ['first_name', 'last_name', 'email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'company', 'job_title', 'notes', 'avatar_url'];
+  const selection = ['id', ...identityFields].join(', ');
   const emails = [row.email, row.email2, row.email3].map(normalizeIdentifier).filter(Boolean);
   for (const email of emails) {
     const [existingByEmail] = await connection.execute(
-      `SELECT id FROM contacts
+      `SELECT ${selection} FROM contacts
        WHERE user_id = ?
          AND (LOWER(email) = ? OR LOWER(email2) = ? OR LOWER(email3) = ?)
-       LIMIT 1`,
+       ORDER BY created_at ASC, id ASC`,
       [userId, email, email, email]
     );
-    if (existingByEmail.length) return existingByEmail[0].id;
+    const matchedId = chooseUnclaimedRestoreMatch(existingByEmail, claimedIds, row, identityFields);
+    if (matchedId) return matchedId;
   }
 
   const firstName = normalizeIdentifier(row.first_name);
@@ -1024,15 +968,16 @@ async function findExistingContactForRestore(connection, row, userId) {
   const phone = normalizeIdentifier(row.phone || row.phone2 || row.phone3);
   if (firstName || lastName || phone) {
     const [existingByName] = await connection.execute(
-      `SELECT id FROM contacts
+      `SELECT ${selection} FROM contacts
        WHERE user_id = ?
          AND LOWER(first_name) = ?
          AND COALESCE(LOWER(last_name), '') = ?
          AND (? = '' OR phone = ? OR phone2 = ? OR phone3 = ?)
-       LIMIT 1`,
+       ORDER BY created_at ASC, id ASC`,
       [userId, firstName, lastName, phone, phone, phone, phone]
     );
-    if (existingByName.length) return existingByName[0].id;
+    const matchedId = chooseUnclaimedRestoreMatch(existingByName, claimedIds, row, identityFields);
+    if (matchedId) return matchedId;
   }
 
   return null;
@@ -1081,22 +1026,36 @@ async function findExistingCalendarForRestore(connection, row, userId, targetAcc
   return null;
 }
 
-async function findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId) {
+async function findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId, claimedIds = new Set()) {
   const [existingById] = await connection.execute('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? AND calendar_id <=> ? LIMIT 1', [row.id, userId, targetCalendarId]);
-  if (existingById.length) return existingById[0].id;
+  if (existingById.length && !claimedIds.has(existingById[0].id)) return existingById[0].id;
+  const serializedReminders = value => {
+    if (!value) return null;
+    if (typeof value === 'string') { try { return canonicalJson(JSON.parse(value)); } catch { return value; } }
+    return canonicalJson(value);
+  };
+  const content = {
+    reminders: serializedReminders(row.reminders),
+    description: row.description ?? null, location: row.location || null, color: row.color || '#22c55e',
+    recurrence: row.recurrence || null, reminder_minutes: row.reminder_minutes ?? null,
+    todo_status: row.todo_status || null, done_at: normalizeMysqlDateTime(row.done_at),
+    all_day: row.all_day ? 1 : 0, is_todo_only: row.is_todo_only ? 1 : 0,
+  };
   const startTime = normalizeMysqlDateTime(row.start_time);
   const endTime = normalizeMysqlDateTime(row.end_time);
   const [existingByShape] = await connection.execute(
-    `SELECT id FROM calendar_events
+    `SELECT id, ${Object.keys(content).join(', ')} FROM calendar_events
      WHERE user_id = ?
        AND calendar_id <=> ?
        AND title = ?
        AND start_time = ?
        AND end_time = ?
-     LIMIT 1`,
+     ORDER BY created_at ASC, id ASC`,
     [userId, targetCalendarId || null, row.title || 'Untitled Event', startTime, endTime]
   );
-  return existingByShape[0]?.id || null;
+  return chooseUnclaimedRestoreMatch(existingByShape.map(candidate => ({ ...candidate,
+    done_at: normalizeMysqlDateTime(candidate.done_at), reminders: serializedReminders(candidate.reminders),
+  })), claimedIds, content, Object.keys(content));
 }
 
 async function findExistingEmailForRestore(connection, row, userId, targetMailAccountId, claimedIds = new Set()) {
@@ -1403,6 +1362,15 @@ function parseJsonZipEntry(entries, name) {
   }
 }
 
+function requireSchema3MetadataChecksum(backup, checksums) {
+  if (backup.version !== 3) return;
+  if (checksums?.algorithm !== 'sha256'
+    || typeof checksums?.entries?.['data/backup.json'] !== 'string'
+    || !/^[a-f0-9]{64}$/.test(checksums.entries['data/backup.json'])) {
+    throw new Error('Schema 3 backup requires valid SHA-256 metadata in checksums.json.');
+  }
+}
+
 function backupFromZipBuffer(buffer) {
   const entries = readZipEntries(buffer);
   const manifest = parseJsonZipEntry(entries, 'manifest.json');
@@ -1418,6 +1386,7 @@ function backupFromZipBuffer(buffer) {
     throw new Error('This ZIP is not a restorable UniHub backup.');
   }
   validateArchiveVersionFields(manifest, backup);
+  requireSchema3MetadataChecksum(backup, checksums);
   if (checksums?.entries?.['data/backup.json']) {
     const actualDataHash = sha256Buffer(entries.get('data/backup.json'));
     if (actualDataHash !== checksums.entries['data/backup.json']) {
@@ -1625,6 +1594,7 @@ async function backupFromZipFile(filePath) {
     throw new Error('This ZIP is not a restorable UniHub backup.');
   }
   validateArchiveVersionFields(manifest, backup);
+  requireSchema3MetadataChecksum(backup, checksums);
   if (
     checksums?.entries?.['data/backup.json']
     && backupEntry.sha256 !== checksums.entries['data/backup.json']
@@ -1737,8 +1707,12 @@ async function importBackupForUser(userId, backup, {
     const calendarAccountIdMap = new Map();
     const calendarIdMap = new Map();
     const calendarEventIdMap = new Map();
+    const claimedCalendarEventIds = new Set();
+    const claimedContactIds = new Set();
     const mailAccountIdMap = new Map();
     const mailFolderIdMap = new Map();
+    const mailRuleIdMap = new Map();
+    const writtenEmailIds = new Set();
     const emailIdMap = new Map();
     const claimedEmailIds = new Set();
     const claimedAttachmentIds = new Set();
@@ -1785,29 +1759,13 @@ async function importBackupForUser(userId, backup, {
       );
     }
 
-    for (const folder of data.mail_folders || []) {
-      await checkRestoreCancelled();
-      const row = overwriteUserId(folder, userId);
-      const [existingFolder] = await connection.execute(
-        'SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1',
-        [row.user_id, row.slug]
-      );
-      const targetFolderId = chooseTargetId(row.id, existingFolder[0]?.id, conflictMode, { canKeepBoth: false });
-      mailFolderIdMap.set(row.id, targetFolderId);
-      if (existingFolder.length && conflictMode !== 'replace') continue;
-      await writeOwnedRow(connection, userId, 'mail_folders',
-        ['id', 'user_id', 'slug', 'display_name', 'is_system', 'position'],
-        [targetFolderId, row.user_id, row.slug, row.display_name, row.is_system ? 1 : 0, row.position || 0],
-        ['display_name', 'is_system', 'position']
-      );
-    }
-
     await reportRestoreProgress('contacts', 50);
     for (const contact of data.contacts || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(contact, userId);
-      const existingContactId = await findExistingContactForRestore(connection, row, userId);
+      const existingContactId = await findExistingContactForRestore(connection, row, userId, claimedContactIds);
       const targetContactId = chooseTargetId(row.id, existingContactId, conflictMode);
+      claimedContactIds.add(targetContactId);
       if (!shouldWriteExisting(existingContactId, targetContactId, conflictMode)) continue;
       await writeOwnedRow(connection, userId, 'contacts',
         ['id', 'user_id', 'first_name', 'last_name', 'email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'company', 'job_title', 'notes', 'avatar_url', 'is_favorite'],
@@ -1884,7 +1842,7 @@ async function importBackupForUser(userId, backup, {
         : row.name || 'Calendar';
       await writeOwnedRow(connection, userId, 'calendar_calendars',
         ['id', 'user_id', 'account_id', 'name', 'external_id', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'sync_token'],
-        [targetCalendarId, row.user_id, targetAccountId, calendarName, row.external_id || null, row.color || '#22c55e', row.is_visible === false ? 0 : 1, row.auto_todo_enabled === false ? 0 : 1, row.read_only ? 1 : 0, row.is_primary ? 1 : 0, row.sync_token || null],
+        [targetCalendarId, row.user_id, targetAccountId, calendarName, row.external_id || null, row.color || '#22c55e', row.is_visible === false || row.is_visible === 0 ? 0 : 1, row.auto_todo_enabled === false || row.auto_todo_enabled === 0 ? 0 : 1, row.read_only ? 1 : 0, row.is_primary ? 1 : 0, row.sync_token || null],
         ['name', 'external_id', 'color', 'is_visible', 'auto_todo_enabled', 'read_only', 'is_primary', 'sync_token']
       );
     }
@@ -1893,9 +1851,10 @@ async function importBackupForUser(userId, backup, {
       await checkRestoreCancelled();
       const row = overwriteUserId(event, userId);
       const targetCalendarId = await resolveOwnedReference(connection, userId, 'calendar_calendars', row.calendar_id, calendarIdMap, { nullable: true });
-      const existingEventId = await findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId);
+      const existingEventId = await findExistingCalendarEventForRestore(connection, row, userId, targetCalendarId, claimedCalendarEventIds);
       const targetEventId = chooseTargetId(row.id, existingEventId, conflictMode);
       calendarEventIdMap.set(row.id, targetEventId);
+      claimedCalendarEventIds.add(targetEventId);
       if (!shouldWriteExisting(existingEventId, targetEventId, conflictMode)) continue;
       await writeOwnedRow(connection, userId, 'calendar_events',
         ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at'],
@@ -1978,6 +1937,12 @@ async function importBackupForUser(userId, backup, {
         : await connection.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
       const targetAccountId = chooseTargetId(row.id, existingById[0]?.id, conflictMode, { canKeepBoth: false });
       mailAccountIdMap.set(row.id, targetAccountId);
+      if (existingById.length) {
+        const [targets] = await connection.execute('SELECT email_address, username, imap_host, imap_port FROM mail_accounts WHERE id = ? AND user_id = ?', [targetAccountId, userId]);
+        if (targets.length && !sameProviderMailbox(targets[0], row)) {
+          throw new Error('Cannot merge mail accounts with different provider mailbox identities. Restore into a separate user or resolve the conflicting account first.');
+        }
+      }
       const syncFetchLimit = normalizeSyncFetchLimit(row.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT;
       const policyAccepted = existingById.length && conflictMode === 'keep_existing'
         ? true : await checkRestoredAccountPolicy(row, 'mail', validation.warnings);
@@ -2018,6 +1983,33 @@ async function importBackupForUser(userId, backup, {
           [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false || row.is_active === 0 ? 0 : 1, normalizeMysqlDateTime(row.last_synced_at)]
         );
       }
+      await connection.execute(
+        'UPDATE mail_accounts SET sync_mode = ?, sync_status = ? WHERE id = ? AND user_id = ?',
+        [row.sync_mode === 'sync' ? 'sync' : 'download', row.sync_mode === 'sync' ? 'pending' : 'idle', targetAccountId, userId]
+      );
+    }
+
+    for (const folder of data.mail_folders || []) {
+      await checkRestoreCancelled();
+      const row = overwriteUserId(folder, userId);
+      const targetAccountId = await resolveOwnedReference(connection, userId, 'mail_accounts', row.mail_account_id, mailAccountIdMap, { nullable: true });
+      const [existingFolder] = await connection.execute(
+        'SELECT id, mail_account_id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1 FOR UPDATE',
+        [row.user_id, row.slug]
+      );
+      // Slugs are unique per user. Reusing one across different account scopes
+      // would hide imported messages or strand the destination's existing mail.
+      if (existingFolder.length && (existingFolder[0].mail_account_id ?? null) !== targetAccountId) {
+        throw new Error(`Mail folder "${row.display_name || row.slug}" (${row.slug}) belongs to a different account scope. Rename the conflicting folder before restoring this backup.`);
+      }
+      const targetFolderId = chooseTargetId(row.id, existingFolder[0]?.id, conflictMode, { canKeepBoth: false });
+      mailFolderIdMap.set(row.id, targetFolderId);
+      if (existingFolder.length && conflictMode !== 'replace') continue;
+      await writeOwnedRow(connection, userId, 'mail_folders',
+        ['id', 'user_id', 'slug', 'display_name', 'is_system', 'position', 'mail_account_id', 'special_use'],
+        [targetFolderId, row.user_id, row.slug, row.display_name, row.is_system ? 1 : 0, row.position || 0, targetAccountId, row.special_use || null],
+        ['display_name', 'is_system', 'position', 'mail_account_id', 'special_use']
+      );
     }
 
     for (const mapping of data.mail_folder_remote_boxes || []) {
@@ -2039,11 +2031,12 @@ async function importBackupForUser(userId, backup, {
          LIMIT 1`,
         [row.user_id, targetMailAccountId, row.match_type, row.match_value, row.target_folder || 'inbox']
       );
-      if (existingRule.length && conflictMode === 'keep_existing') continue;
       const targetRuleId = chooseTargetId(row.id, existingRule[0]?.id, conflictMode);
+      mailRuleIdMap.set(row.id, targetRuleId);
+      if (existingRule.length && conflictMode === 'keep_existing') continue;
       await writeOwnedRow(connection, userId, 'mail_sender_rules',
         ['id', 'user_id', 'mail_account_id', 'match_type', 'match_value', 'target_folder', 'priority', 'is_active'],
-        [targetRuleId, row.user_id, targetMailAccountId, row.match_type, row.match_value, row.target_folder || 'inbox', row.priority || 100, row.is_active === false ? 0 : 1],
+        [targetRuleId, row.user_id, targetMailAccountId, row.match_type, row.match_value, row.target_folder || 'inbox', row.priority ?? 100, row.is_active === false || row.is_active === 0 ? 0 : 1],
         ['mail_account_id', 'match_type', 'match_value', 'target_folder', 'priority', 'is_active']
       );
     }
@@ -2052,6 +2045,7 @@ async function importBackupForUser(userId, backup, {
       await checkRestoreCancelled();
       const row = overwriteUserId(email, userId);
       const targetMailAccountId = await resolveOwnedReference(connection, userId, 'mail_accounts', row.mail_account_id, mailAccountIdMap);
+      const targetFilingAccountId = await resolveOwnedReference(connection, userId, 'mail_accounts', row.filing_account_id, mailAccountIdMap, { nullable: true });
       const existingEmailId = await findExistingEmailForRestore(connection, row, userId, targetMailAccountId, claimedEmailIds);
       const targetEmailId = chooseTargetId(row.id, existingEmailId, conflictMode);
       emailIdMap.set(row.id, targetEmailId);
@@ -2062,11 +2056,12 @@ async function importBackupForUser(userId, backup, {
       if (!rawPath && row.raw_storage_path && existingEmailId === targetEmailId) {
         validation.warnings.push(`Kept the existing raw message for email ${row.id}; this backup has no restorable raw file.`);
       }
+      writtenEmailIds.add(row.id);
       writtenEmailHtml.set(row.id, { targetEmailId, html: row.body_html || null });
       await writeOwnedRow(connection, userId, 'emails',
-        ['id', 'user_id', 'mail_account_id', 'message_id', 'subject', 'from_address', 'from_name', 'to_addresses', 'cc_addresses', 'bcc_addresses', 'body_text', 'body_html', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'raw_storage_path', 'raw_sha256', 'is_read', 'is_starred', 'is_draft', 'has_attachments', 'received_at', 'import_complete'],
-        [targetEmailId, row.user_id, targetMailAccountId, row.message_id || null, row.subject || null, row.from_address || 'unknown', row.from_name || null, typeof row.to_addresses === 'string' ? row.to_addresses : JSON.stringify(row.to_addresses || []), row.cc_addresses ? (typeof row.cc_addresses === 'string' ? row.cc_addresses : JSON.stringify(row.cc_addresses)) : null, row.bcc_addresses ? (typeof row.bcc_addresses === 'string' ? row.bcc_addresses : JSON.stringify(row.bcc_addresses)) : null, row.body_text || null, row.body_html || null, row.folder || 'inbox', row.source_folder || null, row.imap_uid || null, row.imap_uidvalidity || null, rawPath, rawPath ? row.raw_sha256 || null : null, row.is_read ? 1 : 0, row.is_starred ? 1 : 0, row.is_draft ? 1 : 0, row.has_attachments ? 1 : 0, normalizeMysqlDateTime(row.received_at, new Date()), rawPath && (row.import_complete === true || row.import_complete === 1) ? 1 : 0],
-        ['subject', 'from_address', 'from_name', 'to_addresses', 'cc_addresses', 'bcc_addresses', 'body_text', 'body_html', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'raw_storage_path', 'raw_sha256', 'is_read', 'is_starred', 'is_draft', 'has_attachments', 'received_at', 'import_complete']
+        ['id', 'user_id', 'mail_account_id', 'message_id', 'subject', 'from_address', 'from_name', 'to_addresses', 'cc_addresses', 'bcc_addresses', 'body_text', 'body_html', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'raw_storage_path', 'raw_sha256', 'is_read', 'is_starred', 'is_draft', 'has_attachments', 'received_at', 'import_complete', 'filing_account_id', 'is_legacy', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'remote_missing'],
+        [targetEmailId, row.user_id, targetMailAccountId, row.message_id || null, row.subject || null, row.from_address || 'unknown', row.from_name || null, typeof row.to_addresses === 'string' ? row.to_addresses : JSON.stringify(row.to_addresses || []), row.cc_addresses ? (typeof row.cc_addresses === 'string' ? row.cc_addresses : JSON.stringify(row.cc_addresses)) : null, row.bcc_addresses ? (typeof row.bcc_addresses === 'string' ? row.bcc_addresses : JSON.stringify(row.bcc_addresses)) : null, row.body_text || null, row.body_html || null, row.folder || 'inbox', row.source_folder || null, row.imap_uid || null, row.imap_uidvalidity || null, rawPath, rawPath ? row.raw_sha256 || null : null, row.is_read ? 1 : 0, row.is_starred ? 1 : 0, row.is_draft ? 1 : 0, row.has_attachments ? 1 : 0, normalizeMysqlDateTime(row.received_at, new Date()), rawPath && (row.import_complete === true || row.import_complete === 1) ? 1 : 0, targetFilingAccountId, row.is_legacy ? 1 : 0, row.remote_folder ?? null, row.remote_uid ?? null, row.remote_uidvalidity ?? null, row.remote_missing ? 1 : 0],
+        ['subject', 'from_address', 'from_name', 'to_addresses', 'cc_addresses', 'bcc_addresses', 'body_text', 'body_html', 'folder', 'source_folder', 'imap_uid', 'imap_uidvalidity', 'raw_storage_path', 'raw_sha256', 'is_read', 'is_starred', 'is_draft', 'has_attachments', 'received_at', 'import_complete', 'filing_account_id', 'is_legacy', 'remote_folder', 'remote_uid', 'remote_uidvalidity', 'remote_missing']
           .filter(column => rawPath || !['raw_storage_path', 'raw_sha256', 'import_complete'].includes(column))
       );
     }
@@ -2136,6 +2131,27 @@ async function importBackupForUser(userId, backup, {
       );
     }
 
+    await restoreMailRecovery(connection, userId, data, {
+      accountIds: mailAccountIdMap, folderIds: mailFolderIdMap, emailIds: emailIdMap,
+      ruleIds: mailRuleIdMap, writtenEmailIds, conflictMode, checkCancelled: checkRestoreCancelled,
+      normalizeDate: normalizeMysqlDateTime, warnings: validation.warnings,
+    });
+    if (scopedBackup.source_backup_version >= 3) {
+      await validateRestoredMailDestinations(connection, userId, [...writtenEmailIds].map(id => emailIdMap.get(id)), checkRestoreCancelled);
+    }
+
+    for (const score of data.tetris_scores || []) {
+      await checkRestoreCancelled();
+      const [existing] = await connection.execute('SELECT score, `lines` FROM tetris_scores WHERE user_id = ? FOR UPDATE', [userId]);
+      // One personal best per user. keep_both retains the better score.
+      if (existing.length && (conflictMode === 'keep_existing' || conflictMode === 'keep_both'
+        && (existing[0].score > score.score || existing[0].score === score.score && existing[0].lines >= score.lines))) continue;
+      await writeOwnedRow(connection, userId, 'tetris_scores',
+        ['user_id', 'score', 'lines', 'level', 'achieved_at'],
+        [userId, score.score, score.lines, score.level, normalizeMysqlDateTime(score.achieved_at, new Date())],
+        ['score', 'lines', 'level', 'achieved_at']);
+    }
+
     await reportRestoreProgress('recordings', 90);
     for (const recording of data.recordings || []) {
       await checkRestoreCancelled();
@@ -2178,6 +2194,22 @@ async function importBackupForUser(userId, backup, {
         ],
         ['title', 'description', 'original_filename', 'content_type', 'size_bytes', 'duration_seconds', 'storage_path', 'source', 'category', 'recorded_at', 'metadata']
       );
+    }
+
+    for (const transcript of data.recording_transcription_jobs || []) {
+      await checkRestoreCancelled();
+      if (skippedRecordingIds.has(transcript.recording_id)) continue;
+      const recordingId = await resolveOwnedReference(connection, userId, 'recordings', transcript.recording_id, recordingIdMap);
+      const [existing] = await connection.execute(
+        "SELECT id FROM recording_transcription_jobs WHERE user_id = ? AND recording_id = ? AND status = 'completed' AND transcript_text <=> ? LIMIT 1",
+        [userId, recordingId, transcript.transcript_text]);
+      if (existing.length && conflictMode !== 'replace') continue;
+      const id = chooseTargetId(transcript.id, existing[0]?.id, conflictMode, { canKeepBoth: false });
+      await writeOwnedRow(connection, userId, 'recording_transcription_jobs',
+        ['id', 'user_id', 'recording_id', 'status', 'provider', 'model', 'language', 'transcript_text', 'error', 'created_at', 'updated_at'],
+        [id, userId, recordingId, 'completed', transcript.provider || null, transcript.model || null, transcript.language || null,
+          transcript.transcript_text ?? null, null, normalizeMysqlDateTime(transcript.created_at, new Date()), normalizeMysqlDateTime(transcript.updated_at, new Date())],
+        ['provider', 'model', 'language', 'transcript_text', 'error']);
     }
 
     for (const tag of data.recording_tags || []) {

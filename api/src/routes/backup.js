@@ -56,6 +56,17 @@ function isTemporaryBackupUpload(req, body) {
 }
 
 module.exports = {
+  'GET /api/backup/capabilities': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const { SECTION_POLICIES } = require('../services/backup-catalog');
+    const { BACKUP_VERSION } = require('../services/backup-format');
+    const { DISABLED_BACKUP_ROUTES } = require('../services/backup-availability');
+    const labels = { settings: 'Settings', contacts: 'Contacts', calendar: 'Calendar/ToDo', mail: 'Mail', recordings: 'Recordings', games: 'Games' };
+    return { enabled: DISABLED_BACKUP_ROUTES.size === 0, version: BACKUP_VERSION,
+      sections: Object.keys(SECTION_POLICIES).map(id => ({ id, label: labels[id] || id })),
+      exclusions: ['Game progress saved only in this browser', 'Other users, login sessions and server configuration'],
+    };
+  },
   'GET /api/backup/jobs': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
@@ -78,7 +89,7 @@ module.exports = {
       };
     } catch (error) {
       console.error('Start backup job error:', error);
-      return { error: error.message || 'Failed to start backup job', status: 500 };
+      return { error: error.message || 'Failed to start backup job', status: error.code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : 500 };
     }
   },
 
@@ -198,7 +209,7 @@ module.exports = {
       return result.error ? result : { ...result, status: 202 };
     } catch (error) {
       console.error('Create restore from backup error:', error);
-      return { error: error.message || 'Failed to create restore job', status: 500 };
+      return { error: error.message || 'Failed to create restore job', status: error.code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : 500 };
     }
   },
 
@@ -313,7 +324,7 @@ module.exports = {
       return { job, status: 202 };
     } catch (error) {
       console.error('Backup upload error:', error);
-      return { error: error.message || 'Failed to retain backup upload', status: 500 };
+      return { error: error.message || 'Failed to retain backup upload', status: error.code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : 500 };
     }
   },
 };

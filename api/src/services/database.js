@@ -9,6 +9,8 @@ const {
 const { hashPassword } = require('../auth');
 const { backfillCalendarOwnership } = require('./calendar');
 const { getDatabaseConfig } = require('./database-config');
+const { runMigrations } = require('./database-migrations');
+const { verifyDatabaseInventory } = require('./data-inventory');
 
 function isPlaceholderSecret(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -117,6 +119,63 @@ async function initDatabase() {
 
 // ── Auto-create tables & seed admin user on first run ─────────────
 async function ensureSchema() {
+  await runMigrations(getDb(), [
+    {
+      id: 1,
+      name: 'verified-0.10.5-baseline',
+      up: ensureLegacySchema,
+      verify: async connection => {
+        // Notification tables are created by their service after core startup.
+        await verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 1 });
+        const [columns] = await connection.execute("SHOW COLUMNS FROM emails WHERE Field = 'import_complete'");
+        if (columns[0]?.Null !== 'NO' || String(columns[0]?.Default) !== '0') {
+          throw new Error('emails.import_complete must be NOT NULL with default 0');
+        }
+      },
+    },
+    {
+      id: 2,
+      name: 'sent-draft-read-repair',
+      up: connection => connection.execute("UPDATE emails SET is_read = TRUE WHERE is_read = FALSE AND folder IN ('sent', 'drafts')"),
+      verify: async connection => {
+        const [[row]] = await connection.execute("SELECT COUNT(*) AS remaining FROM emails WHERE is_read = FALSE AND folder IN ('sent', 'drafts')");
+        if (Number(row.remaining) !== 0) throw new Error('Sent/draft read-state repair is incomplete');
+      },
+    },
+    {
+      id: 3,
+      name: 'mail-server-follow-mode',
+      up: async connection => {
+        const changes = [
+          ['mail_accounts', 'sync_mode', "ALTER TABLE mail_accounts ADD COLUMN sync_mode VARCHAR(16) NOT NULL DEFAULT 'download'"],
+          ['mail_accounts', 'sync_status', "ALTER TABLE mail_accounts ADD COLUMN sync_status VARCHAR(16) NOT NULL DEFAULT 'idle'"],
+          ['emails', 'remote_folder', 'ALTER TABLE emails ADD COLUMN remote_folder VARCHAR(255) NULL'],
+          ['emails', 'remote_uid', 'ALTER TABLE emails ADD COLUMN remote_uid BIGINT NULL'],
+          ['emails', 'remote_uidvalidity', 'ALTER TABLE emails ADD COLUMN remote_uidvalidity BIGINT NULL'],
+          ['emails', 'remote_missing', 'ALTER TABLE emails ADD COLUMN remote_missing BOOLEAN NOT NULL DEFAULT FALSE'],
+        ];
+        for (const [table, column, sql] of changes) {
+          const [fields] = await connection.execute(`SHOW COLUMNS FROM ${quoteIdentifier(table)}`);
+          if (!fields.some(field => field.Field === column)) await connection.execute(sql);
+        }
+        // Safe after partially committed DDL. This step runs before workers start
+        // and never overwrites an already recorded current provider identity.
+        await connection.execute(`UPDATE emails SET remote_folder = source_folder,
+          remote_uid = imap_uid, remote_uidvalidity = imap_uidvalidity
+          WHERE remote_folder IS NULL AND remote_uid IS NULL AND source_folder IS NOT NULL AND imap_uid IS NOT NULL`);
+      },
+      verify: async connection => {
+        await verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 3 });
+        for (const [table, field, expected] of [['mail_accounts', 'sync_mode', 'download'], ['mail_accounts', 'sync_status', 'idle'], ['emails', 'remote_missing', '0']]) {
+          const [columns] = await connection.execute(`SHOW COLUMNS FROM ${quoteIdentifier(table)} WHERE Field = ?`, [field]);
+          if (columns[0]?.Null !== 'NO' || String(columns[0]?.Default) !== expected) throw new Error(`${table}.${field} has an unsafe default`);
+        }
+      },
+    },
+  ]);
+}
+
+async function ensureLegacySchema() {
   console.log('Checking database schema…');
 
   await db.execute(`CREATE TABLE IF NOT EXISTS users (
@@ -141,9 +200,7 @@ async function ensureSchema() {
   try {
     await db.execute(`ALTER TABLE users ADD COLUMN timezone VARCHAR(64) NULL`);
   } catch (error) {
-    if (!error.message.includes('Duplicate column name')) {
-      console.log('[DB] Note: users.timezone column may already exist');
-    }
+    if (error.code !== 'ER_DUP_FIELDNAME') throw error;
   }
   const userTwoFactorMigrations = [
     ['two_factor_enabled', `ALTER TABLE users ADD COLUMN two_factor_enabled BOOLEAN DEFAULT FALSE AFTER timezone`],
@@ -151,14 +208,7 @@ async function ensureSchema() {
     ['two_factor_recovery_codes', `ALTER TABLE users ADD COLUMN two_factor_recovery_codes JSON NULL AFTER encrypted_two_factor_secret`],
   ];
   for (const [columnName, alterSql] of userTwoFactorMigrations) {
-    try {
-      const [columns] = await db.execute('SHOW COLUMNS FROM users LIKE ?', [columnName]);
-      if (!Array.isArray(columns) || columns.length === 0) {
-        await db.execute(alterSql);
-      }
-    } catch (error) {
-      // Continue startup if a migration is unsupported or already applied.
-    }
+    await ensureColumn('users', columnName, alterSql, { required: true });
   }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS sessions (
@@ -232,22 +282,22 @@ async function ensureSchema() {
       'ALTER TABLE contacts ADD INDEX idx_contacts_user_fav_name (user_id, is_favorite, first_name, last_name)'
     );
   } catch (e) {
-    // Ignore if index already exists or ALTER not supported
+    if (e.code !== 'ER_DUP_KEYNAME') throw e;
   }
 
   // Backfill extra email/phone slots for existing installs
   try {
     await db.execute('ALTER TABLE contacts ADD COLUMN email2 VARCHAR(255)');
-  } catch (e) {}
+  } catch (e) { if (e.code !== 'ER_DUP_FIELDNAME') throw e; }
   try {
     await db.execute('ALTER TABLE contacts ADD COLUMN email3 VARCHAR(255)');
-  } catch (e) {}
+  } catch (e) { if (e.code !== 'ER_DUP_FIELDNAME') throw e; }
   try {
     await db.execute('ALTER TABLE contacts ADD COLUMN phone2 VARCHAR(50)');
-  } catch (e) {}
+  } catch (e) { if (e.code !== 'ER_DUP_FIELDNAME') throw e; }
   try {
     await db.execute('ALTER TABLE contacts ADD COLUMN phone3 VARCHAR(50)');
-  } catch (e) {}
+  } catch (e) { if (e.code !== 'ER_DUP_FIELDNAME') throw e; }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS calendar_accounts (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -285,14 +335,7 @@ async function ensureSchema() {
     ['sync_error', `ALTER TABLE calendar_accounts ADD COLUMN sync_error TEXT NULL AFTER sync_status`],
   ];
   for (const [columnName, alterSql] of calendarAccountMigrations) {
-    try {
-      const [columns] = await db.execute('SHOW COLUMNS FROM calendar_accounts LIKE ?', [columnName]);
-      if (!Array.isArray(columns) || columns.length === 0) {
-        await db.execute(alterSql);
-      }
-    } catch (error) {
-      // Continue startup if an idempotent migration fails on an older MySQL variant.
-    }
+    await ensureColumn('calendar_accounts', columnName, alterSql, { required: true });
   }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS calendar_calendars (
@@ -346,54 +389,40 @@ async function ensureSchema() {
   try {
     await db.execute('ALTER TABLE calendar_events ADD COLUMN calendar_id CHAR(36) NULL AFTER user_id');
   } catch (error) {
-    if (!error.message.includes('Duplicate column name')) {
-      console.log('[DB] Note: calendar_id column may already exist');
-    }
+    if (error.code !== 'ER_DUP_FIELDNAME') throw error;
   }
 
   // Add index for calendar_id if it doesn't exist
   try {
     await db.execute('CREATE INDEX idx_events_calendar ON calendar_events(calendar_id)');
-  } catch (error) {}
+  } catch (error) { if (error.code !== 'ER_DUP_KEYNAME') throw error; }
 
   // Add todo_status column if it doesn't exist (for existing installations)
   try {
     await db.execute(`ALTER TABLE calendar_events ADD COLUMN todo_status VARCHAR(20) DEFAULT NULL COMMENT 'done, changed, time_moved, cancelled'`);
   } catch (error) {
-    // Column already exists, ignore error
-    if (!error.message.includes('Duplicate column name')) {
-      console.log('[DB] Note: todo_status column may already exist');
-    }
+    if (error.code !== 'ER_DUP_FIELDNAME') throw error;
   }
   
   // Add reminders JSON column if it doesn't exist (for existing installations)
   try {
     await db.execute(`ALTER TABLE calendar_events ADD COLUMN reminders JSON DEFAULT NULL COMMENT 'Array of reminder minutes before event: [0, 15, 60] for default + 15min + 1hr before'`);
   } catch (error) {
-    // Column already exists, ignore error
-    if (!error.message.includes('Duplicate column name')) {
-      console.log('[DB] Note: reminders column may already exist');
-    }
+    if (error.code !== 'ER_DUP_FIELDNAME') throw error;
   }
   
   // Add is_todo_only column if it doesn't exist (for existing installations)
   try {
     await db.execute(`ALTER TABLE calendar_events ADD COLUMN is_todo_only BOOLEAN DEFAULT FALSE COMMENT 'True for standalone todos without calendar dates'`);
   } catch (error) {
-    // Column already exists, ignore error
-    if (!error.message.includes('Duplicate column name')) {
-      console.log('[DB] Note: is_todo_only column may already exist');
-    }
+    if (error.code !== 'ER_DUP_FIELDNAME') throw error;
   }
   
   // Add done_at column if it doesn't exist (for existing installations)
   try {
     await db.execute(`ALTER TABLE calendar_events ADD COLUMN done_at DATETIME NULL COMMENT 'Timestamp when task was marked as done'`);
   } catch (error) {
-    // Column already exists, ignore error
-    if (!error.message.includes('Duplicate column name')) {
-      console.log('[DB] Note: done_at column may already exist');
-    }
+    if (error.code !== 'ER_DUP_FIELDNAME') throw error;
   }
 
   // Add FK after both tables are ensured to exist.
@@ -404,7 +433,7 @@ async function ensureSchema() {
       FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id)
       ON DELETE SET NULL
     `);
-  } catch (error) {}
+  } catch (error) { if (error.code !== 'ER_FK_DUP_NAME') throw error; }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS calendar_event_subtasks (
     id CHAR(36) PRIMARY KEY DEFAULT (UUID()),
@@ -689,31 +718,13 @@ async function ensureSchema() {
     ['raw_sha256', `ALTER TABLE emails ADD COLUMN raw_sha256 CHAR(64) NULL AFTER raw_storage_path`],
   ];
   for (const [columnName, alterSql] of emailColumnMigrations) {
-    try {
-      const [columns] = await db.execute(`SHOW COLUMNS FROM emails LIKE ?`, [columnName]);
-      if (!Array.isArray(columns) || columns.length === 0) {
-        await db.execute(alterSql);
-      }
-    } catch (e) {
-      // Continue startup if a migration is unsupported or already applied.
-    }
+    await ensureColumn('emails', columnName, alterSql, { required: true });
   }
-  try {
-    await db.execute(`ALTER TABLE emails MODIFY COLUMN folder VARCHAR(64) DEFAULT 'inbox'`);
-  } catch (e) {
-    // Ignore if the column is already compatible or ALTER is unsupported.
-  }
-  try {
-    // Sent and draft messages are authored locally and must never contribute to unread badges.
-    // This repairs messages created before explicit read-state inserts were introduced.
-    await db.execute("UPDATE emails SET is_read = TRUE WHERE is_read = FALSE AND folder IN ('sent', 'drafts')");
-  } catch (e) {
-    // Keep startup available when the legacy emails table is unavailable.
-  }
+  await db.execute(`ALTER TABLE emails MODIFY COLUMN folder VARCHAR(64) DEFAULT 'inbox'`);
   try {
     await db.execute('CREATE INDEX idx_emails_imap_uid ON emails(mail_account_id, source_folder, imap_uid)');
   } catch (e) {
-    // Ignore duplicate index errors.
+    if (e.code !== 'ER_DUP_KEYNAME') throw e;
   }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS mail_server_messages (
@@ -784,40 +795,26 @@ async function ensureSchema() {
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // Migrations for older installs
-  try {
-    await db.execute(`ALTER TABLE email_attachments ADD COLUMN IF NOT EXISTS content_id VARCHAR(255) AFTER storage_path`);
-  } catch (e) {
-    // Ignore when unsupported or already exists
-  }
-  try {
-    await db.execute(`ALTER TABLE email_attachments ADD COLUMN IF NOT EXISTS user_id CHAR(36) NULL AFTER email_id`);
-  } catch (e) {
-    // Ignore when unsupported or already exists
-  }
-  try {
-    await db.execute(
-      `UPDATE email_attachments a
-       INNER JOIN emails e ON a.email_id = e.id
-       SET a.user_id = e.user_id
-       WHERE a.user_id IS NULL`
-    );
-  } catch (e) {
-    // Ignore migration failures and continue startup
-  }
-  try {
-    await db.execute(`ALTER TABLE email_attachments MODIFY COLUMN user_id CHAR(36) NOT NULL`);
-  } catch (e) {
-    // Ignore if already NOT NULL or unsupported
-  }
+  await ensureColumn('email_attachments', 'content_id',
+    'ALTER TABLE email_attachments ADD COLUMN content_id VARCHAR(255) AFTER storage_path', { required: true });
+  await ensureColumn('email_attachments', 'user_id',
+    'ALTER TABLE email_attachments ADD COLUMN user_id CHAR(36) NULL AFTER email_id', { required: true });
+  await db.execute(
+    `UPDATE email_attachments a
+     INNER JOIN emails e ON a.email_id = e.id
+     SET a.user_id = e.user_id
+     WHERE a.user_id IS NULL`
+  );
+  await db.execute(`ALTER TABLE email_attachments MODIFY COLUMN user_id CHAR(36) NOT NULL`);
   try {
     await db.execute(`CREATE INDEX idx_attachments_user ON email_attachments(user_id)`);
   } catch (e) {
-    // Ignore duplicate index errors
+    if (e.code !== 'ER_DUP_KEYNAME') throw e;
   }
   try {
     await db.execute(`CREATE INDEX idx_attachments_content_id ON email_attachments(content_id)`);
   } catch (e) {
-    // Ignore duplicate index errors
+    if (e.code !== 'ER_DUP_KEYNAME') throw e;
   }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS system_settings (
@@ -864,25 +861,14 @@ async function ensureSchema() {
     ['metadata', `ALTER TABLE recordings ADD COLUMN metadata JSON NULL AFTER recorded_at`],
   ];
   for (const [columnName, alterSql] of recordingColumnMigrations) {
-    try {
-      const [columns] = await db.execute('SHOW COLUMNS FROM recordings LIKE ?', [columnName]);
-      if (!Array.isArray(columns) || columns.length === 0) {
-        await db.execute(alterSql);
-      }
-    } catch (e) {
-      // Continue startup if a migration is unsupported or already applied.
-    }
+    await ensureColumn('recordings', columnName, alterSql, { required: true });
   }
-  try {
-    await db.execute(`UPDATE recordings SET category = 'none' WHERE category IS NULL OR category = ''`);
-    await db.execute(`UPDATE recordings SET recorded_at = created_at WHERE recorded_at IS NULL`);
-  } catch (e) {
-    // Continue startup if backfill fails; defaults still protect new rows.
-  }
+  await db.execute(`UPDATE recordings SET category = 'none' WHERE category IS NULL OR category = ''`);
+  await db.execute(`UPDATE recordings SET recorded_at = created_at WHERE recorded_at IS NULL`);
   try {
     await db.execute('CREATE INDEX idx_recordings_user_category_created ON recordings(user_id, category, created_at DESC)');
   } catch (e) {
-    // Ignore duplicate index errors.
+    if (e.code !== 'ER_DUP_KEYNAME') throw e;
   }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS recording_tags (
@@ -940,14 +926,7 @@ async function ensureSchema() {
     ['metadata', `ALTER TABLE recording_uploads ADD COLUMN metadata JSON NULL AFTER recorded_at`],
   ];
   for (const [columnName, alterSql] of recordingUploadColumnMigrations) {
-    try {
-      const [columns] = await db.execute('SHOW COLUMNS FROM recording_uploads LIKE ?', [columnName]);
-      if (!Array.isArray(columns) || columns.length === 0) {
-        await db.execute(alterSql);
-      }
-    } catch (e) {
-      // Continue startup if a migration is unsupported or already applied.
-    }
+    await ensureColumn('recording_uploads', columnName, alterSql, { required: true });
   }
 
   await db.execute(`CREATE TABLE IF NOT EXISTS recording_transcription_jobs (

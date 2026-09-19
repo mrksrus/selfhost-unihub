@@ -1,6 +1,8 @@
-// Temporarily suspended while the account data model evolves. Existing archives stay readable.
+// Schema 3 recovery has passed the upgrade and recovery gate.
+// Retain a single emergency suspension switch for both HTTP dispatch paths.
+const BACKUP_MUTATIONS_ENABLED = true;
 const BACKUP_DISABLED_MESSAGE = 'Backup creation, import and restore are temporarily disabled while the data model changes. Existing completed backups can still be downloaded.';
-const DISABLED_BACKUP_ROUTES = new Set([
+const DISABLED_BACKUP_ROUTES = new Set(BACKUP_MUTATIONS_ENABLED ? [] : [
   'POST /api/backup/jobs',
   'POST /api/backup/import',
   'POST /api/backup/jobs/:id/restore',

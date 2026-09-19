@@ -106,3 +106,14 @@ test('password reveal reports missing recovery metadata for an existing job', as
   assert.match(result.error, /metadata is missing/i);
   assert.equal(rolledBack, true);
 });
+
+
+test('backup capabilities expose the shared recoverable sections without authorizing anonymous callers', async () => {
+  const handler = routes['GET /api/backup/capabilities'];
+  assert.equal((await handler({}, null)).status, 401);
+  const capabilities = await handler({}, 'owner');
+  assert.equal(capabilities.enabled, true);
+  assert.equal(capabilities.version, 3);
+  assert.deepEqual(capabilities.sections.map(section => section.id), Object.keys(require('../src/services/backup-catalog').SECTION_POLICIES));
+  assert.ok(capabilities.exclusions.some(value => /browser/.test(value)));
+});

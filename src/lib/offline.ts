@@ -213,11 +213,15 @@ const truthy = (value: unknown) => value === true || value === 1 || value === '1
 const numberParam = (params: URLSearchParams, key: string, fallback: number, cap: number) => {
   const value = Number.parseInt(params.get(key) || '',10); return Number.isFinite(value) ? Math.min(Math.max(0,value),cap) : fallback;
 };
+const filingAccount = (row: Row) => row.filing_account_id ?? row.mail_account_id;
+const viewAccount = (row: Row) => truthy(row.is_legacy) ? 'legacy' : filingAccount(row);
+const presentMail = (row: Row) => ({ ...row, source_mail_account_id: Object.prototype.hasOwnProperty.call(row, 'source_mail_account_id') ? row.source_mail_account_id : row.mail_account_id,
+  mail_account_id: filingAccount(row), is_legacy: truthy(row.is_legacy), remote_missing: truthy(row.remote_missing) });
 function mailRows(snapshot: OfflineSnapshot, params: URLSearchParams) {
   return snapshot.emails.filter(row => {
     const folder = params.get('folder');
     const accountId = params.get('account_id');
-    if (accountId && accountId !== 'all' && row.mail_account_id !== accountId) return false;
+    if (accountId && accountId !== 'all' && viewAccount(row) !== accountId) return false;
     if (folder && folder !== 'all' && folder !== 'starred' && row.folder !== folder) return false;
     if (folder === 'starred' && !truthy(row.is_starred)) return false;
     if (params.has('is_read') && truthy(row.is_read) !== (params.get('is_read') === 'true')) return false;
@@ -269,26 +273,45 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
     });
     return {data:{events:events.sort((a,b)=>Date.parse(text(a.start_time))-Date.parse(text(b.start_time)))}};
   }
-  if(path === '/mail/accounts') return {data:{accounts:snapshot.mailAccounts.map(row=>({...row,unread_count:snapshot.emails.filter(email=>email.mail_account_id===row.id&&!truthy(email.is_read)).length}))}};
+  if(path === '/mail/accounts') return {data:{accounts:snapshot.mailAccounts.map(row=>({...row,unread_count:snapshot.emails.filter(email=>viewAccount(email)===row.id&&!truthy(email.is_read)).length}))}};
   if(path === '/mail/emails') {
     const rows=mailRows(snapshot,params),limit=Math.max(1,numberParam(params,'limit',50,100)),offset=numberParam(params,'offset',0,10000000);
     const includeCount=params.get('include_count')!=='false';
-    const emails=rows.slice(offset,offset+limit).map(row=>({...row,body_html:null,body_text:typeof row.body_text==='string'&&row.body_text.length>240?row.body_text.slice(0,240)+'...':row.body_text}));
+    const emails=rows.slice(offset,offset+limit).map(row=>({...presentMail(row),body_html:null,body_text:typeof row.body_text==='string'&&row.body_text.length>240?row.body_text.slice(0,240)+'...':row.body_text}));
     return {data:{emails,pagination:{total:includeCount?rows.length:null,limit,offset,page:Math.floor(offset/Math.max(1,limit))+1,totalPages:includeCount?Math.ceil(rows.length/Math.max(1,limit)):null,hasMore:offset+limit<rows.length},offline:true}};
   }
   if(/^\/mail\/emails\/[^/]+$/.test(path)) {
     const email=snapshot.emails.find(row=>row.id===decodeURIComponent(path.split('/').pop()!));
-    return email ? {data:{email}} : {error:'This message is not in your offline snapshot.',status:404};
+    return email ? {data:{email:presentMail(email)}} : {error:'This message is not in your offline snapshot.',status:404};
   }
   if(path === '/mail/folders') {
     const rows=mailRows(snapshot,params);
-    return {data:{folders:snapshot.folders.map(folder=>({...folder,total_count:rows.filter(row=>row.folder===folder.slug).length,unread_count:rows.filter(row=>row.folder===folder.slug&&!truthy(row.is_read)).length}))}};
+    const accountId=params.get('account_id');
+    const legacyCounts=new Map<string,number>();
+    for(const row of snapshot.emails.filter(row=>truthy(row.is_legacy))) {
+      const slug=text(row.folder);
+      legacyCounts.set(slug,(legacyCounts.get(slug)||0)+1);
+    }
+    const folders=[...snapshot.folders];
+    for(const slug of legacyCounts.keys()) {
+      if(!folders.some(folder=>folder.slug===slug)) folders.push({id:`legacy:${slug}`,slug,display_name:slug||'(Unnamed folder)',is_system:false,mail_account_id:null,position:999});
+    }
+    const visibleFolders=folders.filter(folder=>{
+      if(!accountId||accountId==='all')return true;
+      if(accountId==='legacy')return legacyCounts.has(text(folder.slug));
+      if(truthy(folder.is_system)||folder.mail_account_id===accountId)return true;
+      if(Array.isArray(folder.connected_account_ids))return folder.connected_account_ids.includes(accountId);
+      // Older snapshots lack connection metadata. Keep their cached messages reachable.
+      return rows.some(row=>row.folder===folder.slug);
+    });
+    return {data:{folders:visibleFolders.map(folder=>({...folder,connected_account_ids:folder.connected_account_ids||[],legacy_count:legacyCounts.get(text(folder.slug))||0,
+      total_count:rows.filter(row=>row.folder===folder.slug).length,unread_count:rows.filter(row=>row.folder===folder.slug&&!truthy(row.is_read)).length}))}};
   }
   if(path === '/mail/unread-counts') {
     const unreadByFolder: Record<string,number> = {}, unreadByFolderAccount: Record<string,Record<string,number>> = {};
     for(const row of mailRows(snapshot,params)) {
       if(truthy(row.is_read))continue;
-      const folder=text(row.folder), id=text(row.mail_account_id);
+      const folder=text(row.folder), id=text(viewAccount(row));
       unreadByFolder[folder]=(unreadByFolder[folder]||0)+1;
       (unreadByFolderAccount[folder] ||= {})[id]=(unreadByFolderAccount[folder]?.[id]||0)+1;
       if(truthy(row.is_starred)&&folder!=='starred'){
@@ -299,7 +322,7 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
     return {data:{unreadByFolder,...(params.get('include_by_account')==='true'?{unreadByFolderAccount}:{})}};
   }
   if(path === '/stats')return {data:{contacts:snapshot.contacts.length,upcomingEvents:snapshot.events.filter(row=>Date.parse(text(row.start_time))>=Date.now()&&!truthy(row.is_todo_only)&&!['done','cancelled'].includes(text(row.todo_status))).length,unreadEmails:snapshot.emails.filter(row=>!truthy(row.is_read)).length}};
-  if(path === '/mail/accounts/counts') return {data:{counts:snapshot.mailAccounts.map(row=>({mail_account_id:row.id,total_count:snapshot.emails.filter(email=>email.mail_account_id===row.id).length,unread_count:snapshot.emails.filter(email=>email.mail_account_id===row.id&&!truthy(email.is_read)).length}))}};
+  if(path === '/mail/accounts/counts') return {data:{counts:snapshot.mailAccounts.map(row=>({mail_account_id:row.id,total_count:snapshot.emails.filter(email=>viewAccount(email)===row.id).length,unread_count:snapshot.emails.filter(email=>viewAccount(email)===row.id&&!truthy(email.is_read)).length}))}};
   if(path === '/mail/stats') return {data:{total:snapshot.emails.length,unread:snapshot.emails.filter(row=>!truthy(row.is_read)).length,starred:snapshot.emails.filter(row=>truthy(row.is_starred)).length}};
   if(path === '/settings/preferences') return {data:{preferences:{email_link_behavior:'internal',default_start_page:'mail'}}};
   if(path.startsWith('/mail/attachments/')) return {error:'Attachments are available when you reconnect.',status:503};

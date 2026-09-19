@@ -6,7 +6,10 @@ const { db } = require('./state');
 const { initDatabase, ensurePerformanceIndexes } = require('./services/database');
 const { syncMailAccount, isAnyMailAccountSyncRunning, runMailServerDeletionPass } = require('./services/mail');
 const { cleanupExpiredRecordingUploads } = require('./services/recordings');
-const { suspendPendingBackupJobs } = require('./services/backup-availability');
+const { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } = require('./services/backup-availability');
+const { resumePendingDataExportJobs } = require('./services/export-jobs');
+const { resumePendingRestoreJobs } = require('./services/backup-restore-jobs');
+const { verifyDatabaseInventory } = require('./services/data-inventory');
 const { isSectionRestoreActive } = require('./services/restore-locks');
 const { handleRequest } = require('./request-handler');
 const { ensureNotificationSchema, processNotificationJobs } = require('./services/notifications');
@@ -19,12 +22,21 @@ let periodicMailServerDeleteRunning = false;
 async function start() {
   await initDatabase();
   await ensureNotificationSchema();
+  await verifyDatabaseInventory(db);
   await prepareFolderReconciliation();
   const runNotifications = () => processNotificationJobs().catch(error => console.error('[NOTIFICATIONS] Worker failed:', error.message));
   void runNotifications();
   setInterval(runNotifications, 30 * 1000);
-  await suspendPendingBackupJobs(db);
-  console.log('[BACKUP] Creation and restore suspended; existing archives retained.');
+  if (DISABLED_BACKUP_ROUTES.size) {
+    await suspendPendingBackupJobs(db);
+    console.log('[BACKUP] Creation and restore suspended; existing archives retained.');
+  } else {
+    await resumePendingDataExportJobs();
+    await resumePendingRestoreJobs();
+    console.log('[BACKUP] Versioned backup and restore workers enabled.');
+  }
+  // Previously retained restore uploads stay available until explicitly deleted.
+  // Re-enabling backup must not suddenly expire archives retained during suspension.
 
   const server = http.createServer((req, res) => {
     // Last-resort boundary, including failures while writing an error response.

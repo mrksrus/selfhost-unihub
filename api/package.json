@@ -1,12 +1,14 @@
 {
   "name": "unihub-api",
   "private": true,
-  "version": "0.10.5",
+  "version": "0.10.6",
   "description": "UniHub API Server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test --test-concurrency=1 tests/*.test.js"
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "test:recovery": "node scripts/test-recovery.cjs",
+    "test:ci": "node scripts/test-recovery.cjs --all"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

@@ -108,6 +108,7 @@ test('populated v0.9.23.0 upgrades on MySQL 8 and survives a second production s
   await initDatabase();
   let notifications = require('../src/services/notifications');
   await notifications.ensureNotificationSchema();
+  await require('../src/services/data-inventory').verifyDatabaseInventory(db);
   await assertLegacyRowsPreserved();
   const [columns] = await db.execute("SHOW COLUMNS FROM emails WHERE Field = 'import_complete'");
   assert.equal(columns.length, 1);
@@ -116,6 +117,18 @@ test('populated v0.9.23.0 upgrades on MySQL 8 and survives a second production s
   const [importStates] = await db.execute('SELECT import_complete FROM emails');
   assert.equal(importStates.length, fixture.tables.emails.length);
   assert.ok(importStates.every(row => row.import_complete === 0), 'Old messages must not be assumed fully imported');
+  const [upgradedModes] = await db.execute('SELECT sync_mode, sync_status FROM mail_accounts');
+  assert.ok(upgradedModes.every(row => row.sync_mode === 'download' && row.sync_status === 'idle'), 'Existing accounts retain Download semantics');
+  const [upgradedIdentities] = await db.execute('SELECT source_folder, imap_uid, imap_uidvalidity, remote_folder, remote_uid, remote_uidvalidity, remote_missing FROM emails');
+  for (const row of upgradedIdentities) {
+    assert.equal(row.remote_missing, 0);
+    if (row.source_folder != null && row.imap_uid != null) {
+      assert.equal(row.remote_folder, row.source_folder);
+      assert.equal(row.remote_uid, row.imap_uid);
+      assert.equal(row.remote_uidvalidity, row.imap_uidvalidity);
+    }
+  }
+
   const [[syncCount]] = await db.execute('SELECT COUNT(*) AS total FROM mail_sync_state');
   assert.equal(syncCount.total, 0);
   assert.deepEqual(await loadFolderSyncState(db, mailAccountId, 'INBOX/Research', 5678), { incremental: false, lastUid: 0 });
@@ -132,6 +145,10 @@ test('populated v0.9.23.0 upgrades on MySQL 8 and survives a second production s
   // unchanged legacy rows and migration-created data that must not reset.
   await saveFolderSyncState(db, mailAccountId, 'INBOX/Research', 5678, 1234);
   await db.execute('UPDATE emails SET import_complete = TRUE WHERE id = ?', [emailId]);
+  // Change only the new migration fields. Suppress the table's automatic
+  // timestamp update so the original-column preservation assertion stays exact.
+  await db.execute("UPDATE mail_accounts SET sync_mode = 'sync', sync_status = 'cancelled', updated_at = updated_at WHERE id = ?", [mailAccountId]);
+  await db.execute("UPDATE emails SET remote_folder = 'Moved/Current', remote_uid = 9001, remote_uidvalidity = 9002, remote_missing = TRUE WHERE id = ?", [emailId]);
   await getDb().end();
   setDb(null);
   await initDatabase();
@@ -143,6 +160,11 @@ test('populated v0.9.23.0 upgrades on MySQL 8 and survives a second production s
   assert.deepEqual(await loadFolderSyncState(db, mailAccountId, 'INBOX/Research', 5678), { incremental: true, lastUid: 1234 });
   const [restartedImports] = await db.execute('SELECT id, import_complete FROM emails');
   for (const row of restartedImports) assert.equal(row.import_complete, row.id === emailId ? 1 : 0);
+  const [[restartedMode]] = await db.execute('SELECT sync_mode, sync_status FROM mail_accounts WHERE id = ?', [mailAccountId]);
+  assert.deepEqual(restartedMode, { sync_mode: 'sync', sync_status: 'cancelled' }, 'Migration 3 must not reset a saved mode or cancellation after restart');
+  const [[restartedIdentity]] = await db.execute('SELECT remote_folder, remote_uid, remote_uidvalidity, remote_missing FROM emails WHERE id = ?', [emailId]);
+  assert.deepEqual(restartedIdentity, { remote_folder: 'Moved/Current', remote_uid: 9001, remote_uidvalidity: 9002, remote_missing: 1 }, 'Migration 3 must never replace current provider identity with the original on restart');
+  await db.execute("UPDATE mail_accounts SET sync_mode = 'download', sync_status = 'idle', updated_at = updated_at WHERE id = ?", [mailAccountId]);
 
   const [[account]] = await db.execute('SELECT encrypted_password FROM mail_accounts WHERE id = ?', [mailAccountId]);
   assert.equal(decrypt(account.encrypted_password), fixture.passwords.mail);
@@ -246,6 +268,21 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   await initDatabase();
   let notifications = require('../src/services/notifications');
   await notifications.ensureNotificationSchema();
+  await require('../src/services/data-inventory').verifyDatabaseInventory(db);
+  await db.execute('ALTER TABLE emails ADD COLUMN recovery_inventory_probe TEXT NULL');
+  try {
+    await assert.rejects(require('../src/services/data-inventory').verifyDatabaseInventory(db), /Unclassified field emails.recovery_inventory_probe/);
+  } finally {
+    await db.execute('ALTER TABLE emails DROP COLUMN recovery_inventory_probe');
+  }
+  const [upgradeHistory] = await db.execute('SELECT id, name, completed_at FROM schema_migrations ORDER BY id');
+  assert.deepEqual(upgradeHistory.map(row => row.id), [1, 2, 3]);
+  const [[owner]] = await db.execute('SELECT id FROM users LIMIT 1');
+  const sentId = crypto.randomUUID();
+  const sentAccountId = crypto.randomUUID();
+  await db.execute("INSERT INTO mail_accounts (id, user_id, email_address, provider, is_active) VALUES (?, ?, 'sent-repair@example.test', 'imap', FALSE)", [sentAccountId, owner.id]);
+  // A completed historical repair must not rewrite later user state on restart.
+  await db.execute('INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, folder, is_read) VALUES (?, ?, ?, ?, ?, ?, FALSE)', [sentId, owner.id, sentAccountId, 'sent-repair@example.test', '[]', 'sent']);
   const before = await notifications.getVapidKeys();
   const [[stored]] = await db.execute('SELECT encrypted_private_key FROM notification_config WHERE id = 1');
   assert.notEqual(stored.encrypted_private_key, before.privateKey);
@@ -261,6 +298,12 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   notifications = require('../src/services/notifications');
   await notifications.ensureNotificationSchema();
   assert.deepEqual(await notifications.getVapidKeys(), before);
+  await require('../src/services/data-inventory').verifyDatabaseInventory(db);
+  const [restartedHistory] = await db.execute('SELECT id, name, completed_at FROM schema_migrations ORDER BY id');
+  assert.deepEqual(restartedHistory, upgradeHistory, 'Completed migrations are unchanged after restart');
+  const [[sent]] = await db.execute('SELECT is_read FROM emails WHERE id = ?', [sentId]);
+  assert.equal(sent.is_read, 0, 'Completed sent/draft repair must not run again');
+  await db.execute('DELETE FROM mail_accounts WHERE id = ?', [sentAccountId]);
   await notifications.processNotificationJobs();
 
   const [[user]] = await db.execute('SELECT id FROM users WHERE email = ?', ['ci-admin@example.test']);

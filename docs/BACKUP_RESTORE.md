@@ -1,16 +1,27 @@
 # Backup and Restore Guide
 
-> **0.10.4 availability:** Backup creation, upload/import, validation and restore
-> are temporarily disabled in the UI and API. Existing completed archives and
-> recovery-password downloads remain available. Pending jobs do not resume on
-> startup; their files are retained, and automatic restore-upload expiry is paused.
-> The format and workflow below document 0.10.3 and retained implementation,
-> not an enabled feature in 0.10.4. Use infrastructure backups of MySQL, uploads
-> and configuration in the meantime. Contact vCard import/export is unaffected.
+In 0.10.6, backup creation/import/restore are enabled again. Schema 3 includes
+account-specific folders, local filing/Legacy identities, routing overrides,
+recovery history, completed recording transcripts and the server Tetris score.
+Browser-only game saves are excluded and identified in Data Management.
 
-This guide describes UniHub **0.10.3**. New backups use data schema 2;
+Unknown sections, data tables/fields, file kinds and missing schema-3 file content
+are errors. Conflicting folder ownership or a merge that would hide restored
+mail rolls back instead of reporting success. Missing optional historical
+account references become null with a warning; live references remain required.
+
+Automatic expiry of retained uploads remains paused to protect archives kept
+during suspension. Uploaded archives are removed after successful restoration
+or explicit deletion. Completed backups remain until explicitly deleted.
+
+See [Recovery contracts](DATA_RECOVERY.md) for developer requirements and
+[Backup format](BACKUP_FORMAT.md) for historical compatibility.
+
+
+
+This guide describes UniHub **0.10.6**. New backups use data schema 3;
 imports select schema 1 or 2 automatically. UniHub 0.10.2 reads schema 1 only
-and cannot import new schema-2 backups. See [Backup Format](BACKUP_FORMAT.md)
+and cannot import new schema-3 backups. See [Backup Format](BACKUP_FORMAT.md)
 for the compatibility contract.
 
 ## Purpose

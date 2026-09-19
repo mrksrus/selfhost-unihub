@@ -1,5 +1,20 @@
 # Upgrading from 0.9.x to 0.10.x
 
+## 0.10.6 recovery, account modes and upgrade ledger
+
+Migration 3 adds mail mode and separate current provider identifiers without
+rewriting original identity or deleting messages. Existing accounts remain in
+Download. Mode changes are opt-in; see [mail modes](MAIL_MODES.md).
+
+Read [0.10.6 release notes](RELEASE_0.10.6.md) before upgrading. Direct 0.10.3+
+updates preserve the approved folder migration. The new ledger records completed
+steps, and an unknown data field or required upgrade failure stops startup.
+Backups are re-enabled with schema 3 and automatic readers for 1/2; older apps
+cannot import the new format. Incompatible folder ownership during a restore
+fails rather than hiding mail. Retain a complete pre-update server snapshot for
+rollback. Refresh device offline snapshots after upgrading.
+
+
 ## Compatibility
 
 An existing **0.9.23.0 installation is intended to upgrade in place** to 0.10.x,

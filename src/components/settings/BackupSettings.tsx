@@ -1,3 +1,4 @@
+import type { BackupJob, BackupImportResult, RestoreJob, BackupCapabilities } from '@/lib/backup-api';
 import { useState, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
@@ -18,85 +19,20 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Download, Loader2, Database, Trash2, Upload, LockKeyhole, Square, RotateCcw, Copy, Play } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-type BackupJob = {
-  id: string;
-  scope: 'full' | 'partial';
-  status: 'queued' | 'running' | 'cancelling' | 'cancelled' | 'ready' | 'failed';
-  phase: string;
-  progress: number;
-  cancel_requested: boolean;
-  requested_sections: string[];
-  file_size: number | null;
-  file_sha256: string | null;
-  content_type: string | null;
-  encryption_enabled: boolean;
-  backup_uuid: string | null;
-  recovery_password_available: boolean;
-  recovery_password_revealed: boolean;
-  server_unlock_available: boolean;
-  error: string | null;
-  created_at: string;
-  updated_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-  downloaded_at: string | null;
-};
-
-type BackupImportResult = {
-  dry_run: boolean;
-  valid: boolean;
-  errors: string[];
-  warnings: string[];
-  counts: Record<string, number>;
-  conflicts?: Record<string, number>;
-  import_sections?: string[];
-  restored_files?: number;
-  options?: {
-    conflict_mode?: string;
-    calendar_mode?: string;
-    credentials_mode?: string;
-  };
-};
-
-type RestoreJob = {
-  id: string;
-  source_type: 'upload' | 'generated';
-  source_export_job_id: string | null;
-  status: 'uploaded' | 'awaiting_password' | 'validating' | 'validated' | 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed' | 'expired';
-  operation: 'validate' | 'restore';
-  phase: string;
-  progress: number;
-  cancel_requested: boolean;
-  requested_sections: string[];
-  conflict_mode: string;
-  calendar_mode: string;
-  credentials_mode: string;
-  archive_available: boolean;
-  archive_size: number | null;
-  archive_sha256: string | null;
-  backup_uuid: string | null;
-  is_encrypted: boolean;
-  validation_result: BackupImportResult | null;
-  result_counts: BackupImportResult | null;
-  error: string | null;
-  attempt_count: number;
-  created_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-  expires_at: string | null;
-};
-
-const IMPORT_SECTIONS = [
-  { id: 'mail', label: 'Mail' },
-  { id: 'calendar', label: 'Calendar/ToDo' },
-  { id: 'contacts', label: 'Contacts' },
-  { id: 'recordings', label: 'Recordings' },
-  { id: 'settings', label: 'Settings' },
-] as const;
-
 export default function BackupSettings({ active }: { active: boolean }) {
   const { user } = useAuth();
   const { toast } = useToast();
+  const { data: capabilities } = useQuery({
+    queryKey: ['backup-capabilities'],
+    queryFn: async ({ signal }) => {
+      const response = await api.get<BackupCapabilities>('/backup/capabilities', { signal });
+      if (response.error) throw new Error(response.error);
+      return response.data;
+    }, enabled: !!user && active,
+  });
+  const backupAvailable = capabilities?.enabled === true;
+  const importSections = capabilities?.sections || [];
+
   const queryClient = useQueryClient();
   const [backupCreating, setBackupCreating] = useState(false);
   const [backupImporting, setBackupImporting] = useState(false);
@@ -408,9 +344,11 @@ export default function BackupSettings({ active }: { active: boolean }) {
         >
           <div className="space-y-6">
           <p role="status" className="rounded-md border border-border p-4 text-sm">
-            Backup creation, import and restore are temporarily disabled while the data model changes.
-            Existing completed backups can still be downloaded. Keep your archive files and recovery passwords.
-            For now, protect your installation with a server backup of the database, uploads and configuration.
+            {backupAvailable
+              ? 'Backups protect your selected account data and files. Keep a downloaded copy and its recovery password away from this server.'
+              : 'Backup creation and restore are unavailable. Existing completed backups can still be downloaded.'}
+            {' '}A full server recovery also needs the database, uploads and configuration.
+            {capabilities?.exclusions.map(item => <span key={item} className="mt-1 block text-muted-foreground">Not included: {item}.</span>)}
           </p>
           <Card>
             <CardHeader>
@@ -420,7 +358,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 </div>
                 <div>
                   <CardTitle className="text-lg">Backup</CardTitle>
-                  <CardDescription>Backup history and downloads. Creating new backups is temporarily unavailable.</CardDescription>
+                  <CardDescription>Create an account backup or download a previous one.</CardDescription>
                 </div>
               </div>
             </CardHeader>
@@ -434,29 +372,23 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 </div>
                 <Switch
                   id="backupEncryption"
-                  disabled
+                  disabled={!backupAvailable || backupCreating || backupImporting}
                   checked={backupEncryptionEnabled}
                   onCheckedChange={setBackupEncryptionEnabled}
                 />
               </div>
 
               <div className="flex flex-wrap gap-3">
-                <Button variant="outline" onClick={() => handleStartBackupJob('full')} disabled>
+                <Button variant="outline" onClick={() => handleStartBackupJob('full')} disabled={!backupAvailable || backupCreating}>
                   {backupCreating ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
                   Full backup
                 </Button>
-                {[
-                  ['mail', 'Mail backup'],
-                  ['calendar', 'Calendar backup'],
-                  ['contacts', 'Contacts backup'],
-                  ['recordings', 'Recordings backup'],
-                  ['settings', 'Settings backup'],
-                ].map(([section, label]) => (
+                {importSections.map(({ id: section, label }) => (
                   <Button
                     key={section}
                     variant="outline"
                     onClick={() => handleStartBackupJob([section])}
-                    disabled
+                    disabled={!backupAvailable || backupCreating || backupImporting}
                   >
                     {label}
                   </Button>
@@ -492,7 +424,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                           </Button>
                         )}
                         {job.status === 'ready' && (
-                          <Button variant="outline" size="sm" onClick={() => handleRestoreStoredBackup(job)} disabled>
+                          <Button variant="outline" size="sm" onClick={() => handleRestoreStoredBackup(job)} disabled={!backupAvailable || backupImporting}>
                             <RotateCcw className="h-4 w-4 mr-2" />
                             Restore
                           </Button>
@@ -544,7 +476,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 <Label htmlFor="backupImportFile">Backup file</Label>
                 <Input
                   id="backupImportFile"
-                  disabled
+                  disabled={!backupAvailable || backupCreating || backupImporting}
                   type="file"
                   accept="application/zip,application/vnd.unihub.backup,.zip,.unihub-backup"
                   onChange={(event) => {
@@ -566,7 +498,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   >
                     Full import
                   </Button>
-                  {IMPORT_SECTIONS.map((section) => (
+                  {importSections.map((section) => (
                     <Button
                       key={section.id}
                       type="button"
@@ -630,14 +562,14 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 <Button
                   variant="outline"
                   onClick={handleUploadBackup}
-                  disabled
+                  disabled={!backupAvailable || backupImporting || !backupImportFile}
                 >
                   {backupImporting ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Upload className="h-4 w-4 mr-2" />}
                   Upload and validate
                 </Button>
                 <Button
                   onClick={() => selectedRestoreJob && handleStartRestoreJob(selectedRestoreJob)}
-                  disabled
+                  disabled={!backupAvailable || backupImporting || selectedRestoreJob?.status !== 'validated'}
                 >
                   <Play className="h-4 w-4 mr-2" />
                   Restore
@@ -665,7 +597,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                     />
                     <Button
                       onClick={() => handleUnlockRestoreJob(selectedRestoreJob)}
-                      disabled
+                      disabled={!backupAvailable || backupCreating || backupImporting}
                     >
                       {backupImporting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                       Unlock
@@ -731,7 +663,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 <div>
                   <p className="font-medium text-foreground">Restore jobs</p>
                   <p className="text-xs text-muted-foreground">
-                    Uploaded archives expire after seven days. Completed server backups remain under Backup until deleted.
+                    Completed backups remain until deleted. Uploaded archives are removed after a successful restore or when you delete them; automatic expiry is paused.
                   </p>
                 </div>
                 {restoreJobs.length === 0 ? (
@@ -762,13 +694,13 @@ export default function BackupSettings({ active }: { active: boolean }) {
                       </button>
                       <div className="flex gap-2">
                         {job.status === 'validated' && (
-                          <Button size="sm" onClick={() => handleStartRestoreJob(job)} disabled>
+                          <Button size="sm" onClick={() => handleStartRestoreJob(job)} disabled={!backupAvailable || job.status !== 'validated'}>
                             <Play className="h-4 w-4 mr-2" />
                             Restore
                           </Button>
                         )}
                         {['failed', 'cancelled'].includes(job.status) && job.archive_available && (
-                          <Button variant="outline" size="sm" onClick={() => handleStartRestoreJob(job)} disabled>
+                          <Button variant="outline" size="sm" onClick={() => handleStartRestoreJob(job)} disabled={!backupAvailable}>
                             <RotateCcw className="h-4 w-4 mr-2" />
                             Retry
                           </Button>
@@ -802,7 +734,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                     {job.error && <p className="text-sm text-destructive">{job.error}</p>}
                     {job.expires_at && job.source_type === 'upload' && (
                       <p className="text-xs text-muted-foreground">
-                        Archive expires {new Date(job.expires_at).toLocaleString()}
+                        Automatic archive expiry is paused.
                       </p>
                     )}
                   </div>

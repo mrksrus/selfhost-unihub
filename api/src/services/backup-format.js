@@ -1,8 +1,9 @@
 const { version: appVersion } = require('../../package.json');
 const { readV1 } = require('./backup-formats/v1');
 const { readV2 } = require('./backup-formats/v2');
+const { readV3 } = require('./backup-formats/v3');
 
-const BACKUP_VERSION = 2;
+const BACKUP_VERSION = 3;
 const ZIP_BACKUP_FORMAT = 'unihub-restorable-backup';
 const ZIP_BACKUP_FORMAT_VERSION = 1;
 const BACKUP_METADATA_LIMITS = Object.freeze({
@@ -10,7 +11,7 @@ const BACKUP_METADATA_LIMITS = Object.freeze({
   'checksums.json': 64 * 1024 * 1024,
   'data/backup.json': 512 * 1024 * 1024,
 });
-const READERS = new Map([[1, readV1], [2, readV2]]);
+const READERS = new Map([[1, readV1], [2, readV2], [3, readV3]]);
 
 function getBackupProducer() {
   return { name: 'UniHub', version: appVersion };
@@ -27,7 +28,7 @@ function validateBackupVersionFields(backup) {
   const errors = [];
   const warnings = [];
   if (!READERS.has(backup?.version)) {
-    errors.push(`Unsupported backup data version: ${String(backup?.version)}. This UniHub version reads versions 1 and 2; a newer backup may need a newer UniHub release.`);
+    errors.push(`Unsupported backup data version: ${String(backup?.version)}. This UniHub version reads versions 1, 2 and 3; a newer backup may need a newer UniHub release.`);
   }
   // Inline legacy JSON has no ZIP-format fields. If either field is supplied,
   // require the complete known pair; never guess how an unknown archive works.
@@ -40,6 +41,11 @@ function validateBackupVersionFields(backup) {
       && ['mail_accounts', 'mail_folders', 'emails'].some(table => Object.hasOwn(backup.data, table))) {
     warnings.push('This older backup does not include provider-folder mappings. Local folders, email account identities and source folder names are retained; existing provider mappings are left unchanged.');
   }
+  if ([1, 2].includes(backup?.version) && backup.data
+      && ['mail_accounts', 'mail_folders', 'emails'].some(table => Object.hasOwn(backup.data, table))) {
+    warnings.push('This older backup may lack filing identities, Legacy state and folder recovery history. Missing fields use legacy defaults; provider reconciliation can run on the next successful sync.');
+  }
+  if ([1, 2].includes(backup?.version)) warnings.push('Backup schemas 1 and 2 do not include saved game scores.');
   return { errors, warnings };
 }
 
@@ -70,7 +76,8 @@ function normalizeBackupPayload(backup) {
     ])),
     files: backup.files.map(file => ({ ...file })),
   };
-  const result = READERS.get(backup.version)(normalized);
+  let result = READERS.get(backup.version)(normalized);
+  if (backup.version < 3) result = readV3(result, { legacyDefaults: true });
   result.source_backup_version = backup.version;
   result.version = BACKUP_VERSION;
   // The original checksum was verified before migration. It describes the

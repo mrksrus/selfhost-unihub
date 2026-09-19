@@ -1,3 +1,5 @@
+const { withMailAccountLock } = require('./mail-account-lock');
+const { followMailServer, checkCancelled } = require('./mail-server-follow');
 const { reconcileAccountFolders } = require('./mail-folder-reconciliation');
 const crypto = require('crypto');
 require('../imap-patch');
@@ -36,6 +38,16 @@ const DEFAULT_MAIL_SYNC_FETCH_LIMIT = 'all';
 const MAIL_SYNC_FETCH_LIMITS = new Set(['all']);
 const LEGACY_MAIL_SYNC_FETCH_LIMITS = new Set(['100', '500', '1000', '2000']);
 const activeMailAccountSyncs = new Map();
+const mailSyncControllers = new Map();
+const mailDeleteStopRequests = new Set();
+function cancelMailAccountSync(accountId) {
+  const controller = mailSyncControllers.get(normalizeMailAccountId(accountId));
+  const key = normalizeMailAccountId(accountId);
+  const deleting = activeMailServerDeleteAccounts.has(key);
+  if (deleting) mailDeleteStopRequests.add(key);
+  if (controller) controller.abort();
+  return Boolean(controller) || deleting;
+}
 const activeMailServerDeleteAccounts = new Set();
 const MAIL_SERVER_DELETE_GRACE_MS = 10 * 60 * 1000;
 const MAIL_SERVER_DELETE_BATCH_SIZE = 100;
@@ -504,7 +516,11 @@ async function listAvailableImapFolders(connection, specialUses = new Map(), str
       if (strict) throw new Error('Server folder listing unavailable');
       return ['INBOX'];
     }
-    return flattenImapBoxes(await connection.getBoxes(), '', specialUses);
+    const boxes = await connection.getBoxes();
+    if (strict && (!boxes || typeof boxes !== 'object' || Array.isArray(boxes))) throw new Error('Invalid server folder listing');
+    const folders = flattenImapBoxes(boxes, '', specialUses);
+    if (strict && folders.length === 0) throw new Error('Server returned no selectable folders; retry required');
+    return folders;
   } catch (error) {
     if (strict) throw error;
     console.log('[SYNC] Could not list IMAP folders, falling back to INBOX:', error.message);
@@ -536,7 +552,7 @@ async function allocateCollisionSafeMailFolderSlug(userId, displayName, connecti
   throw new Error('Unable to allocate a unique mail folder slug');
 }
 
-async function registerCustomImapFoldersForUser(userId, accountId, availableFolders, connection = db, specialUses = new Map()) {
+async function registerCustomImapFoldersForUser(userId, accountId, availableFolders, connection = db, specialUses = new Map(), includeAll = false) {
   if (!userId || !accountId) return [];
   await ensureDefaultMailFoldersForUser(userId, connection);
   const standardNames = new Set(MAIL_SYNC_FOLDER_CANDIDATES.flatMap(candidate => candidate.names.map(name => name.toLowerCase())));
@@ -544,9 +560,9 @@ async function registerCustomImapFoldersForUser(userId, accountId, availableFold
 
   for (const rawFolderName of availableFolders || []) {
     // Keep the remote identity lossless; only the label shown in the UI is normalized.
-    const remoteName = String(rawFolderName || '').trim();
+    const remoteName = includeAll ? String(rawFolderName || '') : String(rawFolderName || '').trim();
     const displayName = normalizeMailFolderDisplayName(remoteName);
-    if (!remoteName || !displayName || isVirtualMailFolderName(remoteName)) continue;
+    if (!remoteName || !displayName || (!includeAll && isVirtualMailFolderName(remoteName))) continue;
     const [mapped] = await connection.execute(
       `SELECT f.id, f.slug, f.display_name
        FROM mail_folder_remote_boxes b
@@ -566,7 +582,7 @@ async function registerCustomImapFoldersForUser(userId, accountId, availableFold
       registered.push({ slug: specialUses.get(remoteName), displayName, remoteName });
       continue;
     }
-    if (!specialUses.has(remoteName) && (isProviderManagedImapFolder(remoteName) || standardNames.has(remoteName.toLowerCase()))) continue;
+    if (!includeAll && !specialUses.has(remoteName) && (isProviderManagedImapFolder(remoteName) || standardNames.has(remoteName.toLowerCase()))) continue;
     // Only reuse a folder from this account. Legacy shared rows remain untouched.
     const [sameName] = await connection.execute(
       `SELECT id, slug FROM mail_folders f
@@ -825,7 +841,9 @@ async function recordMailServerMessageForDeletion({
 async function seedMailServerDeletionQueueForAccount({ userId, accountId, connection = db }) {
   if (!userId || !accountId) return { queued: 0 };
   const [emails] = await connection.execute(
-    `SELECT id, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, import_complete
+    `SELECT id, COALESCE(remote_folder, source_folder) AS source_folder,
+       COALESCE(remote_uid, imap_uid) AS imap_uid, COALESCE(remote_uidvalidity, imap_uidvalidity) AS imap_uidvalidity,
+       raw_storage_path, import_complete
      FROM emails
      WHERE user_id = ?
        AND mail_account_id = ?
@@ -940,15 +958,16 @@ async function deleteImapUid(connection, uid) {
 }
 
 async function isMailServerDeletionStillEnabled(accountId) {
+  if (mailDeleteStopRequests.has(normalizeMailAccountId(accountId))) return false;
   const [rows] = await db.execute(
-    `SELECT delete_emails_on_server, is_active, server_delete_grace_until
+    `SELECT delete_emails_on_server, is_active, server_delete_grace_until, sync_mode
      FROM mail_accounts
      WHERE id = ?
      LIMIT 1`,
     [accountId]
   );
   const account = rows[0];
-  if (!account) return false;
+  if (!account || account.sync_mode === 'sync') return false;
   if (!toBooleanFlag(account.delete_emails_on_server) || !toBooleanFlag(account.is_active)) return false;
   if (!account.server_delete_grace_until) return false;
   return new Date(account.server_delete_grace_until).getTime() <= Date.now();
@@ -1048,7 +1067,7 @@ async function createRemoteMailFolderForUserAccounts(userId, folderName, account
   };
 }
 
-async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SERVER_DELETE_BATCH_SIZE } = {}) {
+async function processMailServerDeletionForAccountUnlocked(accountId, { limit = MAIL_SERVER_DELETE_BATCH_SIZE } = {}) {
   const normalizedAccountId = normalizeMailAccountId(accountId);
   if (!normalizedAccountId || activeMailServerDeleteAccounts.has(normalizedAccountId)) {
     return { accountId: normalizedAccountId, skipped: true, reason: 'already_running' };
@@ -1064,6 +1083,7 @@ async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SER
       `SELECT *
        FROM mail_accounts
        WHERE id = ?
+         AND sync_mode = 'download'
          AND delete_emails_on_server = TRUE
          AND is_active = TRUE
          AND server_delete_grace_until IS NOT NULL
@@ -1072,7 +1092,7 @@ async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SER
       [normalizedAccountId]
     );
     const account = accounts[0];
-    if (!account) return { accountId: normalizedAccountId, skipped: true, reason: 'not_enabled_or_grace_pending' };
+    if (!account || account.sync_mode === 'sync') return { accountId: normalizedAccountId, skipped: true, reason: 'not_enabled_or_grace_pending' };
     if (await isSectionRestoreActive(account.user_id, 'mail')) {
       return { accountId: normalizedAccountId, skipped: true, reason: 'mail_restore_running' };
     }
@@ -1159,6 +1179,8 @@ async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SER
           continue;
         }
 
+        // Settings may be changed by another request while IMAP SEARCH waits.
+        if (!(await isMailServerDeletionStillEnabled(normalizedAccountId))) { stopped = true; break; }
         await deleteImapUid(connection, uid);
         await markMailServerMessageDeleteStatus({ id: message.id, status: 'deleted', error: null });
         deleted++;
@@ -1181,7 +1203,15 @@ async function processMailServerDeletionForAccount(accountId, { limit = MAIL_SER
       try { connection.end(); } catch (e) { /* ignore */ }
     }
     activeMailServerDeleteAccounts.delete(normalizedAccountId);
+    mailDeleteStopRequests.delete(normalizedAccountId);
   }
+}
+
+async function processMailServerDeletionForAccount(accountId, options = {}) {
+  const key = normalizeMailAccountId(accountId);
+  if (!key || activeMailServerDeleteAccounts.has(key)) return { accountId: key, skipped: true, reason: 'already_running' };
+  if (isAnyMailAccountSyncRunning()) return { accountId: key, skipped: true, reason: 'mail_sync_running' };
+  return withMailAccountLock(accountId, () => processMailServerDeletionForAccountUnlocked(accountId, options));
 }
 
 async function runMailServerDeletionPass({ accountId = null, limit = MAIL_SERVER_DELETE_BATCH_SIZE } = {}) {
@@ -1193,7 +1223,7 @@ async function runMailServerDeletionPass({ accountId = null, limit = MAIL_SERVER
   let query = `
     SELECT id
     FROM mail_accounts
-    WHERE delete_emails_on_server = TRUE
+    WHERE sync_mode = 'download' AND delete_emails_on_server = TRUE
       AND is_active = TRUE
       AND server_delete_grace_until IS NOT NULL
       AND server_delete_grace_until <= UTC_TIMESTAMP()`;
@@ -1214,7 +1244,7 @@ async function runMailServerDeletionPass({ accountId = null, limit = MAIL_SERVER
 // ── Mail sync and send functions ──────────────────────────────────
 
 // Helper function to sync a specific folder
-async function syncMailFolder(connection, account, accountId, folderName, dbFolderName, lastSyncedAt = null) {
+async function syncMailFolder(connection, account, accountId, folderName, dbFolderName, lastSyncedAt = null, _syncFetchLimit = null, signal = null) {
   let state;
   try {
     await connection.openBox(folderName);
@@ -1242,6 +1272,7 @@ async function syncMailFolder(connection, account, accountId, folderName, dbFold
     let newEmails = 0;
     let failed = 0;
     for (const uid of pending) {
+      checkCancelled(signal);
       try {
         const messages = await connection.search([['UID', uid]], { bodies: [IMAP_FULL_MESSAGE_BODY], markSeen: false, struct: true });
         let existingEmail = null;
@@ -1351,7 +1382,7 @@ async function testImapConnection(account) {
   }
 }
 
-async function syncMailAccountOnce(accountId) {
+async function syncMailAccountOnce(accountId, signal) {
   let connection = null;
   try {
     debugLog('server.js:50', 'syncMailAccount START', { accountId }, 'H1');
@@ -1361,13 +1392,16 @@ async function syncMailAccountOnce(accountId) {
     }
     
     const account = accounts[0];
+    checkCancelled(signal);
+    const followsServer = account.sync_mode === 'sync';
     if (await isSectionRestoreActive(account.user_id, 'mail')) {
       return { success: false, skipped: true, error: 'Mail restore in progress' };
     }
+    if (followsServer) await db.execute("UPDATE mail_accounts SET sync_status = 'running' WHERE id = ?", [accountId]);
     const lastSyncedAt = account.last_synced_at;
     const syncFetchLimit = normalizeSyncFetchLimit(account.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT;
     const config = await buildImapConnectionConfig(account);
-    if (!config) return { success: false, error: 'No password configured for this account' };
+    if (!config) throw new Error('No password configured for this account');
 
     console.log(`[SYNC] Connecting to ${account.email_address}...`);
     connection = await imaps.connect(config);
@@ -1385,13 +1419,36 @@ async function syncMailAccountOnce(accountId) {
     if (!reconciliation.skipped) console.log('[FOLDERS] Reconciliation completed:', accountId, reconciliation);
     // Sync only boxes explicitly registered from this account. Never infer an
     // identity from a lossy UI slug or recreate a locally deleted mailbox.
-    const registeredFolders = await registerCustomImapFoldersForUser(account.user_id, accountId, availableFolders, db, specialUses);
+    const registeredFolders = await registerCustomImapFoldersForUser(account.user_id, accountId, availableFolders, db, specialUses, followsServer);
     const customFolderSlugs = new Map(registeredFolders.map(folder => [folder.remoteName, folder.slug]));
+    if (followsServer) {
+      const folders = availableFolders.map(folderName => ({ folderName, dbFolderName: customFolderSlugs.get(folderName) }));
+      if (folders.some(folder => !folder.dbFolderName)) throw new Error('A listed server folder has no verified local mapping');
+      const result = await followMailServer({ db, connection, account, folders, signal,
+        listFolders: () => listAvailableImapFolders(connection, new Map(), true),
+        getUidValidity: getCurrentBoxUidValidity, buildRaw: buildRawEmailFromImapParts,
+        importMessage: async (remote, fullEmail, existingEmail = null) => {
+          const parsed = await simpleParser(fullEmail);
+          const { fromAddress, fromName } = extractSenderFromParsedEmail(parsed);
+          return require('./mail-import').persistImportedMessage({ db, account, accountId,
+            folderName: remote.folderName, uid: remote.uid, uidValidity: remote.validity,
+            existingEmail, messageId: parsed.messageId || `${accountId}-${remote.folderName}-${remote.validity}-${remote.uid}`,
+            fullEmail, parsed, fromAddress, fromName, toAddresses: extractEmailAddresses(parsed.to),
+            folder: remote.dbFolderName, isRead: remote.flags.includes('\\Seen'),
+            archiveRaw: saveRawEmailSource, enqueueDeletion: async () => false,
+            suppressNotifications: !lastSyncedAt || account.sync_status === 'pending' });
+        } });
+      await db.execute("UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP(), sync_status = 'idle' WHERE id = ?", [accountId]);
+      connection.end();
+      connection = null;
+      return result;
+    }
     const foldersToSync = pickImapSyncFolders(availableFolders, customFolderSlugs);
     console.log(`[SYNC] Folder plan for ${account.email_address}: ${foldersToSync.map(folder => `${folder.folderName}->${folder.dbFolderName}`).join(', ')}`);
 
     const folderResults = [];
     for (const folder of foldersToSync) {
+      checkCancelled(signal);
       const folderResult = await syncMailFolder(
         connection,
         account,
@@ -1399,7 +1456,8 @@ async function syncMailAccountOnce(accountId) {
         folder.folderName,
         folder.dbFolderName,
         lastSyncedAt,
-        syncFetchLimit
+        syncFetchLimit,
+        signal
       );
       folderResults.push({ ...folder, ...folderResult });
       if (folder.dbFolderName === 'inbox' && folderResult.error) {
@@ -1468,6 +1526,7 @@ async function syncMailAccountOnce(accountId) {
       try { connection.end(); } catch (e) { /* ignore */ }
     }
     const errorMsg = error.message || String(error);
+    await db.execute('UPDATE mail_accounts SET sync_status = ? WHERE id = ?', [signal?.aborted ? 'cancelled' : 'error', accountId]).catch(() => {});
     debugLog('server.js:146', 'syncMailAccount ERROR', { accountId, errorMessage: errorMsg, errorName: error.name }, 'H1,H2,H3,H4');
     console.error(`[SYNC] ✗ Error syncing account ${accountId}:`, errorMsg);
 
@@ -1484,7 +1543,7 @@ async function syncMailAccountOnce(accountId) {
       friendlyError = 'Connection closed by server. This may indicate:\n1. Gmail requires an App Password (not your regular password)\n2. "Less secure app access" needs to be enabled\n3. Network/firewall blocking port 993\n4. Account security settings blocking the connection';
     }
 
-    return { success: false, error: friendlyError, details: errorMsg };
+    return { success: false, cancelled: Boolean(signal?.aborted), error: friendlyError, details: errorMsg };
   }
 }
 
@@ -1505,13 +1564,16 @@ async function syncMailAccount(accountId) {
     };
   }
 
-  const syncPromise = syncMailAccountOnce(normalizedAccountId);
+  const controller = new AbortController();
+  mailSyncControllers.set(normalizedAccountId, controller);
+  const syncPromise = withMailAccountLock(normalizedAccountId, () => syncMailAccountOnce(normalizedAccountId, controller.signal));
   activeMailAccountSyncs.set(normalizedAccountId, syncPromise);
   try {
     return await syncPromise;
   } finally {
     if (activeMailAccountSyncs.get(normalizedAccountId) === syncPromise) {
       activeMailAccountSyncs.delete(normalizedAccountId);
+      mailSyncControllers.delete(normalizedAccountId);
     }
   }
 }
@@ -1650,6 +1712,8 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
 }
 
 module.exports = {
+  withMailAccountLock,
+  cancelMailAccountSync,
   KNOWN_MAIL_HOST_SUFFIXES,
   DEFAULT_MAIL_SYNC_FETCH_LIMIT,
   MAIL_SYNC_FETCH_LIMITS,
