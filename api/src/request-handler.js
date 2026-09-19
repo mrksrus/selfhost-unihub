@@ -11,6 +11,8 @@ const {
   isRequestBodyTooLarge,
 } = require('./http/request');
 const { parseSingleByteRange } = require('./http/range');
+const { getModuleForPath } = require('./services/module-catalog');
+const { isModuleEnabled } = require('./services/module-settings');
 const { getActiveRestoreSections } = require('./services/restore-locks');
 const { getRestoreSectionForWrite } = require('./services/backup-catalog');
 const {
@@ -80,7 +82,16 @@ async function dispatchRequest(req, res) {
   req.params = {};
   
   // Handle parameterized routes
-  if (routeKey.includes('/api/contacts/') && req.method !== 'GET' && req.method !== 'POST') {
+  if (url.pathname.startsWith('/api/notes/')) {
+    const match = /^\/api\/notes\/([^/]+)(?:\/(restore|export|attachments|revisions)(?:\/([^/]+)(?:\/(download|restore))?)?)?$/.exec(url.pathname);
+    if (match) {
+      req.params.id = match[1];
+      req.params.attachmentId = match[2] === 'attachments' ? match[3] : undefined;
+      req.params.revision = match[2] === 'revisions' ? match[3] : undefined;
+      const suffix = match[2] ? `/${match[2]}${match[3] ? (match[2] === 'revisions' ? '/:revision' : '/:attachmentId') : ''}${match[4] ? `/${match[4]}` : ''}` : '';
+      routeKey = `${req.method} /api/notes/:id${suffix}`;
+    }
+  } else if (routeKey.includes('/api/contacts/') && req.method !== 'GET' && req.method !== 'POST') {
     routeKey = `${req.method} /api/contacts/:id`;
     if (url.pathname.includes('/favorite')) {
       routeKey = `${req.method} /api/contacts/:id/favorite`;
@@ -230,6 +241,13 @@ async function dispatchRequest(req, res) {
       return;
     }
 
+    const moduleId = getModuleForPath(url.pathname);
+    if (userId && moduleId && !await isModuleEnabled(userId, moduleId)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'This module is disabled. Enable it in Settings.', code: 'MODULE_DISABLED', module: moduleId }));
+      return;
+    }
+
     // Reject before parsing or spooling a potentially huge backup upload.
     if (DISABLED_BACKUP_ROUTES.has(routeKey)) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
@@ -238,7 +256,7 @@ async function dispatchRequest(req, res) {
     }
 
     if (userId && ['POST', 'PUT', 'DELETE'].includes(req.method)) {
-      const section = getRestoreSectionForWrite(url.pathname);
+      const section = url.pathname === '/api/modules' ? 'settings' : getRestoreSectionForWrite(url.pathname);
       if (section) {
         const activeSections = await getActiveRestoreSections(userId);
         if ((section === '*' && activeSections.size > 0) || activeSections.has(section)) {
@@ -254,7 +272,11 @@ async function dispatchRequest(req, res) {
 
     // Allow larger bodies for vCard import and bulk operations
     let maxBodySize = 1000; // Default for most endpoints
-    if (url.pathname.startsWith('/api/notifications/')) {
+    if (url.pathname === '/api/modules') {
+      maxBodySize = 16384;
+    } else if (url.pathname.startsWith('/api/notes')) {
+      maxBodySize = routeKey === 'POST /api/notes/:id/attachments' ? 3 * 1024 * 1024 : 1024 * 1024;
+    } else if (url.pathname.startsWith('/api/notifications/')) {
       maxBodySize = 16384;
     } else if (routeKey === 'POST /api/contacts/import') {
       maxBodySize = 500000; // vCard import can be large

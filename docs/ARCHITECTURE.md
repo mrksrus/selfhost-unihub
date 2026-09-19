@@ -338,3 +338,19 @@ provider UIDs and credentials. See [mail modes](MAIL_MODES.md).
 Chromium request check is available through
 `node scripts/email-privacy-browser-check.mjs` when Chromium is installed. It
 intercepts image responses and uses no provider account.
+
+
+## Built-in module boundaries
+
+`module-catalog.js` lists built-in modules and their corresponding recovery sections.
+`module-settings.js` owns per-user visibility/access/background preferences. The
+request handler checks module access before reading a body or serving an attachment;
+search, statistics, offline reads and provider workers apply their own relevant
+checks. Settings/auth/recovery remain core functions. This is an internal catalog,
+not a dynamic plugin or microservice system.
+
+Notes demonstrates domain-owned editing and recovery: `notes.js` handles ownership,
+revision conflicts and file access; `notes-recovery.js` validates and remaps Notes
+records inside the common restore transaction. UI draft state lives in the
+user-keyed session provider and is never written into persistent browser storage.
+See [Modules and Notes](MODULES_AND_NOTES.md).

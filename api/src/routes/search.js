@@ -1,4 +1,6 @@
 const { db } = require('../state');
+const { getUserModules } = require('../services/module-settings');
+const { searchNotes } = require('../services/notes');
 
 function escapeLike(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
@@ -22,8 +24,10 @@ module.exports = {
         return { query: q, results: [] };
       }
 
+      const modules = new Map((await getUserModules(userId)).map(module => [module.id, module.enabled]));
+      const queryModule = (id, sql, params) => modules.get(id) ? db.execute(sql, params) : Promise.resolve([[]]);
       const like = `%${escapeLike(q)}%`;
-      const [contacts] = await db.execute(
+      const [contacts] = await queryModule('contacts',
         `SELECT id, first_name, last_name, email, email2, email3, company
          FROM contacts
          WHERE user_id = ?
@@ -36,7 +40,7 @@ module.exports = {
         [userId, like, like, like, like, like, like, like, like, like]
       );
 
-      const [emails] = await db.execute(
+      const [emails] = await queryModule('mail',
         `SELECT id, subject, from_address, from_name, folder, received_at
          FROM emails
          WHERE user_id = ?
@@ -48,7 +52,7 @@ module.exports = {
         [userId, like, like, like, like]
       );
 
-      const [events] = await db.execute(
+      const [events] = await queryModule('calendar',
         `SELECT id, title, description, start_time, is_todo_only, todo_status
          FROM calendar_events
          WHERE user_id = ?
@@ -58,7 +62,7 @@ module.exports = {
         [userId, like, like, like]
       );
 
-      const [recordings] = await db.execute(
+      const [recordings] = await queryModule('recordings',
         `SELECT id, title, description, recorded_at, created_at
          FROM recordings
          WHERE user_id = ?
@@ -73,7 +77,9 @@ module.exports = {
         [userId, like, like, like, like]
       );
 
+      const notes = modules.get('notes') ? await searchNotes(userId, q, perTypeLimit) : [];
       const results = [
+        ...notes.map(note => ({ id: `note:${note.id}`, type: 'note', title: note.title || 'Untitled note', subtitle: String(note.body || '').slice(0, 160), href: `/notes?note=${encodeURIComponent(note.id)}`, entity_id: note.id, date: isoDate(note.updated_at) })),
         ...contacts.map((contact) => {
           const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.email || 'Contact';
           return {

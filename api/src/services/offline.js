@@ -1,4 +1,5 @@
 const { db } = require('../state');
+const { getUserModules } = require('./module-settings');
 const { presentMailFiling } = require('./mail-filing');
 const { folderConnections } = require('./mail-folder-reconciliation');
 const { serializeCalendarEvent, serializeCalendarAccount, serializeCalendarCalendar,
@@ -47,15 +48,19 @@ function parseRecipients(value) {
 
 async function collectOfflineSnapshot(connection, userId) {
   if (!userId) throw Object.assign(new Error('Unauthorized'), { status: 401 });
+  const moduleStates = await getUserModules(userId, connection);
+  const modules = new Map(moduleStates.map(module => [module.id, module.enabled]));
+  const sectionModule = key => key === 'contacts' ? 'contacts' : ['emails', 'mailAccounts', 'folders'].includes(key) ? 'mail' : 'calendar';
+  const selected = Object.entries(SECTIONS).filter(([key]) => modules.get(sectionModule(key)));
   let estimatedBytes = 0;
   // Size-check every selected section before transferring potentially large
   // notes/descriptions/mail bodies into Node. Reads share one repeatable snapshot.
-  for (const section of Object.values(SECTIONS)) {
+  for (const [, section] of selected) {
     estimatedBytes += await preflightSection(connection, section, userId);
     if (estimatedBytes > OFFLINE_MAX_BYTES) throw budgetError();
   }
-  const data = {};
-  for (const [key, section] of Object.entries(SECTIONS)) {
+  const data = Object.fromEntries(Object.keys(SECTIONS).map(key => [key, []]));
+  for (const [key, section] of selected) {
     const [rows] = await connection.execute(selectSql(section), [userId]);
     data[key] = projectRows(rows, section);
   }
@@ -80,12 +85,12 @@ async function collectOfflineSnapshot(connection, userId) {
     list.push({ ...attachment, offline_available: false });
     attachmentsByEmail.set(attachment.email_id, list);
   }
-  const links = await folderConnections(userId, connection);
+  const links = modules.get('mail') ? await folderConnections(userId, connection) : new Map();
   const emails = data.emails.map(row => ({ ...presentMailFiling(row), to_addresses: parseRecipients(row.to_addresses),
     cc_addresses: parseRecipients(row.cc_addresses), bcc_addresses: parseRecipients(row.bcc_addresses),
     is_read: !!row.is_read, is_starred: !!row.is_starred, is_draft: false, has_attachments: !!row.has_attachments,
     attachments: attachmentsByEmail.get(row.id) || [] }));
-  const snapshot = { version: 1, userId, savedAt: new Date().toISOString(),
+  const snapshot = { version: 1, userId, savedAt: new Date().toISOString(), modules: moduleStates,
     contacts: data.contacts.map(row => ({ ...row, is_favorite: !!row.is_favorite })), events,
     calendars: projectRows(data.calendars.map(serializeCalendarCalendar), SECTIONS.calendars),
     calendarAccounts: projectRows(data.calendarAccounts.map(serializeCalendarAccount), SECTIONS.calendarAccounts),

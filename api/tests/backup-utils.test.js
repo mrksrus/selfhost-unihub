@@ -56,7 +56,7 @@ test('validateBackupPayload rejects tampered file content', () => {
 });
 
 test('normalizeBackupImportSections maps full and todo scopes', () => {
-  assert.deepEqual(normalizeBackupImportSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings', 'games']);
+  assert.deepEqual(normalizeBackupImportSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings', 'notes', 'games']);
   assert.deepEqual(normalizeBackupImportSections(['mail', 'todo']), ['mail', 'calendar']);
   for (const selection of [['mail', 'unknown'], 'unknown', '', [], ['']]) {
     assert.throws(() => normalizeBackupImportSections(selection), { status: 400, code: 'BACKUP_SECTION_UNSUPPORTED' });

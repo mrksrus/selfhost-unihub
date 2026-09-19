@@ -172,6 +172,65 @@ async function ensureSchema() {
         }
       },
     },
+    {
+      id: 4,
+      name: 'notes-with-revisions-and-attachments',
+      up: async connection => {
+        await connection.execute(`CREATE TABLE IF NOT EXISTS notes (
+          id CHAR(36) PRIMARY KEY,
+          origin_key CHAR(36) NOT NULL,
+          user_id CHAR(36) NOT NULL,
+          title VARCHAR(255) NOT NULL,
+          body MEDIUMTEXT NOT NULL,
+          revision INT UNSIGNED NOT NULL DEFAULT 1,
+          trashed_at DATETIME NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          INDEX idx_notes_owner (user_id, trashed_at, updated_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+        await connection.execute(`CREATE TABLE IF NOT EXISTS note_revisions (
+          id CHAR(36) PRIMARY KEY,
+          user_id CHAR(36) NOT NULL,
+          note_id CHAR(36) NOT NULL,
+          revision INT UNSIGNED NOT NULL,
+          title VARCHAR(255) NOT NULL,
+          body MEDIUMTEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+          UNIQUE KEY uq_note_revision (note_id, revision)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+        await connection.execute(`CREATE TABLE IF NOT EXISTS note_attachments (
+          id CHAR(36) PRIMARY KEY,
+          user_id CHAR(36) NOT NULL,
+          note_id CHAR(36) NOT NULL,
+          filename VARCHAR(255) NOT NULL,
+          content_type VARCHAR(128) NOT NULL,
+          size_bytes INT UNSIGNED NOT NULL,
+          storage_path TEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+        await connection.execute(`CREATE TABLE IF NOT EXISTS note_links (
+          user_id CHAR(36) NOT NULL,
+          note_id CHAR(36) NOT NULL,
+          linked_note_id CHAR(36) NOT NULL,
+          PRIMARY KEY (note_id, linked_note_id),
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+          FOREIGN KEY (linked_note_id) REFERENCES notes(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      },
+      verify: async connection => {
+        await verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 4 });
+        for (const [table, index] of [['note_revisions', 'uq_note_revision'], ['note_links', 'PRIMARY'], ['notes', 'idx_notes_owner']]) {
+          const [rows] = await connection.execute(`SHOW INDEX FROM ${quoteIdentifier(table)} WHERE Key_name = ?`, [index]);
+          if (!rows.length) throw new Error(`Notes migration missing index ${table}.${index}`);
+        }
+      },
+    },
   ]);
 }
 

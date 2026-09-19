@@ -1,12 +1,15 @@
+import { useModules } from '@/hooks/use-modules';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { LayoutDashboard, Gamepad2, Music2, Users, Settings, Shield } from 'lucide-react';
+import { LayoutDashboard, Gamepad2, Music2, Users, Settings, Shield, NotebookPen } from 'lucide-react';
 
 const More = () => {
+  const { canNavigate } = useModules();
   const { user } = useAuth();
   const links = [
+    { title: 'Notes', description: 'Text, Markdown, attachments, and revision history', href: '/notes', icon: NotebookPen },
     { title: 'Music', description: 'Music recordings and chord notes', href: '/music', icon: Music2 },
     { title: 'Contacts', description: 'People, phone numbers, and email addresses', href: '/contacts', icon: Users },
     { title: 'Games', description: 'Small extras and future modules', href: '/games', icon: Gamepad2 },
@@ -26,7 +29,7 @@ const More = () => {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        {links.map((item) => (
+        {links.filter(item => canNavigate(item.href)).map((item) => (
           <Card key={item.href}>
             <CardHeader>
               <div className="flex items-center gap-3">

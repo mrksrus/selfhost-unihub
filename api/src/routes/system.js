@@ -1,4 +1,5 @@
 const { db, getDb } = require('../state');
+const { getUserModules } = require('../services/module-settings');
 
 
 module.exports = {
@@ -18,11 +19,13 @@ module.exports = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const [contacts] = await db.execute(
+      const enabled = new Map((await getUserModules(userId)).map(module => [module.id, module.enabled]));
+      const query = (id, sql, params) => enabled.get(id) ? db.execute(sql, params) : Promise.resolve([[{ count: 0 }]]);
+      const [contacts] = await query('contacts',
         'SELECT COUNT(*) as count FROM contacts WHERE user_id = ?',
         [userId]
       );
-      const [events] = await db.execute(
+      const [events] = await query('calendar',
         `SELECT COUNT(*) as count
          FROM calendar_events
          WHERE user_id = ?
@@ -31,7 +34,7 @@ module.exports = {
            AND (todo_status IS NULL OR todo_status NOT IN ('done', 'cancelled'))`,
         [userId]
       );
-      const [unread] = await db.execute(
+      const [unread] = await query('mail',
         'SELECT COUNT(*) as count FROM emails WHERE user_id = ? AND is_read = FALSE',
         [userId]
       );

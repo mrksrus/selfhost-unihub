@@ -70,7 +70,7 @@ async function start() {
       console.log(`\n[${new Date().toISOString()}] Starting periodic mail sync for ${accounts.length} accounts...`);
       for (const account of accounts) {
         if (await isSectionRestoreActive(account.user_id, 'mail')) continue;
-        const result = await syncMailAccount(account.id);
+        const result = await syncMailAccount(account.id, { background: true });
         if (result?.success === false) {
           console.error(`Failed to sync ${account.email_address}:`, result.error || 'Unknown error');
         }

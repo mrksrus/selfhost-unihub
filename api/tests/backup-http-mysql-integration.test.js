@@ -51,13 +51,25 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
     assert.equal((await source('GET','/backup/capabilities')).enabled,true);
     await source('POST','/backup/jobs',{sections:['unknown-module']},400);
     const contact = await source('POST','/contacts',{first_name:'Grüße',last_name:'Recovery',email:'saved@example.test'});
-    const created = await source('POST','/backup/jobs',{sections:['contacts'],encrypt:true},202);
+    const first = await source('POST', '/notes', { title: 'Linked history', body: 'First note' });
+    const second = await source('POST', '/notes', { title: 'Research', body: 'Original note text', linked_note_ids: [first.note.id] });
+    await destination('GET', `/notes/${second.note.id}`, undefined, 404);
+    await source('POST', `/notes/${second.note.id}/attachments`, { expected_revision: 1, filename: 'evidence.txt', content_base64: Buffer.from('Exact attachment bytes').toString('base64') });
+    await source('PUT', `/notes/${second.note.id}`, { expected_revision: 2, title: 'Research', body: 'Updated note text', linked_note_ids: [first.note.id] });
+    await source('PUT', `/notes/${second.note.id}`, { expected_revision: 2, title: 'Stale', body: 'Must not overwrite' }, 409);
+    await source('DELETE', `/notes/${first.note.id}`, { expected_revision: 1 });
+    const markdown = await source('GET', `/notes/${second.note.id}/export`, undefined, 200, true);
+    assert.match(markdown.toString(), /Updated note text/);
+    await source('PUT', '/modules', { modules: { notes: { enabled: false }, mail: { visible: false, background: false } } });
+    await source('GET', '/notes', undefined, 403);
+    await source('POST', '/notes', { title: 'Blocked', body: '' }, 403);
+    const created = await source('POST','/backup/jobs',{sections:['contacts','notes','settings'],encrypt:true},202);
     const id = created.job.id;
     await wait(() => source('GET',`/backup/jobs/${id}`),'ready');
     await destination('GET',`/backup/jobs/${id}/download`,undefined,404);
     const key = await source('POST',`/backup/jobs/${id}/recovery-password/reveal`,{});
     const archive = await source('GET',`/backup/jobs/${id}/download`,undefined,200,true);
-    const imported = await destination('POST','/backup/import?sections=contacts',archive,202);
+    const imported = await destination('POST','/backup/import?sections=contacts,notes,settings',archive,202);
     const restoreId = imported.job.id;
     await destination('POST',`/backup/restore-jobs/${restoreId}/unlock`,{password:'wrong-password'},400);
     await destination('POST',`/backup/restore-jobs/${restoreId}/unlock`,{password:key.recovery_password},202);
@@ -66,6 +78,28 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
     await wait(() => destination('GET',`/backup/restore-jobs/${restoreId}`),'completed');
     const contacts = (await destination('GET','/contacts')).contacts;
     assert.equal(contacts.length,1); assert.equal(contacts[0].first_name,'Grüße'); assert.notEqual(contacts[0].id,contact.contact.id);
+    const prefs = await destination('GET', '/modules');
+    assert.equal(prefs.modules.find(module => module.id === 'notes').enabled, false, 'Disabled module preference restored');
+    await destination('GET', '/notes', undefined, 403);
+    await destination('PUT', '/modules', { modules: { notes: { enabled: true } } });
+    const restoredNotes = (await destination('GET', '/notes')).notes;
+    assert.equal(restoredNotes.length, 1);
+    const restored = await destination('GET', `/notes/${restoredNotes[0].id}`);
+    assert.notEqual(restored.note.id, second.note.id);
+    assert.equal(restored.note.body, 'Updated note text');
+    assert.equal(restored.revisions.length, 3);
+    assert.equal(restored.attachments.length, 1);
+    const restoredTrash = (await destination('GET', '/notes?trash=true')).notes;
+    assert.equal(restoredTrash.length, 1);
+    assert.equal(restored.links[0].id, restoredTrash[0].id, 'Owned note links remapped across users');
+    const bytes = await destination('GET', `/notes/${restored.note.id}/attachments/${restored.attachments[0].id}/download`, undefined, 200, true);
+    assert.equal(bytes.toString(), 'Exact attachment bytes');
+    await destination('POST', `/notes/${restored.note.id}/revisions/1/restore`, { expected_revision: restored.note.revision });
+    const reverted = await destination('GET', `/notes/${restored.note.id}`);
+    assert.equal(reverted.note.body, 'Original note text');
+    assert.equal(reverted.attachments.length, 1);
+    assert.equal(reverted.links[0].id, restoredTrash[0].id);
+
   } finally {
     if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
     if (owned) { const connection = await pool.getConnection(); try { await connection.query('SET FOREIGN_KEY_CHECKS=0'); const [tables] = await connection.query('SHOW TABLES'); for(const row of tables) await connection.query('DROP TABLE ??',[Object.values(row)[0]]); } finally { await connection.query('SET FOREIGN_KEY_CHECKS=1'); connection.release(); } }

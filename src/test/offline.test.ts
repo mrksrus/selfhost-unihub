@@ -181,3 +181,19 @@ describe('offline API boundary', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+
+describe('offline module preferences', () => {
+  it('projects saved preferences and blocks disabled module reads', () => {
+    const stored = snapshot();
+    stored.modules = [{ id: 'mail', label: 'Mail', enabled: false, visible: true, background: false }];
+    expect(resolveOfflineEndpoint(stored, '/modules')).toEqual({ data: { modules: stored.modules } });
+    expect(resolveOfflineEndpoint(stored, '/mail/emails')).toEqual(expect.objectContaining({ status: 403 }));
+  });
+  it('preserves default access for old snapshots without inventing offline notes', () => {
+    const result = resolveOfflineEndpoint(snapshot(), '/modules') as { data: { modules: { enabled: boolean }[] } };
+    expect(result.data.modules).toHaveLength(6);
+    expect(result.data.modules.every(module => module.enabled)).toBe(true);
+    expect(resolveOfflineEndpoint(snapshot(), '/notes')).toEqual(expect.objectContaining({ status: 503 }));
+  });
+});

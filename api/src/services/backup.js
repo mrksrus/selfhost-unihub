@@ -15,6 +15,9 @@ const { MAIL_RAW_STORAGE_ROOT, DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetch
 const { validateDavUrlPolicy } = require('./caldav');
 const { resolveCalDavUrl } = require('../security/caldav-transport');
 const { RECORDINGS_ROOT } = require('./recordings');
+const { NOTES_ROOT } = require('./notes');
+const { modulesFromValue } = require('./module-settings');
+const { validateNotesData, restoreNotes } = require('./notes-recovery');
 const { chooseTargetId, writeOwnedRow, resolveOwnedReference, assertOwnedRelationship, validateRestoreRows } = require('./backup-ownership');
 const { AUDIO_HEADER_BYTES, identifyRecordingAudio, inspectRecordingAudio } = require('./recording-audio');
 const { BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, BACKUP_METADATA_LIMITS, getBackupProducer,
@@ -24,7 +27,7 @@ const { SECTION_POLICIES, TABLE_POLICIES, FILE_POLICIES, normalizeBackupSections
 const { restoreMailRecovery, validateRestoredMailDestinations } = require('./backup-mail-recovery');
 
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
-const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: MAIL_RAW_STORAGE_ROOT, recording: RECORDINGS_ROOT });
+const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: MAIL_RAW_STORAGE_ROOT, recording: RECORDINGS_ROOT, note_attachment: NOTES_ROOT });
 const BACKUP_CONFLICT_MODES = new Set(['keep_existing', 'replace', 'keep_both']);
 const BACKUP_CALENDAR_MODES = new Set(['merge_same_name', 'copy']);
 const BACKUP_CREDENTIAL_MODES = new Set(['keep_existing', 'restore']);
@@ -215,6 +218,7 @@ function getBackupArchivePath(file) {
   if (file.kind === 'raw_email') return `files/mail-raw/${safeId}-${safeName}`;
   if (file.kind === 'email_attachment') return `files/mail-attachments/${safeId}-${safeName}`;
   if (file.kind === 'recording') return `files/recordings/${safeId}-${safeName}`;
+  if (file.kind === 'note_attachment') return `files/notes/${safeId}-${safeName}`;
   return `files/other/${safeId}-${safeName}`;
 }
 
@@ -334,6 +338,7 @@ function assertBackupFilesComplete(backup) {
   const required = [
     ...(backup.data.email_attachments || []).map(row => `email_attachment:${row.id}`),
     ...(backup.data.recordings || []).map(row => `recording:${row.id}`),
+    ...(backup.data.note_attachments || []).map(row => `note_attachment:${row.id}`),
     ...(backup.data.emails || []).filter(row => row.raw_storage_path || row.import_complete === true || row.import_complete === 1)
       .map(row => `raw_email:${row.id}`),
   ];
@@ -703,6 +708,12 @@ function validateBackupPayload(backup, {
     if (!Object.values(SECTION_POLICIES).some(policy => policy.fileKinds.includes(file?.kind))) errors.push(`Unsupported backup file kind: ${file?.kind}`);
   }
   errors.push(...validateRestoreRows(backup.data));
+  errors.push(...validateNotesData(backup.data));
+  for (const row of Array.isArray(backup.data?.user_settings) ? backup.data.user_settings : []) {
+    if (row?.setting_key === 'module_preferences') {
+      try { modulesFromValue(row.setting_value); } catch { errors.push('Backup has invalid module preferences.'); }
+    }
+  }
 
   if (Array.isArray(backup.files)) {
     for (const file of backup.files) {
@@ -716,6 +727,11 @@ function validateBackupPayload(backup, {
       if ((!file?.data_base64 && !fileBuffer) || !file.sha256) {
         errors.push(`File ${file?.kind || 'unknown'}:${file?.id || 'unknown'} is incomplete`);
         continue;
+      }
+      if (file?.kind === 'note_attachment') {
+        const attachment = (Array.isArray(backup.data?.note_attachments) ? backup.data.note_attachments : []).find(row => row?.id === file.id);
+        const actualSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : fileBuffer?.size ?? (file.data_base64 ? Buffer.from(String(file.data_base64), 'base64').length : null);
+        if (!attachment || actualSize !== attachment.size_bytes) errors.push(`Note attachment ${file.id} has inconsistent file size or ownership.`);
       }
       if (skipFileHashValidation) continue;
       if (fileBuffer && !Buffer.isBuffer(fileBuffer)) {
@@ -745,6 +761,7 @@ function validateBackupPayload(backup, {
     const required = [
       ...rows('email_attachments').map(row => `email_attachment:${row.id}`),
       ...rows('recordings').map(row => `recording:${row.id}`),
+      ...rows('note_attachments').map(row => `note_attachment:${row.id}`),
       ...rows('emails').filter(row => row.raw_storage_path || row.import_complete === true || row.import_complete === 1).map(row => `raw_email:${row.id}`),
     ];
     for (const key of required) if (!files.has(key)) errors.push(`Schema 3 backup has no referenced file: ${key}`);
@@ -868,6 +885,12 @@ async function countRestoreConflicts(userId, backup) {
   }
   if (recordingConflicts) conflicts.recordings = recordingConflicts;
 
+  let noteConflicts = 0;
+  for (const note of data.notes || []) {
+    const [rows] = await db.execute('SELECT id FROM notes WHERE user_id = ? AND (id = ? OR origin_key = ?) LIMIT 1', [userId, note.id, note.origin_key]);
+    if (rows.length) noteConflicts++;
+  }
+  if (noteConflicts) conflicts.notes = noteConflicts;
   return conflicts;
 }
 
@@ -1272,7 +1295,7 @@ async function writeRestoredFile(userId, file, {
   if (!source) return null;
   const root = file.kind === 'raw_email'
     ? MAIL_RAW_STORAGE_ROOT
-    : file.kind === 'recording' ? RECORDINGS_ROOT : ATTACHMENTS_ROOT;
+    : file.kind === 'recording' ? RECORDINGS_ROOT : file.kind === 'note_attachment' ? NOTES_ROOT : ATTACHMENTS_ROOT;
   const targetDir = restoreJobId
     ? path.join(root, String(userId), 'restores', sanitizeArchivePathPart(restoreJobId))
     : path.join(root, String(userId));
@@ -2242,6 +2265,9 @@ async function importBackupForUser(userId, backup, {
         ['user_id']
       );
     }
+
+    await reportRestoreProgress('notes', 97);
+    await restoreNotes({ connection, userId, data, restoredPaths, conflictMode, checkCancelled: checkRestoreCancelled });
 
     const result = {
       dry_run: false,

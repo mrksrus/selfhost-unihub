@@ -1,5 +1,7 @@
 module.exports = {
   ...require('./system'),
+  ...require('./modules'),
+  ...require('./notes'),
   ...require('./auth'),
   ...require('./contacts'),
   ...require('./settings'),

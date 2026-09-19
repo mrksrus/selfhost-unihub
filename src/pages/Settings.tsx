@@ -1,3 +1,4 @@
+import ModuleSettings from '@/components/settings/ModuleSettings';
 import OfflineSettings from '@/components/offline/OfflineSettings';
 import AppearanceSettings from '@/components/theme/AppearanceSettings';
 import { lazy, Suspense, useState, useEffect } from 'react';
@@ -98,7 +99,7 @@ type MailFolder = {
 
 type UserPreferences = {
   email_link_behavior: 'mailto' | 'internal';
-  default_start_page: 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'dashboard';
+  default_start_page: 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'notes' | 'dashboard';
 };
 
 type TwoFactorStatus = {
@@ -124,8 +125,8 @@ const FALLBACK_MAIL_FOLDERS: MailFolder[] = [
 
 const Settings = () => {
   const { user, setUser, signOut } = useAuth();
-  const [activeTab, setActiveTab] = useState('general');
-  const [visitedData, setVisitedData] = useState(false);
+  const [activeTab, setActiveTab] = useState(() => new URLSearchParams(window.location.search).get('tab') || 'general');
+  const [visitedData, setVisitedData] = useState(() => new URLSearchParams(window.location.search).get('tab') === 'data');
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [loading, setLoading] = useState(false);
@@ -637,6 +638,7 @@ const Settings = () => {
             <TabsTrigger value="general" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
               General
             </TabsTrigger>
+            <TabsTrigger value="modules">Modules</TabsTrigger>
             <TabsTrigger value="security" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
               Security
             </TabsTrigger>
@@ -730,6 +732,7 @@ const Settings = () => {
                       <SelectItem value="todo">ToDo</SelectItem>
                       <SelectItem value="contacts">Contacts</SelectItem>
                       <SelectItem value="recordings">Recordings</SelectItem>
+                      <SelectItem value="notes">Notes</SelectItem>
                       <SelectItem value="dashboard">Dashboard</SelectItem>
                     </SelectContent>
                   </Select>
@@ -759,6 +762,7 @@ const Settings = () => {
         </motion.div>
         </TabsContent>
 
+        <TabsContent value="modules"><ModuleSettings /></TabsContent>
         <TabsContent value="security" className="mt-0">
         {/* Security Section */}
         <motion.div

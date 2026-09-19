@@ -133,11 +133,13 @@ Persistent data is split across:
 | `/app/uploads/attachments` | Email attachments and inline images |
 | `/app/uploads/mail-raw` | Raw `.eml` snapshots for imported messages |
 | `/app/uploads/recordings` | Uploaded/imported audio files |
+| `/app/uploads/notes` | Note attachments, including retained bytes needed by active backups |
 | `/app/uploads/backups` | Generated backups and retained restore uploads |
 
 **In 0.10.6, in-app backup creation, import and restore are enabled again.**
 New schema-3 archives preserve the current mail filing model, completed transcripts
-and server game scores. Older schema-1/2 archives are detected automatically.
+and server game scores, plus Notes, its revisions, links and attachments. Disabled
+modules remain included in full backups. Older schema-1/2 archives are detected automatically.
 Browser-only game progress is excluded; Data Management describes the scope. UniHub does not schedule infrastructure
 backups for you. Back up both Docker volumes. Server-retained backups are
 convenient restore points, not protection from loss of the server or uploads volume.
@@ -201,6 +203,7 @@ licensing, and the [0.10.0 release notes](docs/RELEASE_0.10.0.md) for the featur
 
 | Document | Covers |
 | --- | --- |
+| [Modules and Notes](docs/MODULES_AND_NOTES.md) | Optional features, background work, note history and recovery |
 | [Mail account modes](docs/MAIL_MODES.md) | Download, server-following Sync, retention and switching |
 | [Offline reading and appearance](docs/OFFLINE.md) | Device snapshots, limits, dark reading, and update prompts |
 | [Architecture](docs/ARCHITECTURE.md) | Runtime layout, storage, request handling, scheduled jobs |

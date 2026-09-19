@@ -14,6 +14,7 @@ const { db } = require('../state');
 const { debugLog } = require('../logger');
 const { decrypt } = require('../security/encryption');
 const { normalizeNetworkHost, isTrustedMailHost, isPublicNetworkAddress, resolveNetworkHost, resolveMailConnectionTarget } = require('../security/outbound-network');
+const { isModuleEnabled, isModuleBackgroundEnabled } = require('./module-settings');
 const { isSectionRestoreActive } = require('./restore-locks');
 const { normalizeComposerAttachments } = require('./mail-attachments');
 const { loadFolderSyncState, buildFolderSearchCriteria, saveFolderSyncState } = require('./mail-sync-state');
@@ -960,7 +961,7 @@ async function deleteImapUid(connection, uid) {
 async function isMailServerDeletionStillEnabled(accountId) {
   if (mailDeleteStopRequests.has(normalizeMailAccountId(accountId))) return false;
   const [rows] = await db.execute(
-    `SELECT delete_emails_on_server, is_active, server_delete_grace_until, sync_mode
+    `SELECT user_id, delete_emails_on_server, is_active, server_delete_grace_until, sync_mode
      FROM mail_accounts
      WHERE id = ?
      LIMIT 1`,
@@ -969,6 +970,7 @@ async function isMailServerDeletionStillEnabled(accountId) {
   const account = rows[0];
   if (!account || account.sync_mode === 'sync') return false;
   if (!toBooleanFlag(account.delete_emails_on_server) || !toBooleanFlag(account.is_active)) return false;
+  if (!await isModuleBackgroundEnabled(account.user_id, 'mail') || await isSectionRestoreActive(account.user_id, 'mail')) return false;
   if (!account.server_delete_grace_until) return false;
   return new Date(account.server_delete_grace_until).getTime() <= Date.now();
 }
@@ -1093,6 +1095,9 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
     );
     const account = accounts[0];
     if (!account || account.sync_mode === 'sync') return { accountId: normalizedAccountId, skipped: true, reason: 'not_enabled_or_grace_pending' };
+    if (!await isModuleBackgroundEnabled(account.user_id, 'mail')) {
+      return { accountId: normalizedAccountId, skipped: true, reason: 'module_paused' };
+    }
     if (await isSectionRestoreActive(account.user_id, 'mail')) {
       return { accountId: normalizedAccountId, skipped: true, reason: 'mail_restore_running' };
     }
@@ -1382,7 +1387,7 @@ async function testImapConnection(account) {
   }
 }
 
-async function syncMailAccountOnce(accountId, signal) {
+async function syncMailAccountOnce(accountId, signal, background) {
   let connection = null;
   try {
     debugLog('server.js:50', 'syncMailAccount START', { accountId }, 'H1');
@@ -1393,6 +1398,9 @@ async function syncMailAccountOnce(accountId, signal) {
     
     const account = accounts[0];
     checkCancelled(signal);
+    if (!await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) {
+      return { success: false, skipped: true, error: 'Mail module is paused' };
+    }
     const followsServer = account.sync_mode === 'sync';
     if (await isSectionRestoreActive(account.user_id, 'mail')) {
       return { success: false, skipped: true, error: 'Mail restore in progress' };
@@ -1547,7 +1555,7 @@ async function syncMailAccountOnce(accountId, signal) {
   }
 }
 
-async function syncMailAccount(accountId) {
+async function syncMailAccount(accountId, { background = false } = {}) {
   const normalizedAccountId = normalizeMailAccountId(accountId);
   if (!normalizedAccountId) {
     return { success: false, error: 'Account ID required' };
@@ -1566,7 +1574,7 @@ async function syncMailAccount(accountId) {
 
   const controller = new AbortController();
   mailSyncControllers.set(normalizedAccountId, controller);
-  const syncPromise = withMailAccountLock(normalizedAccountId, () => syncMailAccountOnce(normalizedAccountId, controller.signal));
+  const syncPromise = withMailAccountLock(normalizedAccountId, () => syncMailAccountOnce(normalizedAccountId, controller.signal, background));
   activeMailAccountSyncs.set(normalizedAccountId, syncPromise);
   try {
     return await syncPromise;
@@ -1624,6 +1632,7 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
       filename: attachment.filename, contentType: attachment.contentType, content: attachment.content,
     }));
 
+    if (!await isModuleEnabled(account.user_id, 'mail')) throw new Error('Mail module is disabled');
     const info = await transporter.sendMail({
       from: `${account.display_name || account.email_address} <${account.email_address}>`,
       to,

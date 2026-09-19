@@ -347,7 +347,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
             {backupAvailable
               ? 'Backups protect your selected account data and files. Keep a downloaded copy and its recovery password away from this server.'
               : 'Backup creation and restore are unavailable. Existing completed backups can still be downloaded.'}
-            {' '}A full server recovery also needs the database, uploads and configuration.
+            {' '}Full backups include data from hidden and disabled modules. Browser-only game saves are not included. A full server recovery also needs the database, uploads and configuration.
             {capabilities?.exclusions.map(item => <span key={item} className="mt-1 block text-muted-foreground">Not included: {item}.</span>)}
           </p>
           <Card>
@@ -357,8 +357,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   <Database className="h-5 w-5 text-accent" />
                 </div>
                 <div>
-                  <CardTitle className="text-lg">Backup</CardTitle>
-                  <CardDescription>Create an account backup or download a previous one.</CardDescription>
+                  <CardTitle className="text-lg">Create a backup</CardTitle>
+                  <CardDescription>Create an archive on this server, then download it below.</CardDescription>
                 </div>
               </div>
             </CardHeader>
@@ -381,7 +381,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
               <div className="flex flex-wrap gap-3">
                 <Button variant="outline" onClick={() => handleStartBackupJob('full')} disabled={!backupAvailable || backupCreating}>
                   {backupCreating ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
-                  Full backup
+                  Create full backup
                 </Button>
                 {importSections.map(({ id: section, label }) => (
                   <Button
@@ -396,6 +396,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
               </div>
 
               <div className="space-y-3">
+                <h3 className="font-medium">Download saved backups</h3>
+                <p className="text-sm text-muted-foreground">Creating a backup does not download it to this device.</p>
                 {backupJobs.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No backup jobs yet.</p>
                 ) : backupJobs.map((job) => (
@@ -426,7 +428,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                         {job.status === 'ready' && (
                           <Button variant="outline" size="sm" onClick={() => handleRestoreStoredBackup(job)} disabled={!backupAvailable || backupImporting}>
                             <RotateCcw className="h-4 w-4 mr-2" />
-                            Restore
+                            Review for restore
                           </Button>
                         )}
                         {['queued', 'running', 'cancelling'].includes(job.status) && (
@@ -444,6 +446,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                           variant="ghost"
                           size="icon"
                           title="Delete backup"
+                          aria-label="Delete backup"
                           onClick={() => handleDeleteBackupJob(job)}
                           disabled={['queued', 'running', 'cancelling'].includes(job.status)}
                         >
@@ -466,8 +469,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   <Upload className="h-5 w-5 text-accent" />
                 </div>
                 <div>
-                  <CardTitle className="text-lg">Import</CardTitle>
-                  <CardDescription>Upload once, then validate and restore in the background.</CardDescription>
+                  <CardTitle className="text-lg">Import and review</CardTitle>
+                  <CardDescription>Upload a backup and review its scope, counts and warnings before starting restore.</CardDescription>
                 </div>
               </div>
             </CardHeader>
@@ -628,7 +631,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                       {backupImportResult.valid ? 'Valid backup' : 'Invalid backup'}
                     </span>
                     <span className="text-muted-foreground">
-                      {backupImportResult.dry_run ? 'Dry run' : 'Applied'}
+                      {backupImportResult.dry_run ? 'Review only — nothing restored' : 'Restore completed'}
                     </span>
                     {backupImportResult.import_sections?.length ? (
                       <span className="text-muted-foreground">
@@ -638,19 +641,20 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   </div>
                   {Object.keys(backupImportResult.counts || {}).length > 0 && (
                     <p className="mt-2 text-muted-foreground">
-                      {Object.entries(backupImportResult.counts).map(([key, value]) => `${key}: ${value}`).join(' • ')}
+                      Records in selected archive sections: {Object.entries(backupImportResult.counts).map(([key, value]) => `${key}: ${value}`).join(' • ')}
                     </p>
                   )}
                   {Object.keys(backupImportResult.conflicts || {}).length > 0 && (
                     <p className="mt-1 text-muted-foreground">
-                      Conflicts: {Object.entries(backupImportResult.conflicts || {}).map(([key, value]) => `${key}: ${value}`).join(' • ')}
+                      Existing-record conflicts: {Object.entries(backupImportResult.conflicts || {}).map(([key, value]) => `${key}: ${value}`).join(' • ')}
                     </p>
                   )}
+                  <p className="mt-2 text-muted-foreground">Archive counts are not counts of newly restored records. Existing records may be kept, replaced or copied according to your choices; exact skipped-record totals are not reported.</p>
                   {backupImportResult.restored_files !== undefined && (
                     <p className="mt-1 text-muted-foreground">Restored files: {backupImportResult.restored_files}</p>
                   )}
                   {backupImportResult.warnings?.length > 0 && (
-                    <p className="mt-2 text-warning">{backupImportResult.warnings.join(' ')}</p>
+                    <ul aria-label="Recovery warnings" className="mt-2 list-disc pl-5 text-warning">{backupImportResult.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
                   )}
                   {backupImportResult.errors?.length > 0 && (
                     <p className="mt-2 text-destructive">{backupImportResult.errors.join(' ')}</p>
@@ -696,7 +700,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                         {job.status === 'validated' && (
                           <Button size="sm" onClick={() => handleStartRestoreJob(job)} disabled={!backupAvailable || job.status !== 'validated'}>
                             <Play className="h-4 w-4 mr-2" />
-                            Restore
+                            Review for restore
                           </Button>
                         )}
                         {['failed', 'cancelled'].includes(job.status) && job.archive_available && (

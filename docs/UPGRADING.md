@@ -3,7 +3,9 @@
 ## 0.10.6 recovery, account modes and upgrade ledger
 
 Migration 3 adds mail mode and separate current provider identifiers without
-rewriting original identity or deleting messages. Existing accounts remain in
+rewriting original identity or deleting messages. Migration 4 adds Notes tables
+and recovery policies. Module controls default to enabled, preserving access to
+existing features. Existing accounts remain in
 Download. Mode changes are opt-in; see [mail modes](MAIL_MODES.md).
 
 Read [0.10.6 release notes](RELEASE_0.10.6.md) before upgrading. Direct 0.10.3+

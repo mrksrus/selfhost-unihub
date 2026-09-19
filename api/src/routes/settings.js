@@ -1,4 +1,5 @@
 const { db } = require('../state');
+const { NOTES_ROOT } = require('../services/notes');
 const fs = require('fs');
 const path = require('path');
 const { clearAuthCookie, clearCsrfCookie } = require('../auth');
@@ -21,7 +22,7 @@ const USER_SETTING_DEFAULTS = {
 
 const USER_SETTING_ALLOWED_VALUES = {
   email_link_behavior: new Set(['mailto', 'internal']),
-  default_start_page: new Set(['mail', 'calendar', 'todo', 'contacts', 'recordings', 'dashboard']),
+  default_start_page: new Set(['mail', 'calendar', 'todo', 'contacts', 'recordings', 'notes', 'dashboard']),
 };
 
 async function getUserPreferences(userId) {
@@ -107,6 +108,8 @@ module.exports = {
         }
       }
       await db.execute('DELETE FROM users WHERE id = ?', [userId]);
+      // Also remove retained/detached note files after account metadata is deleted.
+      if (/^[a-zA-Z0-9-]{1,36}$/.test(userId)) await fs.promises.rm(path.join(NOTES_ROOT, userId), { recursive: true, force: true }).catch(error => console.error('Note file cleanup failed:', error.message));
       clearAuthCookie(res);
       clearCsrfCookie(res);
       return { deleted: true };

@@ -107,3 +107,23 @@ Use an empty disposable MySQL database whose name ends in `_test`. Set
 Normal CI already discovers these test files. The restored container smoke test
 exercises encrypted HTTP creation, download, upload, validation and restoration.
 Never regenerate a historical fixture merely to make a changed reader pass.
+
+
+## Built-in modules and Notes
+
+`module-catalog.js` binds optional modules to their recovery sections and request
+paths; `module-settings.js` reads archived per-user preferences. Visibility and
+feature/background pause do not narrow full exports. Settings/recovery remain
+available. Search and offline snapshots filter disabled modules separately.
+
+Migration 4 adds Notes with all fields classified at introducedIn 4. Notes owns
+its editing and restore rules in `notes.js` and `notes-recovery.js`; the common
+backup service owns file staging/transaction outcomes. Restore maps note links,
+revisions and attachments together, preserves distinct copies and uses origin
+lineage only within the destination user. A revision restore changes title/text,
+not the current attachment/link set. Removed or replaced attachment bytes remain
+until separate safe cleanup; a concurrent archive may still be reading them.
+
+`notes.test.js`, `module-settings.test.js`, `module-search.test.js` and the extended
+HTTP/full roundtrip tests cover these contracts. Updating module preference
+validation also requires checking archived settings and legacy offline defaults.

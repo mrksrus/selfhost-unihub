@@ -1,3 +1,4 @@
+import { useModules } from '@/hooks/use-modules';
 import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { Calendar, Mail, CheckSquare, Mic, MoreHorizontal } from 'lucide-react';
@@ -11,6 +12,7 @@ const navItems = [
 ];
 
 const BottomNav = () => {
+  const { canNavigate } = useModules();
   const location = useLocation();
 
   return (
@@ -18,10 +20,10 @@ const BottomNav = () => {
       className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around bg-card border-t border-border shadow-lg"
       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}
     >
-      {navItems.map((item) => {
+      {navItems.filter(item => canNavigate(item.href)).map((item) => {
         const isActive =
           item.href === '/more'
-            ? ['/more', '/music', '/games', '/dashboard', '/contacts'].some((path) => location.pathname.startsWith(path))
+            ? ['/more', '/music', '/games', '/dashboard', '/contacts', '/notes'].some((path) => location.pathname.startsWith(path))
             : location.pathname.startsWith(item.href);
         return (
           <NavLink

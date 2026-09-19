@@ -78,6 +78,27 @@ Recovery declarations are checked for section membership, file handling and pare
 mappings against actual MySQL foreign keys. CI now requires database tests to run
 and pass before image publication; no installation Compose change is needed.
 
+## Optional modules, Notes and workspace layout
+
+Settings now separates navigation visibility, feature access and supported
+background work for each built-in module. Pausing keeps data and full-backup
+coverage. Calendar and ToDo stay together. Settings and recovery remain available.
+Queued notifications keep their attempt state while paused; already-issued network
+operations may finish, and expired notifications are not replayed on resume.
+
+Notes adds text/Markdown editing, explicit saves, text revisions, Trash, linked
+notes, bounded attachments and readable Markdown downloads. Revision conflicts
+preserve the editor draft rather than overwriting another device's changes. Notes
+is online-only for now. Migration 4 is additive; schema-3 recovery includes all
+four Notes tables and attachment bytes, including disabled Notes and trashed notes.
+See [Modules and Notes](MODULES_AND_NOTES.md) for limits and recovery behavior.
+
+Wide desktop mail now shows folders, list and reader together; mobile retains its
+account/folder context when returning from a message. Data Management separates
+creation, existing downloads and import review, and distinguishes archive counts
+from restored/skipped results. Module settings are included in new device snapshots;
+refresh older snapshots to get current choices.
+
 ## Validation scope
 
 Focused checks cover populated historical upgrades, repeated startup, actual

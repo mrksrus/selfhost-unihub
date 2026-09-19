@@ -1,3 +1,4 @@
+import { useModules } from '@/hooks/use-modules';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
 import { cn } from '@/lib/utils';
@@ -15,6 +16,7 @@ import {
   Gamepad2,
   Mic,
   MoreHorizontal,
+  NotebookPen,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -23,6 +25,7 @@ import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const navigation = [
+  { name: 'Notes', href: '/notes', icon: NotebookPen },
   { name: 'Mail', href: '/mail', icon: Mail },
   { name: 'Calendar', href: '/calendar', icon: Calendar },
   { name: 'ToDo', href: '/todo', icon: CheckSquare },
@@ -37,6 +40,7 @@ const moreNavigation = [
 ];
 
 const AppSidebar = () => {
+  const { canNavigate } = useModules();
   const { user, signOut } = useAuth();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -88,7 +92,7 @@ const AppSidebar = () => {
 
       {/* Navigation */}
       <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
-        {navigation.map((item) => {
+        {navigation.filter(item => canNavigate(item.href)).map((item) => {
           const isActive = location.pathname.startsWith(item.href);
           return (
             <NavLink
@@ -119,7 +123,7 @@ const AppSidebar = () => {
           );
         })}
         <div className="pt-3 mt-3 border-t border-sidebar-border/70">
-          {moreNavigation.map((item) => {
+          {moreNavigation.filter(item => canNavigate(item.href)).map((item) => {
             const isActive = location.pathname === item.href || (
               item.href === '/more' && ['/music', '/games', '/dashboard'].includes(location.pathname)
             );

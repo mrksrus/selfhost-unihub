@@ -276,7 +276,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     await db.execute('ALTER TABLE emails DROP COLUMN recovery_inventory_probe');
   }
   const [upgradeHistory] = await db.execute('SELECT id, name, completed_at FROM schema_migrations ORDER BY id');
-  assert.deepEqual(upgradeHistory.map(row => row.id), [1, 2, 3]);
+  assert.deepEqual(upgradeHistory.map(row => row.id), [1, 2, 3, 4]);
   const [[owner]] = await db.execute('SELECT id FROM users LIMIT 1');
   const sentId = crypto.randomUUID();
   const sentAccountId = crypto.randomUUID();

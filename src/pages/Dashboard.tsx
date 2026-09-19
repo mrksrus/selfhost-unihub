@@ -1,3 +1,4 @@
+import { useModules } from '@/hooks/use-modules';
 import { mailQueryKeys } from '@/lib/mail-api';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -26,6 +27,7 @@ type EmailSummary = {
 
 const Dashboard = () => {
   const { user } = useAuth();
+  const { canNavigate, isEnabled, isSuccess: modulesReady } = useModules();
   const timezone = user?.timezone ?? null;
   const firstName = user?.full_name?.split(' ')[0] || 'there';
   const now = new Date();
@@ -34,6 +36,7 @@ const Dashboard = () => {
 
   const { data: stats = { contacts: 0, upcomingEvents: 0, unreadEmails: 0 } } = useQuery({
     queryKey: ['stats'],
+    enabled: modulesReady,
     queryFn: async () => {
       const response = await api.get<Stats>('/stats');
       if (response.error) throw new Error(response.error);
@@ -42,6 +45,7 @@ const Dashboard = () => {
   });
 
   const { data: todayEvents = [] } = useQuery({
+    enabled: isEnabled('calendar'),
     queryKey: calendarQueryKeys.list({
       includeTodos: false,
       includeDone: false,
@@ -59,12 +63,14 @@ const Dashboard = () => {
   });
 
   const { data: taskEvents = [] } = useQuery({
+    enabled: isEnabled('calendar'),
     queryKey: calendarQueryKeys.list({ includeTodos: true, includeDone: false, respectAutoTodo: true }),
     queryFn: () => calendarApi.fetchEvents({ includeTodos: true, includeDone: false, respectAutoTodo: true }),
   });
 
   const { data: unreadEmails = [] } = useQuery({
     queryKey: mailQueryKeys.dashboardUnread,
+    enabled: isEnabled('mail'),
     queryFn: async () => {
       const response = await api.get<{ emails: EmailSummary[] }>('/mail/emails?limit=5&offset=0&is_read=false&include_count=false');
       if (response.error) throw new Error(response.error);
@@ -102,20 +108,20 @@ const Dashboard = () => {
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline">
+          {canNavigate('/contacts') && (<Button asChild variant="outline">
             <Link to="/contacts?action=new"><Plus className="h-4 w-4 mr-2" />Contact</Link>
-          </Button>
-          <Button asChild variant="outline">
+          </Button>)}
+          {canNavigate('/calendar') && (<Button asChild variant="outline">
             <Link to="/calendar?action=new"><Plus className="h-4 w-4 mr-2" />Event</Link>
-          </Button>
-          <Button asChild>
+          </Button>)}
+          {canNavigate('/mail') && (<Button asChild>
             <Link to="/mail?action=compose"><Plus className="h-4 w-4 mr-2" />Email</Link>
-          </Button>
+          </Button>)}
         </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {metrics.map((metric) => (
+        {metrics.filter(metric => canNavigate(metric.href)).map((metric) => (
           <Link key={metric.label} to={metric.href} className="rounded-md border bg-card p-4 hover:border-accent/50 transition-colors">
             <div className="flex items-center justify-between">
               <metric.icon className="h-5 w-5 text-muted-foreground" />
@@ -128,7 +134,7 @@ const Dashboard = () => {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-6">
-        <Card>
+        {canNavigate('/calendar') && (<Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-lg">Today&apos;s Agenda</CardTitle>
             <Button asChild variant="ghost" size="sm">
@@ -146,9 +152,9 @@ const Dashboard = () => {
               </div>
             )}
           </CardContent>
-        </Card>
+        </Card>)}
 
-        <Card>
+        {canNavigate('/todo') && (<Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-lg">Task Queue</CardTitle>
             <Button asChild variant="ghost" size="sm">
@@ -178,11 +184,11 @@ const Dashboard = () => {
               )}
             </div>
           </CardContent>
-        </Card>
+        </Card>)}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
+        {canNavigate('/mail') && (<Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-lg">Unread Mail</CardTitle>
             <Button asChild variant="ghost" size="sm">
@@ -206,7 +212,7 @@ const Dashboard = () => {
               </div>
             )}
           </CardContent>
-        </Card>
+        </Card>)}
 
         <Card>
           <CardHeader>

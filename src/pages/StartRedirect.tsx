@@ -1,3 +1,4 @@
+import { useModules } from '@/hooks/use-modules';
 import { Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
@@ -9,10 +10,12 @@ const startPagePaths: Record<string, string> = {
   todo: '/todo',
   contacts: '/contacts',
   recordings: '/recordings',
+  notes: '/notes',
   dashboard: '/dashboard',
 };
 
 const StartRedirect = () => {
+  const modules = useModules();
   const { data, isLoading } = useQuery({
     queryKey: ['settings', 'preferences'],
     queryFn: async () => {
@@ -23,7 +26,7 @@ const StartRedirect = () => {
     retry: false,
   });
 
-  if (isLoading) {
+  if (isLoading || modules.isPending) {
     return (
       <div className="flex min-h-full items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
@@ -31,7 +34,9 @@ const StartRedirect = () => {
     );
   }
 
-  return <Navigate to={startPagePaths[data?.default_start_page || 'mail'] || '/mail'} replace />;
+  const desired = startPagePaths[data?.default_start_page || 'mail'] || '/mail';
+  const target = modules.canNavigate(desired) ? desired : Object.values(startPagePaths).find(path => modules.canNavigate(path)) || '/settings';
+  return <Navigate to={target} replace />;
 };
 
 export default StartRedirect;

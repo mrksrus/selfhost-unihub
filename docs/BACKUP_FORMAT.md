@@ -32,7 +32,9 @@ Schema 3 preserves account-scoped folder metadata, source and filing identities,
 Legacy state, per-account sender-rule overrides, recovery journals and translated
 completion markers. Completed recording transcripts and server-side Tetris scores
 are included. Mail mode, separate current provider bindings and the remote-missing
-marker are included. Old archives default to Download; Sync restores as pending.
+marker are included. Notes text, all revisions, Trash state, owned note links and
+attachment bytes are included, even when Notes is hidden or disabled. Module
+preferences are archived with settings. Old archives default to Download; Sync restores as pending.
 Automatic deletion is always reset off. Different provider mailbox identities
 cannot be merged. Browser-only game saves are outside server recovery.
 

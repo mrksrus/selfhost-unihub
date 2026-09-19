@@ -1685,7 +1685,7 @@ const MailPage = () => {
           ? `fixed left-0 top-0 h-full min-h-0 w-56 z-50 transform overflow-hidden transition-transform duration-200 border-r border-border bg-card flex flex-col ${
               mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'
             }`
-          : `${sidebarCollapsed ? 'w-16' : 'w-64'} h-full min-h-0 overflow-hidden border-r border-border bg-card flex flex-col transition-all duration-200`
+          : `${sidebarCollapsed ? 'w-16' : 'w-64'} shrink-0 h-full min-h-0 overflow-hidden border-r border-border bg-card flex flex-col transition-all duration-200`
       }>
         {/* Compose Button */}
         <div className={`p-4 flex items-center gap-2 ${(sidebarCollapsed && !isMobile) ? 'flex-col' : ''}`}>
@@ -1696,6 +1696,7 @@ const MailPage = () => {
               className="shrink-0"
               onClick={() => setMobileSidebarOpen(false)}
               title="Close sidebar"
+              aria-label="Close account and folder navigation"
             >
               <X className="h-4 w-4" />
             </Button>
@@ -1706,6 +1707,7 @@ const MailPage = () => {
               className="shrink-0"
               onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
               title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={sidebarCollapsed ? 'Expand account and folder navigation' : 'Collapse account and folder navigation'}
             >
               {sidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
             </Button>
@@ -2072,7 +2074,8 @@ const MailPage = () => {
                 variant="ghost"
                 size="icon"
                 onClick={() => setMobileSidebarOpen(true)}
-                title="Open sidebar"
+                title="Choose account and folder"
+                aria-label="Choose account and folder"
                 className="shrink-0"
               >
                 <Menu className="h-5 w-5" />
@@ -2095,7 +2098,7 @@ const MailPage = () => {
             )}
             <h2 className="font-semibold shrink-0">{folderLabel}</h2>
             {!selectedEmails.size && selectedAccount && (
-              <span className="text-sm text-muted-foreground shrink-0 hidden sm:inline">
+              <span className="text-sm text-muted-foreground min-w-0 truncate">
                 {accountLabel}
               </span>
             )}
@@ -2315,7 +2318,6 @@ const MailPage = () => {
                 {emails.map((email) => (
                   <motion.div
                     key={email.id}
-                    layout
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
@@ -2360,7 +2362,7 @@ const MailPage = () => {
                       <Star className={`h-4 w-4 ${email.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />
                     </Button>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-2 mb-1">
+                      <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 mb-1">
                         <div className="flex items-center gap-2 min-w-0">
                           {!email.is_read && (
                             <span className="h-2 w-2 rounded-full bg-accent shrink-0" />
@@ -2564,14 +2566,16 @@ const MailPage = () => {
 
       {/* Email Reader */}
       {selectedEmail && (
-        <div className="fixed inset-0 z-50 bg-background">
+        <div className="fixed inset-0 z-50 bg-background xl:relative xl:inset-auto xl:z-auto xl:h-full xl:w-[45%] xl:shrink-0 xl:border-l xl:border-border">
           <div className="flex flex-col h-full">
             {/* Header */}
-            <div className="shrink-0 border-b border-border p-3 sm:p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-4">
+            <div className="shrink-0 border-b border-border p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex min-w-0 flex-1 basis-64 flex-wrap items-center gap-2 sm:gap-4">
                 <Button
                   variant="ghost"
                   size="icon"
+                  aria-label={`Back to ${accountLabel}, ${folderLabel}`}
+                  title={`Back to ${accountLabel}, ${folderLabel}`}
                   onClick={() => {
                     if (isReplying && (isComposeDirty || attachmentsDirty)) {
                       closeComposeFlow();
@@ -2583,6 +2587,7 @@ const MailPage = () => {
                 >
                   <ArrowLeft className="h-5 w-5" />
                 </Button>
+                <span className="text-xs text-muted-foreground truncate max-w-64">{accountLabel} / {folderLabel}</span>
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
                     variant="outline"
@@ -2650,7 +2655,7 @@ const MailPage = () => {
                   </Button>
                 </div>
               </div>
-              <div className="flex shrink-0 items-center gap-2 self-end sm:self-auto">
+              <div className="flex shrink-0 flex-wrap items-center gap-2 ml-auto">
                 <Button
                   variant="outline"
                   size="sm"
@@ -2672,6 +2677,7 @@ const MailPage = () => {
                 <Button
                   variant="ghost"
                   size="icon"
+                  aria-label={selectedEmail.is_starred ? 'Unstar message' : 'Star message'}
                   onClick={() => toggleStar.mutate({ id: selectedEmail.id, is_starred: !selectedEmail.is_starred })}
                 >
                   <Star className={`h-5 w-5 ${selectedEmail.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />

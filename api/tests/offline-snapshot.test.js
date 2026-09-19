@@ -4,7 +4,7 @@ const { collectOfflineSnapshot, createOfflineSnapshot, OFFLINE_MAX_BYTES } = req
 const routes = require('../src/routes/offline');
 const { getDb, setDb } = require('../src/state');
 
-function fixture({ oversizeTable, failTable } = {}) {
+function fixture({ oversizeTable, failTable, modules = {} } = {}) {
   const contact = index => ({ id: `contact-${String(index).padStart(5, '0')}`, user_id: 'user-1', first_name: 'Person', last_name: String(index), is_favorite: 0, notes: 'Full contact note' });
   const data = {
     contacts: [...Array.from({ length: 2105 }, (_, i) => contact(i)), { ...contact(9999), user_id: 'user-2' }],
@@ -26,6 +26,7 @@ function fixture({ oversizeTable, failTable } = {}) {
   const calls = [];
   let transactionData = null;
   function select(sql, params) {
+    if (sql.includes('FROM user_settings')) return [[{ setting_key: 'module_preferences', setting_value: JSON.stringify(modules) }]];
     if (sql.includes('JOIN mail_folder_remote_boxes')) {
       assert.equal(params[0], 'user-1');
       assert.match(sql, /JSON_CONTAINS/);
@@ -92,7 +93,7 @@ test('oversized metadata fails preflight before any full rows are transferred an
   const previous = getDb();
   const f = fixture({ oversizeTable: 'contacts' }); setDb(f.db); t.after(() => setDb(previous));
   await assert.rejects(createOfflineSnapshot('user-1'), { status: 413 });
-  assert.equal(f.calls.filter(sql => sql.startsWith('SELECT ') && !sql.includes('estimated_bytes')).length, 0);
+  assert.equal(f.calls.filter(sql => sql.startsWith('SELECT ') && !sql.includes('estimated_bytes') && !sql.includes('FROM user_settings')).length, 0);
   assert.ok(f.calls.includes('ROLLBACK'));
   assert.ok(f.calls.includes('RELEASE'));
   assert.equal(f.calls.includes('COMMIT'), false);
@@ -122,4 +123,16 @@ test('offline snapshot preserves filing and Legacy identity and verified folder 
   assert.equal(snapshot.emails[1].is_legacy, true);
   assert.equal(snapshot.folders[1].mail_account_id, 'mail-account-1');
   assert.deepEqual(snapshot.folders[1].connected_account_ids, ['mail-account-2']);
+});
+
+
+test('offline refresh omits disabled modules without reading their data', async () => {
+  const f = fixture({ modules: { mail: { enabled: false }, calendar: { enabled: false } } });
+  const snapshot = await collectOfflineSnapshot(f.connection, 'user-1');
+  assert.equal(snapshot.contacts.length, 2105);
+  assert.deepEqual(snapshot.emails, []);
+  assert.deepEqual(snapshot.events, []);
+  assert.deepEqual(snapshot.mailAccounts, []);
+  assert.deepEqual(snapshot.folders, []);
+  assert.ok(!f.calls.some(sql => /FROM (emails|calendar_events|mail_accounts|mail_folders)\b/.test(sql)));
 });

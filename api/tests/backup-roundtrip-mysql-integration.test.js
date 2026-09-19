@@ -8,7 +8,7 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime');
 
 const uuid = () => crypto.randomUUID();
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-const TABLES = ['user_settings', 'contacts', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'tetris_scores', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides'];
+const TABLES = ['notes', 'note_revisions', 'note_attachments', 'note_links', 'user_settings', 'contacts', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'tetris_scores', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides'];
 
 function wav() {
   const bytes = Buffer.alloc(76);
@@ -103,6 +103,14 @@ test('production export and restore jobs round-trip every section through encryp
   await insert('contacts', { id: uuid(), user_id: unrelatedUser, first_name: 'Do not export or change', notes: 'Unrelated private data' });
   await pool.execute('UPDATE users SET full_name = ?, timezone = ? WHERE id = ?', ['Grüße Roundtrip', 'Europe/Vienna', sourceUser]);
   await insert('user_settings', { user_id: sourceUser, setting_key: 'calendar_preferences', setting_value: JSON.stringify({ firstDay: 1, custom: 'Grüße\nTwo lines' }) });
+  await insert('user_settings', { user_id: sourceUser, setting_key: 'module_preferences', setting_value: JSON.stringify({ notes: { visible: false, enabled: false, background: false } }) });
+  const noteService = source('services/notes');
+  const linkedNote = await noteService.createNote(sourceUser, { title: 'Linked research', body: 'Second note' });
+  const firstNote = await noteService.createNote(sourceUser, { title: 'Research note', body: 'First version' });
+  await noteService.mutateNote(sourceUser, firstNote.note.id, { title: 'Research note', body: 'Grüße **Markdown**\nSecond version', linked_note_ids: [linkedNote.note.id], expected_revision: 1 }, 'update');
+  const noteBytes = Buffer.from([0, 255, 17, 13, 10, 128]);
+  await noteService.mutateNote(sourceUser, firstNote.note.id, { filename: 'Research data.bin', content_base64: noteBytes.toString('base64'), expected_revision: 2 }, 'attach');
+  await noteService.mutateNote(sourceUser, linkedNote.note.id, { expected_revision: 1 }, 'trash');
   await insert('contacts', { id: uuid(), user_id: sourceUser, first_name: 'Zoë', last_name: 'Example', email: 'zoe@example.test', email2: 'second@example.test', phone: '+43 12345', notes: 'Unicode: Grüße\nSecond line', is_favorite: 1 });
   const folderIds = { research: uuid(), copies: uuid() };
   await insert('mail_folders', { id: folderIds.research, user_id: sourceUser, slug: 'research', display_name: 'Research & Notes', position: 7, is_system: 0 });
@@ -201,7 +209,7 @@ test('production export and restore jobs round-trip every section through encryp
   const encrypted = await exportArchive(true);
   const legacy = await exportArchive(false);
   const legacyParsed = await source('services/backup').backupFromZipFile(legacy.file_path);
-  assert.equal(legacyParsed.manifest.file_count, 11);
+  assert.equal(legacyParsed.manifest.file_count, 12);
   assert.deepEqual(legacyParsed.manifest.missing_files, []);
   assert.equal(legacyParsed.backup.data.contacts.length, 1, 'Other users must not appear in an export');
   assert.deepEqual(await snapshot(sourceUser), original, 'Export must not mutate source rows');
@@ -272,6 +280,16 @@ test('production export and restore jobs round-trip every section through encryp
       const order = rows => rows.map(select).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
       assert.deepEqual(order(restored[table]), order(original[table]), `${table}: preserve content`);
     };
+    compare('notes', ['origin_key', 'title', 'body', 'revision', 'trashed_at', 'created_at', 'updated_at']);
+    compare('note_revisions', ['revision', 'title', 'body', 'created_at']);
+    compare('note_attachments', ['filename', 'content_type', 'size_bytes', 'created_at']);
+    for (const attachment of restored.note_attachments) {
+      assert.deepEqual(await fs.readFile(attachment.storage_path), noteBytes);
+      assert.equal(restored.notes.find(note => note.id === attachment.note_id)?.title, 'Research note');
+    }
+    assert.equal(restored.notes.find(note => note.id === restored.note_links[0].note_id)?.title, 'Research note');
+    assert.equal(restored.notes.find(note => note.id === restored.note_links[0].linked_note_id)?.title, 'Linked research');
+    for (const revision of restored.note_revisions) assert.ok(restored.notes.some(note => note.id === revision.note_id));
     compare('contacts', ['first_name', 'last_name', 'email', 'email2', 'phone', 'notes', 'is_favorite']);
     compare('user_settings', ['setting_key', 'setting_value']);
     compare('mail_folders', ['slug', 'display_name', 'position', 'is_system', 'special_use']);
@@ -428,13 +446,17 @@ test('production export and restore jobs round-trip every section through encryp
   });
   await t.test('repeated complete archives honor keep-existing, replace and keep-both without detaching children', async () => {
     await pool.execute('UPDATE contacts SET notes = ? WHERE user_id = ?', ['Local edit', encryptedUser]);
+    const edited = (await rowsFor('notes', encryptedUser)).find(note => note.title === 'Research note');
+    await destination('services/notes').mutateNote(encryptedUser, edited.id, { title: edited.title, body: 'Local edit', expected_revision: edited.revision }, 'update');
     await uploadAndRestore(destination, encryptedUser, encrypted, 'keep_existing');
     assert.equal((await rowsFor('contacts', encryptedUser))[0].notes, 'Local edit');
+    assert.equal((await rowsFor('notes', encryptedUser)).find(note => note.id === edited.id).body, 'Local edit');
     assert.equal((await rowsFor('emails', encryptedUser)).length, original.emails.length);
     await uploadAndRestore(destination, encryptedUser, encrypted, 'replace');
     await assertRestored(destination, encryptedUser);
     await uploadAndRestore(destination, encryptedUser, encrypted, 'keep_both');
     const doubled = await snapshot(encryptedUser);
+    for (const table of ['notes', 'note_revisions', 'note_attachments', 'note_links']) assert.equal(doubled[table].length, original[table].length * 2);
     assert.equal(doubled.contacts.length, 2); assert.equal(doubled.emails.length, original.emails.length * 2); assert.equal(doubled.recordings.length, original.recordings.length * 2);
     assert.equal(doubled.email_attachments.length, original.email_attachments.length * 2); assert.equal(doubled.recording_tag_links.length, original.recording_tag_links.length * 2);
     for (const email of doubled.emails) assert.ok(doubled.email_attachments.some(row => row.email_id === email.id));
@@ -677,6 +699,41 @@ test('production export and restore jobs round-trip every section through encryp
       await pool.execute('UPDATE contacts SET created_at = ? WHERE id = ?', ['2000-01-01 00:00:00', first.contacts[1].id]);
       await destination('services/backup').importBackupZipFileForUser(userId, archivePath, options);
       assert.deepEqual(await readMeaning(), first);
+    }
+  });
+  await t.test('note lineage copies cannot claim a later exact note identity in either restore mode', async () => {
+    for (const conflictMode of ['keep_existing', 'replace']) {
+      const userId = await newUser('note-identity-' + conflictMode);
+      const service = destination('services/notes');
+      const backupService = destination('services/backup');
+      const a = await service.createNote(userId, { title: 'Original A', body: 'Original body' });
+      const bytes = Buffer.from('A and B each retain their own attachment');
+      await service.mutateNote(userId, a.note.id, { expected_revision: 1, filename: 'identity.txt', content_base64: bytes.toString('base64') }, 'attach');
+      const initial = await backupService.buildBackupForUser(userId, { sections: 'notes' });
+      await backupService.importBackupForUser(userId, initial, { mode: 'apply', sections: 'notes', conflict_mode: 'keep_both' });
+      const b = (await rowsFor('notes', userId)).find(note => note.id !== a.note.id);
+      await service.mutateNote(userId, b.id, { expected_revision: b.revision, title: 'Copy B', body: 'Distinct copy body', linked_note_ids: [a.note.id] }, 'update');
+      const archive = await backupService.buildBackupForUser(userId, { sections: 'notes' });
+      archive.data.notes.sort((left, right) => left.id === b.id ? -1 : right.id === b.id ? 1 : 0);
+      delete archive.manifest_sha256; // Deliberately reorder valid source records before import.
+      await pool.execute('DELETE FROM notes WHERE id = ? AND user_id = ?', [b.id, userId]);
+      const result = await backupService.importBackupForUser(userId, archive, { mode: 'apply', sections: 'notes', conflict_mode: conflictMode });
+      assert.equal(result.valid, true);
+      const restored = await rowsFor('notes', userId);
+      assert.equal(restored.length, 2, 'Both the missing lineage copy and the exact note survive');
+      const exact = restored.find(note => note.id === a.note.id);
+      const copy = restored.find(note => note.title === 'Copy B');
+      assert.equal(exact.title, 'Original A'); assert.equal(exact.body, 'Original body');
+      assert.ok(copy); assert.notEqual(copy.id, exact.id); assert.equal(copy.body, 'Distinct copy body');
+      const links = await rowsFor('note_links', userId);
+      assert.equal(links.length, 1); assert.equal(links[0].note_id, copy.id); assert.equal(links[0].linked_note_id, exact.id);
+      for (const note of restored) {
+        const detail = await service.getNote(userId, note.id);
+        assert.equal(detail.revisions.length, note.id === exact.id ? 2 : 3);
+        assert.equal(detail.attachments.length, 1);
+        const download = await service.downloadAttachment(userId, note.id, detail.attachments[0].id);
+        assert.deepEqual(await fs.readFile(download.__streamPath), bytes);
+      }
     }
   });
   assert.deepEqual(await snapshot(sourceUser), original, 'Source data remains unchanged through every destination restore');

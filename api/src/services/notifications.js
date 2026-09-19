@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { db } = require('../state');
 const { encrypt, decrypt } = require('../security/encryption');
 const { pushAgent } = require('./push-transport');
+const { isModuleBackgroundEnabled, getBackgroundPausedModulesByUser } = require('./module-settings');
 const { getActiveRestoreSectionsByUser } = require('./restore-locks');
 const {
   REMINDER_GRACE_MS, EXCLUDED_MAIL_FOLDERS, asUtcDate, reminderMinutes,
@@ -113,7 +114,22 @@ async function subscriptionStatus(userId, endpoint) {
   return rows.length > 0;
 }
 
+function notificationModule(kind) {
+  return kind === 'mail' ? 'mail' : ['calendar', 'todo', 'reminder'].includes(kind) ? 'calendar' : null;
+}
+async function blockedNotificationModules(connection) {
+  const blocked = await getActiveRestoreSectionsByUser(connection);
+  for (const [userId, modules] of await getBackgroundPausedModulesByUser(connection)) {
+    const sections = blocked.get(userId) || new Set();
+    for (const id of modules) sections.add(id);
+    blocked.set(userId, sections);
+  }
+  return blocked;
+}
+
 async function enqueueEvent({ userId, dedupeKey, kind, sourceId = null, title, body, url, expiresAt, data = {}, endpointHash = null }, connection = db) {
+  const moduleId = notificationModule(kind);
+  if (moduleId && !await isModuleBackgroundEnabled(userId, moduleId, connection)) return null;
   const [devices] = await connection.execute(`SELECT p.id FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id
     JOIN users u ON u.id = p.user_id WHERE p.user_id = ? AND s.expires_at > UTC_TIMESTAMP() AND u.is_active = TRUE
     ${endpointHash ? 'AND p.endpoint_hash = ?' : ''}`, endpointHash ? [userId, endpointHash] : [userId]);
@@ -215,12 +231,14 @@ async function enqueueDueReminders(connection, now, activeRestores = new Map()) 
     ${blockedUsers.length ? `AND r.user_id NOT IN (${blockedUsers.map(() => '?').join(', ')})` : ''}
     ORDER BY r.due_at LIMIT 200`, [now, ...blockedUsers]);
   for (const event of rows) {
+    if (!await isModuleBackgroundEnabled(event.user_id, 'calendar', connection)) continue;
     await connection.beginTransaction();
     try {
       const data = { eventId: event.id, reminderMinutes: event.minutes, dedupeKey: reminderKey(event, event.minutes) };
       if (reminderIsCurrent(event, data, now.getTime())) await enqueueEvent({ userId: event.user_id, dedupeKey: data.dedupeKey, kind: 'reminder', sourceId: event.id,
         title: event.title, body: event.minutes === 0 ? 'Event is starting now' : `Event starts in ${event.minutes} minutes`,
         url: `${event.is_todo_only ? '/todo' : '/calendar'}?event=${encodeURIComponent(event.id)}`, data, expiresAt: new Date(asUtcDate(event.due_at).getTime() + REMINDER_GRACE_MS) }, connection);
+      if (!await isModuleBackgroundEnabled(event.user_id, 'calendar', connection)) { await connection.rollback(); continue; }
       await connection.execute('UPDATE notification_reminders SET queued_at = ? WHERE event_id = ? AND minutes = ?', [now, event.id, event.minutes]);
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; }
@@ -262,8 +280,13 @@ async function deliverPending(connection, now, activeRestores = new Map()) {
   const webPush = require('web-push');
   let delivered = 0;
   for (const row of rows) {
+    const moduleId = notificationModule(row.kind);
+    if (moduleId && !await isModuleBackgroundEnabled(row.user_id, moduleId, connection)) continue;
     const payload = jsonValue(row.payload);
-    if (!await eventStillCurrent(row, payload, connection)) {
+    const current = await eventStillCurrent(row, payload, connection);
+    // Recheck after source reads, before changing queued work or starting network IO.
+    if (moduleId && !await isModuleBackgroundEnabled(row.user_id, moduleId, connection)) continue;
+    if (!current) {
       await connection.execute("UPDATE notification_deliveries SET status = 'cancelled' WHERE event_id = ? AND subscription_id = ?", [row.event_id, row.subscription_id]);
       continue;
     }
@@ -294,11 +317,14 @@ async function processNotificationJobs() {
     locked = Number(lock[0]?.acquired) === 1;
     if (!locked) return { skipped: true };
     const now = new Date();
-    await reconcileReminders(connection, now, await getActiveRestoreSectionsByUser(connection));
-    await connection.execute('DELETE FROM notification_reminders WHERE due_at < ?', [new Date(now.getTime() - REMINDER_GRACE_MS)]);
-    await enqueueDueReminders(connection, now, await getActiveRestoreSectionsByUser(connection));
-    const delivered = await deliverPending(connection, now, await getActiveRestoreSectionsByUser(connection));
-    await connection.execute("DELETE FROM notification_events WHERE expires_at < UTC_TIMESTAMP() - INTERVAL 30 DAY");
+    await reconcileReminders(connection, now, await blockedNotificationModules(connection));
+    const paused = await blockedNotificationModules(connection);
+    const calendarUsers = [...paused].filter(([, modules]) => modules.has('calendar')).map(([userId]) => userId);
+    await connection.execute(`DELETE FROM notification_reminders WHERE due_at < ? ${calendarUsers.length ? `AND user_id NOT IN (${calendarUsers.map(() => '?').join(', ')})` : ''}`, [new Date(now.getTime() - REMINDER_GRACE_MS), ...calendarUsers]);
+    await enqueueDueReminders(connection, now, await blockedNotificationModules(connection));
+    const delivered = await deliverPending(connection, now, await blockedNotificationModules(connection));
+    const pausedUsers = [...paused].filter(([, modules]) => modules.has('calendar') || modules.has('mail')).map(([userId]) => userId);
+    await connection.execute(`DELETE FROM notification_events WHERE expires_at < UTC_TIMESTAMP() - INTERVAL 30 DAY ${pausedUsers.length ? `AND user_id NOT IN (${pausedUsers.map(() => '?').join(', ')})` : ''}`, pausedUsers);
     await connection.execute("DELETE FROM push_subscriptions WHERE session_id IN (SELECT id FROM sessions WHERE expires_at <= UTC_TIMESTAMP())");
     return { delivered };
   } finally {

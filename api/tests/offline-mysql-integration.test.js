@@ -15,7 +15,7 @@ test('MySQL offline queries match application schema, include every contact and 
   const previous = getDb();
   t.after(async () => { setDb(previous); await connection.end(); });
   const schema = await fs.readFile(path.join(__dirname, '../src/services/database.js'), 'utf8');
-  const tables = ['contacts', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'mail_accounts', 'mail_folders', 'mail_folder_remote_boxes', 'mail_folder_reconciliations', 'mail_sender_rules', 'mail_folder_rule_overrides', 'emails', 'email_attachments'];
+  const tables = ['user_settings', 'contacts', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'mail_accounts', 'mail_folders', 'mail_folder_remote_boxes', 'mail_folder_reconciliations', 'mail_sender_rules', 'mail_folder_rule_overrides', 'emails', 'email_attachments'];
   for (const table of tables) {
     const start = schema.indexOf(`CREATE TABLE IF NOT EXISTS ${table} (`);
     assert.ok(start >= 0, `application schema defines ${table}`);
@@ -86,7 +86,7 @@ test('MySQL offline queries match application schema, include every contact and 
   const detail = await mailRoutes['GET /api/mail/emails/:id'](request('/api/mail/emails/' + emailIds[100]), userId);
   for (const email of [list.emails[0], detail.email]) {
     assert.equal(email.mail_account_id, receivingId); assert.equal(email.source_mail_account_id, accountId);
-    assert.equal(email.source_folder, 'Provider/Original'); assert.equal(email.imap_uid, 41); assert.equal(email.imap_uidvalidity, 12);
+    assert.equal(email.source_folder, undefined); assert.equal(email.imap_uid, undefined); assert.equal(email.imap_uidvalidity, undefined);
   }
   const backfill = mode => mailRoutes['POST /api/mail/sender-rules/backfill']({}, userId, { account_id: receivingId, mode });
   const rejected = await backfill('apply');
@@ -96,7 +96,7 @@ test('MySQL offline queries match application schema, include every contact and 
   assert.equal(applied.scanned, 1); assert.equal(applied.applied, 1);
   const [[filed]] = await connection.execute('SELECT * FROM emails WHERE id = ?', [emailIds[100]]);
   assert.equal(filed.folder, 'linked'); assert.equal(filed.mail_account_id, accountId);
-  assert.equal(filed.filing_account_id, receivingId); assert.equal(filed.source_folder, 'Provider/Original'); assert.equal(filed.imap_uid, 41);
+  assert.equal(filed.filing_account_id, receivingId); assert.equal(filed.source_folder, 'Provider/Original'); assert.equal(filed.imap_uid, 41); assert.equal(filed.imap_uidvalidity, 12);
   const folders = await mailRoutes['GET /api/mail/folders'](request('/api/mail/folders?account_id=' + receivingId), userId);
   assert.equal(folders.folders.find(row => row.slug === 'linked').total_count, 1);
   assert.equal(folders.folders.some(row => row.slug === 'source-only'), false);

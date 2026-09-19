@@ -1,3 +1,4 @@
+import { useModules } from '@/hooks/use-modules';
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
@@ -6,25 +7,27 @@ import { pushEnabledForUser, showNotification } from '@/utils/service-worker';
 
 export const useCalendarNotifications = () => {
   const { user } = useAuth();
+  const { modules } = useModules();
+  const active = modules.some(module => module.id === 'calendar' && module.enabled && module.background);
   const queryClient = useQueryClient();
   const { data: events = [] } = useQuery({
     queryKey: calendarQueryKeys.list({ includeTodos: true, includeDone: false, visibleOnly: true }),
     queryFn: () => calendarApi.fetchEvents({ includeTodos: true, includeDone: false, visibleOnly: true }),
-    enabled: !!user,
+    enabled: !!user && active,
     staleTime: 60000,
   });
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || !active) return;
     const refresh = (event: Event) => {
       const data = (event as CustomEvent).detail;
       if (data?.userId === user.id && ['reminder', 'calendar', 'todo'].includes(data.kind)) void queryClient.invalidateQueries({ queryKey: calendarQueryKeys.all });
     };
     window.addEventListener('unihub-notification-data', refresh);
     return () => window.removeEventListener('unihub-notification-data', refresh);
-  }, [queryClient, user?.id]);
+  }, [queryClient, user?.id, active]);
   // Best-effort local fallback while an offline page remains alive. Closed-app reminders come from the server.
   useEffect(() => {
-    if (!user?.id) return;
+    if (!user?.id || !active) return;
     const timers: number[] = [];
     const now = Date.now();
     for (const event of events) {
@@ -44,5 +47,5 @@ export const useCalendarNotifications = () => {
       }
     }
     return () => timers.forEach(window.clearTimeout);
-  }, [events, user?.id]);
+  }, [events, user?.id, active]);
 };

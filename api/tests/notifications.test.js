@@ -77,6 +77,7 @@ test('VAPID candidates persist once and reload the winning encrypted key across 
 test('outbox duplicates do not fan out new deliveries and use the caller transaction', async () => {
   const keys = new Set(); const deliveries = [];
   const connection = { async execute(sql, values) {
+    if (sql.includes('FROM user_settings')) return [[]];
     if (sql.startsWith('SELECT p.id')) return [[{ id: 'device-1' }, { id: 'device-2' }]];
     if (sql.startsWith('INSERT IGNORE INTO notification_events')) {
       if (keys.has(values[2])) return [{ affectedRows: 0 }];
@@ -95,6 +96,7 @@ test('new mail enqueue trusts committed ID and not old sender date; excludes his
   const writes = [];
   const connection = { async execute(sql, values) {
     if (sql.startsWith('SELECT id, subject')) return [[{ id: 'new-1', subject: 'Old sender date, new import', folder: 'inbox', from_address: 'sender@example.com' }]];
+    if (sql.includes('FROM user_settings')) return [[]];
     if (sql.startsWith('SELECT p.id')) return [[{ id: 'device-1' }]];
     writes.push({ sql, values }); return [{ affectedRows: 1 }];
   } };
@@ -114,7 +116,8 @@ test('calendar, todo and due reminder payloads link to the exact event without c
     beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {},
     async execute(sql, values) {
       if (sql.startsWith('SELECT e.*')) return [[event]];
-      if (sql.startsWith('SELECT p.id')) return [[{ id: 'device-1' }]];
+      if (sql.includes('FROM user_settings')) return [[]];
+    if (sql.startsWith('SELECT p.id')) return [[{ id: 'device-1' }]];
       if (sql.startsWith('INSERT IGNORE INTO notification_events')) writes.push(JSON.parse(values[5]));
       return [{ affectedRows: 1 }];
     },
@@ -236,4 +239,38 @@ test('restore sections retain todo aliases, merge active jobs, and scope notific
   assert.equal(calls[1].values[2], 'u1');
   assert.equal(calls[1].values[3], 'u1');
   assert.equal(calls[1].values.includes('u2'), false, 'a contact restore does not delay notifications');
+});
+
+test('paused mail and calendar deliveries retain pending attempts and never call transport', async () => {
+  for (const kind of ['mail', 'calendar', 'todo', 'reminder']) {
+    const writes = []; let sends = 0;
+    const connection = { async execute(sql, values) {
+      if (sql.includes('FROM notification_deliveries')) return [[{
+        event_id: 'event', subscription_id: 'device', user_id: 'u1', kind, source_id: 'source', attempts: 2,
+        payload: { dedupeKey: 'test' }, expires_at: new Date(Date.now() + 60000),
+      }]];
+      if (sql.startsWith('SELECT public_key')) return [[{ public_key: 'public', encrypted_private_key: 'encrypted:secret', subject: 'mailto:test@example.com' }]];
+      if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { enabled: false }, calendar: { background: false } }) }]];
+      writes.push({ sql, values }); return [{}];
+    } };
+    const service = loadService(connection, { sendNotification: async () => { sends++; } });
+    assert.equal(await service.testInternals.deliverPending(connection, new Date()), 0);
+    assert.equal(sends, 0);
+    assert.deepEqual(writes, []);
+  }
+});
+
+test('a pause during source revalidation preserves the delivery before reserving an attempt', async () => {
+  let paused = false; const writes = []; let sends = 0;
+  const connection = { async execute(sql, values) {
+    if (sql.includes('FROM notification_deliveries')) return [[{ event_id: 'event', subscription_id: 'device', user_id: 'u1', kind: 'mail', source_id: 'source', attempts: 2, payload: { dedupeKey: 'test' }, expires_at: new Date(Date.now() + 60000) }]];
+    if (sql.startsWith('SELECT public_key')) return [[{ public_key: 'public', encrypted_private_key: 'encrypted:secret', subject: 'mailto:test@example.com' }]];
+    if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { background: !paused } }) }]];
+    if (sql.includes('FROM emails')) { paused = true; return [[{ folder: 'inbox', is_read: 0, is_draft: 0 }]]; }
+    writes.push({ sql, values }); return [{}];
+  } };
+  const service = loadService(connection, { sendNotification: async () => { sends++; } });
+  assert.equal(await service.testInternals.deliverPending(connection, new Date()), 0);
+  assert.equal(sends, 0);
+  assert.deepEqual(writes, []);
 });

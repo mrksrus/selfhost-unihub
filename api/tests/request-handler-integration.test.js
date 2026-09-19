@@ -3,14 +3,16 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 
-function handlerHarness(t, { userId = 'u1', route } = {}) {
-  const paths = ['../src/request-handler', '../src/auth', '../src/routes'].map(require.resolve);
+function handlerHarness(t, { userId = 'u1', route, moduleEnabled = true } = {}) {
+  const paths = ['../src/request-handler', '../src/auth', '../src/routes', '../src/services/module-settings', '../src/services/restore-locks'].map(require.resolve);
   const previous = paths.map(name => require.cache[name]);
   t.after(() => paths.forEach((name, i) => { if (previous[i]) require.cache[name] = previous[i]; else delete require.cache[name]; }));
   const stub = (name, exports) => { require.cache[name] = { id: name, filename: name, loaded: true, exports }; };
   delete require.cache[paths[0]];
   stub(paths[1], { verifyToken: async () => userId, validateCsrfToken: () => true });
-  stub(paths[2], { 'GET /api/offline/snapshot': route || (async (_req, user) => ({ snapshot: { userId: user } })),
+  stub(paths[3], { isModuleEnabled: async () => moduleEnabled });
+  stub(paths[4], { getActiveRestoreSections: async () => new Set() });
+  stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'GET /api/modules': route, 'GET /api/notes/:id/export': route, 'GET /api/offline/snapshot': route || (async (_req, user) => ({ snapshot: { userId: user } })),
     'POST /api/parse-test': route || (async () => ({ success: true })) });
   const { handleRequest } = require(paths[0]);
   return async function run(method, url, body = '', overrides = {}) {
@@ -61,4 +63,18 @@ test('malformed JSON returns 400 without invoking its mutation route', async (t)
   assert.equal(result.status, 400);
   assert.equal(called, false);
   assert.match(result.body.error, /Invalid JSON/);
+});
+
+
+test('disabled module reads, attachments and writes are rejected before reaching a handler', async (t) => {
+  let calls = 0;
+  const run = handlerHarness(t, { moduleEnabled: false, route: async () => { calls++; return { ok: true }; } });
+  for (const [method, path] of [['GET', '/api/mail/attachments/file'], ['PUT', '/api/mail/emails/email'], ['GET', '/api/notes/note/export']]) {
+    const result = await run(method, path, method === 'PUT' ? '{}' : '');
+    assert.equal(result.status, 403);
+    assert.equal(result.body.code, 'MODULE_DISABLED');
+  }
+  assert.equal(calls, 0);
+  assert.equal((await run('GET', '/api/modules')).status, 200);
+  assert.equal(calls, 1);
 });

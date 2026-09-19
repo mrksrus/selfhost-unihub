@@ -7,6 +7,7 @@ const SECTION_POLICIES = Object.freeze({
   calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs"], fileKinds: [] },
   mail: { tables: ["mail_accounts", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides"], fileKinds: ["email_attachment", "raw_email"] },
   recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs"], fileKinds: ["recording"] },
+  notes: { tables: ['notes', 'note_revisions', 'note_attachments', 'note_links'], fileKinds: ['note_attachment'] },
   games: { tables: ["tetris_scores"], fileKinds: [] },
 });
 
@@ -19,7 +20,15 @@ function table(section, columns, keyColumns = ['id'], overrides = {}, introduced
   });
 }
 
+function notesTable(columns, keys = ['id'], overrides = {}) {
+  return table('notes', columns, keys, { created_at: 'preserve', updated_at: 'preserve', ...overrides }, Object.fromEntries(columns.split(' ').map(column => [column, 4])));
+}
+
 const TABLE_POLICIES = Object.freeze({
+  notes: notesTable('id origin_key user_id title body revision trashed_at created_at updated_at'),
+  note_revisions: notesTable('id user_id note_id revision title body created_at'),
+  note_attachments: notesTable('id user_id note_id filename content_type size_bytes storage_path created_at', ['id'], { storage_path: 'restored_file' }),
+  note_links: notesTable('user_id note_id linked_note_id', ['note_id', 'linked_note_id']),
   user: table('settings', 'id email full_name avatar_url role is_active email_verified timezone created_at updated_at', ["id"], {"email": "destination_identity", "role": "destination_identity", "is_active": "destination_identity", "email_verified": "destination_identity"}),
   user_settings: table('settings', 'user_id setting_key setting_value updated_at', ["user_id", "setting_key"], {}),
   contacts: table('contacts', 'id user_id first_name last_name email email2 email3 phone phone2 phone3 company job_title notes avatar_url is_favorite created_at updated_at', ["id"], {}),
@@ -50,6 +59,9 @@ const TABLE_POLICIES = Object.freeze({
 // References describe archive IDs, including logical links without SQL FKs.
 // user_id is always rebound to the authenticated destination, never copied.
 const REFERENCES = Object.freeze({
+  note_revisions: { note_id: 'notes' },
+  note_attachments: { note_id: 'notes' },
+  note_links: { note_id: 'notes', linked_note_id: 'notes' },
   calendar_calendars: { account_id: 'calendar_accounts' },
   calendar_events: { calendar_id: 'calendar_calendars' },
   calendar_event_subtasks: { event_id: 'calendar_events' },
@@ -68,11 +80,13 @@ const REFERENCES = Object.freeze({
   recording_transcription_jobs: { recording_id: 'recordings' },
 });
 const FILE_POLICIES = Object.freeze({
+  note_attachment: { table: 'note_attachments', column: 'storage_path' },
   email_attachment: { table: 'email_attachments', column: 'storage_path' },
   raw_email: { table: 'emails', column: 'raw_storage_path' },
   recording: { table: 'recordings', column: 'storage_path' },
 });
 const WRITE_PATHS = Object.freeze({
+  notes: ['/api/notes'],
   settings: ['/api/settings', '/api/auth/profile'],
   contacts: ['/api/contacts', '/api/settings/clear-contacts'],
   calendar: ['/api/calendar', '/api/settings/clear-calendar'],
@@ -82,7 +96,7 @@ const WRITE_PATHS = Object.freeze({
 });
 
 const BACKGROUND_WRITERS = Object.freeze({
-  settings: [], contacts: [], games: [], recordings: [],
+  notes: [], settings: [], contacts: [], games: [], recordings: [],
   mail: ['mail.syncMailAccount', 'mail.runMailServerDeletionPass', 'notifications.deliverPending'],
   calendar: ['notifications.reconcileReminders', 'notifications.enqueueDueReminders', 'notifications.deliverPending'],
 });

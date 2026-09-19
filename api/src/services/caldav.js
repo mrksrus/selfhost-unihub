@@ -1,3 +1,5 @@
+const { isModuleEnabled } = require('./module-settings');
+const { isSectionRestoreActive } = require('./restore-locks');
 const crypto = require('crypto');
 const { db } = require('../state');
 const { encrypt } = require('../security/encryption');
@@ -314,6 +316,9 @@ async function createCalDavAccountForMail({
   imapHost,
   caldavUrl,
 }) {
+  if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) {
+    throw new Error('Calendar module is disabled or restoring');
+  }
   const discoveryUrl = normalizeCalDavDiscoveryUrl({ emailAddress, imapHost, explicitUrl: caldavUrl });
   if (!discoveryUrl) throw new Error('Could not determine CalDAV discovery URL');
   const policy = await validateDavUrlPolicy(discoveryUrl);

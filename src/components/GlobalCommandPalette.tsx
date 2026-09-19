@@ -1,8 +1,9 @@
+import { useModules } from '@/hooks/use-modules';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, MoreHorizontal, Plus, Search, Settings, Users } from 'lucide-react';
+import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, MoreHorizontal, Plus, Search, Settings, Users, NotebookPen } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
   CommandDialog,
@@ -17,13 +18,14 @@ import {
 
 type SearchResult = {
   id: string;
-  type: 'contact' | 'mail' | 'calendar' | 'todo' | 'recording';
+  type: 'contact' | 'mail' | 'calendar' | 'todo' | 'recording' | 'note';
   title: string;
   subtitle?: string;
   href: string;
 };
 
 const staticActions = [
+  { id: 'notes', label: 'Open Notes', href: '/notes', icon: NotebookPen },
   { id: 'mail', label: 'Open Mail', href: '/mail', icon: Mail },
   { id: 'compose', label: 'Compose Email', href: '/mail?action=compose', icon: Plus },
   { id: 'calendar', label: 'Open Calendar', href: '/calendar', icon: Calendar },
@@ -38,6 +40,7 @@ const staticActions = [
 ];
 
 function getResultIcon(type: SearchResult['type']) {
+  if (type === 'note') return NotebookPen;
   if (type === 'contact') return Users;
   if (type === 'mail') return Mail;
   if (type === 'recording') return Mic;
@@ -46,6 +49,7 @@ function getResultIcon(type: SearchResult['type']) {
 }
 
 const GlobalCommandPalette = () => {
+  const { canNavigate, canAccess } = useModules();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -95,7 +99,7 @@ const GlobalCommandPalette = () => {
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>
       <CommandInput
-        placeholder="Search mail, contacts, calendar, todos, or run a command..."
+        placeholder="Search enabled modules or run a command…"
         value={query}
         onValueChange={setQuery}
       />
@@ -103,7 +107,7 @@ const GlobalCommandPalette = () => {
         <CommandEmpty>{isFetching ? 'Searching...' : 'No results found.'}</CommandEmpty>
         {filteredActions.length > 0 && (
           <CommandGroup heading="Commands">
-            {filteredActions.map((action) => (
+            {filteredActions.filter(action => canNavigate(action.href)).map((action) => (
               <CommandItem key={action.id} value={action.label} onSelect={() => runCommand(action.href)}>
                 <action.icon className="mr-2 h-4 w-4" />
                 <span>{action.label}</span>
@@ -116,7 +120,7 @@ const GlobalCommandPalette = () => {
           <>
             <CommandSeparator />
             <CommandGroup heading="Search Results">
-              {searchResults.map((result) => {
+              {searchResults.filter(result => canAccess(result.href)).map((result) => {
                 const Icon = getResultIcon(result.type);
                 return (
                   <CommandItem

@@ -10,18 +10,22 @@ function setRequireStub(modulePath, exports) {
   };
 }
 
-for (const scenario of ['disabled-between-messages', 'already-sync', 'sync-during-search', 'cancel-during-search']) {
+for (const scenario of ['disabled-between-messages', 'already-sync', 'sync-during-search', 'cancel-during-search', 'module-paused', 'module-paused-during-search']) {
 test(`server deletion worker: ${scenario}`, async (t) => {
   const mailPath = require.resolve('../src/services/mail');
   const statePath = require.resolve('../src/state');
   const encryptionPath = require.resolve('../src/security/encryption');
   const imapSimplePath = require.resolve('imap-simple');
+  const modulesPath = require.resolve('../src/services/module-settings');
+  const originalModules = require.cache[modulesPath];
+  delete require.cache[modulesPath];
   const originalMail = require.cache[mailPath];
   const originalState = require.cache[statePath];
   const originalEncryption = require.cache[encryptionPath];
   const originalImapSimple = require.cache[imapSimplePath];
 
   t.after(() => {
+    if (originalModules) require.cache[modulesPath] = originalModules; else delete require.cache[modulesPath];
     if (originalMail) require.cache[mailPath] = originalMail;
     else delete require.cache[mailPath];
     if (originalState) require.cache[statePath] = originalState;
@@ -34,10 +38,12 @@ test(`server deletion worker: ${scenario}`, async (t) => {
 
   delete require.cache[mailPath];
   let enabledChecks = 0;
+  let modulePaused = scenario === 'module-paused';
   const statusUpdates = [];
   const imapCalls = [];
   const db = {
     execute: async (sql, params = []) => {
+      if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { background: !modulePaused } }) }]];
       if (sql.includes('FROM mail_accounts') && sql.includes('SELECT *')) {
         return [[{
           id: 'account-1',
@@ -57,9 +63,10 @@ test(`server deletion worker: ${scenario}`, async (t) => {
           { id: 'queue-2', user_id: 'user-1', mail_account_id: 'account-1', email_id: 'email-2', source_folder: 'INBOX', imap_uid: 11, imap_uidvalidity: 123 },
         ]];
       }
-      if (sql.includes('SELECT delete_emails_on_server')) {
+      if (sql.includes('SELECT user_id, delete_emails_on_server')) {
         enabledChecks++;
         return [[{
+          user_id: 'user-1',
           delete_emails_on_server: enabledChecks <= 2 ? 1 : 0,
           sync_mode: scenario === 'sync-during-search' && enabledChecks >= 2 ? 'sync' : 'download',
           is_active: 1,
@@ -100,6 +107,7 @@ test(`server deletion worker: ${scenario}`, async (t) => {
       on: () => {},
       openBox: async () => {},
       search: async () => {
+        if (scenario === 'module-paused-during-search') modulePaused = true;
         if (scenario === 'cancel-during-search') require('../src/services/mail').cancelMailAccountSync('account-1');
         return [{}];
       },
@@ -110,7 +118,7 @@ test(`server deletion worker: ${scenario}`, async (t) => {
   const { processMailServerDeletionForAccount } = require('../src/services/mail');
   const result = await processMailServerDeletionForAccount('account-1');
 
-  if (scenario === 'already-sync') {
+  if (['already-sync', 'module-paused'].includes(scenario)) {
     assert.equal(result.skipped, true);
     assert.deepEqual(imapCalls, []);
     assert.deepEqual(statusUpdates, []);
