@@ -2,9 +2,13 @@
 
 [Installation guide](INSTALLATION.md) · [Main page](../README.md)
 
-**Status: proposed installer contract, not an available catalog app.** Checked
-against UniHub 0.10.6 on 19 September 2026. This document prepares the fields and
-acceptance checks; no TrueNAS form, catalog PR or deployment change is included.
+**Status: draft catalog submission, not an available catalog app.**
+[TrueNAS Community PR #5847](https://github.com/truenas/apps/pull/5847) proposes an
+installer for UniHub 0.10.6. The separate catalog contribution contains the form,
+Compose template and storage test configurations. Checked locally with TrueNAS's
+renderer and schema tools on 19 September 2026; actual container/NAS installation,
+restart, upgrade and recovery tests remain pending. This page records the installer
+contract and remaining acceptance work. No application-code changes were needed.
 
 ## What exists today
 
@@ -19,9 +23,9 @@ storage and the MySQL configuration explicitly.
 Existing custom-app users should preserve their working deployment and data. A
 future catalog installation must not claim to adopt existing datasets automatically.
 
-## Form fields to implement
+## Installer field contract
 
-The following is **our proposed form design**. Required means the installer must
+The following is **our proposed form design**, implemented for review in the draft PR. Required means the installer must
 refuse an empty/invalid value, even where the current API only checks presence.
 Private means mask the field in the form; it does not mean the value disappears
 from administrator-accessible configuration. Never provide shared default secrets.
@@ -94,12 +98,11 @@ describes a Community entry with metadata, `questions.yaml`, image/default value
 a Compose template, a description and test configurations. The form's required and
 private attributes live in its schema. Documentation cannot enforce them.
 
-A later implementation therefore needs new catalog YAML/template files, including
-required-field validation, environment mapping, storage, health checks and the
-MySQL configuration solution. Those are deployment changes and are outside this
-documentation-only preparation. No application-code change is currently proven
-necessary; catalog acceptance, image permissions and real deployment tests remain
-open checks.
+The draft PR now supplies these catalog YAML/template files, including validation,
+environment mapping, storage, health checks and MySQL configuration through Compose
+configs. These live in the separate catalog contribution, not the UniHub runtime.
+Catalog acceptance, runtime storage permissions and real deployment tests remain
+open checks. The proposed image retains its existing root startup behavior.
 
 The catalog submission must state the [licensing model](../LICENSING.md) explicitly:
 private noncommercial self-hosting, including multi-user home labs, is free;
@@ -108,7 +111,7 @@ The public licence's listed nonprofit/public-institution permissions remain.
 Disclose the AI-only maintenance model described in the [README](../README.md),
 including the maintainer's lack of professional development qualifications.
 
-## Focused acceptance checks for that later implementation
+## Acceptance checks before catalog readiness
 
 - Empty required fields and a short admin password are rejected by the form;
   invalid origins/proxy addresses are caught before deployment. Secrets are masked.
@@ -127,5 +130,10 @@ including the maintainer's lack of professional development qualifications.
   Never run both against the same writable data. Do not promise automatic adoption
   or downgrade recovery before it has been designed and verified.
 
-Use the catalog's own validation and test tooling when implementation is authorized.
-This checklist records work still to do, not tests already passed.
+Local validation passed for metadata/questions schemas, both storage fixture
+renders, generated library hashes, template/portal checks, catalog port allocation
+and focused environment/storage/security mappings. Thirteen invalid-input cases
+were rejected, and a canonical IPv6 browser origin was checked. Full validation in
+the TrueNAS container and the deployment checks above are still pending; the draft
+PR distinguishes these from completed checks. No services were started on a user's
+NAS or against live data.

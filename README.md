@@ -51,7 +51,8 @@ Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.6`.
 The `latest` tag follows releases; use a version tag when you want explicit control
 of upgrades. The supplied [Compose file](docker-compose.yml) currently uses `latest`.
 
-**TrueNAS:** no catalog installer is included in this repository yet. Pasting the
+**TrueNAS:** a [draft Community catalog installer](https://github.com/truenas/apps/pull/5847)
+is under review; it is not yet an approved catalog app. Pasting the
 supplied Compose file into a custom-app screen is not a complete installation:
 its environment substitutions and relative MySQL configuration mount also need
 resolving. See [TrueNAS installation preparation](docs/TRUENAS_INSTALLER.md).
