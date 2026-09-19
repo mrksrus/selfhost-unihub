@@ -32,6 +32,7 @@ export function MailAccountModeSettings(props: Props) {
       <Checkbox checked={props.deleteOnServer} onCheckedChange={checked => props.onDeleteChange(checked === true)} />
       <span><span className="font-medium">Delete emails on server after download</span>
         <span className="block text-muted-foreground">Off by default. When enabled, UniHub waits 10 minutes before deleting imported server copies. Switching modes turns this off.</span>
+        <span className="mt-1 block text-muted-foreground">UniHub backup, import and restore are ALPHA. Keep an independent backup before deleting server copies; the local copy may become your only remaining email.</span>
       </span>
     </label>}
   </fieldset>;

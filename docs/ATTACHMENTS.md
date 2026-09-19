@@ -142,7 +142,9 @@ The mail sync service also stores raw imported email source below:
 Those `.eml` files are used by backup/restore workflows and are cleaned up during
 account deletion where applicable.
 
-## Backup and Restore
+## Backup and Restore (ALPHA)
+
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 Mail backups include:
 

@@ -1,5 +1,7 @@
 # TrueNAS installation preparation
 
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+
 [Installation guide](INSTALLATION.md) · [Main page](../README.md)
 
 **Status: draft catalog submission, not an available catalog app.**
@@ -7,7 +9,8 @@
 installer for UniHub 0.10.6. The separate catalog contribution contains the form,
 Compose template and storage test configurations. Checked locally with TrueNAS's
 renderer and schema tools on 19 September 2026; actual container/NAS installation,
-restart, upgrade and recovery tests remain pending. This page records the installer
+restart and upgrade tests remain pending. Account backup/import/restore are ALPHA
+and excluded from this catalog installation validation. This page records the installer
 contract and remaining acceptance work. No application-code changes were needed.
 
 ## What exists today
@@ -122,8 +125,9 @@ including the maintainer's lack of professional development qualifications.
 - Slow MySQL readiness can use five minutes and continues as soon as ready.
 - Restart and catalog update preserve secrets, the same storage and existing data;
   bootstrap fields do not reset users. Invalid credentials fail visibly.
-- Mail files, Notes attachments and a representative account backup/restore survive
-  an app upgrade using disposable data. Test infrastructure recovery separately.
+- Mail files and Notes attachments survive an app upgrade using disposable data.
+  Account backup/import/restore are ALPHA and excluded from this installation
+  validation. No recovery validation is claimed.
 - The installer renders without repository-relative host files, and storage works
   with the image's actual permissions. Do not change a real user's dataset ACLs for a test.
 - Document installing from scratch separately from moving an existing custom app.

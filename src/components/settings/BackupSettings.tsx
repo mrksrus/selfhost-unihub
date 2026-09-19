@@ -343,9 +343,14 @@ export default function BackupSettings({ active }: { active: boolean }) {
           transition={{ duration: 0.4, delay: 0.33 }}
         >
           <div className="space-y-6">
+          <div role="note" aria-label="Backup and restore ALPHA" className="rounded-md border border-accent/50 bg-accent/10 p-4 text-sm space-y-2">
+            <p className="font-semibold">ALPHA: backup, import and restore</p>
+            <p>These features are experimental. Do not rely on them as your only copy of important data.</p>
+            <p>Keep an independent backup of your database, uploads, configuration and secrets, especially before deleting emails from your email provider.</p>
+          </div>
           <p role="status" className="rounded-md border border-border p-4 text-sm">
             {backupAvailable
-              ? 'Backups protect your selected account data and files. Keep a downloaded copy and its recovery password away from this server.'
+              ? 'Account exports include your selected data and files. Keep a downloaded copy and its recovery password away from this server.'
               : 'Backup creation and restore are unavailable. Existing completed backups can still be downloaded.'}
             {' '}Full backups include data from hidden and disabled modules. Browser-only game saves are not included. A full server recovery also needs the database, uploads and configuration.
             {capabilities?.exclusions.map(item => <span key={item} className="mt-1 block text-muted-foreground">Not included: {item}.</span>)}
@@ -357,7 +362,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   <Database className="h-5 w-5 text-accent" />
                 </div>
                 <div>
-                  <CardTitle className="text-lg">Create a backup</CardTitle>
+                  <CardTitle className="text-lg">Create a backup (ALPHA)</CardTitle>
                   <CardDescription>Create an archive on this server, then download it below.</CardDescription>
                 </div>
               </div>
@@ -469,7 +474,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   <Upload className="h-5 w-5 text-accent" />
                 </div>
                 <div>
-                  <CardTitle className="text-lg">Import and review</CardTitle>
+                  <CardTitle className="text-lg">Import and review (ALPHA)</CardTitle>
                   <CardDescription>Upload a backup and review its scope, counts and warnings before starting restore.</CardDescription>
                 </div>
               </div>
@@ -579,7 +584,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Restore is enabled after background validation. You may close this page while validation or restore runs.
+                Restore is experimental (ALPHA) and is enabled after background validation. You may close this page while validation or restore runs.
               </p>
 
               {selectedRestoreJob?.status === 'awaiting_password' && (
@@ -766,7 +771,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
               }}
             >
               <DialogHeader>
-                <DialogTitle>Encrypted backup recovery password</DialogTitle>
+                <DialogTitle>Encrypted backup recovery password (ALPHA)</DialogTitle>
               </DialogHeader>
               {!recoveryPassword ? (
                 <div className="space-y-4">

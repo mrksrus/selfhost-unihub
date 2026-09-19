@@ -21,7 +21,7 @@ the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENS
 | Notes | Text/Markdown editing, revision history, links, attachments and Trash. Currently online-only. |
 | Recordings | Record in the browser or import audio, then organise, play and download it. |
 | Optional modules | Hide features or disable their access/background work. Disabling a module keeps its data and full-backup coverage. |
-| Backups | Encrypted account exports and imports, with recovery passwords and automatic detection of supported older formats. |
+| Backups / imports (ALPHA) | Experimental encrypted account exports and imports. Do not use them as your only backup. |
 | Mobile and offline | Installable PWA and opt-in read-only snapshots of up to 100 non-draft emails, contacts and calendar/tasks, subject to a 32 MiB limit. Notifications depend on browser and OS support. |
 | Games | Nine browser games. Some progress stays only in the browser and is not included in account backups. |
 
@@ -47,7 +47,7 @@ For a **new installation**, first collect:
 It gives the exact field names, where to enter them, examples, first-login checks
 and fixes for common startup errors. Do not put passwords into the Dockerfile.
 
-Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.6`.
+Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.7`.
 The `latest` tag follows releases; use a version tag when you want explicit control
 of upgrades. The supplied [Compose file](docker-compose.yml) currently uses `latest`.
 
@@ -58,6 +58,8 @@ its environment substitutions and relative MySQL configuration mount also need
 resolving. See [TrueNAS installation preparation](docs/TRUENAS_INSTALLER.md).
 
 ## Keep your data recoverable
+
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 Keep **both persistent volumes plus your deployment configuration and secrets**.
 A consistent server backup is needed to recover the whole installation. A UniHub
@@ -70,7 +72,7 @@ its storage is lost. There is no built-in scheduled infrastructure backup.
 Version 0.10.6 enables backup creation/import again. Its schema-3 archives include
 Notes and disabled modules; older schema-1/2 archives are read automatically.
 Older applications cannot read schema-3 archives. Downgrading an image does not
-undo database changes. Read [Backup and restore](docs/BACKUP_RESTORE.md) and
+undo database changes. Read [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md) and
 [Upgrading](docs/UPGRADING.md) before relying on either operation.
 
 ## Help and documentation
@@ -80,7 +82,7 @@ undo database changes. Read [Backup and restore](docs/BACKUP_RESTORE.md) and
 | Install and understand every required setting | [Installation and configuration](docs/INSTALLATION.md) |
 | Prepare a TrueNAS catalog installer | [Proposed installer fields and remaining work](docs/TRUENAS_INSTALLER.md) |
 | Update without replacing my data | [Upgrade guide](docs/UPGRADING.md) |
-| Back up or restore my account | [Backup and restore](docs/BACKUP_RESTORE.md) |
+| Back up or restore my account | [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md) |
 | Choose Download or Sync | [Mail modes](docs/MAIL_MODES.md) |
 | Use Notes or optional features | [Modules and Notes](docs/MODULES_AND_NOTES.md) |
 | Configure administrators and trusted proxies | [Authentication and administration](docs/AUTH_ADMIN_SETTINGS.md) |

@@ -44,7 +44,9 @@ embedded content is removed. This can simplify sender formatting. Detection is
 imperfect; explicitly loaded images still expose the requesting IP and open time.
 Stored originals are unchanged. No proxy or automatic prefetching is introduced.
 
-## Backups and imports
+## Backups and imports (ALPHA)
+
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 Creation and restore are enabled again. Schema 3 preserves account-scoped folder
 metadata, filing/Legacy state, rule overrides, translated recovery journals and

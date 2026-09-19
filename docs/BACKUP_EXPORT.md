@@ -1,5 +1,7 @@
 # Backup Documentation Moved
 
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+
 
 The canonical backup and restore documentation is now:
 

@@ -1,8 +1,18 @@
 # Upgrading UniHub
 
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+
 For a new installation, use [Installation](INSTALLATION.md). This page includes
-version-specific history; the current release is 0.10.6. Preserve existing data
+version-specific history; the current release is 0.10.7. Preserve existing data
 and keys when upgrading.
+
+## 0.10.7 ALPHA labels
+
+Backup creation, import and restore remain available but are explicitly marked
+ALPHA in Data Management and the server-deletion setting. This is a wording and
+documentation update; no new database migration, archive format, credentials or
+storage changes are required. Upgrade from 0.10.6 using the same volumes and keys.
+Earlier versions still follow the upgrade requirements below.
 
 ## 0.10.6 recovery, account modes and upgrade ledger
 
@@ -87,7 +97,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.6`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.7`, then run from the existing
 deployment directory:
 
 ```bash

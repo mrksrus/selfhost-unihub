@@ -235,7 +235,9 @@ The ordinary contacts API returns stable pages with `offset` and `has_more`, usi
 an ID tie-breaker after favorite/name ordering. The offline snapshot bypasses
 that page limit so users with more than 2,000 contacts receive their entire list.
 
-## Backup Architecture
+## Backup Architecture (ALPHA)
+
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 The canonical backup data remains an uncompressed, stored-entry ZIP built by
 `api/src/services/export-jobs.js` from data assembled in

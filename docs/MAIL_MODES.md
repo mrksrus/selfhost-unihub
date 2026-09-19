@@ -1,5 +1,7 @@
 # Download and Sync
 
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+
 Choose a mode in each mail account's settings. Existing accounts stay in Download,
 with their existing automatic-deletion preference. Updating does not switch modes.
 

@@ -160,7 +160,9 @@ frontend supports it.
 - State-changing routes require CSRF validation.
 - Import size is capped by the request handler.
 
-## Backup and Restore
+## Backup and Restore (ALPHA)
+
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 Contact backups preserve all supported contact fields, including secondary
 emails/phones, company, job title, notes, avatar URL, and favorite state.

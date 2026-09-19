@@ -1,5 +1,7 @@
 # Backup format and compatibility
 
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+
 0.10.6 enables account backup creation/import/restore with data schema 3.
 `manifest.json` is the version file. Users do not select conversion scripts.
 

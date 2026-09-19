@@ -202,7 +202,9 @@ remain inactive with warnings.
 - CalDAV host policy blocks private/local addresses unless explicitly trusted.
 - CalDAV credentials are encrypted with the shared `ENCRYPTION_KEY`.
 
-## Backup and Restore
+## Backup and Restore (ALPHA)
+
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 Calendar/ToDo backups include calendar accounts, calendars, events, ToDos,
 subtasks, attendees, external references, provider metadata, and supported
