@@ -6,16 +6,19 @@
 
 **Status: draft catalog submission, not an available catalog app.**
 [TrueNAS Community PR #5847](https://github.com/truenas/apps/pull/5847) proposes an
-installer for UniHub 0.10.6. The separate catalog contribution contains the form,
+installer for UniHub 0.10.8. The separate catalog contribution contains the form,
 Compose template and storage test configurations. Checked locally with TrueNAS's
-renderer and schema tools on 19 September 2026; actual container/NAS installation,
-restart and upgrade tests remain pending. Account backup/import/restore are ALPHA
-and excluded from this catalog installation validation. This page records the installer
-contract and remaining acceptance work. No application-code changes were needed.
+renderer and schema tools on 19 September 2026. A disposable local deployment
+exposed and corrected missing Nginx capabilities and a HEAD/GET health-probe
+mismatch. HTTPS API sign-in and database/file writes passed locally. Installation
+through the actual TrueNAS form and NAS-specific checks remain pending. Account
+backup/import/restore are ALPHA and excluded from this catalog validation.
+The reference Compose file and release startup check were aligned in 0.10.8;
+no application-data or database changes were needed.
 
 ## What exists today
 
-The image is `ghcr.io/mrksrus/selfhost-unihub:0.10.6`. The reference deployment is
+The image is `ghcr.io/mrksrus/selfhost-unihub:0.10.8`. The reference deployment is
 [our Compose file](../docker-compose.yml), with a separate MySQL 8.0 container.
 Its `.env` substitutions and relative mount of
 `docker/mysql/conf/custom.cnf` assume the repository layout. Do not paste it into
@@ -69,7 +72,7 @@ Do not make users reconstruct these internal connections:
 
 | Setting | Proposed fixed/default behavior |
 | --- | --- |
-| App image | Pin the reviewed release tag, initially `0.10.6`; never `latest` for a catalog release. |
+| App image | Pin the reviewed release tag, initially `0.10.8`; never `latest` for a catalog release. |
 | MySQL image | Keep MySQL 8.0 compatibility; choose a reviewed image version/digest during packaging. Do not silently replace with MariaDB because a template helper exists. |
 | App mode / proxy | `NODE_ENV=production`, `TRUST_PROXY_HEADERS=true`; keep bundled loopback trust. |
 | Database connection | `MYSQL_HOST` is the installer-defined DB service name; `MYSQL_PORT=3306`, database/user `unihub` in both containers; never expose database port publicly. |
@@ -88,7 +91,9 @@ connection settings or security configuration.
 
 The current Dockerfile has **no `USER` directive**. The supervisor/API therefore
 start with the image's default root user; the Compose setup drops capabilities
-except `NET_BIND_SERVICE` and enables `no-new-privileges`. Do not describe this as
+except `CHOWN`, `DAC_OVERRIDE`, `NET_BIND_SERVICE`, `SETGID` and `SETUID`, and
+enables `no-new-privileges`. Nginx needs these to prepare its owned log/temp paths
+and drop worker privileges. Do not describe this as
 a non-root deployment or set UID 568 merely to satisfy a form. Nginx paths,
 permissions and startup would need checking before any such change. If catalog
 review requires non-root operation, stop and propose the exact runtime changes
@@ -138,6 +143,6 @@ Local validation passed for metadata/questions schemas, both storage fixture
 renders, generated library hashes, template/portal checks, catalog port allocation
 and focused environment/storage/security mappings. Thirteen invalid-input cases
 were rejected, and a canonical IPv6 browser origin was checked. Full validation in
-the TrueNAS container and the deployment checks above are still pending; the draft
-PR distinguishes these from completed checks. No services were started on a user's
+the official TrueNAS container is recorded in the draft PR, along with the exact
+runtime checks completed and the remaining NAS-specific checks. No services were started on a user's
 NAS or against live data.

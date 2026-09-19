@@ -3,8 +3,21 @@
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 For a new installation, use [Installation](INSTALLATION.md). This page includes
-version-specific history; the current release is 0.10.7. Preserve existing data
+version-specific history; the current release is 0.10.8. Preserve existing data
 and keys when upgrading.
+
+## 0.10.8 container startup permissions
+
+Update the `unihub` service's `cap_add` list to match the supplied Compose file:
+`CHOWN`, `DAC_OVERRIDE`, `NET_BIND_SERVICE`, `SETGID`, `SETUID`. Keep
+`cap_drop: ALL` and `no-new-privileges`. Nginx needs these capabilities to prepare
+its owned paths and start workers under its own user/group. A deployment retaining
+only `NET_BIND_SERVICE` can fail with Nginx permission errors.
+
+**Pulling a newer image alone does not update your saved custom-app YAML.** Apply
+the Compose capability change too, preserving all existing volumes and secrets.
+The proposed TrueNAS catalog supplies the corrected capability list itself.
+No database, archive-format or application-data changes are introduced.
 
 ## 0.10.7 ALPHA labels
 
@@ -97,7 +110,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.7`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.8`, then run from the existing
 deployment directory:
 
 ```bash

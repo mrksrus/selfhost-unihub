@@ -63,7 +63,12 @@ for (const port of [80, 4000]) {
 NODE
 
 docker volume create "$volume_name" >/dev/null
+# Match the reference Compose security restrictions so Nginx startup is tested
+# with its required capabilities, rather than Docker's broader default set.
 docker run -d --name "$container_name" --network host \
+  --init --cap-drop ALL --security-opt no-new-privileges \
+  --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add NET_BIND_SERVICE \
+  --cap-add SETGID --cap-add SETUID \
   --mount "type=volume,source=$volume_name,target=/app/uploads" \
   -e NODE_ENV=production \
   -e "MYSQL_HOST=$MYSQL_TEST_HOST" -e "MYSQL_PORT=$MYSQL_TEST_PORT" \

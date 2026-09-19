@@ -16,8 +16,13 @@ services:
     cap_drop:
       - ALL
     cap_add:
-      # Required because Nginx listens on port 80 inside the container.
+      # Nginx prepares nginx-owned log/temp paths, binds port 80, then
+      # drops its worker processes to the nginx user/group.
+      - CHOWN
+      - DAC_OVERRIDE
       - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
     ports:
       - "3000:80"
     environment:
