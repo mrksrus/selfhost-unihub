@@ -1,6 +1,12 @@
 # Security
 
-UniHub is AI-written software maintained by its project owner using OpenAI models, primarily **GPT 6 Astra**. AI models also perform security-focused code reviews as part of development and release preparation.
+UniHub is AI-written and maintained by **[mrksrus](https://github.com/mrksrus)**,
+a non-developer without formal software-development qualifications. Prior coding
+experience was a tic-tac-toe game and a webpage about 15 years ago. Development,
+maintenance and security/function reviews currently rely solely on OpenAI/GPT
+models, primarily GPT 6 Astra. Fable/Anthropic models are planned for future reviews
+and improvements but are not currently used. AI review and automated tests are
+not an independent professional security audit.
 
 The project treats security findings as engineering work: review the affected paths, implement a focused correction, and verify the behavior with appropriate tests. Feedback and reproducible reports are welcome.
 

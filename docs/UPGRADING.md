@@ -1,4 +1,8 @@
-# Upgrading from 0.9.x to 0.10.x
+# Upgrading UniHub
+
+For a new installation, use [Installation](INSTALLATION.md). This page includes
+version-specific history; the current release is 0.10.6. Preserve existing data
+and keys when upgrading.
 
 ## 0.10.6 recovery, account modes and upgrade ledger
 
@@ -83,7 +87,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.5`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.6`, then run from the existing
 deployment directory:
 
 ```bash
@@ -96,8 +100,8 @@ docker compose ps
 The database service must already be running for this app-only update. Wait for
 authenticated MySQL readiness, schema initialization and a healthy application.
 Then verify sign-in, existing mail bodies/attachments, contacts, calendar data,
-mail synchronization. In 0.10.4, application backup creation/import/restore are disabled;
-verify your infrastructure backup instead.
+mail synchronization and a representative backup/restore using disposable data.
+Backups are enabled in 0.10.6; they were suspended in 0.10.4 and 0.10.5.
 
 The first upgraded mail sync establishes per-folder UID progress and revalidates
 existing imports. It can take longer and read provider history again; subsequent

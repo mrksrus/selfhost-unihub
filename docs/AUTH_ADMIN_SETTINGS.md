@@ -1,5 +1,8 @@
 # Auth, Admin, Settings, and Search Documentation
 
+For first-run values, HTTPS and the difference between browser origins, proxy
+addresses and private mail hosts, start with [Installation](INSTALLATION.md).
+
 ## Authentication Model
 
 UniHub uses cookie-based sessions backed by the `sessions` table.

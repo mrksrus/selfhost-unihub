@@ -1,242 +1,117 @@
-# UniHub - Self-Hosted Productivity Suite
+# UniHub
 
-UniHub brings mail, contacts, calendars, to-do items, and recordings together in
-one self-hosted, installable web app. It includes account administration,
-encrypted backups, Web Push notifications, and optional offline reading.
+Your mail, contacts, calendar, tasks, notes and recordings in one self-hosted web app.
+UniHub has a black-and-blue interface, works on desktop and mobile, and can be
+installed as a PWA. Your server stores the application data.
 
-UniHub's application code is AI-written and is maintained using OpenAI models,
-primarily **GPT 6 Astra**. Development includes AI-assisted security reviews,
-regression tests, and release checks. UniHub is independently maintained; it is
-not affiliated with or endorsed by OpenAI.
+**[Install UniHub](docs/INSTALLATION.md)** · **[Upgrade an existing installation](docs/UPGRADING.md)** · **[Releases](https://github.com/mrksrus/selfhost-unihub/releases)** · **[Report a problem](https://github.com/mrksrus/selfhost-unihub/issues)**
 
-## Current Features
+Free for private noncommercial self-hosting, including multi-user home labs.
+Company/business use, including internal operations, requires a separate paid licence;
+contact [smrus@rus.family](mailto:smrus@rus.family). The public licence also permits
+the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENSING.md).
 
-| Area | What exists now |
+## What you can do
+
+| Feature | What to expect |
 | --- | --- |
-| Mail | IMAP sync with per-folder progress, SMTP send, local drafts, attachments, app-owned folders, sender routing rules, unread counts, and bulk read/star/move/delete |
-| Appearance | Black dark mode, white text and blue accents by default, with Light/System preferences |
-| Offline reading | Opt-in latest 100 full non-draft emails, all contacts and calendar/to-do entries; read-only device snapshots with a 32 MiB limit and explicit clearing |
-| Contacts | Search, favorites, import/export vCard 3.0, up to three emails and phone numbers per contact, duplicate preview/merge, bulk delete |
-| Calendar and ToDo | Local calendar accounts, multiple calendars, visibility/color settings, attendees, RSVP state, reminders, subtasks, standalone to-dos |
-| CalDAV import | Optional CalDAV discovery/import when adding a mail account; imports supported non-recurring events into calendar tables |
-| Recordings | Browser recording/import, chunked upload, tags, search/filter, audio streaming/download |
-| Games | Nine local browser games, loaded when opened; Block Stack can save personal bests to the server |
-| Backups | Encrypted-by-default full/section backups, one-time recovery passwords, portable account credentials, background validation/restore, cancellation, and server-retained restore points |
-| Admin | Bootstrap admin, signup mode control, account approval/deactivation, role changes, password resets, user deletion |
-| Security baseline | HttpOnly cookie auth, CSRF tokens, 2FA, rate limiting, strict mail TLS by default, SSRF checks for mail/CalDAV hosts, sandboxed email HTML |
-| PWA | Installable frontend, Web Push mail/event notifications and reminders, optional offline reading, and updates that refresh each tab only after confirmation |
+| Mail | Read and send mail, attachments, folders, search and bulk actions. Download mode can optionally delete downloaded mail from the provider. Sync mode follows server read/star/folder changes and retains missing messages locally. Sync does not write local changes back to the provider. |
+| Contacts | Search, favourites, vCard import/export and duplicate merging. |
+| Calendar and tasks | Plan events and work through tasks using shared calendar data, reminders and subtasks. CalDAV imports supported non-recurring events; it does not send edits back. |
+| Notes | Text/Markdown editing, revision history, links, attachments and Trash. Currently online-only. |
+| Recordings | Record in the browser or import audio, then organise, play and download it. |
+| Optional modules | Hide features or disable their access/background work. Disabling a module keeps its data and full-backup coverage. |
+| Backups | Encrypted account exports and imports, with recovery passwords and automatic detection of supported older formats. |
+| Mobile and offline | Installable PWA and opt-in read-only snapshots of up to 100 non-draft emails, contacts and calendar/tasks, subject to a 32 MiB limit. Notifications depend on browser and OS support. |
+| Games | Nine browser games. Some progress stays only in the browser and is not included in account backups. |
 
-Release checks cover frontend types, lint and tests; API regression and MySQL
-integration tests; and a built-container smoke test for startup, authentication,
-storage, and recording downloads/conversion. See [Security](SECURITY.md) for the
-security review process and vulnerability reporting.
+## Install: start here
 
-## Architecture
+The published deployment uses **two containers: UniHub and MySQL 8.0**. You need
+Docker with Compose, persistent storage for both containers, and an HTTPS reverse
+proxy for normal browser access. A reverse proxy is the service that accepts your
+HTTPS address and forwards requests to UniHub's internal HTTP port.
 
-UniHub runs as two containers in the included Docker Compose setup:
+For a **new installation**, first collect:
 
-| Container | Image | Purpose |
-| --- | --- | --- |
-| `unihub` | `ghcr.io/mrksrus/selfhost-unihub:latest` | React frontend served by Nginx plus Node.js API on port 4000 inside the container |
-| `unihub-mysql` | `mysql:8.0` | MySQL database |
-
-Request flow:
-
-```text
-Browser -> Nginx :80 -> Node.js API :4000 -> MySQL
-                                  -> IMAP/SMTP providers
-                                  -> CalDAV providers during optional import
-                                  -> Browser push services
-                                  -> /app/uploads volume
-```
-
-The API auto-creates and migrates tables on startup. Uploaded files, generated
-backups, and retained restore uploads are stored below `/app/uploads`, which is mounted as the `uploads_data`
-Docker volume by default.
-
-## Deployment
-
-The repository includes [docker-compose.yml](docker-compose.yml),
-[.env.example](.env.example), and the mounted
-[MySQL configuration](docker/mysql/conf/custom.cnf). Keep those paths together.
-Cloning the repository provides the complete deployment layout:
-
-```bash
-git clone https://github.com/mrksrus/selfhost-unihub.git
-cd selfhost-unihub
-cp .env.example .env
-```
-
-Fill in `.env` and review the runtime settings below before starting the stack:
-
-```bash
-docker compose up -d
-```
-
-Deployment `.env` values (all required except the separate backup key):
-
-| Variable | Purpose |
+| You supply | Why it is needed |
 | --- | --- |
-| `UNIHUB_MYSQL_PASSWORD` | Password for the `unihub` MySQL user |
-| `UNIHUB_MYSQL_ROOT_PASSWORD` | MySQL root password |
-| `UNIHUB_JWT_SECRET` | Long random JWT signing secret |
-| `UNIHUB_ENCRYPTION_KEY` | Long random key used to encrypt stored mail/calendar credentials, 2FA secrets, and the Web Push private key |
-| `UNIHUB_BACKUP_MASTER_KEY` | Optional separate key for automatic server-side backup unlocking; defaults to `UNIHUB_ENCRYPTION_KEY` |
-| `UNIHUB_BOOTSTRAP_ADMIN_EMAIL` | First admin email, used only when the users table is empty |
-| `UNIHUB_BOOTSTRAP_ADMIN_PASSWORD` | First admin password, minimum 12 characters |
+| First administrator email and password | Creates your first UniHub login. The password must have at least 12 characters. This is not your email-provider password. |
+| Two database passwords | One for UniHub's database user and a different one for MySQL administration. |
+| Two independently generated secrets | One signs login sessions; the other encrypts stored credentials. Keep both with your deployment records. |
+| Your browser address | For example, `https://hub.example.com`. It must be entered as an allowed origin. |
+| Your HTTPS proxy's address | Identifies the proxy allowed to report visitor IPs. It is not a list of permitted visitors. |
+| Persistent storage | Keep the database and `/app/uploads` across updates and restarts. |
 
-Generate random secrets with:
+**Follow the [installation guide](docs/INSTALLATION.md) before starting the containers.**
+It gives the exact field names, where to enter them, examples, first-login checks
+and fixes for common startup errors. Do not put passwords into the Dockerfile.
 
-```bash
-openssl rand -base64 48
-```
+Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.6`.
+The `latest` tag follows releases; use a version tag when you want explicit control
+of upgrades. The supplied [Compose file](docker-compose.yml) currently uses `latest`.
 
-For localhost testing, open `http://localhost:3000` after startup and sign in
-with the bootstrap admin. For access by hostname, IP address, or public domain,
-put HTTPS in front of the app and use that HTTPS origin.
+**TrueNAS:** no catalog installer is included in this repository yet. Pasting the
+supplied Compose file into a custom-app screen is not a complete installation:
+its environment substitutions and relative MySQL configuration mount also need
+resolving. See [TrueNAS installation preparation](docs/TRUENAS_INSTALLER.md).
 
-### Important Deployment Settings
+## Keep your data recoverable
 
-The Compose file contains the runtime settings passed to the app container.
-Review these before exposing UniHub outside your LAN:
+Keep **both persistent volumes plus your deployment configuration and secrets**.
+A consistent server backup is needed to recover the whole installation. A UniHub
+account export does not include other users or deployment configuration.
 
-| Setting | Default in compose | Notes |
-| --- | --- | --- |
-| `ALLOWED_ORIGINS` | Example localhost and placeholder domain | Replace with your real browser origin, such as `https://hub.example.com` |
-| `TRUST_PROXY_HEADERS` | `true` | Read `X-Forwarded-For` only through explicitly trusted proxy addresses |
-| `TRUSTED_PROXY_CIDRS` | `127.0.0.1/32,::1/128` | Bundled proxy only; set `UNIHUB_TRUSTED_PROXY_CIDRS` in Compose `.env` to include your actual HTTPS proxy address/CIDR |
-| `TRUSTED_MAIL_HOSTS` | `mail.example.com` | Optional comma-separated host allowlist for private/local mail or CalDAV hosts |
-| `MYSQL_STARTUP_MAX_WAIT_SECONDS` | `300` | Wait up to five minutes for MySQL; continue immediately after an authenticated readiness check succeeds |
-| `CALENDAR_MULTI_ENABLED` | enabled unless set to `false` | Controls calendar account/calendar APIs |
+Download important account backups and keep their recovery passwords somewhere
+safe. Backups left only on the UniHub server do not protect you if that server or
+its storage is lost. There is no built-in scheduled infrastructure backup.
 
-For an additional HTTPS proxy, see the [trusted-proxy configuration](docs/AUTH_ADMIN_SETTINGS.md#trusted-proxies).
-Only include proxy addresses you control, and restrict direct access to the app's
-published port when the proxy is meant to be the public entry point. Successful
-sign-in never clears another account's attempt budget.
+Version 0.10.6 enables backup creation/import again. Its schema-3 archives include
+Notes and disabled modules; older schema-1/2 archives are read automatically.
+Older applications cannot read schema-3 archives. Downgrading an image does not
+undo database changes. Read [Backup and restore](docs/BACKUP_RESTORE.md) and
+[Upgrading](docs/UPGRADING.md) before relying on either operation.
 
-The application image and Compose health checks allow 360 seconds for startup.
-Keep that grace period longer than the readiness budget if you increase the wait
-setting. Existing deployments with an explicit `120` must set it to `300` in
-Compose; pulling a new image cannot override that environment setting.
+## Help and documentation
 
-Set up HTTPS at your reverse proxy. The app image serves plain HTTP internally.
-When `NODE_ENV=production`, auth and CSRF cookies use the `Secure` flag, so the
-browser must reach UniHub over HTTPS for sign-in to work reliably.
-
-## Data and Backups
-
-Persistent data is split across:
-
-| Location | Contents |
+| I want to… | Read this |
 | --- | --- |
-| MySQL volume | Users, sessions, contacts, events, mail metadata, settings, job metadata |
-| `/app/uploads/attachments` | Email attachments and inline images |
-| `/app/uploads/mail-raw` | Raw `.eml` snapshots for imported messages |
-| `/app/uploads/recordings` | Uploaded/imported audio files |
-| `/app/uploads/notes` | Note attachments, including retained bytes needed by active backups |
-| `/app/uploads/backups` | Generated backups and retained restore uploads |
+| Install and understand every required setting | [Installation and configuration](docs/INSTALLATION.md) |
+| Prepare a TrueNAS catalog installer | [Proposed installer fields and remaining work](docs/TRUENAS_INSTALLER.md) |
+| Update without replacing my data | [Upgrade guide](docs/UPGRADING.md) |
+| Back up or restore my account | [Backup and restore](docs/BACKUP_RESTORE.md) |
+| Choose Download or Sync | [Mail modes](docs/MAIL_MODES.md) |
+| Use Notes or optional features | [Modules and Notes](docs/MODULES_AND_NOTES.md) |
+| Configure administrators and trusted proxies | [Authentication and administration](docs/AUTH_ADMIN_SETTINGS.md) |
+| Install the PWA or troubleshoot notifications | [PWA guide](docs/PWA.md) |
+| Read saved data without a connection | [Offline reading](docs/OFFLINE.md) |
+| Develop or inspect the application | [Development](docs/DEVELOPMENT.md), [architecture](docs/ARCHITECTURE.md), [recovery contracts](docs/DATA_RECOVERY.md) |
 
-**In 0.10.6, in-app backup creation, import and restore are enabled again.**
-New schema-3 archives preserve the current mail filing model, completed transcripts
-and server game scores, plus Notes, its revisions, links and attachments. Disabled
-modules remain included in full backups. Older schema-1/2 archives are detected automatically.
-Browser-only game progress is excluded; Data Management describes the scope. UniHub does not schedule infrastructure
-backups for you. Back up both Docker volumes. Server-retained backups are
-convenient restore points, not protection from loss of the server or uploads volume.
+For reproducible bugs, open a [GitHub issue](https://github.com/mrksrus/selfhost-unihub/issues)
+with the version and steps to reproduce. Remove passwords, keys and personal mail
+from logs. Report security vulnerabilities privately to
+[smrus@rus.family](mailto:smrus@rus.family); see [Security](SECURITY.md).
 
-Encrypted backups use `.unihub-backup`, are portable to another UniHub server
-with their one-time recovery password, and can carry mail/calendar credentials
-without depending on the destination server's original encryption key. See the
-[Backup and Restore Guide](docs/BACKUP_RESTORE.md) before relying on backups for
-recovery.
+## Project and limits
 
-## Local Development
+UniHub is AI-written. Its maintainer, **[mrksrus](https://github.com/mrksrus)**,
+is not a developer and has no formal software-development qualifications; prior
+coding experience was a tic-tac-toe game and a webpage about 15 years ago.
+Code development, maintenance and security/function reviews currently rely solely
+on OpenAI/GPT models. Future plans include Fable/Anthropic models for additional
+reviews and improvements; they are not part of the current process. Automated tests
+and AI reviews do not constitute an independent professional security audit.
+UniHub is not affiliated with or endorsed by these providers.
 
-Use Node.js 24 LTS, the container and CI runtime. Package manifests require Node 24 or newer.
+Release CI checks the API, frontend, MySQL recovery and built-container startup,
+authentication and recordings. These checks do not guarantee every provider,
+device or existing installation behaves identically.
 
-Install frontend dependencies:
+The app currently targets one application container. Login rate limits reset on
+restart, signup has no email verification, and audit logging is limited. PWA
+notifications are not guaranteed on every browser/OS. See the linked feature
+guides for additional limits.
 
-```bash
-npm ci
-npm run dev
-```
-
-The Vite dev server listens on port `8080`. The frontend API base defaults to
-`/api`; for separate local frontend/backend development, set `VITE_API_URL` to
-the complete API base, such as `http://localhost:4000/api`, and configure
-`ALLOWED_ORIGINS` for the frontend origin on the backend.
-
-Install backend dependencies separately:
-
-```bash
-npm --prefix api ci
-npm --prefix api start
-```
-
-The backend requires MySQL configuration through either `DATABASE_URL` or
-`MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and
-`MYSQL_PASSWORD`. Supply `JWT_SECRET`, `ENCRYPTION_KEY`, and the bootstrap admin
-credentials in the backend process environment as well. The Compose `.env`
-variable names are mapped by Compose; the standalone API reads its runtime
-names directly. Local HTTP development uses non-production cookie settings.
-
-Useful checks:
-
-```bash
-npm run typecheck
-npm run lint
-npm run test
-npm run build
-npm --prefix api test
-```
-
-## Documentation
-
-See the [upgrade guide](docs/UPGRADING.md) before replacing an existing deployment,
-the [0.10.5 release notes](docs/RELEASE_0.10.5.md) for automatic reconciliation of old folders and Legacy recovery,
-the [0.10.6 release notes](docs/RELEASE_0.10.6.md) for recovery compatibility and safe upgrades,
-the [0.10.4 release notes](docs/RELEASE_0.10.4.md) for account folders and temporary backup suspension,
-the [0.10.3 release notes](docs/RELEASE_0.10.3.md) for backup reliability and format
-compatibility, the [0.10.2 release notes](docs/RELEASE_0.10.2.md) for security corrections and
-recording efficiency, the [0.10.1 release notes](docs/RELEASE_0.10.1.md) for
-licensing, and the [0.10.0 release notes](docs/RELEASE_0.10.0.md) for the feature release.
-
-| Document | Covers |
-| --- | --- |
-| [Modules and Notes](docs/MODULES_AND_NOTES.md) | Optional features, background work, note history and recovery |
-| [Mail account modes](docs/MAIL_MODES.md) | Download, server-following Sync, retention and switching |
-| [Offline reading and appearance](docs/OFFLINE.md) | Device snapshots, limits, dark reading, and update prompts |
-| [Architecture](docs/ARCHITECTURE.md) | Runtime layout, storage, request handling, scheduled jobs |
-| [Auth, Admin, Settings](docs/AUTH_ADMIN_SETTINGS.md) | Sessions, CSRF, 2FA, signup modes, admin endpoints, preferences, search |
-| [Mail Sync](docs/MAIL_SYNC.md) | IMAP/SMTP behavior, folders, routing rules, TLS/host trust checks |
-| [Attachments](docs/ATTACHMENTS.md) | Attachment storage, inline images, downloads, compose limits |
-| [Contacts](docs/CONTACTS.md) | Contact schema, vCard import/export, duplicate merge |
-| [Calendar](docs/CALENDAR.md) | Calendar/to-do data model, local calendars, CalDAV import, endpoints |
-| [Recordings](docs/RECORDINGS.md) | Audio upload protocol, tags, storage, limits |
-| [Backup and Restore Guide](docs/BACKUP_RESTORE.md) | Backup contents, encryption, recovery passwords, merge rules, background jobs, retention, API, and troubleshooting |
-| [PWA Guide](docs/PWA.md) | Installation, Web Push, device permissions, delivery limits, and notification persistence |
-| [Security](SECURITY.md) | Security review process, deployment boundaries, and vulnerability reporting |
-| [Licensing](LICENSING.md) | Noncommercial use, commercial agreements, and version applicability |
-
-## Known Limitations
-
-- No built-in TLS termination; use a reverse proxy for HTTPS.
-- Rate limiting is in-memory and resets on container restart.
-- The app is designed for a single app container, not horizontal scaling.
-- No scheduled backup system is included.
-- The current backup payload uses ZIP32 internally; ZIP64 archives are not supported.
-- Email verification is not implemented for user signup.
-- Security/audit logging is minimal.
-- Provider-side deletes and local folder moves are not synchronized in both directions. Local draft edits are not sent back to provider draft folders.
-- CalDAV support is import-oriented and does not push calendar edits back to the provider.
-- Closed-app notifications depend on browser/OS permission and connectivity; a closed PWA cannot schedule alarms while completely offline.
-
-## License
-
-Starting with **v0.10.1**, UniHub is source-available under the
-[PolyForm Noncommercial License 1.0.0](LICENSE), free for noncommercial use.
-Commercial use requires a separate paid written agreement; contact
-[smrus@rus.family](mailto:smrus@rus.family).
-
-Previous releases retain their existing terms. See [Licensing](LICENSING.md) for
-the version boundary and commercial licensing details.
+Starting with v0.10.1, project-owned code is source-available under
+[PolyForm Noncommercial 1.0.0](LICENSE). Earlier versions retain their original
+terms; dependencies retain their own licences. [Licensing details](LICENSING.md).
