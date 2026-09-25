@@ -1,3 +1,5 @@
+// Run before database-startup smoke, which intentionally leaves a populated schema.
+// Node sorts test file paths even when the runner supplies another argument order.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');

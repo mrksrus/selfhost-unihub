@@ -18,10 +18,6 @@ async function main() {
   const api = path.resolve(__dirname, '..');
   const tests = fs.readdirSync(path.join(api, 'tests')).filter(name => name.endsWith('.test.js') &&
     (process.argv.includes('--all') || name.startsWith('backup-') || ['data-inventory.test.js', 'database-migrations.test.js', 'database-startup-mysql-integration.test.js', 'account-folder-reconciliation-mysql-integration.test.js'].includes(name))).sort();
-  // The final production-startup smoke intentionally leaves its schema in place.
-  // Run it after tests that require and clean up an empty disposable database.
-  const startup = 'database-startup-mysql-integration.test.js';
-  if (tests.includes(startup)) tests.push(...tests.splice(tests.indexOf(startup), 1));
   const child = spawn(process.execPath, ['--test', '--test-concurrency=1', '--test-reporter=tap', ...tests.map(name => 'tests/' + name)], {
     cwd: api, env: { ...process.env, MYSQL_TEST_SCHEMA_SMOKE: '1' }, stdio: ['ignore', 'pipe', 'inherit'],
   });
