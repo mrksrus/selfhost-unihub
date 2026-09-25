@@ -147,7 +147,7 @@ function isMailAccountSyncRunning(accountId) {
 }
 
 function isAnyMailAccountSyncRunning() {
-  return activeMailAccountSyncs.size > 0;
+  return activeMailAccountSyncs.size > 0 || require('./mail-writebacks').isWritebackRunning();
 }
 
 function getRunningMailSyncAccountIds() {
@@ -1430,6 +1430,8 @@ async function syncMailAccountOnce(accountId, signal, background) {
     const registeredFolders = await registerCustomImapFoldersForUser(account.user_id, accountId, availableFolders, db, specialUses, followsServer);
     const customFolderSlugs = new Map(registeredFolders.map(folder => [folder.remoteName, folder.slug]));
     if (followsServer) {
+      const writes = await require('./mail-writebacks').processPending(account, connection, { background });
+      if (writes.connectionFailed) throw new Error('Provider write interrupted; pending changes will be checked on reconnect');
       const folders = availableFolders.map(folderName => ({ folderName, dbFolderName: customFolderSlugs.get(folderName) }));
       if (folders.some(folder => !folder.dbFolderName)) throw new Error('A listed server folder has no verified local mapping');
       const result = await followMailServer({ db, connection, account, folders, signal,
@@ -1721,6 +1723,7 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
 }
 
 module.exports = {
+  buildImapConnectionConfig,
   withMailAccountLock,
   cancelMailAccountSync,
   KNOWN_MAIL_HOST_SUFFIXES,

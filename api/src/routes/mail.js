@@ -1,3 +1,4 @@
+const mailWritebacks = require('../services/mail-writebacks');
 const { mailAccountModeChange, sameProviderMailbox } = require('../services/mail-account-mode');
 const { withMailAccountLock } = require('../services/mail-account-lock');
 const { folderConnections, FILING_ACCOUNT_SQL } = require('../services/mail-folder-reconciliation');
@@ -1072,6 +1073,8 @@ module.exports = {
         );
       }
 
+      if (updates.length) await mailWritebacks.cancelForAccount(db, id, userId);
+
       if (modeChange.changed) {
         await db.execute("UPDATE mail_server_messages SET delete_status = 'skipped', delete_error = 'Cancelled by mail mode change' WHERE mail_account_id = ? AND user_id = ? AND delete_status IN ('pending', 'failed')", [id, userId]);
       }
@@ -1103,6 +1106,8 @@ module.exports = {
     
     try {
       const id = extractMailRouteId(req);
+      cancelMailAccountSync(id);
+      return await withMailAccountLock(id, async () => {
       const connection = await db.getConnection();
       let attachments;
       try {
@@ -1130,6 +1135,7 @@ module.exports = {
         deletedAttachmentFiles: fileResult.deletedFiles,
         failedAttachmentFiles: fileResult.failedFiles,
       };
+      });
     } catch (error) {
       return { error: 'Failed to delete mail account', status: 500 };
     }
@@ -1547,20 +1553,30 @@ module.exports = {
     }
   },
   
+  'GET /api/mail/writebacks': async (_req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const [operations] = await db.execute(`SELECT id, email_id, action, status, error, created_at
+      FROM mail_writebacks WHERE user_id = ? AND (status IN ('pending', 'failed', 'conflict')
+        OR (status = 'done' AND updated_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)))
+      ORDER BY (status = 'pending') DESC, updated_at DESC LIMIT 100`, [userId]);
+    return { operations };
+  },
+  'POST /api/mail/writebacks/:id/retry': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try { return await mailWritebacks.retryWriteback(userId, req.params?.id || req.url.split('?')[0].split('/').at(-2)); }
+    catch (error) { return { error: error.status ? error.message : 'Could not retry provider update', status: error.status || 500 }; }
+  },
+
   'PUT /api/mail/emails/:id/read': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
       const parts = req.url.split('?')[0].split('/');
       const id = parts[parts.length - 2];
-      const { is_read } = body;
-      await db.execute(
-        'UPDATE emails SET is_read = ? WHERE id = ? AND user_id = ?',
-        [is_read ? 1 : 0, id, userId]
-      );
-      return { message: 'Email read status updated' };
+      if (typeof body.is_read !== 'boolean') return { error: 'Read state must be boolean', status: 400 };
+      return await mailWritebacks.mutateMessages(userId, [id], { read: Number(body.is_read) });
     } catch (error) {
-      return { error: 'Failed to update email', status: 500 };
+      return { error: error.status ? error.message : 'Failed to update email', status: error.status || 500 };
     }
   },
   
@@ -1570,14 +1586,10 @@ module.exports = {
     try {
       const parts = req.url.split('?')[0].split('/');
       const id = parts[parts.length - 2];
-      const { is_starred } = body;
-      await db.execute(
-        'UPDATE emails SET is_starred = ? WHERE id = ? AND user_id = ?',
-        [is_starred ? 1 : 0, id, userId]
-      );
-      return { message: 'Email star status updated' };
+      if (typeof body.is_starred !== 'boolean') return { error: 'Star state must be boolean', status: 400 };
+      return await mailWritebacks.mutateMessages(userId, [id], { star: Number(body.is_starred) });
     } catch (error) {
-      return { error: 'Failed to update email', status: 500 };
+      return { error: error.status ? error.message : 'Failed to update email', status: error.status || 500 };
     }
   },
 
@@ -1590,17 +1602,10 @@ module.exports = {
         return { error: 'Email IDs array required', status: 400 };
       }
       
-      // Move emails to trash folder instead of permanently deleting
-      const placeholders = email_ids.map(() => '?').join(',');
-      await db.execute(
-        `UPDATE emails SET folder = 'trash' WHERE id IN (${placeholders}) AND user_id = ?`,
-        [...email_ids, userId]
-      );
-      
-      return { message: `Moved ${email_ids.length} email(s) to trash` };
+      return await mailWritebacks.mutateMessages(userId, email_ids, { move: 'trash' });
     } catch (error) {
       console.error('[BULK] Delete error:', error);
-      return { error: 'Failed to delete emails', status: 500 };
+      return { error: error.status ? error.message : 'Failed to delete emails', status: error.status || 500 };
     }
   },
 
@@ -1620,6 +1625,15 @@ module.exports = {
       if (requestedAccount) {
         const [owned] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [requestedAccount, userId]);
         if (!owned.length) return { error: 'Receiving account not found', status: 400 };
+      }
+      if (!requestedAccount) {
+        return await mailWritebacks.mutateMessages(userId, email_ids, { move: folderValidation.folder }, async (_connection, selected) => {
+          for (const email of selected) {
+            if (email.is_legacy || !folderAcceptsAccount({ slug: folderValidation.folder, mail_account_id: folderValidation.accountId, is_system: folderValidation.isSystem }, filingAccountId(email), links)) {
+              throw Object.assign(new Error('Choose a folder connected to the message account; Legacy mail needs a receiving account.'), { status: 400 });
+            }
+          }
+        });
       }
       const placeholders = email_ids.map(() => '?').join(',');
       const connection = await db.getConnection();
@@ -1663,7 +1677,7 @@ module.exports = {
       return { message: `Moved ${email_ids.length} email(s) to ${folderValidation.folder}` };
     } catch (error) {
       console.error('[BULK] Move error:', error);
-      return { error: 'Failed to move emails', status: 500 };
+      return { error: error.status ? error.message : 'Failed to move emails', status: error.status || 500 };
     }
   },
 
@@ -1692,16 +1706,13 @@ module.exports = {
         return { error: 'At least one field (is_read or is_starred) required', status: 400 };
       }
       
-      const placeholders = email_ids.map(() => '?').join(',');
-      await db.execute(
-        `UPDATE emails SET ${updates.join(', ')} WHERE id IN (${placeholders}) AND user_id = ?`,
-        [...values, ...email_ids, userId]
-      );
-      
-      return { message: `Updated ${email_ids.length} email(s)` };
+      const changes = {};
+      if (typeof is_read === 'boolean') changes.read = Number(is_read);
+      if (typeof is_starred === 'boolean') changes.star = Number(is_starred);
+      return await mailWritebacks.mutateMessages(userId, email_ids, changes);
     } catch (error) {
       console.error('[BULK] Update error:', error);
-      return { error: 'Failed to update emails', status: 500 };
+      return { error: error.status ? error.message : 'Failed to update emails', status: error.status || 500 };
     }
   },
 

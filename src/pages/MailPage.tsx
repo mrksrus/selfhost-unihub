@@ -1,4 +1,5 @@
 import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
+import { MailSyncStatus } from '@/components/mail/MailSyncStatus';
 import { useMailAccountSelection } from '@/hooks/use-mail-account-selection';
 import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
 import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
@@ -279,6 +280,20 @@ const MailPage = () => {
   const { accountId: activeMailAccountId, queryAccount: selectedAccount, selectAccount: setSelectedAccount } = useMailAccountSelection();
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
   const { selectedEmail, setSelectedEmail, isReaderLoading, closeReader, loadEmail } = useMailReader();
+  const selectedEmailId = selectedEmail?.id;
+  const refreshSettledEmail = React.useCallback((emailIds: string[]) => {
+    if (!selectedEmailId || !emailIds.includes(selectedEmailId)) return;
+    const id = selectedEmailId;
+    void api.get<{ email: Email }>(`/mail/emails/${encodeURIComponent(id)}`).then(response => {
+      const email = response.data?.email;
+      if (!response.error && email?.id === id) {
+        setSelectedEmail(current => current?.id === id ? {
+          ...current, is_read: email.is_read, is_starred: email.is_starred,
+          folder: email.folder, remote_missing: email.remote_missing,
+        } : current);
+      }
+    });
+  }, [selectedEmailId, setSelectedEmail]);
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [composeMode, setComposeMode] = useState<'new' | 'reply' | 'forward'>('new');
@@ -694,16 +709,17 @@ const MailPage = () => {
   // Bulk operations mutations
   const bulkDelete = useMutation({
     mutationFn: async ({ emailIds }: { emailIds: string[]; restoreFolders: Record<string, string> }) => {
-      const response = await api.post('/mail/emails/bulk-delete', { email_ids: emailIds });
+      const response = await api.post<{ sync_pending?: boolean }>('/mail/emails/bulk-delete', { email_ids: emailIds });
       if (response.error) throw new Error(response.error);
-      return emailIds.length;
+      return { count: emailIds.length, pending: response.data?.sync_pending === true };
     },
-    onSuccess: (count, variables) => {
+    onSuccess: ({ count, pending }, variables) => {
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({
-        title: `Moved ${count} email(s) to trash`,
-        action: (
+        title: pending ? `Trash move requested for ${count} email(s)` : `Moved ${count} email(s) to trash`,
+        description: pending ? 'Server changes are waiting to sync. Check the server change status above your mail.' : undefined,
+        action: pending ? undefined : (
           <ToastAction
             altText="Undo move to trash"
             onClick={() => {
@@ -729,13 +745,15 @@ const MailPage = () => {
 
   const bulkMove = useMutation({
     mutationFn: async ({ emailIds, folder, accountId }: { emailIds: string[]; folder: string; accountId?: string }) => {
-      const response = await api.post('/mail/emails/bulk-move', { email_ids: emailIds, folder, account_id: accountId });
+      const response = await api.post<{ sync_pending?: boolean }>('/mail/emails/bulk-move', { email_ids: emailIds, folder, account_id: accountId });
       if (response.error) throw new Error(response.error);
+      return response.data;
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (data, variables) => {
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
-      toast({ title: `✓ Moved ${variables.emailIds.length} email(s) to ${variables.folder}` });
+      toast({ title: data?.sync_pending ? `Move requested for ${variables.emailIds.length} email(s)` : `Moved ${variables.emailIds.length} email(s) to ${variables.folder}`,
+        description: data?.sync_pending ? 'Server changes are waiting to sync. Check the server change status above your mail.' : undefined });
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to move emails', description: error.message, variant: 'destructive' });
@@ -744,7 +762,7 @@ const MailPage = () => {
 
   const bulkMarkRead = useMutation({
     mutationFn: async ({ emailIds, is_read }: { emailIds: string[]; is_read: boolean }) => {
-      const response = await api.post('/mail/emails/bulk-update', { email_ids: emailIds, is_read });
+      const response = await api.post<{ sync_pending?: boolean }>('/mail/emails/bulk-update', { email_ids: emailIds, is_read });
       if (response.error) throw new Error(response.error);
       return response.data;
     },
@@ -752,7 +770,8 @@ const MailPage = () => {
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({ 
-        title: `✓ Marked ${variables.emailIds.length} email(s) as ${variables.is_read ? 'read' : 'unread'}`,
+        title: data?.sync_pending ? `Read status change requested for ${variables.emailIds.length} email(s)` : `Marked ${variables.emailIds.length} email(s) as ${variables.is_read ? 'read' : 'unread'}`,
+        description: data?.sync_pending ? 'Server changes are waiting to sync. Check the server change status above your mail.' : undefined,
         duration: 3000,
       });
     },
@@ -2045,10 +2064,11 @@ const MailPage = () => {
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {accounts.find(account => account.id === selectedAccount)?.sync_mode === 'sync' && (
           <div className="border-b border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-            Sync from server · {accounts.find(account => account.id === selectedAccount)?.sync_status || 'pending'}.
-            {' '}Local read, star and folder changes may be replaced by the next sync. Missing server messages stay here.
+            Sync with server · {accounts.find(account => account.id === selectedAccount)?.sync_status || 'pending'}.
+            {' '}New read, star and connected-folder moves sync both ways. The server wins conflicts. Missing server messages stay here as local copies.
           </div>
         )}
+        <MailSyncStatus onSettled={refreshSettledEmail} />
         {selectedAccount === LEGACY_ACCOUNT && (
           <div className="border-b border-border p-3 space-y-2 text-sm">
             <p>These messages retain their original folders. Some need a receiving account; others await a successful server check. Select messages to recover them. Their original mail source is preserved.</p>
@@ -2885,7 +2905,7 @@ const MailPage = () => {
           <DialogHeader>
             <DialogTitle>Mail folders</DialogTitle>
             <DialogDescription>
-              Select one mail account to create a folder on that account. Moving mail here changes its local grouping only. Existing server folders are connected during sync. Unresolved older mail appears in the Legacy account view. Rename or delete provider folders at your mail provider.
+              Select one mail account to create a folder on that account. In Sync mode, new moves to connected server folders also move mail on the server. Download mode, local copies and Legacy mail keep moves local. Existing server folders are connected during sync. Rename or delete provider folders at your mail provider.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">

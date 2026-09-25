@@ -15,7 +15,7 @@ the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENS
 
 | Feature | What to expect |
 | --- | --- |
-| Mail | Read and send mail, attachments, folders, search and bulk actions. Download mode can optionally delete downloaded mail from the provider. Sync mode follows server read/star/folder changes and retains missing messages locally. Sync does not write local changes back to the provider. |
+| Mail | Read and send mail, attachments, folders, search and bulk actions. Download mode can optionally delete downloaded mail from the provider. Sync mode follows server read/star/folder changes and retains missing messages locally. Sync also sends new read/star/move actions back, with visible pending/failure status and server-authoritative conflict handling. |
 | Contacts | Search, favourites, vCard import/export and duplicate merging. |
 | Calendar and tasks | Plan events and work through tasks using shared calendar data, reminders and subtasks. CalDAV imports supported non-recurring events; it does not send edits back. |
 | Notes | Text/Markdown editing, revision history, links, attachments and Trash. Currently online-only. |
@@ -47,7 +47,7 @@ For a **new installation**, first collect:
 It gives the exact field names, where to enter them, examples, first-login checks
 and fixes for common startup errors. Do not put passwords into the Dockerfile.
 
-Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.8`.
+Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.9`.
 The `latest` tag follows releases; use a version tag when you want explicit control
 of upgrades. The supplied [Compose file](docker-compose.yml) currently uses `latest`.
 

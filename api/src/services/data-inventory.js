@@ -9,6 +9,7 @@ function excluded(treatment, reason, columns) {
   return Object.freeze({ treatment, reason, columns: Object.freeze(columns.split(' ')) });
 }
 const NON_ARCHIVE_POLICIES = Object.freeze({
+  mail_writebacks: Object.freeze({ ...excluded('temporary', 'Explicit remote commands belong to this installation and must never replay after a restore.', 'id user_id mail_account_id email_id action target_value base_value target_folder remote_folder remote_uid remote_uidvalidity status attempts dispatched dispatch_modseq error available_at created_at updated_at'), introducedIn: Object.fromEntries('id user_id mail_account_id email_id action target_value base_value target_folder remote_folder remote_uid remote_uidvalidity status attempts dispatched dispatch_modseq error available_at created_at updated_at'.split(' ').map(column => [column, 5])) }),
   users: excluded('security_only', 'Login credentials and 2FA stay with the destination identity.', 'password_hash two_factor_enabled encrypted_two_factor_secret two_factor_recovery_codes'),
   sessions: excluded('security_only', 'A restore must not resurrect authenticated sessions.', 'id user_id token expires_at ip_address user_agent created_at'),
   two_factor_challenges: excluded('security_only', 'Login challenges expire and must not be restored.', 'id user_id token_hash expires_at ip_address user_agent created_at'),

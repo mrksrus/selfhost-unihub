@@ -92,17 +92,26 @@ export interface MailContact {
   email3: string | null;
 }
 
+export interface MailWriteback {
+  id: string;
+  email_id: string;
+  action: 'read' | 'star' | 'move';
+  status: 'pending' | 'failed' | 'conflict' | 'done';
+  error: string | null;
+  created_at: string;
+}
 
 export const mailQueryKeys = {
   all: ['emails'] as const,
   accounts: ['mail-accounts'] as const,
   folders: ['mail-folders'] as const,
+  writebacks: ['mail-writebacks'] as const,
   unread: (account: string | null) => ['mail-unread-counts', account] as const,
   dashboardUnread: ['dashboard-unread-mail'] as const,
   list: (filters: MailListFilters) => ['emails', filters.account, filters.folder, filters.page, filters.search, filters.unreadOnly] as const,
 };
 
-const MAIL_QUERY_ROOTS = new Set(['emails', 'mail-unread-counts', 'mail-accounts', 'mail-accounts-count', 'mail-folders', 'email-count', 'stats', 'dashboard-unread-mail']);
+const MAIL_QUERY_ROOTS = new Set(['emails', 'mail-unread-counts', 'mail-accounts', 'mail-accounts-count', 'mail-folders', 'email-count', 'stats', 'dashboard-unread-mail', 'mail-writebacks']);
 export function invalidateMailQueries(client: QueryClient) {
   return client.invalidateQueries({ predicate: (query) => MAIL_QUERY_ROOTS.has(String(query.queryKey[0])) });
 }

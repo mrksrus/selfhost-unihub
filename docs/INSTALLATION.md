@@ -4,7 +4,7 @@
 
 [Back to the main page](../README.md) · [Existing installation? Read the upgrade guide](UPGRADING.md)
 
-This guide describes the supplied Compose deployment for **0.10.8**. It separates
+This guide describes the supplied Compose deployment for **0.10.9**. It separates
 settings that stop startup from settings needed for browser access. Examples are
 illustrations, not working passwords or addresses. Never replace existing keys or
 volumes by following the fresh-install steps on an existing installation.
@@ -170,7 +170,7 @@ makes bounded connection retries; five minutes is not a guaranteed total startup
 time or a mandatory pause. Do not repeatedly restart a database that is initializing.
 
 For controlled updates, change the app image in your deployment copy from `latest`
-to `ghcr.io/mrksrus/selfhost-unihub:0.10.8`. Use release tags, not a mutable `latest`
+to `ghcr.io/mrksrus/selfhost-unihub:0.10.9`. Use release tags, not a mutable `latest`
 image, when you need a reproducible version. Do not change the MySQL major version
 as part of an ordinary app update.
 

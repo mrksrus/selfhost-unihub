@@ -231,6 +231,39 @@ async function ensureSchema() {
         }
       },
     },
+    {
+      id: 5,
+      name: 'explicit-mail-writebacks',
+      up: async connection => {
+        await connection.execute(`CREATE TABLE IF NOT EXISTS mail_writebacks (
+          id CHAR(36) PRIMARY KEY,
+          user_id CHAR(36) NOT NULL,
+          mail_account_id CHAR(36) NOT NULL,
+          email_id CHAR(36) NOT NULL,
+          action VARCHAR(16) NOT NULL,
+          target_value VARCHAR(255) NOT NULL,
+          base_value VARCHAR(255) NOT NULL,
+          target_folder VARCHAR(255) NULL,
+          remote_folder VARCHAR(255) NOT NULL,
+          remote_uid BIGINT NOT NULL,
+          remote_uidvalidity BIGINT NOT NULL,
+          status VARCHAR(16) NOT NULL DEFAULT 'pending',
+          attempts INT NOT NULL DEFAULT 0,
+          dispatched BOOLEAN NOT NULL DEFAULT FALSE,
+          dispatch_modseq VARCHAR(32) NULL,
+          error VARCHAR(255) NULL,
+          available_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (mail_account_id) REFERENCES mail_accounts(id) ON DELETE CASCADE,
+          FOREIGN KEY (email_id) REFERENCES emails(id) ON DELETE CASCADE,
+          UNIQUE KEY uq_mail_writeback (email_id, action),
+          INDEX idx_mail_writeback_pending (mail_account_id, status, available_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      },
+      verify: connection => verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 5 }),
+    },
   ]);
 }
 

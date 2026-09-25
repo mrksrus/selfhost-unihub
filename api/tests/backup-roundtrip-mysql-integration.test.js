@@ -190,6 +190,10 @@ test('production export and restore jobs round-trip every section through encryp
     await insert('recording_transcription_jobs', { id: uuid(), user_id: sourceUser, recording_id: recordingId, status: 'completed', provider: 'synthetic', model: 'test', language: 'de', transcript_text: 'Saved Grüße transcript ' + index, created_at: '2030-01-01 11:00:00', updated_at: '2030-01-01 11:01:00' });
   }
   const original = await snapshot(sourceUser);
+  const pendingSource = original.emails.find(row => row.mail_account_id);
+  await insert('mail_writebacks', { id: uuid(), user_id: sourceUser, mail_account_id: pendingSource.mail_account_id,
+    email_id: pendingSource.id, action: 'read', target_value: '1', base_value: '0', remote_folder: 'INBOX', remote_uid: 1, remote_uidvalidity: 1 });
+
   const unrelated = await snapshot(unrelatedUser);
   const exportJobs = source('services/export-jobs');
   async function exportArchive(encrypted) {
@@ -268,6 +272,7 @@ test('production export and restore jobs round-trip every section through encryp
 
   async function assertRestored(runtime, userId, { credentialsAvailable = true } = {}) {
     const restored = await snapshot(userId);
+    assert.equal((await rowsFor('mail_writebacks', userId)).length, 0, 'Restore never imports or replays provider commands');
     for (const table of TABLES) {
       assert.equal(restored[table].length, original[table].length, `${table}: preserve every row`);
       for (const row of restored[table]) {
@@ -452,7 +457,11 @@ test('production export and restore jobs round-trip every section through encryp
     assert.equal((await rowsFor('contacts', encryptedUser))[0].notes, 'Local edit');
     assert.equal((await rowsFor('notes', encryptedUser)).find(note => note.id === edited.id).body, 'Local edit');
     assert.equal((await rowsFor('emails', encryptedUser)).length, original.emails.length);
+    const localEmail = (await rowsFor('emails', encryptedUser)).find(row => row.mail_account_id);
+    await insert('mail_writebacks', { id: uuid(), user_id: encryptedUser, mail_account_id: localEmail.mail_account_id,
+      email_id: localEmail.id, action: 'read', target_value: '1', base_value: '0', remote_folder: 'INBOX', remote_uid: 1, remote_uidvalidity: 1 });
     await uploadAndRestore(destination, encryptedUser, encrypted, 'replace');
+    assert.equal((await rowsFor('mail_writebacks', encryptedUser)).length, 0, 'Applying a mail restore cancels destination commands too');
     await assertRestored(destination, encryptedUser);
     await uploadAndRestore(destination, encryptedUser, encrypted, 'keep_both');
     const doubled = await snapshot(encryptedUser);

@@ -9,7 +9,7 @@ function mailAccountModeChange(account, body) {
   const requestedDelete = enabled(body.delete_emails_on_server);
   if (mode === 'sync' && requestedDelete) fail('Automatic server deletion is unavailable in Sync mode.');
   if (changed && mode === 'sync' && body.sync_mode_confirmed !== true) {
-    fail('Confirm that Sync will follow server read status and folders, retain messages missing from the server, and stop automatic server deletion.');
+    fail('Confirm that Sync follows server state and sends new read, star and move actions to the provider, retains missing messages locally, and stops automatic server deletion.');
   }
   if (changed && mode === 'download' && requestedDelete) fail('Save Download mode first, then explicitly enable server deletion if wanted.');
   const deleteSettingProvided = changed || mode === 'sync' || Object.hasOwn(body, 'delete_emails_on_server');

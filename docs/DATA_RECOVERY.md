@@ -63,6 +63,10 @@ optional historical account references produce a warning and null; live account
 and folder references must remain valid. Incompatible folder scopes and final
 destinations that would hide new messages fail and roll back.
 
+Migration 5 adds `mail_writebacks`, an explicitly excluded durable command queue.
+Applying a mail restore clears destination commands transactionally; mail workers
+including outbound commands are paused before restore.
+
 Provider deletion is disabled on restored mail accounts. Restore must not replay
 source-server deletion queues, sessions or notification delivery attempts.
 Completed recording transcripts are preserved; pending/failed transcription jobs

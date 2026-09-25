@@ -1727,6 +1727,9 @@ async function importBackupForUser(userId, backup, {
 
     connection = await db.getConnection();
     await connection.beginTransaction();
+    if (scopedBackup.import_sections.includes('mail')) {
+      await connection.execute('DELETE FROM mail_writebacks WHERE user_id = ?', [userId]);
+    }
     const calendarAccountIdMap = new Map();
     const calendarIdMap = new Map();
     const calendarEventIdMap = new Map();

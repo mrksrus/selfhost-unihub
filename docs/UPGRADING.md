@@ -3,8 +3,18 @@
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 For a new installation, use [Installation](INSTALLATION.md). This page includes
-version-specific history; the current release is 0.10.8. Preserve existing data
+version-specific history; the current release is 0.10.9. Preserve existing data
 and keys when upgrading.
+
+## 0.10.9 two-way message sync
+
+Migration 5 adds a separate durable `mail_writebacks` table. It does not rewrite
+existing mail or change account modes. For accounts already in Sync, only new
+read/star/move actions made after upgrading send provider updates; old local state
+is never uploaded. Download remains unchanged. Existing storage/configuration and
+Docker YAML work without changes. See [mail modes](MAIL_MODES.md) for conflict,
+retry, local-copy and provider-capability limits. Account backup/import remain
+ALPHA; queued provider commands are never exported or replayed through restore.
 
 ## 0.10.8 container startup permissions
 
@@ -110,7 +120,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.8`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.9`, then run from the existing
 deployment directory:
 
 ```bash

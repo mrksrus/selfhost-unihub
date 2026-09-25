@@ -19,11 +19,12 @@ export function MailAccountModeSettings(props: Props) {
     <select id="mail-sync-mode" className="w-full rounded-md border border-input bg-background p-2 text-sm" value={props.mode}
       onChange={event => props.onModeChange(event.target.value as Props['mode'])}>
       <option value="download">Download and keep locally</option>
-      <option value="sync">Sync from email server</option>
+      <option value="sync">Sync with email server</option>
     </select>
     {props.mode === 'sync' ? <div className="space-y-3 text-sm text-muted-foreground">
-      <p>UniHub follows the server's read status, stars and folders. Emails no longer on the server stay here as local copies. Automatic server deletion is off.</p>
-      <p>Changes made in UniHub stay local and may be replaced on the next sync. Labels that the provider does not expose as folders or flags are not synced.</p>
+      <p>UniHub syncs read status, stars and moves to connected server folders in both directions. Only new actions in UniHub are sent to the server. If changes conflict, the server version wins.</p>
+      <p>Emails no longer on the server stay here as local copies. Changes to local copies and Legacy mail stay local. Automatic server deletion is off. Moving mail to a connected Trash folder is allowed; permanent deletion in Sync mode is blocked.</p>
+      <p>Draft editing and folder creation, renaming or deletion are not part of two-way sync. Labels that the provider does not expose as folders or flags are not synced.</p>
       {props.requiresConfirmation && <label className="flex items-start gap-2 text-foreground">
         <input type="checkbox" className="mt-1" required checked={props.confirmed} onChange={event => props.onConfirmChange(event.target.checked)} />
         I understand that existing read status and filing will follow the server, while missing emails will be kept.

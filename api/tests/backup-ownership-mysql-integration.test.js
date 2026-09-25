@@ -75,6 +75,7 @@ test('MySQL restores colliding backup IDs without changing another user in every
       .replace(/^\s*FOREIGN KEY[^\n]*\n/gm, '').replace(/^\s*FULLTEXT INDEX[^\n]*\n/gm, '').replace(/,\s*\) ENGINE/, '\n  ) ENGINE');
     await connection.execute(sql);
   }
+  await connection.execute('CREATE TEMPORARY TABLE mail_writebacks (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL)');
   // The frozen old schema remains unchanged. This restore security fixture
   // runs against the current application columns added by production migrations.
   await connection.execute('ALTER TABLE emails ADD COLUMN import_complete BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN filing_account_id CHAR(36) NULL, ADD COLUMN is_legacy BOOLEAN NOT NULL DEFAULT FALSE');
