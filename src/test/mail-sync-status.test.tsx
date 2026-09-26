@@ -26,7 +26,7 @@ describe('mail server change feedback', () => {
 
   it('shows pending counts and conflicts, offers retries only for failed actions, and hides provider details', async () => {
     setup([operation('pending', 'pending', 'read'), operation('failed', 'failed', 'star'), operation('conflict', 'conflict', 'move')]);
-    expect(await screen.findByText('1 recent change is waiting to sync with the email server.')).toBeInTheDocument();
+    expect(await screen.findByText('1 change is waiting for provider confirmation. Mail shows the requested state meanwhile.')).toBeInTheDocument();
     expect(screen.getByText(/Check the message at your provider, then refresh UniHub/)).toBeInTheDocument();
     expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
     expect(screen.getAllByRole('button')).toHaveLength(1);
@@ -36,7 +36,7 @@ describe('mail server change feedback', () => {
 
   it('refreshes the affected open message when a pending action settles', async () => {
     const { client, onSettled } = setup([operation('pending', 'pending', 'read')]);
-    await screen.findByText(/waiting to sync/);
+    await screen.findByText(/waiting for provider confirmation/);
     vi.mocked(api.get).mockResolvedValue({ data: { operations: [] } });
     await client.invalidateQueries({ queryKey: mailQueryKeys.writebacks });
     await waitFor(() => expect(onSettled).toHaveBeenCalledWith(['email-pending']));

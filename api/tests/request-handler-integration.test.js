@@ -12,7 +12,8 @@ function handlerHarness(t, { userId = 'u1', route, moduleEnabled = true } = {}) 
   stub(paths[1], { verifyToken: async () => userId, validateCsrfToken: () => true });
   stub(paths[3], { isModuleEnabled: async () => moduleEnabled });
   stub(paths[4], { getActiveRestoreSections: async () => new Set() });
-  stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'GET /api/modules': route, 'GET /api/notes/:id/export': route, 'GET /api/offline/snapshot': route || (async (_req, user) => ({ snapshot: { userId: user } })),
+  stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
+    'GET /api/modules': route, 'GET /api/notes/:id/export': route, 'GET /api/offline/snapshot': route || (async (_req, user) => ({ snapshot: { userId: user } })),
     'POST /api/parse-test': route || (async () => ({ success: true })) });
   const { handleRequest } = require(paths[0]);
   return async function run(method, url, body = '', overrides = {}) {
@@ -63,6 +64,13 @@ test('malformed JSON returns 400 without invoking its mutation route', async (t)
   assert.equal(result.status, 400);
   assert.equal(called, false);
   assert.match(result.body.error, /Invalid JSON/);
+});
+
+test('mail provider change retry reaches its parameterized route', async (t) => {
+  const run = handlerHarness(t, { route: async (req, userId) => ({ id: req.params.id, userId }) });
+  const result = await run('POST', '/api/mail/writebacks/change-1/retry', '{}');
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { id: 'change-1', userId: 'u1' });
 });
 
 

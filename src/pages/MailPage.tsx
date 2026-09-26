@@ -4,7 +4,7 @@ import { useMailAccountSelection } from '@/hooks/use-mail-account-selection';
 import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
 import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { useMailReader } from '@/hooks/use-mail-reader';
-import { invalidateMailQueries, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
+import { invalidateMailQueries, showRequestedReadInMailLists, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
 import { useMailAccounts, useMailFolders, useMailUnreadCounts, useMailList } from '@/hooks/use-mail-queries';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { contactsQueryOptions } from '@/lib/contacts-api';
@@ -281,6 +281,11 @@ const MailPage = () => {
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
   const { selectedEmail, setSelectedEmail, isReaderLoading, closeReader, loadEmail } = useMailReader();
   const selectedEmailId = selectedEmail?.id;
+  const showRequestedReadState = React.useCallback((ids: string[], isRead: boolean) => {
+    const selectedIds = new Set(ids);
+    showRequestedReadInMailLists(queryClient, ids, isRead);
+    setSelectedEmail(current => current && selectedIds.has(current.id) ? { ...current, is_read: isRead } : current);
+  }, [queryClient, setSelectedEmail]);
   const refreshSettledEmail = React.useCallback((emailIds: string[]) => {
     if (!selectedEmailId || !emailIds.includes(selectedEmailId)) return;
     const id = selectedEmailId;
@@ -289,6 +294,7 @@ const MailPage = () => {
       if (!response.error && email?.id === id) {
         setSelectedEmail(current => current?.id === id ? {
           ...current, is_read: email.is_read, is_starred: email.is_starred,
+          read_sync_pending: email.read_sync_pending, star_sync_pending: email.star_sync_pending,
           folder: email.folder, remote_missing: email.remote_missing,
         } : current);
       }
@@ -631,8 +637,14 @@ const MailPage = () => {
       const response = await api.put(`/mail/emails/${id}/read`, { is_read: true });
       if (response.error) throw new Error(response.error);
     },
+    onMutate: id => showRequestedReadState([id], true),
     onSuccess: () => {
       void invalidateMailQueries(queryClient);
+    },
+    onError: (error: Error, id) => {
+      void invalidateMailQueries(queryClient);
+      refreshSettledEmail([id]);
+      toast({ title: 'Failed to mark email as read', description: error.message, variant: 'destructive' });
     },
   });
 
@@ -642,13 +654,14 @@ const MailPage = () => {
       if (response.error) throw new Error(response.error);
       return { id, is_read };
     },
+    onMutate: ({ id, is_read }) => showRequestedReadState([id], is_read),
     onSuccess: ({ id, is_read }) => {
-      if (selectedEmail?.id === id) {
-        setSelectedEmail({ ...selectedEmail, is_read });
-      }
+      showRequestedReadState([id], is_read);
       void invalidateMailQueries(queryClient);
     },
     onError: (error: Error) => {
+      void invalidateMailQueries(queryClient);
+      if (selectedEmailId) refreshSettledEmail([selectedEmailId]);
       toast({ title: 'Failed to update read status', description: error.message, variant: 'destructive' });
     },
   });
@@ -766,16 +779,19 @@ const MailPage = () => {
       if (response.error) throw new Error(response.error);
       return response.data;
     },
+    onMutate: ({ emailIds, is_read }) => showRequestedReadState(emailIds, is_read),
     onSuccess: (data, variables) => {
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({ 
         title: data?.sync_pending ? `Read status change requested for ${variables.emailIds.length} email(s)` : `Marked ${variables.emailIds.length} email(s) as ${variables.is_read ? 'read' : 'unread'}`,
-        description: data?.sync_pending ? 'Server changes are waiting to sync. Check the server change status above your mail.' : undefined,
+        description: data?.sync_pending ? 'Mail shows your requested read status while the provider confirms it. Check the status above your mail.' : undefined,
         duration: 3000,
       });
     },
     onError: (error: Error) => {
+      void invalidateMailQueries(queryClient);
+      if (selectedEmailId) refreshSettledEmail([selectedEmailId]);
       toast({ 
         title: 'Failed to mark emails as read', 
         description: error.message, 
@@ -2390,6 +2406,9 @@ const MailPage = () => {
                           <span className={`font-medium truncate ${!email.is_read ? 'text-foreground font-semibold' : 'text-muted-foreground'}`}>
                             {email.from_name || email.from_address}
                           </span>
+                          {(email.read_sync_pending || email.star_sync_pending) && (
+                            <span className="shrink-0 text-xs text-muted-foreground">Server update pending</span>
+                          )}
                         </div>
                         <span className="text-xs text-muted-foreground shrink-0">
                           {format(new Date(email.received_at), 'MMM d, yyyy')}
@@ -2676,6 +2695,9 @@ const MailPage = () => {
                 </div>
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-2 ml-auto">
+                {(selectedEmail.read_sync_pending || selectedEmail.star_sync_pending) && (
+                  <span className="text-xs text-muted-foreground">Server update pending</span>
+                )}
                 <Button
                   variant="outline"
                   size="sm"

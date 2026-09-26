@@ -55,6 +55,8 @@ export interface Email {
   folder: string;
   is_read: boolean;
   is_starred: boolean;
+  read_sync_pending?: boolean;
+  star_sync_pending?: boolean;
   is_draft?: boolean;
   received_at: string;
   has_attachments?: boolean;
@@ -126,6 +128,13 @@ export interface MailListFilters {
 export interface MailListResponse {
   emails: Email[];
   pagination?: { total: number; limit: number; offset: number; page: number; totalPages: number };
+}
+export function showRequestedReadInMailLists(client: QueryClient, ids: string[], isRead: boolean) {
+  const selectedIds = new Set(ids);
+  client.setQueriesData<MailListResponse>({ queryKey: mailQueryKeys.all }, current => current ? {
+    ...current,
+    emails: current.emails.map(email => selectedIds.has(email.id) ? { ...email, is_read: isRead } : email),
+  } : current);
 }
 export async function fetchMailList(filters: MailListFilters, signal?: AbortSignal): Promise<MailListResponse> {
   const params = new URLSearchParams({ limit: '50', offset: String((filters.page - 1) * 50) });

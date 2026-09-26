@@ -18,9 +18,13 @@ provider. It never uploads the complete local state. Existing local differences
 are not replayed when upgrading. Download behavior stays local.
 
 Commands persist in MySQL until processed, so an interrupted connection or app
-restart does not silently lose them. UniHub shows pending, failed and conflicting
-changes. A successful provider confirmation/read-back updates the saved local
-state. Changes made later at the provider, another client or AI arrive normally.
+restart does not silently lose them. Once UniHub accepts a read or star action,
+mail lists, message details and unread counts show the requested state while it
+is pending, including after a page reload. The pending status remains visible.
+The stored confirmed state changes only after a successful provider read-back.
+If a change fails or conflicts, the pending display ends and the provider state
+is restored by the next successful sync. Changes made later at the provider,
+another client or AI arrive normally.
 
 If an update is interrupted, UniHub checks the server before at most one automatic
 retry on a later sync. Already-applied flags require no second write. An uncertain

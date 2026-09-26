@@ -51,7 +51,7 @@ export function MailSyncStatus({ onSettled }: { onSettled?: (emailIds: string[])
 
   return <section aria-label="Server change status" className="shrink-0 border-b border-border bg-muted/30 p-3 text-xs">
     <div role="status" className="space-y-1">
-      {pendingCount > 0 && <p>{pendingCount} recent {pendingCount === 1 ? 'change is' : 'changes are'} waiting to sync with the email server.</p>}
+      {pendingCount > 0 && <p>{pendingCount} {pendingCount === 1 ? 'change is' : 'changes are'} waiting for provider confirmation. Mail shows the requested state meanwhile.</p>}
       {status.isError && <p>Server change status is unavailable. Changes may still be waiting to sync.</p>}
       {retry.isError && <p className="text-destructive">{retry.error.message}</p>}
       {problems.length > 0 && <p>Recent changes that did not sync, across all accounts:</p>}

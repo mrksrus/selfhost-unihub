@@ -46,6 +46,15 @@ const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
 const MAIL_LIST_PREVIEW_LENGTH = 240;
 const MAIL_DRAFT_FOLDER = 'drafts';
 const MAIL_ATTACHMENT_UPLOAD_ROOT = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments';
+// Keep stored flags as the last confirmed provider state. Show an accepted
+// pending action immediately, including after a page reload or a long sync.
+const effectiveFlagSql = (action, column) => `COALESCE((SELECT CAST(w.target_value AS UNSIGNED)
+  FROM mail_writebacks w WHERE w.email_id = emails.id AND w.user_id = emails.user_id
+    AND w.action = '${action}' AND w.status = 'pending'), emails.${column})`;
+const pendingFlagSql = action => `EXISTS(SELECT 1 FROM mail_writebacks w WHERE w.email_id = emails.id
+  AND w.user_id = emails.user_id AND w.action = '${action}' AND w.status = 'pending')`;
+const EFFECTIVE_READ_SQL = effectiveFlagSql('read', 'is_read');
+const EFFECTIVE_STAR_SQL = effectiveFlagSql('star', 'is_starred');
 
 function startMailSyncInBackground(accountId, label = accountId) {
   if (isAnyMailAccountSyncRunning()) {
@@ -74,7 +83,7 @@ function isMailSyncFresh(lastSyncedAt, minAgeMs = BACKGROUND_MAIL_SYNC_MIN_AGE_M
 async function getMailFolderRowsWithCounts(userId, accountId = null) {
   const folders = await loadMailFoldersForUser(userId);
   const [countRows] = await db.execute(
-    `SELECT folder, COUNT(*) AS total_count, SUM(CASE WHEN is_read = 0 THEN 1 ELSE 0 END) AS unread_count
+    `SELECT folder, COUNT(*) AS total_count, SUM(CASE WHEN ${EFFECTIVE_READ_SQL} = 0 THEN 1 ELSE 0 END) AS unread_count
      FROM emails
      WHERE user_id = ? ${accountId === 'legacy' ? 'AND is_legacy = TRUE' : accountId ? `AND is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?` : ''}
      GROUP BY folder`,
@@ -628,7 +637,7 @@ module.exports = {
 
       // Fetch unread email counts per account
       const [unreadRows] = await db.execute(
-        `SELECT CASE WHEN is_legacy THEN 'legacy' ELSE ${FILING_ACCOUNT_SQL} END AS mail_account_id, COUNT(*) as unread_count FROM emails WHERE user_id = ? AND is_read = 0 GROUP BY 1`,
+        `SELECT CASE WHEN is_legacy THEN 'legacy' ELSE ${FILING_ACCOUNT_SQL} END AS mail_account_id, COUNT(*) as unread_count FROM emails WHERE user_id = ? AND ${EFFECTIVE_READ_SQL} = 0 GROUP BY 1`,
         [userId]
       );
 
@@ -688,7 +697,7 @@ module.exports = {
       let folderQuery = `
         SELECT folder, COUNT(*) AS unread_count
         FROM emails
-        WHERE user_id = ? AND is_read = 0
+        WHERE user_id = ? AND ${EFFECTIVE_READ_SQL} = 0
       `;
       const folderParams = [userId];
 
@@ -710,7 +719,7 @@ module.exports = {
         let accountBreakdownQuery = `
           SELECT folder, CASE WHEN is_legacy THEN 'legacy' ELSE ${FILING_ACCOUNT_SQL} END AS mail_account_id, COUNT(*) AS unread_count
           FROM emails
-          WHERE user_id = ? AND is_read = 0
+          WHERE user_id = ? AND ${EFFECTIVE_READ_SQL} = 0
         `;
         const accountBreakdownParams = [userId];
         if (hasAccountFilter) {
@@ -1323,7 +1332,7 @@ module.exports = {
       params = [userId];
       
       if (folder === 'starred') {
-        where.push('is_starred = 1');
+        where.push(`${EFFECTIVE_STAR_SQL} = 1`);
       } else if (hasFolderFilter) {
         where.push('folder = ?');
         params.push(folder);
@@ -1335,12 +1344,12 @@ module.exports = {
       }
 
       if (isReadParam === 'true' || isReadParam === 'false') {
-        where.push('is_read = ?');
+        where.push(`${EFFECTIVE_READ_SQL} = ?`);
         params.push(isReadParam === 'true' ? 1 : 0);
       }
 
       if (isStarredParam === 'true' || isStarredParam === 'false') {
-        where.push('is_starred = ?');
+        where.push(`${EFFECTIVE_STAR_SQL} = ?`);
         params.push(isStarredParam === 'true' ? 1 : 0);
       }
 
@@ -1388,8 +1397,10 @@ module.exports = {
           imap_uidvalidity,
           raw_storage_path,
           raw_sha256,
-          is_read,
-          is_starred,
+          ${EFFECTIVE_READ_SQL} AS is_read,
+          ${EFFECTIVE_STAR_SQL} AS is_starred,
+          ${pendingFlagSql('read')} AS read_sync_pending,
+          ${pendingFlagSql('star')} AS star_sync_pending,
           is_draft,
           has_attachments,
           received_at,
@@ -1416,6 +1427,8 @@ module.exports = {
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
         is_read: !!email.is_read,
         is_starred: !!email.is_starred,
+        read_sync_pending: !!email.read_sync_pending,
+        star_sync_pending: !!email.star_sync_pending,
         is_draft: !!email.is_draft,
       }));
       return { 
@@ -1445,7 +1458,10 @@ module.exports = {
     try {
       const id = extractMailRouteId(req);
       const [emails] = await db.execute(
-        'SELECT * FROM emails WHERE id = ? AND user_id = ?',
+        `SELECT emails.*, ${EFFECTIVE_READ_SQL} AS effective_is_read,
+          ${EFFECTIVE_STAR_SQL} AS effective_is_starred,
+          ${pendingFlagSql('read')} AS read_sync_pending,
+          ${pendingFlagSql('star')} AS star_sync_pending FROM emails WHERE id = ? AND user_id = ?`,
         [id, userId]
       );
       
@@ -1454,12 +1470,15 @@ module.exports = {
       }
       
       const email = emails[0];
+      const { effective_is_read, effective_is_starred, ...storedEmail } = email;
       // Parse JSON fields
       const parsedEmail = {
-        ...presentMailFiling(email),
+        ...presentMailFiling(storedEmail),
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
-        is_read: !!email.is_read,
-        is_starred: !!email.is_starred,
+        is_read: !!effective_is_read,
+        is_starred: !!effective_is_starred,
+        read_sync_pending: !!email.read_sync_pending,
+        star_sync_pending: !!email.star_sync_pending,
         is_draft: !!email.is_draft,
       };
       
@@ -1563,7 +1582,7 @@ module.exports = {
   },
   'POST /api/mail/writebacks/:id/retry': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    try { return await mailWritebacks.retryWriteback(userId, req.params?.id || req.url.split('?')[0].split('/').at(-2)); }
+    try { return await mailWritebacks.retryWriteback(userId, req.params.id); }
     catch (error) { return { error: error.status ? error.message : 'Could not retry provider update', status: error.status || 500 }; }
   },
 

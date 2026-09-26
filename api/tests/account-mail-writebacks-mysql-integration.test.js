@@ -33,6 +33,19 @@ test('durable mail commands: ownership, restart, retries, account cancellation a
   const op = async () => (await pool.execute('SELECT * FROM mail_writebacks WHERE email_id=?', [emailId]))[0][0];
   await assert.rejects(service.mutateMessages(stranger, [emailId], { read: 1 }), { status: 404 });
   await queue({ read: 1 });
+  const mailRoutes = require('../src/routes/mail');
+  const list = async query => mailRoutes['GET /api/mail/emails']({ url: `/api/mail/emails${query}`, headers: { host: 'localhost' } }, user);
+  const detail = async () => mailRoutes['GET /api/mail/emails/:id']({ url: `/api/mail/emails/${emailId}` }, user);
+  assert.equal((await list('')).emails[0].is_read, true, 'Accepted read intent is visible before IMAP completes');
+  assert.equal((await list('')).emails[0].read_sync_pending, true);
+  assert.equal((await list('?is_read=false')).emails.length, 0, 'Unread filter follows pending read intent');
+  assert.equal((await detail()).email.is_read, true, 'Reloaded message detail follows pending read intent');
+  assert.equal((await detail()).email.read_sync_pending, true);
+  assert.deepEqual((await mailRoutes['GET /api/mail/unread-counts']({ url: '/api/mail/unread-counts', headers: { host: 'localhost' } }, user)).unreadByFolder, {});
+  const pendingAccount = (await mailRoutes['GET /api/mail/accounts']({}, user)).accounts.find(row => row.id === accountId);
+  assert.equal(pendingAccount.unread_count, 0, 'Account badge follows pending read intent');
+  const pendingInbox = (await mailRoutes['GET /api/mail/folders']({ url: '/api/mail/folders' }, user)).folders.find(row => row.slug === 'inbox');
+  assert.equal(pendingInbox.unread_count, 0, 'Folder badge follows pending read intent');
   // Reloading module simulates process restart with the same persisted intent.
   delete require.cache[require.resolve('../src/services/mail-writebacks')];
   const restarted = require('../src/services/mail-writebacks');
@@ -49,12 +62,16 @@ test('durable mail commands: ownership, restart, retries, account cancellation a
   await restarted.processPending(account, connection);
   assert.equal((await op()).status,'done'); assert.deepEqual(writes,['\\Seen']);
   assert.equal((await pool.execute('SELECT is_read FROM emails WHERE id=?',[emailId]))[0][0].is_read,1);
+  assert.equal((await list('')).emails[0].is_read, true, 'Confirmed provider state remains read');
+  assert.equal((await list('')).emails[0].read_sync_pending, false);
   await queue({ star:1 }); connectionError=true;
+  assert.equal((await list('?is_starred=true')).emails[0].is_starred, true, 'Pending star also appears immediately');
   await restarted.processPending(account,connection);
   let star=(await pool.execute("SELECT * FROM mail_writebacks WHERE action='star'"))[0][0]; assert.equal(star.status,'pending'); assert.equal(star.attempts,1);
   await pool.execute("UPDATE mail_writebacks SET available_at=UTC_TIMESTAMP() WHERE action='star'");
   await restarted.processPending(account,connection);
   star=(await pool.execute("SELECT * FROM mail_writebacks WHERE action='star'"))[0][0]; assert.equal(star.status,'failed'); assert.equal(star.attempts,2);
+  assert.equal((await list('?is_starred=true')).emails.length, 0, 'Failed request stops overlaying provider state');
   await restarted.processPending(account,connection); assert.equal((await pool.execute("SELECT attempts FROM mail_writebacks WHERE action='star'"))[0][0].attempts,2);
   await restarted.cancelForAccount(pool,accountId,user); assert.equal((await pool.execute("SELECT status FROM mail_writebacks WHERE action='star'"))[0][0].status,'conflict');
   connectionError=false;

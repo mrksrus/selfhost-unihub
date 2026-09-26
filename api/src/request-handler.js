@@ -132,6 +132,12 @@ async function dispatchRequest(req, res) {
     routeKey = `${req.method} /api/mail/accounts/:id`;
   } else if (routeKey.includes('/api/mail/attachments/')) {
     routeKey = `${req.method} /api/mail/attachments/:id`;
+  } else if (url.pathname.startsWith('/api/mail/writebacks/')) {
+    const match = /^\/api\/mail\/writebacks\/([^/]+)\/retry$/.exec(url.pathname);
+    if (match) {
+      req.params.id = match[1];
+      routeKey = `${req.method} /api/mail/writebacks/:id/retry`;
+    }
   } else if (routeKey.includes('/api/mail/emails/')) {
     if (url.pathname.includes('/bulk-delete')) {
       routeKey = `${req.method} /api/mail/emails/bulk-delete`;
