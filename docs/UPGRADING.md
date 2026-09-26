@@ -3,8 +3,19 @@
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 For a new installation, use [Installation](INSTALLATION.md). This page includes
-version-specific history; the current release is 0.10.9. Preserve existing data
+version-specific history; the current release is 0.10.10. Preserve existing data
 and keys when upgrading.
+
+## 0.10.10 pending mail state and retry fix
+
+Read/unread actions update the visible mail list immediately. Accepted read/star
+changes remain visible across reloads, filters and unread badges while awaiting
+provider confirmation. Failed or conflicting changes fall back to confirmed
+state. The provider-change Retry action now reaches its API handler.
+
+No new database migration, volume, secret or Docker configuration is required
+relative to 0.10.9. Keep existing volumes and keys. See the
+[release notes](RELEASE_0.10.10.md) for the failed build diagnosis and checks.
 
 ## 0.10.9 two-way message sync
 
@@ -120,7 +131,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.9`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.10`, then run from the existing
 deployment directory:
 
 ```bash

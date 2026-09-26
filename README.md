@@ -47,9 +47,10 @@ For a **new installation**, first collect:
 It gives the exact field names, where to enter them, examples, first-login checks
 and fixes for common startup errors. Do not put passwords into the Dockerfile.
 
-Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.9`.
-The `latest` tag follows releases; use a version tag when you want explicit control
-of upgrades. The supplied [Compose file](docker-compose.yml) currently uses `latest`.
+Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.10`.
+The `latest` tag follows successful main-branch and release builds; use a version
+tag when you want explicit control of upgrades. The supplied
+[Compose file](docker-compose.yml) currently uses `latest`.
 
 **TrueNAS:** a [draft Community catalog installer](https://github.com/truenas/apps/pull/5847)
 is under review; it is not yet an approved catalog app. Pasting the

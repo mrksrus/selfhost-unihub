@@ -15,19 +15,25 @@ function installDb(t, db) {
 
 test('list and detail preserve provider identity while presenting the receiving account', async t => {
   const stored = recovered();
+  stored.is_read = 1;
+  stored.is_starred = 0;
   installDb(t, { async execute(sql, params) {
     assert.equal(params.includes('user'), true);
     if (sql.includes('COUNT(*)')) return [[{ total: 1 }]];
     if (sql.includes('FROM email_attachments')) return [[]];
     assert.match(sql, /FROM emails/);
-    if (!sql.includes('SELECT *')) {
-      assert.match(sql, /is_legacy = FALSE AND COALESCE\(filing_account_id, mail_account_id\) = \?/);
-      assert.equal(params.includes('receiving'), true);
+    if (sql.includes('FROM emails WHERE id = ? AND user_id = ?')) {
+      assert.deepEqual(params, ['message', 'user']);
+      return [[{ ...stored, effective_is_read: stored.is_read, effective_is_starred: stored.is_starred }]];
     }
+    assert.match(sql, /is_legacy = FALSE AND COALESCE\(filing_account_id, mail_account_id\) = \?/);
+    assert.equal(params.includes('receiving'), true);
     return [[{ ...stored }]];
   } });
   const list = await routes['GET /api/mail/emails'](request('/api/mail/emails?account_id=receiving'), 'user');
   const detail = await routes['GET /api/mail/emails/:id'](request('/api/mail/emails/message'), 'user');
+  assert.equal(list.error, undefined);
+  assert.equal(detail.error, undefined);
   for (const email of [list.emails[0], detail.email]) {
     assert.equal(email.mail_account_id, 'receiving');
     assert.equal(email.source_mail_account_id, 'source');
@@ -35,6 +41,8 @@ test('list and detail preserve provider identity while presenting the receiving 
     assert.equal(email.imap_uid, undefined);
     assert.equal(email.imap_uidvalidity, undefined);
     assert.equal(email.is_legacy, false);
+    assert.equal(email.is_read, true);
+    assert.equal(email.is_starred, false);
   }
   assert.deepEqual(presentMailFiling(presentMailFiling(stored)), presentMailFiling(stored));
   assert.equal(stored.mail_account_id, 'source');
