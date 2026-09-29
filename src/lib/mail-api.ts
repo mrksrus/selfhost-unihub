@@ -118,6 +118,15 @@ export function invalidateMailQueries(client: QueryClient) {
   return client.invalidateQueries({ predicate: (query) => MAIL_QUERY_ROOTS.has(String(query.queryKey[0])) });
 }
 
+// Flag writes do not change folders or account settings. In particular, never
+// invalidate writebacks from a writeback poll: that creates a second poll and
+// can repeat the whole mail refetch cycle for every completed operation.
+const MAIL_FLAG_COUNT_ROOTS = new Set(['mail-unread-counts', 'mail-accounts', 'mail-accounts-count', 'email-count', 'stats', 'dashboard-unread-mail']);
+
+export function invalidateMailFlagViews(client: QueryClient) {
+  return client.invalidateQueries({ predicate: query => query.queryKey[0] === 'emails' || MAIL_FLAG_COUNT_ROOTS.has(String(query.queryKey[0])) });
+}
+
 export interface MailListFilters {
   account: string | null;
   folder: string;
@@ -129,12 +138,49 @@ export interface MailListResponse {
   emails: Email[];
   pagination?: { total: number; limit: number; offset: number; page: number; totalPages: number };
 }
-export function showRequestedReadInMailLists(client: QueryClient, ids: string[], isRead: boolean) {
+export type MailFlagKind = 'read' | 'star';
+export type MailFlagPatch = Partial<Pick<Email, 'is_read' | 'is_starred' | 'read_sync_pending' | 'star_sync_pending'>>;
+const flagEdits = new WeakMap<QueryClient, { revision: number; edits: Map<string, { revision: number; pending: boolean; patch: MailFlagPatch }> }>();
+function editsFor(client: QueryClient) {
+  let state = flagEdits.get(client);
+  if (!state) {
+    state = { revision: 0, edits: new Map() };
+    flagEdits.set(client, state);
+  }
+  return state;
+}
+
+// Only bridge HTTP requests that overlap a local edit. New requests after an
+// accepted write use the API's effective flags (including queued provider intent),
+// never a permanent client override of provider/backend state.
+export function captureMailFlagReconciler(client: QueryClient) {
+  const state = editsFor(client);
+  const revision = state.revision;
+  return (email: Email): Email => {
+    let result = email;
+    for (const kind of ['read', 'star'] as const) {
+      const edit = state.edits.get(`${kind}:${email.id}`);
+      if (edit && (edit.pending || edit.revision > revision)) result = { ...result, ...edit.patch };
+    }
+    return result;
+  };
+}
+
+export function recordMailFlagEdit(client: QueryClient, id: string, kind: MailFlagKind, patch: MailFlagPatch, pending: boolean) {
+  const state = editsFor(client);
+  state.edits.set(`${kind}:${id}`, { revision: ++state.revision, pending, patch });
+  showRequestedFlagInMailLists(client, [id], patch);
+}
+
+export function showRequestedFlagInMailLists(client: QueryClient, ids: string[], patch: MailFlagPatch) {
   const selectedIds = new Set(ids);
   client.setQueriesData<MailListResponse>({ queryKey: mailQueryKeys.all }, current => current ? {
     ...current,
-    emails: current.emails.map(email => selectedIds.has(email.id) ? { ...email, is_read: isRead } : email),
+    emails: current.emails.map(email => selectedIds.has(email.id) ? { ...email, ...patch } : email),
   } : current);
+}
+export function showRequestedReadInMailLists(client: QueryClient, ids: string[], isRead: boolean) {
+  showRequestedFlagInMailLists(client, ids, { is_read: isRead });
 }
 export async function fetchMailList(filters: MailListFilters, signal?: AbortSignal): Promise<MailListResponse> {
   const params = new URLSearchParams({ limit: '50', offset: String((filters.page - 1) * 50) });

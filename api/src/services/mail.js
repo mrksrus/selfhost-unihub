@@ -1,4 +1,5 @@
 const { withMailAccountLock } = require('./mail-account-lock');
+const { guardImapConnection } = require('./mail-imap-guard');
 const { followMailServer, checkCancelled } = require('./mail-server-follow');
 const { reconcileAccountFolders } = require('./mail-folder-reconciliation');
 const crypto = require('crypto');
@@ -993,6 +994,7 @@ async function buildImapConnectionConfig(account, { keepalive = true } = {}) {
       },
       connTimeout: 60000,
       authTimeout: 30000,
+      socketTimeout: 60000,
       keepalive,
     },
   };
@@ -1411,14 +1413,19 @@ async function syncMailAccountOnce(accountId, signal, background) {
     const config = await buildImapConnectionConfig(account);
     if (!config) throw new Error('No password configured for this account');
 
+    checkCancelled(signal);
     console.log(`[SYNC] Connecting to ${account.email_address}...`);
-    connection = await imaps.connect(config);
+    // The handshake has connection/auth/socket timeouts. If cancellation arrived
+    // during it, the guard destroys the newly returned connection before use.
+    connection = guardImapConnection(await imaps.connect(config), { signal });
+    checkCancelled(signal);
     connection.on('error', (err) => {
       console.error('[SYNC] IMAP connection error (handled, sync may fail):', err.message);
     });
     
     const specialUses = new Map();
     const availableFolders = await listAvailableImapFolders(connection, specialUses, true);
+    checkCancelled(signal);
     for (const planned of pickImapSyncFolders(availableFolders)) {
       if (availableFolders.includes(planned.folderName) && !specialUses.has(planned.folderName)) specialUses.set(planned.folderName, planned.dbFolderName);
     }
@@ -1431,6 +1438,7 @@ async function syncMailAccountOnce(accountId, signal, background) {
     const customFolderSlugs = new Map(registeredFolders.map(folder => [folder.remoteName, folder.slug]));
     if (followsServer) {
       const writes = await require('./mail-writebacks').processPending(account, connection, { background });
+      checkCancelled(signal);
       if (writes.connectionFailed) throw new Error('Provider write interrupted; pending changes will be checked on reconnect');
       const folders = availableFolders.map(folderName => ({ folderName, dbFolderName: customFolderSlugs.get(folderName) }));
       if (folders.some(folder => !folder.dbFolderName)) throw new Error('A listed server folder has no verified local mapping');
@@ -1448,6 +1456,7 @@ async function syncMailAccountOnce(accountId, signal, background) {
             archiveRaw: saveRawEmailSource, enqueueDeletion: async () => false,
             suppressNotifications: !lastSyncedAt || account.sync_status === 'pending' });
         } });
+      checkCancelled(signal);
       await db.execute("UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP(), sync_status = 'idle' WHERE id = ?", [accountId]);
       connection.end();
       connection = null;
@@ -1469,6 +1478,7 @@ async function syncMailAccountOnce(accountId, signal, background) {
         syncFetchLimit,
         signal
       );
+      checkCancelled(signal);
       folderResults.push({ ...folder, ...folderResult });
       if (folder.dbFolderName === 'inbox' && folderResult.error) {
         break;
@@ -1554,6 +1564,8 @@ async function syncMailAccountOnce(accountId, signal, background) {
     }
 
     return { success: false, cancelled: Boolean(signal?.aborted), error: friendlyError, details: errorMsg };
+  } finally {
+    if (connection) connection.end();
   }
 }
 

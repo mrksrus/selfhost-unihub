@@ -32,10 +32,68 @@ test('durable mail commands: ownership, restart, retries, account cancellation a
   };
   const op = async () => (await pool.execute('SELECT * FROM mail_writebacks WHERE email_id=?', [emailId]))[0][0];
   await assert.rejects(service.mutateMessages(stranger, [emailId], { read: 1 }), { status: 404 });
-  await queue({ read: 1 });
   const mailRoutes = require('../src/routes/mail');
   const list = async query => mailRoutes['GET /api/mail/emails']({ url: `/api/mail/emails${query}`, headers: { host: 'localhost' } }, user);
   const detail = async () => mailRoutes['GET /api/mail/emails/:id']({ url: `/api/mail/emails/${emailId}` }, user);
+  const assertSnapshot = async (read, star, readPending, starPending) => {
+    const page = await list('');
+    assert.equal(page.pagination.total, 1);
+    assert.equal(page.emails.length, 1);
+    for (const row of [page.emails[0], (await detail()).email]) {
+      assert.equal(row.is_read, Boolean(read)); assert.equal(row.is_starred, Boolean(star));
+      assert.equal(row.read_sync_pending, readPending); assert.equal(row.star_sync_pending, starPending);
+    }
+    for (const [flag, value] of [['is_read', read], ['is_starred', star]]) {
+      for (const requested of [false, true]) {
+        const filtered = await list(`?${flag}=${requested}`);
+        const expected = Boolean(value) === requested ? 1 : 0;
+        assert.equal(filtered.pagination.total, expected); assert.equal(filtered.emails.length, expected);
+      }
+    }
+    const starred = await list('?folder=starred');
+    assert.equal(starred.pagination.total, Number(star)); assert.equal(starred.emails.length, Number(star));
+    const counts = await mailRoutes['GET /api/mail/unread-counts']({ url: '/api/mail/unread-counts', headers: { host: 'localhost' } }, user);
+    assert.equal(counts.unreadByFolder.inbox || 0, read ? 0 : 1);
+    const shownAccount = (await mailRoutes['GET /api/mail/accounts']({}, user)).accounts.find(row => row.id === accountId);
+    assert.equal(shownAccount.unread_count, read ? 0 : 1);
+    const inbox = (await mailRoutes['GET /api/mail/folders']({ url: '/api/mail/folders' }, user)).folders.find(row => row.slug === 'inbox');
+    assert.equal(inbox.unread_count, read ? 0 : 1);
+  };
+  await t.test('MySQL numeric-string flags: independent stored/pending false and true, filters, badges and ownership', async () => {
+    // Exercise the actual mysql2 COALESCE/CAST type, not a mock that returns only
+    // numbers or only true. Each flag independently has no overlay, false or true.
+    for (const storedRead of [0, 1]) for (const storedStar of [0, 1]) {
+      for (const pendingRead of [null, 0, 1]) for (const pendingStar of [null, 0, 1]) {
+        await pool.execute('DELETE FROM mail_writebacks WHERE email_id = ?', [emailId]);
+        await pool.execute('UPDATE emails SET is_read = ?, is_starred = ? WHERE id = ?', [storedRead, storedStar, emailId]);
+        const changes = {};
+        if (pendingRead !== null) changes.read = pendingRead;
+        if (pendingStar !== null) changes.star = pendingStar;
+        await queue(changes);
+        await assertSnapshot(pendingRead ?? storedRead, pendingStar ?? storedStar, pendingRead !== null, pendingStar !== null);
+      }
+    }
+    // Failed/conflicted intent in either direction must expose stored provider
+    // flags again, including false on unfiltered list and detail.
+    for (const status of ['failed', 'conflict']) for (const storedRead of [0, 1]) for (const storedStar of [0, 1]) {
+      await pool.execute('DELETE FROM mail_writebacks WHERE email_id = ?', [emailId]);
+      await pool.execute('UPDATE emails SET is_read = ?, is_starred = ? WHERE id = ?', [storedRead, storedStar, emailId]);
+      await queue({ read: 1 - storedRead, star: 1 - storedStar });
+      await pool.execute('UPDATE mail_writebacks SET status = ? WHERE email_id = ?', [status, emailId]);
+      await assertSnapshot(storedRead, storedStar, false, false);
+    }
+    await pool.execute('UPDATE emails SET is_read = 0, is_starred = 0 WHERE id = ?', [emailId]);
+    await pool.execute('DELETE FROM mail_writebacks WHERE email_id = ?', [emailId]);
+    await queue({ read: 1, star: 1 });
+    const strangerList = await mailRoutes['GET /api/mail/emails']({ url: '/api/mail/emails', headers: { host: 'localhost' } }, stranger);
+    assert.equal(strangerList.pagination.total, 0); assert.deepEqual(strangerList.emails, []);
+    assert.equal((await mailRoutes['GET /api/mail/emails/:id']({ url: `/api/mail/emails/${emailId}` }, stranger)).status, 404);
+    // A mismatched owner on a pending row must not overlay or count this email.
+    await pool.execute('UPDATE mail_writebacks SET user_id = ? WHERE email_id = ?', [stranger, emailId]);
+    await assertSnapshot(0, 0, false, false);
+    await pool.execute('DELETE FROM mail_writebacks WHERE email_id = ?', [emailId]);
+  });
+  await queue({ read: 1 });
   assert.equal((await list('')).emails[0].is_read, true, 'Accepted read intent is visible before IMAP completes');
   assert.equal((await list('')).emails[0].read_sync_pending, true);
   assert.equal((await list('?is_read=false')).emails.length, 0, 'Unread filter follows pending read intent');
@@ -72,6 +130,7 @@ test('durable mail commands: ownership, restart, retries, account cancellation a
   await restarted.processPending(account,connection);
   star=(await pool.execute("SELECT * FROM mail_writebacks WHERE action='star'"))[0][0]; assert.equal(star.status,'failed'); assert.equal(star.attempts,2);
   assert.equal((await list('?is_starred=true')).emails.length, 0, 'Failed request stops overlaying provider state');
+  await assertSnapshot(1, 0, false, false);
   await restarted.processPending(account,connection); assert.equal((await pool.execute("SELECT attempts FROM mail_writebacks WHERE action='star'"))[0][0].attempts,2);
   await restarted.cancelForAccount(pool,accountId,user); assert.equal((await pool.execute("SELECT status FROM mail_writebacks WHERE action='star'"))[0][0].status,'conflict');
   connectionError=false;

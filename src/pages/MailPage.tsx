@@ -4,7 +4,8 @@ import { useMailAccountSelection } from '@/hooks/use-mail-account-selection';
 import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
 import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { useMailReader } from '@/hooks/use-mail-reader';
-import { invalidateMailQueries, showRequestedReadInMailLists, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
+import { useMailFlags } from '@/hooks/use-mail-flags';
+import { invalidateMailQueries, captureMailFlagReconciler, showRequestedReadInMailLists, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
 import { useMailAccounts, useMailFolders, useMailUnreadCounts, useMailList } from '@/hooks/use-mail-queries';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { contactsQueryOptions } from '@/lib/contacts-api';
@@ -281,6 +282,11 @@ const MailPage = () => {
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
   const { selectedEmail, setSelectedEmail, isReaderLoading, closeReader, loadEmail } = useMailReader();
   const selectedEmailId = selectedEmail?.id;
+  const { flagRequests, requestFlag } = useMailFlags(setSelectedEmail, (kind, message) => {
+    toast({ title: kind === 'read' ? 'Failed to update read status' : 'Failed to update star', description: message, variant: 'destructive' });
+  });
+  const detailRefreshRevision = React.useRef(0);
+  useEffect(() => { ++detailRefreshRevision.current; }, [selectedEmailId]);
   const showRequestedReadState = React.useCallback((ids: string[], isRead: boolean) => {
     const selectedIds = new Set(ids);
     showRequestedReadInMailLists(queryClient, ids, isRead);
@@ -289,17 +295,19 @@ const MailPage = () => {
   const refreshSettledEmail = React.useCallback((emailIds: string[]) => {
     if (!selectedEmailId || !emailIds.includes(selectedEmailId)) return;
     const id = selectedEmailId;
+    const revision = ++detailRefreshRevision.current;
+    const reconcile = captureMailFlagReconciler(queryClient);
     void api.get<{ email: Email }>(`/mail/emails/${encodeURIComponent(id)}`).then(response => {
-      const email = response.data?.email;
-      if (!response.error && email?.id === id) {
+      const email = response.data?.email && reconcile(response.data.email);
+      if (revision === detailRefreshRevision.current && !response.error && email?.id === id) {
         setSelectedEmail(current => current?.id === id ? {
           ...current, is_read: email.is_read, is_starred: email.is_starred,
           read_sync_pending: email.read_sync_pending, star_sync_pending: email.star_sync_pending,
           folder: email.folder, remote_missing: email.remote_missing,
         } : current);
       }
-    });
-  }, [selectedEmailId, setSelectedEmail]);
+    }).catch(() => { /* A failed status refresh must not replace the current message. */ });
+  }, [selectedEmailId, setSelectedEmail, queryClient]);
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [composeMode, setComposeMode] = useState<'new' | 'reply' | 'forward'>('new');
@@ -615,57 +623,6 @@ const MailPage = () => {
       toast({ title: 'Failed to delete account', description: error.message, variant: 'destructive' });
     },
   });
-
-  // Toggle star mutation
-  const toggleStar = useMutation({
-    mutationFn: async ({ id, is_starred }: { id: string; is_starred: boolean }) => {
-      const response = await api.put(`/mail/emails/${id}/star`, { is_starred });
-      if (response.error) throw new Error(response.error);
-    },
-    onSuccess: (_, variables) => {
-      // Update local selectedEmail state immediately
-      if (selectedEmail && selectedEmail.id === variables.id) {
-        setSelectedEmail({ ...selectedEmail, is_starred: variables.is_starred });
-      }
-      void invalidateMailQueries(queryClient);
-    },
-  });
-
-  // Mark as read mutation
-  const markAsRead = useMutation({
-    mutationFn: async (id: string) => {
-      const response = await api.put(`/mail/emails/${id}/read`, { is_read: true });
-      if (response.error) throw new Error(response.error);
-    },
-    onMutate: id => showRequestedReadState([id], true),
-    onSuccess: () => {
-      void invalidateMailQueries(queryClient);
-    },
-    onError: (error: Error, id) => {
-      void invalidateMailQueries(queryClient);
-      refreshSettledEmail([id]);
-      toast({ title: 'Failed to mark email as read', description: error.message, variant: 'destructive' });
-    },
-  });
-
-  const setEmailReadStatus = useMutation({
-    mutationFn: async ({ id, is_read }: { id: string; is_read: boolean }) => {
-      const response = await api.put(`/mail/emails/${id}/read`, { is_read });
-      if (response.error) throw new Error(response.error);
-      return { id, is_read };
-    },
-    onMutate: ({ id, is_read }) => showRequestedReadState([id], is_read),
-    onSuccess: ({ id, is_read }) => {
-      showRequestedReadState([id], is_read);
-      void invalidateMailQueries(queryClient);
-    },
-    onError: (error: Error) => {
-      void invalidateMailQueries(queryClient);
-      if (selectedEmailId) refreshSettledEmail([selectedEmailId]);
-      toast({ title: 'Failed to update read status', description: error.message, variant: 'destructive' });
-    },
-  });
-
   const openDraftForCompose = React.useCallback((draft: Email) => {
     setComposeMode('new');
     setActiveDraftId(draft.id);
@@ -684,11 +641,15 @@ const MailPage = () => {
     setIsComposeOpen(true);
   }, [setSelectedAccount]);
 
-  const loadEmailForReader = React.useCallback((emailId: string) => loadEmail(emailId, {
-    onDraft: openDraftForCompose,
-    onMarkRead: (id) => markAsRead.mutate(id),
-    onError: (message) => toast({ title: 'Failed to load email', description: message, variant: 'destructive' }),
-  }), [loadEmail, markAsRead, openDraftForCompose, toast]);
+  const loadEmailForReader = React.useCallback((emailId: string) => {
+    ++detailRefreshRevision.current;
+    return loadEmail(emailId, {
+      onDraft: openDraftForCompose,
+      reconcileEmail: captureMailFlagReconciler(queryClient),
+      onMarkRead: (email) => requestFlag(email, 'read', true),
+      onError: (message) => toast({ title: 'Failed to load email', description: message, variant: 'destructive' }),
+    });
+  }, [loadEmail, openDraftForCompose, requestFlag, queryClient, toast]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -779,8 +740,10 @@ const MailPage = () => {
       if (response.error) throw new Error(response.error);
       return response.data;
     },
-    onMutate: ({ emailIds, is_read }) => showRequestedReadState(emailIds, is_read),
+    // A rejected busy-account batch must never appear applied. Publish its
+    // requested flags only once the API has accepted the all-or-nothing batch.
     onSuccess: (data, variables) => {
+      showRequestedReadState(variables.emailIds, variables.is_read);
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({ 
@@ -808,6 +771,9 @@ const MailPage = () => {
     onSuccess: () => {
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to star emails', description: error.message, variant: 'destructive' });
     },
   });
 
@@ -2392,8 +2358,10 @@ const MailPage = () => {
                       className="shrink-0 h-8 w-8"
                       onClick={(e) => {
                         e.stopPropagation();
-                        toggleStar.mutate({ id: email.id, is_starred: !email.is_starred });
+                        requestFlag(email, 'star', !email.is_starred);
                       }}
+                      disabled={flagRequests.has(`star:${email.id}`)}
+                      aria-label={email.is_starred ? `Unstar ${email.subject || 'message'}` : `Star ${email.subject || 'message'}`}
                     >
                       <Star className={`h-4 w-4 ${email.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />
                     </Button>
@@ -2406,9 +2374,10 @@ const MailPage = () => {
                           <span className={`font-medium truncate ${!email.is_read ? 'text-foreground font-semibold' : 'text-muted-foreground'}`}>
                             {email.from_name || email.from_address}
                           </span>
-                          {(email.read_sync_pending || email.star_sync_pending) && (
-                            <span className="shrink-0 text-xs text-muted-foreground">Server update pending</span>
-                          )}
+                          {(email.read_sync_pending || email.star_sync_pending) && <span className="shrink-0 text-xs text-muted-foreground">
+                            {email.read_sync_pending && email.star_sync_pending ? 'Read and star changes awaiting provider' : email.read_sync_pending ? 'Read change awaiting provider' : 'Star change awaiting provider'}
+                          </span>}
+                          {(flagRequests.has(`read:${email.id}`) || flagRequests.has(`star:${email.id}`)) && <span className="shrink-0 text-xs text-muted-foreground">Saving change…</span>}
                         </div>
                         <span className="text-xs text-muted-foreground shrink-0">
                           {format(new Date(email.received_at), 'MMM d, yyyy')}
@@ -2527,9 +2496,9 @@ const MailPage = () => {
             className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
             onClick={() => {
               if (!contextMenuEmail.email.is_read) {
-                markAsRead.mutate(contextMenuEmail.email.id);
+                requestFlag(contextMenuEmail.email, 'read', true);
               } else {
-                bulkMarkRead.mutate({ emailIds: [contextMenuEmail.email.id], is_read: false });
+                requestFlag(contextMenuEmail.email, 'read', false);
               }
               setContextMenuEmail(null);
             }}
@@ -2540,7 +2509,7 @@ const MailPage = () => {
           <button
             className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
             onClick={() => {
-              toggleStar.mutate({ id: contextMenuEmail.email.id, is_starred: !contextMenuEmail.email.is_starred });
+              requestFlag(contextMenuEmail.email, 'star', !contextMenuEmail.email.is_starred);
               setContextMenuEmail(null);
             }}
           >
@@ -2695,14 +2664,15 @@ const MailPage = () => {
                 </div>
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-2 ml-auto">
-                {(selectedEmail.read_sync_pending || selectedEmail.star_sync_pending) && (
-                  <span className="text-xs text-muted-foreground">Server update pending</span>
-                )}
+                {(selectedEmail.read_sync_pending || selectedEmail.star_sync_pending) && <span className="text-xs text-muted-foreground">
+                  {selectedEmail.read_sync_pending && selectedEmail.star_sync_pending ? 'Read and star changes awaiting provider' : selectedEmail.read_sync_pending ? 'Read change awaiting provider' : 'Star change awaiting provider'}
+                </span>}
+                {(flagRequests.has(`read:${selectedEmail.id}`) || flagRequests.has(`star:${selectedEmail.id}`)) && <span className="text-xs text-muted-foreground">Saving change…</span>}
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setEmailReadStatus.mutate({ id: selectedEmail.id, is_read: !selectedEmail.is_read })}
-                  disabled={setEmailReadStatus.isPending}
+                  onClick={() => requestFlag(selectedEmail, 'read', !selectedEmail.is_read)}
+                  disabled={flagRequests.has(`read:${selectedEmail.id}`)}
                 >
                   {selectedEmail.is_read ? (
                     <>
@@ -2720,7 +2690,8 @@ const MailPage = () => {
                   variant="ghost"
                   size="icon"
                   aria-label={selectedEmail.is_starred ? 'Unstar message' : 'Star message'}
-                  onClick={() => toggleStar.mutate({ id: selectedEmail.id, is_starred: !selectedEmail.is_starred })}
+                  onClick={() => requestFlag(selectedEmail, 'star', !selectedEmail.is_starred)}
+                  disabled={flagRequests.has(`star:${selectedEmail.id}`)}
                 >
                   <Star className={`h-5 w-5 ${selectedEmail.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />
                 </Button>

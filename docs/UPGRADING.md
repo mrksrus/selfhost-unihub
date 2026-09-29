@@ -3,8 +3,24 @@
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 For a new installation, use [Installation](INSTALLATION.md). This page includes
-version-specific history; the current release is 0.10.10. Preserve existing data
+version-specific history; the current release is 0.10.11. Preserve existing data
 and keys when upgrading.
+
+## 0.10.11 mail flag and responsiveness fixes
+
+Fixes incorrect read/starred values in mail lists and details caused by MySQL's
+string-valued computed flags. Single-message actions keep list and reader state
+consistent, prevent duplicate clicks, and roll back the affected flag on failure.
+Bulk flag failures are reported without presenting a rejected batch as applied.
+
+An account already syncing now rejects a competing mutation immediately instead
+of leaving the request waiting indefinitely: nothing is changed and the action
+can be retried. IMAP commands have bounded waits, and cancelling a sync closes
+its pending transport before the account lock is released.
+
+No new database migration, volume, secret or Docker configuration is required
+relative to 0.10.10. Keep existing data and keys; refresh the browser/PWA after
+updating. See the [release notes](RELEASE_0.10.11.md) for scope and validation.
 
 ## 0.10.10 pending mail state and retry fix
 
@@ -131,7 +147,7 @@ mail-host trust configuration.
 ## Replace and verify
 
 For a running Compose deployment, set the app image to the desired version,
-for example `ghcr.io/mrksrus/selfhost-unihub:0.10.10`, then run from the existing
+for example `ghcr.io/mrksrus/selfhost-unihub:0.10.11`, then run from the existing
 deployment directory:
 
 ```bash

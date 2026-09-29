@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MailSyncStatus } from '@/components/mail/MailSyncStatus';
 import { api } from '@/lib/api';
@@ -69,5 +69,31 @@ describe('mail server change feedback', () => {
     setup([]);
     expect(api.get).not.toHaveBeenCalled();
     expect(screen.queryByRole('region', { name: 'Server change status' })).not.toBeInTheDocument();
+  });
+
+  it.each(['read', 'star', 'move'] as const)('refreshes %s outcomes once without recursively polling or fetching unrelated folders', async action => {
+    const { client, onSettled } = setup([operation('slow', 'pending', action)]);
+    const fetchList = vi.fn().mockResolvedValue({ emails: [] });
+    const fetchFolders = vi.fn().mockResolvedValue([]);
+    function RelatedMailViews() {
+      useQuery({ queryKey: ['emails', 'test'], queryFn: fetchList });
+      useQuery({ queryKey: mailQueryKeys.folders, queryFn: fetchFolders });
+      return null;
+    }
+    render(<QueryClientProvider client={client}><RelatedMailViews /></QueryClientProvider>);
+    await screen.findByText(/waiting for provider confirmation/);
+    await waitFor(() => expect(fetchFolders).toHaveBeenCalledTimes(1));
+    expect(fetchList).toHaveBeenCalledTimes(1);
+    expect(api.get).toHaveBeenCalledTimes(1);
+    vi.mocked(api.get).mockResolvedValue({ data: { operations: [operation('slow', 'done', action)] } });
+    await act(async () => { await client.invalidateQueries({ queryKey: mailQueryKeys.writebacks }); });
+    await waitFor(() => expect(onSettled).toHaveBeenCalledExactlyOnceWith(['email-slow']));
+    await waitFor(() => expect(fetchList).toHaveBeenCalledTimes(2));
+    expect(fetchFolders).toHaveBeenCalledTimes(action === 'move' ? 2 : 1);
+    expect(api.get).toHaveBeenCalledTimes(2);
+    await act(async () => { await client.invalidateQueries({ queryKey: mailQueryKeys.writebacks }); });
+    expect(api.get).toHaveBeenCalledTimes(3);
+    expect(fetchList).toHaveBeenCalledTimes(2);
+    expect(onSettled).toHaveBeenCalledTimes(1);
   });
 });

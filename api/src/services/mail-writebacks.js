@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const { db } = require('../state');
 const { withMailAccountLock } = require('./mail-account-lock');
+const { guardImapConnection } = require('./mail-imap-guard');
 const { isSectionRestoreActive } = require('./restore-locks');
 const { isModuleEnabled, isModuleBackgroundEnabled } = require('./module-settings');
 const active = new Map();
@@ -61,7 +62,7 @@ async function queueChanges(connection, userId, emails, changes) {
 }
 async function withAccountLocks(ids, callback) {
   const sorted = [...new Set(ids.filter(Boolean))].sort();
-  const next = i => i === sorted.length ? callback() : withMailAccountLock(sorted[i], () => next(i + 1));
+  const next = i => i === sorted.length ? callback() : withMailAccountLock(sorted[i], () => next(i + 1), { wait: false });
   return next(0);
 }
 async function mutateMessages(userId, ids, changes, validate = async () => {}) {
@@ -204,7 +205,7 @@ function startWritebacks(accountId) {
       const config = await buildImapConnectionConfig(account, { keepalive: false });
       if (!config) throw new Error('Missing credentials');
       config.imap.connTimeout = 15000; config.imap.authTimeout = 15000; config.imap.socketTimeout = 30000;
-      connection = await require('imap-simple').connect(config);
+      connection = guardImapConnection(await require('imap-simple').connect(config));
       connection.on('error', () => {});
       ({ needsSync } = await processPending(account, connection));
     } catch {
@@ -230,7 +231,7 @@ async function retryWriteback(userId, id) {
     const [result] = await db.execute(`UPDATE mail_writebacks SET status = 'pending', attempts = 0, error = NULL, available_at = UTC_TIMESTAMP()
       WHERE id = ? AND user_id = ? AND status = 'failed' AND NOT (action = 'move' AND dispatched = TRUE)`, [id, userId]);
     if (!result.affectedRows) throw fail('This change cannot be retried; refresh mail and check its server state.');
-  });
+  }, { wait: false });
   startWritebacks(op.mail_account_id);
   return { message: 'Retry queued' };
 }

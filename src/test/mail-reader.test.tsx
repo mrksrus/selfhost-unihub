@@ -30,7 +30,7 @@ describe('mail reader requests', () => {
     await act(async () => { b.resolve({ data: { email: email('b') } }); await second; });
     await act(async () => { a.resolve({ data: { email: email('a') } }); await first; });
     expect(result.current.selectedEmail?.id).toBe('b');
-    expect(callbacks.onMarkRead).toHaveBeenCalledExactlyOnceWith('b');
+    expect(callbacks.onMarkRead).toHaveBeenCalledExactlyOnceWith(email('b'));
     expect(callbacks.onError).not.toHaveBeenCalled();
   });
 
@@ -56,6 +56,22 @@ describe('mail reader requests', () => {
     await act(async () => { await result.current.loadEmail('offline', callbacks); });
     expect(result.current.selectedEmail).toMatchObject({ id: 'offline', is_read: false });
     expect(callbacks.onMarkRead).not.toHaveBeenCalled();
+  });
+
+  it('hides the previous message and its actions while a different selection is loading', async () => {
+    const next = deferred<{ data: { email: Email } }>();
+    vi.spyOn(api, 'get').mockResolvedValueOnce({ data: { email: email('a') } }).mockReturnValueOnce(next.promise);
+    const { result } = renderHook(() => useMailReader());
+    const callbacks = actions();
+    await act(async () => { await result.current.loadEmail('a', callbacks); });
+    expect(result.current.selectedEmail?.id).toBe('a');
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.loadEmail('b', callbacks); });
+    expect(result.current.selectedEmail).toBeNull();
+    expect(result.current.isReaderLoading).toBe(true);
+    await act(async () => { next.resolve({ data: { email: email('b') } }); await pending; });
+    expect(result.current.selectedEmail?.id).toBe('b');
+    expect(result.current.isReaderLoading).toBe(false);
   });
 
 });

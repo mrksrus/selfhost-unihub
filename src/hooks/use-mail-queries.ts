@@ -1,6 +1,6 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { mailQueryKeys, fetchMailList, type MailAccount, type MailFolder, type MailUnreadCountsResponse, type MailListFilters } from '@/lib/mail-api';
+import { captureMailFlagReconciler, mailQueryKeys, fetchMailList, type MailAccount, type MailFolder, type MailUnreadCountsResponse, type MailListFilters } from '@/lib/mail-api';
 
 export const useMailAccounts = () => useQuery({
   queryKey: mailQueryKeys.accounts,
@@ -32,12 +32,19 @@ export const useMailUnreadCounts = (account: string | null) => useQuery({
   enabled: !!account,
 });
 
-export const useMailList = (filters: MailListFilters) => useQuery({
-  queryKey: mailQueryKeys.list(filters),
-  queryFn: ({ signal }) => fetchMailList(filters, signal),
-  enabled: !!filters.account,
-  staleTime: 60000,
-  // Fetch the bounded list directly; row count alone misses deletes/read/star changes.
-  refetchInterval: 60000,
-  refetchIntervalInBackground: false,
-});
+export const useMailList = (filters: MailListFilters) => {
+  const client = useQueryClient();
+  return useQuery({
+    queryKey: mailQueryKeys.list(filters),
+    queryFn: async ({ signal }) => {
+      const reconcile = captureMailFlagReconciler(client);
+      const result = await fetchMailList(filters, signal);
+      return { ...result, emails: result.emails.map(reconcile) };
+    },
+    enabled: !!filters.account,
+    staleTime: 60000,
+    // Fetch the bounded list directly; row count alone misses deletes/read/star changes.
+    refetchInterval: 60000,
+    refetchIntervalInBackground: false,
+  });
+};

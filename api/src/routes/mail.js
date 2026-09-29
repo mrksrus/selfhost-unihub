@@ -216,8 +216,8 @@ async function loadDraftEmail(userId, draftId) {
   return {
     ...draft,
     to_addresses: typeof draft.to_addresses === 'string' ? JSON.parse(draft.to_addresses || '[]') : draft.to_addresses,
-    is_read: !!draft.is_read,
-    is_starred: !!draft.is_starred,
+    is_read: toBooleanFlag(draft.is_read),
+    is_starred: toBooleanFlag(draft.is_starred),
     is_draft: !!draft.is_draft,
     has_attachments: !!draft.has_attachments,
     attachments: attachments || [],
@@ -1425,8 +1425,8 @@ module.exports = {
       const parsedEmails = emails.map(email => ({
         ...presentMailFiling(email),
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
-        is_read: !!email.is_read,
-        is_starred: !!email.is_starred,
+        is_read: toBooleanFlag(email.is_read),
+        is_starred: toBooleanFlag(email.is_starred),
         read_sync_pending: !!email.read_sync_pending,
         star_sync_pending: !!email.star_sync_pending,
         is_draft: !!email.is_draft,
@@ -1475,8 +1475,8 @@ module.exports = {
       const parsedEmail = {
         ...presentMailFiling(storedEmail),
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
-        is_read: !!effective_is_read,
-        is_starred: !!effective_is_starred,
+        is_read: toBooleanFlag(effective_is_read),
+        is_starred: toBooleanFlag(effective_is_starred),
         read_sync_pending: !!email.read_sync_pending,
         star_sync_pending: !!email.star_sync_pending,
         is_draft: !!email.is_draft,

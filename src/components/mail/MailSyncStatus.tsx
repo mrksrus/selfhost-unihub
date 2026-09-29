@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { invalidateMailQueries, mailQueryKeys, type MailWriteback } from '@/lib/mail-api';
+import { invalidateMailFlagViews, mailQueryKeys, type MailWriteback } from '@/lib/mail-api';
 import { isOfflineMode } from '@/lib/offline';
 import { Button } from '@/components/ui/button';
 
@@ -32,7 +32,10 @@ export function MailSyncStatus({ onSettled }: { onSettled?: (emailIds: string[])
       && !previous.current.some(old => old.id === operation.id && old.status === operation.status && old.error === operation.error));
     previous.current = current;
     if (settled.length || changedOutcomes.length) {
-      void invalidateMailQueries(client);
+      void invalidateMailFlagViews(client);
+      if ([...settled, ...changedOutcomes].some(operation => operation.action === 'move')) {
+        void client.invalidateQueries({ queryKey: mailQueryKeys.folders });
+      }
       onSettled?.([...new Set([...settled, ...changedOutcomes].map(operation => operation.email_id))]);
     }
   }, [status.data, client, onSettled]);
@@ -42,7 +45,7 @@ export function MailSyncStatus({ onSettled }: { onSettled?: (emailIds: string[])
       if (response.error) throw new Error('Retry could not be queued. Check your connection and try again.');
     },
     retry: false,
-    onSettled: () => { void invalidateMailQueries(client); },
+    onSuccess: () => { void client.invalidateQueries({ queryKey: mailQueryKeys.writebacks }); },
   });
   const operations = status.data ?? [];
   const pendingCount = operations.filter(operation => operation.status === 'pending').length;
