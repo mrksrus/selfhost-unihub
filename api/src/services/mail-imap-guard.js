@@ -1,9 +1,11 @@
 // Bound individual network waits, not the whole import. imap-simple does not
 // reject every outstanding command when its socket closes. Merely racing the
 // whole worker would release its account lock while its continuation can write.
+const { installConditionalStore } = require('./mail-imap-conditional-store');
 const IMAP_COMMAND_TIMEOUT_MS = 120000;
 
 function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIMEOUT_MS } = {}) {
+  installConditionalStore(connection.imap);
   const pending = new Set();
   let stopped = null;
   const abortError = () => Object.assign(new Error('Mail sync cancelled; completed messages are retained.'), { code: 'MAIL_SYNC_CANCELLED' });

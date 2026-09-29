@@ -7,6 +7,7 @@ import MailPage from '@/pages/MailPage';
 import { api } from '@/lib/api';
 import { mailQueryKeys, type Email, type MailListResponse, type MailWriteback } from '@/lib/mail-api';
 import { setOfflineMode } from '@/lib/offline';
+import type { MailSyncJob } from '@/hooks/use-mail-sync-jobs';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn() } }));
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }));
@@ -30,6 +31,11 @@ let stored: Email[];
 let operations: MailWriteback[];
 let failLists: boolean;
 let nextDetail: ReturnType<typeof deferred<{ data: { email: Email } }>> | undefined;
+let syncStatus: MailSyncJob[];
+let secondAccount: boolean;
+const job = (account_id: string, state: MailSyncJob['state'], phase: string | null = null): MailSyncJob => ({
+  account_id, state, phase, processed: 2, total: 10, started_at: '2026-09-29T12:00:00Z', updated_at: '2026-09-29T12:01:00Z', error: null,
+});
 const cacheKey = mailQueryKeys.list({ account: 'all', folder: 'inbox', page: 1, search: '', unreadOnly: false });
 const searchKey = mailQueryKeys.list({ account: 'all', folder: 'all', page: 1, search: 'Subject', unreadOnly: false });
 
@@ -57,17 +63,24 @@ beforeEach(() => {
   operations = [];
   failLists = false;
   nextDetail = undefined;
+  syncStatus = [];
+  secondAccount = false;
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } } });
   vi.mocked(api.get).mockImplementation(async (path: string) => {
-    if (path === '/mail/accounts') return { data: { accounts: [{ id: 'account-1', email_address: 'owner@example.test', display_name: 'Owner', provider: 'custom', is_active: true, last_synced_at: null }] } };
+    if (path === '/mail/accounts') return { data: { accounts: [
+      { id: 'account-1', email_address: 'owner@example.test', display_name: 'Owner', provider: 'custom', is_active: true, last_synced_at: null },
+      ...(secondAccount ? [{ id: 'account-2', email_address: 'second@example.test', display_name: 'Second', provider: 'custom', is_active: true, last_synced_at: null }] : []),
+    ] } };
     if (path === '/mail/folders') return { data: { folders: [{ id: 'inbox', slug: 'inbox', display_name: 'Inbox', is_system: true, position: 0, total_count: 2, unread_count: 0 }] } };
     if (path.startsWith('/mail/unread-counts')) return { data: { unreadByFolder: {}, unreadByFolderAccount: {} } };
     if (path.startsWith('/contacts')) return { data: { contacts: [] } };
     if (path === '/mail/writebacks') return { data: { operations: structuredClone(operations) } };
+    if (path === '/mail/sync/status') return { data: { accounts: structuredClone(syncStatus) } };
     if (path.startsWith('/mail/emails?')) {
       if (failLists) return { error: 'List refresh unavailable' };
       const params = new URLSearchParams(path.split('?')[1]);
-      const emails = stored.filter(email => (params.get('folder') !== 'starred' || email.is_starred) && (params.get('is_read') !== 'false' || !email.is_read));
+      const emails = stored.filter(email => (!params.get('account_id') || email.mail_account_id === params.get('account_id'))
+        && (params.get('folder') !== 'starred' || email.is_starred) && (params.get('is_read') !== 'false' || !email.is_read));
       return { data: { emails: structuredClone(emails), pagination: { total: emails.length, limit: 50, offset: 0, page: 1, totalPages: 1 } } };
     }
     if (path.startsWith('/mail/emails/')) {
@@ -85,6 +98,162 @@ beforeEach(() => {
 afterEach(() => { cleanup(); client.clear(); });
 
 describe('mail flag interactions with slow HTTP and provider writebacks', () => {
+  it('keeps reading, flagging, folders and another account usable during a slow sync acceptance', async () => {
+    secondAccount = true;
+    stored.push({ ...message('c'), mail_account_id: 'account-2' });
+    const slow = deferred<{ data: { success: boolean; started: boolean; alreadyRunning: boolean; account_id: string; message: string } }>();
+    vi.mocked(api.post).mockImplementation((path, body) => {
+      if (path === '/mail/sync' && (body as { account_id: string }).account_id === 'account-1') return slow.promise;
+      return Promise.resolve({ data: { success: true, started: true, alreadyRunning: false, account_id: 'account-2', message: 'Queued' } });
+    });
+    mount();
+    fireEvent.click(await screen.findByText('Subject a'));
+    await screen.findByText(bodyText('a'));
+    fireEvent.click(screen.getByRole('button', { name: /Owner owner@example\.test/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Request mail sync' }));
+    expect(screen.getByRole('button', { name: 'Request mail sync' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Star message' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/emails/a/star', { is_starred: true }));
+    fireEvent.click(screen.getByRole('button', { name: /Second second@example\.test/ }));
+    expect(screen.getByRole('button', { name: 'Request mail sync' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Request mail sync' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/sync', { account_id: 'account-2' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Inbox' }));
+    expect(await screen.findByText('Subject c')).toBeInTheDocument();
+    expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync finished' }));
+    await act(async () => { slow.resolve({ data: { success: true, started: true, alreadyRunning: false, account_id: 'account-1', message: 'Queued' } }); });
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync queued' })));
+    expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync finished' }));
+  });
+
+  it('distinguishes already running from completion and refreshes once on terminal success or failure', async () => {
+    syncStatus = [job('account-1', 'running', 'Scanning folders')];
+    vi.mocked(api.post).mockResolvedValue({ data: { success: true, started: false, alreadyRunning: true, account_id: 'account-1', message: 'Already running' } });
+    mount();
+    await screen.findByText(/Scanning folders/);
+    fireEvent.click(screen.getByRole('button', { name: /Owner owner@example\.test/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Request mail sync' }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync already in progress' })));
+    expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync finished' }));
+    syncStatus = [job('account-1', 'idle')];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['mail-sync-jobs'] }); });
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync finished' })));
+    const completions = toast.mock.calls.filter(([args]) => args.title === 'Mail sync finished');
+    await act(async () => { await client.invalidateQueries({ queryKey: ['mail-sync-jobs'] }); });
+    expect(toast.mock.calls.filter(([args]) => args.title === 'Mail sync finished')).toHaveLength(completions.length);
+    syncStatus = [job('account-1', 'running', 'Importing')];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['mail-sync-jobs'] }); });
+    await screen.findByText(/Importing/);
+    syncStatus = [{ ...job('account-1', 'error'), error: 'Provider authentication failed' }];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['mail-sync-jobs'] }); });
+    expect(await screen.findByText(/Provider authentication failed/)).toBeInTheDocument();
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync failed', variant: 'destructive' }));
+    expect(api.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('polls active sync progress and stops polling after a terminal status', async () => {
+    vi.useFakeTimers();
+    try {
+      syncStatus = [job('account-1', 'running', 'Scanning')];
+      mount();
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+      expect(screen.getByText(/Scanning/)).toBeInTheDocument();
+      const initialChecks = vi.mocked(api.get).mock.calls.filter(([path]) => path === '/mail/sync/status').length;
+      syncStatus = [job('account-1', 'idle')];
+      await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+      expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync finished' }));
+      const terminalChecks = vi.mocked(api.get).mock.calls.filter(([path]) => path === '/mail/sync/status').length;
+      expect(terminalChecks).toBeGreaterThan(initialChecks);
+      await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
+      expect(vi.mocked(api.get).mock.calls.filter(([path]) => path === '/mail/sync/status')).toHaveLength(terminalChecks);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows provider-pending bulk star in list and detail, then leaves a failed move unchanged', async () => {
+    vi.mocked(api.post).mockImplementation(async path => path === '/mail/emails/bulk-update'
+      ? { data: { sync_pending: true } } : { error: 'Account busy; move not accepted' });
+    mount();
+    fireEvent.click(await screen.findByText('Subject a'));
+    await screen.findByText(bodyText('a'));
+    fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
+    fireEvent.click(screen.getByRole('button', { name: 'Star' }));
+    await waitFor(() => expect(screen.getAllByText('Star change awaiting provider')).toHaveLength(2));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Star change requested for 1 email(s)' }));
+    expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Starred 1 email(s)' }));
+    fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Failed to delete emails', description: 'Account busy; move not accepted' })));
+    expect(screen.getByText(bodyText('a'))).toBeInTheDocument();
+    expect(row('a')).toBeInTheDocument();
+  });
+  it('deduplicates only the identical bulk HTTP request and leaves other actions available', async () => {
+    const slowRead = deferred<{ error: string }>();
+    vi.mocked(api.post).mockImplementation((path, body) => {
+      if (path === '/mail/emails/bulk-update' && 'is_read' in (body as object)) return slowRead.promise;
+      stored[0] = { ...stored[0], is_starred: true, star_sync_pending: true };
+      return Promise.resolve({ data: { sync_pending: true } });
+    });
+    mount();
+    await screen.findByText('Subject a');
+    fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
+    fireEvent.click(screen.getByRole('button', { name: 'Mark Unread' }));
+    expect(screen.getByRole('button', { name: 'Mark Unread' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Star' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Star' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledTimes(2));
+    expect(cached('a')?.is_read).toBe(true);
+    failLists = true;
+    await act(async () => { slowRead.resolve({ error: 'Read batch was not accepted' }); });
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Failed to mark emails as read', description: 'Read batch was not accepted' })));
+    expect(cached('a')).toMatchObject({ is_read: true, is_starred: true });
+  });
+
+  it('does not claim cancellation before the server confirms it', async () => {
+    syncStatus = [job('account-1', 'running', 'Importing')];
+    vi.mocked(api.post).mockResolvedValue({ error: 'Cancellation unavailable' });
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel sync for owner@example.test' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/sync/cancel', { account_id: 'account-1' }));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not cancel mail sync', variant: 'destructive' }));
+    expect(screen.getByText(/Syncing · Importing/)).toBeInTheDocument();
+    expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync cancelled' }));
+  });
+  it('reports cancellation only after the polled job reaches cancelled', async () => {
+    syncStatus = [job('account-1', 'queued', 'Waiting for provider')];
+    vi.mocked(api.post).mockResolvedValue({ data: { success: true } });
+    mount();
+    await screen.findByText(/Queued for sync · Waiting for provider/);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel sync for owner@example.test' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/sync/cancel', { account_id: 'account-1' }));
+    expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync cancelled' }));
+    syncStatus = [job('account-1', 'cancelled')];
+    await act(async () => { await client.invalidateQueries({ queryKey: ['mail-sync-jobs'] }); });
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync cancelled' })));
+    expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync finished' }));
+  });
+  it('does not let an older bulk acceptance erase a newer single-message flag edit', async () => {
+    stored[0].is_starred = true;
+    const slowBulk = deferred<{ data: { sync_pending: boolean } }>();
+    vi.mocked(api.post).mockReturnValue(slowBulk.promise);
+    vi.mocked(api.put).mockImplementation(async () => {
+      stored[0] = { ...stored[0], is_starred: false, star_sync_pending: true };
+      return { data: { sync_pending: true } };
+    });
+    mount();
+    fireEvent.click(await screen.findByText('Subject a'));
+    await screen.findByText(bodyText('a'));
+    fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
+    fireEvent.click(screen.getByRole('button', { name: 'Star' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/emails/bulk-update', { email_ids: ['a'], is_starred: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Unstar message' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Star message' })).toBeEnabled());
+    await act(async () => { slowBulk.resolve({ data: { sync_pending: true } }); });
+    expect(screen.getByRole('button', { name: 'Star message' })).toBeEnabled();
+    expect(cached('a')?.is_starred).toBe(false);
+  });
   it('keeps a rejected bulk read unchanged and reports a rejected bulk star', async () => {
     stored[0].is_read = false;
     const write = deferred<{ error: string }>();

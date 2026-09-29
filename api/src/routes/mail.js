@@ -31,6 +31,8 @@ const {
   validateMailHostPolicy,
   testImapConnection,
   syncMailAccount,
+  scheduleMailAccountSync,
+  getMailSyncState,
   cancelMailAccountSync,
   isAnyMailAccountSyncRunning,
   getRunningMailSyncAccountIds,
@@ -57,11 +59,8 @@ const EFFECTIVE_READ_SQL = effectiveFlagSql('read', 'is_read');
 const EFFECTIVE_STAR_SQL = effectiveFlagSql('star', 'is_starred');
 
 function startMailSyncInBackground(accountId, label = accountId) {
-  if (isAnyMailAccountSyncRunning()) {
-    return false;
-  }
-
-  syncMailAccount(accountId)
+  const job = scheduleMailAccountSync(accountId);
+  job.promise
     .then((result) => {
       if (result?.success === false) {
         console.error(`[SYNC] Background sync failed for ${label}:`, result.error || 'Unknown error');
@@ -70,7 +69,7 @@ function startMailSyncInBackground(accountId, label = accountId) {
     .catch((error) => {
       console.error(`[SYNC] Background sync failed for ${label}:`, error.message);
     });
-  return true;
+  return job.started;
 }
 
 function isMailSyncFresh(lastSyncedAt, minAgeMs = BACKGROUND_MAIL_SYNC_MIN_AGE_MS) {
@@ -952,7 +951,7 @@ module.exports = {
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
       const requestedMode = mailAccountModeChange(accounts[0], body);
-      if (requestedMode.changed) cancelMailAccountSync(id);
+      if (requestedMode.changed || body.encrypted_password || body.imap_host || body.imap_port || body.username !== undefined) cancelMailAccountSync(id);
       return await withMailAccountLock(id, async () => {
       const [fresh] = await db.execute('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
       if (!fresh.length) return { error: 'Account not found', status: 404 };
@@ -1115,6 +1114,8 @@ module.exports = {
     
     try {
       const id = extractMailRouteId(req);
+      const [owned] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      if (!owned.length) return { error: 'Account not found', status: 404 };
       cancelMailAccountSync(id);
       return await withMailAccountLock(id, async () => {
       const connection = await db.getConnection();
@@ -1774,11 +1775,8 @@ module.exports = {
         const didStart = startMailSyncInBackground(account.id, account.email_address || account.id);
         if (didStart) {
           started.push(account.id);
-          break;
         } else {
-          const runningAccountIds = getRunningMailSyncAccountIds();
-          alreadyRunning.push(...(runningAccountIds.length > 0 ? runningAccountIds : [account.id]));
-          break;
+          alreadyRunning.push(account.id);
         }
       }
 
@@ -1789,6 +1787,19 @@ module.exports = {
     }
   },
   
+  'GET /api/mail/sync/status': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const accountId = new URL(req.url, 'http://localhost').searchParams.get('account_id');
+    const [accounts] = await db.execute(`SELECT id, sync_status FROM mail_accounts WHERE user_id = ?
+      ${accountId ? 'AND id = ?' : ''} ORDER BY created_at`, accountId ? [userId, accountId] : [userId]);
+    if (accountId && !accounts.length) return { error: 'Account not found', status: 404 };
+    return { accounts: accounts.map(account => getMailSyncState(account.id) || {
+      account_id: account.id,
+      state: account.sync_status === 'error' ? 'error' : account.sync_status === 'cancelled' ? 'cancelled' : 'idle',
+      phase: null, processed: 0, total: null, started_at: null, updated_at: null,
+      error: account.sync_status === 'error' ? 'The last sync failed; retry to see a detailed error.' : null,
+    }) };
+  },
   'POST /api/mail/sync': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
@@ -1796,55 +1807,46 @@ module.exports = {
       const { account_id } = body;
       if (!account_id) return { error: 'Account ID required', status: 400 };
       
-      // Verify account belongs to user
+      // Verify account belongs to user before scheduling any provider work.
       const [accounts] = await db.execute(
-        'SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?',
+        'SELECT id, is_active FROM mail_accounts WHERE id = ? AND user_id = ?',
         [account_id, userId]
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+      if (!accounts[0].is_active) return { error: 'Mail account is inactive', status: 409 };
 
-      if (isAnyMailAccountSyncRunning()) {
-        return {
-          success: true,
-          alreadyRunning: true,
-          newEmails: 0,
-          totalFound: 0,
-          message: 'Sync already running; not starting another sync.',
-        };
-      }
-      
-      // Sync and wait for result
-      console.log(`[SYNC] Manual sync requested for account ${account_id}`);
-      // #region agent log
-      debugLog('server.js:1391', 'POST /mail/sync START', { account_id, userId }, 'H1,H2,H3,H4');
-      // #endregion
-      const result = await syncMailAccount(account_id);
-      // #region agent log
-      debugLog('server.js:1392', 'POST /mail/sync RESULT', { success: result.success, error: result.error, newEmails: result.newEmails }, 'H1,H2,H3,H4');
-      // #endregion
-      
-      if (!result.success) {
-        return { 
-          error: result.error, 
-          details: result.details,
-          status: 400 
-        };
-      }
-      
-      return { 
-        success: true,
-        newEmails: result.newEmails,
-        totalFound: result.totalFound,
-        remoteMissing: result.remoteMissing,
-        ambiguous: result.ambiguous,
-        message: result.message
-      };
+      const job = scheduleMailAccountSync(account_id);
+      job.promise.then(result => {
+        if (result?.success === false) console.error(`[SYNC] Account ${account_id} failed:`, result.error);
+      });
+      return { success: true, started: job.started, alreadyRunning: job.alreadyRunning,
+        account_id, message: job.started ? 'Sync queued; check status for progress.' : 'This account is already queued or syncing.',
+        status: job.started ? 202 : 200 };
     } catch (error) {
       console.error('[SYNC] Sync error:', error);
       return { error: error.message || 'Failed to sync mail', status: 500 };
     }
   },
   
+  'POST /api/mail/sync/cancel': async (_req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const accountId = body?.account_id;
+    if (typeof accountId !== 'string' || !accountId.trim()) return { error: 'Account ID required', status: 400 };
+    try {
+      const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+      if (!accounts.length) return { error: 'Account not found', status: 404 };
+      const requested = cancelMailAccountSync(accountId);
+      // A running IMAP command stops cooperatively. The status endpoint, not
+      // this acknowledgement, establishes when its cleanup has completed.
+      return { success: true, account_id: accountId, cancellationRequested: requested,
+        message: requested ? 'Cancellation requested; check sync status.' : 'No active sync for this account.',
+        status: requested ? 202 : 200 };
+    } catch (error) {
+      console.error('[SYNC] Cancellation request failed:', error.message);
+      return { error: 'Could not request mail sync cancellation', status: 500 };
+    }
+  },
+
   'POST /api/mail/send': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     

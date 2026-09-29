@@ -47,7 +47,7 @@ For a **new installation**, first collect:
 It gives the exact field names, where to enter them, examples, first-login checks
 and fixes for common startup errors. Do not put passwords into the Dockerfile.
 
-Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.11`.
+Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.12`.
 The `latest` tag follows successful main-branch and release builds; use a version
 tag when you want explicit control of upgrades. The supplied
 [Compose file](docker-compose.yml) currently uses `latest`.

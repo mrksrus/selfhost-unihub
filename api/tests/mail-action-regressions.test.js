@@ -28,43 +28,44 @@ for (const [read, star] of [[0, 0], [0, 1], [1, 0], [1, 1], ['0', '0'], ['0', '1
   });
 }
 
-test('busy HTTP actions and retry reject without entering a transaction or later applying', { timeout: 2000 }, async t => {
-  let release, transactions = 0, calls = 0;
+test('HTTP flag acceptance commits while a provider lock is held, without waiting for IMAP', { timeout: 2000 }, async t => {
+  let release, transactions = 0, committed = 0;
   const blocker = withMailAccountLock('busy', () => new Promise(resolve => { release = resolve; }));
-  await tick();
-  t.after(() => release());
-  installDb(t, { execute: async (sql, args) => {
-    calls++;
-    assert(args.includes('owner'));
-    if (sql.includes('FROM mail_writebacks')) return [[{ mail_account_id: 'busy' }]];
-    return [[{ mail_account_id: 'busy' }]];
-  }, getConnection: async () => { transactions++; throw new Error('Must not start a transaction'); } });
-  for (const [route, url, body] of [
-    ['PUT /api/mail/emails/:id/read', '/api/mail/emails/e/read', { is_read: false }],
-    ['PUT /api/mail/emails/:id/star', '/api/mail/emails/e/star', { is_starred: true }],
-    ['POST /api/mail/emails/bulk-update', '/api/mail/emails/bulk-update', { email_ids: ['e'], is_read: false, is_starred: false }],
-    ['POST /api/mail/emails/bulk-delete', '/api/mail/emails/bulk-delete', { email_ids: ['e'] }],
-  ]) {
-    // Finishes while the simulated sync is still blocked, not after release.
-    const result = await routes[route](request(url), 'owner', body);
-    assert.equal(result.status, 409);
-    assert.match(result.error, /busy.*Nothing was changed.*retry/);
-  }
-  await assert.rejects(retryWriteback('owner', 'operation'), { status: 409, code: 'MAIL_ACCOUNT_BUSY' });
-  const before = calls;
-  release(); await blocker; await tick();
-  assert.equal(transactions, 0);
-  assert.equal(calls, before, 'Rejected requests must not leave deferred callbacks');
+  await tick(); t.after(() => release());
+  installDb(t, { execute: async sql => {
+    if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
+    assert.fail(`Unexpected query ${sql}`);
+  }, getConnection: async () => {
+    transactions++;
+    return { beginTransaction: async () => {}, commit: async () => { committed++; }, rollback: async () => {}, release: () => {},
+      execute: async (sql, args) => {
+        if (sql.includes('FROM emails e')) return [[{ id: 'e', user_id: 'owner', mail_account_id: 'busy', sync_mode: 'download' }]];
+        if (sql.includes('UPDATE emails')) return [{ affectedRows: 1 }];
+        assert.fail(`Unexpected query ${sql}`);
+      } };
+  } });
+  const result = await routes['PUT /api/mail/emails/:id/star'](request('/api/mail/emails/e/star'), 'owner', { is_starred: true });
+  assert.equal(result.sync_pending, false);
+  assert.equal(transactions, 1);
+  assert.equal(committed, 1);
+  release(); await blocker;
 });
 
-test('multi-account busy rejection releases earlier locks and applies none of the batch', { timeout: 2000 }, async t => {
-  let release;
+test('bulk selection remains atomic across accounts when one id is unavailable', { timeout: 2000 }, async t => {
+  let release, rolledBack = false, writes = 0;
   const blocker = withMailAccountLock('b', () => new Promise(resolve => { release = resolve; }));
   await tick(); t.after(() => release());
-  installDb(t, { execute: async () => [[{ mail_account_id: 'b' }, { mail_account_id: 'a' }]],
-    getConnection: async () => assert.fail('Batch must be all-or-nothing') });
-  await assert.rejects(mutateMessages('owner', ['one', 'two'], { read: 0 }), { code: 'MAIL_ACCOUNT_BUSY' });
-  assert.equal(await withMailAccountLock('a', async () => 'free', { wait: false }), 'free');
+  installDb(t, { execute: async sql => {
+    if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
+    assert.fail(`Unexpected query ${sql}`);
+  }, getConnection: async () => ({ beginTransaction: async () => {}, commit: async () => {}, rollback: async () => { rolledBack = true; }, release: () => {},
+    execute: async sql => {
+      if (sql.includes('FROM emails e')) return [[{ id: 'one', mail_account_id: 'a', sync_mode: 'download' }]];
+      writes++; return [{ affectedRows: 1 }];
+    } }) });
+  await assert.rejects(mutateMessages('owner', ['one', 'two'], { read: 0 }), { status: 404 });
+  assert.equal(rolledBack, true);
+  assert.equal(writes, 0);
   release(); await blocker;
 });
 

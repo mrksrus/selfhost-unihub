@@ -171,6 +171,9 @@ export function recordMailFlagEdit(client: QueryClient, id: string, kind: MailFl
   state.edits.set(`${kind}:${id}`, { revision: ++state.revision, pending, patch });
   showRequestedFlagInMailLists(client, [id], patch);
 }
+export function mailFlagRevision(client: QueryClient, id: string, kind: MailFlagKind) {
+  return editsFor(client).edits.get(`${kind}:${id}`)?.revision ?? 0;
+}
 
 export function showRequestedFlagInMailLists(client: QueryClient, ids: string[], patch: MailFlagPatch) {
   const selectedIds = new Set(ids);

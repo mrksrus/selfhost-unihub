@@ -13,7 +13,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 for (const failure of ['cancel', 'socket', 'deadline']) test(`stalled sync LIST: ${failure} tears down transport and releases worker only after state cleanup`, { timeout: 2000 }, async t => {
   const old = getDb(); t.after(() => setDb(old));
-  const account = { id: `sync-${failure}`, user_id: 'owner', sync_mode: 'sync', email_address: 'mail@example.test',
+  const account = { id: `sync-${failure}`, user_id: 'owner', sync_mode: 'sync', is_active: 1, email_address: 'mail@example.test',
     imap_host: 'imap.example.test', encrypted_password: encrypt('synthetic-test-password') };
   const writes = []; let destroyed = 0, finishList, inList = false;
   const connection = new EventEmitter();
@@ -36,8 +36,7 @@ for (const failure of ['cancel', 'socket', 'deadline']) test(`stalled sync LIST:
   } });
   const worker = mail.syncMailAccount(account.id);
   await tick(); assert.equal(inList, true);
-  const busy = await routes['PUT /api/mail/emails/:id/star']({ url: '/api/mail/emails/e/star' }, 'owner', { is_starred: false });
-  assert.equal(busy.status, 409);
+  assert.equal(mail.getMailSyncState(account.id).state, 'running');
   if (failure === 'cancel') assert.equal(mail.cancelMailAccountSync(account.id), true);
   else if (failure === 'socket') connection.emit('error', new Error('socket timeout'));
   else t.mock.timers.tick(120000);

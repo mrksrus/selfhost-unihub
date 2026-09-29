@@ -1,4 +1,5 @@
 const { withMailAccountLock } = require('./mail-account-lock');
+const { createMailSyncScheduler } = require('./mail-sync-scheduler');
 const { guardImapConnection } = require('./mail-imap-guard');
 const { followMailServer, checkCancelled } = require('./mail-server-follow');
 const { reconcileAccountFolders } = require('./mail-folder-reconciliation');
@@ -39,16 +40,13 @@ const KNOWN_MAIL_HOST_SUFFIXES = [
 const DEFAULT_MAIL_SYNC_FETCH_LIMIT = 'all';
 const MAIL_SYNC_FETCH_LIMITS = new Set(['all']);
 const LEGACY_MAIL_SYNC_FETCH_LIMITS = new Set(['100', '500', '1000', '2000']);
-const activeMailAccountSyncs = new Map();
-const mailSyncControllers = new Map();
+let syncScheduler;
 const mailDeleteStopRequests = new Set();
 function cancelMailAccountSync(accountId) {
-  const controller = mailSyncControllers.get(normalizeMailAccountId(accountId));
   const key = normalizeMailAccountId(accountId);
   const deleting = activeMailServerDeleteAccounts.has(key);
   if (deleting) mailDeleteStopRequests.add(key);
-  if (controller) controller.abort();
-  return Boolean(controller) || deleting;
+  return syncScheduler.cancel(key) || deleting;
 }
 const activeMailServerDeleteAccounts = new Set();
 const MAIL_SERVER_DELETE_GRACE_MS = 10 * 60 * 1000;
@@ -144,15 +142,15 @@ function normalizeMailAccountId(accountId) {
 
 function isMailAccountSyncRunning(accountId) {
   const normalizedAccountId = normalizeMailAccountId(accountId);
-  return !!normalizedAccountId && activeMailAccountSyncs.has(normalizedAccountId);
+  return !!normalizedAccountId && syncScheduler.has(normalizedAccountId);
 }
 
 function isAnyMailAccountSyncRunning() {
-  return activeMailAccountSyncs.size > 0 || require('./mail-writebacks').isWritebackRunning();
+  return syncScheduler.ids().length > 0 || require('./mail-writebacks').isWritebackRunning();
 }
 
 function getRunningMailSyncAccountIds() {
-  return Array.from(activeMailAccountSyncs.keys());
+  return syncScheduler.ids();
 }
 
 function isMailServerDeleteRunning(accountId) {
@@ -1076,7 +1074,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
   if (!normalizedAccountId || activeMailServerDeleteAccounts.has(normalizedAccountId)) {
     return { accountId: normalizedAccountId, skipped: true, reason: 'already_running' };
   }
-  if (isAnyMailAccountSyncRunning()) {
+  if (isMailAccountSyncRunning(normalizedAccountId)) {
     return { accountId: normalizedAccountId, skipped: true, reason: 'mail_sync_running' };
   }
 
@@ -1217,15 +1215,11 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
 async function processMailServerDeletionForAccount(accountId, options = {}) {
   const key = normalizeMailAccountId(accountId);
   if (!key || activeMailServerDeleteAccounts.has(key)) return { accountId: key, skipped: true, reason: 'already_running' };
-  if (isAnyMailAccountSyncRunning()) return { accountId: key, skipped: true, reason: 'mail_sync_running' };
+  if (isMailAccountSyncRunning(key)) return { accountId: key, skipped: true, reason: 'mail_sync_running' };
   return withMailAccountLock(accountId, () => processMailServerDeletionForAccountUnlocked(accountId, options));
 }
 
 async function runMailServerDeletionPass({ accountId = null, limit = MAIL_SERVER_DELETE_BATCH_SIZE } = {}) {
-  if (isAnyMailAccountSyncRunning()) {
-    return { skipped: true, reason: 'mail_sync_running', accounts: [] };
-  }
-
   const params = [];
   let query = `
     SELECT id
@@ -1389,7 +1383,7 @@ async function testImapConnection(account) {
   }
 }
 
-async function syncMailAccountOnce(accountId, signal, background) {
+async function syncMailAccountOnce(accountId, signal, background, report = () => {}) {
   let connection = null;
   try {
     debugLog('server.js:50', 'syncMailAccount START', { accountId }, 'H1');
@@ -1400,6 +1394,7 @@ async function syncMailAccountOnce(accountId, signal, background) {
     
     const account = accounts[0];
     checkCancelled(signal);
+    if (!account.is_active) return { success: false, skipped: true, error: 'Mail account is inactive' };
     if (!await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) {
       return { success: false, skipped: true, error: 'Mail module is paused' };
     }
@@ -1424,6 +1419,7 @@ async function syncMailAccountOnce(accountId, signal, background) {
     });
     
     const specialUses = new Map();
+    report({ phase: 'listing folders' });
     const availableFolders = await listAvailableImapFolders(connection, specialUses, true);
     checkCancelled(signal);
     for (const planned of pickImapSyncFolders(availableFolders)) {
@@ -1442,20 +1438,38 @@ async function syncMailAccountOnce(accountId, signal, background) {
       if (writes.connectionFailed) throw new Error('Provider write interrupted; pending changes will be checked on reconnect');
       const folders = availableFolders.map(folderName => ({ folderName, dbFolderName: customFolderSlugs.get(folderName) }));
       if (folders.some(folder => !folder.dbFolderName)) throw new Error('A listed server folder has no verified local mapping');
-      const result = await followMailServer({ db, connection, account, folders, signal,
-        listFolders: () => listAvailableImapFolders(connection, new Map(), true),
-        getUidValidity: getCurrentBoxUidValidity, buildRaw: buildRawEmailFromImapParts,
-        importMessage: async (remote, fullEmail, existingEmail = null) => {
-          const parsed = await simpleParser(fullEmail);
-          const { fromAddress, fromName } = extractSenderFromParsedEmail(parsed);
-          return require('./mail-import').persistImportedMessage({ db, account, accountId,
-            folderName: remote.folderName, uid: remote.uid, uidValidity: remote.validity,
-            existingEmail, messageId: parsed.messageId || `${accountId}-${remote.folderName}-${remote.validity}-${remote.uid}`,
-            fullEmail, parsed, fromAddress, fromName, toAddresses: extractEmailAddresses(parsed.to),
-            folder: remote.dbFolderName, isRead: remote.flags.includes('\\Seen'),
-            archiveRaw: saveRawEmailSource, enqueueDeletion: async () => false,
-            suppressNotifications: !lastSyncedAt || account.sync_status === 'pending' });
-        } });
+      let result;
+      for (let scan = 0; scan < 5; scan++) {
+        try {
+          result = await followMailServer({ db, connection, account, folders, signal,
+            progress: report,
+            checkpoint: async () => {
+              checkCancelled(signal);
+              const pending = await require('./mail-writebacks').processPending(account, connection, { background });
+              if (pending.connectionFailed) throw new Error('Provider write interrupted; pending changes will be checked on reconnect');
+              checkCancelled(signal);
+              return pending.needsSync;
+            },
+            listFolders: () => listAvailableImapFolders(connection, new Map(), true),
+            getUidValidity: getCurrentBoxUidValidity, buildRaw: buildRawEmailFromImapParts,
+            importMessage: async (remote, fullEmail, existingEmail = null) => {
+              const parsed = await simpleParser(fullEmail);
+              const { fromAddress, fromName } = extractSenderFromParsedEmail(parsed);
+              return require('./mail-import').persistImportedMessage({ db, account, accountId,
+                folderName: remote.folderName, uid: remote.uid, uidValidity: remote.validity,
+                existingEmail, messageId: parsed.messageId || `${accountId}-${remote.folderName}-${remote.validity}-${remote.uid}`,
+                fullEmail, parsed, fromAddress, fromName, toAddresses: extractEmailAddresses(parsed.to),
+                folder: remote.dbFolderName, isRead: remote.flags.includes('\\Seen'),
+                archiveRaw: saveRawEmailSource, enqueueDeletion: async () => false,
+                suppressNotifications: !lastSyncedAt || account.sync_status === 'pending' });
+            },
+          });
+          break;
+        } catch (error) {
+          if (error.code !== 'MAIL_SYNC_RESTART' || scan === 4) throw error;
+          checkCancelled(signal);
+        }
+      }
       checkCancelled(signal);
       await db.execute("UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP(), sync_status = 'idle' WHERE id = ?", [accountId]);
       connection.end();
@@ -1468,6 +1482,7 @@ async function syncMailAccountOnce(accountId, signal, background) {
     const folderResults = [];
     for (const folder of foldersToSync) {
       checkCancelled(signal);
+      report({ phase: `importing ${folder.folderName}`, total: null });
       const folderResult = await syncMailFolder(
         connection,
         account,
@@ -1503,6 +1518,7 @@ async function syncMailAccountOnce(accountId, signal, background) {
     }, { newEmails: 0, totalFound: 0, processed: 0, failed: 0 });
     const failedFolder = folderResults.find(result => result.error || result.failed > 0);
     if (failedFolder) {
+      await db.execute("UPDATE mail_accounts SET sync_status = 'error' WHERE id = ?", [accountId]);
       return {
         success: false,
         error: failedFolder.error || 'Some messages could not be imported',
@@ -1569,35 +1585,25 @@ async function syncMailAccountOnce(accountId, signal, background) {
   }
 }
 
-async function syncMailAccount(accountId, { background = false } = {}) {
-  const normalizedAccountId = normalizeMailAccountId(accountId);
-  if (!normalizedAccountId) {
-    return { success: false, error: 'Account ID required' };
-  }
+syncScheduler = createMailSyncScheduler((id, signal, background, report) =>
+  withMailAccountLock(id, () => syncMailAccountOnce(id, signal, background, report)));
 
-  if (activeMailAccountSyncs.has(normalizedAccountId)) {
-    return {
-      success: true,
-      alreadyRunning: true,
-      skipped: true,
-      newEmails: 0,
-      totalFound: 0,
-      message: 'Sync already running for this account; not starting another sync.',
-    };
-  }
+function scheduleMailAccountSync(accountId, options = {}) {
+  const id = normalizeMailAccountId(accountId);
+  if (!id) throw new Error('Account ID required');
+  const job = syncScheduler.enqueue(id, options);
+  if (job.started) job.promise.then(() => require('./mail-writebacks').drainWritebacks());
+  return job;
+}
+function getMailSyncState(accountId) { return syncScheduler.state(normalizeMailAccountId(accountId)); }
 
-  const controller = new AbortController();
-  mailSyncControllers.set(normalizedAccountId, controller);
-  const syncPromise = withMailAccountLock(normalizedAccountId, () => syncMailAccountOnce(normalizedAccountId, controller.signal, background));
-  activeMailAccountSyncs.set(normalizedAccountId, syncPromise);
-  try {
-    return await syncPromise;
-  } finally {
-    if (activeMailAccountSyncs.get(normalizedAccountId) === syncPromise) {
-      activeMailAccountSyncs.delete(normalizedAccountId);
-      mailSyncControllers.delete(normalizedAccountId);
-    }
-  }
+async function syncMailAccount(accountId, options = {}) {
+  const id = normalizeMailAccountId(accountId);
+  if (!id) return { success: false, error: 'Account ID required' };
+  const job = scheduleMailAccountSync(id, options);
+  if (job.alreadyRunning) return { success: true, alreadyRunning: true, skipped: true,
+    message: 'Sync already queued or running for this account.' };
+  return job.promise;
 }
 
 async function sendEmail(accountId, { to, subject, body, isHtml = false, attachments = [] }) {
@@ -1803,5 +1809,7 @@ module.exports = {
   syncMailFolder,
   testImapConnection,
   syncMailAccount,
+  scheduleMailAccountSync,
+  getMailSyncState,
   sendEmail,
 };

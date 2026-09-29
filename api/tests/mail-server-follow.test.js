@@ -89,7 +89,7 @@ test('metadata-only recurring pass follows read/unread and flagged while retaini
   const result = await fake.run();
   assert.equal(result.remoteMissing, 1);
   assert.equal(fake.imports.length, 0);
-  assert.equal(fake.searches.length, 2);
+  assert.equal(fake.searches.length, 3, 'final metadata recheck protects flags after writeback checkpoints');
   assert.equal(fake.writes[0].args[3], 0);
   assert.equal(fake.writes[0].args[4], 0);
   assert.match(fake.writes[1].sql, /remote_missing = TRUE/);

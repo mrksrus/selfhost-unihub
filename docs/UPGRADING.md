@@ -3,8 +3,24 @@
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 For a new installation, use [Installation](INSTALLATION.md). This page includes
-version-specific history; the current release is 0.10.11. Preserve existing data
+version-specific history; the current release is 0.10.12. Preserve existing data
 and keys when upgrading.
+
+## 0.10.12 provider writes and independent mail jobs
+
+Corrects the actual conditional IMAP command format, adds bounded per-account
+sync jobs and independent writeback retries, and accepts message actions without
+waiting for a full provider scan. The UI reports queue/progress/failure honestly
+and keeps unrelated actions available. Verified new messages persist even when
+a later inventory change prevents safe location/missing-state reconciliation.
+
+No new schema, volumes, secrets, or Compose changes are required relative to
+0.10.11. Existing **pending** intents can resume; failed/conflicting operations
+and uncertain moves are not force-replayed. Do not clear queues as an upgrade
+step. Keep a consistent backup and refresh the browser/PWA after updating.
+
+See [release notes](RELEASE_0.10.12.md) for behavior and limits, and
+[live mail testing](LIVE_MAIL_TESTING.md) for provider-confirmed acceptance tests.
 
 ## 0.10.11 mail flag and responsiveness fixes
 

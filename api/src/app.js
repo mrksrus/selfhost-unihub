@@ -4,7 +4,8 @@ require('./imap-patch');
 const { PORT } = require('./config');
 const { db } = require('./state');
 const { initDatabase, ensurePerformanceIndexes } = require('./services/database');
-const { syncMailAccount, isAnyMailAccountSyncRunning, runMailServerDeletionPass } = require('./services/mail');
+const { scheduleMailAccountSync, runMailServerDeletionPass } = require('./services/mail');
+const { runDueWritebacks } = require('./services/mail-writebacks');
 const { cleanupExpiredRecordingUploads } = require('./services/recordings');
 const { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } = require('./services/backup-availability');
 const { resumePendingDataExportJobs } = require('./services/export-jobs');
@@ -55,12 +56,11 @@ async function start() {
     }, 5000);
   });
   
-  // Periodic mail sync every 10 minutes
-  setInterval(async () => {
-    if (periodicMailSyncRunning || isAnyMailAccountSyncRunning()) {
-      console.log('[SYNC] Skipping periodic mail sync because a sync is already running');
-      return;
-    }
+  // A process restart cannot resume an IMAP connection; rescan safely using
+  // completed local imports and keep provider writebacks in their own queue.
+  await db.execute("UPDATE mail_accounts SET sync_status = 'pending' WHERE sync_status = 'running'");
+  const schedulePeriodicMail = async () => {
+    if (periodicMailSyncRunning) return;
 
     periodicMailSyncRunning = true;
     try {
@@ -70,20 +70,26 @@ async function start() {
       console.log(`\n[${new Date().toISOString()}] Starting periodic mail sync for ${accounts.length} accounts...`);
       for (const account of accounts) {
         if (await isSectionRestoreActive(account.user_id, 'mail')) continue;
-        const result = await syncMailAccount(account.id, { background: true });
-        if (result?.success === false) {
-          console.error(`Failed to sync ${account.email_address}:`, result.error || 'Unknown error');
-        }
+        const job = scheduleMailAccountSync(account.id, { background: true });
+        if (job.started) job.promise.then(result => {
+          if (result?.success === false) console.error(`Failed to sync ${account.email_address}:`, result.error || 'Unknown error');
+        });
       }
     } catch (error) {
       console.error('Periodic sync error:', error);
     } finally {
       periodicMailSyncRunning = false;
     }
-  }, MAIL_SYNC_INTERVAL_MS);
+  };
+  // Let the API begin serving before starting the first bounded recovery pass.
+  setImmediate(() => schedulePeriodicMail().catch(error => console.error('[SYNC] Startup pass failed:', error.message)));
+  setInterval(schedulePeriodicMail, MAIL_SYNC_INTERVAL_MS);
+  const runWritebacks = () => runDueWritebacks().catch(error => console.error('[MAIL WRITEBACK] Due pass failed:', error.message));
+  setImmediate(runWritebacks);
+  setInterval(runWritebacks, 30 * 1000);
 
   setInterval(async () => {
-    if (periodicMailServerDeleteRunning || periodicMailSyncRunning || isAnyMailAccountSyncRunning()) {
+    if (periodicMailServerDeleteRunning) {
       return;
     }
 

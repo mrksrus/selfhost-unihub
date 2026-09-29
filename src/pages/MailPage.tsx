@@ -1,11 +1,13 @@
 import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
 import { MailSyncStatus } from '@/components/mail/MailSyncStatus';
+import { MailSyncJobs } from '@/components/mail/MailSyncJobs';
+import { useMailSyncJobs } from '@/hooks/use-mail-sync-jobs';
 import { useMailAccountSelection } from '@/hooks/use-mail-account-selection';
 import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
 import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { useMailReader } from '@/hooks/use-mail-reader';
 import { useMailFlags } from '@/hooks/use-mail-flags';
-import { invalidateMailQueries, captureMailFlagReconciler, showRequestedReadInMailLists, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
+import { invalidateMailQueries, captureMailFlagReconciler, mailFlagRevision, recordMailFlagEdit, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
 import { useMailAccounts, useMailFolders, useMailUnreadCounts, useMailList } from '@/hooks/use-mail-queries';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { contactsQueryOptions } from '@/lib/contacts-api';
@@ -176,10 +178,6 @@ interface AddMailAccountResponse {
   };
 }
 
-interface MailSyncResponse {
-  message?: string;
-  newEmails?: number;
-}
 
 interface ContactEmailSuggestion {
   key: string;
@@ -215,6 +213,7 @@ type FolderMode = string;
 const ALL_ACCOUNTS = 'all';
 const LEGACY_ACCOUNT = 'legacy';
 const ALL_MAIL: FolderMode = 'all';
+const bulkKey = (kind: string, payload: object) => `${kind}:${JSON.stringify(kind === 'delete' ? (payload as { emailIds: string[] }).emailIds : payload)}`;
 
 const initialAccountForm: AccountFormState = {
   email_address: '',
@@ -287,10 +286,12 @@ const MailPage = () => {
   });
   const detailRefreshRevision = React.useRef(0);
   useEffect(() => { ++detailRefreshRevision.current; }, [selectedEmailId]);
-  const showRequestedReadState = React.useCallback((ids: string[], isRead: boolean) => {
-    const selectedIds = new Set(ids);
-    showRequestedReadInMailLists(queryClient, ids, isRead);
-    setSelectedEmail(current => current && selectedIds.has(current.id) ? { ...current, is_read: isRead } : current);
+
+  const showAcceptedBulkFlag = React.useCallback((ids: string[], kind: 'read' | 'star', value: boolean, pending: boolean) => {
+    const chosen = new Set(ids);
+    const patch = kind === 'read' ? { is_read: value, read_sync_pending: pending } : { is_starred: value, star_sync_pending: pending };
+    ids.forEach(id => recordMailFlagEdit(queryClient, id, kind, patch, false));
+    setSelectedEmail(current => current && chosen.has(current.id) ? { ...current, ...patch } : current);
   }, [queryClient, setSelectedEmail]);
   const refreshSettledEmail = React.useCallback((emailIds: string[]) => {
     if (!selectedEmailId || !emailIds.includes(selectedEmailId)) return;
@@ -317,6 +318,19 @@ const MailPage = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
+  const bulkRequests = React.useRef(new Set<string>());
+  const [bulkPending, setBulkPending] = useState(new Set<string>());
+
+  const runBulk = React.useCallback(<T extends object,>(kind: string, payload: T, send: (value: T) => Promise<unknown>) => {
+    const key = bulkKey(kind, payload);
+    if (bulkRequests.current.has(key)) return;
+    bulkRequests.current.add(key);
+    setBulkPending(new Set(bulkRequests.current));
+    void send(payload).catch(() => { /* Mutation onError displays the API error. */ }).finally(() => {
+      bulkRequests.current.delete(key);
+      setBulkPending(new Set(bulkRequests.current));
+    });
+  }, []);
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const debouncedSearch = useDebouncedValue(searchQuery.trim());
@@ -377,6 +391,7 @@ const MailPage = () => {
   }, [composeForm.body, isComposeOpen, isReplying]);
 
   const { data: accounts = [], isLoading: accountsLoading } = useMailAccounts();
+  const { jobs: syncJobs, requestSync, syncingAccountIds, requestCancel, cancellingAccountIds } = useMailSyncJobs(accounts);
   const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
   const { data: mailFolders = [] } = useMailFolders();
 
@@ -703,7 +718,7 @@ const MailPage = () => {
                 return acc;
               }, {});
               Object.entries(byFolder).forEach(([folder, emailIds]) => {
-                bulkMove.mutate({ emailIds, folder });
+                runBulk('move', { emailIds, folder }, bulkMove.mutateAsync);
               });
             }}
           >
@@ -740,10 +755,12 @@ const MailPage = () => {
       if (response.error) throw new Error(response.error);
       return response.data;
     },
-    // A rejected busy-account batch must never appear applied. Publish its
-    // requested flags only once the API has accepted the all-or-nothing batch.
-    onSuccess: (data, variables) => {
-      showRequestedReadState(variables.emailIds, variables.is_read);
+    onMutate: ({ emailIds }) => Object.fromEntries(emailIds.map(id => [id, mailFlagRevision(queryClient, id, 'read')])),
+    // Do not publish an unaccepted batch. Reconcile in-flight list reads with
+    // the accepted local state, without touching concurrent star edits.
+    onSuccess: (data, variables, revision) => {
+      showAcceptedBulkFlag(variables.emailIds.filter(id => revision?.[id] === mailFlagRevision(queryClient, id, 'read')),
+        'read', variables.is_read, data?.sync_pending === true);
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({ 
@@ -753,8 +770,6 @@ const MailPage = () => {
       });
     },
     onError: (error: Error) => {
-      void invalidateMailQueries(queryClient);
-      if (selectedEmailId) refreshSettledEmail([selectedEmailId]);
       toast({ 
         title: 'Failed to mark emails as read', 
         description: error.message, 
@@ -765,12 +780,18 @@ const MailPage = () => {
 
   const bulkStar = useMutation({
     mutationFn: async ({ emailIds, is_starred }: { emailIds: string[]; is_starred: boolean }) => {
-      const response = await api.post('/mail/emails/bulk-update', { email_ids: emailIds, is_starred });
+      const response = await api.post<{ sync_pending?: boolean }>('/mail/emails/bulk-update', { email_ids: emailIds, is_starred });
       if (response.error) throw new Error(response.error);
+      return response.data;
     },
-    onSuccess: () => {
+    onMutate: ({ emailIds }) => Object.fromEntries(emailIds.map(id => [id, mailFlagRevision(queryClient, id, 'star')])),
+    onSuccess: (data, variables, revision) => {
+      showAcceptedBulkFlag(variables.emailIds.filter(id => revision?.[id] === mailFlagRevision(queryClient, id, 'star')),
+        'star', variables.is_starred, data?.sync_pending === true);
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
+      toast({ title: data?.sync_pending ? `Star change requested for ${variables.emailIds.length} email(s)` : `Starred ${variables.emailIds.length} email(s)`,
+        description: data?.sync_pending ? 'Mail shows your requested star while the provider confirms it.' : undefined });
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to star emails', description: error.message, variant: 'destructive' });
@@ -852,7 +873,7 @@ const MailPage = () => {
       // Delete selected emails
       if (e.key === 'Delete' && selectedEmails.size > 0) {
         e.preventDefault();
-        bulkDelete.mutate(createTrashMovePayload(Array.from(selectedEmails)));
+        runBulk('delete', createTrashMovePayload(Array.from(selectedEmails)), bulkDelete.mutateAsync);
       }
 
       // Select all (Ctrl+A or Cmd+A)
@@ -871,7 +892,7 @@ const MailPage = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedEmails, emails, bulkDelete, createTrashMovePayload]);
+  }, [selectedEmails, emails, bulkDelete, createTrashMovePayload, runBulk]);
 
   // Handle email selection
   const handleEmailSelect = (emailId: string, e: React.MouseEvent) => {
@@ -911,34 +932,7 @@ const MailPage = () => {
     }
   };
 
-  // Sync mail mutation
-  const syncMail = useMutation({
-    mutationFn: async (account_id: string) => {
-      const response = await api.post<MailSyncResponse>('/mail/sync', { account_id });
-      if (response.error) {
-        throw new Error(response.error);
-      }
-      return response.data ?? {};
-    },
-    onSuccess: (data) => {
-      void invalidateMailQueries(queryClient);
-      
-      const msg = data.message || `${data.newEmails || 0} new emails`;
-      toast({ 
-        title: '✓ Sync complete', 
-        description: msg
-      });
-    },
-    onError: (error: Error) => {
-      toast({ 
-        title: 'Sync failed', 
-        description: error.message,
-        variant: 'destructive',
-        duration: 8000,
-      });
-    },
-  });
-  
+
   // Send email mutation
   const sendEmailMutation = useMutation({
     mutationFn: async (data: {
@@ -2051,6 +2045,8 @@ const MailPage = () => {
           </div>
         )}
         <MailSyncStatus onSettled={refreshSettledEmail} />
+        <MailSyncJobs accounts={accounts} jobs={syncJobs.data ?? []} error={syncJobs.isError}
+          cancelling={cancellingAccountIds} onCancel={requestCancel} />
         {selectedAccount === LEGACY_ACCOUNT && (
           <div className="border-b border-border p-3 space-y-2 text-sm">
             <p>These messages retain their original folders. Some need a receiving account; others await a successful server check. Select messages to recover them. Their original mail source is preserved.</p>
@@ -2064,7 +2060,7 @@ const MailPage = () => {
                 <SelectContent>{mailFolders.filter(folder => folder.is_system || folder.mail_account_id === recoveryAccount || folder.connected_account_ids?.includes(recoveryAccount)).map(folder =>
                   <SelectItem key={folder.slug} value={folder.slug}>{folder.display_name}</SelectItem>)}</SelectContent>
               </Select>
-              <Button disabled={!recoveryAccount || bulkMove.isPending} onClick={() => bulkMove.mutate({ emailIds: Array.from(selectedEmails), folder: recoveryFolder, accountId: recoveryAccount })}>Recover selected mail</Button>
+              <Button disabled={!recoveryAccount} onClick={() => runBulk('move', { emailIds: Array.from(selectedEmails), folder: recoveryFolder, accountId: recoveryAccount }, bulkMove.mutateAsync)}>Recover selected mail</Button>
             </div>}
           </div>
         )}
@@ -2153,15 +2149,15 @@ const MailPage = () => {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="max-h-[70vh] overflow-y-auto">
-                  <DropdownMenuItem onClick={() => bulkMarkRead.mutate({ emailIds: Array.from(selectedEmails), is_read: true })}>
+                  <DropdownMenuItem onClick={() => runBulk('read', { emailIds: Array.from(selectedEmails), is_read: true }, bulkMarkRead.mutateAsync)}>
                     <CheckCircle2 className="h-4 w-4 mr-2" />
                     Mark read
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => bulkMarkRead.mutate({ emailIds: Array.from(selectedEmails), is_read: false })}>
+                  <DropdownMenuItem onClick={() => runBulk('read', { emailIds: Array.from(selectedEmails), is_read: false }, bulkMarkRead.mutateAsync)}>
                     <Mail className="h-4 w-4 mr-2" />
                     Mark unread
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => bulkStar.mutate({ emailIds: Array.from(selectedEmails), is_starred: true })}>
+                  <DropdownMenuItem onClick={() => runBulk('star', { emailIds: Array.from(selectedEmails), is_starred: true }, bulkStar.mutateAsync)}>
                     <Star className="h-4 w-4 mr-2" />
                     Star
                   </DropdownMenuItem>
@@ -2171,7 +2167,7 @@ const MailPage = () => {
                     .map((folder) => (
                       <DropdownMenuItem
                         key={folder.id}
-                        onClick={() => bulkMove.mutate({ emailIds: Array.from(selectedEmails), folder: folder.id })}
+                        onClick={() => runBulk('move', { emailIds: Array.from(selectedEmails), folder: folder.id }, bulkMove.mutateAsync)}
                       >
                         <folder.icon className="h-4 w-4 mr-2" />
                         Move to {folder.label}
@@ -2179,7 +2175,7 @@ const MailPage = () => {
                     ))}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
-                    onClick={() => bulkDelete.mutate(createTrashMovePayload(Array.from(selectedEmails)))}
+                    onClick={() => runBulk('delete', createTrashMovePayload(Array.from(selectedEmails)), bulkDelete.mutateAsync)}
                     className="text-destructive focus:text-destructive"
                   >
                     <Trash2 className="h-4 w-4 mr-2" />
@@ -2193,8 +2189,8 @@ const MailPage = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => bulkMarkRead.mutate({ emailIds: Array.from(selectedEmails), is_read: true })}
-                  disabled={bulkMarkRead.isPending}
+                  onClick={() => runBulk('read', { emailIds: Array.from(selectedEmails), is_read: true }, bulkMarkRead.mutateAsync)}
+                  disabled={bulkPending.has(bulkKey('read', { emailIds: Array.from(selectedEmails), is_read: true }))}
                 >
                   <CheckCircle2 className="h-4 w-4 mr-2" />
                   Mark Read
@@ -2202,8 +2198,8 @@ const MailPage = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => bulkMarkRead.mutate({ emailIds: Array.from(selectedEmails), is_read: false })}
-                  disabled={bulkMarkRead.isPending}
+                  onClick={() => runBulk('read', { emailIds: Array.from(selectedEmails), is_read: false }, bulkMarkRead.mutateAsync)}
+                  disabled={bulkPending.has(bulkKey('read', { emailIds: Array.from(selectedEmails), is_read: false }))}
                 >
                   <Mail className="h-4 w-4 mr-2" />
                   Mark Unread
@@ -2211,8 +2207,8 @@ const MailPage = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => bulkStar.mutate({ emailIds: Array.from(selectedEmails), is_starred: true })}
-                  disabled={bulkStar.isPending}
+                  onClick={() => runBulk('star', { emailIds: Array.from(selectedEmails), is_starred: true }, bulkStar.mutateAsync)}
+                  disabled={bulkPending.has(bulkKey('star', { emailIds: Array.from(selectedEmails), is_starred: true }))}
                 >
                   <Star className="h-4 w-4 mr-2" />
                   Star
@@ -2222,7 +2218,6 @@ const MailPage = () => {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={bulkMove.isPending}
                     >
                       <FolderOpen className="h-4 w-4 mr-2" />
                       Move
@@ -2234,7 +2229,7 @@ const MailPage = () => {
                       .map((folder) => (
                         <DropdownMenuItem
                           key={folder.id}
-                          onClick={() => bulkMove.mutate({ emailIds: Array.from(selectedEmails), folder: folder.id })}
+                          onClick={() => runBulk('move', { emailIds: Array.from(selectedEmails), folder: folder.id }, bulkMove.mutateAsync)}
                         >
                           <folder.icon className="h-4 w-4 mr-2" />
                           Move to {folder.label}
@@ -2245,8 +2240,8 @@ const MailPage = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => bulkDelete.mutate(createTrashMovePayload(Array.from(selectedEmails)))}
-                  disabled={bulkDelete.isPending}
+                  onClick={() => runBulk('delete', createTrashMovePayload(Array.from(selectedEmails)), bulkDelete.mutateAsync)}
+                  disabled={bulkPending.has(bulkKey('delete', createTrashMovePayload(Array.from(selectedEmails))))}
                   className="text-destructive hover:text-destructive"
                 >
                   <Trash2 className="h-4 w-4 mr-2" />
@@ -2257,11 +2252,12 @@ const MailPage = () => {
             <Button 
               variant="ghost" 
               size="icon"
-              onClick={() => activeMailAccountId && syncMail.mutate(activeMailAccountId)}
-              disabled={!activeMailAccountId || syncMail.isPending}
-              title="Refresh emails"
+              onClick={() => activeMailAccountId && requestSync(activeMailAccountId)}
+              disabled={!activeMailAccountId || syncingAccountIds.has(activeMailAccountId)}
+              title="Request mail sync"
+              aria-label="Request mail sync"
             >
-              <RefreshCw className={`h-4 w-4 ${syncMail.isPending ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`h-4 w-4 ${activeMailAccountId && syncingAccountIds.has(activeMailAccountId) ? 'animate-spin' : ''}`} />
             </Button>
           </div>
         </div>
@@ -2524,7 +2520,7 @@ const MailPage = () => {
                 key={`context-move-${folder.id}`}
                 className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
                 onClick={() => {
-                  bulkMove.mutate({ emailIds: [contextMenuEmail.email.id], folder: folder.id });
+                  runBulk('move', { emailIds: [contextMenuEmail.email.id], folder: folder.id }, bulkMove.mutateAsync);
                   setContextMenuEmail(null);
                 }}
               >
@@ -2538,7 +2534,7 @@ const MailPage = () => {
               if (contextMenuEmail.email.is_draft || contextMenuEmail.email.folder === 'drafts') {
                 setDraftToDelete(contextMenuEmail.email);
               } else {
-                bulkDelete.mutate(createTrashMovePayload([contextMenuEmail.email.id]));
+                runBulk('delete', createTrashMovePayload([contextMenuEmail.email.id]), bulkDelete.mutateAsync);
               }
               setContextMenuEmail(null);
             }}
