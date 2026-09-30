@@ -47,6 +47,7 @@ For feature details, follow the corresponding file in docs/ rather than treating
 - Keep route handlers focused on HTTP concerns and put reusable domain behavior in api/src/services/. Validate external input at the boundary. Use parameterized SQL and explicit ownership checks. Preserve the existing mail/CalDAV outbound-network and TLS checks.
 - Account for pending, failure, retry, cancellation, and stale responses in asynchronous UI work. In particular, do not let a late response show data from the previous account or an earlier mail selection.
 - Change only the needed layers, but follow a behavior through all affected layers: UI, API, database, workers, offline snapshot, backup/restore, and documentation. Avoid dependencies and abstractions that solve no current requirement. Comments should explain a constraint or reason that the code alone does not show.
+- Database schema: `ensureLegacySchema` in database.js is a frozen 0.11.1 baseline, never edit it; every schema change is a new numbered migration, then regenerate `docker/mysql/init/01-schema.sql` with `scripts/local-mysql.sh schema-dump`.
 - Tests should prove observable behavior and important failure paths with synthetic data. Do not copy a real mailbox, database, contact list, or server volume into a test fixture.
 
 ## Working and verification

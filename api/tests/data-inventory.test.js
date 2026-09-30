@@ -10,7 +10,7 @@ function sourceColumns(source) {
   const rows = new Map();
   const add = (table, column) => rows.set(`${table}.${column}`, { table_name: table, column_name: column });
   source = source.replace(/\\`/g, '`');
-  for (const match of source.matchAll(/CREATE TABLE IF NOT EXISTS (\w+) \(([\s\S]*?)\) ENGINE=/g)) {
+  for (const match of source.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?`?(\w+)`? \(([\s\S]*?)\) ENGINE=/g)) {
     for (const column of match[2].matchAll(/(?:^|\n|,)\s*`?([a-z][a-z_0-9]*)`?\s+(?:CHAR|VARCHAR|TEXT|LONGTEXT|MEDIUMTEXT|INT|TINYINT|BIGINT|SMALLINT|BOOLEAN|BOOL|DATETIME|TIMESTAMP|DATE|JSON|ENUM|DECIMAL|DOUBLE|FLOAT)\b/gi)) add(match[1], column[1]);
   }
   for (const match of source.matchAll(/ALTER TABLE (\w+) ADD COLUMN (?:IF NOT EXISTS )?(\w+)/g)) add(match[1], match[2]);
@@ -44,9 +44,11 @@ test('manual refresh column is required only after its additive migration', () =
   assert.throws(() => assertInventoryCoverage(before, { throughMigration: 8 }), /Missing declared field mail_engine_jobs.manual_refresh/);
 });
 
-test('fresh-install SQL cannot introduce unclassified fields', () => {
-  const columns = sourceColumns(fs.readFileSync(path.join(__dirname, '../../docker/mysql/init/01-schema.sql'), 'utf8'));
-  assertInventoryCoverage(columns, { requireAll: false });
+test('generated fresh-install schema is fully classified', () => {
+  const schema = fs.readFileSync(path.join(__dirname, '../../docker/mysql/init/01-schema.sql'), 'utf8');
+  const columns = sourceColumns(schema);
+  assert.equal(columns.length, schema.match(/^ {2}`[a-z]/gm).length, 'The DDL reader must parse every generated column');
+  assertInventoryCoverage(columns);
 });
 
 test('database verifier reads information_schema rather than assuming the catalog is the schema', async () => {
