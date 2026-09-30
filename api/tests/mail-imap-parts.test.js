@@ -14,9 +14,9 @@ const {
 
 test('prefers complete RFC822 IMAP body over split HEADER/TEXT parts', async () => {
   const rawEmail = [
-    'From: CodeWeavers <noreply_at_codeweavers_com_7c4dpmf5k60072_977234f6@icloud.com>',
-    'To: user@icloud.com',
-    'Subject: Now Dispensing CrossOver 26 at 26% Off!',
+    'From: Example Sender <sender@example.com>',
+    'To: recipient@example.com',
+    'Subject: Example offer',
     'Date: Tue, 10 Feb 2026 16:38:30 +0000',
     'Message-ID: <202610021638.test@example.com>',
     'Content-Type: multipart/alternative; boundary="mail-boundary"',
@@ -32,7 +32,7 @@ test('prefers complete RFC822 IMAP body over split HEADER/TEXT parts', async () 
   const splitTextBody = [
     'content-type: multipart/alternative; boundary="mail-boundary"',
     'date: Tue, 10 Feb 2026 16:38:30 +0000',
-    'from: CodeWeavers <noreply_at_codeweavers_com_7c4dpmf5k60072_977234f6@icloud.com>',
+    'from: Example Sender <sender@example.com>',
     '',
     '--mail-boundary',
     'Content-Type: text/plain; charset=utf-8',
@@ -44,7 +44,7 @@ test('prefers complete RFC822 IMAP body over split HEADER/TEXT parts', async () 
 
   const fullEmail = buildRawEmailFromImapParts({
     parts: [
-      { which: 'HEADER', body: { subject: ['Now Dispensing CrossOver 26 at 26% Off!'] } },
+      { which: 'HEADER', body: { subject: ['Example offer'] } },
       { which: 'TEXT', body: splitTextBody },
       { which: '', body: rawEmail },
     ],
@@ -53,7 +53,7 @@ test('prefers complete RFC822 IMAP body over split HEADER/TEXT parts', async () 
   const parsed = await simpleParser(fullEmail);
 
   assert.equal(fullEmail, rawEmail);
-  assert.equal(parsed.from.value[0].address, 'noreply_at_codeweavers_com_7c4dpmf5k60072_977234f6@icloud.com');
+  assert.equal(parsed.from.value[0].address, 'sender@example.com');
   assert.equal(parsed.text.trim(), 'Offer body');
   assert.equal(parsed.text.includes('content-type:'), false);
 });

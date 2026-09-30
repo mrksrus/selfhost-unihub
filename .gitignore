@@ -13,8 +13,40 @@ dist-ssr
 *.local
 
 # Environment files
-.env
+.env*
 !.env.example
+
+# Local private data and exports. Keep real user data in .private/.
+# Directory names are anchored to the repository root so test fixture folders
+# (for example api/tests/fixtures/backups/) are not silently ignored.
+.private/
+/private/
+/data/
+/uploads/
+/backups/
+/exports/
+/dumps/
+*.db
+*.sqlite
+*.sqlite3
+*.unihub-backup
+*.dump
+*.bak
+*.eml
+*.vcf
+*.ics
+*.csv
+*.tsv
+*.jsonl
+
+# Private keys and certificates
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Synthetic test fixtures may use the extensions above; review them before adding.
+!api/tests/fixtures/**
 
 # Editor directories and files
 .vscode/*
