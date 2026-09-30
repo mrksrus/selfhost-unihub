@@ -1,6 +1,20 @@
 const { spawn } = require('node:child_process');
 
-function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000, exit = code => process.exit(code), signals = process } = {}) {
+// The image sets UNIHUB_API_UID/GID. When the supervisor runs as root (it must,
+// for Nginx to bind port 80), the API process drops to that user; libuv clears
+// supplementary groups first, which needs SETGID/SETUID but no new privileges.
+function apiIdentity(env = process.env, getuid = process.getuid) {
+  if (env.UNIHUB_API_UID === undefined && env.UNIHUB_API_GID === undefined) return null;
+  const uid = Number(env.UNIHUB_API_UID), gid = Number(env.UNIHUB_API_GID);
+  if (![uid, gid].every(id => Number.isSafeInteger(id) && id > 0 && id < 2 ** 31)) {
+    throw new Error('UNIHUB_API_UID and UNIHUB_API_GID must both be non-root numeric IDs');
+  }
+  // Already unprivileged (for example `docker run --user`): start as-is.
+  if (typeof getuid !== 'function' || getuid() !== 0) return null;
+  return { uid, gid };
+}
+
+function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000, exit = code => process.exit(code), signals = process, apiUser = null } = {}) {
   const children = new Set();
   let stopping = false;
   let exitCode = 1;
@@ -25,8 +39,8 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
     }, graceMs);
   }
   function onSignal() { stop(0); }
-  function launch(command, args, onExit) {
-    const child = spawnChild(command, args, { stdio: 'inherit' });
+  function launch(command, args, onExit, options = {}) {
+    const child = spawnChild(command, args, { stdio: 'inherit', ...options });
     children.add(child);
     child.once('error', error => { console.error('Service failed to start:', error.message); stop(1); });
     child.once('close', code => {
@@ -40,7 +54,8 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
   signals.on('SIGTERM', onSignal);
   signals.on('SIGINT', onSignal);
   console.log('✓ Starting Node.js API server...');
-  launch(process.execPath, ['/app/api/server.js']);
+  launch(process.execPath, ['/app/api/server.js'], undefined,
+    apiUser ? { uid: apiUser.uid, gid: apiUser.gid, env: { ...process.env, HOME: '/tmp' } } : {});
   startTimer = setTimeout(() => {
     launch('nginx', ['-t'], code => {
       if (code !== 0) return stop(1);
@@ -54,6 +69,7 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
 
 if (require.main === module) {
   const seconds = Number(process.env.UNIHUB_API_START_DELAY_SECONDS ?? 2);
-  superviseServices({ delayMs: Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= 300 ? seconds * 1000 : 2000 });
+  superviseServices({ delayMs: Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= 300 ? seconds * 1000 : 2000,
+    apiUser: apiIdentity() });
 }
-module.exports = { superviseServices };
+module.exports = { superviseServices, apiIdentity };

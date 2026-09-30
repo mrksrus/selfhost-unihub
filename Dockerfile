@@ -43,8 +43,15 @@ COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf
 # Copy built frontend assets from Stage 1
 COPY --from=frontend-builder /build/dist /usr/share/nginx/html
 
-# Create uploads directory
-RUN mkdir -p /app/uploads
+# The Node API runs as this unprivileged user (fixed IDs so bind mounts can be
+# prepared on the host). The supervisor and Nginx master stay root; Nginx drops
+# its workers to the nginx user as before.
+ENV UNIHUB_API_UID=10001 UNIHUB_API_GID=10001
+RUN addgroup -S -g 10001 unihub \
+    && adduser -S -D -H -h /nonexistent -s /sbin/nologin -u 10001 -G unihub unihub
+
+# A new named volume copies this ownership; start.sh hands over older volumes.
+RUN mkdir -p /app/uploads && chown unihub:unihub /app/uploads
 
 # Copy startup script
 COPY docker/start.sh /app/start.sh

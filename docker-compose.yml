@@ -27,7 +27,8 @@ services:
       - ALL
     cap_add:
       # Nginx prepares nginx-owned log/temp paths, binds port 80, then
-      # drops its worker processes to the nginx user/group.
+      # drops its worker processes to the nginx user/group. The start script
+      # hands /app/uploads to uid 10001 and the API runs as that user.
       - CHOWN
       - DAC_OVERRIDE
       - NET_BIND_SERVICE

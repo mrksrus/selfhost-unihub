@@ -8,6 +8,14 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.11.1 (unreleased)
 
+### Security
+
+- **The API no longer runs as root in the container.** The Node API runs as the
+  `unihub` user (uid/gid 10001) without capabilities; Nginx is unchanged. The
+  first start after updating hands `/app/uploads` over to that user. If you
+  bind-mount uploads from the host, it must be writable by uid 10001. See
+  [upgrading](docs/UPGRADING.md#0111-non-root-api).
+
 ### Fixes
 
 - **Retried mail actions no longer fail on a database deadlock.** Two identical

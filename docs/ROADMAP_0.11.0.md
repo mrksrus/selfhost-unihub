@@ -150,9 +150,12 @@ comes after.
     every startup, and the numbered migrations. Freeze the legacy code as a
     baseline, make every future change a numbered migration, and generate or
     test `01-schema.sql` against a migrated database.
-12. **Run the API as a non-root user** inside the container. Nginx already
+12. **Done (2026-09-30): Run the API as a non-root user** inside the container. Nginx already
     drops its workers to the nginx user; `service-supervisor.js` could start the
     Node API with a dedicated uid/gid, with `/app/uploads` owned by that user.
+    *Done:* the supervisor spawns the API as `unihub` (10001:10001); `start.sh`
+    chowns uploads only when ownership differs; the container smoke test checks
+    the API's uid/gid/capabilities and a root-owned legacy volume.
 13. **Split the largest backend files** by area: `api/src/services/mail.js`
     (~2,000 lines), `api/src/routes/mail.js` (~1,900), `api/src/services/backup.js`
     (~2,400).

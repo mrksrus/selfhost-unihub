@@ -190,7 +190,8 @@ try {
   dockerNode(`const fs=require('fs'),path=require('path');const root='/app/uploads/recordings';
     const dir=path.join(root,process.env.SMOKE_USER_ID);const files=fs.readdirSync(dir).filter(name=>name.startsWith(process.env.SMOKE_RECORDING_ID));
     if(files.length<2)throw new Error('Expected isolated source and converted files');
-    for(const file of files)if(!fs.realpathSync(path.join(dir,file)).startsWith(dir+path.sep))throw new Error('File escaped user storage');`, { SMOKE_USER_ID: userId, SMOKE_RECORDING_ID: recordingId });
+    for(const file of files)if(!fs.realpathSync(path.join(dir,file)).startsWith(dir+path.sep))throw new Error('File escaped user storage');
+    for(const file of files)if(fs.statSync(path.join(dir,file)).uid!==10001)throw new Error('Recording files must be written by the API user');`, { SMOKE_USER_ID: userId, SMOKE_RECORDING_ID: recordingId });
   await primary.request('DELETE', `/api/recordings/${recordingId}`);
   await primary.request('GET', `/api/recordings/${recordingId}/file`, undefined, { expected: 404 });
   dockerNode(`const fs=require('fs'),path=require('path');const dir=path.join('/app/uploads/recordings',process.env.SMOKE_USER_ID);
