@@ -1,5 +1,7 @@
 import { MailAccountDialog } from '@/components/mail/MailAccountDialog';
 import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
+import { MailAccountRemovalDialogs } from '@/components/mail/MailAccountRemovalDialogs';
+import { useMailAccountRemoval } from '@/hooks/use-mail-account-removal';
 import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
 import { useMailSyncJobs } from '@/hooks/use-mail-sync-jobs';
 import { useMailWritebacks } from '@/hooks/use-mail-writebacks';
@@ -143,11 +145,7 @@ const MailPage = () => {
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [composeMode, setComposeMode] = useState<'new' | 'reply' | 'forward'>('new');
   const [isReplying, setIsReplying] = useState(false);
-  const [accountToDelete, setAccountToDelete] = useState<string | null>(null);
-  const [accountToPurge, setAccountToPurge] = useState<string | null>(null);
-  const [purgeConfirmation, setPurgeConfirmation] = useState('');
-  const [purgePreview, setPurgePreview] = useState<MailPurgePreview | null>(null);
-  const [purgePreviewError, setPurgePreviewError] = useState<string | null>(null);
+  const accountRemoval = useMailAccountRemoval(() => setSelectedAccount(ALL_ACCOUNTS));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
@@ -344,48 +342,6 @@ const MailPage = () => {
     });
   }, [contactsForCompose]);
 
-  // Default account deletion only disconnects; retained mail stays readable.
-  const deleteAccount = useMutation({
-    mutationFn: async (id: string) => {
-      const response = await api.delete(`/mail/accounts/${encodeURIComponent(id)}`);
-      if (response.error) throw new Error(response.error);
-    },
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
-      void queryClient.invalidateQueries({ queryKey: ['mail-sync-jobs'] });
-      setAccountToDelete(null);
-      toast({ title: 'Mail account disconnected', description: 'Your local mail is retained. Reconnect in account settings with credentials.' });
-    },
-    onError: (error: Error) => {
-      toast({ title: 'Failed to disconnect account', description: error.message, variant: 'destructive' });
-    },
-  });
-  const openPurgePreview = async (id: string) => {
-    setAccountToPurge(id);
-    setPurgeConfirmation('');
-    setPurgePreview(null);
-    setPurgePreviewError(null);
-    const response = await api.get<MailPurgePreview>(`/mail/accounts/${encodeURIComponent(id)}/purge-preview`);
-    if (response.error || !response.data || response.data.account_id !== id) {
-      setPurgePreviewError(response.error || 'Could not verify the purge preview.');
-      return;
-    }
-    setPurgePreview(response.data);
-  };
-  const purgeAccount = useMutation({
-    mutationFn: async (id: string) => {
-      const response = await api.delete(`/mail/accounts/${encodeURIComponent(id)}?purge=true&confirm_purge=${encodeURIComponent(id)}`);
-      if (response.error) throw new Error(response.error);
-    },
-    onSuccess: () => {
-      void invalidateMailQueries(queryClient);
-      setAccountToPurge(null);
-      setPurgePreview(null);
-      setSelectedAccount(ALL_ACCOUNTS);
-      toast({ title: 'Local mail account data purged' });
-    },
-    onError: (error: Error) => toast({ title: 'Purge blocked', description: error.message, variant: 'destructive' }),
-  });
   const openDraftForCompose = React.useCallback((draft: Email) => {
     setComposeMode('new');
     setActiveDraftId(draft.id);
@@ -1407,8 +1363,8 @@ const MailPage = () => {
                           aria-label={account.disconnected_at ? `Preview purge for ${account.email_address}` : `Disconnect ${account.email_address}`}
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (account.disconnected_at) void openPurgePreview(account.id);
-                            else setAccountToDelete(account.id);
+                            if (account.disconnected_at) void accountRemoval.openPurgePreview(account.id);
+                            else accountRemoval.requestDisconnect(account.id);
                           }}
                         >
                           {account.disconnected_at ? <Trash2 className="h-4 w-4" /> : <X className="h-4 w-4" />}
@@ -1937,47 +1893,7 @@ const MailPage = () => {
         </>
       )}
 
-      {/* Disconnect retains local mail. Purge is a separate guarded flow. */}
-      <AlertDialog open={!!accountToDelete} onOpenChange={(open) => !open && setAccountToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Disconnect mail account?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Sync and credentials for this account will be disconnected. Your local emails and attachments stay in UniHub. You can reconnect by editing the account and entering credentials.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep connected</AlertDialogCancel>
-            <AlertDialogAction disabled={deleteAccount.isPending} onClick={() => accountToDelete && deleteAccount.mutate(accountToDelete)}>
-              Disconnect and keep mail
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-      <AlertDialog open={!!accountToPurge} onOpenChange={open => { if (!open) { setAccountToPurge(null); setPurgePreview(null); } }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Permanently purge local mail?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Purge is separate from disconnect. This removes the disconnected account and its retained local mail. It does not delete messages at the provider.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          {purgePreviewError && <p role="alert" className="text-sm text-destructive">{purgePreviewError}</p>}
-          {!purgePreview && !purgePreviewError && <p role="status">Loading purge preview…</p>}
-          {purgePreview && <div className="space-y-2 text-sm">
-            <p>Account {purgePreview.account_id}: {purgePreview.email_count} emails, {purgePreview.attachment_count} attachments, {purgePreview.raw_count} raw messages; {purgePreview.unresolved_operations} unresolved operations.</p>
-            {purgePreview.blocked ? <p role="alert">Purge blocked: {purgePreview.reason || 'Provider effects are unresolved. Keep the journal and check again later.'}</p> : <>
-              <Label htmlFor="confirm-mail-purge">Type the account ID to confirm permanent deletion: {accountToPurge}</Label>
-              <Input id="confirm-mail-purge" value={purgeConfirmation} onChange={event => setPurgeConfirmation(event.target.value)} autoComplete="off" />
-            </>}
-          </div>}
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep local mail</AlertDialogCancel>
-            <Button type="button" variant="destructive" disabled={!purgePreview || purgePreview.blocked || purgePreview.account_id !== accountToPurge || purgeConfirmation !== accountToPurge || purgeAccount.isPending}
-              onClick={() => accountToPurge && purgeAccount.mutate(accountToPurge)}>Purge local mail</Button>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <MailAccountRemovalDialogs removal={accountRemoval} />
 
       {/* Email Reader */}
       {selectedEmail && (
