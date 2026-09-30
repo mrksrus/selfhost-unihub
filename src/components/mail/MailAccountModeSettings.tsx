@@ -22,7 +22,7 @@ export function MailAccountModeSettings(props: Props) {
       <option value="sync">Sync with email server</option>
     </select>
     {props.mode === 'sync' ? <div className="space-y-3 text-sm text-muted-foreground">
-      <p>UniHub syncs read status, stars and moves to connected server folders in both directions. Only new actions in UniHub are sent to the server. If changes conflict, the server version wins.</p>
+      <p>UniHub saves new read, star and connected-folder move requests before contacting the provider. The latest pending explicit flag request remains visible while UniHub verifies it. Some provider changes may require an outcome check rather than a repeat command.</p>
       <p>Emails no longer on the server stay here as local copies. Changes to local copies and Legacy mail stay local. Automatic server deletion is off. Moving mail to a connected Trash folder is allowed; permanent deletion in Sync mode is blocked.</p>
       <p>Draft editing and folder creation, renaming or deletion are not part of two-way sync. Labels that the provider does not expose as folders or flags are not synced.</p>
       {props.requiresConfirmation && <label className="flex items-start gap-2 text-foreground">

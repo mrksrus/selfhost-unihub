@@ -226,6 +226,10 @@ test('update mail account can disable server deletion without password changes',
   let imapTests = 0;
   let cancellations = 0;
   const queueUpdates = [];
+  const resumes = [];
+  t.mock.method(require('../src/services/mail-engine/runtime'), 'resumeAccount', async input => {
+    resumes.push(input); return { resumed: 0, retired: 0 };
+  });
 
   t.after(() => {
     if (originalRoute) require.cache[routePath] = originalRoute;
@@ -255,6 +259,7 @@ test('update mail account can disable server deletion without password changes',
             encrypted_password: 'encrypted:secret',
             allow_self_signed: 0,
             delete_emails_on_server: 1,
+            is_active: 1,
           }]];
         }
         if (sql.includes('UPDATE mail_server_messages')) { queueUpdates.push(sql); return [{ affectedRows: 1 }]; }
@@ -297,7 +302,10 @@ test('update mail account can disable server deletion without password changes',
       imapTests++;
       return { success: true };
     },
-    cancelMailAccountSync: () => { cancellations++; },
+    cancelMailAccountSync: () => { assert.fail('Settings changes must stop all account work, not merely scans'); },
+    stopMailAccountWork: async (accountId, reason) => {
+      assert.equal(accountId, 'account-1'); assert.equal(reason, 'Account settings changing'); cancellations++;
+    },
     syncMailAccount: async () => ({ success: true }),
     scheduleMailAccountSync: () => ({ started: true, promise: Promise.resolve({ success: true }) }),
     isAnyMailAccountSyncRunning: () => false,
@@ -315,7 +323,9 @@ test('update mail account can disable server deletion without password changes',
     { delete_emails_on_server: false }
   );
 
+  assert.equal(result.error, undefined);
   assert.equal(result.account.delete_emails_on_server, false);
+  assert.deepEqual(resumes, [{ userId: 'user-1', accountId: 'account-1' }]);
   assert.equal(imapTests, 0);
   assert.match(updates[0].sql, /delete_emails_on_server = FALSE/);
   assert.match(updates[0].sql, /server_delete_grace_until = NULL/);
@@ -332,6 +342,8 @@ test('update mail account can disable server deletion without password changes',
   assert.equal(updates.length, 1, 'Mode commit waits for the worker lock');
   release(); await holding;
   assert.ok((await switching).account);
+  assert.equal(cancellations, 2);
+  assert.equal(resumes.length, 2);
   assert.match(updates[1].sql, /sync_mode = .*sync_status = .*delete_emails_on_server = FALSE/);
   assert.deepEqual(updates[1].params.slice(0, 2), ['sync', 'pending']);
   assert.equal(queueUpdates.length, 1);

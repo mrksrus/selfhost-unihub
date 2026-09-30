@@ -56,7 +56,7 @@ describe('mail job discovery and recovery', () => {
     await tick();
     expect(view.result.current.jobs.data?.[0].state).toBe('idle');
     expect(view.result.current.jobs.isError).toBe(false);
-    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync finished' }));
+    expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync coverage current' }));
   });
 
   it('refreshes partial imports at most every ten seconds, without invalidating job status or details', async () => {

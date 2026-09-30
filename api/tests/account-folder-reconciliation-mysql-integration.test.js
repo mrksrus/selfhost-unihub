@@ -151,7 +151,12 @@ test('0.10.3 folder reconciliation and Legacy recovery on MySQL', { skip: !proce
     assert.equal(restored.is_legacy, 0);
     assert.equal(restored.imap_uidvalidity, 42);
     const deletion = await routes['DELETE /api/mail/accounts/:id']({ url: '/api/mail/accounts/' + accountA, params: { id: accountA } }, user);
-    assert.equal(deletion.status, 409, 'Deleting a source account must not erase recovered mail in another account');
+    assert.equal(deletion.disconnected, true, 'Default removal disconnects rather than erasing retained messages');
+    const [[disconnected]] = await pool.execute('SELECT is_active, encrypted_password FROM mail_accounts WHERE id = ?', [accountA]);
+    assert.deepEqual(disconnected, { is_active: 0, encrypted_password: null });
+    const purge = await routes['DELETE /api/mail/accounts/:id']({
+      url: '/api/mail/accounts/' + accountA + '?purge=true&confirm_purge=' + accountA, params: { id: accountA } }, user);
+    assert.equal(purge.status, 409, 'Even an explicitly confirmed purge must not erase mail recovered into another account');
     assert.equal((await read('relay')).id, messages.relay);
     const inbox = await routes['GET /api/mail/emails']({ url: '/api/mail/emails?account_id=' + accountB + '&folder=inbox', headers: { host: 'localhost' } }, user);
     assert(inbox.emails.some(email => email.id === messages.relay));

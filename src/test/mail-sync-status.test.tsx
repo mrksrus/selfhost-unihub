@@ -24,10 +24,37 @@ function setup(operations: MailWriteback[]) {
 describe('mail server change feedback', () => {
   beforeEach(() => { vi.clearAllMocks(); setOfflineMode(false); });
 
+  it('two independent query clients converge on the same durable operation after a status refresh', async () => {
+    let operations: MailWriteback[] = [{ ...operation('shared', 'pending', 'star'), state: 'queued', is_current: true }];
+    vi.mocked(api.get).mockImplementation(async () => ({ data: { operations: structuredClone(operations) } }));
+    const first = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const second = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const firstSettled = vi.fn(); const secondSettled = vi.fn();
+    render(<>
+      <QueryClientProvider client={first}><MailSyncStatus onSettled={firstSettled} /></QueryClientProvider>
+      <QueryClientProvider client={second}><MailSyncStatus onSettled={secondSettled} /></QueryClientProvider>
+    </>);
+    await waitFor(() => expect(screen.getAllByText(/saved in UniHub, waiting for provider confirmation/)).toHaveLength(2));
+    operations = [{ ...operation('shared', 'done', 'star'), state: 'confirmed' as const, is_current: true }];
+    await act(async () => { await Promise.all([first.invalidateQueries({ queryKey: mailQueryKeys.writebacks }), second.invalidateQueries({ queryKey: mailQueryKeys.writebacks })]); });
+    await waitFor(() => expect(firstSettled).toHaveBeenCalledWith(['email-shared']));
+    expect(secondSettled).toHaveBeenCalledWith(['email-shared']);
+    expect(screen.queryByRole('region', { name: 'Server change status' })).not.toBeInTheDocument();
+  });
+
+  it('distinguishes reconciling MOVE from explicit rejection without exposing provider details', async () => {
+    setup([{ ...operation('move', 'pending', 'move'), state: 'reconciling', can_retry: true, retry_action: 'check_outcome' },
+      { ...operation('rejected', 'failed', 'star'), state: 'rejected', can_retry: false }]);
+    expect(await screen.findByText(/checking what happened at the provider/)).toBeInTheDocument();
+    expect(screen.getByText(/request rejected; no provider confirmation/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check outcome of folder move' })).toBeEnabled();
+    expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
+  });
+
   it('shows pending counts and conflicts, offers retries only for failed actions, and hides provider details', async () => {
     setup([operation('pending', 'pending', 'read'), operation('failed', 'failed', 'star'), operation('conflict', 'conflict', 'move')]);
-    expect(await screen.findByText('1 change is waiting for provider confirmation. Mail shows the requested state meanwhile.')).toBeInTheDocument();
-    expect(screen.getByText(/Check the message at your provider, then refresh UniHub/)).toBeInTheDocument();
+    expect(await screen.findByText(/saved in UniHub, waiting for provider confirmation/)).toBeInTheDocument();
+    expect(screen.getByText(/outcome uncertain; do not send this move again/)).toBeInTheDocument();
     expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
     expect(screen.getAllByRole('button')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Retry star change' }));
@@ -44,10 +71,10 @@ describe('mail server change feedback', () => {
   });
 
   it('shows a retry failure without automatically repeating the command', async () => {
-    setup([operation('failed', 'failed', 'move')]);
+    setup([{ ...operation('failed', 'failed', 'move'), state: 'needs_attention', can_retry: true, retry_action: 'check_outcome' }]);
     vi.mocked(api.post).mockResolvedValue({ error: 'private provider details' });
-    fireEvent.click(await screen.findByRole('button', { name: 'Retry folder move' }));
-    expect(await screen.findByText(/Retry could not be queued/)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'Check outcome of folder move' }));
+    expect(await screen.findByText(/Outcome check could not be requested/)).toBeInTheDocument();
     expect(api.post).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
   });
@@ -73,7 +100,7 @@ describe('mail server change feedback', () => {
 
   it.each(['read', 'star', 'move'] as const)('refreshes %s outcomes once without recursively polling or fetching unrelated folders', async action => {
     const { client, onSettled } = setup([operation('slow', 'pending', action)]);
-    const fetchList = vi.fn().mockResolvedValue({ emails: [] });
+    const fetchList = vi.fn().mockResolvedValue({ emails: [{ id: 'email-slow' }] });
     const fetchFolders = vi.fn().mockResolvedValue([]);
     function RelatedMailViews() {
       useQuery({ queryKey: ['emails', 'test'], queryFn: fetchList });

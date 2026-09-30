@@ -3,7 +3,9 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { guardImapConnection } = require('../src/services/mail-imap-guard');
 const { withMailAccountLock } = require('../src/services/mail-account-lock');
-const { executeOperation, processPending } = require('../src/services/mail-writebacks');
+const { executeOperation } = require('../src/services/mail-writebacks');
+const operations = require('../src/services/mail-engine/operations');
+const transport = require('../src/services/mail-engine/transport');
 const { getDb, setDb } = require('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
@@ -77,29 +79,57 @@ test('timed-out provider flag remains uncertain and never continues to readback 
   assert.equal(reads, 1, 'Late success must not trigger a confirmation read or local UPDATE');
 });
 
-for (const [action, attempts, expectedStatus] of [['read', 0, 'pending'], ['star', 1, 'failed'], ['move', 0, 'conflict']]) {
-  test(`timed-out ${action} retains durable ${expectedStatus} safety and cannot confirm mail state`, async t => {
+for (const action of ['read', 'star', 'move']) {
+  test(`timed-out fenced ${action} retains journal and pending reconciliation; late reply cannot confirm`, async t => {
     const old = getDb(); t.after(() => setDb(old));
-    const op = { id: 'op', email_id: 'email', user_id: 'owner', mail_account_id: 'account', action, attempts,
-      remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9, target_value: action === 'move' ? 'Filed' : '1', base_value: '0' };
-    let status = 'pending', dispatchPersisted = false, reply, destroyed = 0, updates = 0;
-    setDb({ execute: async (sql, args) => {
-      if (sql.includes('SELECT * FROM mail_writebacks')) return [[{ ...op }]];
-      if (sql.includes('FROM user_settings') || sql.includes('FROM backup_restore_jobs')) return [[]];
-      if (sql.includes('SELECT e.*')) return [[{ ...op, id: 'email', sync_mode: 'sync', is_active: 1 }]];
-      assert(!sql.startsWith('UPDATE emails'), 'An uncertain reply must never confirm local mail state');
-      if (sql.includes('SET dispatched = TRUE')) dispatchPersisted = true;
-      if (sql.includes('SET status = ?')) status = args[0];
-      updates++; return [{ affectedRows: 1 }];
-    } });
-    const connection = new EventEmitter();
-    connection.openBox = async () => ({ uidvalidity: 9 });
-    connection.search = async () => [{ attributes: { uid: 12, flags: [] } }];
-    const hang = (...args) => { assert.equal(dispatchPersisted, true, 'Persist uncertainty before sending'); reply = args.at(-1); };
-    connection.imap = { destroy() { destroyed++; }, serverSupports: () => true, addFlags: hang, move: hang };
-    const result = await processPending({ id: 'account', user_id: 'owner' }, guardImapConnection(connection, { timeoutMs: 10 }));
-    assert.equal(result.connectionFailed, true); assert.equal(status, expectedStatus); assert.equal(destroyed, 1);
-    const before = updates; reply(null, '77'); await tick(); assert.equal(updates, before);
+    const original = { selectMailbox: transport.selectMailbox, fetchMetadataWindow: transport.fetchMetadataWindow,
+      setFlag: transport.setFlag, nativeMove: transport.nativeMove };
+    t.after(() => Object.assign(transport, original));
+    const op = { id: 'op', email_id: 'email', user_id: 'owner', mail_account_id: 'account', action,
+      state: 'queued', status: 'pending', is_current: 1, attempts: 0, dispatched: 0, intent_revision: 1,
+      remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9,
+      target_value: action === 'move' ? 'Filed' : '1', base_value: '0' };
+    const trace = [], f = fixture({ timeoutMs: 10 });
+    const cx = { beginTransaction: async () => trace.push('begin'), commit: async () => trace.push('commit'),
+      rollback: async () => trace.push('rollback'), release() {},
+      execute: async (sql, args = []) => {
+        trace.push(sql);
+        if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
+        if (sql.includes('SELECT observation_revision FROM emails')) return [[{ observation_revision: 0 }]];
+        if (sql.includes('SELECT remote_folder,remote_uid,remote_uidvalidity FROM emails'))
+          return [[{ remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9 }]];
+        if (sql.includes('SELECT id FROM mail_writebacks WHERE user_id=')) return [[]];
+        if (sql.includes('FROM mail_engine_accounts a') && sql.includes('lease_owner')) return [[{ generation: 1 }]];
+        if (sql.includes('SELECT e.generation, a.is_active')) return [[{ generation: 1, is_active: 1, sync_mode: 'sync' }]];
+        if (sql.includes('SELECT * FROM mail_writebacks WHERE id')) return [[op]];
+        if (sql.includes('SELECT o.id FROM mail_remote_occurrences')) return [[{ id: 'source' }]];
+        if (sql.includes('SELECT * FROM mail_operation_attempts WHERE id')) return [[{ id: 'attempt' }]];
+        if (sql.startsWith('INSERT INTO mail_operation_attempts')) return [{ affectedRows: 1 }];
+        if (sql.includes('UPDATE mail_writebacks SET state =')) { op.dispatched = 1; op.attempts++; op.state = 'executing'; return [{ affectedRows: 1 }]; }
+        if (sql.includes('UPDATE mail_writebacks SET state=?')) { op.state = args[0]; op.status = args[1]; return [{ affectedRows: 1 }]; }
+        assert(!sql.startsWith('UPDATE emails'), 'An uncertain reply must never confirm local mail state');
+        return [{ affectedRows: 1 }];
+      } };
+    setDb({ execute: cx.execute, getConnection: async () => cx });
+    let reads = 0;
+    transport.selectMailbox = async () => ({ uidvalidity: 9, capabilities: { condstore: false } });
+    transport.fetchMetadataWindow = async () => { reads++; return { items: [{ uid: 12, flags: [], modseq: null }] }; };
+    const lost = async (_conn, _input, { beforeDispatch }) => {
+      await beforeDispatch();
+      assert(trace.includes('commit'), 'Dispatch journal must commit before any mutation bytes');
+      try { await f.connection.search(['UID', 12], {}); }
+      catch (error) { assert.equal(error.code, 'MAIL_IMAP_TIMEOUT'); }
+      return { transmission: 'possible', completion: 'lost', mapping: null, mappingStatus: 'missing' };
+    };
+    transport.setFlag = lost; transport.nativeMove = lost;
+    const result = action === 'move'
+      ? await operations.applyMove(op, f.connection, 1, undefined, 'worker', 'job')
+      : await operations.applyFlag(op, f.connection, 1, undefined, 'worker', 'job');
+    assert.equal(result.connectionFailed, true); assert.equal(op.state, 'reconciling');
+    assert.equal(op.status, 'pending'); assert.equal(op.attempts, 1); assert.equal(f.destroyed, 1);
+    assert.equal(reads, 1, 'Lost acknowledgement cannot trigger a confirming readback');
+    const before = trace.length; f.reply(null, '77'); await tick(); assert.equal(trace.length, before);
+    assert.equal(trace.filter(sql => sql.startsWith('INSERT INTO mail_operation_attempts')).length, 1);
   });
 }
 

@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { invalidateMailQueries, mailQueryKeys, type MailAccount } from '@/lib/mail-api';
+import { mailQueryKeys, type MailAccount } from '@/lib/mail-api';
 import { isOfflineMode } from '@/lib/offline';
 import { useToast } from '@/hooks/use-toast';
 
 export interface MailSyncJob {
   account_id: string;
-  state: 'queued' | 'running' | 'idle' | 'error' | 'cancelled';
+  job_id?: string | null;
+  state: 'queued' | 'running' | 'idle' | 'error' | 'cancelled' | 'paused';
+  coverage?: Partial<Record<'recent' | 'history' | 'flags' | 'bodies', { complete?: boolean; current?: boolean; updated_at?: string | null } | null>>;
+  cancellation_requested?: boolean;
   phase: string | null;
   processed: number;
   total: number | null;
@@ -30,6 +33,8 @@ const active = (job: MailSyncJob) => job.state === 'queued' || job.state === 'ru
 export function useMailSyncJobs(accounts: MailAccount[]) {
   const client = useQueryClient();
   const { toast } = useToast();
+  const requested = useRef(new Set<string>());
+  const cancellationRequested = useRef(new Set<string>());
   const previous = useRef<Map<string, MailSyncJob>>(new Map());
   const lastProgressRefresh = useRef(0);
   const requests = useRef(new Set<string>());
@@ -61,14 +66,19 @@ export function useMailSyncJobs(accounts: MailAccount[]) {
         progressAdvanced = true;
       }
       if (old && active(old) && !active(job)) {
-        if (job.state === 'idle') {
-          toast({ title: 'Mail sync finished', description: accounts.find(a => a.id === job.account_id)?.email_address });
-        } else if (job.state === 'error') {
-          toast({ title: 'Mail sync failed', description: job.error || 'Check the account and try again.', variant: 'destructive' });
-        } else if (job.state === 'cancelled') {
+        const userRequested = requested.current.has(job.account_id);
+        if (job.state === 'error' || job.state === 'cancelled' || (job.state === 'idle' && job.coverage?.history?.complete === true && job.coverage?.recent?.current === true)) requested.current.delete(job.account_id);
+        const cancelledByUser = cancellationRequested.current.delete(job.account_id);
+        if (job.state === 'cancelled' && (userRequested || cancelledByUser)) {
           toast({ title: 'Mail sync cancelled', description: accounts.find(a => a.id === job.account_id)?.email_address });
+        } else if (userRequested && job.state === 'idle' && job.coverage?.history?.complete === true && job.coverage?.recent?.current === true) {
+          toast({ title: 'Mail sync coverage current', description: accounts.find(a => a.id === job.account_id)?.email_address });
+        } else if (userRequested && job.state === 'error') {
+          toast({ title: 'Mail sync failed', description: job.error || 'Check the account and try again.', variant: 'destructive' });
         }
-        void invalidateMailQueries(client);
+        // A stopped job may have committed new mail, but does not imply all
+        // streams or all historical messages were covered.
+        void client.invalidateQueries({ queryKey: mailQueryKeys.all });
       }
     }
     // Long imports publish durable messages before the job finishes. Refresh
@@ -105,6 +115,7 @@ export function useMailSyncJobs(accounts: MailAccount[]) {
           ]);
         }
       }
+      requested.current.add(data.account_id);
       toast({ title: data.started ? 'Mail sync queued' : 'Mail sync already in progress', description: data.message });
       void client.invalidateQueries({ queryKey: key });
     },
@@ -118,7 +129,8 @@ export function useMailSyncJobs(accounts: MailAccount[]) {
       return account_id;
     },
     retry: false,
-    onSuccess: () => {
+    onSuccess: accountId => {
+      cancellationRequested.current.add(accountId);
       // The response only acknowledges the request. Wait for a cancelled
       // status before telling the user the job actually stopped.
       void client.invalidateQueries({ queryKey: key });

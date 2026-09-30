@@ -80,10 +80,17 @@ function installMailFixture(t, host) {
   return { account, imapConfigs, smtpConfigs };
 }
 
-async function exerciseMailConnectionPaths(account) {
+async function exerciseMailConnectionPaths(t, account) {
+  const runtime = require('../src/services/mail-engine/runtime');
+  t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
   await mail.testImapConnection(account);
   await mail.createRemoteMailFolderForUserAccounts(account.user_id, 'Folder', account.id);
-  await mail.syncMailAccount(account.id);
+  // Admission only persists a job; execute the real durable worker to cover its
+  // DNS check immediately before the provider connection (and after validation).
+  const job = { id: 'fixture-job', user_id: account.user_id, mail_account_id: account.id,
+    lease_owner: 'fixture-worker', worker_generation: 1, kind: 'sync' };
+  await assert.rejects(mail.runDurableMailJob(job, new AbortController().signal, async () => {}),
+    /non-public address|fixture transport stop/);
   await mail.processMailServerDeletionForAccount(account.id);
   await assert.rejects(mail.sendEmail(account.id, { to: 'nobody@example.test', subject: 'Fixture', body: '' }));
 }
@@ -94,7 +101,7 @@ test('every foreground/background mail path blocks a host rebound after account 
   t.mock.method(dns, 'lookup', async () => [{ address: privateNow ? '127.0.0.1' : publicAddress, family: 4 }]);
   assert.equal((await mail.validateMailHostPolicy({ imap_host: account.imap_host, smtp_host: account.smtp_host })).accepted, true);
   privateNow = true;
-  await exerciseMailConnectionPaths(account);
+  await exerciseMailConnectionPaths(t, account);
   assert.equal(imapConfigs.length, 0);
   assert.equal(smtpConfigs.length, 0);
 });
@@ -103,7 +110,7 @@ test('every mail connection pins its checked IP and preserves TLS hostname verif
   const { account, imapConfigs, smtpConfigs } = installMailFixture(t, 'mail.example');
   let lookups = 0;
   t.mock.method(dns, 'lookup', async () => { lookups += 1; return [{ address: publicAddress, family: 4 }]; });
-  await exerciseMailConnectionPaths(account);
+  await exerciseMailConnectionPaths(t, account);
   assert.equal(imapConfigs.length, 4);
   assert.equal(smtpConfigs.length, 1);
   assert.equal(lookups, 5);

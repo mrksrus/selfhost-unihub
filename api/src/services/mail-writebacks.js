@@ -1,15 +1,15 @@
-const crypto = require('crypto');
+const crypto = require('node:crypto');
 const { db } = require('../state');
 const { withMailAccountLock } = require('./mail-account-lock');
 const { guardImapConnection } = require('./mail-imap-guard');
 const { isSectionRestoreActive } = require('./restore-locks');
 const { isModuleEnabled, isModuleBackgroundEnabled } = require('./module-settings');
-const active = new Map();
-const queued = new Map();
-const foregroundReruns = new Set();
+const engine = require('./mail-engine/operations');
+const runtime = require('./mail-engine/runtime');
+const active = new Map(), queued = new Map(), foregroundReruns = new Set();
+const activeControllers = new Map();
 let dueCursor = '';
 const fields = { read: 'is_read', star: 'is_starred', move: 'folder' };
-const flags = { read: '\\Seen', star: '\\Flagged' };
 function fail(message, status = 409) { return Object.assign(new Error(message), { status }); }
 function remoteEligible(email) {
   return email.sync_mode === 'sync' && !email.is_draft && !email.is_legacy && !email.remote_missing
@@ -17,260 +17,298 @@ function remoteEligible(email) {
 }
 function verifiedIdentity(email) {
   return typeof email.remote_folder === 'string' && email.remote_folder.length > 0
-    && Number.isSafeInteger(Number(email.remote_uid)) && Number(email.remote_uid) > 0
-    && Number.isSafeInteger(Number(email.remote_uidvalidity)) && Number(email.remote_uidvalidity) > 0;
+    && [email.remote_uid, email.remote_uidvalidity].every(v => /^\d+$/.test(String(v)) && Number(v) >= 1 && Number(v) <= 4294967295);
 }
-async function cancelForAccount(connection, accountId, userId) {
-  await connection.execute(`UPDATE mail_writebacks SET status = 'conflict', error = 'Cancelled because account settings changed'
-    WHERE mail_account_id = ? AND user_id = ? AND status IN ('pending', 'failed')`, [accountId, userId]);
+function keyCheck(key) {
+  if (key === undefined || key === null) return null;
+  if (typeof key !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(key)) throw fail('Invalid Idempotency-Key', 400);
+  return key;
 }
-// Called inside the transaction that validates every selected message/destination.
-// Old local state is never uploaded: only these explicit user requests create commands.
-async function queueChanges(connection, userId, emails, changes) {
-  const accounts = new Set();
+function canonicalRequest(ids, changes) {
+  const clean = {};
+  for (const action of Object.keys(changes).sort()) {
+    if (!fields[action]) throw fail('Unsupported mail change', 400);
+    clean[action] = action === 'move' ? String(changes[action]) : Number(Boolean(changes[action]));
+  }
+  if (!Object.keys(clean).length) throw fail('No mail change requested', 400);
+  return crypto.createHash('sha256').update(JSON.stringify({ ids: [...ids].sort(), changes: clean })).digest('hex');
+}
+function receiptResponse(saved) {
+  const value = typeof saved === 'string' ? JSON.parse(saved) : saved;
+  return value?.recovery_required ? { ...value, sync_pending: false,
+    message: 'Recovered command requires provider revalidation; no mutation was replayed' } : value;
+}
+// Caller holds email row locks and a transaction. Never delete an accepted intent.
+async function queueChanges(cx, userId, emails, changes, options = {}) {
+  const accounts = new Set(), operationIds = options.operationIds || [], revisions = options.revisions || [];
   for (const email of emails) {
     for (const [action, value] of Object.entries(changes)) {
       if (!fields[action]) throw fail('Unsupported mail change', 400);
-      if (!remoteEligible(email) || email.is_active === 0) {
-        await connection.execute(`UPDATE emails SET ${fields[action]} = ? WHERE id = ? AND user_id = ?`, [value, email.id, userId]);
+      if (!remoteEligible(email) || Number(email.is_active) === 0) {
+        await cx.execute(`UPDATE emails SET ${fields[action]}=? WHERE id=? AND user_id=?`, [value, email.id, userId]);
         continue;
       }
       if (!verifiedIdentity(email)) throw fail('Sync this account before changing this message on the provider.');
-      let target = action === 'move' ? String(value) : (value ? '1' : '0'), targetFolder = null;
+      let target = action === 'move' ? String(value) : Number(Boolean(value)).toString(), targetFolder = null;
       if (action === 'move') {
-        const [mappings] = await connection.execute(`SELECT b.remote_name FROM mail_folder_remote_boxes b
-          JOIN mail_folders f ON f.id = b.folder_id
-          WHERE f.user_id = ? AND f.slug = ? AND b.mail_account_id = ?`, [userId, value, email.mail_account_id]);
-        if (mappings.length !== 1) throw fail('Choose a folder connected to this message’s provider account.');
-        target = mappings[0].remote_name;
-        targetFolder = value;
+        const [mappings] = await cx.execute(`SELECT b.remote_name FROM mail_folder_remote_boxes b JOIN mail_folders f ON f.id=b.folder_id
+          WHERE f.user_id=? AND f.slug=? AND b.mail_account_id=?`, [userId, value, email.mail_account_id]);
+        if (mappings.length !== 1) throw fail('Choose a folder connected to this provider account.');
+        targetFolder = value; target = mappings[0].remote_name;
       }
-      const [previous] = await connection.execute('SELECT * FROM mail_writebacks WHERE email_id = ? AND action = ? FOR UPDATE', [email.id, action]);
-      const old = previous[0];
-      if (action === 'move' && old?.dispatched && old.status !== 'done' && old.remote_folder === email.remote_folder && Number(old.remote_uid) === Number(email.remote_uid) && Number(old.remote_uidvalidity) === Number(email.remote_uidvalidity)) {
-        throw fail('The previous move needs reconciliation. Sync the account before moving this message again.');
+      const [oldRows] = await cx.execute(`SELECT * FROM mail_writebacks WHERE user_id=? AND mail_account_id=? AND email_id=? AND action=?
+        ORDER BY intent_revision DESC,created_at DESC,id DESC LIMIT 1 FOR UPDATE`, [userId, email.mail_account_id, email.id, action]);
+      const old = oldRows[0];
+      if (old && Number(old.is_current) && ['queued', 'executing', 'verifying', 'reconciling', 'retry_wait'].includes(old.state)
+        && old.target_value === target) {
+        operationIds.push(old.id); revisions.push(Number(old.intent_revision)); accounts.add(email.mail_account_id); continue;
       }
-      if (old?.status === 'pending' && old.target_value === target) { accounts.add(email.mail_account_id); continue; }
-      // If a prior flag command is in flight, its confirmed outcome is not yet
-      // in emails. A new opposite intent must be based on that possible write.
-      // If the old command never arrived, readRemote sees the new target already
-      // satisfied; in either case a stale completion cannot delete this new id.
-      const base = action === 'move' ? email.remote_folder
-        : old?.status === 'pending' && old.dispatched ? old.target_value : String(Number(!!email[fields[action]]));
-      await connection.execute('DELETE FROM mail_writebacks WHERE email_id = ? AND action = ?', [email.id, action]);
-      await connection.execute(`INSERT INTO mail_writebacks
-        (id, user_id, mail_account_id, email_id, action, target_value, base_value, target_folder, remote_folder, remote_uid, remote_uidvalidity)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [crypto.randomUUID(), userId, email.mail_account_id, email.id, action, target, base, targetFolder,
-        email.remote_folder, email.remote_uid, email.remote_uidvalidity]);
-      accounts.add(email.mail_account_id);
+      const revision = Number(old?.intent_revision || 0) + 1;
+      if (old && !Number.isSafeInteger(revision)) throw fail('Mail intent revision exhausted');
+      if (old && Number(old.is_current)) {
+        const pendingEffect = Number(old.dispatched) && old.state !== 'confirmed';
+        await cx.execute(`UPDATE mail_writebacks SET is_current=FALSE,state=?,status=? WHERE id=? AND user_id=? AND mail_account_id=?`,
+          [pendingEffect ? 'reconciling' : old.state === 'confirmed' ? 'confirmed' : 'superseded',
+            pendingEffect ? 'pending' : old.state === 'confirmed' ? 'done' : 'done', old.id, userId, email.mail_account_id]);
+      }
+      const [[source]] = await cx.execute(`SELECT o.id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes b ON b.id=o.mailbox_id
+        WHERE o.user_id=? AND o.mail_account_id=? AND o.email_id=? AND o.presence='present'
+        AND BINARY b.remote_name=BINARY ? AND o.uidvalidity=? AND o.uid=? LIMIT 1`,
+        [userId, email.mail_account_id, email.id, email.remote_folder, email.remote_uidvalidity, email.remote_uid]);
+      const base = action === 'move' ? email.remote_folder : old && Number(old.dispatched) ? old.target_value : Number(Boolean(email[fields[action]])).toString();
+      const id = crypto.randomUUID();
+      await cx.execute(`INSERT INTO mail_writebacks
+        (id,user_id,mail_account_id,email_id,action,target_value,base_value,target_folder,remote_folder,remote_uid,remote_uidvalidity,
+          status,state,is_current,intent_revision,client_key,source_occurrence_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending','queued',TRUE,?,?,?)`,
+      [id, userId, email.mail_account_id, email.id, action, target, base, targetFolder, email.remote_folder,
+        email.remote_uid, email.remote_uidvalidity, revision, options.idempotencyKey || null, source?.id || null]);
+      await runtime.enqueueJob({ userId, accountId: email.mail_account_id, operationId: id, kind: 'operation', priority: 0,
+        foreground: Number(email.is_active) === 1 }, cx);
+      operationIds.push(id); revisions.push(revision); accounts.add(email.mail_account_id);
     }
   }
   return accounts;
 }
-async function mutateMessages(userId, ids, changes, validate = async () => {}) {
+async function mutateMessages(userId, ids, changes, validate = async () => {}, options = {}) {
   if (!Array.isArray(ids) || !ids.length || ids.length > 500 || ids.some(id => typeof id !== 'string')) throw fail('Select between 1 and 500 messages.', 400);
-  ids = [...new Set(ids)];
-  const placeholders = ids.map(() => '?').join(',');
+  ids = [...new Set(ids)].sort();
+  const key = keyCheck(options?.idempotencyKey);
+  const requestHash = canonicalRequest(ids, changes);
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore in progress');
   if (!await isModuleEnabled(userId, 'mail')) throw fail('Mail module is disabled');
-  // DB row locks, not the network account lock: all-or-nothing acceptance stays
-  // fast even while an IMAP scan owns the provider connection for this account.
-  const connection = await db.getConnection();
-  let accounts;
+  const cx = await db.getConnection(); let accounts = new Set(), response;
   try {
-    await connection.beginTransaction();
-    const [emails] = await connection.execute(`SELECT e.*, a.sync_mode, a.is_active FROM emails e
-      LEFT JOIN mail_accounts a ON a.id = e.mail_account_id AND a.user_id = e.user_id
-      WHERE e.id IN (${placeholders}) AND e.user_id = ? FOR UPDATE`, [...ids, userId]);
+    await cx.beginTransaction();
+    if (key) {
+      const [[prior]] = await cx.execute('SELECT * FROM mail_command_receipts WHERE user_id=? AND client_key=? FOR UPDATE', [userId, key]);
+      if (prior) {
+        if (prior.request_hash !== requestHash) throw fail('Idempotency-Key already used for a different request');
+        response = receiptResponse(prior.response_json);
+        await cx.commit(); return response;
+      }
+      await cx.execute(`INSERT INTO mail_command_receipts (user_id,client_key,request_hash,response_json) VALUES (?,?,?,?)`,
+        [userId, key, requestHash, JSON.stringify({ pending: true })]);
+    }
+    const placeholders = ids.map(() => '?').join(',');
+    const [emails] = await cx.execute(`SELECT e.*,a.sync_mode,a.is_active FROM emails e
+      LEFT JOIN mail_accounts a ON a.id=e.mail_account_id AND a.user_id=e.user_id
+      WHERE e.id IN (${placeholders}) AND e.user_id=? ORDER BY e.id FOR UPDATE`, [...ids, userId]);
     if (emails.length !== ids.length) throw fail('Some selected emails are unavailable', 404);
     if (await isSectionRestoreActive(userId, 'mail') || !await isModuleEnabled(userId, 'mail')) throw fail('Mail is paused');
-    await validate(connection, emails);
-    accounts = await queueChanges(connection, userId, emails, changes);
-    await connection.commit();
-  } catch (error) { await connection.rollback(); throw error; }
-  finally { connection.release(); }
+    await validate(cx, emails);
+    const operationIds = [], revisions = [];
+    accounts = await queueChanges(cx, userId, emails, changes, { idempotencyKey: key, operationIds, revisions });
+    response = { message: accounts.size ? 'Provider changes queued' : 'Messages updated', sync_pending: accounts.size > 0,
+      operation_ids: operationIds, accepted_revision: revisions.length ? Math.max(...revisions) : null };
+    if (key) await cx.execute(`UPDATE mail_command_receipts SET response_json=? WHERE user_id=? AND client_key=?`,
+      [JSON.stringify(response), userId, key]);
+    await cx.commit();
+  } catch (error) {
+    await cx.rollback();
+    if (key && error.code === 'ER_DUP_ENTRY') {
+      const [[prior]] = await db.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id=? AND client_key=?', [userId, key]);
+      if (prior) {
+        if (prior.request_hash !== requestHash) throw fail('Idempotency-Key already used for a different request');
+        return receiptResponse(prior.response_json);
+      }
+    }
+    throw error;
+  } finally { cx.release(); }
   for (const accountId of accounts) setImmediate(() => startWritebacks(accountId));
-  return { message: accounts.size ? 'Provider changes queued' : 'Messages updated', sync_pending: accounts.size > 0 };
+  return response;
 }
-function imapCall(imap, method, ...args) {
-  return new Promise((resolve, reject) => imap[method](...args, (error, result) => error ? reject(error) : resolve(result)));
+async function getOperationReceipt(userId, key) {
+  keyCheck(key);
+  if (!key) throw fail('Idempotency-Key required', 400);
+  const [[receipt]] = await db.execute('SELECT response_json FROM mail_command_receipts WHERE user_id=? AND client_key=?', [userId, key]);
+  if (!receipt) return { found: false, response: null, operations: [] };
+  const response = receiptResponse(receipt.response_json);
+  if (!response?.operation_ids?.length) return { found: true, response, operations: [] };
+  const [ops] = await db.execute(`SELECT id,email_id,action,target_value,status,state,is_current,intent_revision,dispatched,attempts,error,available_at,created_at,updated_at
+    FROM mail_writebacks WHERE user_id=? AND id IN (${response.operation_ids.map(() => '?').join(',')}) ORDER BY created_at,id`,
+    [userId, ...response.operation_ids]);
+  return { found: true, response, operations: ops.map(projectOperation) };
 }
-async function readRemote(connection, op) {
-  const box = await connection.openBox(op.remote_folder, false);
-  if (Number(box.uidvalidity) !== Number(op.remote_uidvalidity)) throw fail('Mailbox identity changed; server state retained');
-  const rows = await connection.search([['UID', Number(op.remote_uid)]], { bodies: [], markSeen: false });
-  if (rows.length !== 1 || Number(rows[0].attributes.uid) !== Number(op.remote_uid)) throw fail('Message moved or disappeared on the server');
-  return rows[0].attributes;
+function projectOperation(op) {
+  return { ...op, is_current: Boolean(Number(op.is_current)), can_retry: ['needs_attention', 'reconciling', 'retry_wait'].includes(op.state),
+    retry_action: op.action === 'move' && Number(op.dispatched) ? 'check_outcome' : 'retry' };
 }
-// Pure protocol boundary, dependency-injected in focused tests. Never use SET FLAGS
-// or the library's COPY/EXPUNGE fallback for MOVE.
-async function executeOperation(connection, op, { markDispatched, read = readRemote } = {}) {
-  const remote = await read(connection, op);
-  const imap = connection.imap;
-  if (op.action === 'move') {
-    if (op.target_value === op.remote_folder) return { moved: false };
-    if (op.dispatched) throw fail('Previous move outcome is uncertain; sync and check the provider before another move');
-    if (!imap.serverSupports('MOVE')) throw fail('This server does not support safe IMAP MOVE; move this message at the provider');
-    if (Number(op.attempts) >= 2) throw fail('Automatic retry limit reached', 422);
-    await markDispatched();
-    const destinationUid = await imapCall(imap, 'move', Number(op.remote_uid), op.target_value);
-    return { moved: true, destinationUid: /^\d+$/.test(String(destinationUid)) ? Number(destinationUid) : null };
+async function listWritebacks(userId, { accountId = null, includeHistory = false, limit = 100 } = {}) {
+  limit = String(Math.floor(Math.min(200, Math.max(1, Number(limit) || 100))));
+  const [ops] = await db.execute(`SELECT id,email_id,action,target_value,target_folder,status,state,is_current,intent_revision,
+    attempts,error,available_at,created_at,updated_at,dispatched FROM mail_writebacks
+    WHERE user_id=? ${accountId ? 'AND mail_account_id=?' : ''}
+      ${includeHistory ? '' : "AND (is_current=TRUE OR state IN ('reconciling','needs_attention','executing','verifying'))"}
+    ORDER BY created_at DESC,id DESC LIMIT ?`, accountId ? [userId, accountId, limit] : [userId, limit]);
+  return { operations: ops.map(projectOperation) };
+}
+async function cancelWriteback(userId, id) {
+  const [result] = await db.execute(`UPDATE mail_writebacks SET state='cancelled',status='done',is_current=FALSE,error=NULL
+    WHERE id=? AND user_id=? AND state='queued' AND dispatched=FALSE`, [id, userId]);
+  if (!result.affectedRows) {
+    const [[op]] = await db.execute('SELECT id FROM mail_writebacks WHERE id=? AND user_id=?', [id, userId]);
+    throw fail(op ? 'Only undispatched queued changes can be cancelled' : 'Change not found', op ? 409 : 404);
   }
-  const flag = flags[op.action];
-  if (!flag) throw fail('Unsupported mail change');
-  const current = remote.flags.includes(flag) ? '1' : '0';
-  if (current === op.target_value) return { value: Number(current) };
-  if (current !== op.base_value) throw fail('Server state changed; local action was not applied');
-  if (op.dispatched && (!op.dispatch_modseq || String(remote.modseq) !== op.dispatch_modseq)) {
-    throw fail('Provider state changed after an interrupted update; server state retained');
-  }
-  const conditional = remote.modseq && !imap._box?.nomodseq && imap.serverSupports('CONDSTORE');
-  if (Number(op.attempts) >= 2) throw fail('Automatic retry limit reached', 422);
-  await markDispatched(conditional ? String(remote.modseq) : null);
-  const method = op.target_value === '1' ? 'addFlags' : 'delFlags';
-  if (conditional) await imapCall(imap, method + 'Since', Number(op.remote_uid), flag, String(remote.modseq));
-  else await imapCall(imap, method, Number(op.remote_uid), flag);
-  // node-imap does not expose tagged OK [MODIFIED] for conditional STORE.
-  // Read-back is required to distinguish a rejected conditional write from success.
-  const after = await read(connection, op);
-  if ((after.flags.includes(flag) ? '1' : '0') !== op.target_value) throw fail('Server changed during the update; server state retained');
-  return { value: Number(op.target_value) };
+  return { message: 'Queued change cancelled' };
 }
-async function settle(op, status, error = null) {
-  await db.execute("UPDATE mail_writebacks SET status = ?, error = ? WHERE id = ? AND user_id = ? AND status = 'pending'",
-    [status, error, op.id, op.user_id]);
+async function cancelForAccount(cx, accountId, userId) {
+  // Disconnect/settings pause does not erase an accepted or uncertain provider effect.
+  await cx.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',error='Account paused; check provider after reconnect'
+    WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN ('executing','verifying','retry_wait')`, [accountId, userId]);
 }
-async function processPending(account, connection, { background = false } = {}) {
-  const [ops] = await db.execute(`SELECT * FROM mail_writebacks WHERE mail_account_id = ? AND user_id = ?
-    AND status = 'pending' AND available_at <= UTC_TIMESTAMP()
-    ORDER BY (action = 'move'), created_at, id LIMIT 25`, [account.id, account.user_id]);
-  let needsSync = false, connectionFailed = false;
-  for (const op of ops) {
-    if (await isSectionRestoreActive(account.user_id, 'mail') || !await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) break;
-    const [rows] = await db.execute(`SELECT e.*, a.sync_mode, a.is_active FROM emails e JOIN mail_accounts a ON a.id = e.mail_account_id
-      WHERE e.id = ? AND e.user_id = ? AND a.user_id = ?`, [op.email_id, op.user_id, op.user_id]);
-    const email = rows[0];
-    if (!email || !email.is_active || !remoteEligible(email) || !verifiedIdentity(email)
-      || email.remote_folder !== op.remote_folder || Number(email.remote_uid) !== Number(op.remote_uid)
-      || Number(email.remote_uidvalidity) !== Number(op.remote_uidvalidity)) {
-      await settle(op, 'conflict', 'Message or account changed; server state retained'); continue;
-    }
-    try {
-      const [claimed] = await db.execute("UPDATE mail_writebacks SET attempts = attempts + 1 WHERE id = ? AND status = 'pending'", [op.id]);
-      if (!claimed.affectedRows) continue;
-      const result = await executeOperation(connection, op, { markDispatched: async (modseq = null) => {
-        // Persist BEFORE the remote command: a crash must not replay an uncertain move.
-        if (await isSectionRestoreActive(op.user_id, 'mail') || !await (background ? isModuleBackgroundEnabled : isModuleEnabled)(op.user_id, 'mail')) throw fail('Mail paused before the provider update');
-        const [dispatch] = await db.execute(`UPDATE mail_writebacks SET dispatched = TRUE, dispatch_modseq = ?
-          WHERE id = ? AND user_id = ? AND status = 'pending'
-          AND EXISTS (SELECT 1 FROM mail_accounts a WHERE a.id = mail_writebacks.mail_account_id
-            AND a.user_id = ? AND a.sync_mode = 'sync' AND a.is_active = TRUE)`, [modseq, op.id, op.user_id, op.user_id]);
-        if (!dispatch.affectedRows) throw fail('Change cancelled before the provider update');
-        op.dispatched = true;
-      } });
-      if (op.action === 'move') {
-        needsSync = true;
-        if (result.moved) {
-          // Verify COPYUID's destination against the source's immutable raw hash.
-          if (!result.destinationUid || !email.raw_sha256) throw fail('Move accepted; refresh mail to reconcile its new identity');
-          const box = await connection.openBox(op.target_value, true);
-          const messages = await connection.search([['UID', result.destinationUid]], { bodies: [''], markSeen: false });
-          const raw = messages[0]?.parts?.find(part => part.which === '')?.body;
-          const hash = raw && crypto.createHash('sha256').update(raw).digest('hex');
-          if (messages.length !== 1 || hash !== email.raw_sha256 || !Number(box.uidvalidity)) throw fail('Move accepted; refresh mail to reconcile its new identity');
-          await db.execute(`UPDATE emails SET folder = ?, remote_folder = ?, remote_uid = ?, remote_uidvalidity = ? WHERE id = ? AND user_id = ?`,
-            [op.target_folder, op.target_value, result.destinationUid, box.uidvalidity, op.email_id, op.user_id]);
-        }
-      } else await db.execute(`UPDATE emails SET ${fields[op.action]} = ? WHERE id = ? AND user_id = ?`, [result.value, op.email_id, op.user_id]);
-      await settle(op, 'done');
-    } catch (error) {
-      if (error.status === 409) { await settle(op, 'conflict', error.message); needsSync = true; }
-      else if (op.action === 'move' && op.dispatched) {
-        await settle(op, 'conflict', 'Move outcome uncertain; sync and check the provider before another move'); needsSync = true;
-      } else if (Number(op.attempts) + 1 >= 2) await settle(op, 'failed', error.message || 'Provider update failed after one retry');
-      else await db.execute(`UPDATE mail_writebacks SET error = ?,
-        available_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 MINUTE) WHERE id = ? AND status = 'pending'`,
-      [error.message || 'Provider connection interrupted', op.id]);
-      if (error.status !== 409) { connectionFailed = true; break; } // A broken connection is not reusable.
-    }
-  }
-  await db.execute("DELETE FROM mail_writebacks WHERE mail_account_id = ? AND status = 'done' AND updated_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 7 DAY)", [account.id]);
-  return { needsSync, connectionFailed };
+async function processPending(account, connection, options = {}) {
+  // The legacy full-scan caller has no durable lease. It must not become a
+  // second remote writer while the claimed operation scheduler runs.
+  if (!options.workerId || !options.workerGeneration) return { needsSync: false, connectionFailed: false };
+  return engine.processDueOperations(account, connection, options);
 }
 function runWritebacks(accountId, background) {
-  let needsSync = false;
-  const promise = withMailAccountLock(accountId, async () => {
-    let connection;
-    try {
-      const [[account]] = await db.execute('SELECT * FROM mail_accounts WHERE id = ?', [accountId]);
-      if (!account || account.sync_mode !== 'sync' || !account.is_active || await isSectionRestoreActive(account.user_id, 'mail')
-        || !await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) return;
-      const { buildImapConnectionConfig } = require('./mail');
-      const config = await buildImapConnectionConfig(account, { keepalive: false });
-      if (!config) throw new Error('Missing credentials');
-      config.imap.connTimeout = 15000; config.imap.authTimeout = 15000; config.imap.socketTimeout = 30000;
-      connection = guardImapConnection(await require('imap-simple').connect(config));
-      connection.on('error', () => {});
-      ({ needsSync } = await processPending(account, connection, { background }));
-    } catch (error) {
-      // Connection failures occur before per-command processing. Count and bound
-      // them too; never silently leave a request pending forever.
-      await db.execute(`UPDATE mail_writebacks SET attempts = attempts + 1,
-        status = IF(attempts >= 2, 'failed', 'pending'), error = ?,
-        available_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 MINUTE)
-        WHERE mail_account_id = ? AND status = 'pending' AND available_at <= UTC_TIMESTAMP()`,
-      [(error.message || 'Could not connect to provider').slice(0, 255), accountId]).catch(() => {});
-    } finally { if (connection) connection.end(); }
-  }).catch(error => console.error('[MAIL WRITEBACK] Worker failed:', error.message)).finally(() => {
+  let needsSync = false, processedAccount = accountId;
+  const promise = (async () => {
+    const workerId = `writeback:${process.pid}:${crypto.randomUUID()}`;
+    // Cooperative admission: read-only backlog yields at a safe boundary.
+    await require('./mail').yieldMailReadWork?.(accountId);
+    // Claim a durable operation job, not an in-process queue entry. A different
+    // account may be first in fair priority order; serialize its provider writer.
+    const job = await runtime.claimDueJob({ workerId, accountId, kinds: ['operation', 'reconcile'], leaseSeconds: 60 });
+    if (!job) return;
+    processedAccount = job.mail_account_id;
+    await require('./mail').yieldMailReadWork?.(processedAccount);
+    await withMailAccountLock(processedAccount, async () => {
+      let connection, account, state = 'idle', errorText = null;
+      const controller = new AbortController();
+      activeControllers.set(processedAccount, controller);
+      const generation = Number(job.worker_generation);
+      let heartbeat, heartbeatPending = Promise.resolve();
+      const pulse = async () => {
+        if (controller.signal.aborted) return;
+        try {
+          const status = await runtime.updateJob({ jobId: job.id, accountId: processedAccount,
+            workerId, generation, phase: 'operations', leaseSeconds: 60 });
+          if (status.cancellationRequested) controller.abort();
+        } catch { controller.abort(); }
+      };
+      try {
+        heartbeat = setInterval(() => { heartbeatPending = heartbeatPending.then(pulse); }, 10000);
+        heartbeat.unref?.();
+        await pulse();
+        if (controller.signal.aborted) { state = 'cancelled'; return; }
+        [[account]] = await db.execute('SELECT * FROM mail_accounts WHERE id=? AND user_id=?', [processedAccount, job.user_id]);
+        if (!account || account.sync_mode !== 'sync' || !Number(account.is_active) || account.disconnected_at
+          || await isSectionRestoreActive(account.user_id, 'mail')
+          || !await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) {
+          state = 'paused'; return;
+        }
+        const { buildImapConnectionConfig } = require('./mail');
+        const config = await buildImapConnectionConfig(account, { keepalive: false });
+        if (!config) throw new Error('Missing credentials');
+        config.imap.connTimeout = 15000; config.imap.authTimeout = 15000; config.imap.socketTimeout = 30000;
+        const connected = await require('imap-simple').connect(config);
+        connection = guardImapConnection(connected, { signal: controller.signal });
+        connection.on('error', () => {});
+        await pulse();
+        if (controller.signal.aborted) { state = 'cancelled'; return; }
+        ({ needsSync } = await processPending(account, connection, { background, workerId,
+          workerGeneration: generation, jobId: job.id, operationId: job.operation_id,
+          signal: controller.signal }));
+      } catch (error) {
+        if (controller.signal.aborted || error.code === 'MAIL_WORKER_FENCED') {
+          state = 'cancelled';
+        } else {
+          state = 'error'; errorText = /^[A-Z][A-Z0-9_]{1,63}$/.test(String(error.code || ''))
+            ? error.code : 'Provider connection unavailable';
+          if (account) await engine.deferAccountOffline(account.id, account.user_id, error);
+        }
+      } finally {
+        clearInterval(heartbeat);
+        if (activeControllers.get(processedAccount) === controller) activeControllers.delete(processedAccount);
+        await heartbeatPending;
+        if (connection) connection.end();
+        // Expired/paused generation must not commit a stale completion.
+        try { await runtime.completeJob({ jobId: job.id, accountId: processedAccount, workerId,
+          generation, state: controller.signal.aborted ? 'cancelled' : state, error: errorText }); }
+        catch (error) { if (error.code !== 'MAIL_WORKER_FENCED') throw error; }
+      }
+    });
+  })().catch(error => console.error('[MAIL WRITEBACK] Worker failed:', error.code || 'provider unavailable')).finally(() => {
     active.delete(accountId);
-    if (needsSync) setImmediate(() => require('./mail').syncMailAccount(accountId).catch(() => {}));
+    if (needsSync) setImmediate(() => require('./mail').syncMailAccount(processedAccount).catch(() => {}));
     if (foregroundReruns.delete(accountId)) startWritebacks(accountId);
     drainWritebacks();
   });
-  active.set(accountId, promise);
-  return promise;
+  active.set(accountId, promise); return promise;
 }
 function drainWritebacks() {
   if (!queued.size || active.size >= 4) return;
-  // A sync owns its account connection, but cannot occupy one of the four
-  // independent provider slots while waiting. Checkpoints process that queue.
   for (const [id, job] of queued) {
     if (active.size >= 4) break;
-    if (require('./mail').isMailAccountSyncRunning(id)) continue;
-    queued.delete(id);
-    runWritebacks(id, job.background).then(job.resolve, job.reject);
+    if (require('./mail').isMailAccountWriteRunning(id)) continue;
+    queued.delete(id); runWritebacks(id, job.background).then(job.resolve, job.reject);
   }
+}
+function stopWritebacks(accountId) {
+  const id = String(accountId), controller = activeControllers.get(id), waiting = queued.get(id);
+  foregroundReruns.delete(id);
+  if (waiting) { queued.delete(id); waiting.resolve({ paused: true }); }
+  controller?.abort();
+  return Boolean(controller || waiting);
 }
 function startWritebacks(accountId, { background = false } = {}) {
   const id = String(accountId);
-  if (active.has(id)) {
-    if (!background) foregroundReruns.add(id);
-    return active.get(id);
-  }
-  if (queued.has(id)) {
-    if (!background) queued.get(id).background = false;
-    return queued.get(id).promise;
-  }
+  if (active.has(id)) { if (!background) foregroundReruns.add(id); return active.get(id); }
+  if (queued.has(id)) { if (!background) queued.get(id).background = false; return queued.get(id).promise; }
   let resolve, reject;
   const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-  queued.set(id, { promise, resolve, reject, background });
-  drainWritebacks();
-  return promise;
+  queued.set(id, { promise, resolve, reject, background }); drainWritebacks(); return promise;
 }
-// Independent of full sync, invoked on startup and at a short fixed cadence.
-// The indexed due predicate excludes failed/manual-review and uncertain moves.
 async function runDueWritebacks() {
-  const dueSql = `SELECT DISTINCT w.mail_account_id FROM mail_writebacks w
-    JOIN mail_accounts a ON a.id = w.mail_account_id AND a.user_id = w.user_id
-    WHERE w.status = 'pending' AND w.available_at <= UTC_TIMESTAMP()
-      AND a.is_active = TRUE AND a.sync_mode = 'sync' AND w.mail_account_id > ?
-    ORDER BY w.mail_account_id LIMIT 20`;
+  const dueSql = `SELECT w.id,w.user_id,w.mail_account_id,w.state,w.action FROM mail_writebacks w
+    JOIN mail_accounts a ON a.id=w.mail_account_id AND a.user_id=w.user_id
+    WHERE w.state IN ('queued','retry_wait','executing','verifying','reconciling') AND w.available_at<=UTC_TIMESTAMP()
+      AND a.is_active=TRUE AND a.disconnected_at IS NULL AND a.sync_mode='sync' AND w.mail_account_id>?
+    ORDER BY w.mail_account_id,w.created_at LIMIT 20`;
   let [rows] = await db.execute(dueSql, [dueCursor]);
   if (!rows.length && dueCursor) { dueCursor = ''; [rows] = await db.execute(dueSql, [dueCursor]); }
   for (const row of rows) {
     dueCursor = row.mail_account_id;
-    startWritebacks(row.mail_account_id, { background: true });
+    if (!await isModuleBackgroundEnabled(row.user_id, 'mail')) continue;
+    if (row.state === 'reconciling' && row.action === 'move') {
+      // Exactly one bounded, nonmutating outcome check. It reaches confirmed
+      // on direct evidence or needs_attention, never a perpetual sync loop.
+      await runtime.enqueueJob({ userId: row.user_id, accountId: row.mail_account_id,
+        operationId: row.id, kind: 'reconcile', priority: 0 });
+      startWritebacks(row.mail_account_id, { background: true });
+    } else {
+      await db.execute(`UPDATE mail_engine_jobs j JOIN mail_engine_accounts a ON a.mail_account_id=j.mail_account_id
+        SET j.state='queued',j.due_at=UTC_TIMESTAMP()
+        WHERE j.operation_id=? AND j.user_id=? AND j.mail_account_id=? AND j.state='paused'
+          AND a.user_id=? AND a.paused_reason IS NULL`,
+      [row.id, row.user_id, row.mail_account_id, row.user_id]);
+      await runtime.enqueueJob({ userId: row.user_id, accountId: row.mail_account_id,
+        operationId: row.id, kind: 'operation', priority: 0 });
+      startWritebacks(row.mail_account_id, { background: true });
+    }
   }
   return rows.length;
 }
@@ -278,11 +316,59 @@ async function retryWriteback(userId, id) {
   const [[op]] = await db.execute('SELECT * FROM mail_writebacks WHERE id = ? AND user_id = ?', [id, userId]);
   if (!op) throw fail('Change not found', 404);
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore in progress');
-  const [result] = await db.execute(`UPDATE mail_writebacks SET status = 'pending', attempts = 0, error = NULL, available_at = UTC_TIMESTAMP()
-    WHERE id = ? AND user_id = ? AND status = 'failed' AND NOT (action = 'move' AND dispatched = TRUE)`, [id, userId]);
-  if (!result.affectedRows) throw fail('This change cannot be retried; refresh mail and check its server state.');
-  startWritebacks(op.mail_account_id);
-  return { message: 'Retry queued' };
+  if (op.action === 'move' && Number(op.dispatched)) {
+    await db.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',available_at=UTC_TIMESTAMP()
+      WHERE id=? AND user_id=? AND state IN ('needs_attention','reconciling','retry_wait')`, [id, userId]);
+    await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id,
+      kind: 'reconcile', priority: 0, foreground: true });
+    startWritebacks(op.mail_account_id);
+    // No provider mutation. The bounded outcome checker takes this ID.
+    return { message: 'Move outcome check queued', retry_action: 'check_outcome' };
+  }
+  const [result] = await db.execute(`UPDATE mail_writebacks SET state='queued',status='pending',error=NULL,available_at=UTC_TIMESTAMP()
+    WHERE id=? AND user_id=? AND is_current=TRUE AND dispatched=FALSE AND state IN ('needs_attention','retry_wait','rejected')`, [id, userId]);
+  if (!result.affectedRows) throw fail('This change cannot be safely retried; check provider outcome.');
+  await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id, kind: 'operation', priority: 0, foreground: true });
+  startWritebacks(op.mail_account_id); return { message: 'Retry queued', retry_action: 'retry' };
 }
-module.exports = { mutateMessages, queueChanges, processPending, startWritebacks, runDueWritebacks, drainWritebacks, retryWriteback, cancelForAccount,
-  isWritebackRunning: () => active.size > 0, executeOperation, remoteEligible, verifiedIdentity };
+// Compatibility pure protocol probe retained for older dependency-injected tests.
+// The durable worker above exclusively uses the guarded transport adapter.
+function imapCall(imap, method, ...args) {
+  return new Promise((resolve, reject) => imap[method](...args, (error, result) => error ? reject(error) : resolve(result)));
+}
+async function legacyReadRemote(connection, op) {
+  const box = await connection.openBox(op.remote_folder, false);
+  if (Number(box.uidvalidity) !== Number(op.remote_uidvalidity)) throw fail('Mailbox identity changed; server state retained');
+  const rows = await connection.search([['UID', Number(op.remote_uid)]], { bodies: [], markSeen: false });
+  if (rows.length !== 1 || Number(rows[0].attributes.uid) !== Number(op.remote_uid)) throw fail('Message moved or disappeared on the server');
+  return rows[0].attributes;
+}
+async function executeOperation(connection, op, { markDispatched, read = legacyReadRemote } = {}) {
+  const remote = await read(connection, op), imap = connection.imap;
+  if (op.action === 'move') {
+    if (op.target_value === op.remote_folder) return { moved: false };
+    if (op.dispatched) throw fail('Previous MOVE outcome must be reconciled, not repeated');
+    if (!imap.serverSupports('MOVE')) throw fail('Native MOVE unavailable; no fallback');
+    await markDispatched();
+    const destinationUid = await imapCall(imap, 'move', Number(op.remote_uid), op.target_value);
+    return { moved: true, destinationUid: /^\d+$/.test(String(destinationUid)) ? Number(destinationUid) : null };
+  }
+  const flag = op.action === 'read' ? '\\Seen' : op.action === 'star' ? '\\Flagged' : null;
+  if (!flag) throw fail('Unsupported mail change');
+  const current = remote.flags.includes(flag) ? '1' : '0';
+  if (current === op.target_value) return { value: Number(current) };
+  if (current !== op.base_value) throw fail('Server state changed; local action was not applied');
+  if (op.dispatched && (!op.dispatch_modseq || String(remote.modseq) !== op.dispatch_modseq))
+    throw fail('Provider state changed after interrupted update; server state retained');
+  const conditional = remote.modseq && !imap._box?.nomodseq && imap.serverSupports('CONDSTORE');
+  await markDispatched(conditional ? String(remote.modseq) : null);
+  const method = op.target_value === '1' ? 'addFlags' : 'delFlags';
+  if (conditional) await imapCall(imap, method + 'Since', Number(op.remote_uid), flag, String(remote.modseq));
+  else await imapCall(imap, method, Number(op.remote_uid), flag);
+  const after = await read(connection, op);
+  if ((after.flags.includes(flag) ? '1' : '0') !== op.target_value) throw fail('Server changed during update; server state retained');
+  return { value: Number(op.target_value) };
+}
+module.exports = { mutateMessages, queueChanges, processPending, startWritebacks, stopWritebacks, runDueWritebacks, drainWritebacks,
+  retryWriteback, cancelForAccount, cancelWriteback, getOperationReceipt, listWritebacks, executeOperation,
+  isWritebackRunning: () => active.size > 0, remoteEligible, verifiedIdentity, keyCheck, canonicalRequest };

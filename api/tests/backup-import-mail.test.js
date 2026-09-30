@@ -129,7 +129,9 @@ test('backup import maps restored mail to existing account and email sync identi
   });
 
   assert.equal(result.valid, true);
-  const accountWrite = calls.find(call => call.sql.includes('UPDATE mail_accounts'));
+  const accountWrite = calls.find(call => call.sql.includes('UPDATE mail_accounts') && call.sql.includes('SET email_address = ?'));
+  assert.ok(calls.some(call => call.sql.includes('UPDATE mail_accounts SET is_active = FALSE')), 'Restore must pause connections until provider revalidation');
+  assert.ok(calls.every(call => !/DELETE FROM mail_writebacks/.test(call.sql)), 'Restore must preserve accepted intent history');
   assert.equal(accountWrite.params[0], 'person@example.com');
   assert.equal(accountWrite.params[15], '2026-05-15 10:00:00');
   assert.equal(accountWrite.params[16], 'existing-account');

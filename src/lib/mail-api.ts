@@ -12,6 +12,7 @@ export interface MailAccount {
   smtp_host?: string | null;
   smtp_port?: number | null;
   is_active: boolean;
+  disconnected_at?: string | null;
   last_synced_at: string | null;
   sync_fetch_limit?: string;
   sync_mode?: 'download' | 'sync';
@@ -99,6 +100,12 @@ export interface MailWriteback {
   email_id: string;
   action: 'read' | 'star' | 'move';
   status: 'pending' | 'failed' | 'conflict' | 'done';
+  state?: 'queued' | 'executing' | 'verifying' | 'reconciling' | 'retry_wait' | 'confirmed' | 'needs_attention' | 'rejected' | 'cancelled' | 'superseded';
+  is_current?: boolean;
+  can_retry?: boolean;
+  retry_action?: 'check_outcome' | 'retry' | null;
+  attempts?: number;
+  due_at?: string | null;
   error: string | null;
   created_at: string;
 }

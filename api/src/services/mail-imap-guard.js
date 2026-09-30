@@ -3,8 +3,10 @@
 // whole worker would release its account lock while its continuation can write.
 const { installConditionalStore } = require('./mail-imap-conditional-store');
 const IMAP_COMMAND_TIMEOUT_MS = 120000;
+const guardedRuns = new WeakMap();
 
 function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIMEOUT_MS } = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) throw new TypeError('Invalid IMAP command deadline');
   installConditionalStore(connection.imap);
   const pending = new Set();
   let stopped = null;
@@ -42,6 +44,8 @@ function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIME
       try { start(finish); } catch (error) { finish(error); }
     });
   }
+  // Streaming FETCH has no callback wrapper; share this connection's deadline.
+  guardedRuns.set(connection, run);
   for (const method of ['getBoxes', 'openBox', 'search']) {
     if (typeof connection[method] !== 'function') continue;
     const original = connection[method].bind(connection);
@@ -67,4 +71,10 @@ function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIME
   return connection;
 }
 
-module.exports = { guardImapConnection, IMAP_COMMAND_TIMEOUT_MS };
+function runGuardedImap(connection, start) {
+  const run = guardedRuns.get(connection);
+  if (!run) throw new Error('A guarded IMAP connection is required');
+  return run(start);
+}
+
+module.exports = { guardImapConnection, runGuardedImap, IMAP_COMMAND_TIMEOUT_MS };

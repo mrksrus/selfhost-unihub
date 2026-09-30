@@ -11,6 +11,8 @@ const { backfillCalendarOwnership } = require('./calendar');
 const { getDatabaseConfig } = require('./database-config');
 const { runMigrations } = require('./database-migrations');
 const { verifyDatabaseInventory } = require('./data-inventory');
+const { migrateMailEngineSchema, backfillMailEngine, verifyMailEngineSchema,
+  migrateManualMailRefresh, verifyManualMailRefresh } = require('./mail-engine/schema');
 
 function isPlaceholderSecret(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -263,6 +265,34 @@ async function ensureSchema() {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
       },
       verify: connection => verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 5 }),
+    },
+    {
+      id: 6,
+      name: 'mail-engine-additive-storage',
+      up: migrateMailEngineSchema,
+      verify: verifyMailEngineSchema,
+    },
+    {
+      id: 7,
+      name: 'mail-engine-resumable-backfill',
+      up: connection => backfillMailEngine(connection),
+      verify: async connection => {
+        await verifyMailEngineSchema(connection);
+        const [[row]] = await connection.execute('SELECT COUNT(*) AS remaining FROM mail_writebacks WHERE state IS NULL');
+        if (Number(row.remaining) !== 0) throw new Error('Legacy writeback classification incomplete');
+        for (const source of ['emails', 'mail_writebacks']) {
+          const [[progress]] = await connection.execute('SELECT last_id FROM mail_engine_migration_progress WHERE source_table = ?', [source]);
+          if (!progress) throw new Error(`Missing ${source} migration checkpoint`);
+          const [[remainder]] = await connection.execute(`SELECT COUNT(*) AS remaining FROM ${source} WHERE id > ?`, [progress.last_id]);
+          if (Number(remainder.remaining) !== 0) throw new Error(`Unprocessed ${source} migration rows`);
+        }
+      },
+    },
+    {
+      id: 8,
+      name: 'mail-engine-manual-refresh-intent',
+      up: migrateManualMailRefresh,
+      verify: verifyManualMailRefresh,
     },
   ]);
 }

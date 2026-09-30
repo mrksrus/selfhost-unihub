@@ -32,8 +32,8 @@ function installConditionalStore(imap) {
       throw new Error('Conditional STORE requires a writable CONDSTORE mailbox');
     }
     const version = String(modseq);
-    if (!Number.isSafeInteger(uid) || uid < 1 || !['\\Seen', '\\Flagged'].includes(flag)
-        || !/^[1-9][0-9]*$/.test(version)) {
+    if (!Number.isSafeInteger(uid) || uid < 1 || uid > 0xffffffff || !['\\Seen', '\\Flagged'].includes(flag)
+        || !/^[1-9][0-9]{0,19}$/.test(version) || BigInt(version) > 0xffffffffffffffffn) {
       throw new TypeError('Invalid conditional STORE UID, flag or MODSEQ');
     }
     // No arrays, ranges or arbitrary flag atoms: writebacks target one verified

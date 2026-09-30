@@ -3,8 +3,81 @@
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 For a new installation, use [Installation](INSTALLATION.md). This page includes
-version-specific history; the current release is 0.10.12. Preserve existing data
-and keys when upgrading.
+version-specific upgrade guidance. Preserve existing data and keys when upgrading.
+
+## 0.11.0 durable mail engine
+
+Migrations 6 and 7 add mailbox occurrences, bounded jobs/cursors, operation attempts,
+request receipts and explicit raw-archive provenance. Backfill commits progress in
+bounded transactions and quarantines ambiguous old identities. It must not reset
+existing pending commands, infer remote success from a timeout, or silently merge
+independent copies. Historical uncertain operations can remain attention-required.
+
+Before updating, take an independent **consistent** backup of MySQL, uploads and
+configuration/keys, preserve the exact old image, and read [mail modes](MAIL_MODES.md).
+Do not run old and new provider writers against the same database. Leave a progressing
+migration running; an HTTP startup failure while schema initialization is incomplete
+is not proof of corruption. Diagnose the actual migration error before restarting.
+No additional production volume or credential is required relative to 0.10.12.
+
+Application backups now use data schema 4. Old supported schemas remain readable,
+but older application versions cannot read a schema-4 archive. Mail restore retains
+intent history and quarantines imported provider evidence; accounts and deletion
+remain paused until explicit reconnection/revalidation. Disconnect now retains data
+and clears account credentials; permanent local purge is separate and guarded.
+
+**An image-only downgrade is not a safe rollback.** Preserve a matching database,
+uploads, configuration and image recovery point. If the new writer has already sent
+provider commands, restoring an older database cannot reverse those remote effects.
+Preserve the new operation/attempt journal, keep the restored old writer disabled,
+and reconcile provider state before enabling writes. Do not blindly restart an old
+pending queue or discard the newer journal to manufacture a clean rollback.
+
+### Staged Sync-account cutover
+
+The image includes `/app/api/mail-rollout.js` for an operator-controlled canary.
+This is a maintenance procedure, not a second provider writer or a repair of
+failed operations. It currently requires **all active mail accounts to be in
+Sync mode**; Download-mode server-deletion workers need a separate maintenance
+procedure and the command refuses that cohort rather than pretending to hold it.
+
+1. Preserve the consistent recovery point above. Stop the old application/API
+   and its provider workers; verify their processes have exited. Keep only its
+   database available. Do not run this against a live old writer.
+2. Run a one-shot container from the **target image**, with the existing deployment
+   database connection, encryption/backup keys and uploads mount, on the same
+   private database network. Override its entrypoint with `node`; do not start
+   `/app/start.sh`. After independently verifying the writers are stopped, set
+   `UNIHUB_MAIL_ROLLOUT_MAINTENANCE=1` and execute:
+   `node /app/api/mail-rollout.js prepare CANARY_ACCOUNT_UUID`.
+   Use the exact existing mail-account UUID, not a user ID or email address.
+3. Prepare runs the normal schema migrations without starting HTTP/provider
+   workers, places deployment holds on the other active accounts, and releases
+   only the selected canary. It preserves account credentials/modes, existing
+   recovery pauses, and all operation, attempt and job records. Check the returned
+   per-account status, then start the new application normally.
+4. Exercise the authorized canary through real API/browser/provider workflows.
+   While maintenance is in progress, do not change account connection or module
+   settings, add accounts, or permit another operator to resume held accounts.
+   Ordinary foreground message operations cannot bypass the deployment hold.
+5. After a passing canary, release each next account explicitly using
+   `node /app/api/mail-rollout.js release ACCOUNT_UUID` in the running target
+   container and verify its progress before releasing another. This does not
+   reset queued jobs or classify pending provider actions as successful. It will
+   not clear a restore/disconnect/module pause or reconnect an inactive account.
+   `node /app/api/mail-rollout.js status` is read-only.
+
+If the canary fails, leave the remaining accounts held and stop promotion. A
+successful migration or maintenance command is not successful mail acceptance.
+Follow the journal-preserving rollback instructions above; never restore an old
+pending queue and start its writer blindly.
+
+After upgrading, refresh the browser/PWA and verify provider-confirmed flag changes,
+a MOVE out and back, fresh incoming mail, operation settlement and retained message
+bytes. Acceptance and provider confirmation are different. Missing COPYUID, changed
+UIDVALIDITY or genuinely ambiguous identities can require attention; no native MOVE
+means no remote move fallback. See the [0.11.0 release candidate notes](RELEASE_0.11.0.md)
+for the current validation boundary.
 
 ## 0.10.12 provider writes and independent mail jobs
 

@@ -25,6 +25,7 @@ const { BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, BACKUP_MET
 
 const { SECTION_POLICIES, TABLE_POLICIES, FILE_POLICIES, normalizeBackupSections } = require('./backup-catalog');
 const { restoreMailRecovery, validateRestoredMailDestinations } = require('./backup-mail-recovery');
+const { pauseMailRestore, restoreMailEngineEvidence } = require('./backup-mail-engine');
 
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
 const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: MAIL_RAW_STORAGE_ROOT, recording: RECORDINGS_ROOT, note_attachment: NOTES_ROOT });
@@ -696,7 +697,7 @@ function validateBackupPayload(backup, {
   for (const [table, rows] of Object.entries(backup.data || {})) {
     const policy = TABLE_POLICIES[table];
     if (!policy) { errors.push(`Unsupported backup table: ${table}`); continue; }
-    if (backup.version === 3) {
+    if (backup.version >= 3) {
       for (const row of table === 'user' ? [rows] : Array.isArray(rows) ? rows : []) {
         for (const column of Object.keys(row || {})) {
           if (!policy.columns.includes(column)) errors.push(`Unsupported backup field: ${table}.${column}`);
@@ -749,7 +750,7 @@ function validateBackupPayload(backup, {
     }
   }
 
-  if (backup.version === 3 && backup.data && Array.isArray(backup.files)) {
+  if (backup.version >= 3 && backup.data && Array.isArray(backup.files)) {
     const files = new Map();
     for (const file of backup.files) {
       const key = `${file?.kind}:${file?.id}`;
@@ -1386,7 +1387,7 @@ function parseJsonZipEntry(entries, name) {
 }
 
 function requireSchema3MetadataChecksum(backup, checksums) {
-  if (backup.version !== 3) return;
+  if (backup.version < 3) return;
   if (checksums?.algorithm !== 'sha256'
     || typeof checksums?.entries?.['data/backup.json'] !== 'string'
     || !/^[a-f0-9]{64}$/.test(checksums.entries['data/backup.json'])) {
@@ -1728,7 +1729,7 @@ async function importBackupForUser(userId, backup, {
     connection = await db.getConnection();
     await connection.beginTransaction();
     if (scopedBackup.import_sections.includes('mail')) {
-      await connection.execute('DELETE FROM mail_writebacks WHERE user_id = ?', [userId]);
+      await pauseMailRestore(connection, userId);
     }
     const calendarAccountIdMap = new Map();
     const calendarIdMap = new Map();
@@ -2161,6 +2162,10 @@ async function importBackupForUser(userId, backup, {
       accountIds: mailAccountIdMap, folderIds: mailFolderIdMap, emailIds: emailIdMap,
       ruleIds: mailRuleIdMap, writtenEmailIds, conflictMode, checkCancelled: checkRestoreCancelled,
       normalizeDate: normalizeMysqlDateTime, warnings: validation.warnings,
+    });
+    if (scopedBackup.import_sections.includes('mail')) await restoreMailEngineEvidence(connection, userId, data, {
+      accountIds: mailAccountIdMap, emailIds: emailIdMap, writtenEmailIds, restoredPaths,
+      checkCancelled: checkRestoreCancelled, warnings: validation.warnings,
     });
     if (scopedBackup.source_backup_version >= 3) {
       await validateRestoredMailDestinations(connection, userId, [...writtenEmailIds].map(id => emailIdMap.get(id)), checkRestoreCancelled);

@@ -2,8 +2,9 @@ const { version: appVersion } = require('../../package.json');
 const { readV1 } = require('./backup-formats/v1');
 const { readV2 } = require('./backup-formats/v2');
 const { readV3 } = require('./backup-formats/v3');
+const { readV4 } = require('./backup-formats/v4');
 
-const BACKUP_VERSION = 3;
+const BACKUP_VERSION = 4;
 const ZIP_BACKUP_FORMAT = 'unihub-restorable-backup';
 const ZIP_BACKUP_FORMAT_VERSION = 1;
 const BACKUP_METADATA_LIMITS = Object.freeze({
@@ -11,7 +12,7 @@ const BACKUP_METADATA_LIMITS = Object.freeze({
   'checksums.json': 64 * 1024 * 1024,
   'data/backup.json': 512 * 1024 * 1024,
 });
-const READERS = new Map([[1, readV1], [2, readV2], [3, readV3]]);
+const READERS = new Map([[1, readV1], [2, readV2], [3, readV3], [4, readV4]]);
 
 function getBackupProducer() {
   return { name: 'UniHub', version: appVersion };
@@ -28,7 +29,7 @@ function validateBackupVersionFields(backup) {
   const errors = [];
   const warnings = [];
   if (!READERS.has(backup?.version)) {
-    errors.push(`Unsupported backup data version: ${String(backup?.version)}. This UniHub version reads versions 1, 2 and 3; a newer backup may need a newer UniHub release.`);
+    errors.push(`Unsupported backup data version: ${String(backup?.version)}. This UniHub version reads versions 1, 2, 3 and 4; a newer backup may need a newer UniHub release.`);
   }
   // Inline legacy JSON has no ZIP-format fields. If either field is supplied,
   // require the complete known pair; never guess how an unknown archive works.
@@ -46,6 +47,7 @@ function validateBackupVersionFields(backup) {
     warnings.push('This older backup may lack filing identities, Legacy state and folder recovery history. Missing fields use legacy defaults; provider reconciliation can run on the next successful sync.');
   }
   if ([1, 2].includes(backup?.version)) warnings.push('Backup schemas 1 and 2 do not include saved game scores.');
+  if ([1, 2, 3].includes(backup?.version) && backup.data?.mail_accounts) warnings.push('This older backup has no durable provider-operation journal. Restored mail stays retained; provider writes remain paused until the account is explicitly reconnected and its identity revalidated.');
   return { errors, warnings };
 }
 
@@ -78,6 +80,7 @@ function normalizeBackupPayload(backup) {
   };
   let result = READERS.get(backup.version)(normalized);
   if (backup.version < 3) result = readV3(result, { legacyDefaults: true });
+  if (backup.version < 4) result = readV4(result);
   result.source_backup_version = backup.version;
   result.version = BACKUP_VERSION;
   // The original checksum was verified before migration. It describes the

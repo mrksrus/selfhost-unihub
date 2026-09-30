@@ -15,7 +15,9 @@ const { isSectionRestoreActive } = require('./services/restore-locks');
 const { handleRequest } = require('./request-handler');
 const { ensureNotificationSchema, processNotificationJobs } = require('./services/notifications');
 
-const MAIL_SYNC_INTERVAL_MS = 10 * 60 * 1000;
+// Wake recent discovery independently of historical backfill. The durable
+// scheduler coalesces due work; this timer is not the authority for its state.
+const MAIL_SYNC_INTERVAL_MS = 30 * 1000;
 const MAIL_SERVER_DELETE_INTERVAL_MS = 60 * 1000;
 let periodicMailSyncRunning = false;
 let periodicMailServerDeleteRunning = false;
@@ -70,9 +72,9 @@ async function start() {
       console.log(`\n[${new Date().toISOString()}] Starting periodic mail sync for ${accounts.length} accounts...`);
       for (const account of accounts) {
         if (await isSectionRestoreActive(account.user_id, 'mail')) continue;
-        const job = scheduleMailAccountSync(account.id, { background: true });
+        const job = await scheduleMailAccountSync(account.id, { background: true });
         if (job.started) job.promise.then(result => {
-          if (result?.success === false) console.error(`Failed to sync ${account.email_address}:`, result.error || 'Unknown error');
+          if (result?.success === false) console.error(`Failed to sync account ${account.id}:`, result.error || 'Unknown error');
         });
       }
     } catch (error) {
@@ -86,7 +88,7 @@ async function start() {
   setInterval(schedulePeriodicMail, MAIL_SYNC_INTERVAL_MS);
   const runWritebacks = () => runDueWritebacks().catch(error => console.error('[MAIL WRITEBACK] Due pass failed:', error.message));
   setImmediate(runWritebacks);
-  setInterval(runWritebacks, 30 * 1000);
+  setInterval(runWritebacks, 1000);
 
   setInterval(async () => {
     if (periodicMailServerDeleteRunning) {
@@ -170,7 +172,7 @@ async function start() {
     }
   }, 15 * 60 * 1000); // 15 minutes
   
-  console.log('✓ Periodic mail sync enabled (every 10 minutes)');
+  console.log('✓ Bounded mail discovery wake-up enabled (every 30 seconds)');
   console.log('✓ Mail server deletion worker enabled (every minute)');
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Expired recording upload cleanup enabled (every hour)');

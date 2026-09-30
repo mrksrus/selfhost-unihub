@@ -7,7 +7,8 @@ import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
 import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { useMailReader } from '@/hooks/use-mail-reader';
 import { useMailFlags } from '@/hooks/use-mail-flags';
-import { invalidateMailQueries, captureMailFlagReconciler, mailFlagRevision, recordMailFlagEdit, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
+import { invalidateMailQueries, captureMailFlagReconciler, type MailAccount, type Email, type EmailAttachment, type MailFolder, type MailContact } from '@/lib/mail-api';
+import { acceptMailCommand, newMailCommand, UnknownMailAcceptance } from '@/lib/mail-operations';
 import { useMailAccounts, useMailFolders, useMailUnreadCounts, useMailList } from '@/hooks/use-mail-queries';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { contactsQueryOptions } from '@/lib/contacts-api';
@@ -153,7 +154,7 @@ interface MailHostTrustResult {
 type PendingHostTrust = {
   mode: 'add' | 'edit';
   accountId?: string;
-  account: AccountFormState;
+  account: AccountFormState & { is_active?: boolean };
   trust: MailHostTrustResult;
 };
 
@@ -281,18 +282,12 @@ const MailPage = () => {
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
   const { selectedEmail, setSelectedEmail, isReaderLoading, closeReader, loadEmail } = useMailReader();
   const selectedEmailId = selectedEmail?.id;
-  const { flagRequests, requestFlag } = useMailFlags(setSelectedEmail, (kind, message) => {
-    toast({ title: kind === 'read' ? 'Failed to update read status' : 'Failed to update star', description: message, variant: 'destructive' });
+  const { flagRequests, requestFlag } = useMailFlags(setSelectedEmail, (kind, message, unknown) => {
+    toast({ title: unknown ? `${kind === 'read' ? 'Read' : 'Star'} request outcome unknown` : kind === 'read' ? 'Failed to update read status' : 'Failed to update star', description: message, variant: 'destructive' });
   });
   const detailRefreshRevision = React.useRef(0);
   useEffect(() => { ++detailRefreshRevision.current; }, [selectedEmailId]);
 
-  const showAcceptedBulkFlag = React.useCallback((ids: string[], kind: 'read' | 'star', value: boolean, pending: boolean) => {
-    const chosen = new Set(ids);
-    const patch = kind === 'read' ? { is_read: value, read_sync_pending: pending } : { is_starred: value, star_sync_pending: pending };
-    ids.forEach(id => recordMailFlagEdit(queryClient, id, kind, patch, false));
-    setSelectedEmail(current => current && chosen.has(current.id) ? { ...current, ...patch } : current);
-  }, [queryClient, setSelectedEmail]);
   const refreshSettledEmail = React.useCallback((emailIds: string[]) => {
     if (!selectedEmailId || !emailIds.includes(selectedEmailId)) return;
     const id = selectedEmailId;
@@ -314,6 +309,10 @@ const MailPage = () => {
   const [composeMode, setComposeMode] = useState<'new' | 'reply' | 'forward'>('new');
   const [isReplying, setIsReplying] = useState(false);
   const [accountToDelete, setAccountToDelete] = useState<string | null>(null);
+  const [accountToPurge, setAccountToPurge] = useState<string | null>(null);
+  const [purgeConfirmation, setPurgeConfirmation] = useState('');
+  const [purgePreview, setPurgePreview] = useState<{ account_id: string; email_count: number; attachment_count: number; raw_count: number; unresolved_operations: number; blocked: boolean; reason?: string | null } | null>(null);
+  const [purgePreviewError, setPurgePreviewError] = useState<string | null>(null);
   const [editingAccount, setEditingAccount] = useState<MailAccount | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -588,7 +587,7 @@ const MailPage = () => {
 
   // Update account mutation
   const updateAccount = useMutation({
-    mutationFn: async ({ id, ...data }: { id: string } & Partial<AccountFormState> & { accept_host_trust?: boolean }) => {
+    mutationFn: async ({ id, ...data }: { id: string; is_active?: boolean } & Partial<AccountFormState> & { accept_host_trust?: boolean }) => {
       const response = await api.put(`/mail/accounts/${id}`, {
         ...data,
         encrypted_password: data.password || undefined,
@@ -620,23 +619,47 @@ const MailPage = () => {
     },
   });
 
-  // Delete account mutation
+  // Default account deletion only disconnects; retained mail stays readable.
   const deleteAccount = useMutation({
     mutationFn: async (id: string) => {
-      const response = await api.delete(`/mail/accounts/${id}`);
+      const response = await api.delete(`/mail/accounts/${encodeURIComponent(id)}`);
       if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
-      queryClient.invalidateQueries({ queryKey: ['stats'] });
-      setSelectedAccount(null);
+      void queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail-sync-jobs'] });
       setAccountToDelete(null);
-      toast({ title: 'Mail account and all associated emails deleted' });
+      toast({ title: 'Mail account disconnected', description: 'Your local mail is retained. Reconnect in account settings with credentials.' });
     },
     onError: (error: Error) => {
-      toast({ title: 'Failed to delete account', description: error.message, variant: 'destructive' });
+      toast({ title: 'Failed to disconnect account', description: error.message, variant: 'destructive' });
     },
+  });
+  const openPurgePreview = async (id: string) => {
+    setAccountToPurge(id);
+    setPurgeConfirmation('');
+    setPurgePreview(null);
+    setPurgePreviewError(null);
+    const response = await api.get<typeof purgePreview>(`/mail/accounts/${encodeURIComponent(id)}/purge-preview`);
+    if (response.error || !response.data || response.data.account_id !== id) {
+      setPurgePreviewError(response.error || 'Could not verify the purge preview.');
+      return;
+    }
+    setPurgePreview(response.data);
+  };
+  const purgeAccount = useMutation({
+    mutationFn: async (id: string) => {
+      const response = await api.delete(`/mail/accounts/${encodeURIComponent(id)}?purge=true&confirm_purge=${encodeURIComponent(id)}`);
+      if (response.error) throw new Error(response.error);
+    },
+    onSuccess: () => {
+      void invalidateMailQueries(queryClient);
+      setAccountToPurge(null);
+      setPurgePreview(null);
+      setSelectedAccount(ALL_ACCOUNTS);
+      toast({ title: 'Local mail account data purged' });
+    },
+    onError: (error: Error) => toast({ title: 'Purge blocked', description: error.message, variant: 'destructive' }),
   });
   const openDraftForCompose = React.useCallback((draft: Email) => {
     setComposeMode('new');
@@ -698,15 +721,14 @@ const MailPage = () => {
   // Bulk operations mutations
   const bulkDelete = useMutation({
     mutationFn: async ({ emailIds }: { emailIds: string[]; restoreFolders: Record<string, string> }) => {
-      const response = await api.post<{ sync_pending?: boolean }>('/mail/emails/bulk-delete', { email_ids: emailIds });
-      if (response.error) throw new Error(response.error);
-      return { count: emailIds.length, pending: response.data?.sync_pending === true };
+      const response = await acceptMailCommand(newMailCommand('POST', '/mail/emails/bulk-delete', { email_ids: emailIds }));
+      return { count: emailIds.length, pending: response.sync_pending !== false };
     },
     onSuccess: ({ count, pending }, variables) => {
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({
-        title: pending ? `Trash move requested for ${count} email(s)` : `Moved ${count} email(s) to trash`,
+        title: pending ? `Trash move saved for ${count} email(s)` : `Trash request accepted for ${count} email(s)`,
         description: pending ? 'Server changes are waiting to sync. Check the server change status above your mail.' : undefined,
         action: pending ? undefined : (
           <ToastAction
@@ -728,75 +750,39 @@ const MailPage = () => {
       });
     },
     onError: (error: Error) => {
-      toast({ title: 'Failed to delete emails', description: error.message, variant: 'destructive' });
+      toast({ title: error instanceof UnknownMailAcceptance ? 'Trash request outcome unknown' : 'Trash request rejected', description: error.message, variant: 'destructive' });
     },
   });
 
   const bulkMove = useMutation({
     mutationFn: async ({ emailIds, folder, accountId }: { emailIds: string[]; folder: string; accountId?: string }) => {
-      const response = await api.post<{ sync_pending?: boolean }>('/mail/emails/bulk-move', { email_ids: emailIds, folder, account_id: accountId });
-      if (response.error) throw new Error(response.error);
-      return response.data;
+      const response = await acceptMailCommand(newMailCommand('POST', '/mail/emails/bulk-move', { email_ids: emailIds, folder, account_id: accountId }));
+      return response;
     },
     onSuccess: (data, variables) => {
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
-      toast({ title: data?.sync_pending ? `Move requested for ${variables.emailIds.length} email(s)` : `Moved ${variables.emailIds.length} email(s) to ${variables.folder}`,
-        description: data?.sync_pending ? 'Server changes are waiting to sync. Check the server change status above your mail.' : undefined });
+      toast({ title: `Move accepted for ${variables.emailIds.length} email(s)`,
+        description: data?.sync_pending !== false ? 'Provider confirmation is pending. Check server change status for the outcome.' : 'The local request was accepted; provider confirmation is not implied.' });
     },
     onError: (error: Error) => {
-      toast({ title: 'Failed to move emails', description: error.message, variant: 'destructive' });
+      toast({ title: error instanceof UnknownMailAcceptance ? 'Move outcome unknown — do not resend' : 'Move request rejected', description: error.message, variant: 'destructive' });
     },
   });
 
-  const bulkMarkRead = useMutation({
-    mutationFn: async ({ emailIds, is_read }: { emailIds: string[]; is_read: boolean }) => {
-      const response = await api.post<{ sync_pending?: boolean }>('/mail/emails/bulk-update', { email_ids: emailIds, is_read });
-      if (response.error) throw new Error(response.error);
-      return response.data;
-    },
-    onMutate: ({ emailIds }) => Object.fromEntries(emailIds.map(id => [id, mailFlagRevision(queryClient, id, 'read')])),
-    // Do not publish an unaccepted batch. Reconcile in-flight list reads with
-    // the accepted local state, without touching concurrent star edits.
-    onSuccess: (data, variables, revision) => {
-      showAcceptedBulkFlag(variables.emailIds.filter(id => revision?.[id] === mailFlagRevision(queryClient, id, 'read')),
-        'read', variables.is_read, data?.sync_pending === true);
-      void invalidateMailQueries(queryClient);
-      setSelectedEmails(new Set());
-      toast({ 
-        title: data?.sync_pending ? `Read status change requested for ${variables.emailIds.length} email(s)` : `Marked ${variables.emailIds.length} email(s) as ${variables.is_read ? 'read' : 'unread'}`,
-        description: data?.sync_pending ? 'Mail shows your requested read status while the provider confirms it. Check the status above your mail.' : undefined,
-        duration: 3000,
-      });
-    },
-    onError: (error: Error) => {
-      toast({ 
-        title: 'Failed to mark emails as read', 
-        description: error.message, 
-        variant: 'destructive' 
-      });
-    },
-  });
+  // Bulk flag controls use the same per-email/field admission lanes as row and
+  // reader clicks. A slow batch must not overtake a later single-message click.
+  const requestBulkFlags = (emailIds: string[], kind: 'read' | 'star', value: boolean) => {
+    for (const id of emailIds) {
+      const email = emails.find(item => item.id === id) || (selectedEmail?.id === id ? selectedEmail : null);
+      if (email) requestFlag(email, kind, value);
+    }
+    setSelectedEmails(new Set());
+    return Promise.resolve();
+  };
+  const bulkMarkRead = { mutateAsync: ({ emailIds, is_read }: { emailIds: string[]; is_read: boolean }) => requestBulkFlags(emailIds, 'read', is_read) };
+  const bulkStar = { mutateAsync: ({ emailIds, is_starred }: { emailIds: string[]; is_starred: boolean }) => requestBulkFlags(emailIds, 'star', is_starred) };
 
-  const bulkStar = useMutation({
-    mutationFn: async ({ emailIds, is_starred }: { emailIds: string[]; is_starred: boolean }) => {
-      const response = await api.post<{ sync_pending?: boolean }>('/mail/emails/bulk-update', { email_ids: emailIds, is_starred });
-      if (response.error) throw new Error(response.error);
-      return response.data;
-    },
-    onMutate: ({ emailIds }) => Object.fromEntries(emailIds.map(id => [id, mailFlagRevision(queryClient, id, 'star')])),
-    onSuccess: (data, variables, revision) => {
-      showAcceptedBulkFlag(variables.emailIds.filter(id => revision?.[id] === mailFlagRevision(queryClient, id, 'star')),
-        'star', variables.is_starred, data?.sync_pending === true);
-      void invalidateMailQueries(queryClient);
-      setSelectedEmails(new Set());
-      toast({ title: data?.sync_pending ? `Star change requested for ${variables.emailIds.length} email(s)` : `Starred ${variables.emailIds.length} email(s)`,
-        description: data?.sync_pending ? 'Mail shows your requested star while the provider confirms it.' : undefined });
-    },
-    onError: (error: Error) => {
-      toast({ title: 'Failed to star emails', description: error.message, variant: 'destructive' });
-    },
-  });
 
   const createFolder = useMutation({
     mutationFn: async (displayName: string) => {
@@ -983,7 +969,8 @@ const MailPage = () => {
   const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (editingAccount) {
-      updateAccount.mutate({ id: editingAccount.id, ...accountForm });
+      updateAccount.mutate({ id: editingAccount.id, ...accountForm,
+        ...(editingAccount.disconnected_at && accountForm.password ? { is_active: true } : {}) });
     } else {
       addAccount.mutate(accountForm);
     }
@@ -1809,7 +1796,7 @@ const MailPage = () => {
                       )}
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="password">Password {editingAccount && '(leave blank to keep current)'}</Label>
+                      <Label htmlFor="password">Password {editingAccount && (editingAccount.disconnected_at ? '(required to reconnect; leaving blank keeps local mail disconnected)' : '(leave blank to keep current)')}</Label>
                       <Input
                         id="password"
                         type="password"
@@ -1985,6 +1972,7 @@ const MailPage = () => {
                         <div className="flex-1 min-w-0 text-left">
                           <p className="truncate">{account.display_name || account.email_address}</p>
                           <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
+                          {(account.disconnected_at || !account.is_active) && <p className="text-xs text-warning">Disconnected · local mail retained</p>}
                           {getServerDeleteStatus(account) && (
                             <p className="text-xs text-destructive truncate">{getServerDeleteStatus(account)}</p>
                           )}
@@ -2008,12 +1996,15 @@ const MailPage = () => {
                           variant="ghost"
                           size="icon"
                           className="h-7 w-7 text-destructive hover:text-destructive"
+                          title={account.disconnected_at ? 'Preview permanent purge' : 'Disconnect account and retain mail'}
+                          aria-label={account.disconnected_at ? `Preview purge for ${account.email_address}` : `Disconnect ${account.email_address}`}
                           onClick={(e) => {
                             e.stopPropagation();
-                            setAccountToDelete(account.id);
+                            if (account.disconnected_at) void openPurgePreview(account.id);
+                            else setAccountToDelete(account.id);
                           }}
                         >
-                          <X className="h-4 w-4" />
+                          {account.disconnected_at ? <Trash2 className="h-4 w-4" /> : <X className="h-4 w-4" />}
                         </Button>
                       </div>
                     )}
@@ -2041,7 +2032,7 @@ const MailPage = () => {
         {accounts.find(account => account.id === selectedAccount)?.sync_mode === 'sync' && (
           <div className="border-b border-border bg-muted/30 p-3 text-xs text-muted-foreground">
             Sync with server · {accounts.find(account => account.id === selectedAccount)?.sync_status || 'pending'}.
-            {' '}New read, star and connected-folder moves sync both ways. The server wins conflicts. Missing server messages stay here as local copies.
+            {' '}Recent mail and older history have separate coverage. Pending read, star and connected-folder moves show your requested state while UniHub checks the provider; uncertain moves are not blindly repeated. Missing server messages stay as local copies.
           </div>
         )}
         <MailSyncStatus onSettled={refreshSettledEmail} />
@@ -2356,7 +2347,6 @@ const MailPage = () => {
                         e.stopPropagation();
                         requestFlag(email, 'star', !email.is_starred);
                       }}
-                      disabled={flagRequests.has(`star:${email.id}`)}
                       aria-label={email.is_starred ? `Unstar ${email.subject || 'message'}` : `Star ${email.subject || 'message'}`}
                     >
                       <Star className={`h-4 w-4 ${email.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />
@@ -2383,7 +2373,8 @@ const MailPage = () => {
                         <p className={`truncate flex-1 ${!email.is_read ? 'text-foreground font-medium' : 'text-muted-foreground'}`}>
                           {email.subject || '(No subject)'}
                         </p>
-                        {email.remote_missing && <span className="shrink-0 rounded border border-border px-1 text-xs text-muted-foreground" title="Not found on the server during the last complete sync">Local copy</span>}
+                        {accounts.find(account => account.id === email.mail_account_id)?.disconnected_at && <span className="shrink-0 rounded border border-border px-1 text-xs text-muted-foreground" title="This account is disconnected; this mail is retained locally, not verified at the provider">Disconnected · local mail</span>}
+                        {email.remote_missing && <span className="shrink-0 rounded border border-border px-1 text-xs text-muted-foreground" title="No currently verified provider occurrence; local copy retained">Local copy · provider presence unverified</span>}
                         {email.has_attachments && (
                           <span title="Has attachments" className="shrink-0">
                             <Paperclip className="h-3.5 w-3.5 text-muted-foreground" />
@@ -2546,24 +2537,44 @@ const MailPage = () => {
         </>
       )}
 
-      {/* Delete Account Confirmation */}
+      {/* Disconnect retains local mail. Purge is a separate guarded flow. */}
       <AlertDialog open={!!accountToDelete} onOpenChange={(open) => !open && setAccountToDelete(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Mail Account?</AlertDialogTitle>
+            <AlertDialogTitle>Disconnect mail account?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete the account and all associated emails from the database. 
-              This action cannot be undone.
+              Sync and credentials for this account will be disconnected. Your local emails and attachments stay in UniHub. You can reconnect by editing the account and entering credentials.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => accountToDelete && deleteAccount.mutate(accountToDelete)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              Delete
+            <AlertDialogCancel>Keep connected</AlertDialogCancel>
+            <AlertDialogAction disabled={deleteAccount.isPending} onClick={() => accountToDelete && deleteAccount.mutate(accountToDelete)}>
+              Disconnect and keep mail
             </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={!!accountToPurge} onOpenChange={open => { if (!open) { setAccountToPurge(null); setPurgePreview(null); } }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Permanently purge local mail?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Purge is separate from disconnect. This removes the disconnected account and its retained local mail. It does not delete messages at the provider.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {purgePreviewError && <p role="alert" className="text-sm text-destructive">{purgePreviewError}</p>}
+          {!purgePreview && !purgePreviewError && <p role="status">Loading purge preview…</p>}
+          {purgePreview && <div className="space-y-2 text-sm">
+            <p>Account {purgePreview.account_id}: {purgePreview.email_count} emails, {purgePreview.attachment_count} attachments, {purgePreview.raw_count} raw messages; {purgePreview.unresolved_operations} unresolved operations.</p>
+            {purgePreview.blocked ? <p role="alert">Purge blocked: {purgePreview.reason || 'Provider effects are unresolved. Keep the journal and check again later.'}</p> : <>
+              <Label htmlFor="confirm-mail-purge">Type the account ID to confirm permanent deletion: {accountToPurge}</Label>
+              <Input id="confirm-mail-purge" value={purgeConfirmation} onChange={event => setPurgeConfirmation(event.target.value)} autoComplete="off" />
+            </>}
+          </div>}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep local mail</AlertDialogCancel>
+            <Button type="button" variant="destructive" disabled={!purgePreview || purgePreview.blocked || purgePreview.account_id !== accountToPurge || purgeConfirmation !== accountToPurge || purgeAccount.isPending}
+              onClick={() => accountToPurge && purgeAccount.mutate(accountToPurge)}>Purge local mail</Button>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -2660,6 +2671,8 @@ const MailPage = () => {
                 </div>
               </div>
               <div className="flex shrink-0 flex-wrap items-center gap-2 ml-auto">
+                {accounts.find(account => account.id === selectedEmail.mail_account_id)?.disconnected_at && <span className="text-xs text-muted-foreground">Disconnected · retained locally; provider presence unverified</span>}
+                {selectedEmail.remote_missing && <span className="text-xs text-muted-foreground">Local copy · provider presence unverified</span>}
                 {(selectedEmail.read_sync_pending || selectedEmail.star_sync_pending) && <span className="text-xs text-muted-foreground">
                   {selectedEmail.read_sync_pending && selectedEmail.star_sync_pending ? 'Read and star changes awaiting provider' : selectedEmail.read_sync_pending ? 'Read change awaiting provider' : 'Star change awaiting provider'}
                 </span>}
@@ -2668,7 +2681,6 @@ const MailPage = () => {
                   variant="outline"
                   size="sm"
                   onClick={() => requestFlag(selectedEmail, 'read', !selectedEmail.is_read)}
-                  disabled={flagRequests.has(`read:${selectedEmail.id}`)}
                 >
                   {selectedEmail.is_read ? (
                     <>
@@ -2687,7 +2699,6 @@ const MailPage = () => {
                   size="icon"
                   aria-label={selectedEmail.is_starred ? 'Unstar message' : 'Star message'}
                   onClick={() => requestFlag(selectedEmail, 'star', !selectedEmail.is_starred)}
-                  disabled={flagRequests.has(`star:${selectedEmail.id}`)}
                 >
                   <Star className={`h-5 w-5 ${selectedEmail.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />
                 </Button>

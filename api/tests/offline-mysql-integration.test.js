@@ -1,7 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs/promises');
-const path = require('node:path');
+
+// This file runs in its own test process against an empty disposable _test DB.
+// ensureSchema needs synthetic first-run bootstrap inputs before config is loaded.
+process.env.BOOTSTRAP_ADMIN_EMAIL = 'offline-fixture-admin@example.test';
+process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-offline-fixture-admin-2026';
+
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
 const { createOfflineSnapshot } = require('../src/services/offline');
@@ -13,25 +17,37 @@ test('MySQL offline queries match application schema, include every contact and 
     user: process.env.MYSQL_TEST_USER || 'unihub_test', password: process.env.MYSQL_TEST_PASSWORD || 'test-db-password',
     database: process.env.MYSQL_TEST_DATABASE || 'unihub_test', timezone: '+00:00' });
   const previous = getDb();
-  t.after(async () => { setDb(previous); await connection.end(); });
-  const schema = await fs.readFile(path.join(__dirname, '../src/services/database.js'), 'utf8');
-  const tables = ['user_settings', 'contacts', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'mail_accounts', 'mail_folders', 'mail_folder_remote_boxes', 'mail_folder_reconciliations', 'mail_sender_rules', 'mail_folder_rule_overrides', 'emails', 'email_attachments'];
-  for (const table of tables) {
-    const start = schema.indexOf(`CREATE TABLE IF NOT EXISTS ${table} (`);
-    assert.ok(start >= 0, `application schema defines ${table}`);
-    const end = schema.indexOf('`);', start);
-    // Use the application's real columns/defaults, with connection-local tables.
-    // Temporary InnoDB tables do not support foreign keys or fulltext indexes.
-    const sql = schema.slice(start, end).replace('CREATE TABLE IF NOT EXISTS', 'CREATE TEMPORARY TABLE')
-      .split('\n').filter(line => !/^\s*(FOREIGN KEY|FULLTEXT INDEX)/.test(line)).join('\n').replace(/,\s*\) ENGINE/, '\n) ENGINE');
-    await connection.execute(sql);
-  }
-  // These columns are additive upgrades following the base CREATE statements.
-  await connection.execute('ALTER TABLE mail_folders ADD COLUMN mail_account_id CHAR(36) NULL, ADD COLUMN special_use VARCHAR(32) NULL');
-  await connection.execute("ALTER TABLE mail_accounts ADD COLUMN sync_mode VARCHAR(16) NOT NULL DEFAULT 'download', ADD COLUMN sync_status VARCHAR(16) NOT NULL DEFAULT 'idle'");
-  await connection.execute('ALTER TABLE emails ADD COLUMN remote_folder VARCHAR(255) NULL, ADD COLUMN remote_uid BIGINT NULL, ADD COLUMN remote_uidvalidity BIGINT NULL, ADD COLUMN remote_missing BOOLEAN NOT NULL DEFAULT FALSE');
-  await connection.execute('ALTER TABLE emails ADD COLUMN filing_account_id CHAR(36) NULL, ADD COLUMN is_legacy BOOLEAN NOT NULL DEFAULT FALSE');
+  const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
+    user: process.env.MYSQL_TEST_USER || 'unihub_test', password: process.env.MYSQL_TEST_PASSWORD || 'test-db-password',
+    database: process.env.MYSQL_TEST_DATABASE || 'unihub_test', timezone: '+00:00', connectionLimit: 3 });
+  let ownsDatabase = false;
+  t.after(async () => {
+    setDb(previous);
+    try {
+      if (ownsDatabase) {
+        await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
+        try {
+          const [tables] = await connection.query('SHOW TABLES');
+          for (const row of tables) {
+            const table = Object.values(row)[0];
+            assert.match(table, /^[a-z_]+$/);
+            await connection.execute(`DROP TABLE \`${table}\``);
+          }
+        } finally { await connection.execute('SET FOREIGN_KEY_CHECKS = 1'); }
+      }
+    } finally { await pool.end(); await connection.end(); }
+  });
+  assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/, 'Use an empty disposable test database');
+  const [existing] = await connection.query('SHOW TABLES');
+  assert.equal(existing.length, 0, 'Refusing to change a nonempty database');
+  ownsDatabase = true;
+  // The production folder view joins accounts and writebacks more than once.
+  // MySQL cannot reopen a TEMPORARY table in those nested reads, so use the
+  // actual numbered schema migrations in this empty, serial, disposable DB.
+  setDb(pool);
+  await require('../src/services/database').ensureSchema();
   const userId = crypto.randomUUID(), otherUser = crypto.randomUUID(), accountId = crypto.randomUUID();
+  await connection.execute("INSERT INTO users (id, email, password_hash) VALUES (?, 'offline@example.test', 'synthetic-hash'), (?, 'offline-other@example.test', 'synthetic-hash')", [userId, otherUser]);
   const contactIds = Array.from({ length: 2105 }, () => crypto.randomUUID());
   for (let index = 0; index < contactIds.length; index += 200) {
     const ids = contactIds.slice(index, index + 200);

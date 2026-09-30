@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
 
-test('durable mail commands: ownership, restart, retries, account cancellation and provider moves', { skip: !process.env.MYSQL_TEST_HOST }, async t => {
+test('durable mail commands: ownership, restart, retry retention and operation-aware settlement', { skip: !process.env.MYSQL_TEST_HOST }, async t => {
   assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/);
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00' });
   let owned = false;
@@ -107,42 +107,50 @@ test('durable mail commands: ownership, restart, retries, account cancellation a
   // Reloading module simulates process restart with the same persisted intent.
   delete require.cache[require.resolve('../src/services/mail-writebacks')];
   const restarted = require('../src/services/mail-writebacks');
-  const remoteFlags = new Set(), writes = [];
-  let modseq='100', currentFolder='INBOX', connectionError=false;
-  const connection = {
-    openBox: async folder => { currentFolder=folder; return { uidvalidity: folder==='Filed'?10:9 }; },
-    search: async (_criteria, options) => {
-      if (connectionError) throw new Error('Disconnected');
-      return [{ attributes: { uid:currentFolder==='Filed'?77:12, flags:[...remoteFlags], modseq }, parts: options.bodies.length ? [{which:'',body:raw}] : [] }];
-    },
-    imap: { _box:{}, serverSupports:c=>['MOVE','CONDSTORE'].includes(c), addFlagsSince:(_uid,flag,_version,cb)=>{writes.push(flag);remoteFlags.add(flag);modseq='101';cb(null);}, move:(_uid,_folder,cb)=>{writes.push('move');cb(null,'77');} }
-  };
-  await restarted.processPending(account, connection);
-  assert.equal((await op()).status,'done'); assert.deepEqual(writes,['\\Seen']);
+  const reconcile = require('../src/services/mail-engine/reconciliation');
+  const repository = require('../src/services/mail-engine/repository');
+  const readOp = await op();
+  assert.equal(readOp.state, 'queued', 'Restart preserved accepted operation');
+  const settledRead = await reconcile.settleFlagObservation({ operationId: readOp.id, userId: user, accountId,
+    source: { folder: 'INBOX', uid: 12, uidvalidity: 9 }, flags: ['\\Seen'],
+    modseq: '9007199254740993123', observationRevision: 0 });
+  assert.equal(settledRead.settled, true, 'Verified readback atomically settles exact operation');
+  assert.equal((await op()).status,'done');
   assert.equal((await pool.execute('SELECT is_read FROM emails WHERE id=?',[emailId]))[0][0].is_read,1);
   assert.equal((await list('')).emails[0].is_read, true, 'Confirmed provider state remains read');
   assert.equal((await list('')).emails[0].read_sync_pending, false);
-  await queue({ star:1 }); connectionError=true;
+  await queue({ star:1 });
   assert.equal((await list('?is_starred=true')).emails[0].is_starred, true, 'Pending star also appears immediately');
-  await restarted.processPending(account,connection);
-  let star=(await pool.execute("SELECT * FROM mail_writebacks WHERE action='star'"))[0][0]; assert.equal(star.status,'pending'); assert.equal(star.attempts,1);
+  await require('../src/services/mail-engine/operations').deferAccountOffline(accountId,user,new Error('offline'));
   await pool.execute("UPDATE mail_writebacks SET available_at=UTC_TIMESTAMP() WHERE action='star'");
-  await restarted.processPending(account,connection);
-  star=(await pool.execute("SELECT * FROM mail_writebacks WHERE action='star'"))[0][0]; assert.equal(star.status,'failed'); assert.equal(star.attempts,2);
-  assert.equal((await list('?is_starred=true')).emails.length, 0, 'Failed request stops overlaying provider state');
-  await assertSnapshot(1, 0, false, false);
-  await restarted.processPending(account,connection); assert.equal((await pool.execute("SELECT attempts FROM mail_writebacks WHERE action='star'"))[0][0].attempts,2);
-  await restarted.cancelForAccount(pool,accountId,user); assert.equal((await pool.execute("SELECT status FROM mail_writebacks WHERE action='star'"))[0][0].status,'conflict');
-  connectionError=false;
+  await require('../src/services/mail-engine/operations').deferAccountOffline(accountId,user,new Error('offline'));
+  const star=(await pool.execute("SELECT * FROM mail_writebacks WHERE action='star'"))[0][0];
+  assert.equal(star.status,'pending'); assert.equal(star.state,'retry_wait'); assert.equal(star.attempts,2);
+  assert.equal((await list('?is_starred=true')).emails.length,1,'Transient offline requests retain effective overlay');
+  await restarted.cancelForAccount(pool,accountId,user);
+  assert.equal((await pool.execute("SELECT state FROM mail_writebacks WHERE action='star'"))[0][0].state,'retry_wait');
   const folderId=crypto.randomUUID();
   await pool.execute("INSERT INTO mail_folders (id,user_id,slug,display_name,is_system,mail_account_id) VALUES (?,?,'filed','Filed',FALSE,?)",[folderId,user,accountId]);
   await pool.execute("INSERT INTO mail_folder_remote_boxes (folder_id,mail_account_id,remote_name) VALUES (?,?,'Filed')",[folderId,accountId]);
-  await queue({move:'filed'}); await restarted.processPending(account,connection);
+  await queue({move:'filed'});
+  const [[move]]=await pool.execute("SELECT * FROM mail_writebacks WHERE action='move'");
+  const box=await repository.withTransaction(cx => repository.ensureMailbox({userId:user,accountId,folderName:'Filed',epoch:10},cx),pool);
+  await repository.withTransaction(cx => repository.upsertOccurrence({userId:user,accountId,mailboxId:box.id,epoch:10,
+    uid:77,emailId,flags:['\\Seen'],modseq:'9007199254740993124'},cx),pool);
+  const result=await reconcile.settleMoveEvidence({operationId:move.id,userId:user,accountId,
+    mapping:{uidvalidity:10,sourceUids:[12],destinationUids:[77]},
+    destination:{mailboxId:box.id,folder:'Filed',uidvalidity:10,uid:77},source:{absent:true},evidence:{verified:true}});
+  assert.equal(result.settled,true);
   const [[email]]=await pool.execute('SELECT folder,remote_uid,remote_uidvalidity,remote_folder FROM emails WHERE id=?',[emailId]);
   assert.deepEqual(email,{folder:'filed',remote_uid:77,remote_uidvalidity:10,remote_folder:'Filed'});
-  assert.equal(writes.filter(x=>x==='move').length,1);
+  assert.equal((await pool.execute('SELECT state FROM mail_writebacks WHERE id=?',[move.id]))[0][0].state,'confirmed');
   const route=require('../src/routes/mail')['GET /api/mail/writebacks'];
-  assert.deepEqual((await route({},stranger)).operations,[]);
-  const shown=(await route({},user)).operations;
+  const statusRequest = {url:'/api/mail/writebacks',headers:{host:'localhost'}};
+  const strangers = await route(statusRequest,stranger);
+  assert.equal(strangers.error,undefined, JSON.stringify(strangers));
+  assert.deepEqual(strangers.operations,[]);
+  const ownedResult = await route(statusRequest,user);
+  assert.equal(ownedResult.error,undefined, JSON.stringify(ownedResult));
+  const shown=ownedResult.operations;
   assert(shown.length>0); assert(shown.every(row=>!('remote_uid' in row) && !('mail_account_id' in row)));
 });

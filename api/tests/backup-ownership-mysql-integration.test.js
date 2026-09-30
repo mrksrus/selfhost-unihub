@@ -75,13 +75,28 @@ test('MySQL restores colliding backup IDs without changing another user in every
       .replace(/^\s*FOREIGN KEY[^\n]*\n/gm, '').replace(/^\s*FULLTEXT INDEX[^\n]*\n/gm, '').replace(/,\s*\) ENGINE/, '\n  ) ENGINE');
     await connection.execute(sql);
   }
-  await connection.execute('CREATE TEMPORARY TABLE mail_writebacks (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL)');
+  // The immutable v0.9 fixture predates migrations 5–7. Shadow the new
+  // restore-suspension tables on this connection; no provider work is runnable.
+  await connection.execute(`CREATE TEMPORARY TABLE mail_writebacks (
+    id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'pending', state VARCHAR(24) NULL,
+    is_current BOOLEAN NOT NULL DEFAULT TRUE,
+    evidence_json JSON NULL, error VARCHAR(255) NULL) ENGINE=InnoDB`);
+  await connection.execute(`CREATE TEMPORARY TABLE mail_engine_accounts (
+    mail_account_id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL,
+    generation BIGINT NOT NULL DEFAULT 0, paused_reason VARCHAR(255) NULL,
+    lease_owner VARCHAR(128) NULL, lease_until DATETIME NULL) ENGINE=InnoDB`);
+  await connection.execute(`CREATE TEMPORARY TABLE mail_engine_jobs (
+    id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL,
+    state VARCHAR(24) NOT NULL DEFAULT 'queued', cancellation_requested BOOLEAN NOT NULL DEFAULT FALSE,
+    lease_owner VARCHAR(128) NULL, lease_until DATETIME NULL, error VARCHAR(255) NULL) ENGINE=InnoDB`);
   // The frozen old schema remains unchanged. This restore security fixture
   // runs against the current application columns added by production migrations.
   await connection.execute('ALTER TABLE emails ADD COLUMN import_complete BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN filing_account_id CHAR(36) NULL, ADD COLUMN is_legacy BOOLEAN NOT NULL DEFAULT FALSE');
   await connection.execute('ALTER TABLE mail_folders ADD COLUMN mail_account_id CHAR(36) NULL, ADD COLUMN special_use VARCHAR(32) NULL');
   await connection.execute("ALTER TABLE mail_accounts ADD COLUMN sync_mode VARCHAR(16) NOT NULL DEFAULT 'download', ADD COLUMN sync_status VARCHAR(16) NOT NULL DEFAULT 'idle'");
   await connection.execute('ALTER TABLE emails ADD COLUMN remote_folder VARCHAR(255) NULL, ADD COLUMN remote_uid BIGINT NULL, ADD COLUMN remote_uidvalidity BIGINT NULL, ADD COLUMN remote_missing BOOLEAN NOT NULL DEFAULT FALSE');
+  await connection.execute("ALTER TABLE emails ADD COLUMN observation_revision BIGINT NOT NULL DEFAULT 0, ADD COLUMN observed_modseq VARCHAR(32) NULL, ADD COLUMN raw_format VARCHAR(24) NOT NULL DEFAULT 'legacy_normalized', ADD COLUMN raw_bytes BIGINT NULL, ADD COLUMN raw_verified BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN content_state VARCHAR(24) NOT NULL DEFAULT 'legacy'");
   await connection.execute('CREATE TEMPORARY TABLE notification_config (id INT PRIMARY KEY, reminder_revision BIGINT DEFAULT 0)');
   await connection.execute('INSERT INTO notification_config (id) VALUES (1)');
   const victim = crypto.randomUUID();

@@ -191,7 +191,8 @@ test('production export and restore jobs round-trip every section through encryp
   }
   const original = await snapshot(sourceUser);
   const pendingSource = original.emails.find(row => row.mail_account_id);
-  await insert('mail_writebacks', { id: uuid(), user_id: sourceUser, mail_account_id: pendingSource.mail_account_id,
+  const sourceWritebackId = uuid();
+  await insert('mail_writebacks', { id: sourceWritebackId, user_id: sourceUser, mail_account_id: pendingSource.mail_account_id,
     email_id: pendingSource.id, action: 'read', target_value: '1', base_value: '0', remote_folder: 'INBOX', remote_uid: 1, remote_uidvalidity: 1 });
 
   const unrelated = await snapshot(unrelatedUser);
@@ -272,7 +273,22 @@ test('production export and restore jobs round-trip every section through encryp
 
   async function assertRestored(runtime, userId, { credentialsAvailable = true } = {}) {
     const restored = await snapshot(userId);
-    assert.equal((await rowsFor('mail_writebacks', userId)).length, 0, 'Restore never imports or replays provider commands');
+    const commands = await rowsFor('mail_writebacks', userId);
+    assert.ok(commands.length >= 1, 'Accepted provider intent remains inspectable after restore');
+    assert.ok(commands.some(row => {
+      const evidence = typeof row.evidence_json === 'string' ? JSON.parse(row.evidence_json) : row.evidence_json;
+      return evidence?.archive_operation_id === sourceWritebackId && evidence.restore_requires_revalidation === true;
+    }), 'Archived unresolved intent retains its source ID and a revalidation marker');
+    for (const row of commands) {
+      assert.ok(restored.mail_accounts.some(account => account.id === row.mail_account_id));
+      assert.ok(restored.emails.some(email => email.id === row.email_id && email.mail_account_id === row.mail_account_id));
+      assert.notEqual(row.status, 'pending', 'Restore cannot enqueue a provider mutation');
+      assert.notEqual(row.state, 'queued');
+      assert.notEqual(row.state, 'reconciling');
+      assert.equal(row.is_current, 0, 'Archived intent must not become a runnable overlay');
+    }
+    const [jobs] = await pool.execute('SELECT state, lease_owner, lease_until FROM mail_engine_jobs WHERE user_id = ?', [userId]);
+    assert.ok(jobs.every(job => !['queued', 'running', 'error'].includes(job.state) && job.lease_owner == null && job.lease_until == null));
     for (const table of TABLES) {
       assert.equal(restored[table].length, original[table].length, `${table}: preserve every row`);
       for (const row of restored[table]) {
@@ -340,7 +356,7 @@ test('production export and restore jobs round-trip every section through encryp
     const decrypt = runtime('security/encryption').decrypt;
     for (const account of restored.mail_accounts) {
       assert.equal(decrypt(account.encrypted_password), credentialsAvailable ? passwords.get(account.email_address) : null);
-      assert.equal(account.is_active, credentialsAvailable ? 1 : 0);
+      assert.equal(account.is_active, 0, 'Even restorable credentials cannot activate a provider after restore');
       assert.equal(account.delete_emails_on_server, 0, 'Restore must not reenable server deletion');
       assert.equal(account.sync_mode, original.mail_accounts.find(row => row.email_address === account.email_address).sync_mode);
       assert.equal(account.sync_status, account.sync_mode === 'sync' ? 'pending' : 'idle');
@@ -458,10 +474,23 @@ test('production export and restore jobs round-trip every section through encryp
     assert.equal((await rowsFor('notes', encryptedUser)).find(note => note.id === edited.id).body, 'Local edit');
     assert.equal((await rowsFor('emails', encryptedUser)).length, original.emails.length);
     const localEmail = (await rowsFor('emails', encryptedUser)).find(row => row.mail_account_id);
-    await insert('mail_writebacks', { id: uuid(), user_id: encryptedUser, mail_account_id: localEmail.mail_account_id,
-      email_id: localEmail.id, action: 'read', target_value: '1', base_value: '0', remote_folder: 'INBOX', remote_uid: 1, remote_uidvalidity: 1 });
+    const destinationWritebackId = uuid();
+    await insert('mail_writebacks', { id: destinationWritebackId, user_id: encryptedUser, mail_account_id: localEmail.mail_account_id,
+      email_id: localEmail.id, action: 'read', target_value: '1', base_value: '0', remote_folder: 'INBOX', remote_uid: 1,
+      remote_uidvalidity: 1, is_current: 1 });
+    // Legacy accepted rows can have NULL state until the resumable backfill
+    // classifies them. Restore must still pause that exact destination intent.
+    const [[unclassified]] = await pool.execute('SELECT state, status FROM mail_writebacks WHERE id = ?', [destinationWritebackId]);
+    assert.equal(unclassified.state, null); assert.equal(unclassified.status, 'pending');
     await uploadAndRestore(destination, encryptedUser, encrypted, 'replace');
-    assert.equal((await rowsFor('mail_writebacks', encryptedUser)).length, 0, 'Applying a mail restore cancels destination commands too');
+    const destinationCommands = await rowsFor('mail_writebacks', encryptedUser);
+    const destinationIntent = destinationCommands.find(row => row.id === destinationWritebackId);
+    assert.ok(destinationIntent && destinationIntent.state === 'needs_attention' && destinationIntent.status === 'conflict',
+      'Replacing archived mail preserves the destination intent as non-runnable review evidence');
+    assert.equal(destinationIntent.is_current, 0, 'Destination intent cannot remain a runnable overlay');
+    const destinationEvidence = typeof destinationIntent.evidence_json === 'string'
+      ? JSON.parse(destinationIntent.evidence_json) : destinationIntent.evidence_json;
+    assert.equal(destinationEvidence.restore_requires_revalidation, true);
     await assertRestored(destination, encryptedUser);
     await uploadAndRestore(destination, encryptedUser, encrypted, 'keep_both');
     const doubled = await snapshot(encryptedUser);
@@ -588,7 +617,8 @@ test('production export and restore jobs round-trip every section through encryp
       for (const credential of expected.credentials.mail_accounts) {
         const account = restored.mail_accounts.find(row => row.email_address === credential.email_address);
         assert.equal(decrypt(account.encrypted_password), credential.password);
-        assert.equal(account.is_active, 1); assert.equal(account.delete_emails_on_server, 0);
+        assert.equal(account.is_active, 0, 'Historical credentials do not auto-resume after restore');
+        assert.equal(account.delete_emails_on_server, 0);
         const oldEmail = expected.data.emails.find(row => row.mail_account_id === credential.id);
         const email = restored.emails.find(row => row.mail_account_id === account.id && row.message_id === oldEmail.message_id);
         assert.ok(email);

@@ -1,5 +1,5 @@
 const { withMailAccountLock } = require('./mail-account-lock');
-const { createMailSyncScheduler } = require('./mail-sync-scheduler');
+const { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS } = require('./mail-sync-scheduler');
 const { guardImapConnection } = require('./mail-imap-guard');
 const { followMailServer, checkCancelled } = require('./mail-server-follow');
 const { reconcileAccountFolders } = require('./mail-folder-reconciliation');
@@ -40,18 +40,52 @@ const KNOWN_MAIL_HOST_SUFFIXES = [
 const DEFAULT_MAIL_SYNC_FETCH_LIMIT = 'all';
 const MAIL_SYNC_FETCH_LIMITS = new Set(['all']);
 const LEGACY_MAIL_SYNC_FETCH_LIMITS = new Set(['100', '500', '1000', '2000']);
-let syncScheduler;
 const mailDeleteStopRequests = new Set();
-function cancelMailAccountSync(accountId) {
+async function cancelMailAccountSync(accountId) {
+  // HTTP /sync/cancel is read-only. Accepted operation/reconcile jobs remain
+  // runnable and keep their dispatch/uncertainty journal intact.
   const key = normalizeMailAccountId(accountId);
-  const deleting = activeMailServerDeleteAccounts.has(key);
-  if (deleting) mailDeleteStopRequests.add(key);
-  return syncScheduler.cancel(key) || deleting;
+  const [accounts] = await db.execute('SELECT user_id FROM mail_accounts WHERE id = ?', [key]);
+  if (!accounts.length) return false;
+  let cursor = '', changed = false;
+  for (;;) {
+    const [jobs] = await db.execute(`SELECT id FROM mail_engine_jobs WHERE user_id = ? AND mail_account_id = ?
+      AND kind IN (${[...READ_ONLY_MAIL_JOB_KINDS].map(() => '?').join(',')})
+      AND state IN ('queued','running') AND id > ? ORDER BY id LIMIT 100`,
+    [accounts[0].user_id, key, ...READ_ONLY_MAIL_JOB_KINDS, cursor]);
+    if (!jobs.length) break;
+    for (const job of jobs) {
+      changed = await durableScheduler.cancel({ userId: accounts[0].user_id, accountId: key, jobId: job.id }) || changed;
+    }
+    cursor = jobs[jobs.length - 1].id;
+  }
+  return changed;
+}
+async function yieldMailReadWork(accountId) {
+  const key = normalizeMailAccountId(accountId);
+  if (!key) return false;
+  return durableScheduler.yieldReadWork(key);
+}
+// Disconnect/settings/module shutdown is a different operation from /sync/cancel.
+// Fencing first prevents new provider dispatch; dispatched effects remain
+// inspectable until reconnect. Direct writeback workers must also close their
+// own transports when the account generation is invalidated.
+async function stopMailAccountWork(accountId, reason = 'Account stopped') {
+  const key = normalizeMailAccountId(accountId);
+  const [accounts] = await db.execute('SELECT user_id FROM mail_accounts WHERE id = ?', [key]);
+  if (!accounts.length) return false;
+  await require('./mail-engine/runtime').pauseAccount({ userId: accounts[0].user_id, accountId: key, reason });
+  mailDeleteStopRequests.add(key);
+  durableScheduler.interruptAccount(key);
+  // The direct writeback runner owns a separate guarded transport; abort it
+  // after the generation fence, never wait for it while holding this call.
+  require('./mail-writebacks').stopWritebacks?.(key);
+  return true;
 }
 const activeMailServerDeleteAccounts = new Set();
 const MAIL_SERVER_DELETE_GRACE_MS = 10 * 60 * 1000;
 const MAIL_SERVER_DELETE_BATCH_SIZE = 100;
-const MAIL_RAW_STORAGE_ROOT = '/app/uploads/mail-raw';
+const MAIL_RAW_STORAGE_ROOT = process.env.MAIL_RAW_STORAGE_ROOT || '/app/uploads/mail-raw';
 const MAIL_FOLDER_DEFINITIONS = [
   { slug: 'inbox', displayName: 'Inbox', position: 10 },
   { slug: 'sent', displayName: 'Sent', position: 20 },
@@ -142,15 +176,18 @@ function normalizeMailAccountId(accountId) {
 
 function isMailAccountSyncRunning(accountId) {
   const normalizedAccountId = normalizeMailAccountId(accountId);
-  return !!normalizedAccountId && syncScheduler.has(normalizedAccountId);
+  return !!normalizedAccountId && runningDurableAccounts.has(normalizedAccountId);
 }
 
+function isMailAccountWriteRunning(accountId) {
+  return runningDurableMutationAccounts.has(normalizeMailAccountId(accountId));
+}
 function isAnyMailAccountSyncRunning() {
-  return syncScheduler.ids().length > 0 || require('./mail-writebacks').isWritebackRunning();
+  return runningDurableAccounts.size > 0 || require('./mail-writebacks').isWritebackRunning();
 }
 
 function getRunningMailSyncAccountIds() {
-  return syncScheduler.ids();
+  return [...runningDurableAccounts];
 }
 
 function isMailServerDeleteRunning(accountId) {
@@ -481,16 +518,8 @@ function isUsableRawEmailArchive(storagePath) {
   }
 }
 
-async function saveRawEmailSource({ userId, emailId, messageId, rawEmail }) {
-  if (!rawEmail) return { rawStoragePath: null, rawSha256: null };
-  const rawStoragePath = getMailRawStoragePath(userId, emailId, messageId);
-  await mkdir(path.dirname(rawStoragePath), { recursive: true });
-  const buffer = Buffer.isBuffer(rawEmail) ? rawEmail : Buffer.from(String(rawEmail), 'utf8');
-  await writeFile(rawStoragePath, buffer);
-  return {
-    rawStoragePath,
-    rawSha256: crypto.createHash('sha256').update(buffer).digest('hex'),
-  };
+async function saveRawEmailSource({ userId, emailId, rawEmail }) {
+  return require('./mail-engine/content').publishRaw({ root: MAIL_RAW_STORAGE_ROOT, userId, emailId, raw: rawEmail });
 }
 
 function flattenImapBoxes(boxes, prefix = '', specialUses = new Map()) {
@@ -579,7 +608,15 @@ async function registerCustomImapFoldersForUser(userId, accountId, availableFold
       continue;
     }
     if (SYSTEM_MAIL_FOLDER_SET.has(specialUses.get(remoteName))) {
-      registered.push({ slug: specialUses.get(remoteName), displayName, remoteName });
+      const slug = specialUses.get(remoteName);
+      const [systemRows] = await connection.execute('SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, slug]);
+      if (!systemRows.length) throw new Error('Missing local system folder mapping');
+      await connection.execute(`INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name)
+        VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE folder_id = folder_id`, [systemRows[0].id, accountId, remoteName]);
+      const [verified] = await connection.execute(`SELECT folder_id FROM mail_folder_remote_boxes
+        WHERE mail_account_id = ? AND BINARY remote_name = BINARY ? LIMIT 1`, [accountId, remoteName]);
+      if (verified[0]?.folder_id !== systemRows[0].id) throw new Error('Remote system folder mapping conflicts with another mailbox');
+      registered.push({ slug, displayName, remoteName });
       continue;
     }
     if (!includeAll && !specialUses.has(remoteName) && (isProviderManagedImapFolder(remoteName) || standardNames.has(remoteName.toLowerCase()))) continue;
@@ -728,33 +765,19 @@ function extractEmailAddresses(addressObject) {
   return addressObject.value.map(address => address.address).filter(Boolean);
 }
 
-async function findExistingImportedEmail({ connection = db, messageId, accountId, folderName, uid, uidValidity }) {
-  const [byMessageId] = await connection.execute(
-    `SELECT id, message_id, from_address, from_name, to_addresses, body_text, body_html, received_at,
-            source_folder, imap_uid, imap_uidvalidity, raw_storage_path, import_complete
-     FROM emails
-     WHERE message_id = ? AND mail_account_id = ?
-     LIMIT 1`,
-    [messageId, accountId]
-  );
-  if (byMessageId.length > 0) return byMessageId[0];
-
-  if (typeof uid !== 'number' || !folderName) return null;
-  const params = [accountId, folderName, uid];
-  let query = `
-    SELECT id, message_id, from_address, from_name, to_addresses, body_text, body_html, received_at,
-           source_folder, imap_uid, imap_uidvalidity, raw_storage_path, import_complete
-    FROM emails
-    WHERE mail_account_id = ? AND source_folder = ? AND imap_uid = ?`;
-
-  if (uidValidity !== null && uidValidity !== undefined) {
-    query += ' AND imap_uidvalidity = ?';
-    params.push(uidValidity);
-  }
-
-  query += ' ORDER BY created_at ASC LIMIT 1';
-  const [byUid] = await connection.execute(query, params);
-  return byUid[0] || null;
+async function findExistingImportedEmail({ connection = db, accountId, folderName, uid, uidValidity, userId }) {
+  const validUid = require('./mail-engine/content').uint32(uid);
+  const validEpoch = require('./mail-engine/content').uint32(uidValidity);
+  if (!accountId || !folderName || !validUid || !validEpoch) return null;
+  const [rows] = await connection.execute(`SELECT e.id, e.message_id, e.from_address, e.from_name, e.to_addresses,
+      e.body_text, e.body_html, e.received_at, e.source_folder, e.imap_uid, e.imap_uidvalidity,
+      e.raw_storage_path, e.import_complete
+    FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id = o.mailbox_id
+      JOIN emails e ON e.id = o.email_id AND e.mail_account_id = o.mail_account_id
+    WHERE o.mail_account_id = ? AND (? IS NULL OR o.user_id = ?) AND BINARY m.remote_name = BINARY ?
+      AND o.uidvalidity = ? AND o.uid = ? AND o.presence = 'present' LIMIT 1`,
+  [accountId, userId || null, userId || null, folderName, validEpoch, validUid]);
+  return rows[0] || null;
 }
 
 function chunkArray(values, chunkSize) {
@@ -811,20 +834,26 @@ async function recordMailServerMessageForDeletion({
   imapUid,
   imapUidValidity,
   rawStoragePath,
+  rawSha256,
+  rawBytes,
+  rawFormat,
+  rawVerified,
 }) {
-  const normalizedUid = normalizeImapUid(imapUid);
-  const folderName = String(sourceFolder || '').trim();
-  if (!userId || !accountId || !emailId || !folderName || !normalizedUid) return false;
-  if (!isUsableRawEmailArchive(rawStoragePath)) return false;
+  const { uint32, verifyArchive } = require('./mail-engine/content');
+  const normalizedUid = uint32(imapUid), epoch = uint32(imapUidValidity);
+  const folderName = String(sourceFolder || '');
+  if (!userId || !accountId || !emailId || !folderName || !normalizedUid || !epoch
+    || rawFormat !== 'exact_octets' || rawVerified !== true) return false;
+  if (!await verifyArchive({ raw_storage_path: rawStoragePath, raw_sha256: rawSha256,
+    raw_bytes: rawBytes, raw_format: rawFormat, raw_verified: rawVerified }, { root: MAIL_RAW_STORAGE_ROOT })) return false;
 
   await connection.execute(
     `INSERT INTO mail_server_messages
        (id, user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE
-       user_id = VALUES(user_id),
-       email_id = VALUES(email_id),
-       imap_uidvalidity = VALUES(imap_uidvalidity)`,
+       imap_uidvalidity = IF(mail_server_messages.email_id = VALUES(email_id)
+         AND mail_server_messages.imap_uidvalidity = VALUES(imap_uidvalidity), VALUES(imap_uidvalidity), mail_server_messages.imap_uidvalidity)`,
     [
       crypto.randomUUID(),
       userId,
@@ -840,49 +869,27 @@ async function recordMailServerMessageForDeletion({
 
 async function seedMailServerDeletionQueueForAccount({ userId, accountId, connection = db }) {
   if (!userId || !accountId) return { queued: 0 };
-  const [emails] = await connection.execute(
-    `SELECT id, COALESCE(remote_folder, source_folder) AS source_folder,
-       COALESCE(remote_uid, imap_uid) AS imap_uid, COALESCE(remote_uidvalidity, imap_uidvalidity) AS imap_uidvalidity,
-       raw_storage_path, import_complete
-     FROM emails
-     WHERE user_id = ?
-       AND mail_account_id = ?
-       AND import_complete = TRUE
-       AND source_folder IS NOT NULL
-       AND TRIM(source_folder) <> ''
-       AND imap_uid IS NOT NULL
-       AND raw_storage_path IS NOT NULL
-       AND TRIM(raw_storage_path) <> ''`,
-    [userId, accountId]
-  );
-
-  let queued = 0;
-  for (const email of emails || []) {
-    if (await recordMailServerMessageForDeletion({
-      connection,
-      userId,
-      accountId,
-      emailId: email.id,
-      sourceFolder: email.source_folder,
-      imapUid: email.imap_uid,
-      imapUidValidity: email.imap_uidvalidity,
-      rawStoragePath: email.raw_storage_path,
-    })) {
-      queued++;
+  let queued = 0, afterId = '';
+  for (;;) {
+    const [emails] = await connection.execute(
+      `SELECT id, COALESCE(remote_folder, source_folder) AS source_folder,
+         COALESCE(remote_uid, imap_uid) AS imap_uid, COALESCE(remote_uidvalidity, imap_uidvalidity) AS imap_uidvalidity,
+         raw_storage_path, raw_sha256, raw_bytes, raw_format, raw_verified
+       FROM emails WHERE user_id = ? AND mail_account_id = ? AND id > ?
+         AND import_complete = TRUE AND raw_verified = TRUE AND raw_format = 'exact_octets'
+         AND COALESCE(remote_uidvalidity, imap_uidvalidity) IS NOT NULL
+       ORDER BY id LIMIT 200`, [userId, accountId, afterId]);
+    for (const email of emails) {
+      if (await recordMailServerMessageForDeletion({ connection, userId, accountId, emailId: email.id,
+        sourceFolder: email.source_folder, imapUid: email.imap_uid, imapUidValidity: email.imap_uidvalidity,
+        rawStoragePath: email.raw_storage_path, rawSha256: email.raw_sha256, rawBytes: Number(email.raw_bytes),
+        rawFormat: email.raw_format, rawVerified: toBooleanFlag(email.raw_verified) })) queued++;
     }
+    if (emails.length < 200) break;
+    afterId = emails[emails.length - 1].id;
+    await new Promise(resolve => setImmediate(resolve));
   }
-
-  await connection.execute(
-    `UPDATE mail_server_messages
-     SET delete_status = 'pending',
-         delete_error = NULL,
-         deleted_at = NULL
-     WHERE user_id = ?
-       AND mail_account_id = ?
-       AND delete_status IN ('failed', 'skipped')`,
-    [userId, accountId]
-  );
-
+  // A failed/skipped destructive attempt is not silently reset to pending.
   return { queued };
 }
 
@@ -1107,16 +1114,15 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
 
     const safeLimit = Math.min(Math.max(Number(limit) || MAIL_SERVER_DELETE_BATCH_SIZE, 1), 500);
     const [messages] = await db.execute(
-      `SELECT id, user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity
-       FROM mail_server_messages
-       WHERE mail_account_id = ?
-         AND user_id = ?
-         AND delete_status = 'pending'
-         AND EXISTS (
-           SELECT 1 FROM emails e WHERE e.id = mail_server_messages.email_id
-             AND e.user_id = mail_server_messages.user_id AND e.import_complete = TRUE
-         )
-       ORDER BY created_at ASC
+      `SELECT m.id, m.user_id, m.mail_account_id, m.email_id, m.source_folder, m.imap_uid, m.imap_uidvalidity,
+         e.raw_storage_path, e.raw_sha256, e.raw_bytes, e.raw_format, e.raw_verified, e.import_complete,
+         e.remote_folder, e.remote_uid, e.remote_uidvalidity, e.source_folder AS email_source_folder,
+         e.imap_uid AS email_imap_uid, e.imap_uidvalidity AS email_imap_uidvalidity, e.remote_missing
+       FROM mail_server_messages m JOIN emails e ON e.id = m.email_id AND e.user_id = m.user_id AND e.mail_account_id = m.mail_account_id
+       WHERE m.mail_account_id = ?
+         AND m.user_id = ?
+         AND m.delete_status = 'pending'
+       ORDER BY m.created_at ASC
        LIMIT ${safeLimit}`,
       [normalizedAccountId, account.user_id]
     );
@@ -1146,10 +1152,12 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
         break;
       }
 
-      const uid = normalizeImapUid(message.imap_uid);
-      const sourceFolder = String(message.source_folder || '').trim();
-      if (!uid || !sourceFolder) {
-        await markMailServerMessageDeleteStatus({ id: message.id, status: 'skipped', error: 'Missing source folder or UID.' });
+      const { uint32, eligibleForProviderErasure } = require('./mail-engine/content');
+      const uid = uint32(message.imap_uid);
+      const sourceFolder = String(message.source_folder || '');
+      const expectedEpoch = uint32(message.imap_uidvalidity);
+      if (!uid || !sourceFolder || !expectedEpoch) {
+        await markMailServerMessageDeleteStatus({ id: message.id, status: 'skipped', error: 'Missing verified source folder, UID or epoch.' });
         skipped++;
         processed++;
         continue;
@@ -1161,31 +1169,53 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
           currentFolder = sourceFolder;
         }
 
-        const currentUidValidity = getCurrentBoxUidValidity(connection);
-        const expectedUidValidity = message.imap_uidvalidity === null || message.imap_uidvalidity === undefined
-          ? null
-          : Number(message.imap_uidvalidity);
-        if (expectedUidValidity !== null && currentUidValidity !== null && expectedUidValidity !== currentUidValidity) {
+        const currentUidValidity = uint32(getCurrentBoxUidValidity(connection));
+        if (currentUidValidity !== expectedEpoch) {
           await markMailServerMessageDeleteStatus({
-            id: message.id,
-            status: 'skipped',
-            error: `UIDVALIDITY changed for ${sourceFolder}; expected ${expectedUidValidity}, got ${currentUidValidity}.`,
+            id: message.id, status: 'skipped',
+            error: `UIDVALIDITY unverified or changed for ${sourceFolder}.`,
           });
-          skipped++;
-          processed++;
-          continue;
+          skipped++; processed++; continue;
+        }
+        const archived = { ...message, source_folder: message.email_source_folder,
+          imap_uid: message.email_imap_uid, imap_uidvalidity: message.email_imap_uidvalidity };
+        if (!await eligibleForProviderErasure({ row: archived, sourceFolder, uid,
+          uidValidity: expectedEpoch, selectedUidValidity: currentUidValidity, root: MAIL_RAW_STORAGE_ROOT })) {
+          await markMailServerMessageDeleteStatus({ id: message.id, status: 'skipped', error: 'Exact archive or current source identity unverified.' });
+          skipped++; processed++; continue;
         }
 
         const found = await connection.search([['UID', uid]], { bodies: ['HEADER.FIELDS (MESSAGE-ID)'], markSeen: false });
-        if (!Array.isArray(found) || found.length === 0) {
+        if (!Array.isArray(found) || found.some(item => uint32(item?.attributes?.uid) !== uid)) {
+          throw new Error('Malformed provider UID verification; deletion withheld');
+        }
+        if (found.length === 0) {
           await markMailServerMessageDeleteStatus({ id: message.id, status: 'missing', error: null });
           missing++;
           processed++;
           continue;
         }
 
-        // Settings may be changed by another request while IMAP SEARCH waits.
+        // Settings and local identity may change while SEARCH is in flight.
         if (!(await isMailServerDeletionStillEnabled(normalizedAccountId))) { stopped = true; break; }
+        const [freshRows] = await db.execute(`SELECT m.id, m.source_folder, m.imap_uid, m.imap_uidvalidity,
+          e.source_folder AS email_source_folder, e.imap_uid AS email_imap_uid,
+          e.imap_uidvalidity AS email_imap_uidvalidity, e.remote_folder, e.remote_uid,
+          e.remote_uidvalidity, e.remote_missing, e.import_complete, e.raw_storage_path,
+          e.raw_sha256, e.raw_bytes, e.raw_format, e.raw_verified
+          FROM mail_server_messages m JOIN emails e ON e.id=m.email_id AND e.user_id=m.user_id AND e.mail_account_id=m.mail_account_id
+          WHERE m.id=? AND m.user_id=? AND m.mail_account_id=? AND m.delete_status='pending'`,
+        [message.id, account.user_id, normalizedAccountId]);
+        const fresh = freshRows[0];
+        if (!fresh || String(fresh.source_folder) !== sourceFolder || uint32(fresh.imap_uid) !== uid
+          || uint32(fresh.imap_uidvalidity) !== expectedEpoch
+          || uint32(getCurrentBoxUidValidity(connection)) !== expectedEpoch
+          || !await eligibleForProviderErasure({ row: { ...fresh, source_folder: fresh.email_source_folder,
+            imap_uid: fresh.email_imap_uid, imap_uidvalidity: fresh.email_imap_uidvalidity },
+          sourceFolder, uid, uidValidity: expectedEpoch, selectedUidValidity: expectedEpoch, root: MAIL_RAW_STORAGE_ROOT })) {
+          await markMailServerMessageDeleteStatus({ id: message.id, status: 'skipped', error: 'Archive/source changed before dispatch.' });
+          skipped++; processed++; continue;
+        }
         await deleteImapUid(connection, uid);
         await markMailServerMessageDeleteStatus({ id: message.id, status: 'deleted', error: null });
         deleted++;
@@ -1244,85 +1274,16 @@ async function runMailServerDeletionPass({ accountId = null, limit = MAIL_SERVER
 
 // ── Mail sync and send functions ──────────────────────────────────
 
-// Helper function to sync a specific folder
-async function syncMailFolder(connection, account, accountId, folderName, dbFolderName, lastSyncedAt = null, _syncFetchLimit = null, signal = null) {
-  let state;
-  try {
-    await connection.openBox(folderName);
-    const uidValidity = getCurrentBoxUidValidity(connection);
-    state = await loadFolderSyncState(db, accountId, folderName, uidValidity);
-    const searchResults = await connection.search(buildFolderSearchCriteria(state), {});
-    if (!Array.isArray(searchResults)) throw new Error('Mail provider returned unexpected message IDs');
-    const listedUids = searchResults.map(item => item?.attributes?.uid);
-    if (listedUids.some(uid => !Number.isSafeInteger(uid) || uid <= 0)) {
-      throw new Error('Mail provider returned malformed message IDs; checkpoint was not advanced');
-    }
-    // IMAP n:* may include the current highest UID when n exceeds it.
-    const newUids = listedUids.filter(uid => !state.incremental || uid > state.lastUid);
-    const [retryRows] = await db.execute(
-      `SELECT imap_uid FROM emails WHERE mail_account_id = ? AND source_folder = ?
-       AND import_complete = FALSE AND imap_uid IS NOT NULL
-       AND (imap_uidvalidity = ? OR imap_uidvalidity IS NULL)`,
-      [accountId, folderName, uidValidity]
-    );
-    const retryUids = retryRows.map(row => Number(row.imap_uid)).filter(uid => Number.isSafeInteger(uid) && uid > 0);
-    const allUids = [...new Set([...newUids, ...retryUids])].sort((a, b) => a - b);
-    const known = await loadExistingImportedUidSet({ accountId, folderName, uids: allUids, uidValidity });
-    const pending = allUids.filter(uid => !known.has(uid));
-    const routingContext = pending.length ? await createMailRoutingContext(account.user_id, accountId) : null;
-    let newEmails = 0;
-    let failed = 0;
-    for (const uid of pending) {
-      checkCancelled(signal);
-      try {
-        const messages = await connection.search([['UID', uid]], { bodies: [IMAP_FULL_MESSAGE_BODY], markSeen: false, struct: true });
-        let existingEmail = null;
-        const item = messages?.[0];
-        let fullEmail;
-        if (!item) {
-          // An older import can have a valid raw archive but missing attachment
-          // rows even after its provider copy was removed. Repair from that copy.
-          existingEmail = await findExistingImportedEmail({ messageId: null, accountId, folderName, uid, uidValidity });
-          if (!existingEmail || !isUsableRawEmailArchive(existingEmail.raw_storage_path)) continue;
-          fullEmail = await fs.promises.readFile(existingEmail.raw_storage_path, 'utf8');
-        } else {
-          fullEmail = buildRawEmailFromImapParts(item);
-        }
-        if (!fullEmail || !fullEmail.trim()) throw new Error(`Empty message body for UID ${uid}`);
-        const parsed = await simpleParser(fullEmail);
-        const messageId = parsed.messageId || existingEmail?.message_id || `${accountId}-${folderName}-${uidValidity ?? 'unknown'}-${uid}`;
-        const { fromAddress, fromName } = extractSenderFromParsedEmail(parsed);
-        const toAddresses = extractEmailAddresses(parsed.to);
-        existingEmail ||= await findExistingImportedEmail({ messageId, accountId, folderName, uid, uidValidity });
-        if (toBooleanFlag(existingEmail?.import_complete) && isUsableRawEmailArchive(existingEmail.raw_storage_path)) {
-          await recordMailServerMessageForDeletion({ userId: account.user_id, accountId, emailId: existingEmail.id,
-            sourceFolder: folderName, imapUid: uid, imapUidValidity: uidValidity, rawStoragePath: existingEmail.raw_storage_path });
-          continue;
-        }
-        const routeResult = await resolveMailSenderTargetFolder({ userId: account.user_id, mailAccountId: accountId,
-          fromAddress, fallbackFolder: dbFolderName || 'inbox', routingContext });
-        const flags = Array.isArray(item?.attributes?.flags) ? item.attributes.flags : [];
-        const result = await require('./mail-import').persistImportedMessage({ db, account, accountId, folderName, uid, uidValidity,
-          existingEmail, messageId, fullEmail, parsed, fromAddress, fromName, toAddresses,
-          folder: routeResult.folder, isRead: ['sent', 'drafts'].includes(dbFolderName) || flags.includes('\\Seen'),
-          archiveRaw: saveRawEmailSource, enqueueDeletion: recordMailServerMessageForDeletion,
-          suppressNotifications: !lastSyncedAt || !state.incremental });
-        if (result.isNew) newEmails += 1;
-      } catch (error) {
-        failed += 1;
-        console.error(`[SYNC] Could not import ${folderName} UID ${uid}; will retry:`, error.message);
-      }
-    }
-    if (failed === 0) {
-      await saveFolderSyncState(db, accountId, folderName, uidValidity, newUids.reduce((max, uid) => Math.max(max, uid), state.lastUid));
-    }
-    return { newEmails, processed: pending.length, failed, total: allUids.length,
-      selectedCount: pending.length, requestedCount: state.incremental ? 'incremental' : 'all',
-      ...(failed ? { error: `${failed} message(s) failed; folder checkpoint retained for retry` } : {}) };
-  } catch (error) {
-    console.error(`[SYNC] Error syncing ${folderName}:`, error.message);
-    return { newEmails: 0, processed: 0, failed: 0, total: 0, error: error.message };
-  }
+// Compatibility entry point: perform one bounded slice. Never enumerate ALL or
+// imply that a finite page means all historical bodies/flags are complete.
+async function syncMailFolder(connection, account, accountId, folderName, dbFolderName,
+  _lastSyncedAt = null, _syncFetchLimit = null, signal = null) {
+  const result = await require('./mail-engine/sync').scanMailboxSlice({ db, connection,
+    account: { ...account, id: accountId }, folder: { folderName, dbFolderName },
+    stream: 'recent', signal });
+  return { newEmails: result.inserted || 0, processed: result.processed, failed: 0,
+    total: null, coverage: { recent: { through: result.through, upper: result.upper } },
+    continuation: result.more, requestedCount: 'bounded' };
 }
 
 // Test IMAP connection and authentication without syncing.
@@ -1383,6 +1344,9 @@ async function testImapConnection(account) {
   }
 }
 
+// Retired pre-0.11 implementation, deliberately not called by exported sync.
+// Kept temporarily for migration reference; do not re-enable its ALL/inventory
+// equality scan. The durable job path below is the only production scheduler.
 async function syncMailAccountOnce(accountId, signal, background, report = () => {}) {
   let connection = null;
   try {
@@ -1585,32 +1549,214 @@ async function syncMailAccountOnce(accountId, signal, background, report = () =>
   }
 }
 
-syncScheduler = createMailSyncScheduler((id, signal, background, report) =>
-  withMailAccountLock(id, () => syncMailAccountOnce(id, signal, background, report)));
+const runningDurableAccounts = new Set();
+const runningDurableMutationAccounts = new Set();
+let durableScheduler;
+async function runRecoveredReconcileJob({ job, account, connection, signal, report }) {
+  const runtime = require('./mail-engine/runtime');
+  const transport = require('./mail-engine/transport');
+  const { uint32 } = require('./mail-engine/content');
+  const { settleFlagObservation } = require('./mail-engine/reconciliation');
+  const { validateWindowReply } = require('./mail-engine/sync');
+  const fence = () => runtime.assertFence({ accountId: account.id, jobId: job.id,
+    workerId: job.lease_owner, generation: Number(job.worker_generation) });
+  if (!job.operation_id || account.sync_mode !== 'sync') return { success: false, error: 'Reconciliation requires a Sync operation' };
+  const [[op]] = await db.execute(`SELECT * FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=?`,
+    [job.operation_id, account.user_id, account.id]);
+  if (!op) return { success: false, error: 'Reconciliation operation missing' };
+  if (['confirmed', 'cancelled', 'superseded', 'rejected'].includes(op.state)) return { success: true };
+  if (!Number(op.dispatched)) return { success: false, error: 'Undispatched operation is not a reconciliation job' };
+  if (op.action === 'move') {
+    // The operations executor owns the bounded MOVE outcome classifier. Its
+    // dispatched branch reads provider state and can settle/mark attention;
+    // it must never call nativeMove again after the persisted dispatch fence.
+    await require('./mail-engine/operations').applyMove(op, connection, Number(job.worker_generation),
+      signal, job.lease_owner, job.id);
+    await fence();
+    const [[current]] = await db.execute('SELECT state FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=?',
+      [op.id, account.user_id, account.id]);
+    if (current?.state === 'confirmed')
+      await runtime.enqueueJob({ userId: account.user_id, accountId: account.id, kind: 'sync', priority: 5 });
+    return { success: true, observationOnly: true };
+  }
+  const [boxes] = await db.execute(`SELECT m.id, m.remote_name, m.uidvalidity, f.slug FROM mail_remote_mailboxes m
+    JOIN mail_folder_remote_boxes b ON b.mail_account_id=m.mail_account_id AND BINARY b.remote_name=BINARY m.remote_name
+    JOIN mail_folders f ON f.id=b.folder_id AND f.user_id=m.user_id
+    WHERE m.user_id=? AND m.mail_account_id=? AND m.state='active'
+      AND BINARY m.remote_name=BINARY ?`, [account.user_id, account.id, op.remote_folder]);
+  const source = boxes.find(box => box.remote_name === op.remote_folder);
+  if (['read', 'star'].includes(op.action) && source && uint32(op.remote_uidvalidity) === uint32(source.uidvalidity)
+      && uint32(op.remote_uid)) {
+    const selected = await transport.selectMailbox(connection,
+      { folder: source.remote_name, readOnly: true, signal });
+    if (uint32(selected.uidvalidity) !== uint32(op.remote_uidvalidity))
+      return { success: false, error: 'Flag source epoch changed; identity requires attention' };
+    const uid = Number(op.remote_uid), window = { start: uid, end: uid };
+    const reply = await transport.fetchMetadataWindow(connection, { folder: source.remote_name,
+      uidvalidity: Number(op.remote_uidvalidity), startUid: uid, endUid: uid, maxMessages: 1, maxBytes: 1024 * 1024 }, { signal });
+    const [item] = validateWindowReply(reply, window, Number(op.remote_uidvalidity));
+    if (item) {
+      await fence();
+      const [[email]] = await db.execute('SELECT observation_revision FROM emails WHERE id=? AND user_id=? AND mail_account_id=?',
+        [op.email_id, account.user_id, account.id]);
+      if (email) {
+        const settled = await settleFlagObservation({ operationId: op.id, userId: account.user_id,
+          accountId: account.id, workerGeneration: Number(job.worker_generation), workerId: job.lease_owner,
+          jobId: job.id, source: { folder: op.remote_folder, uid, uidvalidity: Number(op.remote_uidvalidity) },
+          flags: item.flags, modseq: item.modseq, observationRevision: email.observation_revision });
+        if (settled.settled) return { success: true, observationOnly: true };
+      }
+    }
+  }
+  // If the bit still differs, the normal operation executor performs another
+  // fresh read and classifies a safe idempotent flag retry/attention. This job
+  // never blindly replays an interrupted provider command.
+  if (['read', 'star'].includes(op.action)) {
+    await require('./mail-engine/operations').applyFlag(op, connection, Number(job.worker_generation),
+      signal, job.lease_owner, job.id);
+    return { success: true, observationOnly: true };
+  }
+  return { success: false, error: 'Unsupported reconciliation action' };
+}
+async function runDurableMailJob(job, signal, report) {
+  const runtime = require('./mail-engine/runtime');
+  const { scanMailboxSlice } = require('./mail-engine/sync');
+  const { processBodySlice } = require('./mail-engine/content');
+  const accountId = job.mail_account_id;
+  let connection;
+  try {
+    const [accounts] = await db.execute('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, job.user_id]);
+    const account = accounts[0];
+    if (!account || !toBooleanFlag(account.is_active) || account.disconnected_at) return { success: false, error: 'Account inactive or disconnected' };
+    if (!await isModuleEnabled(account.user_id, 'mail') || await isSectionRestoreActive(account.user_id, 'mail'))
+      return { success: false, error: 'Mail module paused or restore in progress' };
+    checkCancelled(signal);
+    await runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner,
+      generation: Number(job.worker_generation) });
+    const config = await buildImapConnectionConfig(account);
+    if (!config) return { success: false, error: 'Mail credentials unavailable' };
+    connection = guardImapConnection(await imaps.connect(config), { signal });
+    connection.on('error', () => {});
+    checkCancelled(signal);
+    if (job.kind === 'reconcile')
+      return await runRecoveredReconcileJob({ job, account, connection, signal, report });
+    if (job.kind === 'sync') {
+      const specialUses = new Map();
+      const names = await listAvailableImapFolders(connection, specialUses, true);
+      for (const planned of pickImapSyncFolders(names)) {
+        if (names.includes(planned.folderName) && !specialUses.has(planned.folderName)) specialUses.set(planned.folderName, planned.dbFolderName);
+      }
+      await ensureDefaultMailFoldersForUser(account.user_id);
+      const registered = await registerCustomImapFoldersForUser(account.user_id, account.id, names, db, specialUses, true);
+      if (registered.length !== names.filter(name => !isVirtualMailFolderName(name)).length)
+        throw new Error('Remote folder mapping incomplete');
+      for (const folder of registered) {
+        checkCancelled(signal);
+        const selected = await require('./mail-engine/transport').selectMailbox(connection,
+          { folder: folder.remoteName, readOnly: true, signal });
+        const mailbox = await require('./mail-engine/repository').withTransaction(executor =>
+          require('./mail-engine/repository').ensureMailbox({ userId: account.user_id,
+            accountId, folderName: folder.remoteName, epoch: selected.uidvalidity,
+            metadata: { localFolderSlug: folder.slug, specialUse: specialUses.get(folder.remoteName) || null } }, executor), db);
+        // These are durable independent jobs, never a global inventory equality gate.
+        for (const [kind, priority] of account.sync_mode === 'sync'
+          ? [['recent', 10], ['flags', 20], ['history', 60], ['presence', 70]]
+          : [['recent', 10], ['history', 60]]) {
+          await runtime.enqueueJob({ userId: account.user_id, accountId, mailboxId: mailbox.id,
+            kind, priority, manualRefresh: Number(job.manual_refresh) === 1 && ['flags', 'presence'].includes(kind) });
+        }
+      }
+      // Stream jobs select a single mapped mailbox in account-scoped rounds.
+      return { success: true, started: true, folders: registered.length };
+    }
+    if (job.kind === 'operation') {
+      if (account.sync_mode !== 'sync') return { success: false, error: 'Provider writes disabled in Download mode' };
+      const result = await require('./mail-engine/operations').processDueOperations(account, connection, {
+        workerGeneration: Number(job.worker_generation), workerId: job.lease_owner, jobId: job.id,
+        operationId: job.operation_id, signal });
+      return { success: !result.connectionFailed, more: false, ...result };
+    }
+    if (!['recent', 'flags', 'history', 'presence', 'body'].includes(job.kind))
+      return { success: false, error: 'Unsupported mail job kind' };
+    if (account.sync_mode !== 'sync' && ['flags', 'presence'].includes(job.kind))
+      return { success: false, error: 'Remote mirroring disabled in Download mode' };
+    let mailbox;
+    if (job.mailbox_id) {
+      const [rows] = await db.execute(`SELECT m.id, m.remote_name, f.slug FROM mail_remote_mailboxes m
+        JOIN mail_folder_remote_boxes b ON b.mail_account_id=m.mail_account_id AND BINARY b.remote_name=BINARY m.remote_name
+        JOIN mail_folders f ON f.id=b.folder_id AND f.user_id=m.user_id
+        WHERE m.id=? AND m.user_id=? AND m.mail_account_id=? AND m.state='active' LIMIT 1`,
+      [job.mailbox_id, account.user_id, account.id]);
+      mailbox = rows[0];
+    }
+    if (!mailbox) return { success: false, error: 'Durable mailbox mapping missing' };
+    const folder = { folderName: mailbox.remote_name, dbFolderName: mailbox.slug };
+    const result = job.kind === 'body'
+      ? await processBodySlice({ db, account, connection, folder, mailboxId: mailbox.id, signal, job, report })
+      : await scanMailboxSlice({ db, account, connection, folder, stream: job.kind, signal, job, report,
+        manualRefresh: Number(job.manual_refresh) === 1 });
+    return { success: true, more: result.more, ...result };
+  } catch (error) {
+    if (signal.aborted || error.code === 'MAIL_SYNC_CANCELLED') return { success: false, cancelled: true };
+    throw error;
+  } finally { if (connection) connection.end(); }
+}
 
-function scheduleMailAccountSync(accountId, options = {}) {
+durableScheduler = createDurableMailScheduler(runDurableMailJob, { onState: state => {
+  if (!state.mail_account_id) return;
+  if (state.state === 'running') {
+    runningDurableAccounts.add(state.mail_account_id);
+    if (['operation', 'reconcile'].includes(state.kind)) runningDurableMutationAccounts.add(state.mail_account_id);
+  } else if (['idle', 'error', 'cancelled'].includes(state.state)) {
+    runningDurableAccounts.delete(state.mail_account_id);
+    if (['operation', 'reconcile'].includes(state.kind)) runningDurableMutationAccounts.delete(state.mail_account_id);
+  }
+  // A continuation is committed atomically with the completed job by the
+  // durable scheduler. An in-memory callback must not create extra work.
+} });
+async function startMailEngineScheduler() { await durableScheduler.start(); }
+async function scheduleMailAccountSync(accountId, options = {}) {
   const id = normalizeMailAccountId(accountId);
   if (!id) throw new Error('Account ID required');
-  const job = syncScheduler.enqueue(id, options);
-  if (job.started) job.promise.then(() => require('./mail-writebacks').drainWritebacks());
-  return job;
+  const [accounts] = await db.execute('SELECT user_id FROM mail_accounts WHERE id = ?', [id]);
+  if (!accounts.length) throw new Error('Mail account not found');
+  // A manual request may reopen only a background/module pause, never a
+  // disconnect, settings fence or active restore. The route calls this entry
+  // directly, so the resume belongs at admission, not only syncMailAccount.
+  if (!options.background && await isModuleEnabled(accounts[0].user_id, 'mail')
+      && !await isSectionRestoreActive(accounts[0].user_id, 'mail'))
+    await require('./mail-engine/runtime').resumeAccount({ userId: accounts[0].user_id,
+      accountId: id, resumeStreams: true, reasons: ['Mail module disabled', 'Mail background paused'] });
+  await durableScheduler.start();
+  const prior = await durableScheduler.state({ userId: accounts[0].user_id, accountId: id });
+  const alreadyRunning = prior && prior.kind === 'sync' && ['queued', 'running'].includes(prior.state);
+  const job = await durableScheduler.enqueue({ userId: accounts[0].user_id, accountId: id,
+    kind: 'sync', priority: 5, manualRefresh: !options.background });
+  return { started: !alreadyRunning, alreadyRunning: !!alreadyRunning, job_id: job.id,
+    promise: Promise.resolve({ success: true, started: !alreadyRunning, alreadyRunning: !!alreadyRunning, job_id: job.id }) };
 }
-function getMailSyncState(accountId) { return syncScheduler.state(normalizeMailAccountId(accountId)); }
-
+async function getMailSyncState(accountId) {
+  const id = normalizeMailAccountId(accountId);
+  if (!id) return null;
+  const [accounts] = await db.execute('SELECT user_id FROM mail_accounts WHERE id = ?', [id]);
+  if (!accounts.length) return null;
+  const job = await durableScheduler.state({ userId: accounts[0].user_id, accountId: id });
+  if (!job) return null;
+  return { account_id: id, job_id: job.id, state: job.state, phase: job.phase,
+    processed: Number(job.processed || 0), total: job.total == null ? null : Number(job.total),
+    coverage: typeof job.coverage_json === 'string' ? JSON.parse(job.coverage_json) : job.coverage_json,
+    started_at: job.started_at, updated_at: job.updated_at, completed_at: job.completed_at,
+    cancellation_requested: toBooleanFlag(job.cancellation_requested), error: job.error };
+}
 async function syncMailAccount(accountId, options = {}) {
   const id = normalizeMailAccountId(accountId);
   if (!id) return { success: false, error: 'Account ID required' };
-  const job = scheduleMailAccountSync(id, options);
-  if (job.alreadyRunning) return { success: true, alreadyRunning: true, skipped: true,
-    message: 'Sync already queued or running for this account.' };
+  const job = await scheduleMailAccountSync(id, options);
   return job.promise;
 }
 
 async function sendEmail(accountId, { to, subject, body, isHtml = false, attachments = [] }) {
   try {
-    // #region agent log
-    debugLog('server.js:169', 'sendEmail START', { accountId, to, subjectLength: subject?.length || 0, bodyLength: body?.length || 0, isHtml, attachmentCount: Array.isArray(attachments) ? attachments.length : 0 }, 'H5');
-    // #endregion
     const [accounts] = await db.execute(
       'SELECT * FROM mail_accounts WHERE id = ?',
       [accountId]
@@ -1618,9 +1764,7 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
     if (!accounts[0]) throw new Error('Account not found');
 
     const account = accounts[0];
-    // #region agent log
-    debugLog('server.js:177', 'Account loaded for send', { email: account.email_address, smtpHost: account.smtp_host, smtpPort: account.smtp_port, hasPassword: !!account.encrypted_password }, 'H5');
-    // #endregion
+    if (!toBooleanFlag(account.is_active) || account.disconnected_at) throw new Error('Mail account is inactive or disconnected');
     const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
     if (!password) throw new Error('No password configured');
 
@@ -1644,10 +1788,6 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
       greetingTimeout: 30000, // Greeting timeout: 30 seconds
       socketTimeout: 60000, // Socket timeout: 60 seconds
     });
-    // #region agent log
-    debugLog('server.js:189', 'Before SMTP sendMail', { smtpHost: account.smtp_host, smtpPort: account.smtp_port, from: account.email_address, to }, 'H5');
-    // #endregion
-
     const smtpAttachments = normalizeComposerAttachments(attachments).map(attachment => ({
       filename: attachment.filename, contentType: attachment.contentType, content: attachment.content,
     }));
@@ -1663,11 +1803,11 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
       disableFileAccess: true,
       disableUrlAccess: true,
     });
-    // #region agent log
-    debugLog('server.js:199', 'SMTP sendMail success', { messageId: info.messageId }, 'H5');
-    // #endregion
-
-    // Save sent email to database
+    // Saving the copy is a separate effect from SMTP delivery. A failed local
+    // copy must never become an overall send failure inviting a second SMTP send.
+    let sentCopyState = 'failed';
+    let sentCopyError = null;
+    let sentCopyId = null;
     try {
       const emailId = crypto.randomUUID();
       const messageId = info.messageId || `<${Date.now()}-${emailId}@unihub.local>`;
@@ -1723,19 +1863,20 @@ async function sendEmail(accountId, { to, subject, body, isHtml = false, attachm
           );
         }
       }
+      sentCopyState = 'confirmed';
+      sentCopyId = emailId;
       console.log(`✓ Saved sent email to database: ${emailId}`);
     } catch (saveError) {
-      // Log error but don't fail the send operation
-      console.error(`⚠ Failed to save sent email to database:`, saveError.message);
+      sentCopyError = String(saveError?.message || saveError).slice(0, 240);
+      console.error('Sent message delivered but local Sent copy failed:', sentCopyError);
     }
 
-    console.log(`✓ Sent email from ${account.email_address}: ${info.messageId}`);
-    return { success: true, messageId: info.messageId };
+    return { success: true, sent: true, messageId: info.messageId,
+      sent_copy_state: sentCopyState, sent_copy_id: sentCopyId,
+      ...(sentCopyError ? { sent_copy_error: sentCopyError,
+        message: 'Message sent, but the local Sent copy failed. Do not resend the message.' } : {}) };
   } catch (error) {
-    // #region agent log
-    debugLog('server.js:201', 'sendEmail ERROR', { accountId, errorMessage: error.message, errorStack: error.stack?.substring(0, 200), errorName: error.name }, 'H5');
-    // #endregion
-    console.error(`Error sending email from account ${accountId}:`, error.message);
+    console.error('Mail send failed for account', accountId, error?.code || error?.name || 'Error');
     throw error;
   }
 }
@@ -1744,6 +1885,8 @@ module.exports = {
   buildImapConnectionConfig,
   withMailAccountLock,
   cancelMailAccountSync,
+  stopMailAccountWork,
+  yieldMailReadWork,
   KNOWN_MAIL_HOST_SUFFIXES,
   DEFAULT_MAIL_SYNC_FETCH_LIMIT,
   MAIL_SYNC_FETCH_LIMITS,
@@ -1764,6 +1907,7 @@ module.exports = {
   normalizeSyncFetchLimit,
   normalizeMailAccountId,
   isMailAccountSyncRunning,
+  isMailAccountWriteRunning,
   isAnyMailAccountSyncRunning,
   getRunningMailSyncAccountIds,
   isMailServerDeleteRunning,
@@ -1809,6 +1953,9 @@ module.exports = {
   syncMailFolder,
   testImapConnection,
   syncMailAccount,
+  startMailEngineScheduler,
+  runDurableMailJob,
+  runRecoveredReconcileJob,
   scheduleMailAccountSync,
   getMailSyncState,
   sendEmail,

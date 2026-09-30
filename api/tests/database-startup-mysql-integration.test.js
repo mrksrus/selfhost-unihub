@@ -263,8 +263,31 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'ci-admin@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'ci-bootstrap-password-2026';
   const { initDatabase } = require('../src/services/database');
-  const { db, getDb } = require('../src/state');
-  t.after(async () => { if (getDb()) await getDb().end(); });
+  const { db, getDb, setDb } = require('../src/state');
+  const mysql = require('mysql2/promise');
+  const cleanupConnection = await mysql.createConnection({
+    host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
+    database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER,
+    password: process.env.MYSQL_TEST_PASSWORD, timezone: '+00:00',
+  });
+  let ownsDatabase = false;
+  t.after(async () => {
+    try {
+      if (getDb()) { await getDb().end(); setDb(null); }
+      if (ownsDatabase) {
+        await cleanupConnection.execute('SET FOREIGN_KEY_CHECKS = 0');
+        try {
+          const [tables] = await cleanupConnection.query('SHOW TABLES');
+          for (const row of tables) await cleanupConnection.execute('DROP TABLE ' + quoteIdentifier(Object.values(row)[0]));
+        } finally { await cleanupConnection.execute('SET FOREIGN_KEY_CHECKS = 1'); }
+        const [remaining] = await cleanupConnection.query('SHOW TABLES');
+        assert.equal(remaining.length, 0, 'Fresh-install fixture must leave an empty database');
+      }
+    } finally { await cleanupConnection.end(); }
+  });
+  const [existingTables] = await cleanupConnection.query('SHOW TABLES');
+  assert.equal(existingTables.length, 0, 'Fresh-install fixture requires an empty dedicated test database');
+  ownsDatabase = true;
   await initDatabase();
   let notifications = require('../src/services/notifications');
   await notifications.ensureNotificationSchema();
@@ -276,7 +299,12 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     await db.execute('ALTER TABLE emails DROP COLUMN recovery_inventory_probe');
   }
   const [upgradeHistory] = await db.execute('SELECT id, name, completed_at FROM schema_migrations ORDER BY id');
-  assert.deepEqual(upgradeHistory.map(row => row.id), [1, 2, 3, 4, 5]);
+  assert.deepEqual(upgradeHistory.map(row => [row.id, row.name]), [
+    [1, 'verified-0.10.5-baseline'], [2, 'sent-draft-read-repair'],
+    [3, 'mail-server-follow-mode'], [4, 'notes-with-revisions-and-attachments'],
+    [5, 'explicit-mail-writebacks'], [6, 'mail-engine-additive-storage'],
+    [7, 'mail-engine-resumable-backfill'], [8, 'mail-engine-manual-refresh-intent'],
+  ]);
   const [[owner]] = await db.execute('SELECT id FROM users LIMIT 1');
   const sentId = crypto.randomUUID();
   const sentAccountId = crypto.randomUUID();

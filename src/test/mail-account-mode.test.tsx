@@ -16,7 +16,7 @@ describe('mail account modes', () => {
     fireEvent.click(consent);
     expect(props.onConfirmChange).toHaveBeenCalledWith(true);
     expect(screen.getByText(/no longer on the server stay here/)).toBeInTheDocument();
-    expect(screen.getByText(/Only new actions in UniHub are sent/)).toBeInTheDocument();
+    expect(screen.getByText(/latest pending explicit flag request remains visible/)).toBeInTheDocument();
     expect(screen.getByText(/Draft editing and folder creation/)).toBeInTheDocument();
     expect(screen.queryByText(/Changes made in UniHub stay local/)).not.toBeInTheDocument();
     view.rerender(<MailAccountModeSettings {...props} saveDownloadFirst />);

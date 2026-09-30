@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { setDb } = require('../src/state');
 const { buildBackupForUser, importBackupForUser, validateBackupPayload } = require('../src/services/backup');
 const { normalizeBackupPayload } = require('../src/services/backup-format');
+const { BACKUP_VERSION } = require('../src/services/backup-format');
 const { SECTION_POLICIES, TABLE_POLICIES } = require('../src/services/backup-catalog');
 
 function database(t, execute = async () => [[]]) {
@@ -42,7 +43,7 @@ test('contacts-only schema 3 export never reads mail, credentials, games or reco
   const calls = database(t, async sql => sql.includes('FROM contacts ')
     ? [[{ id: 'contact', user_id: 'owner', first_name: 'Local' }]] : [[]]);
   const backup = await buildBackupForUser('owner', { sections: 'contacts', includeFileData: false });
-  assert.equal(backup.version, 3);
+  assert.equal(backup.version, BACKUP_VERSION);
   assert.deepEqual(Object.keys(backup.data), ['contacts']);
   const selects = calls.filter(call => call.sql.startsWith('SELECT'));
   assert.equal(selects.length, 1);

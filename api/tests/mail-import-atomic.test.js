@@ -3,10 +3,11 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
+const crypto = require('node:crypto');
 const { persistImportedMessage } = require('../src/services/mail-import');
 
 async function fixture(t, { failAttachment = false, failCommit = false, existingEmail = null } = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mail-import-'));
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'mail-import-'));
   const previousRoot = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT;
   process.env.MAIL_ATTACHMENT_UPLOAD_ROOT = root;
   t.after(async () => {
@@ -24,22 +25,24 @@ async function fixture(t, { failAttachment = false, failCommit = false, existing
     release() { calls.push('release'); },
     async execute(sql, params) {
       calls.push(sql);
+      assert.equal((sql.match(/\?/g) || []).length, params.length, 'prepared SQL parameter count');
       if (failAttachment && sql.includes('INSERT INTO email_attachments')) throw new Error('Injected attachment insert failure');
       if (sql.includes('SELECT id, storage_path')) return [[]];
       return [{ affectedRows: 1 }];
     },
   };
   const args = {
-    db: { async getConnection() { return connection; } }, account: { user_id: 'u1' }, accountId: 'a1',
+    db: { async getConnection() { return connection; } }, account: { user_id: 'u1', sync_mode: 'download' }, accountId: 'a1',
     folderName: 'INBOX', uid: 1, uidValidity: 10, existingEmail, messageId: '<id@example.test>',
-    fullEmail: 'raw data', parsed: { subject: 'Subject', text: 'text', html: '<img src="cid:pic">',
+    fullEmail: Buffer.from([0x52, 0x61, 0x77, 0xff]), parsed: { subject: 'Subject', text: 'text', html: '<img src="cid:pic">',
       attachments: [{ filename: 'pic.png', contentType: 'image/png', cid: 'pic', content: Buffer.from('image') }] },
     fromAddress: 'sender@example.test', fromName: 'Sender', toAddresses: ['recipient@example.test'], folder: 'inbox', isRead: false,
     suppressNotifications: true,
-    async archiveRaw({ emailId }) {
+    async archiveRaw({ emailId, rawEmail }) {
       const rawStoragePath = path.join(root, `${emailId}.eml`);
-      await fs.writeFile(rawStoragePath, 'raw data');
-      return { rawStoragePath, rawSha256: 'fakehash' };
+      await fs.writeFile(rawStoragePath, rawEmail);
+      return { rawStoragePath, rawSha256: crypto.createHash('sha256').update(rawEmail).digest('hex'),
+        rawBytes: rawEmail.length, rawFormat: 'exact_octets', rawVerified: true };
     },
     async enqueueDeletion({ connection: actual }) {
       assert.equal(actual, connection);
@@ -59,8 +62,10 @@ test('complete imported message, attachments and deletion queue commit together'
   assert.equal(h.rolledBack, false);
   const insert = h.calls.find(sql => sql.includes('INSERT INTO emails'));
   assert.match(insert, /import_complete/);
+  assert.match(insert, /raw_verified/);
   assert.ok(h.calls.indexOf('queue deletion') < h.calls.indexOf('commit'));
-  assert.equal((await fs.readdir(path.join(h.root, 'u1'))).length, 1);
+  const archived = path.join(h.root, `${result.emailId}.eml`);
+  assert.deepEqual(await fs.readFile(archived), h.args.fullEmail);
 });
 
 test('attachment persistence failure rolls back metadata and removes staged raw and attachment files', async (t) => {

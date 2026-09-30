@@ -31,6 +31,8 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   const options = 'ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci';
   await connection.execute(`CREATE TEMPORARY TABLE users (id CHAR(36) PRIMARY KEY, email VARCHAR(255), role VARCHAR(16), is_active BOOLEAN DEFAULT TRUE, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE sessions (id CHAR(36) PRIMARY KEY, user_id CHAR(36), token VARCHAR(512), expires_at DATETIME) ${options}`);
+  await connection.execute(`CREATE TEMPORARY TABLE user_settings (user_id CHAR(36) NOT NULL,
+    setting_key VARCHAR(100) NOT NULL, setting_value JSON, PRIMARY KEY (user_id, setting_key)) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE calendar_calendars (id CHAR(36) PRIMARY KEY, is_visible BOOLEAN) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE calendar_events (id CHAR(36) PRIMARY KEY, user_id CHAR(36), calendar_id CHAR(36), title VARCHAR(255), start_time DATETIME, end_time DATETIME,
     reminders JSON, reminder_minutes INT, todo_status VARCHAR(24), is_todo_only BOOLEAN DEFAULT FALSE, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ${options}`);
@@ -75,6 +77,12 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   const [[scan]] = await connection.execute('SELECT last_reminder_scan_at FROM notification_config WHERE id = 1');
   assert.equal(scan.last_reminder_scan_at, null, 'a restore cannot advance the reminder scan cursor');
   await connection.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [restoreId]);
+  await service.processNotificationJobs();
+  // The outbox uses SQL UTC_TIMESTAMP(), whereas a worker tick captures its
+  // cutoff before reconciling reminders. A second boundary-safe tick delivers
+  // newly queued reminders even when reconciliation crossed a whole second.
+  const [[reminderOutbox]] = await connection.execute("SELECT COUNT(*) AS total FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id WHERE e.kind = 'reminder'");
+  assert.equal(reminderOutbox.total, 1, 'the due reminder was genuinely queued');
   await service.processNotificationJobs();
   assert.equal(sent.filter(item => item.kind === 'mail').length, 1);
   assert.equal(sent.filter(item => item.kind === 'reminder').length, 1);

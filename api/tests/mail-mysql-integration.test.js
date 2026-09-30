@@ -34,7 +34,9 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
     message_id VARCHAR(500), subject TEXT, from_address VARCHAR(255), from_name VARCHAR(255), to_addresses JSON,
     body_text LONGTEXT, body_html LONGTEXT, has_attachments BOOLEAN, received_at TIMESTAMP NULL, folder VARCHAR(64),
     source_folder VARCHAR(255), imap_uid BIGINT, imap_uidvalidity BIGINT, raw_storage_path TEXT, raw_sha256 CHAR(64),
-    is_read BOOLEAN, import_complete BOOLEAN NOT NULL DEFAULT FALSE) ENGINE=InnoDB`);
+    is_read BOOLEAN, import_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    raw_format VARCHAR(24) NOT NULL DEFAULT 'legacy_normalized', raw_bytes BIGINT NULL,
+    raw_verified BOOLEAN NOT NULL DEFAULT FALSE, content_state VARCHAR(24) NOT NULL DEFAULT 'legacy') ENGINE=InnoDB`);
   await connection.execute(`CREATE TEMPORARY TABLE email_attachments (id CHAR(36) PRIMARY KEY, email_id CHAR(36), user_id CHAR(36),
     filename VARCHAR(255), content_type VARCHAR(100), size_bytes BIGINT, storage_path TEXT, content_id VARCHAR(255)) ENGINE=InnoDB`);
   const userId = crypto.randomUUID();

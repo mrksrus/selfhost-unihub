@@ -32,7 +32,7 @@ test('backup metadata uses one consistent read-only snapshot including owned rem
   setDb({ getConnection: async () => connection, execute: () => { throw new Error('Pool reads cannot provide a shared snapshot'); } });
   t.after(() => setDb(null));
   const backup = await buildBackupForUser('user', { includeFileData: false });
-  assert.equal(backup.version, 3);
+  assert.equal(backup.version, 4);
   assert.equal(backup.producer.name, 'UniHub');
   assert.equal(backup.data.mail_folder_remote_boxes[0].remote_name, 'Projects/2026');
   assert.deepEqual(calls.slice(0, 2).map(item => item.sql), [

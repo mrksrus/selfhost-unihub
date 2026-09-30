@@ -33,7 +33,7 @@ test('v2 backup reader retains provider mappings and section-only backups stay s
 });
 
 test('future, missing and malformed data versions fail before normalization', () => {
-  for (const version of [undefined, null, 0, 4, 999, '1', '2', 1.5]) {
+  for (const version of [undefined, null, 0, 5, 999, '1', '2', 1.5]) {
     const backup = { app: 'unihub', version, data: {}, files: [] };
     assert.equal(validateBackupPayload(backup).valid, false);
     assert.throws(() => normalizeBackupPayload(backup), /Unsupported backup data version/);
@@ -53,7 +53,7 @@ test('both ZIP import paths reject unknown or inconsistent versions with intact 
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'backup-version-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, manifestVersion, dataVersion, archiveVersion] of [
-    ['old', 1, 1, 1], ['v2', 2, 2, 1], ['current', 3, 3, 1], ['future', 4, 4, 1],
+    ['old', 1, 1, 1], ['v2', 2, 2, 1], ['v3', 3, 3, 1], ['current', 4, 4, 1], ['future', 5, 5, 1],
     ['mismatch', 1, 2, 1], ['future-archive', 2, 2, 2],
   ]) {
     const filePath = path.join(directory, name + '.zip');
@@ -65,7 +65,7 @@ test('both ZIP import paths reject unknown or inconsistent versions with intact 
       { name: 'checksums.json', data: JSON.stringify({ algorithm: 'sha256', entries: { 'data/backup.json': sha256Buffer(data) } }) },
     ], filePath);
     const bytes = await fs.readFile(filePath);
-    if (['old', 'v2', 'current'].includes(name)) {
+    if (['old', 'v2', 'v3', 'current'].includes(name)) {
       assert.equal(backupFromZipBuffer(bytes).backup.version, dataVersion);
       assert.equal((await backupFromZipFile(filePath)).backup.version, dataVersion);
     } else {
@@ -78,7 +78,7 @@ test('both ZIP import paths reject unknown or inconsistent versions with intact 
 test('schema 3 ZIP readers require complete SHA-256 metadata before import', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'backup-metadata-integrity-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  for (const version of [1, 2, 3]) {
+  for (const version of [1, 2, 3, 4]) {
     const metadata = { app: 'unihub', version, format: ZIP_BACKUP_FORMAT, format_version: ZIP_BACKUP_FORMAT_VERSION };
     const data = Buffer.from(JSON.stringify({ ...metadata, data: { contacts: [] }, files: [] }));
     const digest = sha256Buffer(data);
@@ -96,7 +96,7 @@ test('schema 3 ZIP readers require complete SHA-256 metadata before import', asy
       if (checksums) entries.push({ name: 'checksums.json', data: JSON.stringify(checksums) });
       await writeZip(entries, filePath);
       const bytes = await fs.readFile(filePath);
-      if (version === 3 && name !== 'valid') {
+      if (version >= 3 && name !== 'valid') {
         assert.throws(() => backupFromZipBuffer(bytes), /requires valid SHA-256 metadata/);
         await assert.rejects(backupFromZipFile(filePath), /requires valid SHA-256 metadata/);
       } else {
@@ -104,9 +104,9 @@ test('schema 3 ZIP readers require complete SHA-256 metadata before import', asy
         assert.equal((await backupFromZipFile(filePath)).backup.version, version);
       }
     }
-    if (version === 3) {
+    if (version >= 3) {
       for (const digest of ['not-a-sha256', '0'.repeat(64)]) {
-        const filePath = path.join(directory, `bad-${digest}.zip`);
+        const filePath = path.join(directory, `${version}-bad-${digest}.zip`);
         await writeZip([
           { name: 'manifest.json', data: JSON.stringify(metadata) }, { name: 'data/backup.json', data },
           { name: 'checksums.json', data: JSON.stringify({ algorithm: 'sha256', entries: { 'data/backup.json': digest } }) },

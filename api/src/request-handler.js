@@ -129,14 +129,18 @@ async function dispatchRequest(req, res) {
       routeKey = `${req.method} /api/mail/drafts/:id`;
     }
   } else if (routeKey.includes('/api/mail/accounts/')) {
-    routeKey = `${req.method} /api/mail/accounts/:id`;
+    const match = /^\/api\/mail\/accounts\/([^/]+)(\/purge-preview)?$/.exec(url.pathname);
+    if (match) {
+      req.params.id = match[1];
+      routeKey = `${req.method} /api/mail/accounts/:id${match[2] || ''}`;
+    }
   } else if (routeKey.includes('/api/mail/attachments/')) {
     routeKey = `${req.method} /api/mail/attachments/:id`;
   } else if (url.pathname.startsWith('/api/mail/writebacks/')) {
-    const match = /^\/api\/mail\/writebacks\/([^/]+)\/retry$/.exec(url.pathname);
+    const match = /^\/api\/mail\/writebacks\/([^/]+)\/(retry|cancel)$/.exec(url.pathname);
     if (match) {
       req.params.id = match[1];
-      routeKey = `${req.method} /api/mail/writebacks/:id/retry`;
+      routeKey = `${req.method} /api/mail/writebacks/:id/${match[2]}`;
     }
   } else if (routeKey.includes('/api/mail/emails/')) {
     if (url.pathname.includes('/bulk-delete')) {

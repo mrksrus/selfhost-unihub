@@ -1,11 +1,12 @@
 // Recovery declarations are shared by export, section scoping and restore locks.
 // columns is an explicit archive allowlist. fieldPolicies describes import behavior;
 // metadata retained for inspection need not overwrite destination operational state.
+const { ARCHIVE_COLUMNS, ARCHIVE_KEYS, EXTRA_COLUMNS, NEW_OPERATION_COLUMNS } = require('./mail-engine/recovery-policy');
 const SECTION_POLICIES = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
   contacts: { tables: ["contacts"], fileKinds: [] },
   calendar: { tables: ["calendar_accounts", "calendar_calendars", "calendar_events", "calendar_event_subtasks", "calendar_event_attendees", "calendar_event_external_refs"], fileKinds: [] },
-  mail: { tables: ["mail_accounts", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides"], fileKinds: ["email_attachment", "raw_email"] },
+  mail: { tables: ["mail_accounts", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
   recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs"], fileKinds: ["recording"] },
   notes: { tables: ['notes', 'note_revisions', 'note_attachments', 'note_links'], fileKinds: ['note_attachment'] },
   games: { tables: ["tetris_scores"], fileKinds: [] },
@@ -24,7 +25,7 @@ function notesTable(columns, keys = ['id'], overrides = {}) {
   return table('notes', columns, keys, { created_at: 'preserve', updated_at: 'preserve', ...overrides }, Object.fromEntries(columns.split(' ').map(column => [column, 4])));
 }
 
-const TABLE_POLICIES = Object.freeze({
+const BASE_TABLE_POLICIES = Object.freeze({
   notes: notesTable('id origin_key user_id title body revision trashed_at created_at updated_at'),
   note_revisions: notesTable('id user_id note_id revision title body created_at'),
   note_attachments: notesTable('id user_id note_id filename content_type size_bytes storage_path created_at', ['id'], { storage_path: 'restored_file' }),
@@ -56,6 +57,24 @@ const TABLE_POLICIES = Object.freeze({
 });
 
 
+const TABLE_POLICIES = Object.freeze({
+  ...BASE_TABLE_POLICIES,
+  ...Object.fromEntries(Object.entries(EXTRA_COLUMNS).map(([name, extra]) => {
+    const original = BASE_TABLE_POLICIES[name];
+    const fields = extra.split(' ');
+    return [name, Object.freeze({ ...original,
+      columns: Object.freeze([...original.columns, ...fields]),
+      fieldPolicies: Object.freeze({ ...original.fieldPolicies, ...Object.fromEntries(fields.map(field => [field, field.startsWith('raw_') ? 'verify_restored_archive' : 'reset_provider_observation'])) }),
+      introducedIn: Object.freeze({ ...original.introducedIn, ...Object.fromEntries(fields.map(field => [field, 6])) }),
+    })];
+  })),
+  ...Object.fromEntries(Object.entries(ARCHIVE_COLUMNS).map(([name, columns]) => [name,
+    table('mail', columns, ARCHIVE_KEYS[name] || ['id'],
+      Object.fromEntries(columns.split(' ').map(field => [field, 'quarantine_provider_evidence'])),
+      Object.fromEntries(columns.split(' ').map(field => [field, name === 'mail_writebacks' && !NEW_OPERATION_COLUMNS.has(field) ? 5 : 6])))
+  ])),
+});
+
 // References describe archive IDs, including logical links without SQL FKs.
 // user_id is always rebound to the authenticated destination, never copied.
 const REFERENCES = Object.freeze({
@@ -76,6 +95,13 @@ const REFERENCES = Object.freeze({
   mail_folder_reconciliations: { mail_account_id: 'mail_accounts' },
   mail_folder_recovery_items: { email_id: 'emails', source_account_id: 'mail_accounts', original_filing_account_id: 'mail_accounts', target_account_id: 'mail_accounts' },
   mail_folder_rule_overrides: { rule_id: 'mail_sender_rules', mail_account_id: 'mail_accounts' },
+  mail_remote_mailboxes: { mail_account_id: 'mail_accounts' },
+  mail_remote_occurrences: { mail_account_id: 'mail_accounts', mailbox_id: 'mail_remote_mailboxes', email_id: 'emails' },
+  mail_gmail_messages: { mail_account_id: 'mail_accounts', email_id: 'emails' },
+  mail_writebacks: { mail_account_id: 'mail_accounts', email_id: 'emails', source_occurrence_id: 'mail_remote_occurrences' },
+  mail_operation_attempts: { mail_account_id: 'mail_accounts', operation_id: 'mail_writebacks' },
+  mail_command_receipts: {},
+  mail_engine_quarantine: {},
   recording_tag_links: { recording_id: 'recordings', tag_id: 'recording_tags' },
   recording_transcription_jobs: { recording_id: 'recordings' },
 });

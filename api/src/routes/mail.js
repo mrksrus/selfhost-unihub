@@ -1,7 +1,9 @@
 const mailWritebacks = require('../services/mail-writebacks');
+const mailAccountLifecycle = require('../services/mail-account-lifecycle');
 const { mailAccountModeChange, sameProviderMailbox } = require('../services/mail-account-mode');
 const { withMailAccountLock } = require('../services/mail-account-lock');
 const { folderConnections, FILING_ACCOUNT_SQL } = require('../services/mail-folder-reconciliation');
+const { folderMembershipSql, membershipCountQuery, unreadMembershipQuery, pendingMoveSql } = require('../services/mail-folder-view');
 const { filingAccountId, presentMailFiling, folderAcceptsAccount } = require('../services/mail-filing');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -34,6 +36,7 @@ const {
   scheduleMailAccountSync,
   getMailSyncState,
   cancelMailAccountSync,
+  stopMailAccountWork,
   isAnyMailAccountSyncRunning,
   getRunningMailSyncAccountIds,
   getRunningMailServerDeleteAccountIds,
@@ -52,14 +55,23 @@ const MAIL_ATTACHMENT_UPLOAD_ROOT = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '
 // pending action immediately, including after a page reload or a long sync.
 const effectiveFlagSql = (action, column) => `COALESCE((SELECT CAST(w.target_value AS UNSIGNED)
   FROM mail_writebacks w WHERE w.email_id = emails.id AND w.user_id = emails.user_id
-    AND w.action = '${action}' AND w.status = 'pending'), emails.${column})`;
+    AND w.action = '${action}' AND w.status = 'pending' AND w.is_current = TRUE
+    ORDER BY w.intent_revision DESC, w.created_at DESC, w.id DESC LIMIT 1), emails.${column})`;
 const pendingFlagSql = action => `EXISTS(SELECT 1 FROM mail_writebacks w WHERE w.email_id = emails.id
-  AND w.user_id = emails.user_id AND w.action = '${action}' AND w.status = 'pending')`;
+  AND w.user_id = emails.user_id AND w.action = '${action}' AND w.status = 'pending' AND w.is_current = TRUE)`;
 const EFFECTIVE_READ_SQL = effectiveFlagSql('read', 'is_read');
 const EFFECTIVE_STAR_SQL = effectiveFlagSql('star', 'is_starred');
 
-function startMailSyncInBackground(accountId, label = accountId) {
-  const job = scheduleMailAccountSync(accountId);
+function operationOptions(req) {
+  const key = req.headers?.['idempotency-key'];
+  if (key !== undefined && (typeof key !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(key))) {
+    throw Object.assign(new Error('Invalid Idempotency-Key'), { status: 400 });
+  }
+  return { idempotencyKey: key };
+}
+
+async function startMailSyncInBackground(accountId, label = accountId) {
+  const job = await scheduleMailAccountSync(accountId);
   job.promise
     .then((result) => {
       if (result?.success === false) {
@@ -82,11 +94,8 @@ function isMailSyncFresh(lastSyncedAt, minAgeMs = BACKGROUND_MAIL_SYNC_MIN_AGE_M
 async function getMailFolderRowsWithCounts(userId, accountId = null) {
   const folders = await loadMailFoldersForUser(userId);
   const [countRows] = await db.execute(
-    `SELECT folder, COUNT(*) AS total_count, SUM(CASE WHEN ${EFFECTIVE_READ_SQL} = 0 THEN 1 ELSE 0 END) AS unread_count
-     FROM emails
-     WHERE user_id = ? ${accountId === 'legacy' ? 'AND is_legacy = TRUE' : accountId ? `AND is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?` : ''}
-     GROUP BY folder`,
-    accountId && accountId !== 'legacy' ? [userId, accountId] : [userId]
+    membershipCountQuery(EFFECTIVE_READ_SQL, accountId),
+    accountId && accountId !== 'legacy' && accountId !== 'all' ? [userId, accountId] : [userId]
   );
   const countsByFolder = new Map((countRows || []).map(row => [
     row.folder,
@@ -627,7 +636,7 @@ module.exports = {
         `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
                 smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
                 server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
-                is_active, last_synced_at, created_at
+                is_active, disconnected_at, engine_version, last_synced_at, created_at
          FROM mail_accounts
          WHERE user_id = ?`,
         [userId]
@@ -693,43 +702,21 @@ module.exports = {
       const includeByAccount = url.searchParams.get('include_by_account') === 'true';
       const hasAccountFilter = !!accountId && accountId !== 'all';
 
-      let folderQuery = `
-        SELECT folder, COUNT(*) AS unread_count
-        FROM emails
-        WHERE user_id = ? AND ${EFFECTIVE_READ_SQL} = 0
-      `;
+      const folderQuery = unreadMembershipQuery(EFFECTIVE_READ_SQL, accountId);
       const folderParams = [userId];
-
-      if (hasAccountFilter) {
-        folderQuery += accountId === 'legacy' ? ' AND is_legacy = TRUE' : ` AND is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?`;
-        if (accountId !== 'legacy') folderParams.push(accountId);
-      }
-      folderQuery += ' GROUP BY folder';
+      if (hasAccountFilter && accountId !== 'legacy') folderParams.push(accountId);
 
       const [folderRows] = await db.execute(folderQuery, folderParams);
       const unreadByFolder = {};
       for (const row of folderRows) {
-        unreadByFolder[row.folder] = Number(row.unread_count) || 0;
+        unreadByFolder[row.folder] = (unreadByFolder[row.folder] || 0) + (Number(row.unread_count) || 0);
       }
 
       const response = { unreadByFolder };
 
       if (includeByAccount) {
-        let accountBreakdownQuery = `
-          SELECT folder, CASE WHEN is_legacy THEN 'legacy' ELSE ${FILING_ACCOUNT_SQL} END AS mail_account_id, COUNT(*) AS unread_count
-          FROM emails
-          WHERE user_id = ? AND ${EFFECTIVE_READ_SQL} = 0
-        `;
-        const accountBreakdownParams = [userId];
-        if (hasAccountFilter) {
-          accountBreakdownQuery += accountId === 'legacy' ? ' AND is_legacy = TRUE' : ` AND is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?`;
-          if (accountId !== 'legacy') accountBreakdownParams.push(accountId);
-        }
-        accountBreakdownQuery += ' GROUP BY 1, 2';
-
-        const [folderAccountRows] = await db.execute(accountBreakdownQuery, accountBreakdownParams);
         const unreadByFolderAccount = {};
-        for (const row of folderAccountRows) {
+        for (const row of folderRows) {
           if (!unreadByFolderAccount[row.folder]) {
             unreadByFolderAccount[row.folder] = {};
           }
@@ -906,7 +893,7 @@ module.exports = {
       
       // Start sync in background (non-blocking)
       console.log(`[ACCOUNT] Starting background sync for ${email_address}...`);
-      const syncStarted = startMailSyncInBackground(accountId, email_address);
+      const syncStarted = await startMailSyncInBackground(accountId);
       
       // Return success immediately
       return { 
@@ -951,7 +938,8 @@ module.exports = {
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
       const requestedMode = mailAccountModeChange(accounts[0], body);
-      if (requestedMode.changed || body.encrypted_password || body.imap_host || body.imap_port || body.username !== undefined) cancelMailAccountSync(id);
+      const stopRequired = Boolean(requestedMode.changed || body.is_active === true || body.encrypted_password
+        || body.email_address || body.imap_host || body.imap_port || body.username !== undefined || body.delete_emails_on_server !== undefined);
       return await withMailAccountLock(id, async () => {
       const [fresh] = await db.execute('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
       if (!fresh.length) return { error: 'Account not found', status: 404 };
@@ -969,9 +957,14 @@ module.exports = {
         if (identified.length) return { error: 'This account already contains imported mail. Add a separate account for a different mailbox or IMAP server to preserve message identity.', status: 409 };
       }
       const nextEncryptedPassword = encrypted_password ? encrypt(encrypted_password) : existingAccount.encrypted_password;
+      if (body.is_active !== undefined && typeof body.is_active !== 'boolean') return { error: 'Active state must be boolean', status: 400 };
+      if (body.is_active === true && existingAccount.disconnected_at && !encrypted_password) {
+        return { error: 'Reconnect by providing and verifying the account credentials again.', status: 400 };
+      }
+      if (body.is_active === false) return { error: 'Use Disconnect to pause this account and remove its stored credentials.', status: 400 };
       const trustAccepted = toBooleanFlag(accept_host_trust);
-      const hostSettingsChanged = Boolean(imap_host || imap_port || smtp_host || smtp_port);
-      const imapLoginSettingsChanged = Boolean(email_address || username !== undefined || imap_host || imap_port || encrypted_password);
+      const hostSettingsChanged = Boolean(body.is_active === true || imap_host || imap_port || smtp_host || smtp_port);
+      const imapLoginSettingsChanged = Boolean(body.is_active === true || email_address || username !== undefined || imap_host || imap_port || encrypted_password);
       let shouldUpdateTlsTrust = false;
       let nextAllowSelfSigned = toBooleanFlag(existingAccount.allow_self_signed) ? 1 : 0;
 
@@ -1042,6 +1035,7 @@ module.exports = {
       if (smtp_host) { updates.push('smtp_host = ?'); params.push(smtp_host); }
       if (smtp_port) { updates.push('smtp_port = ?'); params.push(smtp_port); }
       if (encrypted_password) { updates.push('encrypted_password = ?'); params.push(nextEncryptedPassword); }
+      if (body.is_active === true) updates.push('is_active = TRUE', 'disconnected_at = NULL');
       if (shouldUpdateTlsTrust) {
         updates.push('allow_self_signed = ?');
         params.push(nextAllowSelfSigned);
@@ -1072,6 +1066,8 @@ module.exports = {
       }
       
       if (updates.length === 0 && !serverDeleteSettingProvided) return { error: 'No fields to update', status: 400 };
+      // Failed validation/authentication must not pause a working account.
+      if (stopRequired) await stopMailAccountWork(id, 'Account settings changing');
       
       if (updates.length > 0) {
         params.push(id, userId);
@@ -1081,7 +1077,9 @@ module.exports = {
         );
       }
 
-      if (updates.length) await mailWritebacks.cancelForAccount(db, id, userId);
+      if (modeChange.changed) await mailWritebacks.cancelForAccount(db, id, userId);
+      if (stopRequired && (body.is_active === true || toBooleanFlag(existingAccount.is_active)))
+        await require('../services/mail-engine/runtime').resumeAccount({ userId, accountId: id });
 
       if (modeChange.changed) {
         await db.execute("UPDATE mail_server_messages SET delete_status = 'skipped', delete_error = 'Cancelled by mail mode change' WHERE mail_account_id = ? AND user_id = ? AND delete_status IN ('pending', 'failed')", [id, userId]);
@@ -1101,6 +1099,7 @@ module.exports = {
       
       const updatedAccount = updated[0] || null;
       if (updatedAccount) updatedAccount.delete_emails_on_server = toBooleanFlag(updatedAccount.delete_emails_on_server);
+      if (body.is_active === true) setImmediate(() => startMailSyncInBackground(id).catch(error => console.error('[SYNC] Reconnect scheduling failed:', error.message)));
       return { account: updatedAccount };
       });
     } catch (error) {
@@ -1109,45 +1108,22 @@ module.exports = {
     }
   },
   
+  'GET /api/mail/accounts/:id/purge-preview': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try { return await mailAccountLifecycle.purgePreview(userId, req.params.id); }
+    catch (error) { return { error: error.status ? error.message : 'Could not preview account purge', status: error.status || 500 }; }
+  },
+
   'DELETE /api/mail/accounts/:id': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    
     try {
       const id = extractMailRouteId(req);
-      const [owned] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
-      if (!owned.length) return { error: 'Account not found', status: 404 };
-      cancelMailAccountSync(id);
-      return await withMailAccountLock(id, async () => {
-      const connection = await db.getConnection();
-      let attachments;
-      try {
-        await connection.beginTransaction();
-        await connection.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [id, userId]);
-        // Lock source messages against simultaneous Legacy recovery before deciding
-        // whether a cascading account deletion is safe.
-        const [messages] = await connection.execute('SELECT filing_account_id FROM emails WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [id, userId]);
-        if (messages.some(email => email.filing_account_id && email.filing_account_id !== id)) {
-          await connection.rollback();
-          return { error: 'This account is the original source of mail recovered into another account. Deletion is blocked to protect those messages.', status: 409 };
-        }
-        [attachments] = await connection.execute(
-          `SELECT a.storage_path FROM email_attachments a INNER JOIN emails e ON e.id = a.email_id
-           WHERE e.mail_account_id = ? AND e.user_id = ?`, [id, userId]);
-        await connection.execute('DELETE FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
-        await connection.commit();
-      } catch (error) {
-        await connection.rollback();
-        throw error;
-      } finally { connection.release(); }
-      const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
-      return {
-        message: 'Mail account deleted',
-        deletedAttachmentFiles: fileResult.deletedFiles,
-        failedAttachmentFiles: fileResult.failedFiles,
-      };
-      });
+      const query = new URL(req.url, 'http://localhost').searchParams;
+      return query.get('purge') === 'true'
+        ? await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'))
+        : await mailAccountLifecycle.disconnectAccount(userId, id);
     } catch (error) {
-      return { error: 'Failed to delete mail account', status: 500 };
+      return { error: error.status ? error.message : 'Could not change mail account connection', status: error.status || 500 };
     }
   },
 
@@ -1335,8 +1311,8 @@ module.exports = {
       if (folder === 'starred') {
         where.push(`${EFFECTIVE_STAR_SQL} = 1`);
       } else if (hasFolderFilter) {
-        where.push('folder = ?');
-        params.push(folder);
+        where.push(folderMembershipSql);
+        params.push(folder, folder, folder);
       }
       
       if (hasAccountFilter) {
@@ -1392,7 +1368,7 @@ module.exports = {
             ELSE body_text
           END AS body_text,
           NULL AS body_html,
-          folder,
+          COALESCE(${pendingMoveSql}, folder) AS folder,
           source_folder,
           imap_uid,
           imap_uidvalidity,
@@ -1425,6 +1401,7 @@ module.exports = {
       // Parse JSON fields
       const parsedEmails = emails.map(email => ({
         ...presentMailFiling(email),
+        ...(hasFolderFilter && folder !== 'starred' ? { folder } : {}),
         to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
         is_read: toBooleanFlag(email.is_read),
         is_starred: toBooleanFlag(email.is_starred),
@@ -1573,13 +1550,26 @@ module.exports = {
     }
   },
   
-  'GET /api/mail/writebacks': async (_req, userId) => {
+  'GET /api/mail/writebacks': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    const [operations] = await db.execute(`SELECT id, email_id, action, status, error, created_at
-      FROM mail_writebacks WHERE user_id = ? AND (status IN ('pending', 'failed', 'conflict')
-        OR (status = 'done' AND updated_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)))
-      ORDER BY (status = 'pending') DESC, updated_at DESC LIMIT 100`, [userId]);
-    return { operations };
+    try {
+      const query = new URL(req.url, 'http://localhost').searchParams;
+      const result = await mailWritebacks.listWritebacks(userId, { accountId: query.get('account_id'), includeHistory: query.get('history') === 'true' });
+      return Array.isArray(result) ? { operations: result } : result;
+    } catch (error) { return { error: error.status ? error.message : 'Could not load provider changes', status: error.status || 500 }; }
+  },
+  'GET /api/mail/operations': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const key = new URL(req.url, 'http://localhost').searchParams.get('key');
+      if (!key || !/^[A-Za-z0-9._:-]{1,128}$/.test(key)) return { error: 'Valid operation key required', status: 400 };
+      return await mailWritebacks.getOperationReceipt(userId, key);
+    } catch (error) { return { error: error.status ? error.message : 'Could not look up accepted change', status: error.status || 500 }; }
+  },
+  'POST /api/mail/writebacks/:id/cancel': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try { return await mailWritebacks.cancelWriteback(userId, req.params.id); }
+    catch (error) { return { error: error.status ? error.message : 'Could not cancel provider change', status: error.status || 500 }; }
   },
   'POST /api/mail/writebacks/:id/retry': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
@@ -1594,7 +1584,7 @@ module.exports = {
       const parts = req.url.split('?')[0].split('/');
       const id = parts[parts.length - 2];
       if (typeof body.is_read !== 'boolean') return { error: 'Read state must be boolean', status: 400 };
-      return await mailWritebacks.mutateMessages(userId, [id], { read: Number(body.is_read) });
+      return await mailWritebacks.mutateMessages(userId, [id], { read: Number(body.is_read) }, undefined, operationOptions(req));
     } catch (error) {
       return { error: error.status ? error.message : 'Failed to update email', status: error.status || 500 };
     }
@@ -1607,7 +1597,7 @@ module.exports = {
       const parts = req.url.split('?')[0].split('/');
       const id = parts[parts.length - 2];
       if (typeof body.is_starred !== 'boolean') return { error: 'Star state must be boolean', status: 400 };
-      return await mailWritebacks.mutateMessages(userId, [id], { star: Number(body.is_starred) });
+      return await mailWritebacks.mutateMessages(userId, [id], { star: Number(body.is_starred) }, undefined, operationOptions(req));
     } catch (error) {
       return { error: error.status ? error.message : 'Failed to update email', status: error.status || 500 };
     }
@@ -1622,7 +1612,7 @@ module.exports = {
         return { error: 'Email IDs array required', status: 400 };
       }
       
-      return await mailWritebacks.mutateMessages(userId, email_ids, { move: 'trash' });
+      return await mailWritebacks.mutateMessages(userId, email_ids, { move: 'trash' }, undefined, operationOptions(req));
     } catch (error) {
       console.error('[BULK] Delete error:', error);
       return { error: error.status ? error.message : 'Failed to delete emails', status: error.status || 500 };
@@ -1633,10 +1623,12 @@ module.exports = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const { email_ids, folder } = body;
-      if (!Array.isArray(email_ids) || email_ids.length === 0) {
-        return { error: 'Email IDs array required', status: 400 };
+      const { folder } = body;
+      const options = operationOptions(req);
+      if (!Array.isArray(body.email_ids) || !body.email_ids.length || body.email_ids.length > 500 || body.email_ids.some(id => typeof id !== 'string' || !id)) {
+        return { error: 'Select between 1 and 500 messages.', status: 400 };
       }
+      const email_ids = [...new Set(body.email_ids)].sort();
       const folderValidation = await validateUserMailFolder(userId, folder);
       if (folderValidation.error) return folderValidation;
       
@@ -1653,12 +1645,27 @@ module.exports = {
               throw Object.assign(new Error('Choose a folder connected to the message account; Legacy mail needs a receiving account.'), { status: 400 });
             }
           }
-        });
+        }, options);
       }
+      const localHash = crypto.createHash('sha256').update(JSON.stringify({ kind: 'legacy-recovery',
+        ids: email_ids, folder: folderValidation.folder, account_id: requestedAccount })).digest('hex');
+      const replay = receipt => {
+        if (receipt.request_hash !== localHash) throw Object.assign(new Error('Idempotency-Key already used for a different request'), { status: 409 });
+        const saved = typeof receipt.response_json === 'string' ? JSON.parse(receipt.response_json) : receipt.response_json;
+        return saved.recovery_required ? { ...saved, sync_pending: false, message: 'Recovered command requires review; no operation was replayed' } : saved;
+      };
+      const response = { message: `Filed ${email_ids.length} email(s) locally in ${folderValidation.folder}. Provider mail was not changed.`,
+        sync_pending: false, operation_ids: [], accepted_revision: null, local_only: true };
       const placeholders = email_ids.map(() => '?').join(',');
       const connection = await db.getConnection();
       try {
         await connection.beginTransaction();
+        if (options.idempotencyKey) {
+          const [[prior]] = await connection.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ? FOR UPDATE', [userId, options.idempotencyKey]);
+          if (prior) { const saved = replay(prior); await connection.commit(); return saved; }
+          await connection.execute('INSERT INTO mail_command_receipts (user_id,client_key,request_hash,response_json) VALUES (?,?,?,?)',
+            [userId, options.idempotencyKey, localHash, JSON.stringify(response)]);
+        }
         const [selected] = await connection.execute(
           `SELECT id, mail_account_id, filing_account_id, folder, is_legacy FROM emails
            WHERE id IN (${placeholders}) AND user_id = ? FOR UPDATE`, [...email_ids, userId]);
@@ -1691,10 +1698,14 @@ module.exports = {
         await connection.commit();
       } catch (error) {
         await connection.rollback();
+        if (options.idempotencyKey && error.code === 'ER_DUP_ENTRY') {
+          const [[prior]] = await db.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ?', [userId, options.idempotencyKey]);
+          if (prior) return replay(prior);
+        }
         throw error;
       } finally { connection.release(); }
 
-      return { message: `Moved ${email_ids.length} email(s) to ${folderValidation.folder}` };
+      return response;
     } catch (error) {
       console.error('[BULK] Move error:', error);
       return { error: error.status ? error.message : 'Failed to move emails', status: error.status || 500 };
@@ -1729,7 +1740,7 @@ module.exports = {
       const changes = {};
       if (typeof is_read === 'boolean') changes.read = Number(is_read);
       if (typeof is_starred === 'boolean') changes.star = Number(is_starred);
-      return await mailWritebacks.mutateMessages(userId, email_ids, changes);
+      return await mailWritebacks.mutateMessages(userId, email_ids, changes, undefined, operationOptions(req));
     } catch (error) {
       console.error('[BULK] Update error:', error);
       return { error: error.status ? error.message : 'Failed to update emails', status: error.status || 500 };
@@ -1772,7 +1783,7 @@ module.exports = {
           continue;
         }
 
-        const didStart = startMailSyncInBackground(account.id, account.email_address || account.id);
+        const didStart = await startMailSyncInBackground(account.id);
         if (didStart) {
           started.push(account.id);
         } else {
@@ -1793,12 +1804,12 @@ module.exports = {
     const [accounts] = await db.execute(`SELECT id, sync_status FROM mail_accounts WHERE user_id = ?
       ${accountId ? 'AND id = ?' : ''} ORDER BY created_at`, accountId ? [userId, accountId] : [userId]);
     if (accountId && !accounts.length) return { error: 'Account not found', status: 404 };
-    return { accounts: accounts.map(account => getMailSyncState(account.id) || {
+    return { accounts: await Promise.all(accounts.map(async account => await getMailSyncState(account.id) || {
       account_id: account.id,
       state: account.sync_status === 'error' ? 'error' : account.sync_status === 'cancelled' ? 'cancelled' : 'idle',
       phase: null, processed: 0, total: null, started_at: null, updated_at: null,
       error: account.sync_status === 'error' ? 'The last sync failed; retry to see a detailed error.' : null,
-    }) };
+    })) };
   },
   'POST /api/mail/sync': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
@@ -1815,7 +1826,7 @@ module.exports = {
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
       if (!accounts[0].is_active) return { error: 'Mail account is inactive', status: 409 };
 
-      const job = scheduleMailAccountSync(account_id);
+      const job = await scheduleMailAccountSync(account_id);
       job.promise.then(result => {
         if (result?.success === false) console.error(`[SYNC] Account ${account_id} failed:`, result.error);
       });
@@ -1835,7 +1846,7 @@ module.exports = {
     try {
       const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
       if (!accounts.length) return { error: 'Account not found', status: 404 };
-      const requested = cancelMailAccountSync(accountId);
+      const requested = await cancelMailAccountSync(accountId);
       // A running IMAP command stops cooperatively. The status endpoint, not
       // this acknowledgement, establishes when its cleanup has completed.
       return { success: true, account_id: accountId, cancellationRequested: requested,
@@ -1873,7 +1884,7 @@ module.exports = {
       // #region agent log
       debugLog('server.js:1441', 'POST /mail/send SUCCESS', { messageId: result.messageId }, 'H5');
       // #endregion
-      return { success: true, messageId: result.messageId };
+      return { ...result, success: true, messageId: result.messageId };
     } catch (error) {
       // #region agent log
       debugLog('server.js:1442', 'POST /mail/send ERROR', { errorMessage: error.message, errorStack: error.stack?.substring(0, 200) }, 'H5');

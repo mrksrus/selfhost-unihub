@@ -6,7 +6,7 @@ const { stageAttachments, discardStagedAttachments, insertStagedAttachments, rew
 // survive repair; files are staged before a short metadata transaction.
 async function persistImportedMessage({ db, account, accountId, folderName, uid, uidValidity,
   existingEmail, messageId, fullEmail, parsed, fromAddress, fromName, toAddresses,
-  folder, isRead, archiveRaw, enqueueDeletion, suppressNotifications = true }) {
+  folder, isRead, archiveRaw, enqueueDeletion, suppressNotifications = true, validateOccurrence = null }) {
   const emailId = existingEmail?.id || crypto.randomUUID();
   let staged = [];
   let archive;
@@ -15,38 +15,54 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
   let commitAttempted = false;
   let oldAttachments = [];
   try {
-    archive = await archiveRaw({ userId: account.user_id, emailId: `${emailId}-${crypto.randomUUID()}`, messageId, rawEmail: fullEmail });
+    archive = await archiveRaw({ userId: account.user_id, emailId, messageId, rawEmail: fullEmail });
     if (!archive.rawStoragePath) throw new Error('Raw message archive was not saved');
+    const rawBuffer = Buffer.isBuffer(fullEmail) ? fullEmail : Buffer.from(String(fullEmail), 'utf8');
+    const exact = Buffer.isBuffer(fullEmail) && archive.rawFormat === 'exact_octets'
+      && archive.rawVerified === true && archive.rawBytes === rawBuffer.length
+      && archive.rawSha256 === crypto.createHash('sha256').update(rawBuffer).digest('hex');
+    if (Buffer.isBuffer(fullEmail) && !exact) throw new Error('Raw archive integrity could not be verified');
     staged = await stageAttachments({ userId: account.user_id, emailId, attachments: parsed.attachments || [] });
     const bodyHtml = rewriteInlineAttachments(parsed.html, staged);
     connection = await db.getConnection();
     await connection.beginTransaction();
+    if (validateOccurrence) await validateOccurrence(connection, emailId);
     if (existingEmail) {
       [oldAttachments] = await connection.execute('SELECT id, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?', [emailId, account.user_id]);
-      await connection.execute(
-        `UPDATE emails SET message_id = ?, from_address = ?, from_name = ?, to_addresses = ?,
+      const [updated] = await connection.execute(
+        `UPDATE emails SET message_id = ?, subject = ?, received_at = ?, from_address = ?, from_name = ?, to_addresses = ?,
           body_text = ?, body_html = ?, has_attachments = ?, source_folder = COALESCE(source_folder, ?),
           imap_uid = COALESCE(imap_uid, ?), imap_uidvalidity = COALESCE(imap_uidvalidity, ?),
-          raw_storage_path = ?, raw_sha256 = ?, import_complete = TRUE
-         WHERE id = ? AND user_id = ?`,
-        [messageId, fromAddress, fromName, JSON.stringify(toAddresses), parsed.text || null, bodyHtml,
-          staged.length > 0 ? 1 : 0, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256, emailId, account.user_id]
+          raw_storage_path = ?, raw_sha256 = ?, raw_bytes = ?, raw_format = ?, raw_verified = ?,
+          content_state = 'complete', import_complete = TRUE
+         WHERE id = ? AND user_id = ? AND mail_account_id = ?`,
+        [messageId, parsed.subject || '(No subject)', parsed.date || new Date(),
+          fromAddress, fromName, JSON.stringify(toAddresses), parsed.text || null, bodyHtml,
+          staged.length > 0 ? 1 : 0, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256,
+          archive.rawBytes ?? null, exact ? 'exact_octets' : 'legacy_normalized', exact ? 1 : 0,
+          emailId, account.user_id, accountId]
       );
+      if (updated.affectedRows !== 1) throw new Error('Archived item changed before body commit');
       await connection.execute('DELETE FROM email_attachments WHERE email_id = ? AND user_id = ?', [emailId, account.user_id]);
     } else {
       await connection.execute(
         `INSERT INTO emails
           (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html,
-           has_attachments, received_at, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256, is_read, import_complete)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
+           has_attachments, received_at, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256,
+           raw_bytes, raw_format, raw_verified, content_state, is_read, import_complete)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete', ?, TRUE)`,
         [emailId, account.user_id, accountId, messageId, parsed.subject || '(No subject)', fromAddress, fromName,
           JSON.stringify(toAddresses), parsed.text || null, bodyHtml, staged.length > 0 ? 1 : 0, parsed.date || new Date(),
-          folder, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256, isRead ? 1 : 0]
+          folder, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256, archive.rawBytes ?? null,
+          exact ? 'exact_octets' : 'legacy_normalized', exact ? 1 : 0, isRead ? 1 : 0]
       );
     }
     await insertStagedAttachments(connection, staged);
-    await enqueueDeletion({ connection, userId: account.user_id, accountId, emailId, sourceFolder: folderName,
-      imapUid: uid, imapUidValidity: uidValidity, rawStoragePath: archive.rawStoragePath });
+    if (exact && account.sync_mode === 'download') {
+      await enqueueDeletion({ connection, userId: account.user_id, accountId, emailId, sourceFolder: folderName,
+        imapUid: uid, imapUidValidity: uidValidity, rawStoragePath: archive.rawStoragePath,
+        rawSha256: archive.rawSha256, rawBytes: archive.rawBytes, rawFormat: archive.rawFormat, rawVerified: true });
+    }
     if (!existingEmail && !suppressNotifications) {
       await require('./notifications').enqueueMailNotification({ userId: account.user_id, emailId, suppressNotifications }, connection);
     }
