@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { mailQueryKeys, type Email, type MailListResponse, type MailWriteback } from '@/lib/mail-api';
 import { setOfflineMode } from '@/lib/offline';
 import type { MailSyncJob } from '@/hooks/use-mail-sync-jobs';
+import { applyMailPageWaitBudget, MAIL_PAGE_TEST_TIMEOUT } from '@/test/helpers/mail-page-budget';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn() } }));
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }));
@@ -97,7 +98,9 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); client.clear(); });
 
-describe('mail flag interactions with slow HTTP and provider writebacks', () => {
+applyMailPageWaitBudget();
+
+describe('mail flag interactions with slow HTTP and provider writebacks', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
   it('keeps an unresolved HTTP admission visible instead of rolling back or reporting rejection', async () => {
     vi.mocked(api.put).mockResolvedValue({ status: 503, error: 'API temporarily unavailable' });
     mount();

@@ -1,0 +1,205 @@
+import { useState, type FormEvent } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { api } from '@/lib/api';
+import type { MailAccount } from '@/lib/mail-api';
+import { useToast } from '@/hooks/use-toast';
+import {
+  initialAccountForm, mailProviders,
+  type AccountFormState, type AddMailAccountResponse, type MailHostTrustError, type MailHostTrustResult, type PendingHostTrust,
+} from '@/components/mail/mail-page-model';
+
+const createHostTrustError = (message: string, mailHostTrust?: unknown) => {
+  const error = new Error(message) as MailHostTrustError;
+  error.requiresHostTrustConfirmation = true;
+  error.mailHostTrust = mailHostTrust as MailHostTrustResult | undefined;
+  return error;
+};
+
+const isHostTrustError = (error: Error): error is MailHostTrustError => (
+  Boolean((error as MailHostTrustError).requiresHostTrustConfirmation && (error as MailHostTrustError).mailHostTrust)
+);
+
+/** State and requests of the add/edit mail account dialog, including the host trust review step. */
+export function useMailAccountEditor() {
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [isOpen, setIsOpen] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<MailAccount | null>(null);
+  const [accountForm, setAccountForm] = useState<AccountFormState>(initialAccountForm);
+  const [pendingHostTrust, setPendingHostTrust] = useState<PendingHostTrust | null>(null);
+
+  // The backend verifies host safety, certificate trust, then IMAP auth.
+  const addAccount = useMutation({
+    mutationFn: async (account: AccountFormState & { accept_host_trust?: boolean }) => {
+      const response = await api.post<AddMailAccountResponse>('/mail/accounts', {
+        ...account,
+        encrypted_password: account.password, // Will be encrypted on server
+      });
+      if (response.status === 409 && response.requiresHostTrustConfirmation) {
+        throw createHostTrustError(response.error || 'Review mail server authenticity before continuing.', response.mailHostTrust);
+      }
+      if (response.error) throw new Error(response.error);
+      return response.data ?? {};
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      queryClient.invalidateQueries({ queryKey: ['calendar-accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['calendar-calendars'] });
+      setPendingHostTrust(null);
+
+      const syncMsg = data?.syncInProgress
+        ? data.message || 'Syncing emails in the background. First sync will take a long time.'
+        : 'Account connected successfully';
+
+      toast({
+        title: '✓ Account connected successfully',
+        description: syncMsg,
+        duration: 10000,
+      });
+      if (data.calendarSync?.attempted) {
+        if (data.calendarSync.success) {
+          toast({
+            title: 'Calendar sync connected',
+            description: `${data.calendarSync.importedEvents || 0} events imported.`,
+          });
+        } else {
+          toast({
+            title: 'Mail connected, calendar sync failed',
+            description: data.calendarSync.warning || 'Check the CalDAV URL or credentials.',
+            variant: 'destructive',
+            duration: 10000,
+          });
+        }
+      }
+
+      setIsOpen(false);
+      setAccountForm(initialAccountForm);
+    },
+    onError: (error: Error, variables) => {
+      if (isHostTrustError(error)) {
+        setPendingHostTrust({ mode: 'add', account: variables, trust: error.mailHostTrust! });
+        return;
+      }
+      toast({
+        title: 'Failed to add mail account',
+        description: error.message,
+        variant: 'destructive',
+        duration: 8000,
+      });
+    },
+  });
+
+  const updateAccount = useMutation({
+    mutationFn: async ({ id, ...data }: { id: string; is_active?: boolean } & Partial<AccountFormState> & { accept_host_trust?: boolean }) => {
+      const response = await api.put(`/mail/accounts/${id}`, {
+        ...data,
+        encrypted_password: data.password || undefined,
+      });
+      if (response.status === 409 && response.requiresHostTrustConfirmation) {
+        throw createHostTrustError(response.error || 'Review mail server authenticity before continuing.', response.mailHostTrust);
+      }
+      if (response.error) throw new Error(response.error);
+      return response.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      setPendingHostTrust(null);
+      toast({ title: '✓ Account updated successfully' });
+      setEditingAccount(null);
+      setIsOpen(false);
+      setAccountForm(initialAccountForm);
+    },
+    onError: (error: Error, variables) => {
+      if (isHostTrustError(error)) {
+        setPendingHostTrust({ mode: 'edit', accountId: variables.id, account: { ...accountForm, ...variables }, trust: error.mailHostTrust! });
+        return;
+      }
+      toast({
+        title: 'Failed to update account',
+        description: error.message,
+        variant: 'destructive'
+      });
+    },
+  });
+
+  const onOpenChange = (open: boolean) => {
+    setIsOpen(open);
+    if (!open) {
+      setEditingAccount(null);
+      setAccountForm(initialAccountForm);
+      setPendingHostTrust(null);
+    }
+  };
+
+  const changeProvider = (provider: string) => {
+    const providerConfig = mailProviders.find(p => p.value === provider);
+    setAccountForm({
+      ...accountForm,
+      provider,
+      imap_host: providerConfig?.imapHost || '',
+      smtp_host: providerConfig?.smtpHost || '',
+      imap_port: providerConfig?.imapPort || 993,
+      smtp_port: providerConfig?.smtpPort || 587,
+    });
+  };
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (editingAccount) {
+      updateAccount.mutate({ id: editingAccount.id, ...accountForm,
+        ...(editingAccount.disconnected_at && accountForm.password ? { is_active: true } : {}) });
+    } else {
+      addAccount.mutate(accountForm);
+    }
+  };
+
+  const confirmHostTrust = () => {
+    if (!pendingHostTrust) return;
+    if (pendingHostTrust.mode === 'edit' && pendingHostTrust.accountId) {
+      updateAccount.mutate({
+        id: pendingHostTrust.accountId,
+        ...pendingHostTrust.account,
+        accept_host_trust: true,
+      });
+    } else {
+      addAccount.mutate({
+        ...pendingHostTrust.account,
+        accept_host_trust: true,
+      });
+    }
+    setPendingHostTrust(null);
+  };
+
+  const startEdit = (account: MailAccount) => {
+    setEditingAccount(account);
+    setAccountForm({
+      email_address: account.email_address,
+      display_name: account.display_name || '',
+      provider: account.provider,
+      username: account.username || account.email_address,
+      password: '',
+      imap_host: account.imap_host || '',
+      smtp_host: account.smtp_host || '',
+      imap_port: account.imap_port || 993,
+      smtp_port: account.smtp_port || 587,
+      sync_fetch_limit: account.sync_fetch_limit || 'all',
+      sync_mode: account.sync_mode || 'download',
+      sync_mode_confirmed: false,
+      delete_emails_on_server: account.delete_emails_on_server === true,
+      try_calendar_sync: false,
+      caldav_url: '',
+    });
+    setIsOpen(true);
+  };
+
+  return {
+    isOpen, onOpenChange, openAdd: () => setIsOpen(true), close: () => setIsOpen(false),
+    editingAccount, startEdit, accountForm, setAccountForm, changeProvider, submit,
+    pendingHostTrust, confirmHostTrust, denyHostTrust: () => setPendingHostTrust(null),
+    isSaving: addAccount.isPending || updateAccount.isPending,
+  };
+}
+
+export type MailAccountEditor = ReturnType<typeof useMailAccountEditor>;

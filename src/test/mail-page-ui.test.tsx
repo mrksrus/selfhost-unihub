@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MailPage from '@/pages/MailPage';
 import { api } from '@/lib/api';
 import { setOfflineMode } from '@/lib/offline';
+import { applyMailPageWaitBudget, MAIL_PAGE_TEST_TIMEOUT } from '@/test/helpers/mail-page-budget';
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -72,9 +73,9 @@ const draftEmail = {
   attachments: [],
 };
 
-function setupApi(emails = [inboxEmail]) {
+function setupApi(emails = [inboxEmail], accountPatch: Record<string, unknown> = {}) {
   vi.mocked(api.get).mockImplementation(async (endpoint: string) => {
-    if (endpoint === '/mail/accounts') return { data: { accounts: [account] } };
+    if (endpoint === '/mail/accounts') return { data: { accounts: [{ ...account, ...accountPatch }] } };
     if (endpoint.startsWith('/contacts')) return { data: { contacts: [] } };
     if (endpoint === '/mail/folders') return { data: { folders } };
     if (endpoint.startsWith('/mail/unread-counts')) return { data: { unreadByFolder: { inbox: 1 }, unreadByFolderAccount: {} } };
@@ -95,8 +96,8 @@ function setupApi(emails = [inboxEmail]) {
   vi.mocked(api.delete).mockResolvedValue({ data: { deleted: true } });
 }
 
-function renderMailPage(emails = [inboxEmail], initialEntry = '/mail') {
-  setupApi(emails);
+function renderMailPage(emails = [inboxEmail], initialEntry = '/mail', accountPatch: Record<string, unknown> = {}) {
+  setupApi(emails, accountPatch);
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -117,7 +118,9 @@ function getComposeEditor() {
   return screen.getAllByRole('textbox').find(element => element.getAttribute('aria-multiline') === 'true');
 }
 
-describe('MailPage UI regressions', () => {
+applyMailPageWaitBudget();
+
+describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -192,6 +195,15 @@ describe('MailPage UI regressions', () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     expect(screen.getByLabelText('Subject')).toHaveValue('Draft subject');
     expect(screen.getByText(/draft saved/i)).toBeInTheDocument();
+  });
+
+  it('keeps the list free of the sync coverage explanation for a sync-mode account', async () => {
+    localStorage.setItem('mail_last_selected_account', 'account-1');
+    renderMailPage([inboxEmail], '/mail', { sync_mode: 'sync', sync_status: 'idle' });
+
+    await screen.findByText('Inbox subject');
+    expect(screen.queryByText(/separate coverage/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Sync with server/)).not.toBeInTheDocument();
   });
 
   it('keeps compose footer actions rendered with long content', async () => {

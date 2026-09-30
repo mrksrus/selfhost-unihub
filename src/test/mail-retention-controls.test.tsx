@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MailPage from '@/pages/MailPage';
 import { api } from '@/lib/api';
 import { setOfflineMode } from '@/lib/offline';
+import { applyMailPageWaitBudget, MAIL_PAGE_TEST_TIMEOUT } from '@/test/helpers/mail-page-budget';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn() } }));
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }));
@@ -38,7 +39,9 @@ function mount() {
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/mail']}><MailPage /></MemoryRouter></QueryClientProvider>);
 }
 
-describe('mail retention controls', { timeout: 15000 }, () => {
+applyMailPageWaitBudget();
+
+describe('mail retention controls', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
   // These tests drive the whole mail page, where each *ByRole query computes
   // roles and names for a large DOM. Wait for data with cheap text queries and
   // run role queries once afterwards: a cold role query polled by findByRole

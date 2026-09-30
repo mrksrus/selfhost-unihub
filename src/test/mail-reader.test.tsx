@@ -74,4 +74,39 @@ describe('mail reader requests', () => {
     expect(result.current.isReaderLoading).toBe(false);
   });
 
+  it('drops a load that is still in flight when the account view changes', async () => {
+    const request = deferred<{ data: { email: Email } }>();
+    const get = vi.spyOn(api, 'get').mockReturnValue(request.promise);
+    const { result, rerender } = renderHook(({ scope }) => useMailReader(scope), { initialProps: { scope: 'account-1' as string | null } });
+    const callbacks = actions();
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.loadEmail('a', callbacks); });
+    rerender({ scope: 'account-2' });
+    expect(get.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    expect(result.current.isReaderLoading).toBe(false);
+    await act(async () => { request.resolve({ data: { email: email('a') } }); await pending; });
+    expect(result.current.selectedEmail).toBeNull();
+    expect(callbacks.onMarkRead).not.toHaveBeenCalled();
+    expect(callbacks.onError).not.toHaveBeenCalled();
+  });
+
+  it('keeps a linked message loading while the remembered account is restored', async () => {
+    const request = deferred<{ data: { email: Email } }>();
+    vi.spyOn(api, 'get').mockReturnValue(request.promise);
+    const { result, rerender } = renderHook(({ scope }) => useMailReader(scope), { initialProps: { scope: null as string | null } });
+    const callbacks = actions();
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.loadEmail('a', callbacks); });
+    rerender({ scope: 'all' });
+    await act(async () => { request.resolve({ data: { email: email('a') } }); await pending; });
+    expect(result.current.selectedEmail?.id).toBe('a');
+  });
+
+  it('keeps an open message when the account view changes afterwards', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({ data: { email: email('a') } });
+    const { result, rerender } = renderHook(({ scope }) => useMailReader(scope), { initialProps: { scope: 'all' as string | null } });
+    await act(async () => { await result.current.loadEmail('a', actions()); });
+    rerender({ scope: 'account-1' });
+    expect(result.current.selectedEmail?.id).toBe('a');
+  });
 });

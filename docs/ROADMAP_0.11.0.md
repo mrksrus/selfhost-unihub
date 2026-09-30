@@ -60,15 +60,35 @@ comes after.
    `vitest run` and passed three times in isolation, so it is likely a timeout
    or timing race under load.
    *Done 2026-09-30* (commit "Fix flaky mail retention controls test").
-   *Still open:* `src/test/mail-flag-interactions.test.tsx` ("keeps an unresolved
-   HTTP admission visible…") failed once in two full runs and passes alone.
+   *Done 2026-09-30 for `src/test/mail-flag-interactions.test.tsx`* ("keeps an
+   unresolved HTTP admission visible…"): reproduced with six full suites in
+   parallel. Fixtures resolve at once, but the first mail page render in a
+   worker (~0.9 s to the first row) and cold `*ByRole` queries over the page
+   DOM (~1.3 s each) ran into Testing Library's 1 s wait and Vitest's 5 s test
+   limit. The whole-page mail tests (flag interactions, page UI, retention
+   controls) share a 5 s wait / 20 s test budget in
+   `src/test/helpers/mail-page-budget.ts`; they now pass under that load.
+   `notification-event-links` (calendar) still fails under six parallel suites
+   (a 1 s `waitFor`), not under a normal full run.
 4. **Split `src/pages/MailPage.tsx` (3,184 lines, ~42 `useState`).** Extract the
    message list, reader, toolbar/bulk actions and dialogs into
    `src/components/mail/`, each with its own hook. Smaller units make it easier
    to guarantee that a late response never shows the wrong account or message.
-   *Not done.* A first extraction step was started and saved, unmerged, as
-   patch `.private/mailpage-split-wip.patch` (local only, "WIP: start splitting MailPage",
-   `src/components/mail/mail-page-model.ts`). Continue from there or restart.
+   *Done 2026-09-30:* `MailPage.tsx` is a ~200-line composition layer. Hooks:
+   `use-mail-folder-view`, `use-mail-list-view`, `use-mail-list-selection`,
+   `use-mail-bulk-actions`, `use-mail-compose`, `use-mail-account-editor`,
+   `use-mail-account-removal`, plus `useMailReaderRefresh` and
+   `useRememberedMailAccount`. Components: `MailSidebar`, `MailListToolbar`,
+   `MailMessageList`, `MailReader`, `MailCompose`, `MailAccountDialog`,
+   `MailAccountRemovalDialogs`, `MailFolderDialogs`; shared types and helpers in
+   `mail-page-model.ts`. Stale responses: the reader drops a message load still
+   in flight when the account view changes, the list selection is stored with
+   its account/folder view, and a late purge preview no longer fills a later
+   or closed dialog (tests in `mail-reader` and `mail-stale-state`). The DOM was
+   compared against the old page in 14 desktop/mobile interaction scenarios.
+   The sync coverage explanation moved from above the list into the sync panel
+   ("About sync coverage"). Converting mail to the shared page states (item 6)
+   is still open.
 5. **Use one toast system.** `use-toast` (Radix) is used in 16 files and
    `sonner` in 2, and both `<Toaster />` and `<Sonner />` are mounted in
    `src/App.tsx`. Pick one and remove the other.

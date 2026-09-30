@@ -1,7 +1,8 @@
 import { isOfflineMode } from '@/lib/offline';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import type { Email } from '@/lib/mail-api';
+import { captureMailFlagReconciler, type Email } from '@/lib/mail-api';
 
 interface ReaderActions {
   onDraft: (draft: Email) => void;
@@ -10,7 +11,14 @@ interface ReaderActions {
   onError: (message: string) => void;
 }
 
-export function useMailReader() {
+/**
+ * The message open in the reader. Only the latest request may fill it: each
+ * load, close, or change of `scope` (the selected account view) invalidates
+ * requests started earlier, so a late response for an earlier selection or
+ * account is dropped. The first scope (restoring the account on page load)
+ * does not cancel a message opened from a link.
+ */
+export function useMailReader(scope: string | null = null) {
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
   const [isReaderLoading, setIsReaderLoading] = useState(false);
   const pending = useRef<AbortController | null>(null);
@@ -22,6 +30,18 @@ export function useMailReader() {
     pending.current = null;
   }, []);
   useEffect(() => cancel, [cancel]);
+
+  const previousScope = useRef(scope);
+  useEffect(() => {
+    const before = previousScope.current;
+    previousScope.current = scope;
+    // A message already open stays open; only a load still in flight for the
+    // previous account view is abandoned.
+    if (before !== null && before !== scope && pending.current) {
+      cancel();
+      setIsReaderLoading(false);
+    }
+  }, [scope, cancel]);
 
   const closeReader = useCallback(() => {
     cancel();
@@ -65,4 +85,36 @@ export function useMailReader() {
   }, [cancel]);
 
   return { selectedEmail, setSelectedEmail, isReaderLoading, closeReader, loadEmail };
+}
+
+/**
+ * Refreshes the read/star/folder state of the open message after one of its
+ * provider writebacks settles. A refresh answers only for the message that
+ * was open when it started and loses to any later load or refresh.
+ */
+export function useMailReaderRefresh(selectedEmailId: string | undefined, setSelectedEmail: Dispatch<SetStateAction<Email | null>>) {
+  const queryClient = useQueryClient();
+  const revision = useRef(0);
+  useEffect(() => { ++revision.current; }, [selectedEmailId]);
+
+  const refreshSettledEmail = useCallback((emailIds: string[]) => {
+    if (!selectedEmailId || !emailIds.includes(selectedEmailId)) return;
+    const id = selectedEmailId;
+    const started = ++revision.current;
+    const reconcile = captureMailFlagReconciler(queryClient);
+    void api.get<{ email: Email }>(`/mail/emails/${encodeURIComponent(id)}`).then(response => {
+      const email = response.data?.email && reconcile(response.data.email);
+      if (started === revision.current && !response.error && email?.id === id) {
+        setSelectedEmail(current => current?.id === id ? {
+          ...current, is_read: email.is_read, is_starred: email.is_starred,
+          read_sync_pending: email.read_sync_pending, star_sync_pending: email.star_sync_pending,
+          folder: email.folder, remote_missing: email.remote_missing,
+        } : current);
+      }
+    }).catch(() => { /* A failed status refresh must not replace the current message. */ });
+  }, [selectedEmailId, setSelectedEmail, queryClient]);
+
+  /** Call when a new message load starts, so an older refresh cannot apply. */
+  const supersedeRefresh = useCallback(() => { ++revision.current; }, []);
+  return { refreshSettledEmail, supersedeRefresh };
 }

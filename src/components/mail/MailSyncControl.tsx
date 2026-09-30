@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import { skipToken, useQuery } from '@tanstack/react-query';
 import { formatDistanceToNowStrict } from 'date-fns';
-import { ChevronDown, RefreshCw, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, RefreshCw, X } from 'lucide-react';
 import type { MailAccount, MailWriteback } from '@/lib/mail-api';
 import type { MailSyncJob } from '@/hooks/use-mail-sync-jobs';
 import { groupWritebacks } from '@/hooks/use-mail-writebacks';
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 import { Switch } from '@/components/ui/switch';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { MailPendingChanges } from '@/components/mail/MailPendingChanges';
 
 /** Which part of the sync panel receives focus when it opens. */
@@ -73,6 +74,21 @@ function BackgroundSyncSwitch() {
   </div>;
 }
 
+/** How Sync-with-server accounts are covered; collapsed so it takes no room until asked for. */
+function SyncCoverageNote() {
+  return <Collapsible className="pt-1 text-xs">
+    <CollapsibleTrigger className="group flex w-full items-center gap-1 rounded-sm py-1 text-left font-medium text-muted-foreground hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <ChevronRight aria-hidden="true" className="h-3.5 w-3.5 shrink-0 transition-transform motion-reduce:transition-none group-data-[state=open]:rotate-90" />
+      About sync coverage
+    </CollapsibleTrigger>
+    <CollapsibleContent>
+      <p className="py-1 text-muted-foreground">
+        For accounts that sync with the server, recent mail and older history have separate coverage. Pending read, star and connected-folder moves show your requested state while UniHub checks the provider; uncertain moves are not blindly repeated. Missing server messages stay as local copies.
+      </p>
+    </CollapsibleContent>
+  </Collapsible>;
+}
+
 interface ControlProps {
   accounts: MailAccount[];
   /** Accounts shown in the list: the selected one, or every active account in combined views. */
@@ -124,6 +140,7 @@ function PanelBody({ accounts, jobs, jobsError, operations, operationsError, syn
           </li>;
         })}
       </ul>
+      {accounts.some(account => account.sync_mode === 'sync') && <SyncCoverageNote />}
     </section>
     {!offline && <section aria-label="Server changes">
       <MailPendingChanges operations={operations} unavailable={operationsError} focusAttention={panel === 'attention'} />
