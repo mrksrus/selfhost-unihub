@@ -67,7 +67,7 @@ comes after.
    `src/components/mail/`, each with its own hook. Smaller units make it easier
    to guarantee that a late response never shows the wrong account or message.
    *Not done.* A first extraction step was started and saved, unmerged, as
-   branch `worktree-agent-ab4ba6c5408d19dbc` ("WIP: start splitting MailPage",
+   patch `.private/mailpage-split-wip.patch` (local only, "WIP: start splitting MailPage",
    `src/components/mail/mail-page-model.ts`). Continue from there or restart.
 5. **Use one toast system.** `use-toast` (Radix) is used in 16 files and
    `sonner` in 2, and both `<Toaster />` and `<Sonner />` are mounted in
