@@ -58,6 +58,23 @@ async function ensureIndex(tableName, indexName, alterSql) {
   return true;
 }
 
+// Stored times are UTC: CURRENT_TIMESTAMP defaults are compared with
+// UTC_TIMESTAMP(), and mysql2's `timezone` option only converts values on the
+// client. Pin each session so a server not configured for UTC cannot shift due
+// times by hours. The 'connection' event fires before the new connection is
+// handed out, and the connection runs commands in order, so this SET precedes
+// every app query on it.
+function useUtcSessions(pool) {
+  pool.pool.on('connection', connection => {
+    connection.query("SET time_zone = '+00:00'", error => {
+      if (!error) return;
+      console.error('[DB] Could not set the session time zone to UTC:', error.message);
+      connection.destroy();
+    });
+  });
+  return pool;
+}
+
 async function initDatabase() {
   if (isPlaceholderSecret(JWT_SECRET)) {
     console.error('✗ Missing or placeholder JWT_SECRET. Set a strong random JWT secret before starting.');
@@ -98,7 +115,7 @@ async function initDatabase() {
   // Reduced retry time since MySQL startup is optimized
   for (let attempt = 1; attempt <= 20; attempt++) {
     try {
-      setDb(mysql.createPool(poolConfig));
+      setDb(useUtcSessions(mysql.createPool(poolConfig)));
       await db.execute('SELECT 1');
       console.log('✓ Database connected');
       break;
@@ -1283,6 +1300,7 @@ module.exports = {
   getDatabaseConfig,
   isPlaceholderSecret,
   initDatabase,
+  useUtcSessions,
   ensureSchema,
   ensurePerformanceIndexes,
 };

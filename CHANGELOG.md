@@ -22,6 +22,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   requests with the same `Idempotency-Key` (for example a move or read change
   resent after a slow response) could deadlock and one of them failed. The
   second request now waits and returns the first one's result.
+- **Correct due times on MySQL servers not set to UTC.** The API now switches
+  every database connection to UTC. Before, a MySQL server with a different
+  default time zone shifted scheduled work, expiries and timestamps by hours.
 
 ### Maintenance
 
