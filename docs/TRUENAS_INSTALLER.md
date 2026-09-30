@@ -89,12 +89,15 @@ fields: the API gives it precedence and it could silently bypass the intended DB
 Do not let additional environment entries override installer-owned paths, ports,
 connection settings or security configuration.
 
-The current Dockerfile has **no `USER` directive**. The supervisor/API therefore
-start with the image's default root user; the Compose setup drops capabilities
-except `CHOWN`, `DAC_OVERRIDE`, `NET_BIND_SERVICE`, `SETGID` and `SETUID`, and
-enables `no-new-privileges`. Nginx needs these to prepare its owned log/temp paths
-and drop worker privileges. Do not describe this as
-a non-root deployment or set UID 568 merely to satisfy a form. Nginx paths,
+The current Dockerfile has **no `USER` directive**. The start script and service
+supervisor run as root; since 0.11.1 the supervisor starts the Node API as the
+image's `unihub` user (uid/gid 10001) and the start script gives `/app/uploads` to
+that user. The Compose setup drops capabilities except `CHOWN`, `DAC_OVERRIDE`,
+`NET_BIND_SERVICE`, `SETGID` and `SETUID`, and enables `no-new-privileges`. Nginx
+needs these to prepare its owned log/temp paths and drop worker privileges; the
+supervisor needs `SETGID`/`SETUID` to start the API as 10001. A host-path uploads
+dataset must be writable by uid 10001. Do not describe the container as a fully
+non-root deployment or set UID 568 merely to satisfy a form. Nginx paths,
 permissions and startup would need checking before any such change. If catalog
 review requires non-root operation, stop and propose the exact runtime changes
 and tests separately.

@@ -393,12 +393,6 @@ async function processDueOperations(account, connection, { background = false, w
   }
   return { needsSync, connectionFailed };
 }
-async function recoverUncertainOperations(accountId, userId) {
-  const [result] = await db.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',
-    error='Checking provider outcome after interrupted dispatch' WHERE mail_account_id=? AND user_id=?
-    AND dispatched=TRUE AND state IN ('executing','verifying')`, [accountId, userId]);
-  return result.affectedRows;
-}
 async function deferAccountOffline(accountId, userId, error) {
   // A transport connect error cannot consume and silently discard accepted work.
   const [result] = await db.execute(`UPDATE mail_writebacks SET state='retry_wait',status='pending',error=?,
@@ -411,6 +405,6 @@ async function deferAccountOffline(accountId, userId, error) {
     AND available_at<=UTC_TIMESTAMP()`, [accountId, userId]);
   return result.affectedRows;
 }
-module.exports = { processDueOperations, recoverUncertainOperations, deferAccountOffline, retryDelay,
+module.exports = { processDueOperations, deferAccountOffline, retryDelay,
   // pure functions surfaced for protocol/operation state tests
   applyFlag, applyMove, beginDispatch };

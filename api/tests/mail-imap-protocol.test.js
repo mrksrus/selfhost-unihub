@@ -4,10 +4,10 @@ const net = require('node:net');
 const imaps = require('imap-simple');
 const { guardImapConnection } = require('../src/services/mail-imap-guard');
 const { installConditionalStore } = require('../src/services/mail-imap-conditional-store');
-const { executeOperation } = require('../src/services/mail-writebacks');
+const { selectMailbox, fetchMetadataWindow, setFlag, nativeMove } = require('../src/services/mail-engine/transport');
 
 // Loopback protocol peer, not a mocked imap object: imap-simple -> node-imap
-// parser/queue -> socket -> tagged replies -> the production guard/writeback.
+// parser/queue -> socket -> tagged replies -> the production guard/transport.
 async function peer({ conditional = true } = {}) {
   const commands = [], sockets = new Set();
   const messages = new Map([
@@ -41,7 +41,7 @@ async function peer({ conditional = true } = {}) {
         } else if (/^UID SEARCH UID \d+$/.test(cmd)) {
           const uid = Number(cmd.split(' ').at(-1));
           socket.write(`* SEARCH${messages.has(uid) ? ` ${uid}` : ''}\r\n`); ok();
-        } else if (/^UID FETCH \d+ /.test(cmd)) {
+        } else if (/^UID FETCH \d+(?::\d+)? /.test(cmd)) {
           const uid = Number(/^UID FETCH (\d+)/.exec(cmd)[1]);
           const message = messages.get(uid);
           if (message) {
@@ -102,16 +102,23 @@ async function peer({ conditional = true } = {}) {
   };
 }
 
-function op(action, target, base) {
-  return { action, remote_folder: 'INBOX', remote_uid: 103, remote_uidvalidity: 9,
-    target_value: String(target), base_value: String(base), attempts: 0 };
+async function readSource(connection, box) {
+  const window = await fetchMetadataWindow(connection, { folder: 'INBOX', uidvalidity: box.uidvalidity, startUid: 103, endUid: 103 });
+  return window.items[0];
 }
-
-async function operation(connection, request, dispatches) {
-  return executeOperation(connection, request, {
-    markDispatched: async modseq => dispatches.push(modseq),
-  });
+// The durable worker's order (operations.applyFlag): read the source, fence the
+// dispatch, send one UID-scoped delta, and read back only after a clean reply.
+async function changeFlag(connection, action, value, dispatches) {
+  const box = await selectMailbox(connection, { folder: 'INBOX' });
+  const before = await readSource(connection, box);
+  const modseq = connection.imap.serverSupports('CONDSTORE') ? before.modseq : null;
+  const result = await setFlag(connection, { uid: 103, uidvalidity: box.uidvalidity, sourceFolder: 'INBOX',
+    flag: action === 'read' ? '\\Seen' : '\\Flagged', value: Boolean(value), modseq },
+  { beforeDispatch: async () => dispatches.push(modseq) });
+  const after = result.completion === 'ok' && !result.modified ? await readSource(connection, box) : null;
+  return { ...result, after };
 }
+const fetches = fixture => fixture.commands.filter(cmd => cmd.startsWith('UID FETCH ')).length;
 
 test('real library serializes four UID-scoped conditional flag deltas and readback retains unrelated flags', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
@@ -121,7 +128,9 @@ test('real library serializes four UID-scoped conditional flag deltas and readba
     ['read', 1, 0, '+', '\\Seen'], ['star', 1, 0, '+', '\\Flagged'],
     ['read', 0, 1, '-', '\\Seen'], ['star', 0, 1, '-', '\\Flagged'],
   ]) {
-    assert.deepEqual(await operation(connection, op(action, value, base), dispatches), { value });
+    const result = await changeFlag(connection, action, value, dispatches);
+    assert.equal(result.completion, 'ok'); assert.equal(result.modified, false);
+    assert.equal(result.after.flags.includes(flag), Boolean(value));
     const command = fixture.commands.filter(cmd => cmd.startsWith('UID STORE ')).at(-1);
     assert.equal(command, `UID STORE 103 (UNCHANGEDSINCE ${dispatches.at(-1)}) ${verb}FLAGS.SILENT (${flag})`);
   }
@@ -137,11 +146,10 @@ test('tagged OK MODIFIED is a conflict even if another actor reached the target 
   const connection = await fixture.connect(); t.after(() => connection.end());
   fixture.rejectNext({ targetChanged: true });
   const dispatches = [];
-  await assert.rejects(operation(connection, op('read', 1, 0), dispatches),
-    { code: 'MAIL_IMAP_MODIFIED', status: 409 });
+  const result = await changeFlag(connection, 'read', 1, dispatches);
+  assert.equal(result.modified, true); assert.equal(result.after, null);
   assert.deepEqual(dispatches, ['295']);
-  assert.equal(fixture.commands.filter(cmd => cmd.startsWith('UID FETCH ')).length, 1,
-    'Do not mistake a conflicting third-party change for our successful write');
+  assert.equal(fetches(fixture), 1, 'Do not mistake a conflicting third-party change for our successful write');
   assert.equal(fixture.commands.filter(cmd => cmd.startsWith('UID STORE ')).length, 1);
   assert(fixture.messages.get(103).flags.has('\\Seen'));
 });
@@ -150,8 +158,8 @@ test('tagged NO MODIFIED also reports a conflict instead of treating it as a tra
   const fixture = await peer(); t.after(() => fixture.close());
   const connection = await fixture.connect(); t.after(() => connection.end());
   fixture.rejectNext({ no: true });
-  await assert.rejects(operation(connection, op('star', 1, 0), []),
-    { code: 'MAIL_IMAP_MODIFIED', status: 409 });
+  const result = await changeFlag(connection, 'star', 1, []);
+  assert.equal(result.modified, true); assert.equal(result.completion, 'no');
   assert(!fixture.messages.get(103).flags.has('\\Flagged'));
 });
 
@@ -192,10 +200,10 @@ test('tagged BAD preserves the provider protocol error and cannot confirm a loca
   const connection = await fixture.connect(); t.after(() => connection.end());
   fixture.badNext();
   const dispatches = [];
-  await assert.rejects(operation(connection, op('read', 1, 0), dispatches),
-    error => error.type === 'bad' && error.source === 'protocol' && /rejected by provider/.test(error.message));
+  const result = await changeFlag(connection, 'read', 1, dispatches);
+  assert.equal(result.completion, 'bad'); assert.equal(result.modified, false); assert.equal(result.after, null);
   assert.deepEqual(dispatches, ['295']);
-  assert.equal(fixture.commands.filter(cmd => cmd.startsWith('UID FETCH ')).length, 1);
+  assert.equal(fetches(fixture), 1);
   assert(!fixture.messages.get(103).flags.has('\\Seen'));
 });
 
@@ -204,7 +212,8 @@ test('large MODSEQ is kept as a decimal string on the actual wire', async t => {
   fixture.messages.get(103).modseq = '9007199254740993123';
   const connection = await fixture.connect(); t.after(() => connection.end());
   const dispatches = [];
-  assert.deepEqual(await operation(connection, op('star', 1, 0), dispatches), { value: 1 });
+  const result = await changeFlag(connection, 'star', 1, dispatches);
+  assert.equal(result.completion, 'ok'); assert(result.after.flags.includes('\\Flagged'));
   assert.deepEqual(dispatches, ['9007199254740993123']);
   assert(fixture.commands.includes('UID STORE 103 (UNCHANGEDSINCE 9007199254740993123) +FLAGS.SILENT (\\Flagged)'));
 });
@@ -212,8 +221,11 @@ test('large MODSEQ is kept as a decimal string on the actual wire', async t => {
 test('native MOVE returns COPYUID destination and never triggers COPY/EXPUNGE', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
   const connection = await fixture.connect(); t.after(() => connection.end());
-  assert.deepEqual(await operation(connection, { ...op('move', 'Filed', 'INBOX'), target_value: 'Filed' }, []),
-    { moved: true, destinationUid: 207 });
+  const box = await selectMailbox(connection, { folder: 'INBOX' });
+  const result = await nativeMove(connection, { uid: 103, uidvalidity: box.uidvalidity, sourceFolder: 'INBOX', targetFolder: 'Filed' },
+    { beforeDispatch: async () => {} });
+  assert.equal(result.completion, 'ok'); assert.equal(result.mappingStatus, 'valid');
+  assert.deepEqual(result.mapping, { uidvalidity: 9, sourceUids: [103], destinationUids: [207] });
   assert(fixture.commands.includes('UID MOVE 103 "Filed"'));
   assert(!fixture.commands.some(cmd => /\b(?:COPY|EXPUNGE)\b/.test(cmd)));
 });
@@ -221,7 +233,8 @@ test('native MOVE returns COPYUID destination and never triggers COPY/EXPUNGE', 
 test('non-CONDSTORE server sends only UID-scoped delta, not SET FLAGS', async t => {
   const fixture = await peer({ conditional: false }); t.after(() => fixture.close());
   const connection = await fixture.connect(); t.after(() => connection.end());
-  assert.deepEqual(await operation(connection, op('read', 1, 0), []), { value: 1 });
+  const result = await changeFlag(connection, 'read', 1, []);
+  assert.equal(result.completion, 'ok'); assert(result.after.flags.includes('\\Seen'));
   assert(fixture.commands.includes('UID STORE 103 +FLAGS.SILENT (\\Seen)'));
   assert.deepEqual([...fixture.messages.get(103).flags].sort(), ['$custom', '\\Seen']);
 });

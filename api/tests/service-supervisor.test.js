@@ -1,14 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { superviseServices } = require('../src/service-supervisor');
+const { superviseServices, apiIdentity } = require('../src/service-supervisor');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function harness(options = {}) {
   const children = [], exits = [], signals = new EventEmitter();
   const control = superviseServices({ delayMs: 0, graceMs: 5, signals, exit: code => exits.push(code),
-    spawnChild(command, args) {
-      const child = new EventEmitter(); Object.assign(child, { command, args, killed: [], closed: false });
+    spawnChild(command, args, spawnOptions) {
+      const child = new EventEmitter(); Object.assign(child, { command, args, spawnOptions, killed: [], closed: false });
       child.finish = code => { if (!child.closed) { child.closed = true; child.emit('close', code); } };
       child.kill = signal => { child.killed.push(signal); if (!options.ignoreTerm || signal === 'SIGKILL') queueMicrotask(() => child.finish(0)); };
       children.push(child);
@@ -45,4 +45,24 @@ test('configuration failures stop the API and unresponsive children are killed a
   const h = harness({ badConfig: true, ignoreTerm: true }); await delay(30);
   assert.deepEqual(h.children[0].killed, ['SIGTERM', 'SIGKILL']);
   assert.deepEqual(h.exits, [1]);
+});
+
+test('the API runs as the configured user while nginx keeps the supervisor identity', async () => {
+  const h = harness({ supervisor: { apiUser: { uid: 10001, gid: 10001 } } }); await delay(15);
+  const [api, check, nginx] = h.children;
+  assert.deepEqual(api.args, ['/app/api/server.js']);
+  assert.equal(api.spawnOptions.uid, 10001); assert.equal(api.spawnOptions.gid, 10001);
+  assert.equal(api.spawnOptions.env.HOME, '/tmp');
+  for (const child of [check, nginx]) { assert.equal(child.command, 'nginx'); assert.equal(child.spawnOptions.uid, undefined); }
+  h.signals.emit('SIGTERM'); await delay(10);
+});
+
+test('API identity is dropped only from root and refuses root or malformed IDs', () => {
+  const env = { UNIHUB_API_UID: '10001', UNIHUB_API_GID: '10001' };
+  assert.deepEqual(apiIdentity(env, () => 0), { uid: 10001, gid: 10001 });
+  assert.equal(apiIdentity(env, () => 10001), null, 'an unprivileged container starts the API as-is');
+  assert.equal(apiIdentity({}, () => 0), null, 'development and tests without the image settings');
+  for (const bad of [{ UNIHUB_API_UID: '0', UNIHUB_API_GID: '0' }, { UNIHUB_API_UID: '10001' }, { UNIHUB_API_UID: 'unihub', UNIHUB_API_GID: '10001' }]) {
+    assert.throws(() => apiIdentity(bad, () => 0), /non-root numeric/);
+  }
 });

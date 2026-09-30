@@ -1,27 +1,21 @@
 const { withMailAccountLock } = require('./mail-account-lock');
 const { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS } = require('./mail-sync-scheduler');
-const { guardImapConnection } = require('./mail-imap-guard');
 const { acquireImapConnection, releaseImapConnection, evictImapConnections } = require('./mail-engine/connection-pool');
 const { operationDue, processOperationBatch } = require('./mail-engine/operation-batch');
-const { followMailServer, checkCancelled } = require('./mail-server-follow');
-const { reconcileAccountFolders } = require('./mail-folder-reconciliation');
 const crypto = require('crypto');
 require('../imap-patch');
 const imaps = require('imap-simple');
-const { simpleParser } = require('mailparser');
 const nodemailer = require('nodemailer');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const { promisify } = require('util');
 const { db } = require('../state');
-const { debugLog } = require('../logger');
 const { decrypt } = require('../security/encryption');
 const { normalizeNetworkHost, isTrustedMailHost, isPublicNetworkAddress, resolveNetworkHost, resolveMailConnectionTarget } = require('../security/outbound-network');
 const { isModuleEnabled, isModuleBackgroundEnabled } = require('./module-settings');
 const { isSectionRestoreActive } = require('./restore-locks');
 const { normalizeComposerAttachments } = require('./mail-attachments');
-const { loadFolderSyncState, buildFolderSearchCriteria, saveFolderSyncState } = require('./mail-sync-state');
 
 const writeFile = promisify(fs.writeFile);
 const mkdir = promisify(fs.mkdir);
@@ -42,6 +36,13 @@ const KNOWN_MAIL_HOST_SUFFIXES = [
 const DEFAULT_MAIL_SYNC_FETCH_LIMIT = 'all';
 const MAIL_SYNC_FETCH_LIMITS = new Set(['all']);
 const LEGACY_MAIL_SYNC_FETCH_LIMITS = new Set(['100', '500', '1000', '2000']);
+function checkCancelled(signal) {
+  if (signal?.aborted) {
+    const error = new Error('Mail sync cancelled; completed messages are retained.');
+    error.code = 'MAIL_SYNC_CANCELLED';
+    throw error;
+  }
+}
 const mailDeleteStopRequests = new Set();
 async function cancelMailAccountSync(accountId) {
   // HTTP /sync/cancel is read-only. Accepted operation/reconcile jobs remain
@@ -113,8 +114,6 @@ const MAIL_SYNC_FOLDER_CANDIDATES = [
   { slug: 'archive', names: ['Archive', 'Archives', '[Gmail]/All Mail', '[Google Mail]/All Mail'] },
   { slug: 'trash', names: ['Trash', 'Deleted Items', 'Deleted Messages', '[Gmail]/Trash', '[Google Mail]/Trash'] },
 ];
-
-const IMAP_FULL_MESSAGE_BODY = '';
 
 function normalizeMailFolderSlug(value) {
   return String(value || '')
@@ -521,10 +520,6 @@ function isUsableRawEmailArchive(storagePath) {
   }
 }
 
-async function saveRawEmailSource({ userId, emailId, rawEmail }) {
-  return require('./mail-engine/content').publishRaw({ root: MAIL_RAW_STORAGE_ROOT, userId, emailId, raw: rawEmail });
-}
-
 function flattenImapBoxes(boxes, prefix = '', specialUses = new Map()) {
   const results = [];
   for (const [name, box] of Object.entries(boxes || {})) {
@@ -705,91 +700,6 @@ function getCurrentBoxUidValidity(connection) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function stringifyImapBody(body) {
-  if (!body) return '';
-  if (Buffer.isBuffer(body)) return body.toString('utf8');
-  if (typeof body === 'string') return body;
-  return String(body);
-}
-
-function stringifyImapHeaderBody(body) {
-  if (!body) return '';
-  if (typeof body === 'string' || Buffer.isBuffer(body)) return stringifyImapBody(body);
-  if (typeof body !== 'object') return String(body);
-
-  const headerLines = [];
-  for (const [key, value] of Object.entries(body)) {
-    if (Array.isArray(value)) {
-      value.forEach((item) => {
-        if (item) headerLines.push(`${key}: ${item}`);
-      });
-    } else if (value) {
-      headerLines.push(`${key}: ${value}`);
-    }
-  }
-  return headerLines.join('\r\n');
-}
-
-function getImapPart(item, which) {
-  return (item?.parts || []).find(part => part.which === which) || null;
-}
-
-function buildRawEmailFromImapParts(item) {
-  const fullPart = getImapPart(item, IMAP_FULL_MESSAGE_BODY);
-  const fullBody = stringifyImapBody(fullPart?.body);
-  if (fullBody.trim()) return fullBody;
-
-  const headerContent = stringifyImapHeaderBody(getImapPart(item, 'HEADER')?.body);
-  const bodyContent = stringifyImapBody(getImapPart(item, 'TEXT')?.body);
-
-  if (headerContent) {
-    return headerContent + (bodyContent ? '\r\n\r\n' + bodyContent : '');
-  }
-  return bodyContent;
-}
-
-function extractSenderFromParsedEmail(parsed) {
-  let fromAddress = 'unknown';
-  let fromName = null;
-
-  if (parsed.from) {
-    if (parsed.from.value && parsed.from.value.length > 0) {
-      fromAddress = parsed.from.value[0].address || parsed.from.text || 'unknown';
-      fromName = parsed.from.value[0].name || null;
-    } else if (parsed.from.text) {
-      const textMatch = parsed.from.text.match(/^(.+?)\s*<(.+?)>$/);
-      if (textMatch) {
-        fromName = textMatch[1].trim();
-        fromAddress = textMatch[2].trim();
-      } else {
-        fromAddress = parsed.from.text;
-      }
-    }
-  }
-
-  return { fromAddress, fromName };
-}
-
-function extractEmailAddresses(addressObject) {
-  if (!addressObject?.value) return [];
-  return addressObject.value.map(address => address.address).filter(Boolean);
-}
-
-async function findExistingImportedEmail({ connection = db, accountId, folderName, uid, uidValidity, userId }) {
-  const validUid = require('./mail-engine/content').uint32(uid);
-  const validEpoch = require('./mail-engine/content').uint32(uidValidity);
-  if (!accountId || !folderName || !validUid || !validEpoch) return null;
-  const [rows] = await connection.execute(`SELECT e.id, e.message_id, e.from_address, e.from_name, e.to_addresses,
-      e.body_text, e.body_html, e.received_at, e.source_folder, e.imap_uid, e.imap_uidvalidity,
-      e.raw_storage_path, e.import_complete
-    FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id = o.mailbox_id
-      JOIN emails e ON e.id = o.email_id AND e.mail_account_id = o.mail_account_id
-    WHERE o.mail_account_id = ? AND (? IS NULL OR o.user_id = ?) AND BINARY m.remote_name = BINARY ?
-      AND o.uidvalidity = ? AND o.uid = ? AND o.presence = 'present' LIMIT 1`,
-  [accountId, userId || null, userId || null, folderName, validEpoch, validUid]);
-  return rows[0] || null;
-}
-
 function chunkArray(values, chunkSize) {
   const chunks = [];
   for (let i = 0; i < values.length; i += chunkSize) {
@@ -828,11 +738,6 @@ async function loadExistingImportedUidSet({ connection = db, accountId, folderNa
   }
 
   return existingUids;
-}
-
-function normalizeImapUid(value) {
-  const uid = Number(value);
-  return Number.isFinite(uid) && uid > 0 ? uid : null;
 }
 
 async function recordMailServerMessageForDeletion({
@@ -1284,18 +1189,6 @@ async function runMailServerDeletionPass({ accountId = null, limit = MAIL_SERVER
 
 // ── Mail sync and send functions ──────────────────────────────────
 
-// Compatibility entry point: perform one bounded slice. Never enumerate ALL or
-// imply that a finite page means all historical bodies/flags are complete.
-async function syncMailFolder(connection, account, accountId, folderName, dbFolderName,
-  _lastSyncedAt = null, _syncFetchLimit = null, signal = null) {
-  const result = await require('./mail-engine/sync').scanMailboxSlice({ db, connection,
-    account: { ...account, id: accountId }, folder: { folderName, dbFolderName },
-    stream: 'recent', signal });
-  return { newEmails: result.inserted || 0, processed: result.processed, failed: 0,
-    total: null, coverage: { recent: { through: result.through, upper: result.upper } },
-    continuation: result.more, requestedCount: 'bounded' };
-}
-
 // Test IMAP connection and authentication without syncing.
 async function testImapConnection(account) {
   let connection = null;
@@ -1351,211 +1244,6 @@ async function testImapConnection(account) {
       code: error.code || null,
       tlsTrustError,
     };
-  }
-}
-
-// Retired pre-0.11 implementation, deliberately not called by exported sync.
-// Kept temporarily for migration reference; do not re-enable its ALL/inventory
-// equality scan. The durable job path below is the only production scheduler.
-async function syncMailAccountOnce(accountId, signal, background, report = () => {}) {
-  let connection = null;
-  try {
-    debugLog('server.js:50', 'syncMailAccount START', { accountId }, 'H1');
-    const [accounts] = await db.execute('SELECT * FROM mail_accounts WHERE id = ?', [accountId]);
-    if (!accounts[0]) {
-      return { success: false, error: `Account ${accountId} not found in database` };
-    }
-    
-    const account = accounts[0];
-    checkCancelled(signal);
-    if (!account.is_active) return { success: false, skipped: true, error: 'Mail account is inactive' };
-    if (!await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) {
-      return { success: false, skipped: true, error: 'Mail module is paused' };
-    }
-    const followsServer = account.sync_mode === 'sync';
-    if (await isSectionRestoreActive(account.user_id, 'mail')) {
-      return { success: false, skipped: true, error: 'Mail restore in progress' };
-    }
-    if (followsServer) await db.execute("UPDATE mail_accounts SET sync_status = 'running' WHERE id = ?", [accountId]);
-    const lastSyncedAt = account.last_synced_at;
-    const syncFetchLimit = normalizeSyncFetchLimit(account.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT;
-    const config = await buildImapConnectionConfig(account);
-    if (!config) throw new Error('No password configured for this account');
-
-    checkCancelled(signal);
-    console.log(`[SYNC] Connecting to ${account.email_address}...`);
-    // The handshake has connection/auth/socket timeouts. If cancellation arrived
-    // during it, the guard destroys the newly returned connection before use.
-    connection = guardImapConnection(await imaps.connect(config), { signal });
-    checkCancelled(signal);
-    connection.on('error', (err) => {
-      console.error('[SYNC] IMAP connection error (handled, sync may fail):', err.message);
-    });
-    
-    const specialUses = new Map();
-    report({ phase: 'listing folders' });
-    const availableFolders = await listAvailableImapFolders(connection, specialUses, true);
-    checkCancelled(signal);
-    for (const planned of pickImapSyncFolders(availableFolders)) {
-      if (availableFolders.includes(planned.folderName) && !specialUses.has(planned.folderName)) specialUses.set(planned.folderName, planned.dbFolderName);
-    }
-    await ensureDefaultMailFoldersForUser(account.user_id);
-    const reconciliation = await reconcileAccountFolders(account.user_id, accountId, availableFolders, specialUses);
-    if (!reconciliation.skipped) console.log('[FOLDERS] Reconciliation completed:', accountId, reconciliation);
-    // Sync only boxes explicitly registered from this account. Never infer an
-    // identity from a lossy UI slug or recreate a locally deleted mailbox.
-    const registeredFolders = await registerCustomImapFoldersForUser(account.user_id, accountId, availableFolders, db, specialUses, followsServer);
-    const customFolderSlugs = new Map(registeredFolders.map(folder => [folder.remoteName, folder.slug]));
-    if (followsServer) {
-      const writes = await require('./mail-writebacks').processPending(account, connection, { background });
-      checkCancelled(signal);
-      if (writes.connectionFailed) throw new Error('Provider write interrupted; pending changes will be checked on reconnect');
-      const folders = availableFolders.map(folderName => ({ folderName, dbFolderName: customFolderSlugs.get(folderName) }));
-      if (folders.some(folder => !folder.dbFolderName)) throw new Error('A listed server folder has no verified local mapping');
-      let result;
-      for (let scan = 0; scan < 5; scan++) {
-        try {
-          result = await followMailServer({ db, connection, account, folders, signal,
-            progress: report,
-            checkpoint: async () => {
-              checkCancelled(signal);
-              const pending = await require('./mail-writebacks').processPending(account, connection, { background });
-              if (pending.connectionFailed) throw new Error('Provider write interrupted; pending changes will be checked on reconnect');
-              checkCancelled(signal);
-              return pending.needsSync;
-            },
-            listFolders: () => listAvailableImapFolders(connection, new Map(), true),
-            getUidValidity: getCurrentBoxUidValidity, buildRaw: buildRawEmailFromImapParts,
-            importMessage: async (remote, fullEmail, existingEmail = null) => {
-              const parsed = await simpleParser(fullEmail);
-              const { fromAddress, fromName } = extractSenderFromParsedEmail(parsed);
-              return require('./mail-import').persistImportedMessage({ db, account, accountId,
-                folderName: remote.folderName, uid: remote.uid, uidValidity: remote.validity,
-                existingEmail, messageId: parsed.messageId || `${accountId}-${remote.folderName}-${remote.validity}-${remote.uid}`,
-                fullEmail, parsed, fromAddress, fromName, toAddresses: extractEmailAddresses(parsed.to),
-                folder: remote.dbFolderName, isRead: remote.flags.includes('\\Seen'),
-                archiveRaw: saveRawEmailSource, enqueueDeletion: async () => false,
-                suppressNotifications: !lastSyncedAt || account.sync_status === 'pending' });
-            },
-          });
-          break;
-        } catch (error) {
-          if (error.code !== 'MAIL_SYNC_RESTART' || scan === 4) throw error;
-          checkCancelled(signal);
-        }
-      }
-      checkCancelled(signal);
-      await db.execute("UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP(), sync_status = 'idle' WHERE id = ?", [accountId]);
-      connection.end();
-      connection = null;
-      return result;
-    }
-    const foldersToSync = pickImapSyncFolders(availableFolders, customFolderSlugs);
-    console.log(`[SYNC] Folder plan for ${account.email_address}: ${foldersToSync.map(folder => `${folder.folderName}->${folder.dbFolderName}`).join(', ')}`);
-
-    const folderResults = [];
-    for (const folder of foldersToSync) {
-      checkCancelled(signal);
-      report({ phase: `importing ${folder.folderName}`, total: null });
-      const folderResult = await syncMailFolder(
-        connection,
-        account,
-        accountId,
-        folder.folderName,
-        folder.dbFolderName,
-        lastSyncedAt,
-        syncFetchLimit,
-        signal
-      );
-      checkCancelled(signal);
-      folderResults.push({ ...folder, ...folderResult });
-      if (folder.dbFolderName === 'inbox' && folderResult.error) {
-        break;
-      }
-    }
-    
-    // Clean up connection
-    if (connection) {
-      try {
-        connection.end();
-      } catch (endError) {
-        console.log(`[SYNC] Error closing connection: ${endError.message}`);
-      }
-    }
-    
-    const totals = folderResults.reduce((acc, result) => {
-      acc.newEmails += result.newEmails || 0;
-      acc.totalFound += result.total || 0;
-      acc.processed += result.processed || 0;
-      acc.failed += result.failed || 0;
-      return acc;
-    }, { newEmails: 0, totalFound: 0, processed: 0, failed: 0 });
-    const failedFolder = folderResults.find(result => result.error || result.failed > 0);
-    if (failedFolder) {
-      await db.execute("UPDATE mail_accounts SET sync_status = 'error' WHERE id = ?", [accountId]);
-      return {
-        success: false,
-        error: failedFolder.error || 'Some messages could not be imported',
-        details: 'Completed messages are retained; unsuccessful folders will retry on the next sync.',
-        newEmails: totals.newEmails,
-        totalFound: totals.totalFound,
-        folders: folderResults,
-      };
-    }
-
-    await db.execute('UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
-
-    const resultMsg = `Synced ${account.email_address}: ${totals.newEmails} new emails across ${folderResults.length} folder(s) (${totals.totalFound} available, ${totals.processed} processed, ${totals.failed} failed; limit=${syncFetchLimit})`;
-    console.log(`[SYNC] ✓ ${resultMsg}`);
-    
-    // Log detailed summary for debugging
-    if (totals.newEmails === 0 && totals.processed > 0) {
-      console.warn(`[SYNC] ⚠ WARNING: Processed ${totals.processed} emails but saved 0. This might indicate:`);
-      console.warn(`[SYNC]   - All emails already exist in database (duplicate detection)`);
-      console.warn(`[SYNC]   - Emails are empty or invalid`);
-      console.warn(`[SYNC]   - Database insert errors (check logs above)`);
-    }
-    
-    return {
-      success: true,
-      newEmails: totals.newEmails,
-      totalFound: totals.totalFound,
-      message: resultMsg,
-      folders: folderResults.map(result => ({
-        sourceFolder: result.folderName,
-        folder: result.dbFolderName,
-        newEmails: result.newEmails || 0,
-        totalFound: result.total || 0,
-        processed: result.processed || 0,
-        failed: result.failed || 0,
-        error: result.error || null,
-      })),
-    };
-  } catch (error) {
-    if (connection) {
-      try { connection.end(); } catch (e) { /* ignore */ }
-    }
-    const errorMsg = error.message || String(error);
-    await db.execute('UPDATE mail_accounts SET sync_status = ? WHERE id = ?', [signal?.aborted ? 'cancelled' : 'error', accountId]).catch(() => {});
-    debugLog('server.js:146', 'syncMailAccount ERROR', { accountId, errorMessage: errorMsg, errorName: error.name }, 'H1,H2,H3,H4');
-    console.error(`[SYNC] ✗ Error syncing account ${accountId}:`, errorMsg);
-
-    let friendlyError = errorMsg;
-    if (errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
-      friendlyError = 'Authentication failed. Check your username and password (use App Password for Gmail/Yahoo).';
-    } else if (errorMsg.includes('ETIMEDOUT') || errorMsg.includes('timeout')) {
-      friendlyError = 'Connection timeout. Check server address and port, or try again later.';
-    } else if (errorMsg.includes('ENOTFOUND')) {
-      friendlyError = 'Server not found. Check the IMAP host address.';
-    } else if (errorMsg.includes('ECONNREFUSED')) {
-      friendlyError = 'Connection refused. Check the IMAP port and server settings.';
-    } else if (errorMsg.includes('Connection ended unexpectedly') || errorMsg.includes('ECONNRESET')) {
-      friendlyError = 'Connection closed by server. This may indicate:\n1. Gmail requires an App Password (not your regular password)\n2. "Less secure app access" needs to be enabled\n3. Network/firewall blocking port 993\n4. Account security settings blocking the connection';
-    }
-
-    return { success: false, cancelled: Boolean(signal?.aborted), error: friendlyError, details: errorMsg };
-  } finally {
-    if (connection) connection.end();
   }
 }
 
@@ -1993,7 +1681,6 @@ module.exports = {
   getMailRawStoragePath,
   isMailRawPathUnderRoot,
   isUsableRawEmailArchive,
-  saveRawEmailSource,
   flattenImapBoxes,
   listAvailableImapFolders,
   registerCustomImapFoldersForUser,
@@ -2002,7 +1689,6 @@ module.exports = {
   ensureCustomImapFoldersForUser,
   createRemoteMailFolderForUserAccounts,
   getCurrentBoxUidValidity,
-  buildRawEmailFromImapParts,
   loadExistingImportedUidSet,
   recordMailServerMessageForDeletion,
   seedMailServerDeletionQueueForAccount,
@@ -2010,7 +1696,6 @@ module.exports = {
   deleteImapUid,
   processMailServerDeletionForAccount,
   runMailServerDeletionPass,
-  syncMailFolder,
   testImapConnection,
   syncMailAccount,
   startMailEngineScheduler,

@@ -1,4 +1,5 @@
 const mailWritebacks = require('../services/mail-writebacks');
+const mailRepository = require('../services/mail-engine/repository');
 const mailAccountLifecycle = require('../services/mail-account-lifecycle');
 const { mailAccountModeChange, sameProviderMailbox } = require('../services/mail-account-mode');
 const { withMailAccountLock } = require('../services/mail-account-lock');
@@ -1655,63 +1656,55 @@ module.exports = {
       }
       const localHash = crypto.createHash('sha256').update(JSON.stringify({ kind: 'legacy-recovery',
         ids: email_ids, folder: folderValidation.folder, account_id: requestedAccount })).digest('hex');
-      const replay = receipt => {
-        if (receipt.request_hash !== localHash) throw Object.assign(new Error('Idempotency-Key already used for a different request'), { status: 409 });
-        const saved = typeof receipt.response_json === 'string' ? JSON.parse(receipt.response_json) : receipt.response_json;
-        return saved.recovery_required ? { ...saved, sync_pending: false, message: 'Recovered command requires review; no operation was replayed' } : saved;
-      };
+      const replay = saved => saved.recovery_required
+        ? { ...saved, sync_pending: false, message: 'Recovered command requires review; no operation was replayed' } : saved;
       const response = { message: `Filed ${email_ids.length} email(s) locally in ${folderValidation.folder}. Provider mail was not changed.`,
         sync_pending: false, operation_ids: [], accepted_revision: null, local_only: true };
+      const refuse = (message, status) => Object.assign(new Error(message), { status, refusal: true });
       const placeholders = email_ids.map(() => '?').join(',');
-      const connection = await db.getConnection();
       try {
-        await connection.beginTransaction();
-        if (options.idempotencyKey) {
-          const [[prior]] = await connection.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ? FOR UPDATE', [userId, options.idempotencyKey]);
-          if (prior) { const saved = replay(prior); await connection.commit(); return saved; }
-          await connection.execute('INSERT INTO mail_command_receipts (user_id,client_key,request_hash,response_json) VALUES (?,?,?,?)',
-            [userId, options.idempotencyKey, localHash, JSON.stringify(response)]);
-        }
-        const [selected] = await connection.execute(
-          `SELECT id, mail_account_id, filing_account_id, folder, is_legacy FROM emails
-           WHERE id IN (${placeholders}) AND user_id = ? FOR UPDATE`, [...email_ids, userId]);
-        if (selected.length !== new Set(email_ids).size) {
-          await connection.rollback();
-          return { error: 'Some selected emails are unavailable', status: 404 };
-        }
-        for (const email of selected) {
-          const targetAccount = requestedAccount || filingAccountId(email);
-          if ((requestedAccount && !email.is_legacy) || (!requestedAccount && email.is_legacy)
-            || !folderAcceptsAccount({ slug: folderValidation.folder, mail_account_id: folderValidation.accountId, is_system: folderValidation.isSystem }, targetAccount, links)) {
-            await connection.rollback();
-            return { error: 'Move cancelled. Choose a receiving account for Legacy mail and a folder connected to that account.', status: 400 };
+        return await mailRepository.withTransaction(async connection => {
+          if (options.idempotencyKey) {
+            let receipt;
+            try {
+              receipt = await mailRepository.recordReceipt({ userId, clientKey: options.idempotencyKey, requestHash: localHash, response }, connection);
+            } catch (error) {
+              if (error.code === 'IDEMPOTENCY_KEY_REUSED') throw refuse('Idempotency-Key already used for a different request', 409);
+              throw error;
+            }
+            if (receipt.replayed) return replay(receipt.response);
           }
-        }
-        if (requestedAccount) {
+          const [selected] = await connection.execute(
+            `SELECT id, mail_account_id, filing_account_id, folder, is_legacy FROM emails
+             WHERE id IN (${placeholders}) AND user_id = ? FOR UPDATE`, [...email_ids, userId]);
+          if (selected.length !== new Set(email_ids).size) throw refuse('Some selected emails are unavailable', 404);
           for (const email of selected) {
-            await connection.execute(`INSERT INTO mail_folder_recovery_items
-              (email_id, user_id, source_account_id, original_folder, original_filing_account_id, target_folder, target_account_id, action)
-              VALUES (?, ?, ?, ?, ?, ?, ?, 'manual') ON DUPLICATE KEY UPDATE
-              target_folder = VALUES(target_folder), target_account_id = VALUES(target_account_id), action = 'manual'`,
-            [email.id, userId, email.mail_account_id, email.folder, email.filing_account_id, folderValidation.folder, requestedAccount]);
+            const targetAccount = requestedAccount || filingAccountId(email);
+            if ((requestedAccount && !email.is_legacy) || (!requestedAccount && email.is_legacy)
+              || !folderAcceptsAccount({ slug: folderValidation.folder, mail_account_id: folderValidation.accountId, is_system: folderValidation.isSystem }, targetAccount, links)) {
+              throw refuse('Move cancelled. Choose a receiving account for Legacy mail and a folder connected to that account.', 400);
+            }
           }
-          await connection.execute(`UPDATE emails SET folder = ?, filing_account_id = ?, is_legacy = FALSE
-            WHERE id IN (${placeholders}) AND user_id = ?`, [folderValidation.folder, requestedAccount, ...email_ids, userId]);
-        } else {
-          await connection.execute(`UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
-            [folderValidation.folder, ...email_ids, userId]);
-        }
-        await connection.commit();
+          if (requestedAccount) {
+            for (const email of selected) {
+              await connection.execute(`INSERT INTO mail_folder_recovery_items
+                (email_id, user_id, source_account_id, original_folder, original_filing_account_id, target_folder, target_account_id, action)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'manual') ON DUPLICATE KEY UPDATE
+                target_folder = VALUES(target_folder), target_account_id = VALUES(target_account_id), action = 'manual'`,
+              [email.id, userId, email.mail_account_id, email.folder, email.filing_account_id, folderValidation.folder, requestedAccount]);
+            }
+            await connection.execute(`UPDATE emails SET folder = ?, filing_account_id = ?, is_legacy = FALSE
+              WHERE id IN (${placeholders}) AND user_id = ?`, [folderValidation.folder, requestedAccount, ...email_ids, userId]);
+          } else {
+            await connection.execute(`UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
+              [folderValidation.folder, ...email_ids, userId]);
+          }
+          return response;
+        }, db);
       } catch (error) {
-        await connection.rollback();
-        if (options.idempotencyKey && error.code === 'ER_DUP_ENTRY') {
-          const [[prior]] = await db.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ?', [userId, options.idempotencyKey]);
-          if (prior) return replay(prior);
-        }
+        if (error.refusal) return { error: error.message, status: error.status };
         throw error;
-      } finally { connection.release(); }
-
-      return response;
+      }
     } catch (error) {
       console.error('[BULK] Move error:', error);
       return { error: error.status ? error.message : 'Failed to move emails', status: error.status || 500 };

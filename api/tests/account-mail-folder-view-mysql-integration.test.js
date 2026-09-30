@@ -116,8 +116,11 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
     await pool.execute("INSERT INTO mail_accounts (id,user_id,email_address,provider,is_active) VALUES (?,?,'receiving@example.test','custom',FALSE)", [receiving,owner]);
     const request = { url:'/api/mail/emails/bulk-move', headers:{host:'localhost','idempotency-key':'legacy-recovery-fixture'} };
     const body = {email_ids:[item],folder:'inbox',account_id:receiving};
-    const result = await routes['POST /api/mail/emails/bulk-move'](request,owner,body);
+    // Two concurrent identical requests: one files, the other waits and replays (no deadlock).
+    const [result, raced] = await Promise.all([1, 2].map(() => routes['POST /api/mail/emails/bulk-move'](request,owner,body)));
     assert.equal(result.error,undefined); assert.equal(result.local_only,true); assert.equal(result.sync_pending,false);
+    assert.deepEqual(raced,result);
+    assert.equal((await pool.execute('SELECT COUNT(*) AS n FROM mail_folder_recovery_items WHERE email_id=?',[item]))[0][0].n,1);
     const again = await routes['POST /api/mail/emails/bulk-move'](request,owner,body);
     assert.deepEqual(again,result, 'A retried accepted local filing must not be rejected as no longer Legacy');
     const [[message]] = await pool.execute('SELECT mail_account_id,filing_account_id,folder,is_legacy FROM emails WHERE id=?',[item]);
@@ -126,7 +129,7 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
     assert.equal(receipt.found,true); assert.deepEqual(receipt.response,result); assert.deepEqual(receipt.operations,[]);
     assert.equal((await require('../src/services/mail-writebacks').getOperationReceipt(stranger,'legacy-recovery-fixture')).found,false);
     const conflict = await routes['POST /api/mail/emails/bulk-move'](request,owner,{...body,folder:'label'});
-    assert.equal(conflict.status,409);
+    assert.equal(conflict.status,409); assert.equal(conflict.error,'Idempotency-Key already used for a different request');
     const [[unchanged]] = await pool.execute('SELECT folder FROM emails WHERE id=?',[item]);
     assert.equal(unchanged.folder,'inbox');
   });

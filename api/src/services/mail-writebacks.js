@@ -7,6 +7,7 @@ const { isSectionRestoreActive } = require('./restore-locks');
 const { isModuleEnabled, isModuleBackgroundEnabled } = require('./module-settings');
 const engine = require('./mail-engine/operations');
 const runtime = require('./mail-engine/runtime');
+const repository = require('./mail-engine/repository');
 const active = new Map(), queued = new Map(), foregroundReruns = new Set();
 const activeControllers = new Map();
 let dueCursor = '';
@@ -38,6 +39,15 @@ function receiptResponse(saved) {
   const value = typeof saved === 'string' ? JSON.parse(saved) : saved;
   return value?.recovery_required ? { ...value, sync_pending: false,
     message: 'Recovered command requires provider revalidation; no mutation was replayed' } : value;
+}
+// Claims the Idempotency-Key or replays its committed response; the HTTP error
+// for a key reused with another payload stays the same as before.
+async function claimReceipt(input, cx) {
+  try { return await repository.recordReceipt(input, cx); }
+  catch (error) {
+    if (error.code === 'IDEMPOTENCY_KEY_REUSED') throw fail('Idempotency-Key already used for a different request');
+    throw error;
+  }
 }
 // Caller holds email row locks and a transaction. Never delete an accepted intent.
 async function queueChanges(cx, userId, emails, changes, options = {}) {
@@ -98,18 +108,12 @@ async function mutateMessages(userId, ids, changes, validate = async () => {}, o
   const requestHash = canonicalRequest(ids, changes);
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore in progress');
   if (!await isModuleEnabled(userId, 'mail')) throw fail('Mail module is disabled');
-  const cx = await db.getConnection(); let accounts = new Set(), response;
-  try {
-    await cx.beginTransaction();
+  let accounts = new Set(), replayed = false;
+  const response = await repository.withTransaction(async cx => {
+    accounts = new Set(); replayed = false;
     if (key) {
-      const [[prior]] = await cx.execute('SELECT * FROM mail_command_receipts WHERE user_id=? AND client_key=? FOR UPDATE', [userId, key]);
-      if (prior) {
-        if (prior.request_hash !== requestHash) throw fail('Idempotency-Key already used for a different request');
-        response = receiptResponse(prior.response_json);
-        await cx.commit(); return response;
-      }
-      await cx.execute(`INSERT INTO mail_command_receipts (user_id,client_key,request_hash,response_json) VALUES (?,?,?,?)`,
-        [userId, key, requestHash, JSON.stringify({ pending: true })]);
+      const receipt = await claimReceipt({ userId, clientKey: key, requestHash, response: { pending: true } }, cx);
+      if (receipt.replayed) { replayed = true; return receiptResponse(receipt.response); }
     }
     const placeholders = ids.map(() => '?').join(',');
     const [emails] = await cx.execute(`SELECT e.*,a.sync_mode,a.is_active FROM emails e
@@ -120,29 +124,19 @@ async function mutateMessages(userId, ids, changes, validate = async () => {}, o
     await validate(cx, emails);
     const operationIds = [], revisions = [];
     accounts = await queueChanges(cx, userId, emails, changes, { idempotencyKey: key, operationIds, revisions });
-    response = { message: accounts.size ? 'Provider changes queued' : 'Messages updated', sync_pending: accounts.size > 0,
+    const result = { message: accounts.size ? 'Provider changes queued' : 'Messages updated', sync_pending: accounts.size > 0,
       operation_ids: operationIds, accepted_revision: revisions.length ? Math.max(...revisions) : null };
-    if (key) await cx.execute(`UPDATE mail_command_receipts SET response_json=? WHERE user_id=? AND client_key=?`,
-      [JSON.stringify(response), userId, key]);
-    await cx.commit();
-  } catch (error) {
-    await cx.rollback();
-    if (key && error.code === 'ER_DUP_ENTRY') {
-      const [[prior]] = await db.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id=? AND client_key=?', [userId, key]);
-      if (prior) {
-        if (prior.request_hash !== requestHash) throw fail('Idempotency-Key already used for a different request');
-        return receiptResponse(prior.response_json);
-      }
-    }
-    throw error;
-  } finally { cx.release(); }
+    if (key) await repository.finishReceipt({ userId, clientKey: key, requestHash, response: result }, cx);
+    return result;
+  }, db);
+  if (replayed) return response;
   for (const accountId of accounts) setImmediate(() => startWritebacks(accountId));
   return response;
 }
 async function getOperationReceipt(userId, key) {
   keyCheck(key);
   if (!key) throw fail('Idempotency-Key required', 400);
-  const [[receipt]] = await db.execute('SELECT response_json FROM mail_command_receipts WHERE user_id=? AND client_key=?', [userId, key]);
+  const receipt = await repository.getReceipt({ userId, clientKey: key });
   if (!receipt) return { found: false, response: null, operations: [] };
   const response = receiptResponse(receipt.response_json);
   if (!response?.operation_ids?.length) return { found: true, response, operations: [] };
@@ -435,44 +429,6 @@ async function requeue(userId, op) {
   } catch (error) { await cx.rollback(); throw error; }
   finally { cx.release(); }
 }
-// Compatibility pure protocol probe retained for older dependency-injected tests.
-// The durable worker above exclusively uses the guarded transport adapter.
-function imapCall(imap, method, ...args) {
-  return new Promise((resolve, reject) => imap[method](...args, (error, result) => error ? reject(error) : resolve(result)));
-}
-async function legacyReadRemote(connection, op) {
-  const box = await connection.openBox(op.remote_folder, false);
-  if (Number(box.uidvalidity) !== Number(op.remote_uidvalidity)) throw fail('Mailbox identity changed; server state retained');
-  const rows = await connection.search([['UID', Number(op.remote_uid)]], { bodies: [], markSeen: false });
-  if (rows.length !== 1 || Number(rows[0].attributes.uid) !== Number(op.remote_uid)) throw fail('Message moved or disappeared on the server');
-  return rows[0].attributes;
-}
-async function executeOperation(connection, op, { markDispatched, read = legacyReadRemote } = {}) {
-  const remote = await read(connection, op), imap = connection.imap;
-  if (op.action === 'move') {
-    if (op.target_value === op.remote_folder) return { moved: false };
-    if (op.dispatched) throw fail('Previous MOVE outcome must be reconciled, not repeated');
-    if (!imap.serverSupports('MOVE')) throw fail('Native MOVE unavailable; no fallback');
-    await markDispatched();
-    const destinationUid = await imapCall(imap, 'move', Number(op.remote_uid), op.target_value);
-    return { moved: true, destinationUid: /^\d+$/.test(String(destinationUid)) ? Number(destinationUid) : null };
-  }
-  const flag = op.action === 'read' ? '\\Seen' : op.action === 'star' ? '\\Flagged' : null;
-  if (!flag) throw fail('Unsupported mail change');
-  const current = remote.flags.includes(flag) ? '1' : '0';
-  if (current === op.target_value) return { value: Number(current) };
-  if (current !== op.base_value) throw fail('Server state changed; local action was not applied');
-  if (op.dispatched && (!op.dispatch_modseq || String(remote.modseq) !== op.dispatch_modseq))
-    throw fail('Provider state changed after interrupted update; server state retained');
-  const conditional = remote.modseq && !imap._box?.nomodseq && imap.serverSupports('CONDSTORE');
-  await markDispatched(conditional ? String(remote.modseq) : null);
-  const method = op.target_value === '1' ? 'addFlags' : 'delFlags';
-  if (conditional) await imapCall(imap, method + 'Since', Number(op.remote_uid), flag, String(remote.modseq));
-  else await imapCall(imap, method, Number(op.remote_uid), flag);
-  const after = await read(connection, op);
-  if ((after.flags.includes(flag) ? '1' : '0') !== op.target_value) throw fail('Server changed during update; server state retained');
-  return { value: Number(op.target_value) };
-}
 module.exports = { mutateMessages, queueChanges, processPending, startWritebacks, stopWritebacks, runDueWritebacks, drainWritebacks,
-  retryWriteback, acceptServerState, cancelForAccount, cancelWriteback, getOperationReceipt, listWritebacks, executeOperation,
+  retryWriteback, acceptServerState, cancelForAccount, cancelWriteback, getOperationReceipt, listWritebacks,
   isWritebackRunning: () => active.size > 0, remoteEligible, verifiedIdentity, keyCheck, canonicalRequest };

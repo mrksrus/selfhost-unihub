@@ -63,6 +63,13 @@ for (const port of [80, 4000]) {
 NODE
 
 docker volume create "$volume_name" >/dev/null
+# Simulate an uploads volume from before 0.11.1: everything owned by root, a
+# private file, and a symlink whose target start.sh must never chown.
+docker run --rm --network none --entrypoint sh \
+  --mount "type=volume,source=$volume_name,target=/app/uploads" "$image" -c \
+  'mkdir -p /app/uploads/legacy-smoke && echo synthetic > /app/uploads/legacy-smoke/file.txt \
+    && chmod 600 /app/uploads/legacy-smoke/file.txt && ln -s /etc/passwd /app/uploads/legacy-smoke/link \
+    && chown -R -h 0:0 /app/uploads'
 # Match the reference Compose security restrictions so Nginx startup is tested
 # with its required capabilities, rather than Docker's broader default set.
 docker run -d --name "$container_name" --network host \
@@ -97,15 +104,30 @@ if [[ "$startup_log" == *'MySQL took longer than expected'* || "$startup_log" !=
 fi
 
 docker exec "$container_name" node -e 'if(process.versions.node.split(".")[0]!=="24")process.exit(1);console.log("Runtime Node.js",process.version)'
+# The API must run as the unprivileged unihub user (10001) with no capabilities
+# or supplementary groups, and the old root-owned uploads must now belong to it.
+api_pid="$(docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of fs.readdirSync("/proc")){if(!/^\d+$/.test(name))continue;try{const args=fs.readFileSync(`/proc/${name}/cmdline`,"utf8").split("\0");if(args.includes("/app/api/server.js")){console.log(name);process.exit(0)}}catch{}}process.exit(1)')"
+[[ "$api_pid" =~ ^[0-9]+$ ]] || { echo 'Could not identify disposable container API process.' >&2; exit 1; }
+docker exec -e "SMOKE_API_PID=$api_pid" "$container_name" node -e '
+const fs=require("node:fs");const status=fs.readFileSync(`/proc/${process.env.SMOKE_API_PID}/status`,"utf8");
+const field=name=>(new RegExp(`^${name}:\\s*(.*)$`,"m").exec(status)||[])[1]?.trim().split(/\s+/).filter(Boolean)||[];
+const uid=field("Uid"),gid=field("Gid");
+if(uid.length!==4||!uid.every(id=>id==="10001"))throw new Error(`API process must run as uid 10001, got ${uid}`);
+if(gid.length!==4||!gid.every(id=>id==="10001"))throw new Error(`API process must run as gid 10001, got ${gid}`);
+if(field("Groups").length)throw new Error("API process must not keep supplementary groups");
+if(BigInt("0x"+field("CapEff")[0])!==0n||BigInt("0x"+field("CapPrm")[0])!==0n)throw new Error("API process must not hold capabilities");
+for(const target of ["/app/uploads","/app/uploads/legacy-smoke","/app/uploads/legacy-smoke/file.txt"]){const stat=fs.statSync(target);if(stat.uid!==10001||stat.gid!==10001)throw new Error(`${target} was not handed to the API user`)}
+if(fs.lstatSync("/app/uploads/legacy-smoke/link").uid!==10001)throw new Error("Symlink in uploads was not handed over");
+if(fs.statSync("/etc/passwd").uid!==0)throw new Error("Ownership change followed a symlink out of uploads");
+console.log("API runs as uid/gid 10001 without capabilities; uploads handed over");'
 docker exec "$container_name" ffmpeg -version
 docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of ["LICENSE","LICENSING.md","THIRD_PARTY_NOTICES.md","frontend-dependency-notices.txt","alpine-packages.txt","ffmpeg-license.txt"]){if(!fs.statSync("/app/licenses/"+name).size)throw Error("Empty license notice: "+name)}'
 [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}' "$container_name")" == 'PolyForm-Noncommercial-1.0.0' ]]
 UNIHUB_SMOKE_CONTAINER="$container_name" node "$script_dir/container-smoke.mjs"
-docker exec -i -e UNIHUB_API_ROOT=/app/api "$container_name" node < "$script_dir/../api/tests/helpers/audio-conversion-smoke.cjs"
+docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api "$container_name" node < "$script_dir/../api/tests/helpers/audio-conversion-smoke.cjs"
 # Only the disposable container created above is affected. The container must
 # exit if its API dies so the deployment's restart policy can recover it.
-api_pid="$(docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of fs.readdirSync("/proc")){if(!/^\d+$/.test(name))continue;try{const args=fs.readFileSync(`/proc/${name}/cmdline`,"utf8").split("\0");if(args.includes("/app/api/server.js")){console.log(name);process.exit(0)}}catch{}}process.exit(1)')"
-[[ "$api_pid" =~ ^[0-9]+$ ]] || { echo 'Could not identify disposable container API process.' >&2; exit 1; }
+[[ "$(docker exec "$container_name" cat "/proc/$api_pid/cmdline" | tr '\0' ' ')" == *'/app/api/server.js'* ]] || { echo 'API process changed during smoke.' >&2; exit 1; }
 docker exec "$container_name" kill -TERM "$api_pid"
 for ((attempt=0; attempt<20; attempt++)); do
   [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] && break
@@ -113,4 +135,4 @@ for ((attempt=0; attempt<20; attempt++)); do
 done
 [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] || { echo 'Container stayed running after API death.' >&2; exit 1; }
 [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container_name")" == 1 ]] || { echo 'Container did not report essential service failure.' >&2; exit 1; }
-echo 'Container smoke passed: startup, health, authentication, isolation, malformed requests, audio and encrypted backup round-trips, and essential-service recovery.'
+echo 'Container smoke passed: startup, non-root API and uploads handover, health, authentication, isolation, malformed requests, audio and encrypted backup round-trips, and essential-service recovery.'

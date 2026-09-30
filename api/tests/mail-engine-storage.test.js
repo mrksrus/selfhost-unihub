@@ -126,10 +126,17 @@ test('repository refuses incomplete coverage, stale epoch and unrelated-owner oc
 });
 
 test('idempotency receipt replays exact response and rejects payload reuse', async () => {
-  let saved = null;
+  let saved = null; const calls = [];
   const cx = { async execute(sql, args) {
+    calls.push(sql);
     if (sql.startsWith('SELECT request_hash')) return [saved ? [saved] : []];
-    if (sql.startsWith('INSERT INTO mail_command_receipts')) { saved = { request_hash: args[2], response_json: args[3] }; return [{ affectedRows: 1 }]; }
+    if (sql.startsWith('INSERT INTO mail_command_receipts')) {
+      if (saved) throw Object.assign(new Error('Duplicate entry'), { code: 'ER_DUP_ENTRY', errno: 1062 });
+      saved = { request_hash: args[2], response_json: args[3] }; return [{ affectedRows: 1 }];
+    }
+    if (sql.startsWith('UPDATE mail_command_receipts')) {
+      const hit = saved && saved.request_hash === args[3]; if (hit) saved.response_json = args[0]; return [{ affectedRows: hit ? 1 : 0 }];
+    }
     throw new Error(sql);
   } };
   const input = { userId: 'u', clientKey: 'abc-123', requestHash: 'a'.repeat(64), response: { operation_ids: ['original'], accepted_revision: 12 } };
@@ -137,6 +144,12 @@ test('idempotency receipt replays exact response and rejects payload reuse', asy
   assert.deepEqual(await repo.recordReceipt({ ...input, response: { operation_ids: ['different'] } }, cx), { response: input.response, replayed: true });
   await assert.rejects(repo.recordReceipt({ ...input, requestHash: 'b'.repeat(64) }, cx), { code: 'IDEMPOTENCY_KEY_REUSED' });
   await assert.rejects(repo.recordReceipt({ ...input, clientKey: 'bad key\n' }, cx), TypeError);
+  // Claim by INSERT first; a duplicate is only read with a shared lock (no FOR UPDATE gap lock before INSERT).
+  assert(!calls.some(sql => sql.includes('FOR UPDATE')));
+  assert(calls.some(sql => sql.startsWith('SELECT request_hash') && sql.includes('FOR SHARE')));
+  await repo.finishReceipt({ ...input, response: { operation_ids: ['final'] } }, cx);
+  assert.deepEqual((await repo.recordReceipt(input, cx)).response, { operation_ids: ['final'] });
+  await assert.rejects(repo.finishReceipt({ ...input, requestHash: 'b'.repeat(64), response: {} }, cx), { code: 'IDEMPOTENCY_KEY_BUSY' });
 });
 
 test('claim skips active account and fences stale commits; unknown operation outcomes stay reconciling', async () => {
@@ -179,9 +192,6 @@ test('dispatch fence refuses a stale source tuple before journaling an attempt',
   await assert.rejects(runtime.beginOperationAttempt({ operationId: 'op', userId: 'u', accountId: 'a',
     workerId: 'worker', generation: 4 }, cx), { code: 'MAIL_EPOCH_STALE' });
   assert(!calls.some(sql => sql.includes('INSERT INTO mail_operation_attempts')));
-  await assert.rejects(runtime.finishOperationAttempt({ attemptId: 'attempt', operationId: 'op', userId: 'u',
-    accountId: 'a', workerId: 'worker', generation: 4, outcome: 'confirmed', transmission: 'yes' }, cx),
-  /verified provider evidence/);
 });
 
 test('durable scheduler uses repository claims and persists progress before success', async () => {

@@ -153,4 +153,38 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
   assert.equal(ownedResult.error,undefined, JSON.stringify(ownedResult));
   const shown=ownedResult.operations;
   assert(shown.length>0); assert(shown.every(row=>!('remote_uid' in row) && !('mail_account_id' in row)));
+  await t.test('concurrent identical requests with one Idempotency-Key admit one operation and one response', async () => {
+    // Before 0.11.1 each request took a gap lock (SELECT ... FOR UPDATE on a
+    // missing key) and then INSERTed, so same-key requests could deadlock.
+    const itemId = crypto.randomUUID();
+    await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,remote_folder,remote_uid,remote_uidvalidity)
+      VALUES (?,?,?,'test@example.test','[]','inbox','INBOX',31,9)`, [itemId, user, accountId]);
+    const key = 'synthetic-concurrent-key';
+    const results = await Promise.all(Array.from({ length: 4 }, () =>
+      service.mutateMessages(user, [itemId], { star: 1 }, undefined, { idempotencyKey: key })));
+    assert.equal(results[0].operation_ids.length, 1);
+    for (const result of results) assert.deepEqual(result, results[0]);
+    const [ops] = await pool.execute("SELECT id FROM mail_writebacks WHERE email_id=? AND action='star'", [itemId]);
+    assert.deepEqual(ops.map(row => row.id), results[0].operation_ids);
+    const [[jobs]] = await pool.execute('SELECT COUNT(*) AS n FROM mail_engine_jobs WHERE operation_id=?', [ops[0].id]);
+    assert.equal(Number(jobs.n), 1);
+    const [[receipts]] = await pool.execute('SELECT COUNT(*) AS n FROM mail_command_receipts WHERE user_id=? AND client_key=?', [user, key]);
+    assert.equal(Number(receipts.n), 1);
+    // A later retry replays the stored response without a new operation.
+    assert.deepEqual(await service.mutateMessages(user, [itemId], { star: true }, undefined, { idempotencyKey: key }), results[0]);
+    // The same key with another payload, concurrently: one is admitted, the other is refused.
+    const mixed = await Promise.allSettled([{ star: 0 }, { read: 1 }].map(changes =>
+      service.mutateMessages(user, [itemId], changes, undefined, { idempotencyKey: 'synthetic-mixed-key' })));
+    assert.equal(mixed.filter(result => result.status === 'fulfilled').length, 1);
+    const refused = mixed.find(result => result.status === 'rejected').reason;
+    assert.equal(refused.status, 409);
+    assert.equal(refused.message, 'Idempotency-Key already used for a different request');
+    assert.equal((await pool.execute('SELECT COUNT(*) AS n FROM mail_writebacks WHERE email_id=?', [itemId]))[0][0].n, 2);
+    // Accepted commands start a writeback pass; this account has no credentials,
+    // so it defers. Let it finish before the pool closes.
+    for (let i = 0; i < 100; i++) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      if (!service.isWritebackRunning()) break;
+    }
+  });
 });

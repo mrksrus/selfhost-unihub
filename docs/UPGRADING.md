@@ -5,6 +5,31 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.11.1 non-root API
+
+The Node API now runs as the unprivileged `unihub` user (uid/gid **10001**) inside
+the container. Nginx and the small process supervisor keep their current model.
+No database migration is required.
+
+- **First start changes ownership of uploads.** Volumes created by older images
+  are owned by root. On start, the container checks `/app/uploads` and, if any
+  entry is not owned by 10001, runs `chown -R` once (symlinks themselves are
+  changed, never their targets). This can take a moment on a large volume.
+  Later starts only scan and skip the change.
+- **Keep the capability list.** The supplied Compose file already grants
+  `CHOWN`, `DAC_OVERRIDE`, `SETGID` and `SETUID`; the start script needs `CHOWN`
+  and `DAC_OVERRIDE` for the handover and the supervisor needs `SETGID`/`SETUID`
+  to start the API as 10001. `no-new-privileges` stays on.
+- **Bind mounts must be writable by uid 10001.** If `/app/uploads` is a host
+  directory (instead of the `uploads_data` named volume) and the container
+  cannot change its ownership, for example on NFS with root squash, prepare it
+  on the host: `sudo chown -R 10001:10001 /path/to/uploads`. Otherwise the
+  container logs a warning and uploads, recordings, backups and mail archives
+  fail with permission errors.
+- **Running with `--user`.** If you start the container as a non-root user
+  yourself, the supervisor starts the API as that user and skips the handover;
+  Nginx then needs its own adjustments and this is not a supported setup.
+
 ## 0.10.13 durable mail engine (0.11 preview)
 
 Migrations 6 and 7 add mailbox occurrences, bounded jobs/cursors, operation attempts,

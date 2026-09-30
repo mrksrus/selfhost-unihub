@@ -54,8 +54,8 @@ test('COPYUID settlement is correlated, atomic and duplicate-safe; no raw-hash i
 });
 test('scan-first prior conflict reconciles only when source absence is evidenced', async () => {
   const f = model(); f.op.state = 'needs_attention';
-  const call = extra => settle.reconcileLegacyMove({ operationId: f.op.id, userId: 'owner', accountId: 'account',
-    evidence: { destination, source: { absent: false }, evidence: { verified: true, unique: true }, ...extra }, executor: f.cx });
+  const call = extra => settle.settleMoveEvidence({ operationId: f.op.id, userId: 'owner', accountId: 'account',
+    destination, source: { absent: false }, evidence: { verified: true, unique: true }, ...extra, executor: f.cx });
   assert.equal((await call({})).reason, 'identity_ambiguous');
   f.source.presence = 'absent';
   assert.equal((await call({})).settled, true);
@@ -69,8 +69,8 @@ test('legacy rebinding requires covered source epoch and affirmative unique iden
     if (sql.includes('SELECT presence FROM mail_remote_occurrences') && sql.includes('mailbox_id=')) return [[]];
     return execute(sql, args);
   };
-  const probe = unique => settle.reconcileLegacyMove({ operationId: 'op1', userId: 'owner', accountId: 'account',
-    evidence: { destination, source: { absent: false }, evidence: { verified: true, unique } }, executor: f.cx });
+  const probe = unique => settle.settleMoveEvidence({ operationId: 'op1', userId: 'owner', accountId: 'account',
+    destination, source: { absent: false }, evidence: { verified: true, unique }, executor: f.cx });
   assert.equal((await probe(true)).reason, 'identity_ambiguous');
   covered = true;
   assert.equal((await probe(false)).reason, 'identity_ambiguous');
@@ -84,8 +84,8 @@ test('scan settlement closes the original unresolved attempt, not a new mutation
     if (sql.includes('UPDATE mail_operation_attempts SET outcome=')) { events.push(args); return [{ affectedRows: 1 }]; }
     return original(sql, args);
   };
-  assert.equal((await settle.reconcileLegacyMove({ operationId: 'op1', userId: 'owner', accountId: 'account',
-    evidence: { destination, source: { absent: true }, evidence: { verified: true, unique: true } }, executor: f.cx })).settled, true);
+  assert.equal((await settle.settleMoveEvidence({ operationId: 'op1', userId: 'owner', accountId: 'account',
+    destination, source: { absent: true }, evidence: { verified: true, unique: true }, executor: f.cx })).settled, true);
   assert.equal(events.length, 1); assert.equal(events[0][0], 'confirmed');
   assert.equal(events[0][2], 'attempt-before-crash');
 });
@@ -238,9 +238,10 @@ test('admission commits receipt, intent and job together; exact replay never app
     execute: async (sql, args = []) => {
       history.push(sql);
       if (sql.includes('backup_restore_jobs') || sql.includes('user_settings')) return [[]];
-      if (sql.startsWith('SELECT * FROM mail_command_receipts')) return [[receipts.get(`${args[0]}:${args[1]}`)].filter(Boolean)];
-      if (sql.startsWith('INSERT INTO mail_command_receipts')) { receipts.set(`${args[0]}:${args[1]}`,
-        { request_hash: args[2], response_json: args[3] }); return [{ affectedRows: 1 }]; }
+      if (sql.startsWith('SELECT request_hash,response_json FROM mail_command_receipts')) return [[receipts.get(`${args[0]}:${args[1]}`)].filter(Boolean)];
+      if (sql.startsWith('INSERT INTO mail_command_receipts')) {
+        if (receipts.has(`${args[0]}:${args[1]}`)) throw Object.assign(new Error('Duplicate entry'), { code: 'ER_DUP_ENTRY', errno: 1062 });
+        receipts.set(`${args[0]}:${args[1]}`, { request_hash: args[2], response_json: args[3] }); return [{ affectedRows: 1 }]; }
       if (sql.startsWith('UPDATE mail_command_receipts')) {
         receipts.get(`${args[1]}:${args[2]}`).response_json = args[0]; return [{ affectedRows: 1 }]; }
       if (sql.includes('SELECT e.*,a.sync_mode,a.is_active')) return [[email]];

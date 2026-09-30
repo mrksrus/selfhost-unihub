@@ -126,7 +126,7 @@ comes after.
    *Done:* popover is used (sync panel) and kept; skeleton, toggle-variants,
    `NavLink.tsx` and 10 unused Radix packages were removed too. The main chunk
    did not change (tree-shaking already dropped them).
-9. **Remove dead mail code and duplicates.** The retired `syncMailAccountOnce`
+9. **Done (2026-09-30): Remove dead mail code and duplicates.** The retired `syncMailAccountOnce`
    (~200 lines), `withFencedMailAccountLock`, `recoverUncertainOperations`,
    `finishOperationAttempt`, `reconcileLegacyMove`, and the legacy
    `executeOperation`/`legacyReadRemote` in `mail-writebacks.js`. Merge the
@@ -134,6 +134,11 @@ comes after.
    `repository.withTransaction`, and use `repository.recordReceipt/getReceipt`
    in `mutateMessages` and the bulk-move route (the inline `SELECT … FOR UPDATE`
    then `INSERT` can deadlock on concurrent requests with the same key).
+   *Done:* removed those functions plus what only they used (`mail-server-follow.js`,
+   the in-memory `createMailSyncScheduler`, `syncMailFolder`, raw-part rebuilders);
+   receipts now claim the key with an INSERT first (`recordReceipt`/`finishReceipt`),
+   proven by a concurrent same-key MySQL test. The two `transaction()` helpers were
+   already one-line wrappers around `repository.withTransaction` and stay.
 10. **Two mail job runners.** `mail-writebacks.js runWritebacks` (in-process
     queue that claims `operation`/`reconcile` jobs) and the durable scheduler's
     `runDurableMailJob` both execute operation jobs. Consolidate on the durable
@@ -145,9 +150,12 @@ comes after.
     every startup, and the numbered migrations. Freeze the legacy code as a
     baseline, make every future change a numbered migration, and generate or
     test `01-schema.sql` against a migrated database.
-12. **Run the API as a non-root user** inside the container. Nginx already
+12. **Done (2026-09-30): Run the API as a non-root user** inside the container. Nginx already
     drops its workers to the nginx user; `service-supervisor.js` could start the
     Node API with a dedicated uid/gid, with `/app/uploads` owned by that user.
+    *Done:* the supervisor spawns the API as `unihub` (10001:10001); `start.sh`
+    chowns uploads only when ownership differs; the container smoke test checks
+    the API's uid/gid/capabilities and a root-owned legacy volume.
 13. **Split the largest backend files** by area: `api/src/services/mail.js`
     (~2,000 lines), `api/src/routes/mail.js` (~1,900), `api/src/services/backup.js`
     (~2,400).

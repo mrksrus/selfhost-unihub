@@ -1,41 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createMailSyncScheduler } = require('../src/services/mail-sync-scheduler');
-const { followMailServer } = require('../src/services/mail-server-follow');
 const { queueChanges, processPending, startWritebacks, stopWritebacks, drainWritebacks, runDueWritebacks } = require('../src/services/mail-writebacks');
 const { getDb, setDb } = require('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
-
-test('bounded FIFO sync jobs isolate accounts, expose real failure and cancel queued work', async () => {
-  const releases = new Map(), calls = [];
-  const scheduler = createMailSyncScheduler((id, signal, background, report) => {
-    calls.push(id);
-    report({ phase: 'inventory', processed: 2, total: 10 });
-    return new Promise(resolve => releases.set(id, resolve));
-  }, { concurrency: 2 });
-  const a = scheduler.enqueue('user-a');
-  const b = scheduler.enqueue('user-b');
-  const c = scheduler.enqueue('user-c');
-  assert.equal(scheduler.enqueue('user-a').alreadyRunning, true);
-  assert.equal(scheduler.state('user-c').state, 'queued');
-  await tick();
-  assert.deepEqual(calls, ['user-a', 'user-b']);
-  assert.equal(scheduler.state('user-b').processed, 2);
-  assert.equal(scheduler.cancel('user-c'), true);
-  assert.equal((await c.promise).cancelled, true);
-  releases.get('user-a')({ success: false, error: 'Auth rejected' });
-  assert.equal((await a.promise).success, false);
-  assert.equal(scheduler.state('user-a').error, 'Auth rejected');
-  assert.equal(scheduler.state('user-a').state, 'error');
-  const d = scheduler.enqueue('user-d');
-  await tick();
-  assert.deepEqual(calls, ['user-a', 'user-b', 'user-d']);
-  releases.get('user-b')({ success: true });
-  releases.get('user-d')({ success: true });
-  await Promise.all([b.promise, d.promise]);
-  assert.equal(scheduler.state('user-b').state, 'idle');
-  assert.equal(scheduler.ids().length, 0);
-});
 
 test('HTTP sync acknowledgement is prompt and status never includes another owner', async t => {
   const routePath = require.resolve('../src/routes/mail');
@@ -310,85 +277,4 @@ test('account stop synchronously aborts an active direct writeback and destroys 
   await worker;
   assert.equal(completion.state, 'cancelled');
   assert.equal(remoteCommands, 0);
-});
-
-test('new mail is durably imported before a later changing inventory blocks location metadata', async () => {
-  const imports = [], writes = [];
-  let selected = 'INBOX';
-  const connection = { openBox: async name => { selected = name; return { uidvalidity: 9 }; },
-    search: async (criteria) => criteria[0] === 'ALL'
-      ? [{ attributes: { uid: 31, flags: [] } }]
-      : [{ attributes: { uid: 31 }, raw: 'From: new@example.test\r\n\r\nnew body' }] };
-  const db = { execute: async (sql, args) => {
-    if (sql.includes('SELECT id')) return [[]];
-    writes.push({ sql, args }); return [{ affectedRows: 1 }];
-  } };
-  await assert.rejects(followMailServer({ db, connection, account: { id: 'a', user_id: 'u' },
-    folders: [{ folderName: 'INBOX', dbFolderName: 'inbox' }], listFolders: async () => ['INBOX', 'just-arrived'],
-    getUidValidity: () => 9, buildRaw: item => item.raw,
-    importMessage: async (remote, raw) => { imports.push({ remote, raw }); return { emailId: 'saved', isNew: true }; },
-  }), /Folder inventory changed/);
-  assert.equal(imports.length, 1, 'verified body is retained even though a new folder arrived');
-  assert.equal(writes.length, 0, 'no absence or location metadata used the unstable snapshot');
-});
-
-test('an arrival during SELECT/SEARCH still imports verified UIDs but defers absence', async () => {
-  const imports = [], writes = [];
-  const connection = { openBox: async () => ({ uidvalidity: 9, messages: { total: 1 } }),
-    search: async criteria => criteria[0] === 'ALL'
-      ? [{ attributes: { uid: 1, flags: [] } }, { attributes: { uid: 2, flags: [] } }]
-      : [{ attributes: { uid: criteria[0][1] }, raw: `From: x@example.test\r\n\r\nbody-${criteria[0][1]}` }] };
-  const db = { execute: async (sql, args) => {
-    if (sql.includes('SELECT id')) return [[]];
-    writes.push({ sql, args }); return [{ affectedRows: 1 }];
-  } };
-  await assert.rejects(followMailServer({ db, connection, account: { id: 'a', user_id: 'u' },
-    folders: [{ folderName: 'INBOX', dbFolderName: 'inbox' }], listFolders: async () => ['INBOX'],
-    getUidValidity: () => 9, buildRaw: item => item.raw,
-    importMessage: async (remote) => { imports.push(remote.uid); return { emailId: `saved-${remote.uid}`, isNew: true }; },
-  }), /Incomplete message inventory/);
-  assert.deepEqual(imports, [1, 2]);
-  assert.equal(writes.length, 0);
-});
-
-test('a checkpointed move restarts the snapshot after retaining safe imports', async () => {
-  const imports = [], writes = [];
-  const connection = { openBox: async () => ({ uidvalidity: 9 }), search: async criteria =>
-    criteria[0] === 'ALL' ? [{ attributes: { uid: 1, flags: [] } }]
-      : [{ attributes: { uid: 1 }, raw: 'From: x@example.test\r\n\r\nfirst' }] };
-  const db = { execute: async sql => sql.includes('SELECT id') ? [[]] : (writes.push(sql), [{ affectedRows: 1 }]) };
-  await assert.rejects(followMailServer({ db, connection, account: { id: 'a', user_id: 'u' },
-    folders: [{ folderName: 'INBOX', dbFolderName: 'inbox' }], listFolders: async () => ['INBOX'],
-    getUidValidity: () => 9, buildRaw: item => item.raw,
-    importMessage: async remote => { imports.push(remote.uid); return { emailId: 'saved', isNew: true }; },
-    checkpoint: async () => true,
-  }), { code: 'MAIL_SYNC_RESTART' });
-  assert.deepEqual(imports, [1]);
-  assert.deepEqual(writes, []);
-});
-
-test('checkpoint reads fresh flags and reuses staged raw body without repeat fetch', async () => {
-  const seen = [], imports = [], writes = [], stages = [];
-  let selected, flag = false;
-  const connection = { openBox: async name => { selected = name; return { uidvalidity: 9 }; },
-    search: async (criteria, opts) => {
-      if (criteria[0] === 'ALL') return [{ attributes: { uid: 1, flags: flag ? ['\\Seen'] : [] } }];
-      seen.push({ selected, criteria });
-      return [{ attributes: { uid: 1 }, raw: 'From: a@example.test\r\n\r\nbody' }];
-    } };
-  const db = { execute: async (sql, args) => {
-    if (sql.includes('SELECT id')) return [[]];
-    writes.push({ sql, args }); return [{ affectedRows: 1 }];
-  } };
-  const result = await followMailServer({ db, connection, account: { id: 'a', user_id: 'u' },
-    folders: [{ folderName: 'INBOX', dbFolderName: 'inbox' }], listFolders: async () => ['INBOX'],
-    getUidValidity: () => 9, buildRaw: item => item.raw,
-    importMessage: async (remote, raw) => { imports.push(raw); return { emailId: 'new', isNew: true }; },
-    checkpoint: async () => { flag = true; }, progress: status => stages.push(status.phase),
-  });
-  assert.equal(result.newEmails, 1);
-  assert.equal(seen.length, 1, 'unknown body fetched once for hash and import');
-  assert.equal(imports.length, 1);
-  assert.equal(writes[0].args[3], 1, 'confirmed read state follows fresh metadata after checkpoint');
-  assert(stages.includes('inventory') && stages.includes('importing'));
 });
