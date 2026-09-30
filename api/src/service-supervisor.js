@@ -1,8 +1,8 @@
 const { spawn } = require('node:child_process');
 
 // The image sets UNIHUB_API_UID/GID. When the supervisor runs as root (it must,
-// for Nginx to bind port 80), the API process drops to that user; libuv clears
-// supplementary groups first, which needs SETGID/SETUID but no new privileges.
+// for Nginx to bind port 80), the API process drops to that user through
+// drop-privileges.js, which needs SETGID/SETUID but no new privileges.
 function apiIdentity(env = process.env, getuid = process.getuid) {
   if (env.UNIHUB_API_UID === undefined && env.UNIHUB_API_GID === undefined) return null;
   const uid = Number(env.UNIHUB_API_UID), gid = Number(env.UNIHUB_API_GID);
@@ -54,8 +54,11 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
   signals.on('SIGTERM', onSignal);
   signals.on('SIGINT', onSignal);
   console.log('✓ Starting Node.js API server...');
-  launch(process.execPath, ['/app/api/server.js'], undefined,
-    apiUser ? { uid: apiUser.uid, gid: apiUser.gid, env: { ...process.env, HOME: '/tmp' } } : {});
+  // The wrapper clears supplementary groups, then sets gid and uid, before any
+  // API code loads; server.js stays in the command line for process lookups.
+  if (apiUser) launch(process.execPath, [require('node:path').join(__dirname, 'drop-privileges.js'),
+    String(apiUser.uid), String(apiUser.gid), '/app/api/server.js'], undefined, { env: { ...process.env, HOME: '/tmp' } });
+  else launch(process.execPath, ['/app/api/server.js']);
   startTimer = setTimeout(() => {
     launch('nginx', ['-t'], code => {
       if (code !== 0) return stop(1);

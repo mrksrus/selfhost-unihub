@@ -50,8 +50,9 @@ test('configuration failures stop the API and unresponsive children are killed a
 test('the API runs as the configured user while nginx keeps the supervisor identity', async () => {
   const h = harness({ supervisor: { apiUser: { uid: 10001, gid: 10001 } } }); await delay(15);
   const [api, check, nginx] = h.children;
-  assert.deepEqual(api.args, ['/app/api/server.js']);
-  assert.equal(api.spawnOptions.uid, 10001); assert.equal(api.spawnOptions.gid, 10001);
+  assert.deepEqual(api.args.slice(1), ['10001', '10001', '/app/api/server.js']);
+  assert.match(api.args[0], /drop-privileges\.js$/);
+  assert.equal(api.spawnOptions.uid, undefined, 'the wrapper drops groups, gid and uid itself');
   assert.equal(api.spawnOptions.env.HOME, '/tmp');
   for (const child of [check, nginx]) { assert.equal(child.command, 'nginx'); assert.equal(child.spawnOptions.uid, undefined); }
   h.signals.emit('SIGTERM'); await delay(10);
