@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MailSyncStatus } from '@/components/mail/MailSyncStatus';
+import { MailPendingChanges } from '@/components/mail/MailPendingChanges';
+import { useMailWritebacks } from '@/hooks/use-mail-writebacks';
 import { api } from '@/lib/api';
 import { mailQueryKeys, type MailWriteback } from '@/lib/mail-api';
 import { setOfflineMode } from '@/lib/offline';
@@ -11,6 +12,13 @@ vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), post: vi.fn() } }));
 const operation = (id: string, status: MailWriteback['status'], action: MailWriteback['action']): MailWriteback => ({
   id, status, action, email_id: `email-${id}`, error: 'private provider details', created_at: '2026-09-25T10:00:00Z',
 });
+
+// The panel renders the list; the page owns the single status observer.
+function MailSyncStatus({ onSettled }: { onSettled?: (ids: string[]) => void }) {
+  const status = useMailWritebacks(onSettled);
+  return <MailPendingChanges operations={status.data ?? []} unavailable={status.isError} />;
+}
+const WAITING = /changes? waiting for the server/;
 
 function setup(operations: MailWriteback[]) {
   vi.mocked(api.get).mockResolvedValue({ data: { operations } });
@@ -34,17 +42,18 @@ describe('mail server change feedback', () => {
       <QueryClientProvider client={first}><MailSyncStatus onSettled={firstSettled} /></QueryClientProvider>
       <QueryClientProvider client={second}><MailSyncStatus onSettled={secondSettled} /></QueryClientProvider>
     </>);
-    await waitFor(() => expect(screen.getAllByText(/saved in UniHub, waiting for provider confirmation/)).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByText('1 change waiting for the server')).toHaveLength(2));
     operations = [{ ...operation('shared', 'done', 'star'), state: 'confirmed' as const, is_current: true }];
     await act(async () => { await Promise.all([first.invalidateQueries({ queryKey: mailQueryKeys.writebacks }), second.invalidateQueries({ queryKey: mailQueryKeys.writebacks })]); });
     await waitFor(() => expect(firstSettled).toHaveBeenCalledWith(['email-shared']));
     expect(secondSettled).toHaveBeenCalledWith(['email-shared']);
-    expect(screen.queryByRole('region', { name: 'Server change status' })).not.toBeInTheDocument();
+    expect(screen.queryByText(WAITING)).not.toBeInTheDocument();
   });
 
   it('distinguishes reconciling MOVE from explicit rejection without exposing provider details', async () => {
     setup([{ ...operation('move', 'pending', 'move'), state: 'reconciling', can_retry: true, retry_action: 'check_outcome' },
       { ...operation('rejected', 'failed', 'star'), state: 'rejected', can_retry: false }]);
+    fireEvent.click(await screen.findByRole('button', { name: '1 change waiting for the server' }));
     expect(await screen.findByText(/checking what happened at the provider/)).toBeInTheDocument();
     expect(screen.getByText(/request rejected; no provider confirmation/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Check outcome of folder move' })).toBeEnabled();
@@ -53,10 +62,13 @@ describe('mail server change feedback', () => {
 
   it('shows pending counts and conflicts, offers retries only for failed actions, and hides provider details', async () => {
     setup([operation('pending', 'pending', 'read'), operation('failed', 'failed', 'star'), operation('conflict', 'conflict', 'move')]);
-    expect(await screen.findByText(/saved in UniHub, waiting for provider confirmation/)).toBeInTheDocument();
+    expect(await screen.findByText('2 changes need your attention')).toBeInTheDocument();
     expect(screen.getByText(/outcome uncertain; do not send this move again/)).toBeInTheDocument();
     expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
-    expect(screen.getAllByRole('button')).toHaveLength(1);
+    // The collapsed waiting list plus the only permitted action.
+    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['Retry', '1 change waiting for the server']);
+    fireEvent.click(screen.getByRole('button', { name: '1 change waiting for the server' }));
+    expect(screen.getByText(/Read status change: waiting for the server/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry star change' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/writebacks/failed/retry'));
   });
@@ -107,11 +119,12 @@ describe('mail server change feedback', () => {
 
   it('refreshes the affected open message when a pending action settles', async () => {
     const { client, onSettled } = setup([operation('pending', 'pending', 'read')]);
-    await screen.findByText(/waiting for provider confirmation/);
+    await screen.findByText(WAITING);
     vi.mocked(api.get).mockResolvedValue({ data: { operations: [] } });
     await client.invalidateQueries({ queryKey: mailQueryKeys.writebacks });
     await waitFor(() => expect(onSettled).toHaveBeenCalledWith(['email-pending']));
-    expect(screen.queryByRole('region', { name: 'Server change status' })).not.toBeInTheDocument();
+    expect(screen.queryByText(WAITING)).not.toBeInTheDocument();
+    expect(screen.getByText('All your changes are confirmed by the server.')).toBeInTheDocument();
   });
 
   it('shows a retry failure without automatically repeating the command', async () => {
@@ -129,7 +142,7 @@ describe('mail server change feedback', () => {
     vi.mocked(api.get).mockResolvedValue({ data: { operations: [operation('quick', 'done', 'star')] } });
     await client.invalidateQueries({ queryKey: mailQueryKeys.writebacks });
     await waitFor(() => expect(onSettled).toHaveBeenCalledWith(['email-quick']));
-    expect(screen.queryByRole('region', { name: 'Server change status' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Star change/)).not.toBeInTheDocument();
     onSettled.mockClear();
     await client.invalidateQueries({ queryKey: mailQueryKeys.writebacks });
     expect(onSettled).not.toHaveBeenCalled();
@@ -139,7 +152,7 @@ describe('mail server change feedback', () => {
     setOfflineMode(true);
     setup([]);
     expect(api.get).not.toHaveBeenCalled();
-    expect(screen.queryByRole('region', { name: 'Server change status' })).not.toBeInTheDocument();
+    expect(screen.queryByText(WAITING)).not.toBeInTheDocument();
   });
 
   it.each(['read', 'star', 'move'] as const)('refreshes %s outcomes once without recursively polling or fetching unrelated folders', async action => {
@@ -152,7 +165,7 @@ describe('mail server change feedback', () => {
       return null;
     }
     render(<QueryClientProvider client={client}><RelatedMailViews /></QueryClientProvider>);
-    await screen.findByText(/waiting for provider confirmation/);
+    await screen.findByText(WAITING);
     await waitFor(() => expect(fetchFolders).toHaveBeenCalledTimes(1));
     expect(fetchList).toHaveBeenCalledTimes(1);
     expect(api.get).toHaveBeenCalledTimes(1);

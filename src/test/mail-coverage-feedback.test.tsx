@@ -1,32 +1,47 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, expect, it, vi } from 'vitest';
-import { MailSyncJobs } from '@/components/mail/MailSyncJobs';
+import { MailSyncControl } from '@/components/mail/MailSyncControl';
 import type { MailSyncJob } from '@/hooks/use-mail-sync-jobs';
+
+vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn() } }));
 
 const base: MailSyncJob = { account_id: 'a1', state: 'running', phase: 'history', processed: 8, total: null,
   started_at: null, updated_at: null, error: null };
 const accounts = [{ id: 'a1', email_address: 'owner@example.test', display_name: 'Owner', provider: 'custom', is_active: true, last_synced_at: null }];
-const view = (job: MailSyncJob) => render(<MailSyncJobs accounts={accounts} jobs={[job]} error={false} cancelling={new Set()} onCancel={vi.fn()} />);
+const view = (job: MailSyncJob) => {
+  render(<QueryClientProvider client={new QueryClient()}>
+    <MailSyncControl accounts={accounts} viewAccountIds={['a1']} jobs={[job]} jobsError={false} operations={[]} operationsError={false}
+      syncing={new Set()} cancelling={new Set()} onSync={vi.fn()} onCancel={vi.fn()} panel="default" onPanelChange={vi.fn()} touch={false} />
+  </QueryClientProvider>);
+  return within(screen.getByRole('region', { name: 'Accounts' }));
+};
 
-describe('coverage-aware sync feedback', () => {
+describe('coverage-aware sync feedback in the sync panel', () => {
   it('distinguishes recent coverage from pending history and bodies with unknown total', () => {
-    view({ ...base, coverage: { recent: { current: true }, history: { complete: false }, bodies: { complete: false } } });
-    expect(screen.getByText(/Inbox current/)).toBeInTheDocument();
-    expect(screen.getByText(/Older mail not fully covered/)).toBeInTheDocument();
-    expect(screen.getByText(/Bodies still downloading/)).toBeInTheDocument();
-    expect(screen.getByText(/8 processed/)).toBeInTheDocument();
-    expect(screen.queryByText(/Sync complete/)).not.toBeInTheDocument();
+    const panel = view({ ...base, coverage: { recent: { current: true }, history: { complete: false }, bodies: { complete: false } } });
+    expect(panel.getByText('Syncing · history · 8 processed')).toBeInTheDocument();
+    expect(panel.getByText(/Inbox current/)).toBeInTheDocument();
+    expect(panel.getByText(/Older mail not fully covered/)).toBeInTheDocument();
+    expect(panel.getByText(/Bodies still downloading/)).toBeInTheDocument();
+    expect(panel.queryByText(/Up to date/)).not.toBeInTheDocument();
   });
   it('never infers complete history from an idle job or a covered UID window', () => {
-    view({ ...base, state: 'idle', coverage: { recent: { /* window metadata is not freshness */ }, history: { complete: false } } });
-    expect(screen.getByText(/No sync job running/)).toBeInTheDocument();
-    expect(screen.getByText(/Older mail not fully covered/)).toBeInTheDocument();
-    expect(screen.queryByText(/Inbox current/)).not.toBeInTheDocument();
+    const panel = view({ ...base, state: 'idle', coverage: { recent: { /* window metadata is not freshness */ }, history: { complete: false } } });
+    expect(panel.getByText('Not synced yet')).toBeInTheDocument();
+    expect(panel.getByText(/Older mail not fully covered/)).toBeInTheDocument();
+    expect(panel.queryByText(/Inbox current/)).not.toBeInTheDocument();
+    expect(panel.queryByText(/Up to date/)).not.toBeInTheDocument();
+    expect(panel.getByRole('button', { name: 'Sync owner@example.test now' })).toBeEnabled();
+  });
+  it('reports up to date only when recent and history coverage are both complete', () => {
+    const panel = view({ ...base, state: 'idle', updated_at: new Date(Date.now() - 120000).toISOString(),
+      coverage: { recent: { current: true }, history: { complete: true }, bodies: { complete: true } } });
+    expect(panel.getByText('Up to date · 2 minutes ago')).toBeInTheDocument();
   });
   it('shows paused provider state and requested cancellation without claiming completion', () => {
-    view({ ...base, state: 'paused', phase: 'auth', error: 'Credentials needed' });
-    expect(screen.getByText(/Waiting for provider or credentials/)).toBeInTheDocument();
-    expect(screen.getByText(/Credentials needed/)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Cancel sync/ })).not.toBeInTheDocument();
+    const panel = view({ ...base, state: 'paused', phase: 'auth', error: 'Credentials needed' });
+    expect(panel.getByText('Waiting · Credentials needed')).toBeInTheDocument();
+    expect(panel.queryByRole('button', { name: /Cancel sync/ })).not.toBeInTheDocument();
   });
 });

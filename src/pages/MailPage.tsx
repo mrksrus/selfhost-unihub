@@ -1,7 +1,7 @@
 import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
-import { MailSyncStatus } from '@/components/mail/MailSyncStatus';
-import { MailSyncJobs } from '@/components/mail/MailSyncJobs';
+import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
 import { useMailSyncJobs } from '@/hooks/use-mail-sync-jobs';
+import { useMailWritebacks } from '@/hooks/use-mail-writebacks';
 import { useMailAccountSelection } from '@/hooks/use-mail-account-selection';
 import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
 import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
@@ -60,7 +60,6 @@ import {
   Archive,
   Mail,
   Loader2,
-  RefreshCw,
   PenSquare,
   MoreVertical,
   X,
@@ -391,6 +390,8 @@ const MailPage = () => {
 
   const { data: accounts = [], isLoading: accountsLoading } = useMailAccounts();
   const { jobs: syncJobs, requestSync, syncingAccountIds, requestCancel, cancellingAccountIds } = useMailSyncJobs(accounts);
+  const writebacks = useMailWritebacks(refreshSettledEmail);
+  const [syncPanel, setSyncPanel] = useState<SyncPanelFocus | null>(null);
   const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
   const { data: mailFolders = [] } = useMailFolders();
 
@@ -729,7 +730,7 @@ const MailPage = () => {
       setSelectedEmails(new Set());
       toast({
         title: pending ? `Trash move saved for ${count} email(s)` : `Trash request accepted for ${count} email(s)`,
-        description: pending ? 'Server changes are waiting to sync. Check the server change status above your mail.' : undefined,
+        description: pending ? 'Server changes are waiting to sync. The sync button shows their progress.' : undefined,
         action: pending ? undefined : (
           <ToastAction
             altText="Undo move to trash"
@@ -763,7 +764,7 @@ const MailPage = () => {
       void invalidateMailQueries(queryClient);
       setSelectedEmails(new Set());
       toast({ title: `Move accepted for ${variables.emailIds.length} email(s)`,
-        description: data?.sync_pending !== false ? 'Provider confirmation is pending. Check server change status for the outcome.' : 'The local request was accepted; provider confirmation is not implied.' });
+        description: data?.sync_pending !== false ? 'Provider confirmation is pending. The sync button shows the outcome.' : 'The local request was accepted; provider confirmation is not implied.' });
     },
     onError: (error: Error) => {
       toast({ title: error instanceof UnknownMailAcceptance ? 'Move outcome unknown — do not resend' : 'Move request rejected', description: error.message, variant: 'destructive' });
@@ -2035,9 +2036,7 @@ const MailPage = () => {
             {' '}Recent mail and older history have separate coverage. Pending read, star and connected-folder moves show your requested state while UniHub checks the provider; uncertain moves are not blindly repeated. Missing server messages stay as local copies.
           </div>
         )}
-        <MailSyncStatus onSettled={refreshSettledEmail} />
-        <MailSyncJobs accounts={accounts} jobs={syncJobs.data ?? []} error={syncJobs.isError}
-          cancelling={cancellingAccountIds} onCancel={requestCancel} />
+        <MailSyncAttentionLine operations={writebacks.data ?? []} onReview={() => setSyncPanel('attention')} />
         {selectedAccount === LEGACY_ACCOUNT && (
           <div className="border-b border-border p-3 space-y-2 text-sm">
             <p>These messages retain their original folders. Some need a receiving account; others await a successful server check. Select messages to recover them. Their original mail source is preserved.</p>
@@ -2240,16 +2239,11 @@ const MailPage = () => {
                 </Button>
               </>
             )}
-            <Button 
-              variant="ghost" 
-              size="icon"
-              onClick={() => activeMailAccountId && requestSync(activeMailAccountId)}
-              disabled={!activeMailAccountId || syncingAccountIds.has(activeMailAccountId)}
-              title="Request mail sync"
-              aria-label="Request mail sync"
-            >
-              <RefreshCw className={`h-4 w-4 ${activeMailAccountId && syncingAccountIds.has(activeMailAccountId) ? 'animate-spin' : ''}`} />
-            </Button>
+            <MailSyncControl accounts={accounts}
+              viewAccountIds={activeMailAccountId ? [activeMailAccountId] : accounts.filter(account => account.is_active).map(account => account.id)}
+              jobs={syncJobs.data ?? []} jobsError={syncJobs.isError} operations={writebacks.data ?? []} operationsError={writebacks.isError}
+              syncing={syncingAccountIds} cancelling={cancellingAccountIds} onSync={requestSync} onCancel={requestCancel}
+              panel={syncPanel} onPanelChange={setSyncPanel} touch={isMobile} />
           </div>
         </div>
 
