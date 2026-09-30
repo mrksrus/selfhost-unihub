@@ -2,7 +2,7 @@
 
 ## 0.10.5: existing-folder reconciliation
 
-The [0.10.5 migration](RELEASE_0.10.5.md) supersedes the Legacy shared behavior
+The [0.10.5 migration](../CHANGELOG.md#0105) supersedes the Legacy shared behavior
 below. Existing server-folder mappings and exact display-name matches connect
 without creating provider folders. Local-only messages are filed in a uniquely
 matched To account's Inbox; unresolved mail appears under the Legacy account

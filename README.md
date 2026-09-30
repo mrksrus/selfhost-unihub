@@ -4,7 +4,7 @@ Your mail, contacts, calendar, tasks, notes and recordings in one self-hosted we
 UniHub has a black-and-blue interface, works on desktop and mobile, and can be
 installed as a PWA. Your server stores the application data.
 
-**[Install UniHub](docs/INSTALLATION.md)** · **[Upgrade an existing installation](docs/UPGRADING.md)** · **[Releases](https://github.com/mrksrus/selfhost-unihub/releases)** · **[Report a problem](https://github.com/mrksrus/selfhost-unihub/issues)**
+**[Install UniHub](docs/INSTALLATION.md)** · **[Upgrade an existing installation](docs/UPGRADING.md)** · **[Changelog](CHANGELOG.md)** · **[Releases](https://github.com/mrksrus/selfhost-unihub/releases)** · **[Report a problem](https://github.com/mrksrus/selfhost-unihub/issues)**
 
 Free for private noncommercial self-hosting, including multi-user home labs.
 Company/business use, including internal operations, requires a separate paid licence;
