@@ -4,6 +4,7 @@ import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/comp
 import { useMailCompose } from '@/hooks/use-mail-compose';
 import { MailFolderDialogs } from '@/components/mail/MailFolderDialogs';
 import { MailReader } from '@/components/mail/MailReader';
+import { MailAccountList, MailSidebar } from '@/components/mail/MailSidebar';
 import { MailAccountRemovalDialogs } from '@/components/mail/MailAccountRemovalDialogs';
 import { useMailAccountRemoval } from '@/hooks/use-mail-account-removal';
 import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
@@ -187,186 +188,25 @@ const MailPage = () => {
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden">
-      {/* Mobile Sidebar Overlay */}
-      {isMobile && mobileSidebarOpen && (
-        <div 
-          className="fixed inset-0 bg-black/50 z-40"
-          onClick={() => setMobileSidebarOpen(false)}
-        />
-      )}
-      
-      {/* Sidebar */}
-      <div className={
-        isMobile
-          ? `fixed left-0 top-0 h-full min-h-0 w-56 z-50 transform overflow-hidden transition-transform duration-200 border-r border-border bg-card flex flex-col ${
-              mobileSidebarOpen ? 'translate-x-0' : '-translate-x-full'
-            }`
-          : `${sidebarCollapsed ? 'w-16' : 'w-64'} shrink-0 h-full min-h-0 overflow-hidden border-r border-border bg-card flex flex-col transition-all duration-200`
-      }>
-        {/* Compose Button */}
-        <div className={`p-4 flex items-center gap-2 ${(sidebarCollapsed && !isMobile) ? 'flex-col' : ''}`}>
-          {isMobile ? (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="shrink-0"
-              onClick={() => setMobileSidebarOpen(false)}
-              title="Close sidebar"
-              aria-label="Close account and folder navigation"
-            >
-              <X className="h-4 w-4" />
+      <MailSidebar isMobile={isMobile} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
+        mobileOpen={mobileSidebarOpen} onMobileOpenChange={setMobileSidebarOpen} onCompose={compose.openCompose}>
+        <MailAccountList accounts={accounts} loading={accountsLoading} selectedAccount={selectedAccount} legacyCount={legacyCount}
+          compact={sidebarCollapsed && !isMobile}
+          addAccount={<MailAccountDialog editor={accountEditor} trigger={
+            <Button variant="ghost" size="icon" className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`} title={(sidebarCollapsed && !isMobile) ? 'Add Account' : undefined}>
+              <Plus className="h-4 w-4" />
             </Button>
-          ) : (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="shrink-0"
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              aria-label={sidebarCollapsed ? 'Expand account and folder navigation' : 'Collapse account and folder navigation'}
-            >
-              {sidebarCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-            </Button>
-          )}
-          <Button 
-            className="w-full" 
-            onClick={compose.openCompose}
-            title={sidebarCollapsed && !isMobile ? 'Compose' : undefined}
-          >
-            <PenSquare className={`h-4 w-4 ${(sidebarCollapsed && !isMobile) ? '' : 'mr-2'}`} />
-            {(!sidebarCollapsed || isMobile) && 'Compose'}
-          </Button>
-        </div>
-
-        {/* Accounts */}
-        <div role="region" aria-label="Mail accounts" className="shrink-0 max-h-[40%] overflow-y-auto">
-          <div className={`px-4 pb-2 flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'justify-between'}`}>
-            {(!sidebarCollapsed || isMobile) && (
-              <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Accounts
-              </span>
-            )}
-            <MailAccountDialog editor={accountEditor} trigger={
-              <Button variant="ghost" size="icon" className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`} title={(sidebarCollapsed && !isMobile) ? 'Add Account' : undefined}>
-                <Plus className="h-4 w-4" />
-              </Button>
-            } />
-          </div>
-          
-          <div className="px-2 space-y-1">
-            {accountsLoading ? (
-              <div className="flex justify-center py-4">
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-              </div>
-            ) : accounts.length === 0 ? (
-              <div className="px-3 py-4 text-center">
-                <Mail className="h-8 w-8 mx-auto text-muted-foreground/50 mb-2" />
-                <p className="text-sm text-muted-foreground">No accounts yet</p>
-              </div>
-            ) : (
-              <>
-                <div className={`relative group ${(sidebarCollapsed && !isMobile) ? 'flex justify-center' : ''}`}>
-                  <button
-                    onClick={() => {
-                      setSelectedAccount(ALL_ACCOUNTS);
-                      if (isMobile) setMobileSidebarOpen(false);
-                    }}
-                    className={`w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
-                      selectedAccount === ALL_ACCOUNTS
-                        ? 'bg-mail/10 text-mail font-medium'
-                        : 'text-muted-foreground hover:bg-muted'
-                    }`}
-                    title={(sidebarCollapsed && !isMobile) ? 'All accounts' : undefined}
-                  >
-                    <div className="w-8 h-8 rounded-full bg-mail/10 flex items-center justify-center text-mail text-xs font-medium shrink-0">
-                      A
-                    </div>
-                    {(!sidebarCollapsed || isMobile) && (
-                      <div className="flex-1 min-w-0 text-left">
-                        <p className="truncate">All accounts</p>
-                        <p className="text-xs text-muted-foreground truncate">Combined mailbox</p>
-                      </div>
-                    )}
-                  </button>
-                </div>
-                <button type="button"
-                  onClick={() => { setSelectedAccount(LEGACY_ACCOUNT); setSelectedFolder(ALL_MAIL); if (isMobile) setMobileSidebarOpen(false); }}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${selectedAccount === LEGACY_ACCOUNT ? 'bg-mail/10 text-mail' : 'text-muted-foreground hover:bg-muted'}`}
-                  title="Legacy: unresolved mail and mail awaiting a successful server folder check">
-                  <FolderOpen className="h-5 w-5 shrink-0" />
-                  {(!sidebarCollapsed || isMobile) && <span>Legacy ({legacyCount})</span>}
-                </button>
-                {accounts.map((account) => (
-                  <div key={account.id} className={`relative group ${(sidebarCollapsed && !isMobile) ? 'flex justify-center' : ''}`}>
-                    <button
-                      onClick={() => {
-                        setSelectedAccount(account.id);
-                        if (isMobile) setMobileSidebarOpen(false);
-                      }}
-                      className={`w-full flex items-center ${(sidebarCollapsed && !isMobile) ? 'justify-center' : 'gap-3'} px-3 py-2 rounded-lg text-sm transition-colors ${
-                        selectedAccount === account.id
-                          ? 'bg-mail/10 text-mail font-medium'
-                          : 'text-muted-foreground hover:bg-muted'
-                      }`}
-                      title={(sidebarCollapsed && !isMobile) ? (account.display_name || account.email_address) : undefined}
-                    >
-                      <div className="w-8 h-8 rounded-full bg-mail/10 flex items-center justify-center text-mail text-xs font-medium shrink-0">
-                        {account.unread_count && account.unread_count > 0 && (
-                          <motion.span
-                            className="absolute -top-0.5 -right-0.5 h-2.5 w-2.5 rounded-full bg-mail"
-                            animate={{ opacity: [0.4, 1, 0.4], scale: [0.9, 1.2, 0.9] }}
-                            transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
-                          />
-                        )}
-                        {account.email_address[0].toUpperCase()}
-                      </div>
-                      {(!sidebarCollapsed || isMobile) && (
-                        <div className="flex-1 min-w-0 text-left">
-                          <p className="truncate">{account.display_name || account.email_address}</p>
-                          <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
-                          {(account.disconnected_at || !account.is_active) && <p className="text-xs text-warning">Disconnected · local mail retained</p>}
-                          {getServerDeleteStatus(account) && (
-                            <p className="text-xs text-destructive truncate">{getServerDeleteStatus(account)}</p>
-                          )}
-                        </div>
-                      )}
-                    </button>
-                    {(!sidebarCollapsed || isMobile) && (
-                      <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            accountEditor.startEdit(account);
-                          }}
-                        >
-                          <Edit className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-destructive hover:text-destructive"
-                          title={account.disconnected_at ? 'Preview permanent purge' : 'Disconnect account and retain mail'}
-                          aria-label={account.disconnected_at ? `Preview purge for ${account.email_address}` : `Disconnect ${account.email_address}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (account.disconnected_at) void accountRemoval.openPurgePreview(account.id);
-                            else accountRemoval.requestDisconnect(account.id);
-                          }}
-                        >
-                          {account.disconnected_at ? <Trash2 className="h-4 w-4" /> : <X className="h-4 w-4" />}
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </>
-            )}
-          </div>
-        </div>
-
+          } />}
+          onSelect={id => {
+            setSelectedAccount(id);
+            if (id === LEGACY_ACCOUNT) setSelectedFolder(ALL_MAIL);
+            if (isMobile) setMobileSidebarOpen(false);
+          }}
+          onEdit={accountEditor.startEdit}
+          onRemove={account => {
+            if (account.disconnected_at) void accountRemoval.openPurgePreview(account.id);
+            else accountRemoval.requestDisconnect(account.id);
+          }} />
         <MailFolderNavigation
           folders={folderFilters}
           systemIds={systemFolders.map(folder => folder.id)}
@@ -377,7 +217,7 @@ const MailPage = () => {
           onSelect={id => { setSelectedFolder(id); if (isMobile) setMobileSidebarOpen(false); }}
           onManage={() => setFolderDialogOpen(true)}
         />
-      </div>
+      </MailSidebar>
 
       {/* Main Content */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
