@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MailPage from '@/pages/MailPage';
 import { api } from '@/lib/api';
 import { setOfflineMode } from '@/lib/offline';
+import { applyMailPageWaitBudget, MAIL_PAGE_TEST_TIMEOUT } from '@/test/helpers/mail-page-budget';
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -117,7 +118,9 @@ function getComposeEditor() {
   return screen.getAllByRole('textbox').find(element => element.getAttribute('aria-multiline') === 'true');
 }
 
-describe('MailPage UI regressions', () => {
+applyMailPageWaitBudget();
+
+describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
