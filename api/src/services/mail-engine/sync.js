@@ -6,6 +6,7 @@ const { uint32, DEFAULT_MAX_BYTES } = require('./content');
 
 const WINDOW = 128; // UID-span, not offset or message count; one fetch has <=128 items.
 const STREAMS = ['recent', 'flags', 'history', 'presence'];
+const SWEEP_THROTTLE_MINUTES = 15;
 function cancelled(signal) {
   if (signal?.aborted) throw Object.assign(new Error('Mail sync cancelled; committed slices remain available'), { code: 'MAIL_SYNC_CANCELLED' });
 }
@@ -244,7 +245,7 @@ async function scanMailboxSlice({ db, connection, account, folder, stream = 'rec
         generation: job.worker_generation }, executor);
       const [reset] = await executor.execute(`UPDATE mail_engine_cursors SET covered_through = 0, sweep_generation = sweep_generation + 1
         WHERE mailbox_id = ? AND stream = ? AND user_id = ? AND mail_account_id = ? AND uidvalidity = ?
-          AND covered_through >= ?${manualRefresh ? '' : ' AND last_covered_at < UTC_TIMESTAMP() - INTERVAL 15 MINUTE'}`,
+          AND covered_through >= ?${manualRefresh ? '' : ` AND last_covered_at < UTC_TIMESTAMP() - INTERVAL ${SWEEP_THROTTLE_MINUTES} MINUTE`}`,
       [mailbox.id, stream, account.user_id, account.id, epoch, priorUpper]);
       if (manualRefresh && reset.affectedRows !== 1) throw new Error('Manual sweep cursor changed; retry without losing refresh intent');
       if (manualRefresh) refreshPending = false;
@@ -281,4 +282,18 @@ async function scanMailboxSlice({ db, connection, account, folder, stream = 'rec
     refreshPending, more: targetUid === null && (window.end < upper || refreshPending) };
 }
 
-module.exports = { WINDOW, STREAMS, windowFor, validateWindowReply, scanMailboxSlice, gmailCapable, upperBoundary, snapshotRevisions };
+// A background flags/presence job over a sweep completed within the throttle
+// would only re-read UIDs that 'recent' already observes. Decide from the
+// durable cursor before any transport is opened; manual refresh never skips.
+async function sweepThrottled(db, { userId, accountId, mailboxId, stream }) {
+  if (!['flags', 'presence'].includes(stream)) return false;
+  const [rows] = await db.execute(`SELECT c.mailbox_id FROM mail_engine_cursors c
+    JOIN mail_remote_mailboxes m ON m.id = c.mailbox_id AND m.uidvalidity = c.uidvalidity AND m.state = 'active'
+    WHERE c.mailbox_id = ? AND c.stream = ? AND c.user_id = ? AND c.mail_account_id = ? AND c.covered_through > 0
+      AND c.covered_through >= CAST(JSON_UNQUOTE(JSON_EXTRACT(c.coverage_json, '$.upper')) AS UNSIGNED)
+      AND c.last_covered_at >= UTC_TIMESTAMP() - INTERVAL ${SWEEP_THROTTLE_MINUTES} MINUTE LIMIT 1`,
+  [mailboxId, stream, userId, accountId]);
+  return rows.length > 0;
+}
+
+module.exports = { WINDOW, STREAMS, SWEEP_THROTTLE_MINUTES, sweepThrottled, windowFor, validateWindowReply, scanMailboxSlice, gmailCapable, upperBoundary, snapshotRevisions };

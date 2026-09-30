@@ -3,19 +3,30 @@
 // whole worker would release its account lock while its continuation can write.
 const { installConditionalStore } = require('./mail-imap-conditional-store');
 const IMAP_COMMAND_TIMEOUT_MS = 120000;
-const guardedRuns = new WeakMap();
+const guards = new WeakMap();
 
+// Wrapping is installed once per transport. A pooled transport handed to the
+// next job is rebound to that job's signal; the previous listener is removed.
 function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIMEOUT_MS } = {}) {
+  const existing = guards.get(connection);
+  if (existing) { existing.bind(signal); return connection; }
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) throw new TypeError('Invalid IMAP command deadline');
   installConditionalStore(connection.imap);
   const pending = new Set();
-  let stopped = null;
+  let stopped = null, bound = null;
   const abortError = () => Object.assign(new Error('Mail sync cancelled; completed messages are retained.'), { code: 'MAIL_SYNC_CANCELLED' });
   const onAbort = () => stop(abortError());
+  function bind(next) {
+    if (stopped) return;
+    bound?.removeEventListener('abort', onAbort);
+    bound = next || null;
+    bound?.addEventListener('abort', onAbort, { once: true });
+    if (bound?.aborted) onAbort();
+  }
   function stop(error) {
     if (stopped) return;
     stopped = error;
-    signal?.removeEventListener('abort', onAbort);
+    bound?.removeEventListener('abort', onAbort);
     // Destroy, not LOGOUT: end() queues behind the very command that stalled.
     // Mark terminal first so neither late replies nor error events can dispatch
     // another command. Reject only the network waits; the worker still unwinds
@@ -45,7 +56,7 @@ function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIME
     });
   }
   // Streaming FETCH has no callback wrapper; share this connection's deadline.
-  guardedRuns.set(connection, run);
+  guards.set(connection, { run, bind, get stopped() { return !!stopped; }, get pending() { return pending.size; } });
   for (const method of ['getBoxes', 'openBox', 'search']) {
     if (typeof connection[method] !== 'function') continue;
     const original = connection[method].bind(connection);
@@ -66,15 +77,19 @@ function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIME
   connection.on('close', () => stop(new Error('IMAP connection closed unexpectedly')));
   connection.on('end', () => stop(new Error('IMAP connection ended unexpectedly')));
   connection.end = () => stop(new Error('IMAP connection closed'));
-  signal?.addEventListener('abort', onAbort, { once: true });
-  if (signal?.aborted) onAbort();
+  bind(signal);
   return connection;
 }
 
 function runGuardedImap(connection, start) {
-  const run = guardedRuns.get(connection);
-  if (!run) throw new Error('A guarded IMAP connection is required');
-  return run(start);
+  const guard = guards.get(connection);
+  if (!guard) throw new Error('A guarded IMAP connection is required');
+  return guard.run(start);
+}
+// Reusable only if never stopped and no guarded wait is outstanding.
+function imapGuardIdle(connection) {
+  const guard = guards.get(connection);
+  return !!guard && !guard.stopped && guard.pending === 0;
 }
 
-module.exports = { guardImapConnection, runGuardedImap, IMAP_COMMAND_TIMEOUT_MS };
+module.exports = { guardImapConnection, runGuardedImap, imapGuardIdle, IMAP_COMMAND_TIMEOUT_MS };

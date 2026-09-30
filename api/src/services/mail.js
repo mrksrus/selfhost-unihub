@@ -1,6 +1,8 @@
 const { withMailAccountLock } = require('./mail-account-lock');
 const { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS } = require('./mail-sync-scheduler');
 const { guardImapConnection } = require('./mail-imap-guard');
+const { acquireImapConnection, releaseImapConnection, evictImapConnections } = require('./mail-engine/connection-pool');
+const { operationDue, processOperationBatch } = require('./mail-engine/operation-batch');
 const { followMailServer, checkCancelled } = require('./mail-server-follow');
 const { reconcileAccountFolders } = require('./mail-folder-reconciliation');
 const crypto = require('crypto');
@@ -77,6 +79,7 @@ async function stopMailAccountWork(accountId, reason = 'Account stopped') {
   await require('./mail-engine/runtime').pauseAccount({ userId: accounts[0].user_id, accountId: key, reason });
   mailDeleteStopRequests.add(key);
   durableScheduler.interruptAccount(key);
+  evictImapConnections(key);
   // The direct writeback runner owns a separate guarded transport; abort it
   // after the generation fence, never wait for it while holding this call.
   require('./mail-writebacks').stopWritebacks?.(key);
@@ -1618,12 +1621,21 @@ async function runRecoveredReconcileJob({ job, account, connection, signal, repo
   }
   return { success: false, error: 'Unsupported reconciliation action' };
 }
+// Jobs that provably have no provider work finish before any transport opens.
+async function durableJobIdle(job, account) {
+  if (job.kind === 'operation' && job.operation_id) return !await operationDue(account, job.operation_id);
+  if (['flags', 'presence'].includes(job.kind) && job.mailbox_id && Number(job.manual_refresh) !== 1)
+    return require('./mail-engine/sync').sweepThrottled(db, { userId: account.user_id, accountId: account.id,
+      mailboxId: job.mailbox_id, stream: job.kind });
+  return false;
+}
 async function runDurableMailJob(job, signal, report) {
   const runtime = require('./mail-engine/runtime');
   const { scanMailboxSlice } = require('./mail-engine/sync');
   const { processBodySlice } = require('./mail-engine/content');
   const accountId = job.mail_account_id;
-  let connection;
+  let connection, outcome, threw = true;
+  const done = value => { outcome = value; threw = false; return value; };
   try {
     const [accounts] = await db.execute('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, job.user_id]);
     const account = accounts[0];
@@ -1635,11 +1647,11 @@ async function runDurableMailJob(job, signal, report) {
       generation: Number(job.worker_generation) });
     const config = await buildImapConnectionConfig(account);
     if (!config) return { success: false, error: 'Mail credentials unavailable' };
-    connection = guardImapConnection(await imaps.connect(config), { signal });
-    connection.on('error', () => {});
+    if (await durableJobIdle(job, account)) return { success: true, more: false, skipped: true };
+    connection = await acquireImapConnection(account, config, { signal });
     checkCancelled(signal);
     if (job.kind === 'reconcile')
-      return await runRecoveredReconcileJob({ job, account, connection, signal, report });
+      return done(await runRecoveredReconcileJob({ job, account, connection, signal, report }));
     if (job.kind === 'sync') {
       const specialUses = new Map();
       const names = await listAvailableImapFolders(connection, specialUses, true);
@@ -1667,14 +1679,14 @@ async function runDurableMailJob(job, signal, report) {
         }
       }
       // Stream jobs select a single mapped mailbox in account-scoped rounds.
-      return { success: true, started: true, folders: registered.length };
+      return done({ success: true, started: true, folders: registered.length });
     }
     if (job.kind === 'operation') {
       if (account.sync_mode !== 'sync') return { success: false, error: 'Provider writes disabled in Download mode' };
-      const result = await require('./mail-engine/operations').processDueOperations(account, connection, {
+      const result = await processOperationBatch(account, connection, {
         workerGeneration: Number(job.worker_generation), workerId: job.lease_owner, jobId: job.id,
-        operationId: job.operation_id, signal });
-      return { success: !result.connectionFailed, more: false, ...result };
+        operationId: job.operation_id, signal }, { process: require('./mail-engine/operations').processDueOperations });
+      return done({ success: !result.connectionFailed, more: false, ...result });
     }
     if (!['recent', 'flags', 'history', 'presence', 'body'].includes(job.kind))
       return { success: false, error: 'Unsupported mail job kind' };
@@ -1695,11 +1707,13 @@ async function runDurableMailJob(job, signal, report) {
       ? await processBodySlice({ db, account, connection, folder, mailboxId: mailbox.id, signal, job, report })
       : await scanMailboxSlice({ db, account, connection, folder, stream: job.kind, signal, job, report,
         manualRefresh: Number(job.manual_refresh) === 1 });
-    return { success: true, more: result.more, ...result };
+    return done({ success: true, more: result.more, ...result });
   } catch (error) {
     if (signal.aborted || error.code === 'MAIL_SYNC_CANCELLED') return { success: false, cancelled: true };
     throw error;
-  } finally { if (connection) connection.end(); }
+  } finally {
+    if (connection) releaseImapConnection(connection, { reusable: !threw && outcome?.success === true && !signal.aborted });
+  }
 }
 
 durableScheduler = createDurableMailScheduler(runDurableMailJob, { onState: state => {
@@ -1753,6 +1767,30 @@ async function syncMailAccount(accountId, options = {}) {
   if (!id) return { success: false, error: 'Account ID required' };
   const job = await scheduleMailAccountSync(id, options);
   return job.promise;
+}
+
+// Periodic cadence. Each tick only follows INBOX arrivals ('recent', usually on
+// a parked session). Folder discovery and its per-folder recent/flags/history/
+// presence fan-out run at most every MAIL_DISCOVERY_INTERVAL_SECONDS, or again
+// after a failed pass. Manual Sync stays immediate and complete.
+const MAIL_DISCOVERY_INTERVAL_SECONDS = 5 * 60;
+async function schedulePeriodicMailWork(accountId, { executor = db, scheduler = durableScheduler } = {}) {
+  const id = normalizeMailAccountId(accountId);
+  if (!id) throw new Error('Account ID required');
+  const [accounts] = await executor.execute('SELECT user_id FROM mail_accounts WHERE id = ?', [id]);
+  if (!accounts.length) throw new Error('Mail account not found');
+  const userId = accounts[0].user_id;
+  const [[discovery]] = await executor.execute(`SELECT COUNT(*) AS n FROM mail_engine_jobs
+    WHERE user_id = ? AND mail_account_id = ? AND kind = 'sync' AND (state IN ('queued','running')
+      OR (state = 'idle' AND completed_at >= UTC_TIMESTAMP() - INTERVAL ? SECOND))`, [userId, id, MAIL_DISCOVERY_INTERVAL_SECONDS]);
+  const [inboxes] = Number(discovery?.n) ? await executor.execute(`SELECT m.id FROM mail_remote_mailboxes m
+    JOIN mail_folder_remote_boxes b ON b.mail_account_id=m.mail_account_id AND BINARY b.remote_name=BINARY m.remote_name
+    JOIN mail_folders f ON f.id=b.folder_id AND f.user_id=m.user_id
+    WHERE m.user_id=? AND m.mail_account_id=? AND m.state='active' AND f.slug='inbox'`, [userId, id]) : [[]];
+  if (!inboxes.length) return scheduleMailAccountSync(id, { background: true });
+  await scheduler.start();
+  for (const box of inboxes) await scheduler.enqueue({ userId, accountId: id, mailboxId: box.id, kind: 'recent', priority: 10 });
+  return { started: false, alreadyRunning: false, discovery: false, promise: Promise.resolve({ success: true }) };
 }
 
 async function sendEmail(accountId, { to, subject, body, isHtml = false, attachments = [] }) {
@@ -1886,6 +1924,8 @@ module.exports = {
   withMailAccountLock,
   cancelMailAccountSync,
   stopMailAccountWork,
+  schedulePeriodicMailWork,
+  MAIL_DISCOVERY_INTERVAL_SECONDS,
   yieldMailReadWork,
   KNOWN_MAIL_HOST_SUFFIXES,
   DEFAULT_MAIL_SYNC_FETCH_LIMIT,

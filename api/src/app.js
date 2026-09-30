@@ -4,7 +4,7 @@ require('./imap-patch');
 const { PORT } = require('./config');
 const { db } = require('./state');
 const { initDatabase, ensurePerformanceIndexes } = require('./services/database');
-const { scheduleMailAccountSync, runMailServerDeletionPass } = require('./services/mail');
+const { schedulePeriodicMailWork, runMailServerDeletionPass } = require('./services/mail');
 const { runDueWritebacks } = require('./services/mail-writebacks');
 const { cleanupExpiredRecordingUploads } = require('./services/recordings');
 const { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } = require('./services/backup-availability');
@@ -72,7 +72,7 @@ async function start() {
       console.log(`\n[${new Date().toISOString()}] Starting periodic mail sync for ${accounts.length} accounts...`);
       for (const account of accounts) {
         if (await isSectionRestoreActive(account.user_id, 'mail')) continue;
-        const job = await scheduleMailAccountSync(account.id, { background: true });
+        const job = await schedulePeriodicMailWork(account.id);
         if (job.started) job.promise.then(result => {
           if (result?.success === false) console.error(`Failed to sync account ${account.id}:`, result.error || 'Unknown error');
         });
@@ -172,7 +172,7 @@ async function start() {
     }
   }, 15 * 60 * 1000); // 15 minutes
   
-  console.log('✓ Bounded mail discovery wake-up enabled (every 30 seconds)');
+  console.log('✓ Mail INBOX follow-up every 30 seconds; folder discovery every 5 minutes');
   console.log('✓ Mail server deletion worker enabled (every minute)');
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Expired recording upload cleanup enabled (every hour)');
