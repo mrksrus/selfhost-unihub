@@ -1,0 +1,1899 @@
+const mailWritebacks = require('../services/mail-writebacks');
+const mailAccountLifecycle = require('../services/mail-account-lifecycle');
+const { mailAccountModeChange, sameProviderMailbox } = require('../services/mail-account-mode');
+const { withMailAccountLock } = require('../services/mail-account-lock');
+const { folderConnections, FILING_ACCOUNT_SQL } = require('../services/mail-folder-reconciliation');
+const { folderMembershipSql, membershipCountQuery, unreadMembershipQuery, pendingMoveSql } = require('../services/mail-folder-view');
+const { filingAccountId, presentMailFiling, folderAcceptsAccount } = require('../services/mail-filing');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { promisify } = require('util');
+const { db } = require('../state');
+const { encrypt } = require('../security/encryption');
+const { debugLog } = require('../logger');
+const {
+  DEFAULT_MAIL_SYNC_FETCH_LIMIT,
+  MAIL_SENDER_RULE_MATCH_TYPES,
+  normalizeMailSenderRuleInput,
+  SYSTEM_MAIL_FOLDER_SET,
+  normalizeMailFolderSlug,
+  normalizeMailFolderDisplayName,
+  allocateCollisionSafeMailFolderSlug,
+  createRemoteMailFolderForUserAccounts,
+  loadMailFoldersForUser,
+  toBooleanFlag,
+  loadActiveMailSenderRules,
+  resolveMailSenderTargetFolder,
+  createMailRoutingContext,
+  ensureDefaultMailFoldersForUser,
+  normalizeSyncFetchLimit,
+  seedMailServerDeletionQueueForAccount,
+  buildMailHostTrustResult,
+  validateMailHostPolicy,
+  testImapConnection,
+  syncMailAccount,
+  scheduleMailAccountSync,
+  getMailSyncState,
+  cancelMailAccountSync,
+  stopMailAccountWork,
+  isAnyMailAccountSyncRunning,
+  getRunningMailSyncAccountIds,
+  getRunningMailServerDeleteAccountIds,
+  sendEmail,
+  deleteStoredAttachmentFiles,
+} = require('../services/mail');
+const { createCalDavAccountForMail } = require('../services/caldav');
+const { saveDraftMutation } = require('../services/mail-drafts');
+
+const readFile = promisify(fs.readFile);
+const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
+const MAIL_LIST_PREVIEW_LENGTH = 240;
+const MAIL_DRAFT_FOLDER = 'drafts';
+const MAIL_ATTACHMENT_UPLOAD_ROOT = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments';
+// Keep stored flags as the last confirmed provider state. Show an accepted
+// pending action immediately, including after a page reload or a long sync.
+const effectiveFlagSql = (action, column) => `COALESCE((SELECT CAST(w.target_value AS UNSIGNED)
+  FROM mail_writebacks w WHERE w.email_id = emails.id AND w.user_id = emails.user_id
+    AND w.action = '${action}' AND w.status = 'pending' AND w.is_current = TRUE
+    ORDER BY w.intent_revision DESC, w.created_at DESC, w.id DESC LIMIT 1), emails.${column})`;
+const pendingFlagSql = action => `EXISTS(SELECT 1 FROM mail_writebacks w WHERE w.email_id = emails.id
+  AND w.user_id = emails.user_id AND w.action = '${action}' AND w.status = 'pending' AND w.is_current = TRUE)`;
+const EFFECTIVE_READ_SQL = effectiveFlagSql('read', 'is_read');
+const EFFECTIVE_STAR_SQL = effectiveFlagSql('star', 'is_starred');
+
+function operationOptions(req) {
+  const key = req.headers?.['idempotency-key'];
+  if (key !== undefined && (typeof key !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(key))) {
+    throw Object.assign(new Error('Invalid Idempotency-Key'), { status: 400 });
+  }
+  return { idempotencyKey: key };
+}
+
+async function startMailSyncInBackground(accountId, label = accountId, options = {}) {
+  const job = await scheduleMailAccountSync(accountId, options);
+  if (job.skipped) return null;
+  job.promise
+    .then((result) => {
+      if (result?.success === false) {
+        console.error(`[SYNC] Background sync failed for ${label}:`, result.error || 'Unknown error');
+      }
+    })
+    .catch((error) => {
+      console.error(`[SYNC] Background sync failed for ${label}:`, error.message);
+    });
+  return job.started;
+}
+
+function isMailSyncFresh(lastSyncedAt, minAgeMs = BACKGROUND_MAIL_SYNC_MIN_AGE_MS) {
+  if (!lastSyncedAt) return false;
+  const lastSyncedAtMs = new Date(lastSyncedAt).getTime();
+  if (!Number.isFinite(lastSyncedAtMs)) return false;
+  return Date.now() - lastSyncedAtMs < minAgeMs;
+}
+
+async function getMailFolderRowsWithCounts(userId, accountId = null) {
+  const folders = await loadMailFoldersForUser(userId);
+  const [countRows] = await db.execute(
+    membershipCountQuery(EFFECTIVE_READ_SQL, accountId),
+    accountId && accountId !== 'legacy' && accountId !== 'all' ? [userId, accountId] : [userId]
+  );
+  const countsByFolder = new Map((countRows || []).map(row => [
+    row.folder,
+    {
+      total_count: Number(row.total_count) || 0,
+      unread_count: Number(row.unread_count) || 0,
+    },
+  ]));
+  const links = await folderConnections(userId);
+  const [legacyRows] = await db.execute('SELECT folder, COUNT(*) AS count FROM emails WHERE user_id = ? AND is_legacy = TRUE GROUP BY folder', [userId]);
+  const legacyCounts = new Map(legacyRows.map(row => [row.folder, Number(row.count)]));
+  for (const row of legacyRows) {
+    if (!folders.some(folder => folder.slug === row.folder)) folders.push({ id: `legacy:${row.folder}`, slug: row.folder,
+      display_name: row.folder || '(Unnamed folder)', is_system: false, mail_account_id: null, position: 999 });
+  }
+  return folders.filter(folder => !accountId || (accountId === 'legacy' ? legacyCounts.has(folder.slug)
+    : folderAcceptsAccount(folder, accountId, links))).map(folder => ({
+    ...folder,
+    connected_account_ids: links.get(folder.slug) || [],
+    legacy_count: legacyCounts.get(folder.slug) || 0,
+    total_count: countsByFolder.get(folder.slug)?.total_count || 0,
+    unread_count: countsByFolder.get(folder.slug)?.unread_count || 0,
+  }));
+}
+
+async function validateUserMailFolder(userId, folderSlug) {
+  const normalizedSlug = normalizeMailFolderSlug(folderSlug);
+  if (!normalizedSlug) return { error: 'Valid folder is required', status: 400 };
+  await ensureDefaultMailFoldersForUser(userId);
+  const [rows] = await db.execute('SELECT mail_account_id, is_system FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, normalizedSlug]);
+  if (!rows.length) return { error: 'Folder not found', status: 404 };
+  return { folder: normalizedSlug, accountId: rows[0].mail_account_id || null, isSystem: !!rows[0].is_system };
+}
+
+async function persistRemoteMailFolderBoxes(folderId, remoteFolder, connection) {
+  for (const account of remoteFolder?.accounts || []) {
+    if (account.status === 'failed') continue;
+    await connection.execute(
+      `INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name)
+       VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE remote_name = VALUES(remote_name)`,
+      [folderId, account.accountId, account.remoteName]
+    );
+  }
+}
+
+function encodeSenderRuleBackfillCursor(email) {
+  const receivedAt = String(email?.received_at_cursor || '');
+  const id = String(email?.id || '');
+  return receivedAt && id ? Buffer.from(JSON.stringify({ receivedAt, id })).toString('base64url') : null;
+}
+
+function decodeSenderRuleBackfillCursor(value) {
+  if (!value) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(String(value), 'base64url').toString('utf8'));
+    const receivedAt = String(cursor?.receivedAt || '');
+    const id = String(cursor?.id || '');
+    if (!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(receivedAt) || !id || id.length > 128) throw new Error('invalid cursor');
+    return { receivedAt, id };
+  } catch {
+    const error = new Error('Invalid backfill cursor');
+    error.status = 400;
+    throw error;
+  }
+}
+
+function extractMailRouteId(req, offsetFromEnd = 1) {
+  const parts = req.url.split('?')[0].split('/').filter(Boolean);
+  return parts[parts.length - offsetFromEnd] || null;
+}
+
+function htmlToDraftText(value) {
+  return String(value || '')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+\n/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .trim();
+}
+
+function normalizeDraftRecipients(value) {
+  return String(value || '')
+    .split(',')
+    .map(part => {
+      const trimmed = part.trim();
+      const match = trimmed.match(/^(.+?)\s*<(.+?)>$/);
+      return (match ? match[2] : trimmed).trim();
+    })
+    .filter(Boolean);
+}
+
+function formatDraftRecipients(value) {
+  const recipients = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? JSON.parse(value || '[]')
+      : [];
+  return recipients.filter(Boolean).join(', ');
+}
+
+async function loadMailAccountForDraft(userId, accountId) {
+  const normalizedAccountId = String(accountId || '').trim();
+  if (!normalizedAccountId) return null;
+  const [accounts] = await db.execute(
+    'SELECT id, user_id, email_address, display_name FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
+    [normalizedAccountId, userId]
+  );
+  return accounts[0] || null;
+}
+
+async function loadDraftEmail(userId, draftId) {
+  const [rows] = await db.execute(
+    'SELECT * FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE LIMIT 1',
+    [draftId, userId]
+  );
+  if (!rows.length) return null;
+  const draft = rows[0];
+  const [attachments] = await db.execute(
+    'SELECT id, filename, content_type, size_bytes FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
+    [draftId, userId]
+  );
+  return {
+    ...draft,
+    to_addresses: typeof draft.to_addresses === 'string' ? JSON.parse(draft.to_addresses || '[]') : draft.to_addresses,
+    is_read: toBooleanFlag(draft.is_read),
+    is_starred: toBooleanFlag(draft.is_starred),
+    is_draft: !!draft.is_draft,
+    has_attachments: !!draft.has_attachments,
+    attachments: attachments || [],
+  };
+}
+
+async function deleteDraftWithFiles(userId, draftId) {
+  const draft = await loadDraftEmail(userId, draftId);
+  if (!draft) return { error: 'Draft not found', status: 404 };
+  const [attachments] = await db.execute(
+    'SELECT storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?',
+    [draftId, userId]
+  );
+  await db.execute('DELETE FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE', [draftId, userId]);
+  const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
+  return {
+    deleted: true,
+    deletedAttachmentFiles: fileResult.deletedFiles,
+    failedAttachmentFiles: fileResult.failedFiles,
+  };
+}
+
+async function buildHostTrustConfirmationResponse({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError }) {
+  const mailHostTrust = await buildMailHostTrustResult({
+    imap_host,
+    imap_port,
+    smtp_host,
+    smtp_port,
+    imapTlsError,
+  });
+  return {
+    error: 'Review and confirm mail server authenticity before continuing.',
+    status: 409,
+    requiresHostTrustConfirmation: true,
+    mailHostTrust,
+  };
+}
+
+
+module.exports = {
+  'GET /api/mail/folders': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const accountId = new URL(req.url, 'http://localhost').searchParams.get('account_id') || null;
+      return { folders: await getMailFolderRowsWithCounts(userId, accountId) };
+    } catch (error) {
+      console.error('List mail folders error:', error);
+      return { error: 'Failed to load mail folders', status: 500 };
+    }
+  },
+
+  'POST /api/mail/folders': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const accountId = String(body?.mail_account_id || '').trim();
+      if (!accountId) return { error: 'Select one mail account before creating a folder', status: 400 };
+      const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE LIMIT 1', [accountId, userId]);
+      if (!accounts.length) return { error: 'Active mail account not found', status: 400 };
+      const displayName = normalizeMailFolderDisplayName(body?.display_name || body?.name);
+      if (!displayName) return { error: 'Folder name is required', status: 400 };
+      const requestedSlug = normalizeMailFolderSlug(body?.slug || displayName);
+      if (!requestedSlug) return { error: 'Folder slug is invalid', status: 400 };
+      if (requestedSlug === 'all' || requestedSlug === 'starred') {
+        return { error: 'Folder slug is reserved', status: 400 };
+      }
+      const [sameName] = await db.execute(
+        'SELECT id FROM mail_folders WHERE user_id = ? AND (mail_account_id = ? OR is_system = TRUE) AND LOWER(display_name) = LOWER(?) LIMIT 1',
+        [userId, accountId, displayName]
+      );
+      if (sameName.length > 0) return { error: 'Folder already exists', status: 409 };
+      const [mappedName] = await db.execute(
+        `SELECT f.id FROM mail_folder_remote_boxes b JOIN mail_folders f ON f.id = b.folder_id
+         WHERE f.user_id = ? AND b.mail_account_id = ? AND LOWER(b.remote_name) = LOWER(?) LIMIT 1`,
+        [userId, accountId, displayName]);
+      if (mappedName.length) return { error: 'This provider folder is already represented, possibly under Legacy shared. Choose a different name.', status: 409 };
+      const [existing] = await db.execute('SELECT id FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1', [userId, requestedSlug]);
+      const slug = existing.length > 0
+        ? await allocateCollisionSafeMailFolderSlug(userId, displayName)
+        : requestedSlug;
+      const [positionRows] = await db.execute(
+        'SELECT COALESCE(MAX(position), 90) AS max_position FROM mail_folders WHERE user_id = ?',
+        [userId]
+      );
+      const position = Number(positionRows[0]?.max_position || 90) + 10;
+      // Remote creation may be partially successful. Persist successes so retrying is safe.
+      const remoteFolder = await createRemoteMailFolderForUserAccounts(userId, displayName, accountId);
+      const folderId = crypto.randomUUID();
+      const connection = await db.getConnection();
+      try {
+        await connection.beginTransaction();
+        await connection.execute(
+          `INSERT INTO mail_folders (id, user_id, mail_account_id, slug, display_name, is_system, position)
+           VALUES (?, ?, ?, ?, ?, FALSE, ?)`,
+          [folderId, userId, accountId, slug, displayName, position]
+        );
+        await persistRemoteMailFolderBoxes(folderId, remoteFolder, connection);
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+      const folders = await getMailFolderRowsWithCounts(userId);
+      return { folder: folders.find(folder => folder.slug === slug) || null, folders, remoteFolder };
+    } catch (error) {
+      console.error('Create mail folder error:', error);
+      return { error: 'Failed to create mail folder', status: 500 };
+    }
+  },
+
+  'PUT /api/mail/folders/:slug': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const slug = normalizeMailFolderSlug(req.params.slug);
+      if (!slug) return { error: 'Folder is required', status: 400 };
+      const [folders] = await db.execute(
+        'SELECT * FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1',
+        [userId, slug]
+      );
+      if (!folders.length) return { error: 'Folder not found', status: 404 };
+      const folder = folders[0];
+      if (!folder.is_system && (Object.prototype.hasOwnProperty.call(body || {}, 'display_name') || Object.prototype.hasOwnProperty.call(body || {}, 'name'))) {
+        return { error: 'Renaming synced custom folders is not supported; create a new folder instead.', status: 409 };
+      }
+      const updates = [];
+      const params = [];
+      if (Object.prototype.hasOwnProperty.call(body || {}, 'display_name') || Object.prototype.hasOwnProperty.call(body || {}, 'name')) {
+        const displayName = normalizeMailFolderDisplayName(body.display_name || body.name);
+        if (!displayName) return { error: 'Folder name is required', status: 400 };
+        updates.push('display_name = ?');
+        params.push(displayName);
+      }
+      if (Object.prototype.hasOwnProperty.call(body || {}, 'position')) {
+        const position = Number.parseInt(String(body.position), 10);
+        if (!Number.isFinite(position)) return { error: 'Position must be a number', status: 400 };
+        updates.push('position = ?');
+        params.push(position);
+      }
+      if (updates.length === 0) return { error: 'No fields to update', status: 400 };
+      params.push(folder.id, userId);
+      await db.execute(`UPDATE mail_folders SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      const updatedFolders = await getMailFolderRowsWithCounts(userId);
+      return { folder: updatedFolders.find(item => item.slug === slug) || null, folders: updatedFolders };
+    } catch (error) {
+      console.error('Update mail folder error:', error);
+      return { error: 'Failed to update mail folder', status: 500 };
+    }
+  },
+
+  'DELETE /api/mail/folders/:slug': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const slug = normalizeMailFolderSlug(req.params.slug);
+      if (!slug) return { error: 'Folder is required', status: 400 };
+      const [folders] = await db.execute(
+        'SELECT * FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1',
+        [userId, slug]
+      );
+      if (!folders.length) return { error: 'Folder not found', status: 404 };
+      if (folders[0].is_system || SYSTEM_MAIL_FOLDER_SET.has(slug)) {
+        return { error: 'System folders cannot be deleted', status: 400 };
+      }
+      return { error: 'Deleting synced custom folders is not supported; keep the folder or delete it in your mail provider.', status: 409 };
+    } catch (error) {
+      console.error('Delete mail folder error:', error);
+      return { error: 'Failed to delete mail folder', status: 500 };
+    }
+  },
+
+  // Mail accounts endpoints
+  'GET /api/mail/sender-rules': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const accountId = String(url.searchParams.get('account_id') || '').trim();
+      const matchType = String(url.searchParams.get('match_type') || '').trim().toLowerCase();
+      const where = ['r.user_id = ?'];
+      const params = [userId];
+      if (accountId) {
+        where.push('(r.mail_account_id IS NULL OR r.mail_account_id = ?)');
+        params.push(accountId);
+      }
+      if (matchType) {
+        if (!MAIL_SENDER_RULE_MATCH_TYPES.has(matchType)) return { error: 'Invalid match_type filter', status: 400 };
+        where.push('r.match_type = ?');
+        params.push(matchType);
+      }
+      const [rules] = await db.execute(
+        `SELECT r.id, r.user_id, r.mail_account_id, r.match_type, LOWER(TRIM(r.match_value)) AS match_value, r.target_folder, r.priority, r.is_active, r.created_at, r.updated_at,
+                a.email_address AS account_email
+         FROM mail_sender_rules r
+         LEFT JOIN mail_accounts a ON a.id = r.mail_account_id
+         WHERE ${where.join(' AND ')}
+         ORDER BY r.is_active DESC, r.priority ASC, r.match_type ASC, r.created_at ASC`,
+        params
+      );
+      return { rules: rules || [] };
+    } catch (error) {
+      console.error('List mail sender rules error:', error);
+      return { error: 'Failed to load sender rules', status: 500 };
+    }
+  },
+  'POST /api/mail/sender-rules': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const parsed = normalizeMailSenderRuleInput(body?.match_type, body?.match_value);
+      if (parsed.error) return { error: parsed.error, status: 400 };
+      const targetFolder = normalizeMailFolderSlug(body?.target_folder);
+      const folderValidation = await validateUserMailFolder(userId, targetFolder);
+      if (folderValidation.error) return folderValidation;
+      const accountId = String(body?.mail_account_id || '').trim() || null;
+      if (folderValidation.accountId && folderValidation.accountId !== accountId) {
+        return { error: 'This folder requires a rule for its own mail account', status: 400 };
+      }
+      if (accountId) {
+        const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
+        if (!accounts.length) return { error: 'Invalid mail_account_id', status: 400 };
+      }
+      const priorityNumber = Number.parseInt(String(body?.priority ?? '100'), 10);
+      const priority = Number.isFinite(priorityNumber) ? priorityNumber : 100;
+      const isActive = body?.is_active === undefined ? true : !!body.is_active;
+      const ruleId = crypto.randomUUID();
+      await db.execute(
+        `INSERT INTO mail_sender_rules (id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [ruleId, userId, accountId, parsed.matchType, parsed.matchValue, targetFolder, priority, isActive ? 1 : 0]
+      );
+      const [rows] = await db.execute(
+        'SELECT id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active, created_at, updated_at FROM mail_sender_rules WHERE id = ? LIMIT 1',
+        [ruleId]
+      );
+      return { rule: rows[0] || null };
+    } catch (error) {
+      console.error('Create mail sender rule error:', error);
+      return { error: 'Failed to create sender rule', status: 500 };
+    }
+  },
+  'PUT /api/mail/sender-rules/:id': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const ruleId = req.params.id;
+    if (!ruleId) return { error: 'Rule id is required', status: 400 };
+    try {
+      const [existingRows] = await db.execute('SELECT * FROM mail_sender_rules WHERE id = ? AND user_id = ? LIMIT 1', [ruleId, userId]);
+      if (!existingRows.length) return { error: 'Rule not found', status: 404 };
+      const existing = existingRows[0];
+      const nextMatchType = body?.match_type !== undefined ? body.match_type : existing.match_type;
+      const nextMatchValue = body?.match_value !== undefined ? body.match_value : existing.match_value;
+      const parsed = normalizeMailSenderRuleInput(nextMatchType, nextMatchValue);
+      if (parsed.error) return { error: parsed.error, status: 400 };
+      const nextTargetFolder = body?.target_folder !== undefined ? normalizeMailFolderSlug(body.target_folder) : existing.target_folder;
+      const folderValidation = await validateUserMailFolder(userId, nextTargetFolder);
+      if (folderValidation.error) return folderValidation;
+      const accountId = body?.mail_account_id !== undefined
+        ? (String(body.mail_account_id || '').trim() || null)
+        : (existing.mail_account_id || null);
+      if (folderValidation.accountId && folderValidation.accountId !== accountId) {
+        return { error: 'This folder requires a rule for its own mail account', status: 400 };
+      }
+      if (accountId) {
+        const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
+        if (!accounts.length) return { error: 'Invalid mail_account_id', status: 400 };
+      }
+      const priorityCandidate = body?.priority !== undefined ? body.priority : existing.priority;
+      const parsedPriority = Number.parseInt(String(priorityCandidate), 10);
+      const priority = Number.isFinite(parsedPriority) ? parsedPriority : 100;
+      const isActive = body?.is_active !== undefined ? !!body.is_active : toBooleanFlag(existing.is_active);
+      await db.execute(
+        `UPDATE mail_sender_rules
+         SET mail_account_id = ?, match_type = ?, match_value = ?, target_folder = ?, priority = ?, is_active = ?
+         WHERE id = ? AND user_id = ?`,
+        [accountId, parsed.matchType, parsed.matchValue, nextTargetFolder, priority, isActive ? 1 : 0, ruleId, userId]
+      );
+      await db.execute('DELETE FROM mail_folder_rule_overrides WHERE rule_id = ?', [ruleId]);
+      const [rows] = await db.execute(
+        'SELECT id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active, created_at, updated_at FROM mail_sender_rules WHERE id = ? LIMIT 1',
+        [ruleId]
+      );
+      return { rule: rows[0] || null };
+    } catch (error) {
+      console.error('Update mail sender rule error:', error);
+      return { error: 'Failed to update sender rule', status: 500 };
+    }
+  },
+  'DELETE /api/mail/sender-rules/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const ruleId = req.params.id;
+    if (!ruleId) return { error: 'Rule id is required', status: 400 };
+    try {
+      const [result] = await db.execute('DELETE FROM mail_sender_rules WHERE id = ? AND user_id = ? LIMIT 1', [ruleId, userId]);
+      if (!result.affectedRows) return { error: 'Rule not found', status: 404 };
+      return { deleted: true };
+    } catch (error) {
+      console.error('Delete mail sender rule error:', error);
+      return { error: 'Failed to delete sender rule', status: 500 };
+    }
+  },
+  'POST /api/mail/sender-rules/backfill': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const accountId = String(body?.account_id || '').trim() || null;
+      const applyChanges = body?.mode === 'apply' || body?.apply === true;
+      const cursor = decodeSenderRuleBackfillCursor(body?.cursor);
+      const requestedLimit = Number.parseInt(String(body?.limit ?? '1000'), 10);
+      const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 5000) : 1000;
+      if (accountId) {
+        const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
+        if (!accounts.length) return { error: 'Invalid account_id', status: 400 };
+      }
+      const where = ['e.user_id = ?', 'e.is_legacy = FALSE', "e.folder = 'inbox'", 'e.from_address IS NOT NULL', "TRIM(e.from_address) <> ''"];
+      const params = [userId];
+      if (accountId) {
+        where.push('COALESCE(e.filing_account_id, e.mail_account_id) = ?');
+        params.push(accountId);
+      }
+      if (cursor) {
+        where.push('(e.received_at < ? OR (e.received_at = ? AND e.id < ?))');
+        params.push(cursor.receivedAt, cursor.receivedAt, cursor.id);
+      }
+      const [emailRows] = await db.execute(
+        `SELECT e.id, e.mail_account_id, e.filing_account_id, e.from_address, e.folder,
+                DATE_FORMAT(e.received_at, '%Y-%m-%d %H:%i:%s.%f') AS received_at_cursor
+         FROM emails e
+         WHERE NOT EXISTS (SELECT 1 FROM mail_accounts a WHERE a.id = e.mail_account_id AND a.sync_mode = 'sync')
+           AND ${where.join(' AND ')}
+         ORDER BY e.received_at DESC, e.id DESC
+         LIMIT ${limit + 1}`,
+        params
+      );
+      const hasMore = (emailRows || []).length > limit;
+      const emails = (emailRows || []).slice(0, limit);
+      const nextCursor = hasMore ? encodeSenderRuleBackfillCursor(emails[emails.length - 1]) : null;
+      const perAccountRules = new Map();
+      const folders = new Map((await loadMailFoldersForUser(userId)).map(folder => [folder.slug, folder]));
+      const links = await folderConnections(userId);
+      const updates = [];
+      const originals = new Map(emails.map(email => [email.id, email]));
+      for (const email of emails || []) {
+        const filingAccount = filingAccountId(email);
+        const ruleCacheKey = String(filingAccount || '');
+        if (!perAccountRules.has(ruleCacheKey)) {
+          const context = await createMailRoutingContext(userId, filingAccount, db);
+          context.folders = new Set([...folders.values()].filter(folder => folderAcceptsAccount(folder, filingAccount, links)).map(folder => folder.slug));
+          perAccountRules.set(ruleCacheKey, context);
+        }
+        const resolved = await resolveMailSenderTargetFolder({
+          userId,
+          mailAccountId: filingAccount,
+          fromAddress: email.from_address || '',
+          fallbackFolder: 'inbox',
+          routingContext: perAccountRules.get(ruleCacheKey),
+          connection: db,
+        });
+        if (resolved.folder !== 'inbox' && folderAcceptsAccount(folders.get(resolved.folder), filingAccount, links)) {
+          updates.push({
+            email_id: email.id,
+            from_address: email.from_address,
+            current_folder: email.folder,
+            next_folder: resolved.folder,
+            rule_id: resolved.rule?.id || null,
+          });
+        }
+      }
+      let applied = 0;
+      if (applyChanges && updates.length > 0) {
+        const connection = await db.getConnection();
+        try {
+          await connection.beginTransaction();
+          for (const item of updates) {
+            const original = originals.get(item.email_id);
+            // Skip messages moved or recovered since this batch was read.
+            const [result] = await connection.execute(`UPDATE emails SET folder = ?
+              WHERE id = ? AND user_id = ? AND folder = ? AND is_legacy = FALSE
+                AND mail_account_id <=> ? AND filing_account_id <=> ?
+                AND NOT EXISTS (SELECT 1 FROM mail_accounts a WHERE a.id = emails.mail_account_id AND a.sync_mode = 'sync')`,
+            [item.next_folder, item.email_id, userId, original.folder, original.mail_account_id, original.filing_account_id ?? null]);
+            applied += result.affectedRows;
+          }
+          await connection.commit();
+        } catch (error) {
+          await connection.rollback();
+          throw error;
+        } finally {
+          connection.release();
+        }
+      }
+      return {
+        dry_run: !applyChanges,
+        scanned: emails.length,
+        matched: updates.length,
+        applied,
+        complete: !hasMore,
+        has_more: hasMore,
+        next_cursor: nextCursor,
+        remaining: hasMore ? 'More inbox messages remain; continue sorting to process the next batch.' : null,
+        updates: updates.slice(0, 200),
+      };
+    } catch (error) {
+      console.error('Mail sender rule backfill error:', error);
+      return { error: 'Failed to backfill mail routing', status: 500 };
+    }
+  },
+  'GET /api/mail/accounts': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const [accounts] = await db.execute(
+        `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+                smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
+                server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
+                is_active, disconnected_at, engine_version, last_synced_at, created_at
+         FROM mail_accounts
+         WHERE user_id = ?`,
+        [userId]
+      );
+      await ensureDefaultMailFoldersForUser(userId);
+
+      // Fetch unread email counts per account
+      const [unreadRows] = await db.execute(
+        `SELECT CASE WHEN is_legacy THEN 'legacy' ELSE ${FILING_ACCOUNT_SQL} END AS mail_account_id, COUNT(*) as unread_count FROM emails WHERE user_id = ? AND ${EFFECTIVE_READ_SQL} = 0 GROUP BY 1`,
+        [userId]
+      );
+
+      const unreadByAccount = {};
+      for (const row of unreadRows) {
+        unreadByAccount[row.mail_account_id] = row.unread_count;
+      }
+
+      const [deleteRows] = await db.execute(
+        `SELECT mail_account_id,
+                SUM(CASE WHEN delete_status = 'pending' THEN 1 ELSE 0 END) AS pending_count,
+                SUM(CASE WHEN delete_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                SUM(CASE WHEN delete_status = 'deleted' THEN 1 ELSE 0 END) AS deleted_count,
+                SUM(CASE WHEN delete_status = 'missing' THEN 1 ELSE 0 END) AS missing_count,
+                SUM(CASE WHEN delete_status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count
+         FROM mail_server_messages
+         WHERE user_id = ?
+         GROUP BY mail_account_id`,
+        [userId]
+      );
+      const deleteCountsByAccount = {};
+      for (const row of deleteRows || []) {
+        deleteCountsByAccount[row.mail_account_id] = {
+          pending: Number(row.pending_count) || 0,
+          failed: Number(row.failed_count) || 0,
+          deleted: Number(row.deleted_count) || 0,
+          missing: Number(row.missing_count) || 0,
+          skipped: Number(row.skipped_count) || 0,
+        };
+      }
+      const runningDeleteAccountIds = new Set(getRunningMailServerDeleteAccountIds());
+
+      const accountsWithUnread = accounts.map((account) => ({
+        ...account,
+        delete_emails_on_server: toBooleanFlag(account.delete_emails_on_server),
+        sync_fetch_limit: normalizeSyncFetchLimit(account.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT,
+        unread_count: unreadByAccount[account.id] || 0,
+        server_delete_counts: deleteCountsByAccount[account.id] || { pending: 0, failed: 0, deleted: 0, missing: 0, skipped: 0 },
+        server_delete_running: runningDeleteAccountIds.has(account.id),
+      }));
+
+      return { accounts: accountsWithUnread };
+    } catch (error) {
+      return { error: 'Failed to get mail accounts', status: 500 };
+    }
+  },
+
+  'GET /api/mail/unread-counts': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const accountId = url.searchParams.get('account_id');
+      const includeByAccount = url.searchParams.get('include_by_account') === 'true';
+      const hasAccountFilter = !!accountId && accountId !== 'all';
+
+      const folderQuery = unreadMembershipQuery(EFFECTIVE_READ_SQL, accountId);
+      const folderParams = [userId];
+      if (hasAccountFilter && accountId !== 'legacy') folderParams.push(accountId);
+
+      const [folderRows] = await db.execute(folderQuery, folderParams);
+      const unreadByFolder = {};
+      for (const row of folderRows) {
+        unreadByFolder[row.folder] = (unreadByFolder[row.folder] || 0) + (Number(row.unread_count) || 0);
+      }
+
+      const response = { unreadByFolder };
+
+      if (includeByAccount) {
+        const unreadByFolderAccount = {};
+        for (const row of folderRows) {
+          if (!unreadByFolderAccount[row.folder]) {
+            unreadByFolderAccount[row.folder] = {};
+          }
+          unreadByFolderAccount[row.folder][row.mail_account_id] = Number(row.unread_count) || 0;
+        }
+        response.unreadByFolderAccount = unreadByFolderAccount;
+      }
+
+      return response;
+    } catch (error) {
+      console.error('[MAIL] Failed to get unread counts:', error);
+      return { error: 'Failed to get unread counts', status: 500 };
+    }
+  },
+
+  'POST /api/mail/accounts': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const {
+        email_address,
+        display_name,
+        provider,
+        username,
+        imap_host,
+        imap_port,
+        smtp_host,
+        smtp_port,
+        encrypted_password,
+        sync_fetch_limit,
+        delete_emails_on_server,
+        accept_host_trust,
+        try_calendar_sync,
+        caldav_url,
+      } = body;
+      console.log(`[ACCOUNT] Add mail account requested for ${email_address || '(missing email)'} via ${provider || 'unknown provider'}`);
+      
+      if (!email_address || !encrypted_password) {
+        return { error: 'Email address and password are required', status: 400 };
+      }
+      if (!imap_host || !smtp_host) {
+        return { error: 'IMAP and SMTP server addresses are required', status: 400 };
+      }
+      const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);
+      if (!normalizedSyncFetchLimit) {
+        return { error: 'Invalid sync fetch limit. Allowed value: all', status: 400 };
+      }
+
+      const normalizedImapPort = Number(imap_port) || 993;
+      const normalizedSmtpPort = Number(smtp_port) || 587;
+      const trustAccepted = toBooleanFlag(accept_host_trust);
+      const modeChange = mailAccountModeChange(null, body);
+      const serverDeleteEnabled = modeChange.deleteEnabled;
+
+      console.log(`[ACCOUNT] Checking mail host policy for ${email_address}: IMAP ${imap_host}:${normalizedImapPort}, SMTP ${smtp_host}:${normalizedSmtpPort}`);
+      const hostPolicyResult = await validateMailHostPolicy({
+        imap_host,
+        imap_port: normalizedImapPort,
+        smtp_host,
+        smtp_port: normalizedSmtpPort,
+      });
+      console.log(`[ACCOUNT] Host policy check complete for ${email_address}: blocked=${hostPolicyResult.mailHostTrust?.blocked ? 'yes' : 'no'}, trust_accepted=${trustAccepted ? 'yes' : 'no'}`);
+      if (hostPolicyResult.error) {
+        console.warn(`[ACCOUNT] Host policy rejected for ${email_address}: ${hostPolicyResult.error}`);
+        return hostPolicyResult;
+      }
+
+      const encryptedPasswordForStorage = encrypt(encrypted_password);
+      // Verify authentication using strict TLS unless the user explicitly accepted an IMAP certificate failure.
+      const tempAccount = {
+        email_address,
+        username: username || email_address,
+        imap_host,
+        imap_port: normalizedImapPort,
+        allow_self_signed: trustAccepted ? 1 : 0,
+        trusted_imap_fingerprint256: null,
+        encrypted_password: encryptedPasswordForStorage,
+      };
+      
+      // Test IMAP connection and auth (wrong password / connection errors still returned)
+      console.log(`[ACCOUNT] Testing IMAP connection for ${email_address} (strict_tls=${trustAccepted ? 'no' : 'yes'})...`);
+      const testResult = await testImapConnection(tempAccount);
+      
+      if (!testResult.success) {
+        if (testResult.tlsTrustError && !trustAccepted) {
+          console.warn(`[ACCOUNT] IMAP TLS trust confirmation required for ${email_address}: ${testResult.details || testResult.error}`);
+          return buildHostTrustConfirmationResponse({
+            imap_host,
+            imap_port: normalizedImapPort,
+            smtp_host,
+            smtp_port: normalizedSmtpPort,
+            imapTlsError: testResult.details || testResult.error,
+          });
+        }
+        return { 
+          error: testResult.error, 
+          details: testResult.details,
+          status: 400 
+        };
+      }
+      
+      // Auth successful - save account immediately
+      const accountId = crypto.randomUUID();
+      const actualUsername = username || email_address;
+      await db.execute(
+        `INSERT INTO mail_accounts
+           (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+            smtp_host, smtp_port, encrypted_password, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
+            server_delete_enabled_at, server_delete_grace_until, allow_self_signed,
+            trusted_imap_fingerprint256, trusted_smtp_fingerprint256)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${serverDeleteEnabled ? 'UTC_TIMESTAMP()' : 'NULL'},
+                 ${serverDeleteEnabled ? 'DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)' : 'NULL'}, ?, ?, ?)`,
+        [
+          accountId,
+          userId,
+          email_address,
+          display_name || null,
+          provider,
+          actualUsername,
+          imap_host || null,
+          normalizedImapPort,
+          smtp_host || null,
+          normalizedSmtpPort,
+          encryptedPasswordForStorage,
+          normalizedSyncFetchLimit,
+          modeChange.mode,
+          modeChange.mode === 'sync' ? 'pending' : 'idle',
+          serverDeleteEnabled ? 1 : 0,
+          trustAccepted ? 1 : 0,
+          null,
+          null,
+        ]
+      );
+      await ensureDefaultMailFoldersForUser(userId);
+      
+      const [accounts] = await db.execute(
+        `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+                smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
+                server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at, is_active
+         FROM mail_accounts
+         WHERE id = ?`,
+        [accountId]
+      );
+      if (accounts[0]) accounts[0].delete_emails_on_server = toBooleanFlag(accounts[0].delete_emails_on_server);
+
+      let calendarSync = null;
+      if (toBooleanFlag(try_calendar_sync)) {
+        try {
+          const caldavResult = await createCalDavAccountForMail({
+            userId,
+            emailAddress: email_address,
+            displayName: display_name || email_address,
+            username: actualUsername,
+            password: encrypted_password,
+            imapHost: imap_host,
+            caldavUrl: caldav_url,
+          });
+          calendarSync = {
+            attempted: true,
+            success: true,
+            account: caldavResult.account,
+            calendars: caldavResult.calendars,
+            importedEvents: caldavResult.importedEvents,
+          };
+        } catch (calendarError) {
+          console.warn(`[CALDAV] Calendar sync setup failed for ${email_address}:`, calendarError.message);
+          calendarSync = {
+            attempted: true,
+            success: false,
+            warning: calendarError.message || 'Calendar sync setup failed',
+          };
+        }
+      }
+      
+      // Start sync in background (non-blocking)
+      console.log(`[ACCOUNT] Starting background sync for ${email_address}...`);
+      const syncStarted = await startMailSyncInBackground(accountId);
+      
+      // Return success immediately
+      return { 
+        account: accounts[0],
+        authSuccess: true,
+        syncInProgress: syncStarted,
+        calendarSync,
+        mailHostTrust: hostPolicyResult.mailHostTrust,
+        message: syncStarted
+          ? 'Account connected successfully. Syncing emails in the background — this may take several minutes for large mailboxes.'
+          : 'Account connected successfully. A mail sync is already running; this account will sync on the next scheduled pass.'
+      };
+    } catch (error) {
+      console.error('[ACCOUNT] Create mail account error:', error);
+      return { error: error.message || 'Failed to create mail account', status: error.status || 500 };
+    }
+  },
+  
+  'PUT /api/mail/accounts/:id': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const id = extractMailRouteId(req);
+      const {
+        email_address,
+        display_name,
+        username,
+        imap_host,
+        imap_port,
+        smtp_host,
+        smtp_port,
+        encrypted_password,
+        sync_fetch_limit,
+        delete_emails_on_server,
+        accept_host_trust,
+      } = body;
+      
+      // Verify account belongs to user
+      const [accounts] = await db.execute(
+        'SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?',
+        [id, userId]
+      );
+      if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+      const requestedMode = mailAccountModeChange(accounts[0], body);
+      const stopRequired = Boolean(requestedMode.changed || body.is_active === true || body.encrypted_password
+        || body.email_address || body.imap_host || body.imap_port || body.username !== undefined || body.delete_emails_on_server !== undefined);
+      return await withMailAccountLock(id, async () => {
+      const [fresh] = await db.execute('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      if (!fresh.length) return { error: 'Account not found', status: 404 };
+      const existingAccount = fresh[0];
+      const modeChange = mailAccountModeChange(existingAccount, body);
+
+      const nextEmailAddress = email_address || existingAccount.email_address;
+      const nextUsername = username !== undefined ? (username || nextEmailAddress) : (existingAccount.username || nextEmailAddress);
+      const nextImapHost = imap_host || existingAccount.imap_host;
+      const nextImapPort = Number(imap_port) || Number(existingAccount.imap_port) || 993;
+      const nextSmtpHost = smtp_host || existingAccount.smtp_host;
+      const nextSmtpPort = Number(smtp_port) || Number(existingAccount.smtp_port) || 587;
+      if (!sameProviderMailbox(existingAccount, { email_address: nextEmailAddress, username: nextUsername, imap_host: nextImapHost, imap_port: nextImapPort })) {
+        const [identified] = await db.execute('SELECT id FROM emails WHERE mail_account_id = ? AND user_id = ? AND (imap_uid IS NOT NULL OR remote_uid IS NOT NULL) LIMIT 1', [id, userId]);
+        if (identified.length) return { error: 'This account already contains imported mail. Add a separate account for a different mailbox or IMAP server to preserve message identity.', status: 409 };
+      }
+      const nextEncryptedPassword = encrypted_password ? encrypt(encrypted_password) : existingAccount.encrypted_password;
+      if (body.is_active !== undefined && typeof body.is_active !== 'boolean') return { error: 'Active state must be boolean', status: 400 };
+      if (body.is_active === true && existingAccount.disconnected_at && !encrypted_password) {
+        return { error: 'Reconnect by providing and verifying the account credentials again.', status: 400 };
+      }
+      if (body.is_active === false) return { error: 'Use Disconnect to pause this account and remove its stored credentials.', status: 400 };
+      const trustAccepted = toBooleanFlag(accept_host_trust);
+      const hostSettingsChanged = Boolean(body.is_active === true || imap_host || imap_port || smtp_host || smtp_port);
+      const imapLoginSettingsChanged = Boolean(body.is_active === true || email_address || username !== undefined || imap_host || imap_port || encrypted_password);
+      let shouldUpdateTlsTrust = false;
+      let nextAllowSelfSigned = toBooleanFlag(existingAccount.allow_self_signed) ? 1 : 0;
+
+      if (hostSettingsChanged) {
+        const hostPolicyResult = await validateMailHostPolicy({
+          imap_host: nextImapHost,
+          imap_port: nextImapPort,
+          smtp_host: nextSmtpHost,
+          smtp_port: nextSmtpPort,
+        });
+        if (hostPolicyResult.error) return hostPolicyResult;
+      }
+
+      if (imapLoginSettingsChanged) {
+        const existingTrustStillApplies = toBooleanFlag(existingAccount.allow_self_signed) && !imap_host && !imap_port;
+        const allowInsecureForTest = trustAccepted || existingTrustStillApplies;
+        const testAccount = {
+          email_address: nextEmailAddress,
+          username: nextUsername,
+          imap_host: nextImapHost,
+          imap_port: nextImapPort,
+          encrypted_password: nextEncryptedPassword,
+          allow_self_signed: allowInsecureForTest ? 1 : 0,
+        };
+        console.log(`[ACCOUNT] Testing updated IMAP connection for ${nextEmailAddress} (strict_tls=${allowInsecureForTest ? 'no' : 'yes'})...`);
+        const testResult = await testImapConnection(testAccount);
+        if (!testResult.success) {
+          if (testResult.tlsTrustError && !allowInsecureForTest) {
+            console.warn(`[ACCOUNT] IMAP TLS trust confirmation required for updated account ${nextEmailAddress}: ${testResult.details || testResult.error}`);
+            return buildHostTrustConfirmationResponse({
+              imap_host: nextImapHost,
+              imap_port: nextImapPort,
+              smtp_host: nextSmtpHost,
+              smtp_port: nextSmtpPort,
+              imapTlsError: testResult.details || testResult.error,
+            });
+          }
+          return {
+            error: testResult.error,
+            details: testResult.details,
+            status: 400,
+          };
+        }
+
+        if (trustAccepted || imap_host || imap_port) {
+          nextAllowSelfSigned = trustAccepted ? 1 : 0;
+          shouldUpdateTlsTrust = true;
+        }
+      }
+      
+      // Build update query dynamically
+      const updates = [];
+      const params = [];
+      const serverDeleteSettingProvided = modeChange.deleteSettingProvided;
+      const requestedServerDeleteEnabled = modeChange.deleteEnabled;
+      const currentServerDeleteEnabled = toBooleanFlag(existingAccount.delete_emails_on_server);
+      let shouldSeedServerDeleteQueue = false;
+      
+      if (modeChange.changed) {
+        updates.push('sync_mode = ?', 'sync_status = ?');
+        params.push(modeChange.mode, modeChange.mode === 'sync' ? 'pending' : 'idle');
+      }
+      if (email_address) { updates.push('email_address = ?'); params.push(email_address); }
+      if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name || null); }
+      if (username !== undefined) { updates.push('username = ?'); params.push(nextUsername); }
+      if (imap_host) { updates.push('imap_host = ?'); params.push(imap_host); }
+      if (imap_port) { updates.push('imap_port = ?'); params.push(imap_port); }
+      if (smtp_host) { updates.push('smtp_host = ?'); params.push(smtp_host); }
+      if (smtp_port) { updates.push('smtp_port = ?'); params.push(smtp_port); }
+      if (encrypted_password) { updates.push('encrypted_password = ?'); params.push(nextEncryptedPassword); }
+      if (body.is_active === true) updates.push('is_active = TRUE', 'disconnected_at = NULL');
+      if (shouldUpdateTlsTrust) {
+        updates.push('allow_self_signed = ?');
+        params.push(nextAllowSelfSigned);
+        updates.push('trusted_imap_fingerprint256 = ?');
+        params.push(null);
+        updates.push('trusted_smtp_fingerprint256 = ?');
+        params.push(null);
+      }
+      if (sync_fetch_limit !== undefined) {
+        const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);
+        if (!normalizedSyncFetchLimit) {
+          return { error: 'Invalid sync fetch limit. Allowed value: all', status: 400 };
+        }
+        updates.push('sync_fetch_limit = ?');
+        params.push(normalizedSyncFetchLimit);
+      }
+      if (serverDeleteSettingProvided) {
+        if (requestedServerDeleteEnabled && !currentServerDeleteEnabled) {
+          updates.push('delete_emails_on_server = TRUE');
+          updates.push('server_delete_enabled_at = UTC_TIMESTAMP()');
+          updates.push('server_delete_grace_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)');
+          shouldSeedServerDeleteQueue = true;
+        } else if (!requestedServerDeleteEnabled && currentServerDeleteEnabled) {
+          updates.push('delete_emails_on_server = FALSE');
+          updates.push('server_delete_enabled_at = NULL');
+          updates.push('server_delete_grace_until = NULL');
+        }
+      }
+      
+      if (updates.length === 0 && !serverDeleteSettingProvided) return { error: 'No fields to update', status: 400 };
+      // Failed validation/authentication must not pause a working account.
+      if (stopRequired) await stopMailAccountWork(id, 'Account settings changing');
+      
+      if (updates.length > 0) {
+        params.push(id, userId);
+        await db.execute(
+          `UPDATE mail_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
+          params
+        );
+      }
+
+      if (modeChange.changed) await mailWritebacks.cancelForAccount(db, id, userId);
+      if (stopRequired && (body.is_active === true || toBooleanFlag(existingAccount.is_active)))
+        await require('../services/mail-engine/runtime').resumeAccount({ userId, accountId: id });
+
+      if (modeChange.changed) {
+        await db.execute("UPDATE mail_server_messages SET delete_status = 'skipped', delete_error = 'Cancelled by mail mode change' WHERE mail_account_id = ? AND user_id = ? AND delete_status IN ('pending', 'failed')", [id, userId]);
+      }
+      if (shouldSeedServerDeleteQueue) {
+        await seedMailServerDeletionQueueForAccount({ userId, accountId: id });
+      }
+      
+      const [updated] = await db.execute(
+        `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+                smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
+                server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at, is_active
+         FROM mail_accounts
+         WHERE id = ?`,
+        [id]
+      );
+      
+      const updatedAccount = updated[0] || null;
+      if (updatedAccount) updatedAccount.delete_emails_on_server = toBooleanFlag(updatedAccount.delete_emails_on_server);
+      if (body.is_active === true) setImmediate(() => startMailSyncInBackground(id).catch(error => console.error('[SYNC] Reconnect scheduling failed:', error.message)));
+      return { account: updatedAccount };
+      });
+    } catch (error) {
+      console.error('[ACCOUNT] Update error:', error);
+      return { error: error.message || 'Failed to update mail account', status: error.status || 500 };
+    }
+  },
+  
+  'GET /api/mail/accounts/:id/purge-preview': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try { return await mailAccountLifecycle.purgePreview(userId, req.params.id); }
+    catch (error) { return { error: error.status ? error.message : 'Could not preview account purge', status: error.status || 500 }; }
+  },
+
+  'DELETE /api/mail/accounts/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const id = extractMailRouteId(req);
+      const query = new URL(req.url, 'http://localhost').searchParams;
+      return query.get('purge') === 'true'
+        ? await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'))
+        : await mailAccountLifecycle.disconnectAccount(userId, id);
+    } catch (error) {
+      return { error: error.status ? error.message : 'Could not change mail account connection', status: error.status || 500 };
+    }
+  },
+
+  'POST /api/mail/drafts': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const account = await loadMailAccountForDraft(userId, body?.account_id);
+      if (!account) return { error: 'Account not found', status: 404 };
+
+      const draftId = crypto.randomUUID();
+      const isHtml = body?.isHtml !== false;
+      const draftBody = String(body?.body_html ?? body?.body ?? '');
+      const bodyText = isHtml ? htmlToDraftText(draftBody) : draftBody;
+      const bodyHtml = isHtml ? draftBody : null;
+      const toAddresses = normalizeDraftRecipients(body?.to);
+      const subject = String(body?.subject ?? '');
+
+      await ensureDefaultMailFoldersForUser(userId);
+      await saveDraftMutation({ db, userId, emailId: draftId, isNew: true, body,
+        deleteFiles: deleteStoredAttachmentFiles,
+        mutate: (connection) => connection.execute(
+        `INSERT INTO emails
+          (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses,
+           body_text, body_html, has_attachments, received_at, folder, is_read, is_draft)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, UTC_TIMESTAMP(), ?, TRUE, TRUE)`,
+        [
+          draftId,
+          userId,
+          account.id,
+          `<draft-${draftId}@unihub.local>`,
+          subject || null,
+          account.email_address,
+          account.display_name || null,
+          JSON.stringify(toAddresses),
+          bodyText || null,
+          bodyHtml,
+          MAIL_DRAFT_FOLDER,
+        ]
+        ),
+      });
+
+      return { draft: await loadDraftEmail(userId, draftId) };
+    } catch (error) {
+      console.error('Create draft error:', error);
+      return { error: error.message || 'Failed to save draft', status: error.status || 500 };
+    }
+  },
+
+  'PUT /api/mail/drafts/:id': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const draftId = extractMailRouteId(req);
+      const current = await loadDraftEmail(userId, draftId);
+      if (!current) return { error: 'Draft not found', status: 404 };
+
+      let account = null;
+      if (body?.account_id !== undefined && body.account_id !== current.mail_account_id) {
+        account = await loadMailAccountForDraft(userId, body.account_id);
+        if (!account) return { error: 'Account not found', status: 404 };
+      }
+
+      const updates = ['received_at = UTC_TIMESTAMP()', 'folder = ?', 'is_draft = TRUE', 'is_read = TRUE'];
+      const params = [MAIL_DRAFT_FOLDER];
+
+      if (account) {
+        updates.push('mail_account_id = ?', 'from_address = ?', 'from_name = ?');
+        params.push(account.id, account.email_address, account.display_name || null);
+      }
+      if (body?.to !== undefined) {
+        updates.push('to_addresses = ?');
+        params.push(JSON.stringify(normalizeDraftRecipients(body.to)));
+      }
+      if (body?.subject !== undefined) {
+        updates.push('subject = ?');
+        params.push(String(body.subject || '') || null);
+      }
+      if (body?.body !== undefined || body?.body_html !== undefined) {
+        const isHtml = body?.isHtml !== false;
+        const draftBody = String(body.body_html ?? body.body ?? '');
+        updates.push('body_text = ?', 'body_html = ?');
+        params.push(isHtml ? htmlToDraftText(draftBody) || null : draftBody || null, isHtml ? draftBody : null);
+      }
+
+      params.push(draftId, userId);
+      await saveDraftMutation({ db, userId, emailId: draftId, body,
+        deleteFiles: deleteStoredAttachmentFiles,
+        mutate: (connection) => connection.execute(
+          `UPDATE emails SET ${updates.join(', ')} WHERE id = ? AND user_id = ? AND is_draft = TRUE`, params
+        ),
+      });
+
+      return { draft: await loadDraftEmail(userId, draftId) };
+    } catch (error) {
+      console.error('Update draft error:', error);
+      return { error: error.message || 'Failed to update draft', status: error.status || 500 };
+    }
+  },
+
+  'DELETE /api/mail/drafts/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      return await deleteDraftWithFiles(userId, extractMailRouteId(req));
+    } catch (error) {
+      console.error('Delete draft error:', error);
+      return { error: error.message || 'Failed to delete draft', status: 500 };
+    }
+  },
+
+  'POST /api/mail/drafts/:id/send': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const draftId = extractMailRouteId(req, 2);
+      const draft = await loadDraftEmail(userId, draftId);
+      if (!draft) return { error: 'Draft not found', status: 404 };
+
+      const account = await loadMailAccountForDraft(userId, draft.mail_account_id);
+      if (!account) return { error: 'Account not found', status: 404 };
+
+      const to = formatDraftRecipients(draft.to_addresses);
+      if (!to) return { error: 'Draft needs at least one recipient before sending', status: 400 };
+
+      const [attachmentRows] = await db.execute(
+        'SELECT filename, content_type, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
+        [draftId, userId]
+      );
+      const attachments = [];
+      for (const attachment of attachmentRows || []) {
+        if (!attachment.storage_path) continue;
+        const content = await readFile(attachment.storage_path);
+        attachments.push({
+          filename: attachment.filename,
+          contentType: attachment.content_type || 'application/octet-stream',
+          dataBase64: content.toString('base64'),
+        });
+      }
+
+      const bodyContent = draft.body_html || draft.body_text || (attachments.length > 0 ? '<p></p>' : '');
+      if (!bodyContent && attachments.length === 0) {
+        return { error: 'Draft needs a message or attachment before sending', status: 400 };
+      }
+
+      const result = await sendEmail(draft.mail_account_id, {
+        to,
+        subject: draft.subject || '(No subject)',
+        body: bodyContent,
+        isHtml: !!draft.body_html || attachments.length > 0,
+        attachments,
+      });
+      const deleteResult = await deleteDraftWithFiles(userId, draftId);
+
+      return {
+        success: true,
+        messageId: result.messageId,
+        deletedAttachmentFiles: deleteResult.deletedAttachmentFiles || 0,
+        failedAttachmentFiles: deleteResult.failedAttachmentFiles || 0,
+      };
+    } catch (error) {
+      console.error('Send draft error:', error);
+      return { error: error.message || 'Failed to send draft', status: error.status || 500 };
+    }
+  },
+  
+  // Emails endpoints
+  'GET /api/mail/emails': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    let query, params, folder, accountId;
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      folder = url.searchParams.get('folder');
+      accountId = url.searchParams.get('account_id');
+      const hasFolderFilter = !!folder && folder !== 'all';
+      const hasAccountFilter = !!accountId && accountId !== 'all';
+      const isReadParam = url.searchParams.get('is_read');
+      const isStarredParam = url.searchParams.get('is_starred');
+      const searchParam = (url.searchParams.get('search') || '').trim();
+      const includeCount = url.searchParams.get('include_count') !== 'false';
+      const where = ['user_id = ?'];
+      params = [userId];
+      
+      if (folder === 'starred') {
+        where.push(`${EFFECTIVE_STAR_SQL} = 1`);
+      } else if (hasFolderFilter) {
+        where.push(folderMembershipSql);
+        params.push(folder, folder, folder);
+      }
+      
+      if (hasAccountFilter) {
+        where.push(accountId === 'legacy' ? 'is_legacy = TRUE' : `is_legacy = FALSE AND ${FILING_ACCOUNT_SQL} = ?`);
+        if (accountId !== 'legacy') params.push(accountId);
+      }
+
+      if (isReadParam === 'true' || isReadParam === 'false') {
+        where.push(`${EFFECTIVE_READ_SQL} = ?`);
+        params.push(isReadParam === 'true' ? 1 : 0);
+      }
+
+      if (isStarredParam === 'true' || isStarredParam === 'false') {
+        where.push(`${EFFECTIVE_STAR_SQL} = ?`);
+        params.push(isStarredParam === 'true' ? 1 : 0);
+      }
+
+      if (searchParam) {
+        const searchValue = `%${searchParam.toLowerCase()}%`;
+        where.push(`(
+          LOWER(COALESCE(subject, '')) LIKE ? OR
+          LOWER(COALESCE(from_name, '')) LIKE ? OR
+          LOWER(COALESCE(from_address, '')) LIKE ? OR
+          LOWER(COALESCE(body_text, '')) LIKE ?
+        )`);
+        params.push(searchValue, searchValue, searchValue, searchValue);
+      }
+      
+      // Pagination
+      const requestedLimit = parseInt(url.searchParams.get('limit') || '50', 10);
+      const requestedOffset = parseInt(url.searchParams.get('offset') || '0', 10);
+      const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50;
+      const offset = Number.isFinite(requestedOffset) ? Math.max(requestedOffset, 0) : 0;
+      const page = Math.max(1, Math.floor(offset / limit) + 1);
+      const whereSql = where.join(' AND ');
+      
+      // Use template literals for LIMIT/OFFSET since they're already sanitized integers
+      // This avoids parameter binding issues with mysql2
+      query = `
+        SELECT
+          id,
+          user_id,
+          mail_account_id, filing_account_id, is_legacy, remote_missing,
+          message_id,
+          subject,
+          from_address,
+          from_name,
+          to_addresses,
+          CASE
+            WHEN body_text IS NULL THEN NULL
+            WHEN CHAR_LENGTH(body_text) > ${MAIL_LIST_PREVIEW_LENGTH}
+              THEN CONCAT(LEFT(body_text, ${MAIL_LIST_PREVIEW_LENGTH}), '...')
+            ELSE body_text
+          END AS body_text,
+          NULL AS body_html,
+          COALESCE(${pendingMoveSql}, folder) AS folder,
+          source_folder,
+          imap_uid,
+          imap_uidvalidity,
+          raw_storage_path,
+          raw_sha256,
+          ${EFFECTIVE_READ_SQL} AS is_read,
+          ${EFFECTIVE_STAR_SQL} AS is_starred,
+          ${pendingFlagSql('read')} AS read_sync_pending,
+          ${pendingFlagSql('star')} AS star_sync_pending,
+          is_draft,
+          has_attachments,
+          received_at,
+          created_at
+        FROM emails
+        WHERE ${whereSql}
+        ORDER BY received_at DESC, id DESC
+        LIMIT ${limit} OFFSET ${offset}`;
+      
+      // Get total count for pagination
+      let total = null;
+      if (includeCount) {
+        const countQuery = `SELECT COUNT(*) as total FROM emails WHERE ${whereSql}`;
+        const [countResult] = await db.execute(countQuery, params);
+        total = countResult[0]?.total || 0;
+      }
+      
+      const [emails] = await db.execute(query, params);
+      console.log(`[API] GET /api/mail/emails: Found ${emails.length} emails for user ${userId}, folder ${hasFolderFilter ? folder : 'all'}, account ${hasAccountFilter ? accountId : 'all'}, total ${includeCount ? total : 'not requested'}`);
+      
+      // Parse JSON fields
+      const parsedEmails = emails.map(email => ({
+        ...presentMailFiling(email),
+        ...(hasFolderFilter && folder !== 'starred' ? { folder } : {}),
+        to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
+        is_read: toBooleanFlag(email.is_read),
+        is_starred: toBooleanFlag(email.is_starred),
+        read_sync_pending: !!email.read_sync_pending,
+        star_sync_pending: !!email.star_sync_pending,
+        is_draft: !!email.is_draft,
+      }));
+      return { 
+        emails: parsedEmails,
+        pagination: {
+          total,
+          limit,
+          offset,
+          page,
+          totalPages: includeCount ? Math.ceil(total / limit) : null,
+          hasMore: emails.length === limit,
+        }
+      };
+    } catch (error) {
+      console.error(`[API] GET /api/mail/emails ERROR:`, error.message);
+      console.error(`[API] Query:`, query || 'N/A');
+      console.error(`[API] Params:`, params || 'N/A');
+      console.error(`[API] Folder:`, folder || 'N/A', `AccountId:`, accountId || 'N/A');
+      console.error(`[API] Error stack:`, error.stack);
+      return { error: 'Failed to get emails', status: 500 };
+    }
+  },
+  
+  'GET /api/mail/emails/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const id = extractMailRouteId(req);
+      const [emails] = await db.execute(
+        `SELECT emails.*, ${EFFECTIVE_READ_SQL} AS effective_is_read,
+          ${EFFECTIVE_STAR_SQL} AS effective_is_starred,
+          ${pendingFlagSql('read')} AS read_sync_pending,
+          ${pendingFlagSql('star')} AS star_sync_pending FROM emails WHERE id = ? AND user_id = ?`,
+        [id, userId]
+      );
+      
+      if (emails.length === 0) {
+        return { error: 'Email not found', status: 404 };
+      }
+      
+      const email = emails[0];
+      const { effective_is_read, effective_is_starred, ...storedEmail } = email;
+      // Parse JSON fields
+      const parsedEmail = {
+        ...presentMailFiling(storedEmail),
+        to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
+        is_read: toBooleanFlag(effective_is_read),
+        is_starred: toBooleanFlag(effective_is_starred),
+        read_sync_pending: !!email.read_sync_pending,
+        star_sync_pending: !!email.star_sync_pending,
+        is_draft: !!email.is_draft,
+      };
+      
+      // Fetch attachments (exclude inline attachments from list - they're embedded in HTML)
+      const [attachments] = await db.execute(
+        'SELECT id, filename, content_type, size_bytes, content_id FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
+        [id, userId]
+      );
+      
+      // Separate inline and regular attachments
+      const inlineAttachments = attachments.filter(att => att.content_id);
+      const regularAttachments = attachments.filter(att => !att.content_id);
+      
+      parsedEmail.attachments = regularAttachments.map(att => ({
+        id: att.id,
+        filename: att.filename,
+        content_type: att.content_type,
+        size_bytes: att.size_bytes,
+      }));
+      
+      // Note: Inline attachments are already embedded in body_html via URL replacement
+      
+      return { email: parsedEmail };
+    } catch (error) {
+      return { error: 'Failed to get email', status: 500 };
+    }
+  },
+
+  'GET /api/mail/attachments/:id': async (req, userId, body, res) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const parts = req.url.split('?')[0].split('/');
+      const attachmentId = parts[parts.length - 1];
+      
+      // Get attachment info and verify it belongs to user's email
+      const [attachments] = await db.execute(
+        `SELECT a.id, a.filename, a.content_type, a.storage_path, a.user_id
+         FROM email_attachments a
+         WHERE a.id = ? AND a.user_id = ?`,
+        [attachmentId, userId]
+      );
+      
+      if (attachments.length === 0) {
+        return { error: 'Attachment not found', status: 404 };
+      }
+      
+      const attachment = attachments[0];
+      
+      // Read file from storage (must stay under attachments root)
+      try {
+        const uploadsRoot = path.resolve(MAIL_ATTACHMENT_UPLOAD_ROOT);
+        const resolvedPath = path.resolve(attachment.storage_path || '');
+        if (!resolvedPath.startsWith(`${uploadsRoot}${path.sep}`) && resolvedPath !== uploadsRoot) {
+          console.error('[ATTACH] Rejected attachment path outside uploads root:', resolvedPath);
+          return { error: 'Invalid attachment path', status: 400 };
+        }
+
+        const fileStat = await fs.promises.stat(resolvedPath);
+        if (!fileStat.isFile()) return { error: 'Attachment not found', status: 404 };
+        
+        // Reuse the bounded-memory download response used by recordings/backups.
+        // Ensure proper content type for PDFs and other common types
+        let contentType = attachment.content_type || 'application/octet-stream';
+        const filename = attachment.filename || 'download';
+        
+        // Fix common content type issues
+        if (filename.toLowerCase().endsWith('.pdf') && !contentType.includes('pdf')) {
+          contentType = 'application/pdf';
+        } else if (filename.toLowerCase().endsWith('.jpg') || filename.toLowerCase().endsWith('.jpeg')) {
+          contentType = 'image/jpeg';
+        } else if (filename.toLowerCase().endsWith('.png')) {
+          contentType = 'image/png';
+        } else if (filename.toLowerCase().endsWith('.txt')) {
+          contentType = 'text/plain';
+        }
+        
+        return {
+          __streamPath: resolvedPath,
+          __contentLength: fileStat.size,
+          __contentType: contentType,
+          __filename: filename,
+        };
+      } catch (fileError) {
+        console.error(`[ATTACH] Failed to read attachment file:`, fileError.message);
+        return { error: 'Failed to read attachment file', status: 500 };
+      }
+    } catch (error) {
+      console.error('[ATTACH] Error:', error);
+      return { error: 'Failed to fetch attachment', status: 500 };
+    }
+  },
+  
+  'GET /api/mail/writebacks': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const query = new URL(req.url, 'http://localhost').searchParams;
+      const result = await mailWritebacks.listWritebacks(userId, { accountId: query.get('account_id'), includeHistory: query.get('history') === 'true' });
+      return Array.isArray(result) ? { operations: result } : result;
+    } catch (error) { return { error: error.status ? error.message : 'Could not load provider changes', status: error.status || 500 }; }
+  },
+  'GET /api/mail/operations': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const key = new URL(req.url, 'http://localhost').searchParams.get('key');
+      if (!key || !/^[A-Za-z0-9._:-]{1,128}$/.test(key)) return { error: 'Valid operation key required', status: 400 };
+      return await mailWritebacks.getOperationReceipt(userId, key);
+    } catch (error) { return { error: error.status ? error.message : 'Could not look up accepted change', status: error.status || 500 }; }
+  },
+  'POST /api/mail/writebacks/:id/cancel': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try { return await mailWritebacks.cancelWriteback(userId, req.params.id); }
+    catch (error) { return { error: error.status ? error.message : 'Could not cancel provider change', status: error.status || 500 }; }
+  },
+  'POST /api/mail/writebacks/:id/retry': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try { return await mailWritebacks.retryWriteback(userId, req.params.id); }
+    catch (error) { return { error: error.status ? error.message : 'Could not retry provider update', status: error.status || 500 }; }
+  },
+
+  'PUT /api/mail/emails/:id/read': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const parts = req.url.split('?')[0].split('/');
+      const id = parts[parts.length - 2];
+      if (typeof body.is_read !== 'boolean') return { error: 'Read state must be boolean', status: 400 };
+      return await mailWritebacks.mutateMessages(userId, [id], { read: Number(body.is_read) }, undefined, operationOptions(req));
+    } catch (error) {
+      return { error: error.status ? error.message : 'Failed to update email', status: error.status || 500 };
+    }
+  },
+  
+  'PUT /api/mail/emails/:id/star': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const parts = req.url.split('?')[0].split('/');
+      const id = parts[parts.length - 2];
+      if (typeof body.is_starred !== 'boolean') return { error: 'Star state must be boolean', status: 400 };
+      return await mailWritebacks.mutateMessages(userId, [id], { star: Number(body.is_starred) }, undefined, operationOptions(req));
+    } catch (error) {
+      return { error: error.status ? error.message : 'Failed to update email', status: error.status || 500 };
+    }
+  },
+
+  'POST /api/mail/emails/bulk-delete': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { email_ids } = body;
+      if (!Array.isArray(email_ids) || email_ids.length === 0) {
+        return { error: 'Email IDs array required', status: 400 };
+      }
+      
+      return await mailWritebacks.mutateMessages(userId, email_ids, { move: 'trash' }, undefined, operationOptions(req));
+    } catch (error) {
+      console.error('[BULK] Delete error:', error);
+      return { error: error.status ? error.message : 'Failed to delete emails', status: error.status || 500 };
+    }
+  },
+
+  'POST /api/mail/emails/bulk-move': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { folder } = body;
+      const options = operationOptions(req);
+      if (!Array.isArray(body.email_ids) || !body.email_ids.length || body.email_ids.length > 500 || body.email_ids.some(id => typeof id !== 'string' || !id)) {
+        return { error: 'Select between 1 and 500 messages.', status: 400 };
+      }
+      const email_ids = [...new Set(body.email_ids)].sort();
+      const folderValidation = await validateUserMailFolder(userId, folder);
+      if (folderValidation.error) return folderValidation;
+      
+      const requestedAccount = String(body.account_id || '').trim() || null;
+      const links = await folderConnections(userId);
+      if (requestedAccount) {
+        const [owned] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [requestedAccount, userId]);
+        if (!owned.length) return { error: 'Receiving account not found', status: 400 };
+      }
+      if (!requestedAccount) {
+        return await mailWritebacks.mutateMessages(userId, email_ids, { move: folderValidation.folder }, async (_connection, selected) => {
+          for (const email of selected) {
+            if (email.is_legacy || !folderAcceptsAccount({ slug: folderValidation.folder, mail_account_id: folderValidation.accountId, is_system: folderValidation.isSystem }, filingAccountId(email), links)) {
+              throw Object.assign(new Error('Choose a folder connected to the message account; Legacy mail needs a receiving account.'), { status: 400 });
+            }
+          }
+        }, options);
+      }
+      const localHash = crypto.createHash('sha256').update(JSON.stringify({ kind: 'legacy-recovery',
+        ids: email_ids, folder: folderValidation.folder, account_id: requestedAccount })).digest('hex');
+      const replay = receipt => {
+        if (receipt.request_hash !== localHash) throw Object.assign(new Error('Idempotency-Key already used for a different request'), { status: 409 });
+        const saved = typeof receipt.response_json === 'string' ? JSON.parse(receipt.response_json) : receipt.response_json;
+        return saved.recovery_required ? { ...saved, sync_pending: false, message: 'Recovered command requires review; no operation was replayed' } : saved;
+      };
+      const response = { message: `Filed ${email_ids.length} email(s) locally in ${folderValidation.folder}. Provider mail was not changed.`,
+        sync_pending: false, operation_ids: [], accepted_revision: null, local_only: true };
+      const placeholders = email_ids.map(() => '?').join(',');
+      const connection = await db.getConnection();
+      try {
+        await connection.beginTransaction();
+        if (options.idempotencyKey) {
+          const [[prior]] = await connection.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ? FOR UPDATE', [userId, options.idempotencyKey]);
+          if (prior) { const saved = replay(prior); await connection.commit(); return saved; }
+          await connection.execute('INSERT INTO mail_command_receipts (user_id,client_key,request_hash,response_json) VALUES (?,?,?,?)',
+            [userId, options.idempotencyKey, localHash, JSON.stringify(response)]);
+        }
+        const [selected] = await connection.execute(
+          `SELECT id, mail_account_id, filing_account_id, folder, is_legacy FROM emails
+           WHERE id IN (${placeholders}) AND user_id = ? FOR UPDATE`, [...email_ids, userId]);
+        if (selected.length !== new Set(email_ids).size) {
+          await connection.rollback();
+          return { error: 'Some selected emails are unavailable', status: 404 };
+        }
+        for (const email of selected) {
+          const targetAccount = requestedAccount || filingAccountId(email);
+          if ((requestedAccount && !email.is_legacy) || (!requestedAccount && email.is_legacy)
+            || !folderAcceptsAccount({ slug: folderValidation.folder, mail_account_id: folderValidation.accountId, is_system: folderValidation.isSystem }, targetAccount, links)) {
+            await connection.rollback();
+            return { error: 'Move cancelled. Choose a receiving account for Legacy mail and a folder connected to that account.', status: 400 };
+          }
+        }
+        if (requestedAccount) {
+          for (const email of selected) {
+            await connection.execute(`INSERT INTO mail_folder_recovery_items
+              (email_id, user_id, source_account_id, original_folder, original_filing_account_id, target_folder, target_account_id, action)
+              VALUES (?, ?, ?, ?, ?, ?, ?, 'manual') ON DUPLICATE KEY UPDATE
+              target_folder = VALUES(target_folder), target_account_id = VALUES(target_account_id), action = 'manual'`,
+            [email.id, userId, email.mail_account_id, email.folder, email.filing_account_id, folderValidation.folder, requestedAccount]);
+          }
+          await connection.execute(`UPDATE emails SET folder = ?, filing_account_id = ?, is_legacy = FALSE
+            WHERE id IN (${placeholders}) AND user_id = ?`, [folderValidation.folder, requestedAccount, ...email_ids, userId]);
+        } else {
+          await connection.execute(`UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
+            [folderValidation.folder, ...email_ids, userId]);
+        }
+        await connection.commit();
+      } catch (error) {
+        await connection.rollback();
+        if (options.idempotencyKey && error.code === 'ER_DUP_ENTRY') {
+          const [[prior]] = await db.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ?', [userId, options.idempotencyKey]);
+          if (prior) return replay(prior);
+        }
+        throw error;
+      } finally { connection.release(); }
+
+      return response;
+    } catch (error) {
+      console.error('[BULK] Move error:', error);
+      return { error: error.status ? error.message : 'Failed to move emails', status: error.status || 500 };
+    }
+  },
+
+  'POST /api/mail/emails/bulk-update': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { email_ids, is_read, is_starred } = body;
+      if (!Array.isArray(email_ids) || email_ids.length === 0) {
+        return { error: 'Email IDs array required', status: 400 };
+      }
+      
+      const updates = [];
+      const values = [];
+      
+      if (typeof is_read === 'boolean') {
+        updates.push('is_read = ?');
+        values.push(is_read ? 1 : 0);
+      }
+      if (typeof is_starred === 'boolean') {
+        updates.push('is_starred = ?');
+        values.push(is_starred ? 1 : 0);
+      }
+      
+      if (updates.length === 0) {
+        return { error: 'At least one field (is_read or is_starred) required', status: 400 };
+      }
+      
+      const changes = {};
+      if (typeof is_read === 'boolean') changes.read = Number(is_read);
+      if (typeof is_starred === 'boolean') changes.star = Number(is_starred);
+      return await mailWritebacks.mutateMessages(userId, email_ids, changes, undefined, operationOptions(req));
+    } catch (error) {
+      console.error('[BULK] Update error:', error);
+      return { error: error.status ? error.message : 'Failed to update emails', status: error.status || 500 };
+    }
+  },
+
+  'POST /api/mail/sync/background': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    try {
+      const accountId = String(body?.account_id || '').trim();
+      const requestedMinAgeMs = Number(body?.min_age_ms);
+      const minAgeMs = Number.isFinite(requestedMinAgeMs)
+        ? Math.max(BACKGROUND_MAIL_SYNC_MIN_AGE_MS, requestedMinAgeMs)
+        : BACKGROUND_MAIL_SYNC_MIN_AGE_MS;
+
+      const params = [userId];
+      let query = `
+        SELECT id, email_address, last_synced_at
+        FROM mail_accounts
+        WHERE user_id = ? AND is_active = TRUE`;
+
+      if (accountId) {
+        query += ' AND id = ?';
+        params.push(accountId);
+      }
+
+      const [accounts] = await db.execute(query, params);
+      if (accountId && accounts.length === 0) {
+        return { error: 'Account not found', status: 404 };
+      }
+
+      const started = [];
+      const skipped = [];
+      const alreadyRunning = [];
+
+      for (const account of accounts) {
+        if (isMailSyncFresh(account.last_synced_at, minAgeMs)) {
+          skipped.push(account.id);
+          continue;
+        }
+
+        const didStart = await startMailSyncInBackground(account.id, account.id, { background: true });
+        if (didStart === null) {
+          skipped.push(account.id);
+        } else if (didStart) {
+          started.push(account.id);
+        } else {
+          alreadyRunning.push(account.id);
+        }
+      }
+
+      return { started, skipped, alreadyRunning: Array.from(new Set(alreadyRunning)) };
+    } catch (error) {
+      console.error('[SYNC] Background sync trigger error:', error);
+      return { error: error.message || 'Failed to start background mail sync', status: 500 };
+    }
+  },
+  
+  'GET /api/mail/sync/status': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const accountId = new URL(req.url, 'http://localhost').searchParams.get('account_id');
+    const [accounts] = await db.execute(`SELECT id, sync_status FROM mail_accounts WHERE user_id = ?
+      ${accountId ? 'AND id = ?' : ''} ORDER BY created_at`, accountId ? [userId, accountId] : [userId]);
+    if (accountId && !accounts.length) return { error: 'Account not found', status: 404 };
+    return { accounts: await Promise.all(accounts.map(async account => await getMailSyncState(account.id) || {
+      account_id: account.id,
+      state: account.sync_status === 'error' ? 'error' : account.sync_status === 'cancelled' ? 'cancelled' : 'idle',
+      phase: null, processed: 0, total: null, started_at: null, updated_at: null,
+      error: account.sync_status === 'error' ? 'The last sync failed; retry to see a detailed error.' : null,
+    })) };
+  },
+  'POST /api/mail/sync': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { account_id } = body;
+      if (!account_id) return { error: 'Account ID required', status: 400 };
+      
+      // Verify account belongs to user before scheduling any provider work.
+      const [accounts] = await db.execute(
+        'SELECT id, is_active FROM mail_accounts WHERE id = ? AND user_id = ?',
+        [account_id, userId]
+      );
+      if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+      if (!accounts[0].is_active) return { error: 'Mail account is inactive', status: 409 };
+
+      const job = await scheduleMailAccountSync(account_id);
+      job.promise.then(result => {
+        if (result?.success === false) console.error(`[SYNC] Account ${account_id} failed:`, result.error);
+      });
+      return { success: true, started: job.started, alreadyRunning: job.alreadyRunning,
+        account_id, message: job.started ? 'Sync queued; check status for progress.' : 'This account is already queued or syncing.',
+        status: job.started ? 202 : 200 };
+    } catch (error) {
+      console.error('[SYNC] Sync error:', error);
+      return { error: error.message || 'Failed to sync mail', status: 500 };
+    }
+  },
+  
+  'POST /api/mail/sync/cancel': async (_req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    const accountId = body?.account_id;
+    if (typeof accountId !== 'string' || !accountId.trim()) return { error: 'Account ID required', status: 400 };
+    try {
+      const [accounts] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+      if (!accounts.length) return { error: 'Account not found', status: 404 };
+      const requested = await cancelMailAccountSync(accountId);
+      // A running IMAP command stops cooperatively. The status endpoint, not
+      // this acknowledgement, establishes when its cleanup has completed.
+      return { success: true, account_id: accountId, cancellationRequested: requested,
+        message: requested ? 'Cancellation requested; check sync status.' : 'No active sync for this account.',
+        status: requested ? 202 : 200 };
+    } catch (error) {
+      console.error('[SYNC] Cancellation request failed:', error.message);
+      return { error: 'Could not request mail sync cancellation', status: 500 };
+    }
+  },
+
+  'POST /api/mail/send': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    
+    try {
+      const { account_id, to, subject, body: emailBody, isHtml, attachments } = body;
+      if (!account_id || !to || !subject || !emailBody) {
+        return { error: 'Missing required fields', status: 400 };
+      }
+      if (attachments !== undefined && !Array.isArray(attachments)) {
+        return { error: 'attachments must be an array', status: 400 };
+      }
+      
+      // Verify account belongs to user
+      const [accounts] = await db.execute(
+        'SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?',
+        [account_id, userId]
+      );
+      if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+      
+      // #region agent log
+      debugLog('server.js:1440', 'POST /mail/send START', { account_id, to, subject, userId }, 'H5');
+      // #endregion
+      const result = await sendEmail(account_id, { to, subject, body: emailBody, isHtml, attachments: attachments || [] });
+      // #region agent log
+      debugLog('server.js:1441', 'POST /mail/send SUCCESS', { messageId: result.messageId }, 'H5');
+      // #endregion
+      return { ...result, success: true, messageId: result.messageId };
+    } catch (error) {
+      // #region agent log
+      debugLog('server.js:1442', 'POST /mail/send ERROR', { errorMessage: error.message, errorStack: error.stack?.substring(0, 200) }, 'H5');
+      // #endregion
+      console.error('Send email error:', error);
+      return { error: error.message || 'Failed to send email', status: error.status || 500 };
+    }
+  },
+};

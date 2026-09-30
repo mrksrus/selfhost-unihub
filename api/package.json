@@ -1,0 +1,29 @@
+{
+  "name": "unihub-api",
+  "private": true,
+  "version": "0.10.13",
+  "description": "UniHub API Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test --test-concurrency=1 tests/*.test.js",
+    "test:recovery": "node scripts/test-recovery.cjs",
+    "test:ci": "node scripts/test-recovery.cjs --all"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "imap-simple": "^5.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mailparser": "3.9.16",
+    "mysql2": "3.23.1",
+    "nodemailer": "^9.0.3",
+    "web-push": "^3.6.7"
+  },
+  "overrides": {
+    "semver": "^7.6.0"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

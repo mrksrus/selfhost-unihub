@@ -1,0 +1,274 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* UniHub Design System - Professional Productivity Suite */
+
+@layer base {
+  :root {
+    /* Core palette - Black, white and blue */
+    --background: 220 20% 97%;
+    --foreground: 222 47% 11%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+
+    /* Primary - Deep slate blue */
+    --primary: 222 47% 20%;
+    --primary-foreground: 210 40% 98%;
+
+    /* Secondary - Cool gray */
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 222 47% 20%;
+
+    /* Muted surfaces */
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 9% 46%;
+
+    /* Accent - Blue */
+    --accent: 221 83% 53%;
+    --accent-foreground: 0 0% 100%;
+
+    /* Semantic colors */
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --info: 199 89% 48%;
+    --info-foreground: 0 0% 100%;
+
+    /* Borders and inputs */
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 221 83% 53%;
+
+    --radius: 0.625rem;
+
+    /* Sidebar - Darker for contrast */
+    --sidebar-background: 222 47% 11%;
+    --sidebar-foreground: 210 40% 96%;
+    --sidebar-primary: 213 94% 68%;
+    --sidebar-primary-foreground: 222 47% 11%;
+    --sidebar-accent: 222 47% 18%;
+    --sidebar-accent-foreground: 210 40% 96%;
+    --sidebar-border: 222 47% 18%;
+    --sidebar-ring: 213 94% 68%;
+
+    /* Module colors */
+    --contacts-color: 199 89% 48%;
+    --calendar-color: 262 83% 58%;
+    --mail-color: 221 83% 53%;
+
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(222 47% 20%) 0%, hsl(222 47% 30%) 100%);
+    --gradient-accent: linear-gradient(135deg, hsl(221 83% 53%) 0%, hsl(213 94% 68%) 100%);
+    --gradient-hero: linear-gradient(135deg, hsl(222 47% 11%) 0%, hsl(222 47% 20%) 50%, hsl(221 83% 30%) 100%);
+
+    /* Shadows */
+    --shadow-sm: 0 1px 2px 0 hsl(222 47% 11% / 0.05);
+    --shadow-md: 0 4px 6px -1px hsl(222 47% 11% / 0.1), 0 2px 4px -2px hsl(222 47% 11% / 0.1);
+    --shadow-lg: 0 10px 15px -3px hsl(222 47% 11% / 0.1), 0 4px 6px -4px hsl(222 47% 11% / 0.1);
+    --shadow-glow: 0 0 20px hsl(221 83% 53% / 0.3);
+  }
+
+  .dark {
+    color-scheme: dark;
+    --background: 0 0% 0%;
+    --foreground: 0 0% 100%;
+    --card: 0 0% 5%;
+    --card-foreground: 0 0% 100%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 100%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 9%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 9%;
+    --muted-foreground: 0 0% 70%;
+    --accent: 221 83% 53%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 20%;
+    --input: 0 0% 25%;
+    --ring: 213 94% 68%;
+    --sidebar-background: 0 0% 3%;
+    --sidebar-foreground: 0 0% 100%;
+    --sidebar-primary: 221 83% 53%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 0 0% 10%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 0 0% 18%;
+    --sidebar-ring: 213 94% 68%;
+    --contacts-color: 213 94% 68%;
+    --mail-color: 213 94% 68%;
+    --gradient-primary: linear-gradient(135deg, #101010, #191919);
+    --gradient-accent: linear-gradient(135deg, #2563eb, #60a5fa);
+    --gradient-hero: linear-gradient(135deg, #000 0%, #111 60%, #10254c 100%);
+    --shadow-glow: 0 0 20px hsl(221 83% 53% / 0.2);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-semibold tracking-tight;
+  }
+
+  code, pre {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+@layer components {
+  /* Module card styles */
+  .module-card {
+    @apply relative overflow-hidden rounded-xl bg-card border border-border shadow-sm transition-all duration-300;
+  }
+
+  .module-card:hover {
+    @apply shadow-lg border-accent/30;
+    transform: translateY(-2px);
+  }
+
+  .module-card-contacts {
+    @apply module-card;
+  }
+
+  .module-card-contacts:hover {
+    border-color: hsl(var(--contacts-color) / 0.3);
+  }
+
+  .module-card-calendar {
+    @apply module-card;
+  }
+
+  .module-card-calendar:hover {
+    border-color: hsl(var(--calendar-color) / 0.3);
+  }
+
+  .module-card-mail {
+    @apply module-card;
+  }
+
+  .module-card-mail:hover {
+    border-color: hsl(var(--mail-color) / 0.3);
+  }
+
+  /* Glass morphism effects */
+  .glass {
+    @apply bg-card/80 backdrop-blur-lg;
+  }
+
+  /* Sidebar nav item */
+  .sidebar-nav-item {
+    @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-sidebar-foreground/80 transition-all duration-200;
+  }
+
+  .sidebar-nav-item:hover {
+    @apply bg-sidebar-accent text-sidebar-foreground;
+  }
+
+  .sidebar-nav-item.active {
+    @apply bg-sidebar-primary text-sidebar-primary-foreground font-medium;
+  }
+
+  /* Input focus states */
+  .input-focus {
+    @apply focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-background transition-shadow;
+  }
+
+  /* Badge variants */
+  .badge-contacts {
+    @apply bg-[hsl(var(--contacts-color)/0.1)] text-[hsl(var(--contacts-color))] border-[hsl(var(--contacts-color)/0.2)];
+  }
+
+  .badge-calendar {
+    @apply bg-[hsl(var(--calendar-color)/0.1)] text-[hsl(var(--calendar-color))] border-[hsl(var(--calendar-color)/0.2)];
+  }
+
+  .badge-mail {
+    @apply bg-[hsl(var(--mail-color)/0.1)] text-[hsl(var(--mail-color))] border-[hsl(var(--mail-color)/0.2)];
+  }
+}
+
+@layer utilities {
+  /* Mobile bottom nav clearance: bar height + safe area */
+  .pb-mobile-nav {
+    padding-bottom: max(5rem, calc(5rem + env(safe-area-inset-bottom, 0)));
+  }
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent;
+    background-image: var(--gradient-accent);
+  }
+
+  .bg-gradient-primary {
+    background-image: var(--gradient-primary);
+  }
+
+  .bg-gradient-accent {
+    background-image: var(--gradient-accent);
+  }
+
+  .bg-gradient-hero {
+    background-image: var(--gradient-hero);
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.3s ease-out forwards;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.4s ease-out forwards;
+  }
+
+  .animate-scale-in {
+    animation: scaleIn 0.2s ease-out forwards;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes slideUp {
+    from { 
+      opacity: 0; 
+      transform: translateY(10px); 
+    }
+    to { 
+      opacity: 1; 
+      transform: translateY(0); 
+    }
+  }
+
+  @keyframes scaleIn {
+    from { 
+      opacity: 0; 
+      transform: scale(0.95); 
+    }
+    to { 
+      opacity: 1; 
+      transform: scale(1); 
+    }
+  }
+}

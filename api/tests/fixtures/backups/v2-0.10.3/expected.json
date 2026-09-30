@@ -1,0 +1,18 @@
+{
+  "tag": "v0.10.3",
+  "commit": "04fc92d99f0af0775e45d6e62345a3ddb5a06c83",
+  "version": 2,
+  "sha256": "5850aad39e1afdb503dd6833d10d09d7f6c216d8739a125f6ff38ebcaa65b6f1",
+  "source_sha256": {
+    "services/backup.js": "f809de598f0a3b16d21ac4fd13d172a95206b9a25e4b8bec8fb57ec06ed909f7",
+    "services/backup-format.js": "7f8d0b01a84b23c1b66487eceb40fe81d6310e6e750d9be7348fb394ec44d044",
+    "services/export-jobs.js": "30ed9f997cea0bd1444f34ff49e1d734707b4b58c9a032595b259e1eca076fee",
+    "services/database.js": "290b6001849149b181bd5c6867a4c7e50028d8a161001ad71adf544b79a4ca78"
+  },
+  "user": "01030000-0000-4000-8000-000000000001",
+  "account": "01030000-0000-4000-8000-000000000002",
+  "folder": "01030000-0000-4000-8000-000000000003",
+  "subject": "Frozen schema two message",
+  "body": "Original schema two body",
+  "remote_name": "Important"
+}

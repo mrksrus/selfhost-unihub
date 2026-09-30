@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark light" />
+    <script>
+      (() => {
+        let theme = 'dark';
+        try { theme = localStorage.getItem('theme') || 'dark'; } catch {}
+        const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('dark', dark);
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        document.documentElement.style.backgroundColor = dark ? '#000000' : '#f5f7fa';
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="UniHub" />
+    
+    <title>UniHub - Unified Productivity Suite</title>
+    <meta name="description" content="UniHub - Your unified productivity suite for Contacts, Calendar, and Mail. Self-hosted and secure." />
+    <meta name="author" content="UniHub" />
+    <meta name="keywords" content="productivity, contacts, calendar, mail, email, self-hosted, pwa" />
+
+    <meta property="og:title" content="UniHub - Unified Productivity Suite" />
+    <meta property="og:description" content="Manage your Contacts, Calendar, and Mail in one secure place" />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/icons/icon-512x512.svg" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="UniHub - Unified Productivity Suite" />
+    <meta name="twitter:description" content="Manage your Contacts, Calendar, and Mail in one secure place" />
+    
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180x180.png" />
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

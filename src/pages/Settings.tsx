@@ -1,0 +1,1423 @@
+import ModuleSettings from '@/components/settings/ModuleSettings';
+import OfflineSettings from '@/components/offline/OfflineSettings';
+import AppearanceSettings from '@/components/theme/AppearanceSettings';
+import { lazy, Suspense, useState, useEffect } from 'react';
+import type { User as AuthUser } from '@/contexts/auth-context';
+import NotificationSettings from '@/components/pwa/NotificationSettings';
+const BackupSettings = lazy(() => import('@/components/settings/BackupSettings'));
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useAuth } from '@/contexts/useAuth';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
+import { Progress } from '@/components/ui/progress';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { useToast } from '@/hooks/use-toast';
+import { api } from '@/lib/api';
+import { calendarQueryKeys } from '@/lib/calendar-api';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  User,
+  Shield,
+  Download,
+  Loader2,
+  Database,
+  Globe,
+  AtSign,
+  Trash2,
+  Upload,
+  LockKeyhole,
+  Square,
+  RotateCcw,
+  Copy,
+  Play,
+} from 'lucide-react';
+import { motion } from 'framer-motion';
+
+const DEVICE_TZ_VALUE = '';
+const timezoneOptions = (() => {
+  try {
+    const intl = Intl as typeof Intl & { supportedValuesOf?: (key: 'timeZone') => string[] };
+    const zones = intl.supportedValuesOf?.('timeZone') ?? [];
+    return [DEVICE_TZ_VALUE, ...zones.sort()];
+  } catch {
+    return [DEVICE_TZ_VALUE];
+  }
+})();
+
+type MailSenderRule = {
+  id: string;
+  user_id: string;
+  mail_account_id: string | null;
+  match_type: 'domain' | 'email';
+  match_value: string;
+  target_folder: string;
+  priority: number;
+  is_active: number | boolean;
+  created_at?: string;
+  updated_at?: string;
+  account_email?: string | null;
+};
+
+type MailCandidateDomain = {
+  domain: string;
+  email_count: number;
+  last_received_at: string | null;
+  has_rule: number;
+  matching_rule?: MailSenderRule | null;
+};
+
+type MailCandidateSender = {
+  sender_email: string;
+  sender_name: string | null;
+  email_count: number;
+  last_received_at: string | null;
+  has_rule: number;
+  matching_rule?: MailSenderRule | null;
+};
+
+type MailFolder = {
+  slug: string;
+  display_name: string;
+  is_system: boolean;
+};
+
+type UserPreferences = {
+  email_link_behavior: 'mailto' | 'internal';
+  default_start_page: 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'notes' | 'dashboard';
+};
+
+type TwoFactorStatus = {
+  enabled: boolean;
+  recoveryCodesRemaining: number;
+};
+
+type TwoFactorSetup = {
+  secret: string;
+  otpauth_uri: string;
+};
+
+const FALLBACK_MAIL_FOLDERS: MailFolder[] = [
+  { slug: 'inbox', display_name: 'Inbox', is_system: true },
+  { slug: 'important', display_name: 'Important', is_system: true },
+  { slug: 'marketing', display_name: 'Marketing', is_system: true },
+  { slug: 'twofactor_notifications', display_name: '2FA / Notifications', is_system: true },
+  { slug: 'archive', display_name: 'Archive', is_system: true },
+  { slug: 'unknown', display_name: 'Unknown', is_system: true },
+  { slug: 'scam', display_name: 'Scam', is_system: true },
+  { slug: 'trash', display_name: 'Trash', is_system: true },
+];
+
+const Settings = () => {
+  const { user, setUser, signOut } = useAuth();
+  const [activeTab, setActiveTab] = useState(() => new URLSearchParams(window.location.search).get('tab') || 'general');
+  const [visitedData, setVisitedData] = useState(() => new URLSearchParams(window.location.search).get('tab') === 'data');
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const [loading, setLoading] = useState(false);
+  const [fullName, setFullName] = useState(user?.full_name || '');
+  const [timezone, setTimezone] = useState(user?.timezone ?? DEVICE_TZ_VALUE);
+  const [isPasswordOpen, setIsPasswordOpen] = useState(false);
+  const [clearContactsOpen, setClearContactsOpen] = useState(false);
+  const [clearCalendarOpen, setClearCalendarOpen] = useState(false);
+  const [clearMailOpen, setClearMailOpen] = useState(false);
+  const [clearRecordingsOpen, setClearRecordingsOpen] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [clearContactsLoading, setClearContactsLoading] = useState(false);
+  const [clearCalendarLoading, setClearCalendarLoading] = useState(false);
+  const [clearMailLoading, setClearMailLoading] = useState(false);
+  const [clearRecordingsLoading, setClearRecordingsLoading] = useState(false);
+  const [deleteAccountLoading, setDeleteAccountLoading] = useState(false);
+  const [preferencesSaving, setPreferencesSaving] = useState(false);
+  const [preferences, setPreferences] = useState<UserPreferences>({
+    email_link_behavior: 'mailto',
+    default_start_page: 'mail',
+  });
+  const [ruleSaving, setRuleSaving] = useState(false);
+  const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
+  const [ruleSorting, setRuleSorting] = useState(false);
+  const [ruleSortCursor, setRuleSortCursor] = useState<string | null>(null);
+  const [ruleEditor, setRuleEditor] = useState<{
+    id?: string;
+    match_type: 'domain' | 'email';
+    match_value: string;
+    target_folder: string;
+    mail_account_id: string;
+    priority: number;
+    is_active: boolean;
+  }>({
+    match_type: 'domain',
+    match_value: '',
+    target_folder: 'marketing',
+    mail_account_id: '',
+    priority: 100,
+    is_active: true,
+  });
+
+  const { data: mailSenderCandidates, isLoading: mailSenderCandidatesLoading, refetch: refetchMailSenderCandidates } = useQuery({
+    queryKey: ['mail-sender-candidates'],
+    enabled: activeTab === 'mail',
+    queryFn: async () => {
+      const response = await api.get<{
+        domains: MailCandidateDomain[];
+        senders: MailCandidateSender[];
+      }>('/settings/mail-sender-candidates?domain_limit=20&sender_limit=20');
+      if (response.error) throw new Error(response.error);
+      return response.data ?? { domains: [], senders: [] };
+    },
+  });
+
+  const { data: mailAccounts } = useQuery({
+    queryKey: ['mail-accounts'],
+    enabled: activeTab === 'mail',
+    queryFn: async () => {
+      const response = await api.get<{ accounts: Array<{ id: string; email_address: string; display_name?: string | null }> }>('/mail/accounts');
+      if (response.error) throw new Error(response.error);
+      return response.data?.accounts ?? [];
+    },
+  });
+
+  const { data: mailFolders = FALLBACK_MAIL_FOLDERS } = useQuery({
+    queryKey: ['mail-folders'],
+    enabled: activeTab === 'mail',
+    queryFn: async () => {
+      const response = await api.get<{ folders: MailFolder[] }>('/mail/folders');
+      if (response.error) throw new Error(response.error);
+      return response.data?.folders ?? FALLBACK_MAIL_FOLDERS;
+    },
+  });
+
+  const { data: preferencesData } = useQuery({
+    queryKey: ['settings', 'preferences'],
+    queryFn: async () => {
+      const response = await api.get<{ preferences: UserPreferences }>('/settings/preferences');
+      if (response.error) throw new Error(response.error);
+      return response.data?.preferences || { email_link_behavior: 'mailto', default_start_page: 'mail' } as UserPreferences;
+    },
+    enabled: !!user,
+  });
+
+  const getMailFolderLabel = (slug: string) =>
+    (mailFolders.length ? mailFolders : FALLBACK_MAIL_FOLDERS).find((folder) => folder.slug === slug)?.display_name || slug;
+
+  useEffect(() => {
+    setFullName(user?.full_name || '');
+    setTimezone(user?.timezone ?? DEVICE_TZ_VALUE);
+  }, [user?.full_name, user?.timezone]);
+
+  useEffect(() => {
+    if (preferencesData) setPreferences(preferencesData);
+  }, [preferencesData]);
+
+  const [passwordForm, setPasswordForm] = useState({
+    current_password: '',
+    new_password: '',
+    confirm_password: '',
+  });
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [twoFactorSetupOpen, setTwoFactorSetupOpen] = useState(false);
+  const [twoFactorDisableOpen, setTwoFactorDisableOpen] = useState(false);
+  const [twoFactorRecoveryOpen, setTwoFactorRecoveryOpen] = useState(false);
+  const [twoFactorSetup, setTwoFactorSetup] = useState<TwoFactorSetup | null>(null);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorDisableForm, setTwoFactorDisableForm] = useState({ current_password: '', code: '' });
+  const [newRecoveryCodes, setNewRecoveryCodes] = useState<string[] | null>(null);
+  const [twoFactorLoading, setTwoFactorLoading] = useState(false);
+
+  const { data: twoFactorStatus, refetch: refetchTwoFactorStatus } = useQuery({
+    queryKey: ['auth', '2fa-status'],
+    queryFn: async () => {
+      const response = await api.get<TwoFactorStatus>('/auth/2fa/status');
+      if (response.error) throw new Error(response.error);
+      return response.data || { enabled: false, recoveryCodesRemaining: 0 };
+    },
+    enabled: !!user && activeTab === 'security',
+  });
+
+  const handleChangePassword = async () => {
+    if (passwordForm.new_password !== passwordForm.confirm_password) {
+      toast({ title: 'Passwords do not match', variant: 'destructive' });
+      return;
+    }
+    if (passwordForm.new_password.length < 12) {
+      toast({ title: 'New password must be at least 12 characters', variant: 'destructive' });
+      return;
+    }
+    setPasswordLoading(true);
+    try {
+      const response = await api.put('/auth/password', {
+        current_password: passwordForm.current_password,
+        new_password: passwordForm.new_password,
+      });
+      if (response.error) {
+        toast({ title: 'Failed to change password', description: response.error, variant: 'destructive' });
+      } else {
+        toast({
+          title: 'Password changed successfully',
+          description: 'All sessions were invalidated. Sign in again with your new password.',
+        });
+        setIsPasswordOpen(false);
+        setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+        await signOut();
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to change password', description: message, variant: 'destructive' });
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
+  const startTwoFactorSetup = async () => {
+    setTwoFactorLoading(true);
+    setNewRecoveryCodes(null);
+    setTwoFactorCode('');
+    try {
+      const response = await api.post<TwoFactorSetup>('/auth/2fa/setup/start');
+      if (response.error) {
+        toast({ title: 'Failed to start 2FA setup', description: response.error, variant: 'destructive' });
+        return;
+      }
+      setTwoFactorSetup(response.data || null);
+      setTwoFactorSetupOpen(true);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to start 2FA setup', description: message, variant: 'destructive' });
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const confirmTwoFactorSetup = async () => {
+    if (!twoFactorSetup) return;
+    setTwoFactorLoading(true);
+    try {
+      const response = await api.post<{ enabled: boolean; recoveryCodes: string[]; recoveryCodesRemaining: number }>('/auth/2fa/setup/confirm', {
+        secret: twoFactorSetup.secret,
+        code: twoFactorCode,
+      });
+      if (response.error) {
+        toast({ title: 'Failed to enable 2FA', description: response.error, variant: 'destructive' });
+        return;
+      }
+      setNewRecoveryCodes(response.data?.recoveryCodes || []);
+      setUser(user ? { ...user, two_factor_enabled: true } : user);
+      await refetchTwoFactorStatus();
+      toast({ title: 'Two-factor authentication enabled' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to enable 2FA', description: message, variant: 'destructive' });
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const disableTwoFactor = async () => {
+    setTwoFactorLoading(true);
+    try {
+      const response = await api.post<{ enabled: boolean }>('/auth/2fa/disable', twoFactorDisableForm);
+      if (response.error) {
+        toast({ title: 'Failed to disable 2FA', description: response.error, variant: 'destructive' });
+        return;
+      }
+      setTwoFactorDisableOpen(false);
+      setTwoFactorDisableForm({ current_password: '', code: '' });
+      setNewRecoveryCodes(null);
+      setUser(user ? { ...user, two_factor_enabled: false } : user);
+      await refetchTwoFactorStatus();
+      toast({ title: 'Two-factor authentication disabled' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to disable 2FA', description: message, variant: 'destructive' });
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const regenerateRecoveryCodes = async () => {
+    setTwoFactorLoading(true);
+    try {
+      const response = await api.post<{ recoveryCodes: string[]; recoveryCodesRemaining: number }>('/auth/2fa/recovery-codes/regenerate', {
+        code: twoFactorCode,
+      });
+      if (response.error) {
+        toast({ title: 'Failed to regenerate recovery codes', description: response.error, variant: 'destructive' });
+        return;
+      }
+      setNewRecoveryCodes(response.data?.recoveryCodes || []);
+      setTwoFactorRecoveryOpen(false);
+      setTwoFactorCode('');
+      await refetchTwoFactorStatus();
+      toast({ title: 'Recovery codes regenerated' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to regenerate recovery codes', description: message, variant: 'destructive' });
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
+
+  const handleUpdateProfile = async () => {
+    setLoading(true);
+    try {
+      const response = await api.put<{ user: AuthUser }>('/auth/profile', {
+        full_name: fullName.trim(),
+        timezone: timezone === DEVICE_TZ_VALUE ? null : timezone,
+      });
+      if (response.error) {
+        toast({ title: 'Failed to update profile', description: response.error, variant: 'destructive' });
+      } else {
+        if (response.data?.user) setUser(response.data.user);
+        toast({ title: 'Profile updated successfully' });
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to update profile', description: message, variant: 'destructive' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleClearContacts = async () => {
+    setClearContactsLoading(true);
+    try {
+      const response = await api.post<{ message?: string; error?: string; deleted?: number }>('/settings/clear-contacts');
+      if (response.error) {
+        toast({ title: 'Failed to delete contacts', description: response.error, variant: 'destructive' });
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ['contacts'] });
+      queryClient.invalidateQueries({ queryKey: ['contacts-count'] });
+      toast({ title: response.data?.message || 'All contacts deleted' });
+      setClearContactsOpen(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete contacts', description: message, variant: 'destructive' });
+    } finally {
+      setClearContactsLoading(false);
+    }
+  };
+
+  const handleClearCalendar = async () => {
+    setClearCalendarLoading(true);
+    try {
+      const response = await api.post<{ message?: string; error?: string; deleted?: number }>('/settings/clear-calendar');
+      if (response.error) {
+        toast({ title: 'Failed to delete calendar and todo data', description: response.error, variant: 'destructive' });
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: calendarQueryKeys.all });
+      queryClient.invalidateQueries({ queryKey: calendarQueryKeys.upcomingEvents });
+      queryClient.invalidateQueries({ queryKey: calendarQueryKeys.stats });
+      toast({ title: response.data?.message || 'All calendar and todo entries deleted' });
+      setClearCalendarOpen(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete calendar and todo data', description: message, variant: 'destructive' });
+    } finally {
+      setClearCalendarLoading(false);
+    }
+  };
+
+  const handleClearMail = async () => {
+    setClearMailLoading(true);
+    try {
+      const response = await api.post<{ message?: string; error?: string; deleted?: number }>('/settings/clear-mail-accounts');
+      if (response.error) {
+        toast({ title: 'Failed to delete mail accounts', description: response.error, variant: 'destructive' });
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['stats'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-sender-candidates'] });
+      toast({ title: response.data?.message || 'All mail accounts deleted' });
+      setClearMailOpen(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete mail accounts', description: message, variant: 'destructive' });
+    } finally {
+      setClearMailLoading(false);
+    }
+  };
+
+  const handleClearRecordings = async () => {
+    setClearRecordingsLoading(true);
+    try {
+      const response = await api.post<{ message?: string; error?: string; deleted?: number }>('/settings/clear-recordings');
+      if (response.error) {
+        toast({ title: 'Failed to delete recordings', description: response.error, variant: 'destructive' });
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey: ['recordings'] });
+      toast({ title: response.data?.message || 'All recordings deleted' });
+      setClearRecordingsOpen(false);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete recordings', description: message, variant: 'destructive' });
+    } finally {
+      setClearRecordingsLoading(false);
+    }
+  };
+
+  const handleSavePreferences = async () => {
+    setPreferencesSaving(true);
+    try {
+      const response = await api.put<{ preferences: UserPreferences }>('/settings/preferences', preferences);
+      if (response.error) {
+        toast({ title: 'Failed to save preferences', description: response.error, variant: 'destructive' });
+        return;
+      }
+      if (response.data?.preferences) setPreferences(response.data.preferences);
+      queryClient.invalidateQueries({ queryKey: ['settings', 'preferences'] });
+      toast({ title: 'Preferences saved' });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to save preferences', description: message, variant: 'destructive' });
+    } finally {
+      setPreferencesSaving(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    setDeleteAccountLoading(true);
+    try {
+      const response = await api.delete('/settings/account');
+      if (response.error) {
+        toast({ title: 'Failed to delete account', description: response.error, variant: 'destructive' });
+        return;
+      }
+      window.location.assign('/auth');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete account', description: message, variant: 'destructive' });
+    } finally {
+      setDeleteAccountLoading(false);
+    }
+  };
+
+  const formatCandidateDate = (value: string | null) => {
+    if (!value) return 'Never';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return 'Unknown';
+    return date.toLocaleDateString();
+  };
+
+  const formatRuleDetails = (rule?: MailSenderRule | null) => {
+    if (!rule) return 'No rule yet';
+    const scope = rule.mail_account_id ? `Account: ${rule.account_email || rule.mail_account_id}` : 'All accounts';
+    return `Folder: ${getMailFolderLabel(rule.target_folder)} • ${scope} • Priority: ${rule.priority} • ${rule.is_active ? 'Active' : 'Inactive'}`;
+  };
+
+  const openCreateRuleEditor = (candidate: { match_type: 'domain' | 'email'; match_value: string; matching_rule?: MailSenderRule | null }) => {
+    const existing = candidate.matching_rule || null;
+    setRuleEditor({
+      id: existing?.id,
+      match_type: candidate.match_type,
+      match_value: candidate.match_value,
+      target_folder: existing?.target_folder || 'marketing',
+      mail_account_id: existing?.mail_account_id || '',
+      priority: typeof existing?.priority === 'number' ? existing.priority : 100,
+      is_active: existing ? !!existing.is_active : true,
+    });
+    setRuleEditorOpen(true);
+  };
+
+  const saveRule = async () => {
+    setRuleSaving(true);
+    try {
+      const payload = {
+        match_type: ruleEditor.match_type,
+        match_value: ruleEditor.match_value,
+        target_folder: ruleEditor.target_folder,
+        mail_account_id: ruleEditor.mail_account_id || null,
+        priority: Number(ruleEditor.priority),
+        is_active: ruleEditor.is_active,
+      };
+      const response = ruleEditor.id
+        ? await api.put(`/mail/sender-rules/${ruleEditor.id}`, payload)
+        : await api.post('/mail/sender-rules', payload);
+      if (response.error) {
+        toast({ title: 'Failed to save rule', description: response.error, variant: 'destructive' });
+        return;
+      }
+      toast({ title: ruleEditor.id ? 'Rule updated' : 'Rule created' });
+      setRuleEditorOpen(false);
+      await refetchMailSenderCandidates();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to save rule', description: message, variant: 'destructive' });
+    } finally {
+      setRuleSaving(false);
+    }
+  };
+
+  const deleteRule = async () => {
+    if (!ruleEditor.id) return;
+    setRuleSaving(true);
+    try {
+      const response = await api.delete(`/mail/sender-rules/${ruleEditor.id}`);
+      if (response.error) {
+        toast({ title: 'Failed to delete rule', description: response.error, variant: 'destructive' });
+        return;
+      }
+      toast({ title: 'Rule deleted' });
+      setRuleEditorOpen(false);
+      await refetchMailSenderCandidates();
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Failed to delete rule', description: message, variant: 'destructive' });
+    } finally {
+      setRuleSaving(false);
+    }
+  };
+
+  const applySenderRulesNow = async () => {
+    setRuleSorting(true);
+    try {
+      const response = await api.post<{ scanned: number; matched: number; applied: number; complete?: boolean; has_more?: boolean; next_cursor?: string | null; remaining?: string | null }>('/mail/sender-rules/backfill', {
+        mode: 'apply',
+        limit: 5000,
+        cursor: ruleSortCursor || undefined,
+      });
+      if (response.error) {
+        toast({ title: 'Could not sort mail', description: response.error, variant: 'destructive' });
+        return;
+      }
+      const result = response.data;
+      setRuleSortCursor(result?.complete === false && result?.next_cursor ? result.next_cursor : null);
+      queryClient.invalidateQueries({ queryKey: ['emails'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+      await refetchMailSenderCandidates();
+      toast({
+        title: result?.complete === false ? 'Mail sorting incomplete' : 'Mail sorted',
+        description: result?.complete === false
+          ? `${result?.applied ?? 0} matching emails sorted from this batch of ${result?.scanned ?? 0}. ${result.remaining || 'More inbox messages remain; continue sorting to process the next batch.'}`
+          : `${result?.applied ?? 0} of ${result?.scanned ?? 0} inbox emails matched your current rules.`,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      toast({ title: 'Could not sort mail', description: message, variant: 'destructive' });
+    } finally {
+      setRuleSorting(false);
+    }
+  };
+
+  return (
+    <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto">
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+        className="mb-8"
+      >
+        <h1 className="text-2xl font-bold text-foreground">Settings</h1>
+        <p className="text-muted-foreground">Manage your account and preferences</p>
+      </motion.div>
+
+      <Tabs value={activeTab} onValueChange={(tab) => { setActiveTab(tab); if (tab === 'data') setVisitedData(true); }} className="space-y-6">
+        <div className="-mx-4 overflow-x-auto px-4 sm:-mx-6 sm:px-6 lg:mx-0 lg:px-0">
+          <TabsList className="h-11 w-max min-w-full justify-start gap-1 rounded-none border-b border-border bg-transparent p-0 text-muted-foreground lg:min-w-0 lg:rounded-md lg:border lg:bg-muted lg:p-1">
+            <TabsTrigger value="general" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              General
+            </TabsTrigger>
+            <TabsTrigger value="modules">Modules</TabsTrigger>
+            <TabsTrigger value="security" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Security
+            </TabsTrigger>
+            <TabsTrigger value="data" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Data Management (ALPHA)
+            </TabsTrigger>
+            <TabsTrigger value="mail" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Mail Categorisation
+            </TabsTrigger>
+            <TabsTrigger value="danger" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
+              Danger Zone
+            </TabsTrigger>
+          </TabsList>
+        </div>
+        <TabsContent value="general" className="mt-0 space-y-6">
+        <AppearanceSettings />
+        <OfflineSettings />
+        <NotificationSettings />
+        {/* General Section */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.1 }}
+        >
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-accent/10">
+                  <User className="h-5 w-5 text-accent" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">General</CardTitle>
+                  <CardDescription>Profile and app preferences</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <Input id="email" value={user?.email || ''} disabled />
+                <p className="text-xs text-muted-foreground">
+                  Your email cannot be changed
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="fullName">Full Name</Label>
+                <Input
+                  id="fullName"
+                  value={fullName}
+                  onChange={(e) => setFullName(e.target.value)}
+                  placeholder="Enter your name"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="timezone">Time zone</Label>
+                <select
+                  id="timezone"
+                  value={timezone}
+                  onChange={(e) => setTimezone(e.target.value)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <option value={DEVICE_TZ_VALUE}>Use device time zone</option>
+                  {timezoneOptions.filter((z) => z !== DEVICE_TZ_VALUE).map((tz) => (
+                    <option key={tz} value={tz}>
+                      {tz}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  Used for calendar and to-do dates and times
+                </p>
+              </div>
+              <Button onClick={handleUpdateProfile} disabled={loading}>
+                {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Save Profile
+              </Button>
+              <Separator />
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>Default start page</Label>
+                  <Select
+                    value={preferences.default_start_page}
+                    onValueChange={(value) => setPreferences((prev) => ({ ...prev, default_start_page: value as UserPreferences['default_start_page'] }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mail">Mail</SelectItem>
+                      <SelectItem value="calendar">Calendar</SelectItem>
+                      <SelectItem value="todo">ToDo</SelectItem>
+                      <SelectItem value="contacts">Contacts</SelectItem>
+                      <SelectItem value="recordings">Recordings</SelectItem>
+                      <SelectItem value="notes">Notes</SelectItem>
+                      <SelectItem value="dashboard">Dashboard</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Email address clicks</Label>
+                  <Select
+                    value={preferences.email_link_behavior}
+                    onValueChange={(value) => setPreferences((prev) => ({ ...prev, email_link_behavior: value as UserPreferences['email_link_behavior'] }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mailto">Use device mail app</SelectItem>
+                      <SelectItem value="internal">Use UniHub composer</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <Button onClick={handleSavePreferences} disabled={preferencesSaving}>
+                {preferencesSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Save Preferences
+              </Button>
+            </CardContent>
+          </Card>
+        </motion.div>
+        </TabsContent>
+
+        <TabsContent value="modules"><ModuleSettings /></TabsContent>
+        <TabsContent value="security" className="mt-0">
+        {/* Security Section */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.2 }}
+        >
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-accent/10">
+                  <Shield className="h-5 w-5 text-accent" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">Security</CardTitle>
+                  <CardDescription>Password and authentication settings</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Password</p>
+                  <p className="text-sm text-muted-foreground">Change your account password</p>
+                </div>
+                <Dialog open={isPasswordOpen} onOpenChange={(open) => {
+                  setIsPasswordOpen(open);
+                  if (!open) setPasswordForm({ current_password: '', new_password: '', confirm_password: '' });
+                }}>
+                  <DialogTrigger asChild>
+                    <Button variant="outline">Change Password</Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>Change Password</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-4 pt-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="currentPassword">Current Password</Label>
+                        <Input
+                          id="currentPassword"
+                          type="password"
+                          value={passwordForm.current_password}
+                          onChange={(e) => setPasswordForm(f => ({ ...f, current_password: e.target.value }))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="newPassword">New Password</Label>
+                        <Input
+                          id="newPassword"
+                          type="password"
+                          value={passwordForm.new_password}
+                          onChange={(e) => setPasswordForm(f => ({ ...f, new_password: e.target.value }))}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="confirmPassword">Confirm New Password</Label>
+                        <Input
+                          id="confirmPassword"
+                          type="password"
+                          value={passwordForm.confirm_password}
+                          onChange={(e) => setPasswordForm(f => ({ ...f, confirm_password: e.target.value }))}
+                        />
+                      </div>
+                      <div className="flex justify-end gap-2 pt-2">
+                        <Button variant="outline" onClick={() => setIsPasswordOpen(false)}>
+                          Cancel
+                        </Button>
+                        <Button onClick={handleChangePassword} disabled={passwordLoading}>
+                          {passwordLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                          Update Password
+                        </Button>
+                      </div>
+                    </div>
+                  </DialogContent>
+                </Dialog>
+              </div>
+              <Separator />
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Two-Factor Authentication</p>
+                  <p className="text-sm text-muted-foreground">
+                    {twoFactorStatus?.enabled
+                      ? `Enabled. ${twoFactorStatus.recoveryCodesRemaining} recovery code${twoFactorStatus.recoveryCodesRemaining === 1 ? '' : 's'} remaining.`
+                      : 'Require an authenticator code when signing in.'}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {twoFactorStatus?.enabled ? (
+                    <>
+                      <Dialog open={twoFactorRecoveryOpen} onOpenChange={(open) => {
+                        setTwoFactorRecoveryOpen(open);
+                        if (!open) setTwoFactorCode('');
+                      }}>
+                        <DialogTrigger asChild>
+                          <Button variant="outline">New Recovery Codes</Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Regenerate Recovery Codes</DialogTitle>
+                          </DialogHeader>
+                          <div className="space-y-4 pt-2">
+                            <p className="text-sm text-muted-foreground">
+                              Enter a current authenticator code. Existing unused recovery codes will stop working.
+                            </p>
+                            <div className="space-y-2">
+                              <Label htmlFor="recoveryCodeVerify">Authentication code</Label>
+                              <Input
+                                id="recoveryCodeVerify"
+                                inputMode="numeric"
+                                value={twoFactorCode}
+                                onChange={(event) => setTwoFactorCode(event.target.value)}
+                              />
+                            </div>
+                            <div className="flex justify-end gap-2">
+                              <Button variant="outline" onClick={() => setTwoFactorRecoveryOpen(false)}>Cancel</Button>
+                              <Button onClick={regenerateRecoveryCodes} disabled={twoFactorLoading || !twoFactorCode.trim()}>
+                                {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                                Regenerate
+                              </Button>
+                            </div>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                      <Dialog open={twoFactorDisableOpen} onOpenChange={(open) => {
+                        setTwoFactorDisableOpen(open);
+                        if (!open) setTwoFactorDisableForm({ current_password: '', code: '' });
+                      }}>
+                        <DialogTrigger asChild>
+                          <Button variant="outline">Disable</Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Disable Two-Factor Authentication</DialogTitle>
+                          </DialogHeader>
+                          <div className="space-y-4 pt-2">
+                            <div className="space-y-2">
+                              <Label htmlFor="disable2faPassword">Current Password</Label>
+                              <Input
+                                id="disable2faPassword"
+                                type="password"
+                                value={twoFactorDisableForm.current_password}
+                                onChange={(event) => setTwoFactorDisableForm((prev) => ({ ...prev, current_password: event.target.value }))}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <Label htmlFor="disable2faCode">Authenticator or recovery code</Label>
+                              <Input
+                                id="disable2faCode"
+                                value={twoFactorDisableForm.code}
+                                onChange={(event) => setTwoFactorDisableForm((prev) => ({ ...prev, code: event.target.value }))}
+                              />
+                            </div>
+                            <div className="flex justify-end gap-2">
+                              <Button variant="outline" onClick={() => setTwoFactorDisableOpen(false)}>Cancel</Button>
+                              <Button variant="destructive" onClick={disableTwoFactor} disabled={twoFactorLoading}>
+                                {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                                Disable 2FA
+                              </Button>
+                            </div>
+                          </div>
+                        </DialogContent>
+                      </Dialog>
+                    </>
+                  ) : (
+                    <Button variant="outline" onClick={startTwoFactorSetup} disabled={twoFactorLoading}>
+                      {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Set Up 2FA
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {newRecoveryCodes && newRecoveryCodes.length > 0 && (
+                <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+                  <p className="font-medium text-foreground mb-2">Recovery codes</p>
+                  <p className="text-muted-foreground mb-3">
+                    Store these somewhere safe. Each code can be used once if you lose access to your authenticator app.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 font-mono text-foreground">
+                    {newRecoveryCodes.map((code) => <span key={code}>{code}</span>)}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <Dialog open={twoFactorSetupOpen} onOpenChange={(open) => {
+          setTwoFactorSetupOpen(open);
+          if (!open) {
+            setTwoFactorSetup(null);
+            setTwoFactorCode('');
+          }
+        }}>
+          <DialogContent className="sm:max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Set Up Two-Factor Authentication</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 pt-2">
+              {!newRecoveryCodes ? (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Add this account to your authenticator app using the manual key below, then enter the 6-digit code it shows.
+                  </p>
+                  <div className="space-y-2">
+                    <Label>Manual setup key</Label>
+                    <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-sm break-all">
+                      {twoFactorSetup?.secret}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Authenticator URI</Label>
+                    <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs break-all">
+                      {twoFactorSetup?.otpauth_uri}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="confirm2faCode">Authentication code</Label>
+                    <Input
+                      id="confirm2faCode"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
+                      value={twoFactorCode}
+                      onChange={(event) => setTwoFactorCode(event.target.value)}
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2">
+                    <Button variant="outline" onClick={() => setTwoFactorSetupOpen(false)}>Cancel</Button>
+                    <Button onClick={confirmTwoFactorSetup} disabled={twoFactorLoading || !twoFactorCode.trim()}>
+                      {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                      Enable 2FA
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    Two-factor authentication is enabled. Store these recovery codes now; they will not be shown again.
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 rounded-md border border-border p-3 font-mono text-sm">
+                    {newRecoveryCodes.map((code) => <span key={code}>{code}</span>)}
+                  </div>
+                  <div className="flex justify-end">
+                    <Button onClick={() => {
+                      setTwoFactorSetupOpen(false);
+                      setTwoFactorSetup(null);
+                      setTwoFactorCode('');
+                    }}>
+                      Done
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+        </TabsContent>
+
+        <TabsContent value="data" forceMount className="mt-0 data-[state=inactive]:hidden">
+          {visitedData && <Suspense fallback={<p role="status">Loading backup settings…</p>}><BackupSettings active={activeTab === 'data'} /></Suspense>}
+        </TabsContent>
+
+        <TabsContent value="danger" className="mt-0">
+        {/* Data management */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.35 }}
+        >
+          <Card className="border-destructive/30">
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-destructive/10">
+                  <Trash2 className="h-5 w-5 text-destructive" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg text-destructive">Danger Zone</CardTitle>
+                  <CardDescription>Permanently clear your data. These actions cannot be undone.</CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Delete all Contacts</p>
+                  <p className="text-sm text-muted-foreground">Remove every contact from your account</p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setClearContactsOpen(true)}
+                >
+                  Delete all Contacts
+                </Button>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Delete all Calendar & ToDo</p>
+                  <p className="text-sm text-muted-foreground">Remove all events and todo entries</p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setClearCalendarOpen(true)}
+                >
+                  Delete all Calendar/ToDo
+                </Button>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Delete all Mail Accounts</p>
+                  <p className="text-sm text-muted-foreground">Remove all mail accounts and their emails</p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setClearMailOpen(true)}
+                >
+                  Delete all Mail Accounts
+                </Button>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-foreground">Delete all Recordings</p>
+                  <p className="text-sm text-muted-foreground">Remove all recordings and stored audio files</p>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setClearRecordingsOpen(true)}
+                >
+                  Delete all Recordings
+                </Button>
+              </div>
+              <Separator />
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-destructive">Delete Account</p>
+                  <p className="text-sm text-muted-foreground">Permanently delete your account and all data</p>
+                </div>
+                <Button variant="destructive" onClick={() => setDeleteAccountOpen(true)}>Delete Account</Button>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+        </TabsContent>
+
+        <TabsContent value="mail" className="mt-0">
+        {/* Mail categorization foundation */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.38 }}
+        >
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-accent/10">
+                    <AtSign className="h-5 w-5 text-accent" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-lg">Mail categorization foundation</CardTitle>
+                    <CardDescription>
+                      Create and manage sender/domain routing rules used by inbound mail sync.
+                    </CardDescription>
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                  <Button variant="outline" size="sm" onClick={applySenderRulesNow} disabled={ruleSorting}>
+                    {ruleSorting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    {ruleSortCursor ? 'Continue sorting' : 'Sort now'}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => refetchMailSenderCandidates()} disabled={mailSenderCandidatesLoading}>
+                    {mailSenderCandidatesLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                    Refresh
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <Globe className="h-4 w-4 text-muted-foreground" />
+                  <p className="font-medium text-foreground">Top domains</p>
+                </div>
+                {mailSenderCandidatesLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading domains...</p>
+                ) : (mailSenderCandidates?.domains?.length ?? 0) === 0 ? (
+                  <p className="text-sm text-muted-foreground">No domains found yet. Sync some emails first.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {mailSenderCandidates?.domains.map((domain) => (
+                      <div key={domain.domain} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                        <div>
+                          <p className="font-medium text-foreground">{domain.domain}</p>
+                          <p className="text-xs text-muted-foreground">Last seen: {formatCandidateDate(domain.last_received_at)}</p>
+                          <p className="text-xs text-muted-foreground">{formatRuleDetails(domain.matching_rule)}</p>
+                        </div>
+                        <div className="text-right flex items-center gap-3">
+                          <div>
+                          <p className="text-sm text-foreground">{domain.email_count} emails</p>
+                            <p className="text-xs text-muted-foreground">{domain.has_rule ? 'Rule configured' : 'No rule yet'}</p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant={domain.matching_rule ? 'secondary' : 'outline'}
+                            onClick={() => openCreateRuleEditor({ match_type: 'domain', match_value: domain.domain, matching_rule: domain.matching_rule })}
+                          >
+                            Create rule
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <Separator />
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <AtSign className="h-4 w-4 text-muted-foreground" />
+                  <p className="font-medium text-foreground">Top senders</p>
+                </div>
+                {mailSenderCandidatesLoading ? (
+                  <p className="text-sm text-muted-foreground">Loading senders...</p>
+                ) : (mailSenderCandidates?.senders?.length ?? 0) === 0 ? (
+                  <p className="text-sm text-muted-foreground">No senders found yet. Sync some emails first.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {mailSenderCandidates?.senders.map((sender) => (
+                      <div key={sender.sender_email} className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                        <div>
+                          <p className="font-medium text-foreground">{sender.sender_name || sender.sender_email}</p>
+                          <p className="text-xs text-muted-foreground">{sender.sender_email}</p>
+                          <p className="text-xs text-muted-foreground">{formatRuleDetails(sender.matching_rule)}</p>
+                        </div>
+                        <div className="text-right flex items-center gap-3">
+                          <div>
+                          <p className="text-sm text-foreground">{sender.email_count} emails</p>
+                            <p className="text-xs text-muted-foreground">{sender.has_rule ? 'Rule configured' : 'No rule yet'}</p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant={sender.matching_rule ? 'secondary' : 'outline'}
+                            onClick={() => openCreateRuleEditor({ match_type: 'email', match_value: sender.sender_email, matching_rule: sender.matching_rule })}
+                          >
+                            Create rule
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {ruleEditorOpen && (
+                <>
+                  <Separator />
+                  <div className="rounded-md border border-border p-4 space-y-3">
+                    <p className="font-medium text-foreground">{ruleEditor.id ? 'Edit sender rule' : 'Create sender rule'}</p>
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <div className="space-y-1">
+                        <Label>Match type</Label>
+                        <Input value={ruleEditor.match_type} disabled />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Match value</Label>
+                        <Input value={ruleEditor.match_value} disabled />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Target folder</Label>
+                        <select
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          value={ruleEditor.target_folder}
+                          onChange={(e) => setRuleEditor((prev) => ({ ...prev, target_folder: e.target.value }))}
+                        >
+                          {(mailFolders.length ? mailFolders : FALLBACK_MAIL_FOLDERS).map((folder) => (
+                            <option key={folder.slug} value={folder.slug}>{folder.display_name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Account scope (optional)</Label>
+                        <select
+                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          value={ruleEditor.mail_account_id}
+                          onChange={(e) => setRuleEditor((prev) => ({ ...prev, mail_account_id: e.target.value }))}
+                        >
+                          <option value="">All accounts</option>
+                          {(mailAccounts || []).map((account) => (
+                            <option key={account.id} value={account.id}>{account.display_name || account.email_address}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Priority (lower wins)</Label>
+                        <Input
+                          type="number"
+                          value={ruleEditor.priority}
+                          onChange={(e) => setRuleEditor((prev) => ({ ...prev, priority: Number.parseInt(e.target.value || '100', 10) || 100 }))}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Active</Label>
+                        <div className="h-10 flex items-center">
+                          <Switch
+                            checked={ruleEditor.is_active}
+                            onCheckedChange={(checked) => setRuleEditor((prev) => ({ ...prev, is_active: !!checked }))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      {ruleEditor.id && (
+                        <Button variant="destructive" onClick={deleteRule} disabled={ruleSaving}>
+                          Delete
+                        </Button>
+                      )}
+                      <Button variant="outline" onClick={() => setRuleEditorOpen(false)} disabled={ruleSaving}>
+                        Cancel
+                      </Button>
+                      <Button onClick={saveRule} disabled={ruleSaving}>
+                        {ruleSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                        {ruleEditor.id ? 'Update rule' : 'Create rule'}
+                      </Button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+        </TabsContent>
+      </Tabs>
+
+        <AlertDialog open={clearContactsOpen} onOpenChange={setClearContactsOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete all contacts?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete all your contacts and cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleClearContacts();
+                }}
+                disabled={clearContactsLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {clearContactsLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete all
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <AlertDialog open={clearCalendarOpen} onOpenChange={setClearCalendarOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete all calendar and todo entries?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete all your calendar events and todo items and cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleClearCalendar();
+                }}
+                disabled={clearCalendarLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {clearCalendarLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete all
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <AlertDialog open={clearMailOpen} onOpenChange={setClearMailOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete all mail accounts?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete all your mail accounts and their emails and cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleClearMail();
+                }}
+                disabled={clearMailLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {clearMailLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete all
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <AlertDialog open={clearRecordingsOpen} onOpenChange={setClearRecordingsOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete all recordings?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete all your recordings and stored audio files and cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleClearRecordings();
+                }}
+                disabled={clearRecordingsLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {clearRecordingsLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete all
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        <AlertDialog open={deleteAccountOpen} onOpenChange={setDeleteAccountOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete your account?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This permanently deletes your account and all associated UniHub data. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleDeleteAccount();
+                }}
+                disabled={deleteAccountLoading}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                {deleteAccountLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Delete account
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+    </div>
+  );
+};
+
+export default Settings;

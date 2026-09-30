@@ -1,0 +1,123 @@
+services:
+  # ── UniHub Application (Frontend + API) ─────────────────────────
+  #
+  # Bootstrap admin account (required on first start):
+  #   UNIHUB_BOOTSTRAP_ADMIN_EMAIL + UNIHUB_BOOTSTRAP_ADMIN_PASSWORD
+  # Password must be at least 12 characters.
+  #
+  unihub:
+    # Image tag options:
+    #   :latest   newest build of the main branch; combined with pull_policy:
+    #             always, a container restart is the update (default)
+    #   :0.11.0   one exact tagged release; update by editing this tag
+    # Database upgrades run on startup and cannot be undone by switching back to
+    # an older image. Take a backup before a restart that may pull a new release.
+    image: ghcr.io/mrksrus/selfhost-unihub:latest
+    # Pull policy options:
+    #   always    check the registry on every start (default, restart-to-update)
+    #   missing   pull only when no local copy exists; update with docker compose pull
+    #   never     use only a locally built or loaded image
+    pull_policy: always
+    container_name: unihub
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # Nginx prepares nginx-owned log/temp paths, binds port 80, then
+      # drops its worker processes to the nginx user/group.
+      - CHOWN
+      - DAC_OVERRIDE
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    ports:
+      - "3000:80"
+    environment:
+      NODE_ENV: production
+      MYSQL_DATABASE: unihub
+      MYSQL_USER: unihub
+      MYSQL_PASSWORD: ${UNIHUB_MYSQL_PASSWORD:?Set UNIHUB_MYSQL_PASSWORD to a strong database password before starting}
+      MYSQL_HOST: unihub-mysql
+      MYSQL_PORT: "3306"
+      # ── Startup timing controls used by docker/start.sh ───────────────
+      MYSQL_STARTUP_MAX_WAIT_SECONDS: "300"
+      MYSQL_STARTUP_CHECK_INTERVAL_SECONDS: "5"
+      UNIHUB_API_START_DELAY_SECONDS: "2"
+      # ── Required: set a strong, random secret ──────────────────────
+      # Generate one with:  openssl rand -base64 48
+      JWT_SECRET: ${UNIHUB_JWT_SECRET:?Set UNIHUB_JWT_SECRET to a strong random value before starting}
+      # ── Encryption key for stored email passwords ──────────────────
+      ENCRYPTION_KEY: ${UNIHUB_ENCRYPTION_KEY:?Set UNIHUB_ENCRYPTION_KEY to a strong random value before starting}
+      BACKUP_MASTER_KEY: ${UNIHUB_BACKUP_MASTER_KEY:-}
+      # ── First-run admin bootstrap (required when users table is empty) ──
+      BOOTSTRAP_ADMIN_EMAIL: ${UNIHUB_BOOTSTRAP_ADMIN_EMAIL:?Set UNIHUB_BOOTSTRAP_ADMIN_EMAIL before first startup}
+      BOOTSTRAP_ADMIN_PASSWORD: ${UNIHUB_BOOTSTRAP_ADMIN_PASSWORD:?Set UNIHUB_BOOTSTRAP_ADMIN_PASSWORD before first startup}
+      # ── CORS allowlist (comma-separated origins) ───────────────────
+      ALLOWED_ORIGINS: "http://localhost:3000,https://mydomain.domain.com"
+      # ── Trust proxy headers only when behind a trusted reverse proxy ──
+      TRUST_PROXY_HEADERS: "true"
+      # Include the bundled loopback proxy plus only your actual HTTPS proxy's
+      # address/CIDR. Never trust all private networks or 0.0.0.0/0.
+      TRUSTED_PROXY_CIDRS: ${UNIHUB_TRUSTED_PROXY_CIDRS:-127.0.0.1/32,::1/128}
+      # ── Optional allowlist for self-hosted mail domains/IP hostnames ──
+      TRUSTED_MAIL_HOSTS: mail.example.com
+    depends_on:
+      - unihub-mysql
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 360s  # Covers the five-minute MySQL wait plus API startup
+    networks:
+      - unihub-network
+    volumes:
+      - uploads_data:/app/uploads
+
+  # ── MySQL Database ──────────────────────────────────────────────
+  unihub-mysql:
+    # MySQL 8.4 LTS. An existing 8.0 data volume upgrades in place on first
+    # start; MySQL cannot downgrade it afterwards, so back up before switching.
+    image: mysql:8.4
+    container_name: unihub-mysql
+    init: true
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      MYSQL_DATABASE: unihub
+      MYSQL_USER: unihub
+      MYSQL_PASSWORD: ${UNIHUB_MYSQL_PASSWORD:?Set UNIHUB_MYSQL_PASSWORD to a strong database password before starting}
+      MYSQL_ROOT_PASSWORD: ${UNIHUB_MYSQL_ROOT_PASSWORD:?Set UNIHUB_MYSQL_ROOT_PASSWORD to a strong root database password before starting}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --max-connections=100
+      - --innodb-buffer-pool-size=192M
+      - --innodb-redo-log-capacity=96M
+      - --skip-name-resolve
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/conf/custom.cnf:/etc/mysql/conf.d/custom.cnf:ro
+    # Health check uses MYSQL_PWD to avoid YAML escaping issues
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h localhost -u root"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 30s
+    networks:
+      - unihub-network
+
+networks:
+  unihub-network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+    driver: local
+  uploads_data:
+    driver: local

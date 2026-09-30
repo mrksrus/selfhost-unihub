@@ -1,0 +1,47 @@
+import OfflineBanner from '@/components/offline/OfflineBanner';
+import { Outlet, Navigate } from 'react-router-dom';
+import { useAuth } from '@/contexts/useAuth';
+import { useBackgroundNotificationChecks } from '@/hooks/use-background-notification-checks';
+import { useCalendarNotifications } from '@/hooks/use-calendar-notifications';
+import { useMailNotifications } from '@/hooks/use-mail-notifications';
+import AppSidebar from './AppSidebar';
+import MobileHeader from './MobileHeader';
+import BottomNav from './BottomNav';
+import GlobalCommandPalette from '@/components/GlobalCommandPalette';
+import { Loader2 } from 'lucide-react';
+
+const AppLayout = () => {
+  const { user, loading } = useAuth();
+  useBackgroundNotificationChecks();
+  useCalendarNotifications();
+  useMailNotifications();
+
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <Loader2 className="h-8 w-8 animate-spin text-accent" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/auth" replace />;
+  }
+
+  return (
+    <div className="flex flex-col md:flex-row h-dvh overflow-hidden bg-background">
+      <div className="hidden md:block">
+        <AppSidebar />
+      </div>
+      <MobileHeader />
+      <main className="flex-1 overflow-auto w-full pb-mobile-nav md:pb-0 min-w-0">
+        <OfflineBanner />
+        <Outlet />
+      </main>
+      <GlobalCommandPalette />
+      <BottomNav />
+    </div>
+  );
+};
+
+export default AppLayout;

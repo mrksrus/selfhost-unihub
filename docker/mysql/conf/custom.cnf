@@ -1,0 +1,44 @@
+[mysqld]
+# Character set
+character-set-server = utf8mb4
+collation-server = utf8mb4_unicode_ci
+
+# InnoDB settings - balanced for startup speed AND runtime performance
+# Buffer pool: 192M balances startup speed (smaller than 256M) with performance (larger than 128M)
+# Rule of thumb: buffer pool should be 50-70% of available RAM for small-medium databases
+innodb_buffer_pool_size = 192M
+innodb_redo_log_capacity = 96M   # Replaces deprecated innodb_log_file_size (2 x 48M in the 8.0 layout)
+innodb_flush_log_at_trx_commit = 2
+innodb_flush_method = O_DIRECT
+innodb_buffer_pool_instances = 1  # Single instance for faster startup (fine for <1GB buffer pool)
+innodb_log_buffer_size = 16M     # Standard size - good for email syncs
+
+# Faster startup optimizations (no performance impact)
+skip-name-resolve              # Skip DNS lookups (faster connections, no downside in Docker)
+# Host cache disabled via host_cache_size = 0 (replaces deprecated --skip-host-cache)
+# Note: This must be set in config file, not command line
+host_cache_size = 0
+
+# Performance monitoring - keep enabled for diagnostics (minimal overhead)
+performance_schema = ON         # Keep ON for monitoring, but limit what's tracked
+performance_schema_max_table_instances = 125  # Reduced from default 12500
+performance_schema_max_thread_instances = 50  # Reduced from default 402
+
+# Table cache - adequate for your schema (you have ~8 tables)
+table_open_cache = 400          # Standard size - you have few tables, this is fine
+
+# Connection settings
+max_connections = 100
+wait_timeout = 28800
+interactive_timeout = 28800
+
+# Logging - can enable if needed for debugging
+slow_query_log = 0             # Disabled by default, enable if debugging performance
+# slow_query_log_file = /var/log/mysql/slow.log
+# long_query_time = 2
+
+# Security
+local_infile = 0
+
+[client]
+default-character-set = utf8mb4

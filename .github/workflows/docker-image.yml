@@ -1,0 +1,113 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: mrksrus/selfhost-unihub
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MYSQL_TEST_SCHEMA_SMOKE: "1"
+      MYSQL_TEST_HOST: 127.0.0.1
+      MYSQL_TEST_PORT: "3306"
+      MYSQL_TEST_DATABASE: unihub_test
+      MYSQL_TEST_USER: unihub_test
+      MYSQL_TEST_PASSWORD: test-db-password
+      ENCRYPTION_KEY: ci-test-encryption-key
+      BACKUP_MASTER_KEY: ci-test-backup-master-key
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: test-root-password
+          MYSQL_DATABASE: unihub_test
+          MYSQL_USER: unihub_test
+          MYSQL_PASSWORD: test-db-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot -ptest-root-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix api ci
+
+      - name: Run API tests
+        run: npm --prefix api run test:ci
+
+      - name: Run frontend checks
+        run: |
+          npm test -- --run
+          npm run lint
+          npm run build
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          labels: |
+            org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha,prefix=
+
+      - name: Build image for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: false
+          tags: unihub:ci
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Test container startup, auth and recording round-trip
+        run: bash scripts/container-smoke.sh
+
+      - name: Log in to Container Registry
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the tested image
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            docker tag unihub:ci "$tag"
+            docker push "$tag"
+          done <<< "$IMAGE_TAGS"

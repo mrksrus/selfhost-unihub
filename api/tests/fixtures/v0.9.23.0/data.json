@@ -1,0 +1,337 @@
+{
+  "encryptionKey": "ci-test-encryption-key",
+  "passwords": {
+    "login": "legacy-login-password-2026",
+    "mail": "legacy-mail-password",
+    "calendar": "legacy-caldav-password",
+    "twoFactor": "JBSWY3DPEHPK3PXP",
+    "accessToken": "legacy-calendar-access-token",
+    "refreshToken": "legacy-calendar-refresh-token"
+  },
+  "tables": {
+    "users": [
+      {
+        "id": "09230000-0000-4000-8000-000000000001",
+        "email": "legacy-admin@example.test",
+        "password_hash": "$2b$12$C52uKx8Tw6MTYdiFN/NCDOF1gYFmc8OGrBt0f6vhu.kC0K7nfhbq.",
+        "full_name": "Legacy Admin",
+        "role": "admin",
+        "timezone": "Europe/Vienna",
+        "email_verified": 1,
+        "two_factor_enabled": 1,
+        "encrypted_two_factor_secret": "e13934a0f3bc6ea9175583ed:a2b3a18a3c7c3678c38eb3f4412fdc83:6740715261fe4b1c54ae6884b511c600",
+        "two_factor_recovery_codes": "[\"already-hashed-test-recovery-code\"]"
+      },
+      {
+        "id": "09230000-0000-4000-8000-000000000002",
+        "email": "legacy-member@example.test",
+        "password_hash": "$2b$12$m3.wgqBcjuzYUQk3ESbpveh0GBsvBM.NZ2U94JC2ggG6u31P98Try",
+        "full_name": "Legacy Member",
+        "role": "user",
+        "timezone": "America/New_York",
+        "email_verified": 1
+      }
+    ],
+    "sessions": [
+      {
+        "id": "09230000-0000-4000-8000-000000000030",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "token": "legacy-stored-session-token",
+        "expires_at": "2035-01-01 00:00:00",
+        "ip_address": "192.0.2.1",
+        "user_agent": "Legacy fixture browser"
+      }
+    ],
+    "contacts": [
+      {
+        "id": "09230000-0000-4000-8000-000000000020",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "first_name": "Ada",
+        "last_name": "Example",
+        "email": "ada@example.test",
+        "email2": "ada.work@example.test",
+        "phone": "+43 123 4567",
+        "company": "Synthetic Company",
+        "notes": "Preserve Unicode: Grüße",
+        "is_favorite": 1
+      }
+    ],
+    "calendar_accounts": [
+      {
+        "id": "09230000-0000-4000-8000-000000000004",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "provider": "local",
+        "display_name": "Local Calendar"
+      },
+      {
+        "id": "09230000-0000-4000-8000-000000000009",
+        "user_id": "09230000-0000-4000-8000-000000000002",
+        "provider": "local",
+        "display_name": "Member Calendar"
+      },
+      {
+        "id": "09230000-0000-4000-8000-000000000011",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "provider": "caldav",
+        "account_email": "legacy-calendar@example.test",
+        "display_name": "Personal CalDAV",
+        "username": "caldav-login",
+        "encrypted_password": "322a7594b71367591642f032:133d3b4b13afea7b4c4e7a4b0e6118e2:32dd6def9913c34f92ec7562fc69dbf7513ad3bd1b27",
+        "discovery_url": "https://calendar.example.test/.well-known/caldav",
+        "base_url": "https://calendar.example.test/dav/",
+        "encrypted_access_token": "c41a61d6f988580bd0757c2b:50d5e0e92937a4a7d2f2c110e6c34735:85bb2f6b9acf05037710f0bef6edb16ee6a419f24568c75e5eddc0c9",
+        "encrypted_refresh_token": "c9131d9d01beeb06088318d2:cadc8a9c45a3f192e9b115cbe26c92a1:923322b1d239203d07c8b73d20947fbcc61f1c5e00938ad4be600224b2",
+        "provider_config": "{\"syncInterval\":15}",
+        "capabilities": "{\"sync\":true}",
+        "sync_status": "ok"
+      }
+    ],
+    "calendar_calendars": [
+      {
+        "id": "09230000-0000-4000-8000-000000000005",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "account_id": "09230000-0000-4000-8000-000000000004",
+        "name": "My appointments",
+        "color": "#aa33bb",
+        "is_primary": 1,
+        "auto_todo_enabled": 0
+      },
+      {
+        "id": "09230000-0000-4000-8000-000000000010",
+        "user_id": "09230000-0000-4000-8000-000000000002",
+        "account_id": "09230000-0000-4000-8000-000000000009",
+        "name": "Member appointments",
+        "color": "#22c55e",
+        "is_primary": 1
+      },
+      {
+        "id": "09230000-0000-4000-8000-000000000012",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "account_id": "09230000-0000-4000-8000-000000000011",
+        "name": "Remote appointments",
+        "external_id": "/dav/calendars/personal/",
+        "color": "#ff8800",
+        "sync_token": "legacy-sync-token",
+        "is_visible": 0
+      }
+    ],
+    "calendar_events": [
+      {
+        "id": "09230000-0000-4000-8000-000000000006",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "calendar_id": "09230000-0000-4000-8000-000000000012",
+        "title": "Legacy recurring appointment",
+        "description": "Existing event content",
+        "start_time": "2035-01-15 09:00:00",
+        "end_time": "2035-01-15 10:00:00",
+        "location": "Vienna",
+        "color": "#aa33bb",
+        "recurrence": "FREQ=WEEKLY;BYDAY=MO",
+        "reminder_minutes": 15,
+        "reminders": "[0,15,60]",
+        "todo_status": "changed"
+      },
+      {
+        "id": "09230000-0000-4000-8000-000000000031",
+        "user_id": "09230000-0000-4000-8000-000000000002",
+        "calendar_id": "09230000-0000-4000-8000-000000000010",
+        "title": "Member task",
+        "start_time": "2035-01-16 09:00:00",
+        "end_time": "2035-01-16 10:00:00",
+        "is_todo_only": 1,
+        "todo_status": "done",
+        "done_at": "2026-01-15 10:00:00"
+      }
+    ],
+    "calendar_event_subtasks": [
+      {
+        "id": "09230000-0000-4000-8000-000000000021",
+        "event_id": "09230000-0000-4000-8000-000000000006",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "title": "Bring notes",
+        "is_done": 1,
+        "position": 3
+      }
+    ],
+    "calendar_event_external_refs": [
+      {
+        "id": "09230000-0000-4000-8000-000000000022",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "event_id": "09230000-0000-4000-8000-000000000006",
+        "calendar_id": "09230000-0000-4000-8000-000000000012",
+        "account_id": "09230000-0000-4000-8000-000000000011",
+        "provider": "caldav",
+        "external_event_id": "legacy-event.ics",
+        "external_etag": "\"legacy-etag\"",
+        "external_updated_at": "2026-01-15 10:00:00"
+      }
+    ],
+    "calendar_event_attendees": [
+      {
+        "id": "09230000-0000-4000-8000-000000000023",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "event_id": "09230000-0000-4000-8000-000000000006",
+        "email": "guest@example.test",
+        "display_name": "Invited Guest",
+        "response_status": "accepted",
+        "optional_attendee": 1
+      }
+    ],
+    "mail_accounts": [
+      {
+        "id": "09230000-0000-4000-8000-000000000003",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "email_address": "legacy-mail@example.test",
+        "display_name": "Personal mail",
+        "provider": "imap",
+        "username": "legacy-imap-login",
+        "imap_host": "imap.example.test",
+        "smtp_host": "smtp.example.test",
+        "encrypted_password": "555c6036b391a4459db116a0:56cac14418a016eec0972f9843a41107:4b51c2539b5b6ed855eebbb5019dc19c31a96e78",
+        "sync_fetch_limit": "all",
+        "delete_emails_on_server": 0,
+        "allow_self_signed": 1,
+        "trusted_imap_fingerprint256": "AB:CD:EF",
+        "trusted_smtp_fingerprint256": "12:34:56"
+      }
+    ],
+    "mail_folders": [
+      {
+        "id": "09230000-0000-4000-8000-000000000007",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "slug": "inbox",
+        "display_name": "My renamed inbox",
+        "is_system": 1,
+        "position": 777
+      },
+      {
+        "id": "09230000-0000-4000-8000-000000000024",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "slug": "research",
+        "display_name": "Research & receipts",
+        "is_system": 0,
+        "position": 2
+      }
+    ],
+    "mail_folder_remote_boxes": [
+      {
+        "folder_id": "09230000-0000-4000-8000-000000000024",
+        "mail_account_id": "09230000-0000-4000-8000-000000000003",
+        "remote_name": "INBOX/Research"
+      }
+    ],
+    "mail_sender_rules": [
+      {
+        "id": "09230000-0000-4000-8000-000000000025",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "mail_account_id": "09230000-0000-4000-8000-000000000003",
+        "match_type": "domain",
+        "match_value": "journal.example.test",
+        "target_folder": "research",
+        "priority": 17
+      }
+    ],
+    "emails": [
+      {
+        "id": "09230000-0000-4000-8000-000000000008",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "mail_account_id": "09230000-0000-4000-8000-000000000003",
+        "message_id": "<legacy-1@example.test>",
+        "subject": "Preserve Grüße & attachment",
+        "from_address": "sender@example.test",
+        "from_name": "Legacy sender",
+        "to_addresses": "[{\"address\":\"legacy-mail@example.test\",\"name\":\"Legacy Admin\"}]",
+        "cc_addresses": "[{\"address\":\"copy@example.test\"}]",
+        "body_text": "Existing mail body",
+        "body_html": "<p>Existing <b>mail</b> body</p>",
+        "folder": "research",
+        "source_folder": "INBOX/Research",
+        "imap_uid": 1234,
+        "imap_uidvalidity": 5678,
+        "raw_storage_path": "/app/uploads/mail/raw/legacy-1.eml",
+        "raw_sha256": "934501b546db84b5d691b681eb2d874bf9825e989739c080ad5ea83515011c67",
+        "is_read": 0,
+        "is_starred": 1,
+        "has_attachments": 1,
+        "received_at": "2026-01-15 10:00:00"
+      },
+      {
+        "id": "09230000-0000-4000-8000-000000000032",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "mail_account_id": "09230000-0000-4000-8000-000000000003",
+        "message_id": "<legacy-draft@example.test>",
+        "subject": "Existing draft",
+        "from_address": "legacy-mail@example.test",
+        "to_addresses": "[]",
+        "body_text": "Unsent content",
+        "folder": "drafts",
+        "is_read": 1,
+        "is_draft": 1,
+        "received_at": "2026-01-16 10:00:00"
+      }
+    ],
+    "mail_server_messages": [
+      {
+        "id": "09230000-0000-4000-8000-000000000026",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "mail_account_id": "09230000-0000-4000-8000-000000000003",
+        "email_id": "09230000-0000-4000-8000-000000000008",
+        "source_folder": "INBOX/Research",
+        "imap_uid": 1234,
+        "imap_uidvalidity": 5678,
+        "delete_status": "pending"
+      }
+    ],
+    "email_attachments": [
+      {
+        "id": "09230000-0000-4000-8000-000000000027",
+        "email_id": "09230000-0000-4000-8000-000000000008",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "filename": "legacy-notes.txt",
+        "content_type": "text/plain",
+        "size_bytes": 24,
+        "storage_path": "/app/uploads/mail/attachments/legacy-notes.txt",
+        "content_id": "legacy-inline@example.test"
+      }
+    ],
+    "system_settings": [
+      {
+        "setting_key": "signup_mode",
+        "setting_value": "open"
+      },
+      {
+        "setting_key": "signup_secure_default_applied",
+        "setting_value": "true"
+      },
+      {
+        "setting_key": "instance_name",
+        "setting_value": "My existing UniHub"
+      }
+    ],
+    "user_settings": [
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "setting_key": "theme",
+        "setting_value": "dark"
+      },
+      {
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "setting_key": "mail_layout",
+        "setting_value": "vertical"
+      }
+    ],
+    "recordings": [
+      {
+        "id": "09230000-0000-4000-8000-000000000028",
+        "user_id": "09230000-0000-4000-8000-000000000001",
+        "title": "Legacy recording",
+        "content_type": "audio/webm",
+        "size_bytes": 1234,
+        "storage_path": "/app/uploads/recordings/legacy.webm",
+        "category": "meeting",
+        "recorded_at": "2026-01-15 10:00:00",
+        "metadata": "{\"language\":\"de\"}"
+      }
+    ]
+  }
+}
