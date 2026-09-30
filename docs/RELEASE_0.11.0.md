@@ -12,6 +12,15 @@
 - Backup schema 4 preserves new mail state and quarantines imported provider evidence. Old supported backup formats remain readable. Older applications cannot read new schema-4 archives.
 - Raw-message completion and provenance are distinct from header discovery. Legacy archives are retained, not automatically relabelled byte-verified.
 
+### Review fixes after the handoff
+
+- Every operation state has a working exit. A newer MOVE behind an earlier unconfirmed MOVE, or an unsent change on a mailbox whose UIDVALIDITY changed, goes to attention with Retry/Discard instead of waiting forever. A read/star change that stopped after being sent can be retried or discarded. Retry and Discard buttons only appear when the API accepts them.
+- The one-second due scan only selects work the executor can act on and backs off exponentially per operation (15 s up to 1 h), so no stuck change causes a login loop.
+- The Mail background setting is enforced when work is queued and is no longer cleared by a single foreground action. Syncs that follow a change are not treated as manual refreshes.
+- An operator canary hold can only be released by `mail-rollout.js release`; settings changes, reconnects and module toggles keep it.
+- One parked IMAP session per account is reused between sequential jobs, bulk changes run in batches of up to 50 on one connection, and the periodic wake-up only follows INBOX every 30 s, with full folder discovery at most every 5 minutes.
+- The bundled Compose file uses MySQL 8.4 LTS. See [upgrading](UPGRADING.md).
+
 ## Validation boundary
 
 Completed isolated checks include real-MySQL migration interruption/restart, restore/reconnect, occurrence-backed folder views, conflicting-write rollback, durable receipts, and selective foreground/background resume. Installed IMAP-library tests against a controlled wire peer and real MySQL cover a held acknowledgement, lost acknowledgement, actual worker SIGKILL after the provider effect, missing COPYUID, scan-first settlement and lease-expiry recovery. They assert that MOVE is not replayed.

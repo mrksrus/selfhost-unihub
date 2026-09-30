@@ -56,8 +56,10 @@ async function ensureMailbox({ userId, accountId, folderName, epoch = null, meta
     const stale = `user_id = ? AND mail_account_id = ? AND (BINARY remote_folder = BINARY ?
         OR (? = 'INBOX' AND remote_folder REGEXP '^[iI][nN][bB][oO][xX]$')) AND remote_uidvalidity <> ?
         AND state IN ('queued','executing','verifying','retry_wait')`;
+    // Keep recorded COPYUID/UID mapping evidence; the outcome check needs it.
     await cx.execute(`UPDATE mail_writebacks SET state = 'reconciling', status = 'pending',
-      evidence_json = JSON_OBJECT('reason','epoch_changed') WHERE dispatched = TRUE AND ${stale}`, [userId, accountId, name, name, epoch]);
+      evidence_json = JSON_SET(COALESCE(evidence_json, JSON_OBJECT()), '$.reason', 'epoch_changed')
+      WHERE dispatched = TRUE AND ${stale}`, [userId, accountId, name, name, epoch]);
     await cx.execute(`UPDATE mail_writebacks SET state = 'needs_attention', status = 'conflict',
       error = 'Provider reset this mailbox; sync, then retry or discard this change',
       evidence_json = JSON_OBJECT('reason','epoch_changed') WHERE dispatched = FALSE AND ${stale}`, [userId, accountId, name, name, epoch]);

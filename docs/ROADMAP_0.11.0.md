@@ -5,8 +5,28 @@ Working list for making 0.11.0 a stable baseline. It combines the review of the
 assessment made on 2026-09-30. Items are ordered by priority: first it must work,
 then it must look right and never get stuck, then long-term maintainability.
 
-P1 (correctness, deployment safety) is being worked on separately; see the
-handoff and release notes. This file tracks what comes after.
+P1 (correctness, deployment safety) was addressed on 2026-09-30: stuck
+operation states, the background setting, canary holds, manual-vs-follow-up
+syncs, IMAP connection reuse and MySQL 8.4. See `RELEASE_0.11.0.md`. Live
+verification on the maintainer's server is still pending. This file tracks what
+comes after.
+
+## Open from the P1 work
+
+- **A sent MOVE that cannot be proven can stay in attention forever.** When a
+  MOVE was sent but no COPYUID arrived and the bounded outcome check cannot find
+  the message, it stays `needs_attention`. By design it cannot be discarded
+  (the move may have happened), so it blocks account purge and any newer move
+  of that message. Add an explicit "Accept server state" action: mark the
+  operation resolved without any provider write, then run a manual sync so the
+  local copy follows wherever the message really is.
+- **New SQL not yet run on MySQL.** The due-scan backoff subquery, cancel/retry
+  transactions, epoch-change updates and canary-hold precedence are covered by
+  unit tests with fake databases only. Run the MySQL integration suite
+  (`npm --prefix api run test:ci` with a disposable database, or CI) before
+  tagging.
+- **Connection reuse relies on node-imap internals** (`_enqueue('NOOP')`,
+  `_queue`, `_curReq`). Pinned to node-imap 0.8.19; revisit with ImapFlow.
 
 ## P2: Looks right in the UI and never gets stuck
 
