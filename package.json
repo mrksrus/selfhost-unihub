@@ -11,7 +11,11 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json"
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "db:start": "scripts/local-mysql.sh start",
+    "db:stop": "scripts/local-mysql.sh stop",
+    "db:dev": "scripts/local-mysql.sh dev",
+    "test:mysql": "scripts/local-mysql.sh test"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.14",

@@ -150,7 +150,7 @@ dev() {
   cat <<EOF
 
 Local MySQL keeps running for this session. Start the app with:
-  (cd api && MYSQL_HOST=127.0.0.1 MYSQL_PORT=$PORT MYSQL_USER=unihub MYSQL_PASSWORD=\$(. .private/local-mysql.env; echo \$APP_PW) \\
+  (cd api && MYSQL_HOST=127.0.0.1 MYSQL_PORT=$PORT MYSQL_USER=unihub MYSQL_PASSWORD=\$(. ../.private/local-mysql.env; echo \$APP_PW) \\
      MYSQL_DATABASE=unihub_dev JWT_SECRET=$JWT_SECRET ENCRYPTION_KEY=$ENCRYPTION_KEY \\
      BOOTSTRAP_ADMIN_EMAIL=$BOOTSTRAP_ADMIN_EMAIL BOOTSTRAP_ADMIN_PASSWORD=$BOOTSTRAP_ADMIN_PASSWORD \\
      ALLOWED_ORIGINS=http://localhost:8080 PORT=4000 npm start)

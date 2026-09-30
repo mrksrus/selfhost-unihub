@@ -66,3 +66,46 @@ npm run build
 npm --prefix api test
 ```
 
+
+## Local MySQL and sample data
+
+`scripts/local-mysql.sh` runs an on-demand MySQL 8.4 as your own user from the
+official tarball: no system service, no sudo, nothing starts at boot. Install the
+minimal glibc tarball once and verify its signature (Oracle's MySQL release key
+`B7B3B788A8D3785C`):
+
+```bash
+V=8.4.11; T=mysql-$V-linux-glibc2.28-x86_64-minimal.tar.xz
+cd ~/Downloads
+curl -LO https://cdn.mysql.com/Downloads/MySQL-8.4/$T
+curl -LO https://cdn.mysql.com/Downloads/MySQL-8.4/$T.asc
+gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys B7B3B788A8D3785C
+gpg --verify $T.asc $T   # must report a good signature from MySQL Release Engineering
+mkdir -p ~/.local/opt && tar -xJf $T -C ~/.local/opt
+ln -sfn ~/.local/opt/${T%.tar.xz} ~/.local/opt/mysql-8.4
+```
+
+The script only talks to the server through the API's `mysql2` driver, because
+the minimal tarball's `mysql` CLI needs `libncurses.so.6`, which some
+distributions (e.g. Arch) do not ship. Data lives in `~/.local/share/unihub-mysql`
+and generated local passwords in `.private/local-mysql.env` (ignored by Git).
+
+```bash
+npm run db:start     # scripts/local-mysql.sh start (first run initializes the data dir)
+npm run db:dev       # start, build and seed the unihub_dev database, print the API command
+npm run test:mysql   # MySQL integration suite like CI (stops the server again if it started it)
+npm run db:stop      # scripts/local-mysql.sh stop
+scripts/local-mysql.sh sql -e 'SHOW DATABASES'
+scripts/local-mysql.sh dev --reset   # drop all unihub_dev tables and seed again
+```
+
+`db:dev` runs `api/scripts/seed-dev.cjs`, which refuses any database not ending
+in `_dev`, builds the schema with the app's own startup code and inserts
+deterministic synthetic data: contacts, calendars with events and todos, notes,
+four mail accounts (two Sync, one Download, one disconnected) with a few hundred
+messages, and mail sync operations in queued, retry, needs-attention and
+confirmed states. Re-running it without `--reset` changes nothing. The sample
+mail servers use unresolvable `.test` hosts, so any sync attempt fails quickly
+without leaving the machine; queued sample operations therefore move to a retry
+state once the API runs. Sign in with `admin@example.com` or `alex@example.com`,
+both with the password `local-dev-admin-password`.
