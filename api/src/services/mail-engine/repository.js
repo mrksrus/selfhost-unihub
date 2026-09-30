@@ -189,22 +189,33 @@ async function getReceipt({ userId, clientKey }, executor = db) {
   const [rows] = await executor.execute('SELECT * FROM mail_command_receipts WHERE user_id = ? AND client_key = ?', [userId, clientKey]);
   return rows[0] || null;
 }
+const parseReceipt = value => typeof value === 'string' ? JSON.parse(value) : value;
+// Claims clientKey for this request inside the caller's transaction, or replays
+// the committed response of an earlier identical request. The INSERT comes
+// first: a concurrent claimer then waits on the new row's lock and sees the
+// committed row. A locking read before the INSERT would take a gap lock that
+// both requests hold and each INSERT waits on (deadlock). After a duplicate
+// only a shared read follows, so several waiting replays cannot deadlock.
 async function recordReceipt({ userId, clientKey, requestHash, response }, executor = db) {
   validateClientKey(clientKey); requireId(userId, 'userId');
   if (typeof requestHash !== 'string' || !/^[a-f0-9]{64}$/.test(requestHash)) throw new TypeError('Invalid request hash');
-  // Caller uses one transaction for row lock, command insert and receipt. Unique PK
-  // arbitrates concurrent inserts; duplicate-key follows with locking read.
-  const [known] = await executor.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ? FOR UPDATE', [userId, clientKey]);
-  if (known.length) {
-    if (known[0].request_hash !== requestHash) throw fail('IDEMPOTENCY_KEY_REUSED', 'Idempotency key belongs to a different request');
-    return { response: typeof known[0].response_json === 'string' ? JSON.parse(known[0].response_json) : known[0].response_json, replayed: true };
+  try {
+    await executor.execute('INSERT INTO mail_command_receipts (user_id,client_key,request_hash,response_json) VALUES (?,?,?,?)',
+      [userId, clientKey, requestHash, JSON.stringify(response)]);
+    return { response, replayed: false };
+  } catch (error) {
+    if (error?.code !== 'ER_DUP_ENTRY' && error?.errno !== 1062) throw error;
   }
-  await executor.execute(`INSERT INTO mail_command_receipts (user_id,client_key,request_hash,response_json)
-    VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE user_id = user_id`,
-    [userId, clientKey, requestHash, JSON.stringify(response)]);
-  const [accepted] = await executor.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ? FOR UPDATE', [userId, clientKey]);
-  if (accepted[0].request_hash !== requestHash) throw fail('IDEMPOTENCY_KEY_REUSED', 'Idempotency key belongs to a different request');
-  return { response: typeof accepted[0].response_json === 'string' ? JSON.parse(accepted[0].response_json) : accepted[0].response_json,
-    replayed: false };
+  const [known] = await executor.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ? FOR SHARE', [userId, clientKey]);
+  if (!known.length) throw fail('IDEMPOTENCY_KEY_BUSY', 'Idempotency key changed during the request');
+  if (known[0].request_hash !== requestHash) throw fail('IDEMPOTENCY_KEY_REUSED', 'Idempotency key belongs to a different request');
+  return { response: parseReceipt(known[0].response_json), replayed: true };
 }
-module.exports = { withTransaction, isDeadlock, ownAccount, ownMailbox, ensureMailbox, upsertOccurrence, getOccurrence, loadCursor, saveCursor, markAbsentInWindow, getReceipt, recordReceipt };
+// Stores the final response of a request that recordReceipt claimed in the same transaction.
+async function finishReceipt({ userId, clientKey, requestHash, response }, executor = db) {
+  validateClientKey(clientKey); requireId(userId, 'userId');
+  const [result] = await executor.execute('UPDATE mail_command_receipts SET response_json = ? WHERE user_id = ? AND client_key = ? AND request_hash = ?',
+    [JSON.stringify(response), userId, clientKey, requestHash]);
+  if (result.affectedRows !== 1) throw fail('IDEMPOTENCY_KEY_BUSY', 'Idempotency receipt was not claimed by this request');
+}
+module.exports = { withTransaction, isDeadlock, ownAccount, ownMailbox, ensureMailbox, upsertOccurrence, getOccurrence, loadCursor, saveCursor, markAbsentInWindow, getReceipt, recordReceipt, finishReceipt };

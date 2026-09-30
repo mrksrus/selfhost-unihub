@@ -3,7 +3,6 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { guardImapConnection } = require('../src/services/mail-imap-guard');
 const { withMailAccountLock } = require('../src/services/mail-account-lock');
-const { executeOperation } = require('../src/services/mail-writebacks');
 const operations = require('../src/services/mail-engine/operations');
 const transport = require('../src/services/mail-engine/transport');
 const { getDb, setDb } = require('../src/state');
@@ -65,18 +64,6 @@ test('cancelled connection cannot dispatch any new commands', async () => {
   const f = fixture({ signal: controller.signal });
   await assert.rejects(f.connection.search(['ALL'], {}), { code: 'MAIL_SYNC_CANCELLED' });
   assert.equal(f.commands, 0); assert.equal(f.destroyed, 1);
-});
-
-test('timed-out provider flag remains uncertain and never continues to readback or confirms success', async () => {
-  const f = fixture({ timeoutMs: 10 });
-  let dispatched = false, reads = 0;
-  const operation = executeOperation(f.connection, { action: 'read', remote_uid: 12, target_value: '1', base_value: '0' }, {
-    read: async () => { reads++; return { flags: [] }; }, markDispatched: async () => { dispatched = true; },
-  });
-  await assert.rejects(operation, { code: 'MAIL_IMAP_TIMEOUT' });
-  assert.equal(dispatched, true); assert.equal(reads, 1); assert.equal(f.destroyed, 1);
-  f.reply(null); await tick();
-  assert.equal(reads, 1, 'Late success must not trigger a confirmation read or local UPDATE');
 });
 
 for (const action of ['read', 'star', 'move']) {

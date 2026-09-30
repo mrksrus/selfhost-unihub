@@ -8,20 +8,6 @@ const requireId = (value, name) => { if (typeof value !== 'string' || !value.tri
 const fenced = () => Object.assign(new Error('Mail worker lease or generation was lost'), { code: 'MAIL_WORKER_FENCED' });
 const tx = (executor, callback) => typeof executor.getConnection === 'function' ? withTransaction(callback, executor) : callback(executor);
 const int = (n, low, high, name) => { if (!Number.isSafeInteger(n) || n < low || n > high) throw new RangeError(`Invalid ${name}`); return n; };
-function safeEvidence(evidence) {
-  // Structured correlation only. Never persist arbitrary server text/MIME/PII.
-  if (evidence == null) return null;
-  if (typeof evidence !== 'object' || Array.isArray(evidence)) throw new TypeError('Evidence must be structured');
-  const out = {};
-  for (const key of ['reason','responseCode','sourceUidvalidity','destinationUidvalidity','sourceUid','destinationUid','modseq','mappingValid','transmitted','verified','occurrenceId','mailboxId']) {
-    if (!Object.hasOwn(evidence, key) || evidence[key] == null) continue;
-    const value = evidence[key];
-    if (typeof value === 'boolean') out[key] = value;
-    else if ((typeof value === 'string' || typeof value === 'number') && String(value).length <= 80 && /^[a-zA-Z0-9_ .:-]+$/.test(String(value))) out[key] = String(value);
-    else throw new TypeError(`Unsafe evidence ${key}`);
-  }
-  return JSON.stringify(out);
-}
 async function enqueueJob({ userId, accountId, mailboxId = null, operationId = null, kind = 'sync', priority = 50, dueAt = null, foreground = false, manualRefresh = false }, executor = db) {
   if (!/^[a-z_]{1,32}$/.test(kind)) throw new TypeError('Invalid job kind');
   if (typeof manualRefresh !== 'boolean' || (manualRefresh && !['sync', 'flags', 'presence'].includes(kind)))
@@ -309,23 +295,4 @@ async function beginOperationAttempt({ operationId, userId, accountId, workerId,
     return attempts[0];
   });
 }
-async function finishOperationAttempt({ attemptId, operationId, userId, accountId, workerId, generation, outcome, transmission, evidence = null }, executor = db) {
-  if (!['confirmed','verifying','uncertain','not_transmitted','rejected'].includes(outcome)) throw new TypeError('Invalid outcome');
-  if (!['yes','no','unknown'].includes(transmission)) throw new TypeError('Invalid transmission');
-  if (outcome === 'not_transmitted' && transmission !== 'no') throw new TypeError('Non-transmission requires proof');
-  if (outcome === 'confirmed' && evidence?.verified !== true) throw new TypeError('Confirmation requires verified provider evidence');
-  return tx(executor, async cx => {
-    await assertFence({ accountId, workerId, generation }, cx);
-    const [attempts] = await cx.execute('SELECT * FROM mail_operation_attempts WHERE id = ? AND operation_id = ? AND user_id = ? AND mail_account_id = ? AND worker_generation = ? FOR UPDATE', [attemptId, operationId, userId, accountId, generation]);
-    if (!attempts.length || attempts[0].outcome !== 'prepared') throw fenced();
-    const json = safeEvidence(evidence);
-    const state = outcome === 'not_transmitted' ? 'retry_wait' : outcome === 'confirmed' ? 'confirmed' : outcome === 'verifying' ? 'verifying' : outcome === 'rejected' && transmission === 'no' ? 'rejected' : 'reconciling';
-    await cx.execute(`UPDATE mail_operation_attempts SET outcome = ?, transmission = ?, evidence_json = ?, completed_at = UTC_TIMESTAMP() WHERE id = ?`, [outcome, transmission, json, attemptId]);
-    const [updated] = await cx.execute(`UPDATE mail_writebacks SET state = ?, status = ?, evidence_json = ?, dispatched = ?
-      WHERE id = ? AND user_id = ? AND mail_account_id = ? AND state = 'executing'`,
-    [state, ['confirmed','rejected'].includes(state) ? state === 'confirmed' ? 'done' : 'failed' : 'pending', json, transmission === 'no' ? 0 : 1, operationId, userId, accountId]);
-    if (updated.affectedRows !== 1) throw fenced();
-    return state;
-  });
-}
-module.exports = { enqueueJob, claimDueJob, assertFence, updateJob, releaseUnstartedJob, completeJob, requestCancellation, pauseAccount, resumeAccount, recoverExpiredJobs, pruneFinishedJobs, getJobStatus, beginOperationAttempt, finishOperationAttempt };
+module.exports = { enqueueJob, claimDueJob, assertFence, updateJob, releaseUnstartedJob, completeJob, requestCancellation, pauseAccount, resumeAccount, recoverExpiredJobs, pruneFinishedJobs, getJobStatus, beginOperationAttempt };

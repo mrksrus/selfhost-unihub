@@ -325,8 +325,8 @@ Important boundaries in the current code:
 
 `mail-account-mode.js` validates switches and provider identity. The per-account
 queue in `mail-account-lock.js` serializes settings with sync/deletion workers.
-`mail-server-follow.js` compares complete provider inventories, reconciles verified
-current locations and retains absent copies. Original provider identity remains
+The durable engine in `mail-engine/` scans each mapped provider mailbox in bounded
+UID windows, reconciles verified current locations and retains absent copies. Original provider identity remains
 separate from current bindings and local filing. This assumes the standard single
 API process; multiple API replicas require distributed worker coordination.
 

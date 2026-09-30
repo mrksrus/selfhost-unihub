@@ -1,9 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { simpleParser } = require('mailparser');
 const {
   buildMailHostTrustResult,
-  buildRawEmailFromImapParts,
   deleteImapUid,
   isTlsTrustError,
   loadExistingImportedUidSet,
@@ -11,70 +9,6 @@ const {
   recordMailServerMessageForDeletion,
   validateMailHostPolicy,
 } = require('../src/services/mail');
-
-test('prefers complete RFC822 IMAP body over split HEADER/TEXT parts', async () => {
-  const rawEmail = [
-    'From: Example Sender <sender@example.com>',
-    'To: recipient@example.com',
-    'Subject: Example offer',
-    'Date: Tue, 10 Feb 2026 16:38:30 +0000',
-    'Message-ID: <202610021638.test@example.com>',
-    'Content-Type: multipart/alternative; boundary="mail-boundary"',
-    '',
-    '--mail-boundary',
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    'Offer body',
-    '--mail-boundary--',
-    '',
-  ].join('\r\n');
-
-  const splitTextBody = [
-    'content-type: multipart/alternative; boundary="mail-boundary"',
-    'date: Tue, 10 Feb 2026 16:38:30 +0000',
-    'from: Example Sender <sender@example.com>',
-    '',
-    '--mail-boundary',
-    'Content-Type: text/plain; charset=utf-8',
-    '',
-    'Offer body',
-    '--mail-boundary--',
-    '',
-  ].join('\r\n');
-
-  const fullEmail = buildRawEmailFromImapParts({
-    parts: [
-      { which: 'HEADER', body: { subject: ['Example offer'] } },
-      { which: 'TEXT', body: splitTextBody },
-      { which: '', body: rawEmail },
-    ],
-  });
-
-  const parsed = await simpleParser(fullEmail);
-
-  assert.equal(fullEmail, rawEmail);
-  assert.equal(parsed.from.value[0].address, 'sender@example.com');
-  assert.equal(parsed.text.trim(), 'Offer body');
-  assert.equal(parsed.text.includes('content-type:'), false);
-});
-
-test('reconstructs split HEADER/TEXT parts when complete IMAP body is unavailable', () => {
-  const fullEmail = buildRawEmailFromImapParts({
-    parts: [
-      {
-        which: 'HEADER',
-        body: {
-          from: ['Alice <alice@example.com>'],
-          to: ['Bob <bob@example.com>'],
-          subject: ['Hello'],
-        },
-      },
-      { which: 'TEXT', body: 'Plain body' },
-    ],
-  });
-
-  assert.match(fullEmail, /^from: Alice <alice@example.com>\r\nto: Bob <bob@example.com>\r\nsubject: Hello\r\n\r\nPlain body$/);
-});
 
 test('normalizes legacy initial sync limits to all', () => {
   assert.equal(normalizeSyncFetchLimit(undefined), 'all');

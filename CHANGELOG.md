@@ -6,6 +6,19 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of MySQL, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.11.1 (unreleased)
+
+### Fixes
+
+- **Retried mail actions no longer fail on a database deadlock.** Two identical
+  requests with the same `Idempotency-Key` (for example a move or read change
+  resent after a slow response) could deadlock and one of them failed. The
+  second request now waits and returns the first one's result.
+
+### Maintenance
+
+- Removed the retired pre-0.11 mail sync code and other unused mail helpers.
+
 ## 0.11.0
 
 *Calmer mail sync and a stable baseline*

@@ -185,7 +185,4 @@ async function reconcileObservedOccurrence({ executor, userId, accountId, emailI
     return result;
   }, executor);
 }
-async function reconcileLegacyMove({ operationId, userId, accountId, evidence = {}, executor } = {}) {
-  return settleMoveEvidence({ operationId, userId, accountId, ...evidence, executor });
-}
-module.exports = { settleFlagObservation, settleMoveEvidence, reconcileObservedOccurrence, reconcileLegacyMove, validMapping };
+module.exports = { settleFlagObservation, settleMoveEvidence, reconcileObservedOccurrence, validMapping };

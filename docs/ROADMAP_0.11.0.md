@@ -126,7 +126,7 @@ comes after.
    *Done:* popover is used (sync panel) and kept; skeleton, toggle-variants,
    `NavLink.tsx` and 10 unused Radix packages were removed too. The main chunk
    did not change (tree-shaking already dropped them).
-9. **Remove dead mail code and duplicates.** The retired `syncMailAccountOnce`
+9. **Done (2026-09-30): Remove dead mail code and duplicates.** The retired `syncMailAccountOnce`
    (~200 lines), `withFencedMailAccountLock`, `recoverUncertainOperations`,
    `finishOperationAttempt`, `reconcileLegacyMove`, and the legacy
    `executeOperation`/`legacyReadRemote` in `mail-writebacks.js`. Merge the
@@ -134,6 +134,11 @@ comes after.
    `repository.withTransaction`, and use `repository.recordReceipt/getReceipt`
    in `mutateMessages` and the bulk-move route (the inline `SELECT … FOR UPDATE`
    then `INSERT` can deadlock on concurrent requests with the same key).
+   *Done:* removed those functions plus what only they used (`mail-server-follow.js`,
+   the in-memory `createMailSyncScheduler`, `syncMailFolder`, raw-part rebuilders);
+   receipts now claim the key with an INSERT first (`recordReceipt`/`finishReceipt`),
+   proven by a concurrent same-key MySQL test. The two `transaction()` helpers were
+   already one-line wrappers around `repository.withTransaction` and stay.
 10. **Two mail job runners.** `mail-writebacks.js runWritebacks` (in-process
     queue that claims `operation`/`reconcile` jobs) and the durable scheduler's
     `runDurableMailJob` both execute operation jobs. Consolidate on the durable

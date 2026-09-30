@@ -10,7 +10,7 @@ const emailId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const folder = { folderName: 'INBOX', dbFolderName: 'inbox' };
 
 // Real bounded sync algorithm with fake transactional storage and provider.
-// Old pre-0.11 syncMailFolder used ALL and a global import checkpoint; the
+// The retired pre-0.11 folder sync used ALL and a global import checkpoint; the
 // durable engine has independent recent/history and body work instead.
 function scanFixture(t, { uids = [1, 2, 3], epoch = 100 } = {}) {
   const names = ['repository', 'runtime', 'transport', 'sync'];
