@@ -137,12 +137,6 @@ const MailPage = () => {
 
       {/* Main Content */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {accounts.find(account => account.id === selectedAccount)?.sync_mode === 'sync' && (
-          <div className="border-b border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-            Sync with server · {accounts.find(account => account.id === selectedAccount)?.sync_status || 'pending'}.
-            {' '}Recent mail and older history have separate coverage. Pending read, star and connected-folder moves show your requested state while UniHub checks the provider; uncertain moves are not blindly repeated. Missing server messages stay as local copies.
-          </div>
-        )}
         <MailSyncAttentionLine operations={writebacks.data ?? []} onReview={() => setSyncPanel('attention')} />
         {selectedAccount === LEGACY_ACCOUNT && (
           <MailLegacyRecovery accounts={accounts} folders={folderView.mailFolders} selectedIds={selectedIds}
