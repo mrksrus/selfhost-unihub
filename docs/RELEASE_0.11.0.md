@@ -1,39 +1,74 @@
-# UniHub 0.11.0 — release candidate
+# 0.11.0: calmer mail sync and a stable baseline
 
-**Not yet a published release.** This working tree is undergoing the pre-push and provider/browser acceptance gates. Package version numbers alone do not indicate deployment or acceptance.
+0.11.0 finishes the durable mail engine that shipped as a preview in
+[0.10.13](RELEASE_0.10.13.md). It fixes the queues that stopped draining on real
+Gmail, iCloud and self-hosted accounts, moves sync status out of the way, and
+cleans up the UI and code that later work builds on.
 
-## What changes
+**Back up MySQL and uploads before updating.** No new migration is required
+compared with 0.10.13; updating from 0.10.12 or older runs the 0.10.13
+migrations. See [upgrading](UPGRADING.md).
 
-- Durable, owner-scoped mail intentions and idempotent request receipts separate prompt API acceptance from provider confirmation. Explicit states and optimistic overlays replace long request-bound writes.
-- Bounded, resumable discovery, body and flag/presence work use account fencing and durable jobs. Interactive changes can yield read-only background work. Cancelling a scan does not discard accepted provider changes.
-- Logical items are separate from mailbox occurrences. Provider-stable Gmail identity can represent multiple labels without collapsing ordinary IMAP copies by Message-ID or body hash. Exact mailbox names and UIDVALIDITY remain part of the addressing rules.
-- MOVE records dispatch before wire transmission. Native MOVE/COPYUID evidence can reconcile after a lost reply, scan-first race or worker restart without submitting a second MOVE. Unprovable outcomes remain attention-required.
-- Disconnect retains local data and the operation journal; destructive local purge is separately confirmed and guarded. Explicit validated reconnect does not replay restored mutation jobs.
-- Backup schema 4 preserves new mail state and quarantines imported provider evidence. Old supported backup formats remain readable. Older applications cannot read new schema-4 archives.
-- Raw-message completion and provenance are distinct from header discovery. Legacy archives are retained, not automatically relabelled byte-verified.
+## Mail sync fixes
 
-### Review fixes after the handoff
+- **Queues no longer starve.** One busy account's backlog could fill the
+  scheduler's candidate window and stop every other account from syncing. Only
+  accounts that can run now are considered.
+- **Database deadlocks are retried.** Lock conflicts between the scheduler and
+  the due-work pass were aborting whole passes and failing sync jobs. Deadlocked
+  transactions now run again, and the due-work pass skips a contended row
+  instead of stopping.
+- **Gmail sync no longer fails on duplicate system folders.** A second mailbox
+  that looks like a system folder (for example a label "Sent" next to
+  `[Gmail]/Sent Mail`) becomes its own folder instead of failing every sync.
+- **iCloud sync no longer fails on out-of-spec mod-sequences.** An invalid
+  `HIGHESTMODSEQ`/`MODSEQ` is treated as "no CONDSTORE" for that mailbox.
+- **A failing change no longer blocks the others.** It is counted, backs off,
+  ends in "needs attention" after 8 attempts, and its reason is written to the
+  server log (`[MAIL OPERATION]`, never to the database or UI).
+- **Accept server state.** A sent move whose result cannot be proven can now be
+  resolved from the sync panel: UniHub stops tracking it, sends nothing to the
+  provider and syncs the account again.
+- Finished mail jobs are pruned after 7 days, and lease recovery runs every
+  15 seconds instead of on every scheduler poll.
 
-- Every operation state has a working exit. A newer MOVE behind an earlier unconfirmed MOVE, or an unsent change on a mailbox whose UIDVALIDITY changed, goes to attention with Retry/Discard instead of waiting forever. A read/star change that stopped after being sent can be retried or discarded. Retry and Discard buttons only appear when the API accepts them.
-- The one-second due scan only selects work the executor can act on and backs off exponentially per operation (15 s up to 1 h), so no stuck change causes a login loop.
-- The Mail background setting is enforced when work is queued and is no longer cleared by a single foreground action. Syncs that follow a change are not treated as manual refreshes.
-- An operator canary hold can only be released by `mail-rollout.js release`; settings changes, reconnects and module toggles keep it.
-- One parked IMAP session per account is reused between sequential jobs, bulk changes run in batches of up to 50 on one connection, and the periodic wake-up only follows INBOX every 30 s, with full folder discovery at most every 5 minutes.
-- The bundled Compose file uses MySQL 8.4 LTS. See [upgrading](UPGRADING.md).
+## Interface
 
-## Validation boundary
+- **Sync status lives in the sync button.** The pending-changes sentence and the
+  per-account rows above the mail list are gone. The toolbar sync button shows a
+  spinner while syncing (✕ on hover on desktop), a badge with the number of
+  changes waiting for the server, and an amber dot when something needs you. It
+  opens a sync panel (popover on desktop, bottom sheet on phones) with each
+  account's status, Cancel / Sync now, the waiting changes with Retry, Discard
+  and Accept server state, and a Background sync switch.
+- The only inline notice above the list is one line when changes need your
+  decision: "N changes need your attention · Review".
+- Consistent loading, empty and error-with-retry states on Contacts, Calendar,
+  Todo, Recordings, Music, Notes, Dashboard, Admin users and Settings. Failed
+  loads no longer look like empty lists, Save preferences is disabled until
+  preferences have loaded, and 2FA status errors no longer offer "Set up 2FA".
+- One toast system (the unused `sonner` toaster was removed).
 
-Completed isolated checks include real-MySQL migration interruption/restart, restore/reconnect, occurrence-backed folder views, conflicting-write rollback, durable receipts, and selective foreground/background resume. Installed IMAP-library tests against a controlled wire peer and real MySQL cover a held acknowledgement, lost acknowledgement, actual worker SIGKILL after the provider effect, missing COPYUID, scan-first settlement and lease-expiry recovery. They assert that MOVE is not replayed.
+## Under the hood
 
-These are regression and protocol gates, **not substitutes for real-provider and rendered-browser acceptance**. Final full-suite/build results, the backup/rollback rehearsal, candidate provider/browser checks, release publication and live deployment acceptance remain release gates. This document must be finalized from those results before publishing 0.11.0.
+- `MailPage.tsx` is split into focused components and hooks.
+- New real-MySQL integration tests cover job pruning, the claim filter, the
+  due-work back-off, Accept server state, mailbox epoch changes and deadlock
+  retry.
+- Flaky frontend tests were fixed.
+
+## Not verified before release
+
+- The new interface was not reviewed in a browser before publishing (desktop and
+  phone, dark and light). Please report anything that looks off.
+- Provider behaviour was fixed from live diagnostics; confirm on your accounts
+  that the change count goes down after updating. If one change keeps failing,
+  `docker logs unihub 2>&1 | grep "MAIL OPERATION"` shows why.
 
 ## Compatibility and limits
 
-- Native IMAP MOVE is required. There is no COPY/EXPUNGE fallback or arbitrary permanent provider deletion.
-- Missing/invalid COPYUID, uncertain identity, changed UIDVALIDITY or unknown historical operations may require attention. A matching body or Message-ID alone cannot authorize merging copies or declare a remote move successful.
-- CONDSTORE support is provider-dependent. Without it, changes made by another client between a read and write cannot be made atomic.
-- Header visibility is not proof of a complete body/archive. Discovery or a partial sweep does not prove provider absence.
-- Existing user pending work and genuine conflicts must not be cleared to pass acceptance tests.
-- No additional database service or upload volume, or replacement provider credentials/deployment secrets, are required solely for this version. Database schema migrations are required.
-
-Read [upgrading](UPGRADING.md), [mail modes](MAIL_MODES.md) and [backup compatibility](BACKUP_FORMAT.md) before updating. Keep a consistent database/uploads/configuration backup and the previous image. An image-only downgrade cannot undo provider effects; preserve the newer operation journal and keep old provider writers disabled during a recovery.
+- Native IMAP MOVE is required for provider moves.
+- CONDSTORE is provider-dependent. Without it (including iCloud mailboxes with
+  invalid mod-sequences), a change made by another client between UniHub's read
+  and write cannot be detected atomically.
+- Backups use data schema 4, which 0.10.12 and older cannot read.

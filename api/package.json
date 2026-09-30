@@ -1,7 +1,7 @@
 {
   "name": "unihub-api",
   "private": true,
-  "version": "0.10.13",
+  "version": "0.11.0",
   "description": "UniHub API Server",
   "main": "server.js",
   "scripts": {
