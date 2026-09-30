@@ -40,6 +40,8 @@ log-error = $DATA.err
 bind-address = 127.0.0.1
 port = $PORT
 mysqlx = OFF
+# Local only: no replication, and binary logging roughly doubles DDL time on slow disks.
+disable_log_bin
 character-set-server = utf8mb4
 collation-server = utf8mb4_unicode_ci
 # Production/CI containers run in UTC; DATETIME defaults are compared with UTC_TIMESTAMP().
@@ -93,7 +95,7 @@ SQL
 ROOT_PW=$root
 APP_PW=$app
 EOF
-  ROOT_PW=$root
+  ROOT_PW=$root APP_PW=$app
 }
 start() {
   load_env; write_config
