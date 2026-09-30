@@ -2,8 +2,8 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import CalendarPage from '@/pages/CalendarPageRefactored';
-import TodoPage from '@/pages/TodoPageRefactored';
+import CalendarPage from '@/pages/CalendarPage';
+import TodoPage from '@/pages/TodoPage';
 import { useNotificationEventLink } from '@/hooks/use-notification-event-link';
 import { api } from '@/lib/api';
 

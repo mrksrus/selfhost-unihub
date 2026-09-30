@@ -55,6 +55,7 @@ For feature details, follow the corresponding file in docs/ rather than treating
 - Run focused tests for the code changed. Frontend checks are npm run typecheck, npm run lint, and npm test -- <test-file>; backend tests use node --test api/tests/<file>.test.js or npm --prefix api test. MySQL integration tests need a disposable configured database.
 - For UI changes, inspect the actual result at desktop and mobile widths in dark and light themes. For PWA, offline, push, or updates, verify the relevant browser state and consult docs/PWA.md and docs/OFFLINE.md. Report what was and was not verified.
 - Update the relevant feature documentation when a user-visible behavior or cross-component contract changes. Keep this file short and revise a stale rule instead of appending a conflicting one.
+- Add a CHANGELOG.md entry under the upcoming version for every user-visible change.
 
 ## Private data in this repository /  Checks before commiting
 

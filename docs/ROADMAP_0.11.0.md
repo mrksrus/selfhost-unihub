@@ -105,11 +105,13 @@ comes after.
 
 ## P3: Future-proofing and tech debt
 
-7. **Enable strict TypeScript.** `tsconfig.app.json` has `strict: false`, but
+7. **Done (2026-09-30): Enable strict TypeScript.** `tsconfig.app.json` has `strict: false`, but
    `--strict` currently produces only 11 errors (9 in
    `src/components/games/AIGame.tsx`, 1 in `use-calendar-notifications.tsx`,
    1 in a test). Fix them, enable `strict`, and keep it on.
-8. **Remove unused frontend code.** Not imported anywhere:
+   *Done:* `strict` and `noUnusedLocals` are on in `tsconfig.app.json` (one more
+   error, in `api.ts`, was hidden by `noImplicitAny: false`); no `any` added.
+8. **Done (2026-09-30): Remove unused frontend code.** Not imported anywhere:
    - Pages: `src/pages/Index.tsx`, `src/pages/Install.tsx`.
    - 20 components in `src/components/ui/`: accordion, aspect-ratio, breadcrumb,
      calendar, carousel, chart, context-menu, drawer, form, hover-card,
@@ -121,6 +123,9 @@ comes after.
      a build after removing.)
    - Rename `CalendarPageRefactored.tsx`/`TodoPageRefactored.tsx` to
      `CalendarPage.tsx`/`TodoPage.tsx` and delete the one-line re-export files.
+   *Done:* popover is used (sync panel) and kept; skeleton, toggle-variants,
+   `NavLink.tsx` and 10 unused Radix packages were removed too. The main chunk
+   did not change (tree-shaking already dropped them).
 9. **Remove dead mail code and duplicates.** The retired `syncMailAccountOnce`
    (~200 lines), `withFencedMailAccountLock`, `recoverUncertainOperations`,
    `finishOperationAttempt`, `reconcileLegacyMove`, and the legacy
@@ -146,9 +151,11 @@ comes after.
 13. **Split the largest backend files** by area: `api/src/services/mail.js`
     (~2,000 lines), `api/src/routes/mail.js` (~1,900), `api/src/services/backup.js`
     (~2,400).
-14. **One changelog.** Merge the 13 `docs/RELEASE_0.10.*.md` files and the root
+14. **Done (2026-09-30): One changelog.** Merge the 13 `docs/RELEASE_0.10.*.md` files and the root
     `RELEASE_v0.9.20.0.md` into `CHANGELOG.md`.
-15. **Commit `AGENTS.md`** (currently untracked).
+    *Done:* root `CHANGELOG.md`; only `RELEASE_0.10.13.md` and `RELEASE_0.11.0.md`
+    remain for GitHub releases.
+15. **Done (2026-09-30): Commit `AGENTS.md`.** It is tracked in git.
 
 ## P4: Next version (0.12)
 

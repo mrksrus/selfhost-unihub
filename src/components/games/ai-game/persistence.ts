@@ -8,8 +8,6 @@ const UNLOCK_THRESHOLDS = {
   cosmeticLabel: 45,
 } as const;
 
-type UnlockId = keyof typeof UNLOCK_THRESHOLDS;
-
 interface ModeBest {
   bestFloor: number;
   bestScore: number;

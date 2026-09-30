@@ -107,7 +107,7 @@ No new schema, volumes, secrets, or Compose changes are required relative to
 and uncertain moves are not force-replayed. Do not clear queues as an upgrade
 step. Keep a consistent backup and refresh the browser/PWA after updating.
 
-See [release notes](RELEASE_0.10.12.md) for behavior and limits, and
+See [release notes](../CHANGELOG.md#01012) for behavior and limits, and
 [live mail testing](LIVE_MAIL_TESTING.md) for provider-confirmed acceptance tests.
 
 ## 0.10.11 mail flag and responsiveness fixes
@@ -124,7 +124,7 @@ its pending transport before the account lock is released.
 
 No new database migration, volume, secret or Docker configuration is required
 relative to 0.10.10. Keep existing data and keys; refresh the browser/PWA after
-updating. See the [release notes](RELEASE_0.10.11.md) for scope and validation.
+updating. See the [release notes](../CHANGELOG.md#01011) for scope and validation.
 
 ## 0.10.10 pending mail state and retry fix
 
@@ -135,7 +135,7 @@ state. The provider-change Retry action now reaches its API handler.
 
 No new database migration, volume, secret or Docker configuration is required
 relative to 0.10.9. Keep existing volumes and keys. See the
-[release notes](RELEASE_0.10.10.md) for the failed build diagnosis and checks.
+[release notes](../CHANGELOG.md#01010) for the failed build diagnosis and checks.
 
 ## 0.10.9 two-way message sync
 
@@ -176,7 +176,7 @@ and recovery policies. Module controls default to enabled, preserving access to
 existing features. Existing accounts remain in
 Download. Mode changes are opt-in; see [mail modes](MAIL_MODES.md).
 
-Read [0.10.6 release notes](RELEASE_0.10.6.md) before upgrading. Direct 0.10.3+
+Read [0.10.6 release notes](../CHANGELOG.md#0106) before upgrading. Direct 0.10.3+
 updates preserve the approved folder migration. The new ledger records completed
 steps, and an unknown data field or required upgrade failure stops startup.
 Backups are re-enabled with schema 3 and automatic readers for 1/2; older apps
@@ -316,7 +316,7 @@ a warning, so a restore does not silently initiate an unsafe connection.
 New audio uploads/restores accept recognized WAV, MP3, M4A/MP4 audio, Ogg, WebM,
 FLAC, AAC and AIFF signatures; arbitrary file types labeled as audio are rejected.
 Existing stored originals are retained. MP3 export is bounded and may ask you to
-retry when another conversion is busy. See [0.10.2 release notes](RELEASE_0.10.2.md).
+retry when another conversion is busy. See [0.10.2 release notes](../CHANGELOG.md#0102).
 
 ## 0.10.3 backup reliability update
 
@@ -382,6 +382,6 @@ server matches connect, uniquely addressed local-only mail goes to its receiving
 Inbox, and uncertain messages retain their folders in the Legacy view. The
 migration does not create provider folders. Local Important/Archive filing is
 included when no server link exists; Inbox/Sent/Drafts/Trash are excluded.
-See [0.10.5 release notes](RELEASE_0.10.5.md) for the rules, manual recovery,
+See [0.10.5 release notes](../CHANGELOG.md#0105) for the rules, manual recovery,
 source-account ownership, auditing and rollback limits. Preserve a complete
 infrastructure snapshot before updating; application backups remain suspended.
