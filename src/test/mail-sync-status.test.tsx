@@ -61,6 +61,20 @@ describe('mail server change feedback', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/writebacks/failed/retry'));
   });
 
+  it('offers retry and discard exactly as the server allows, and never discards a sent move', async () => {
+    setup([
+      { ...operation('flag', 'conflict', 'star'), state: 'needs_attention', can_retry: true, can_cancel: true, retry_action: 'retry' },
+      { ...operation('unsent', 'conflict', 'move'), state: 'needs_attention', can_retry: true, can_cancel: true, retry_action: 'retry' },
+      { ...operation('sent', 'conflict', 'move'), state: 'needs_attention', can_retry: true, can_cancel: false, retry_action: 'check_outcome' },
+    ]);
+    expect(await screen.findByRole('button', { name: 'Retry folder move' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Check outcome of folder move' })).toBeEnabled();
+    expect(screen.getAllByRole('button', { name: 'Discard folder move' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Discard star change' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/writebacks/flag/cancel'));
+    expect(api.post).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes the affected open message when a pending action settles', async () => {
     const { client, onSettled } = setup([operation('pending', 'pending', 'read')]);
     await screen.findByText(/waiting for provider confirmation/);

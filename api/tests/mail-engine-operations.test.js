@@ -153,7 +153,7 @@ test('acknowledgment-first verified COPYUID settles a destination that scanner i
   f.cx.execute = async (sql, args = []) => {
     history.push(sql);
     if (sql.includes('backup_restore_jobs') || sql.includes('user_settings')) return [[]];
-    if (sql.includes('SELECT id FROM mail_writebacks WHERE user_id=')) return [[]];
+    if (sql.includes('SELECT id,state FROM mail_writebacks WHERE user_id=')) return [[]];
     if (sql.includes('SELECT remote_folder,remote_uid,remote_uidvalidity FROM emails')) return [[f.email]];
     if (sql.includes('SELECT observation_revision FROM emails')) return [[{ observation_revision: 0 }]];
     if (sql.includes('SELECT e.generation, a.is_active')) return [[{ generation: 1, is_active: 1, sync_mode: 'sync' }]];
