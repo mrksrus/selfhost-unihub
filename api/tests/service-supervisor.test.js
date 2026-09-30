@@ -67,3 +67,23 @@ test('API identity is dropped only from root and refuses root or malformed IDs',
     assert.throws(() => apiIdentity(bad, () => 0), /non-root numeric/);
   }
 });
+
+test('an API running as another user is stopped through its IPC channel, never by signal', async () => {
+  const h = harness({ supervisor: { apiUser: { uid: 10001, gid: 10001 } } }); await delay(15);
+  const api = h.children[0];
+  assert.deepEqual(api.spawnOptions.stdio, ['inherit', 'inherit', 'inherit', 'ipc']);
+  let disconnects = 0;
+  Object.assign(api, { connected: true, disconnect() { disconnects++; api.connected = false; queueMicrotask(() => api.finish(0)); } });
+  api.kill = () => { throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' }); };
+  h.signals.emit('SIGTERM'); await delay(15);
+  assert.equal(disconnects, 1);
+  assert.deepEqual(h.exits, [0]);
+});
+
+test('shutdown still finishes when an unprivileged API cannot be killed after grace', async () => {
+  const h = harness({ supervisor: { apiUser: { uid: 10001, gid: 10001 } } }); await delay(15);
+  const api = h.children[0];
+  Object.assign(api, { connected: true, disconnect() { api.connected = false; /* never exits */ } });
+  h.signals.emit('SIGTERM'); await delay(1100);
+  assert.deepEqual(h.exits, [0]);
+});

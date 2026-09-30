@@ -125,14 +125,31 @@ docker exec "$container_name" node -e 'const fs=require("node:fs");for(const nam
 [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}' "$container_name")" == 'PolyForm-Noncommercial-1.0.0' ]]
 UNIHUB_SMOKE_CONTAINER="$container_name" node "$script_dir/container-smoke.mjs"
 docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api "$container_name" node < "$script_dir/../api/tests/helpers/audio-conversion-smoke.cjs"
+# Graceful stop: with cap_drop ALL the root supervisor cannot signal the API
+# user, so shutdown goes through the IPC channel. It must finish well inside
+# Docker's grace period (no SIGKILL) and exit 0.
+stop_started=$SECONDS
+docker stop -t 30 "$container_name" >/dev/null
+(( SECONDS - stop_started < 20 )) || { echo "Graceful stop took $((SECONDS - stop_started))s; the API did not shut down on request." >&2; exit 1; }
+[[ "$(docker inspect --format '{{.State.ExitCode}}' "$container_name")" == 0 ]] || { echo 'Container did not exit cleanly on docker stop.' >&2; exit 1; }
+docker start "$container_name" >/dev/null
+ready=0
+for ((attempt=0; attempt<90; attempt++)); do
+  if curl --silent --fail --max-time 2 http://localhost/health >/dev/null; then ready=1; break; fi
+  sleep 2
+done
+[[ "$ready" == 1 ]] || { echo 'Container did not become healthy again after restart.' >&2; exit 1; }
+api_pid="$(docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of fs.readdirSync("/proc")){if(!/^\d+$/.test(name))continue;try{const args=fs.readFileSync(`/proc/${name}/cmdline`,"utf8").split("\0");if(args.includes("/app/api/server.js")){console.log(name);process.exit(0)}}catch{}}process.exit(1)')"
+[[ "$api_pid" =~ ^[0-9]+$ ]] || { echo 'Could not identify the restarted API process.' >&2; exit 1; }
 # Only the disposable container created above is affected. The container must
 # exit if its API dies so the deployment's restart policy can recover it.
 [[ "$(docker exec "$container_name" cat "/proc/$api_pid/cmdline" | tr '\0' ' ')" == *'/app/api/server.js'* ]] || { echo 'API process changed during smoke.' >&2; exit 1; }
-docker exec "$container_name" kill -TERM "$api_pid"
+# Signal as the API user: the container's root has no CAP_KILL for uid 10001.
+docker exec -u 10001:10001 "$container_name" kill -TERM "$api_pid"
 for ((attempt=0; attempt<20; attempt++)); do
   [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] && break
   sleep 1
 done
 [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] || { echo 'Container stayed running after API death.' >&2; exit 1; }
 [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container_name")" == 1 ]] || { echo 'Container did not report essential service failure.' >&2; exit 1; }
-echo 'Container smoke passed: startup, non-root API and uploads handover, health, authentication, isolation, malformed requests, audio and encrypted backup round-trips, and essential-service recovery.'
+echo 'Container smoke passed: startup, non-root API and uploads handover, health, authentication, isolation, malformed requests, audio and encrypted backup round-trips, graceful stop, and essential-service recovery.'

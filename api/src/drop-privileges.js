@@ -16,5 +16,8 @@ process.setuid(targetUid);
 if (process.getuid() !== targetUid || process.getgid() !== targetGid || process.getgroups().some(g => g !== targetGid)) {
   throw new Error('Could not drop API privileges');
 }
+// The root supervisor may lack CAP_KILL for this user; it closes the IPC
+// channel instead, and a process may always signal itself.
+process.on('disconnect', () => process.kill(process.pid, 'SIGTERM'));
 process.argv.splice(1, 3); // the API sees argv as if started directly
 require(entry);

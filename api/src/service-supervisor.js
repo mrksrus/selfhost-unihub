@@ -32,11 +32,20 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
     stopping = true;
     exitCode = code;
     clearTimeout(startTimer);
-    for (const child of children) child.kill('SIGTERM');
+    for (const child of children) signal(child, 'SIGTERM');
     if (children.size === 0) return finish();
     killTimer = setTimeout(() => {
-      for (const child of children) child.kill('SIGKILL');
+      for (const child of children) signal(child, 'SIGKILL');
+      // An API running as another user cannot be SIGKILLed without CAP_KILL;
+      // exiting PID 1's child ends the container and the kernel reaps the rest.
+      killTimer = setTimeout(finish, 1000);
     }, graceMs);
+  }
+  // With `cap_drop: ALL`, root may not signal the API once it runs as another
+  // user. That child stops when its IPC channel closes (drop-privileges.js).
+  function signal(child, name) {
+    if (child.ownerChannel) { try { if (child.connected) child.disconnect(); } catch { /* already closed */ } return; }
+    try { child.kill(name); } catch { /* already exited */ }
   }
   function onSignal() { stop(0); }
   function launch(command, args, onExit, options = {}) {
@@ -57,7 +66,8 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
   // The wrapper clears supplementary groups, then sets gid and uid, before any
   // API code loads; server.js stays in the command line for process lookups.
   if (apiUser) launch(process.execPath, [require('node:path').join(__dirname, 'drop-privileges.js'),
-    String(apiUser.uid), String(apiUser.gid), '/app/api/server.js'], undefined, { env: { ...process.env, HOME: '/tmp' } });
+    String(apiUser.uid), String(apiUser.gid), '/app/api/server.js'], undefined,
+  { env: { ...process.env, HOME: '/tmp' }, stdio: ['inherit', 'inherit', 'inherit', 'ipc'] }).ownerChannel = true;
   else launch(process.execPath, ['/app/api/server.js']);
   startTimer = setTimeout(() => {
     launch('nginx', ['-t'], code => {
