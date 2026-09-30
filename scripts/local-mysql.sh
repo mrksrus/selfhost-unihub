@@ -18,7 +18,8 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 MYSQL_HOME=${UNIHUB_MYSQL_HOME:-$HOME/.local/opt/mysql-8.4}
 DATA=${UNIHUB_MYSQL_DATA:-$HOME/.local/share/unihub-mysql}
 PORT=${UNIHUB_MYSQL_PORT:-3307}
-RUN=${XDG_RUNTIME_DIR:-/tmp}/unihub-mysql-$(id -u)
+# Per port, so separate instances (e.g. parallel test runs) never share a socket.
+RUN=${XDG_RUNTIME_DIR:-/tmp}/unihub-mysql-$(id -u)-$PORT
 CNF=$DATA.cnf
 ENV_FILE=$REPO/.private/local-mysql.env
 SOCKET=$RUN/mysqld.sock
