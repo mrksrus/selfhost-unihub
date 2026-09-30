@@ -117,6 +117,12 @@ this policy remain inactive with a warning.
 | Periodic server sync | `api/src/app.js` interval | every 10 minutes for active accounts |
 | Manual sync | `POST /api/mail/sync` | waits for sync result for one account |
 | Service worker sync | `POST /api/mail/sync/background` | starts at most one sync if data is stale |
+| Writeback follow-up | provider operation worker | ordinary (throttled) sync after an unsettled flag/move |
+
+Periodic and service-worker sync are background work: they are skipped while the
+Mail module's background setting is off. Manual Sync, flag/move actions and their
+follow-up refresh still run and do not change that setting. Only manual Sync
+reopens a module pause or forces an immediate flags/presence resweep.
 
 Only one mail sync runs at a time. A second request returns an already-running
 result or skips starting a new sync.

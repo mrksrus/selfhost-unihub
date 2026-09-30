@@ -13,9 +13,11 @@ async function pauseMailRestore(connection, userId) {
   // all accepted commands; do not DELETE the installation's operation journal.
   await connection.execute(`UPDATE mail_accounts SET is_active = FALSE, delete_emails_on_server = FALSE,
     server_delete_enabled_at = NULL, server_delete_grace_until = NULL WHERE user_id = ?`, [userId]);
+  // A canary hold survives; is_active = FALSE already forces revalidation
+  // before the operator can release it.
   await connection.execute(`UPDATE mail_engine_accounts SET generation = generation + 1,
-    paused_reason = 'Restore requires provider identity revalidation', lease_owner = NULL, lease_until = NULL
-    WHERE user_id = ?`, [userId]);
+    paused_reason = IF(paused_reason <=> ?, paused_reason, 'Restore requires provider identity revalidation'),
+    lease_owner = NULL, lease_until = NULL WHERE user_id = ?`, [require('./mail-engine/rollout').HOLD_REASON, userId]);
   await connection.execute(`UPDATE mail_engine_jobs SET state = 'paused', cancellation_requested = TRUE,
     lease_owner = NULL, lease_until = NULL, error = 'Restore requires provider identity revalidation'
     WHERE user_id = ? AND state IN ('queued','running','error')`, [userId]);

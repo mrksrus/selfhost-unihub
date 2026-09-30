@@ -3,6 +3,7 @@ const { randomUUID } = require('node:crypto');
 const { db } = require('../../state');
 const { withTransaction, ownAccount } = require('./repository');
 const { bool } = require('./repository-identity');
+const { HOLD_REASON } = require('./rollout');
 const requireId = (value, name) => { if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name} required`); return value; };
 const fenced = () => Object.assign(new Error('Mail worker lease or generation was lost'), { code: 'MAIL_WORKER_FENCED' });
 const tx = (executor, callback) => typeof executor.getConnection === 'function' ? withTransaction(callback, executor) : callback(executor);
@@ -166,18 +167,22 @@ async function requestCancellation({ userId, accountId, jobId }, executor = db) 
     return changed.affectedRows === 1;
   });
 }
+// An operator canary hold outranks every other pause: the stop still fences
+// workers, but only releaseRollout may clear the hold. Absorbed reasons stay
+// enforced by is_active/disconnected_at and live module checks.
 async function pauseAccount({ userId, accountId, reason }, executor = db) {
   if (typeof reason !== 'string' || !reason || reason.length > 255) throw new TypeError('Invalid pause reason');
   return tx(executor, async cx => {
     await ownAccount(cx, userId, accountId, true);
     await cx.execute(`INSERT INTO mail_engine_accounts (mail_account_id,user_id,paused_reason) VALUES (?,?,?)
-      ON DUPLICATE KEY UPDATE paused_reason = VALUES(paused_reason), generation = generation + 1,
-        lease_owner = NULL, lease_until = NULL`, [accountId, userId, reason]);
+      ON DUPLICATE KEY UPDATE paused_reason = IF(paused_reason <=> ?, paused_reason, VALUES(paused_reason)),
+        generation = generation + 1, lease_owner = NULL, lease_until = NULL`, [accountId, userId, reason, HOLD_REASON]);
     await cx.execute("UPDATE mail_engine_jobs SET state='paused', lease_owner=NULL, lease_until=NULL WHERE mail_account_id=? AND state IN ('queued','running')", [accountId]);
   });
 }
-// Explicit authenticated reconnect (all reasons), or permitted user interaction
-// (only named module pauses). Never resume archived provider writes as jobs.
+// Explicit authenticated reconnect (all reasons but a canary hold), or permitted
+// user interaction (only named module pauses). Never resume archived provider
+// writes as jobs.
 async function resumeAccount({ userId, accountId, resumeStreams = true, reasons = null }, executor = db) {
   return tx(executor, async cx => {
     await ownAccount(cx, userId, accountId, true);
@@ -200,8 +205,9 @@ async function resumeAccount({ userId, accountId, resumeStreams = true, reasons 
           AND kind IN ('sync','recent','flags','history','presence','body')`, [accountId, userId]);
       return { resumed: resumed.affectedRows, retired: 0 };
     }
-    await cx.execute(`UPDATE mail_engine_accounts SET paused_reason = NULL, generation = generation + 1,
-      lease_owner = NULL, lease_until = NULL WHERE mail_account_id = ? AND user_id = ?`, [accountId, userId]);
+    await cx.execute(`UPDATE mail_engine_accounts SET paused_reason = IF(paused_reason <=> ?, paused_reason, NULL),
+      generation = generation + 1, lease_owner = NULL, lease_until = NULL WHERE mail_account_id = ? AND user_id = ?`,
+    [HOLD_REASON, accountId, userId]);
     const readOnly = "operation_id IS NULL AND kind IN ('sync','recent','flags','history','presence','body')";
     const [retired] = await cx.execute(`UPDATE mail_engine_jobs SET state = 'cancelled', cancellation_requested = TRUE,
       lease_owner = NULL, lease_until = NULL, completed_at = UTC_TIMESTAMP(),

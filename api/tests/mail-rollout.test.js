@@ -24,3 +24,60 @@ test('rollout prepare requires an explicit stopped-writer maintenance acknowledg
     else process.env.UNIHUB_MAIL_ROLLOUT_MAINTENANCE = old;
   }
 });
+function fakePool(handler) {
+  const calls = [];
+  const cx = { calls, async execute(sql, params = []) {
+    calls.push({ sql, params });
+    assert.equal((sql.match(/\?/g) || []).length, params.length, `Parameter count: ${sql}`);
+    return handler(sql, params);
+  }, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release: () => {} };
+  return { calls, cx, getConnection: async () => cx };
+}
+test('no account pause or reconnect overwrites/clears an operator canary hold', async () => {
+  const runtime = require('../src/services/mail-engine/runtime');
+  const { HOLD_REASON } = require('../src/services/mail-engine/rollout');
+  const pool = fakePool(sql => {
+    if (sql.includes('FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE')) return [[{ id: 'A' }]];
+    if (sql.includes('SELECT is_active')) return [[{ is_active: 1, disconnected_at: null }]];
+    return [{ affectedRows: 0 }];
+  });
+  await runtime.pauseAccount({ userId: 'owner', accountId: 'A', reason: 'Account settings changing' }, pool.cx);
+  const pause = pool.calls.find(call => call.sql.includes('INSERT INTO mail_engine_accounts'));
+  assert.match(pause.sql, /paused_reason = IF\(paused_reason <=> \?, paused_reason, VALUES\(paused_reason\)\)/);
+  assert.deepEqual(pause.params, ['A', 'owner', 'Account settings changing', HOLD_REASON]);
+  assert.match(pause.sql, /generation = generation \+ 1/, 'the stop still fences active workers');
+  pool.calls.length = 0;
+  await runtime.resumeAccount({ userId: 'owner', accountId: 'A' }, pool.cx);
+  const resume = pool.calls.find(call => call.sql.startsWith('UPDATE mail_engine_accounts'));
+  assert.match(resume.sql, /paused_reason = IF\(paused_reason <=> \?, paused_reason, NULL\)/);
+  assert.deepEqual(resume.params, [HOLD_REASON, 'A', 'owner']);
+});
+test('prepare replaces only user-liftable module pauses; release re-queues held read streams, never writes', async () => {
+  const { HOLD_REASON, USER_PAUSES, prepareRollout, releaseRollout } = require('../src/services/mail-engine/rollout');
+  const canary = '10000000-0000-4000-8000-000000000001', other = '10000000-0000-4000-8000-000000000002';
+  let reason = null;
+  const pool = fakePool(sql => {
+    if (sql.startsWith('SELECT id,user_id,sync_mode FROM mail_accounts')) return [[{ id: canary, user_id: 'owner', sync_mode: 'sync' },
+      { id: other, user_id: 'owner', sync_mode: 'sync' }]];
+    if (sql.startsWith('SELECT id,user_id FROM mail_accounts')) return [[{ id: other, user_id: 'owner' }]];
+    if (sql.includes('FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE')) return [[{ id: other }]];
+    if (sql.includes('SELECT is_active')) return [[{ is_active: 1, disconnected_at: null }]];
+    if (sql.startsWith('SELECT paused_reason')) return [[{ paused_reason: reason }]];
+    if (sql.startsWith('UPDATE mail_engine_accounts SET paused_reason = NULL')) { reason = null; return [{ affectedRows: 1 }]; }
+    if (sql.startsWith('UPDATE')) return [{ affectedRows: 0 }];
+    return [[]];
+  });
+  await prepareRollout(pool, canary);
+  const installs = pool.calls.filter(call => call.sql.startsWith('INSERT INTO mail_engine_accounts'));
+  assert.equal(installs.length, 2);
+  for (const call of installs) {
+    assert.match(call.sql, /IF\(paused_reason IS NULL OR paused_reason IN \(\?,\?\)/);
+    assert.deepEqual(call.params.slice(2), [HOLD_REASON, ...USER_PAUSES]);
+  }
+  pool.calls.length = 0; reason = HOLD_REASON;
+  await releaseRollout(pool, other);
+  const requeue = pool.calls.find(call => call.sql.startsWith('UPDATE mail_engine_jobs'));
+  assert.match(requeue.sql, /state = 'queued'/);
+  assert.match(requeue.sql, /state = 'paused' AND operation_id IS NULL/);
+  assert.ok(pool.calls.every(call => !/mail_writebacks/.test(call.sql)));
+});

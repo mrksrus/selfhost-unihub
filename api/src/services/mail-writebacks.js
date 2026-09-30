@@ -253,7 +253,10 @@ function runWritebacks(accountId, background) {
     });
   })().catch(error => console.error('[MAIL WRITEBACK] Worker failed:', error.code || 'provider unavailable')).finally(() => {
     active.delete(accountId);
-    if (needsSync) setImmediate(() => require('./mail').syncMailAccount(processedAccount).catch(() => {}));
+    // Throttled refresh, never a manual resweep or pause resume. A foreground
+    // write may still settle while background sync is off.
+    if (needsSync) setImmediate(() => require('./mail').syncMailAccount(processedAccount,
+      background ? { background: true } : { followUp: true }).catch(() => {}));
     if (foregroundReruns.delete(accountId)) startWritebacks(accountId);
     drainWritebacks();
   });

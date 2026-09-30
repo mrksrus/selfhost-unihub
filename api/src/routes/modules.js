@@ -10,16 +10,22 @@ module.exports = {
       const modules = await setUserModules(userId, body);
       if (body.modules?.mail) {
         const { db } = require('../state');
-        const { stopMailAccountWork } = require('../services/mail');
+        const { stopMailAccountWork, cancelMailAccountSync } = require('../services/mail');
+        const { USER_PAUSES } = require('../services/mail-engine/rollout');
         const mail = modules.find(module => module.id === 'mail');
         const [accounts] = await db.execute('SELECT id, is_active, disconnected_at FROM mail_accounts WHERE user_id = ?', [userId]);
-        if (!mail.enabled || !mail.background) {
-          for (const account of accounts) await stopMailAccountWork(account.id,
-            mail.enabled ? 'Mail background paused' : 'Mail module disabled');
+        if (!mail.enabled) {
+          for (const account of accounts) await stopMailAccountWork(account.id, 'Mail module disabled');
         } else {
-          for (const account of accounts) if (Number(account.is_active) && !account.disconnected_at)
-            await require('../services/mail-engine/runtime').resumeAccount({ userId, accountId: account.id,
-              reasons: ['Mail module disabled', 'Mail background paused'] });
+          // Background off is a scheduling preference enforced at admission,
+          // not an account fence: user Sync/flag/move work must keep running
+          // without clearing it. Only queued/running read work is dropped.
+          for (const account of accounts) {
+            if (Number(account.is_active) && !account.disconnected_at)
+              await require('../services/mail-engine/runtime').resumeAccount({ userId, accountId: account.id,
+                resumeStreams: mail.background, reasons: USER_PAUSES });
+            if (!mail.background) await cancelMailAccountSync(account.id);
+          }
         }
       }
       return { modules };

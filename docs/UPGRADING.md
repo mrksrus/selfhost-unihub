@@ -55,7 +55,10 @@ procedure and the command refuses that cohort rather than pretending to hold it.
    workers, places deployment holds on the other active accounts, and releases
    only the selected canary. It preserves account credentials/modes, existing
    recovery pauses, and all operation, attempt and job records. Check the returned
-   per-account status, then start the new application normally.
+   per-account status, then start the new application normally. A hold replaces
+   a user-liftable module pause (the module setting is still enforced live).
+   Account settings changes, reconnects, module toggles and restores keep an
+   existing hold; only `release` clears it.
 4. Exercise the authorized canary through real API/browser/provider workflows.
    While maintenance is in progress, do not change account connection or module
    settings, add accounts, or permit another operator to resume held accounts.
@@ -63,7 +66,8 @@ procedure and the command refuses that cohort rather than pretending to hold it.
 5. After a passing canary, release each next account explicitly using
    `node /app/api/mail-rollout.js release ACCOUNT_UUID` in the running target
    container and verify its progress before releasing another. This does not
-   reset queued jobs or classify pending provider actions as successful. It will
+   classify pending provider actions as successful; it only re-queues read-only
+   sync streams that were paused while the account was held. It will
    not clear a restore/disconnect/module pause or reconnect an inactive account.
    `node /app/api/mail-rollout.js status` is read-only.
 
