@@ -3,6 +3,7 @@ import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
 import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/components/mail/MailCompose';
 import { useMailCompose } from '@/hooks/use-mail-compose';
 import { MailFolderDialogs } from '@/components/mail/MailFolderDialogs';
+import { MailReader } from '@/components/mail/MailReader';
 import { MailAccountRemovalDialogs } from '@/components/mail/MailAccountRemovalDialogs';
 import { useMailAccountRemoval } from '@/hooks/use-mail-account-removal';
 import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
@@ -299,25 +300,6 @@ const MailPage = () => {
     params.delete('email');
     navigate({ pathname: location.pathname, search: params.toString(), hash: location.hash }, { replace: true });
   }, [loadEmailForReader, location.pathname, location.search, location.hash, navigate]);
-
-  const createContactFromEmail = useMutation({
-    mutationFn: async (email: Email) => {
-      const derivedName = deriveContactNameFromEmail(email);
-      const response = await api.post('/contacts', {
-        ...derivedName,
-        email: email.from_address,
-      });
-      if (response.error) throw new Error(response.error);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['contacts'] });
-      toast({ title: 'Contact added' });
-    },
-    onError: (error: Error) => {
-      toast({ title: 'Failed to add contact', description: error.message, variant: 'destructive' });
-    },
-  });
 
   // Bulk operations mutations
   const bulkDelete = useMutation({
@@ -1178,206 +1160,21 @@ const MailPage = () => {
 
       <MailAccountRemovalDialogs removal={accountRemoval} />
 
-      {/* Email Reader */}
       {selectedEmail && (
-        <div className="fixed inset-0 z-50 bg-background xl:relative xl:inset-auto xl:z-auto xl:h-full xl:w-[45%] xl:shrink-0 xl:border-l xl:border-border">
-          <div className="flex flex-col h-full">
-            {/* Header */}
-            <div className="shrink-0 border-b border-border p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex min-w-0 flex-1 basis-64 flex-wrap items-center gap-2 sm:gap-4">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={`Back to ${accountLabel}, ${folderLabel}`}
-                  title={`Back to ${accountLabel}, ${folderLabel}`}
-                  onClick={() => {
-                    if (compose.isReplying && compose.isDirty) {
-                      compose.closeComposeFlow();
-                      return;
-                    }
-                    closeReader();
-                    compose.resetComposeState();
-                  }}
-                >
-                  <ArrowLeft className="h-5 w-5" />
-                </Button>
-                <span className="text-xs text-muted-foreground truncate max-w-64">{accountLabel} / {folderLabel}</span>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => compose.startResponse(selectedEmail, 'reply')}
-                  >
-                    <Reply className="h-4 w-4 mr-2" />
-                    Reply
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => compose.startResponse(selectedEmail, 'forward')}
-                  >
-                    <Forward className="h-4 w-4 mr-2" />
-                    Forward
-                  </Button>
-                </div>
-              </div>
-              <div className="flex shrink-0 flex-wrap items-center gap-2 ml-auto">
-                {accounts.find(account => account.id === selectedEmail.mail_account_id)?.disconnected_at && <span className="text-xs text-muted-foreground">Disconnected · retained locally; provider presence unverified</span>}
-                {selectedEmail.remote_missing && <span className="text-xs text-muted-foreground">Local copy · provider presence unverified</span>}
-                {(selectedEmail.read_sync_pending || selectedEmail.star_sync_pending) && <span className="text-xs text-muted-foreground">
-                  {selectedEmail.read_sync_pending && selectedEmail.star_sync_pending ? 'Read and star changes awaiting provider' : selectedEmail.read_sync_pending ? 'Read change awaiting provider' : 'Star change awaiting provider'}
-                </span>}
-                {(flagRequests.has(`read:${selectedEmail.id}`) || flagRequests.has(`star:${selectedEmail.id}`)) && <span className="text-xs text-muted-foreground">Saving change…</span>}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => requestFlag(selectedEmail, 'read', !selectedEmail.is_read)}
-                >
-                  {selectedEmail.is_read ? (
-                    <>
-                      <Mail className="h-4 w-4 mr-2" />
-                      Mark unread
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="h-4 w-4 mr-2" />
-                      Mark read
-                    </>
-                  )}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label={selectedEmail.is_starred ? 'Unstar message' : 'Star message'}
-                  onClick={() => requestFlag(selectedEmail, 'star', !selectedEmail.is_starred)}
-                >
-                  <Star className={`h-5 w-5 ${selectedEmail.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />
-                </Button>
-              </div>
-            </div>
-            
-            {/* Email Content */}
-            <div className={`flex-1 overflow-auto p-6 ${!isMobile && compose.isReplying ? 'pb-0' : ''}`}>
-              <div className="max-w-4xl mx-auto space-y-4">
-                <div>
-                  <h1 className="text-2xl font-bold mb-4">{selectedEmail.subject || '(No subject)'}</h1>
-                  {selectedEmail.remote_missing && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">Local copy: this email was not found on the server during the last complete sync. Its content and attachments are kept here.</p>}
-                  <div className="space-y-2 text-sm text-muted-foreground">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="min-w-0 break-all">
-                        <span className="font-medium text-foreground">From:</span> {selectedEmail.from_name ? `${selectedEmail.from_name} <${selectedEmail.from_address}>` : selectedEmail.from_address}
-                      </span>
-                      {!senderAlreadyInContacts && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          className="h-7 gap-1.5"
-                          onClick={() => createContactFromEmail.mutate(selectedEmail)}
-                          disabled={createContactFromEmail.isPending}
-                        >
-                          {createContactFromEmail.isPending ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <UserPlus className="h-3.5 w-3.5" />
-                          )}
-                          Add contact
-                        </Button>
-                      )}
-                    </div>
-                    <div>
-                      <span className="font-medium text-foreground">To:</span> {selectedEmail.to_addresses?.join(', ') || 'N/A'}
-                    </div>
-                    <div>
-                      <span className="font-medium text-foreground">Date:</span> {format(new Date(selectedEmail.received_at), 'PPpp')}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Attachments */}
-                {selectedEmail.attachments && selectedEmail.attachments.length > 0 && (
-                  <div className="border-t border-border pt-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <Paperclip className="h-4 w-4 text-muted-foreground" />
-                      <span className="text-sm font-medium text-foreground">
-                        Attachments ({selectedEmail.attachments.length})
-                      </span>
-                    </div>
-                    <div className="space-y-2">
-                      {selectedEmail.attachments.map((attachment) => {
-                        const sizeKB = attachment.size_bytes ? (attachment.size_bytes / 1024).toFixed(1) : '?';
-                        const handleDownload = async (e: React.MouseEvent) => {
-                          e.preventDefault();
-                          try {
-                            const { blob, filename } = await api.getBlob(`/mail/attachments/${attachment.id}`);
-                            const blobUrl = window.URL.createObjectURL(blob);
-                            const link = document.createElement('a');
-                            link.href = blobUrl;
-                            link.download = filename || attachment.filename || 'attachment';
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
-                            window.URL.revokeObjectURL(blobUrl);
-                          } catch (error) {
-                            console.error('Download failed:', error);
-                            const errorWithStatus = error as Error & { status?: number };
-                            let description = 'Could not download attachment. Please try again.';
-
-                            if (errorWithStatus.status === 401) {
-                              description = 'Session expired. Please sign in again and retry.';
-                            } else if (errorWithStatus.status === 404) {
-                              description = 'Attachment not found (it may not be available on disk).';
-                            } else if (errorWithStatus.status && errorWithStatus.status >= 500) {
-                              description = 'Server error while downloading attachment.';
-                            } else if (errorWithStatus.message) {
-                              description = errorWithStatus.message;
-                            }
-
-                            toast({ 
-                              title: 'Download failed', 
-                              description,
-                              variant: 'destructive' 
-                            });
-                          }
-                        };
-                        
-                        return (
-                          <button
-                            key={attachment.id}
-                            onClick={handleDownload}
-                            className="w-full flex items-center gap-3 p-3 border border-border rounded-lg hover:bg-muted/50 transition-colors group text-left"
-                          >
-                            <Paperclip className="h-5 w-5 text-muted-foreground shrink-0" />
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-foreground truncate">
-                                {attachment.filename}
-                              </p>
-                              <p className="text-xs text-muted-foreground">
-                                {attachment.content_type} • {sizeKB} KB
-                              </p>
-                            </div>
-                            <Download className="h-4 w-4 text-muted-foreground group-hover:text-accent transition-colors shrink-0" />
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-                
-                <div className="border-t border-border pt-4">
-                  <SafeEmailContent
-                    emailId={selectedEmail.id}
-                    bodyHtml={selectedEmail.body_html}
-                    bodyText={selectedEmail.body_text}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Desktop: Inline Compose Editor */}
-            {!isMobile && compose.isReplying && <MailInlineCompose compose={compose} />}
-          </div>
-        </div>
+        <MailReader email={selectedEmail} accounts={accounts} location={`${accountLabel} / ${folderLabel}`}
+          backLabel={`Back to ${accountLabel}, ${folderLabel}`} isMobile={isMobile} isReplying={compose.isReplying}
+          flagRequests={flagRequests} requestFlag={requestFlag} senderInContacts={senderAlreadyInContacts}
+          onBack={() => {
+            if (compose.isReplying && compose.isDirty) {
+              compose.closeComposeFlow();
+              return;
+            }
+            closeReader();
+            compose.resetComposeState();
+          }}
+          onReply={() => compose.startResponse(selectedEmail, 'reply')}
+          onForward={() => compose.startResponse(selectedEmail, 'forward')}
+          inlineCompose={!isMobile && compose.isReplying && <MailInlineCompose compose={compose} />} />
       )}
 
       <MailFolderDialogs open={folderDialogOpen} onOpenChange={setFolderDialogOpen} activeMailAccountId={activeMailAccountId}
