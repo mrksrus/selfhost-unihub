@@ -1,4 +1,5 @@
-import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
+import { MailAccountDialog } from '@/components/mail/MailAccountDialog';
+import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
 import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
 import { useMailSyncJobs } from '@/hooks/use-mail-sync-jobs';
 import { useMailWritebacks } from '@/hooks/use-mail-writebacks';
@@ -138,7 +139,7 @@ const MailPage = () => {
       }
     }).catch(() => { /* A failed status refresh must not replace the current message. */ });
   }, [selectedEmailId, setSelectedEmail, queryClient]);
-  const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
+  const accountEditor = useMailAccountEditor();
   const [isComposeOpen, setIsComposeOpen] = useState(false);
   const [composeMode, setComposeMode] = useState<'new' | 'reply' | 'forward'>('new');
   const [isReplying, setIsReplying] = useState(false);
@@ -147,7 +148,6 @@ const MailPage = () => {
   const [purgeConfirmation, setPurgeConfirmation] = useState('');
   const [purgePreview, setPurgePreview] = useState<MailPurgePreview | null>(null);
   const [purgePreviewError, setPurgePreviewError] = useState<string | null>(null);
-  const [editingAccount, setEditingAccount] = useState<MailAccount | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set());
@@ -169,7 +169,6 @@ const MailPage = () => {
   const debouncedSearch = useDebouncedValue(searchQuery.trim());
   const [emailPage, setEmailPage] = useState(1);
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
-  const [pendingHostTrust, setPendingHostTrust] = useState<PendingHostTrust | null>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [folderToDelete, setFolderToDelete] = useState<MailFolder | null>(null);
   const [newFolderName, setNewFolderName] = useState('');
@@ -196,7 +195,6 @@ const MailPage = () => {
   const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
   const inlineComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
   const dialogComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
-  const [accountForm, setAccountForm] = useState<AccountFormState>(initialAccountForm);
 
   // Open compose dialog if linked from dashboard
   useEffect(() => {
@@ -345,115 +343,6 @@ const MailPage = () => {
         }));
     });
   }, [contactsForCompose]);
-
-  const createHostTrustError = (message: string, mailHostTrust?: unknown) => {
-    const error = new Error(message) as MailHostTrustError;
-    error.requiresHostTrustConfirmation = true;
-    error.mailHostTrust = mailHostTrust as MailHostTrustResult | undefined;
-    return error;
-  };
-
-  const isHostTrustError = (error: Error): error is MailHostTrustError => (
-    Boolean((error as MailHostTrustError).requiresHostTrustConfirmation && (error as MailHostTrustError).mailHostTrust)
-  );
-  
-  // Add mail account mutation (backend verifies host safety, certificate trust, then IMAP auth)
-  const addAccount = useMutation({
-    mutationFn: async (account: AccountFormState & { accept_host_trust?: boolean }) => {
-      const response = await api.post<AddMailAccountResponse>('/mail/accounts', {
-        ...account,
-        encrypted_password: account.password, // Will be encrypted on server
-      });
-      if (response.status === 409 && response.requiresHostTrustConfirmation) {
-        throw createHostTrustError(response.error || 'Review mail server authenticity before continuing.', response.mailHostTrust);
-      }
-      if (response.error) throw new Error(response.error);
-      return response.data ?? {};
-    },
-    onSuccess: (data) => {
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts-count'] });
-      queryClient.invalidateQueries({ queryKey: ['stats'] });
-      queryClient.invalidateQueries({ queryKey: ['calendar-accounts'] });
-      queryClient.invalidateQueries({ queryKey: ['calendar-calendars'] });
-      setPendingHostTrust(null);
-      
-      // Show success immediately with green checkmark
-      const syncMsg = data?.syncInProgress 
-        ? data.message || 'Syncing emails in the background. First sync will take a long time.'
-        : 'Account connected successfully';
-      
-      toast({ 
-        title: '✓ Account connected successfully',
-        description: syncMsg,
-        duration: 10000,
-      });
-      if (data.calendarSync?.attempted) {
-        if (data.calendarSync.success) {
-          toast({
-            title: 'Calendar sync connected',
-            description: `${data.calendarSync.importedEvents || 0} events imported.`,
-          });
-        } else {
-          toast({
-            title: 'Mail connected, calendar sync failed',
-            description: data.calendarSync.warning || 'Check the CalDAV URL or credentials.',
-            variant: 'destructive',
-            duration: 10000,
-          });
-        }
-      }
-      
-      setIsAddAccountOpen(false);
-      setAccountForm(initialAccountForm);
-    },
-    onError: (error: Error, variables) => {
-      if (isHostTrustError(error)) {
-        setPendingHostTrust({ mode: 'add', account: variables, trust: error.mailHostTrust! });
-        return;
-      }
-      toast({ 
-        title: 'Failed to add mail account', 
-        description: error.message,
-        variant: 'destructive',
-        duration: 8000,
-      });
-    },
-  });
-
-  // Update account mutation
-  const updateAccount = useMutation({
-    mutationFn: async ({ id, ...data }: { id: string; is_active?: boolean } & Partial<AccountFormState> & { accept_host_trust?: boolean }) => {
-      const response = await api.put(`/mail/accounts/${id}`, {
-        ...data,
-        encrypted_password: data.password || undefined,
-      });
-      if (response.status === 409 && response.requiresHostTrustConfirmation) {
-        throw createHostTrustError(response.error || 'Review mail server authenticity before continuing.', response.mailHostTrust);
-      }
-      if (response.error) throw new Error(response.error);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
-      setPendingHostTrust(null);
-      toast({ title: '✓ Account updated successfully' });
-      setEditingAccount(null);
-      setIsAddAccountOpen(false);
-      setAccountForm(initialAccountForm);
-    },
-    onError: (error: Error, variables) => {
-      if (isHostTrustError(error)) {
-        setPendingHostTrust({ mode: 'edit', accountId: variables.id, account: { ...accountForm, ...variables }, trust: error.mailHostTrust! });
-        return;
-      }
-      toast({ 
-        title: 'Failed to update account', 
-        description: error.message,
-        variant: 'destructive' 
-      });
-    },
-  });
 
   // Default account deletion only disconnects; retained mail stays readable.
   const deleteAccount = useMutation({
@@ -790,137 +679,6 @@ const MailPage = () => {
     },
   });
 
-  const handleProviderChange = (provider: string) => {
-    const providerConfig = mailProviders.find(p => p.value === provider);
-    setAccountForm({
-      ...accountForm,
-      provider,
-      imap_host: providerConfig?.imapHost || '',
-      smtp_host: providerConfig?.smtpHost || '',
-      imap_port: providerConfig?.imapPort || 993,
-      smtp_port: providerConfig?.smtpPort || 587,
-    });
-  };
-
-  const handleAddAccount = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (editingAccount) {
-      updateAccount.mutate({ id: editingAccount.id, ...accountForm,
-        ...(editingAccount.disconnected_at && accountForm.password ? { is_active: true } : {}) });
-    } else {
-      addAccount.mutate(accountForm);
-    }
-  };
-
-  const handleConfirmHostTrust = () => {
-    if (!pendingHostTrust) return;
-    if (pendingHostTrust.mode === 'edit' && pendingHostTrust.accountId) {
-      updateAccount.mutate({
-        id: pendingHostTrust.accountId,
-        ...pendingHostTrust.account,
-        accept_host_trust: true,
-      });
-    } else {
-      addAccount.mutate({
-        ...pendingHostTrust.account,
-        accept_host_trust: true,
-      });
-    }
-    setPendingHostTrust(null);
-  };
-
-  const formatCertificateName = (value?: Record<string, string> | null) => {
-    if (!value) return 'Unknown';
-    return value.CN || Object.entries(value).map(([key, item]) => `${key}=${item}`).join(', ') || 'Unknown';
-  };
-
-  const renderTrustSection = (label: 'IMAP' | 'SMTP', assessment?: MailHostAssessment, certificate?: MailHostCertificate) => (
-    <div className="rounded-md border border-border p-3 space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <p className="font-medium">{label} server</p>
-        <span className={certificate?.authorized ? 'text-success text-xs' : 'text-warning text-xs'}>
-          {certificate?.authorized ? 'Verified certificate' : 'Needs review'}
-        </span>
-      </div>
-      <p className="text-sm text-muted-foreground break-all">
-        {assessment?.host || 'Unknown host'}:{assessment?.port || 'unknown'}
-      </p>
-      <p className="text-xs text-muted-foreground">
-        Provider: {assessment?.knownProvider ? 'known provider' : assessment?.allowlisted ? 'hoster allowlisted' : 'unknown/custom'}
-      </p>
-      {assessment?.resolvedAddresses && assessment.resolvedAddresses.length > 0 && (
-        <p className="text-xs text-muted-foreground break-all">
-          IPs: {assessment.resolvedAddresses.join(', ')}
-        </p>
-      )}
-      <div className="text-xs text-muted-foreground space-y-1">
-        <p>Certificate owner: {formatCertificateName(certificate?.subject)}</p>
-        <p>Certificate issuer: {formatCertificateName(certificate?.issuer)}</p>
-        {certificate?.valid_to && <p>Valid until: {certificate.valid_to}</p>}
-        {certificate?.fingerprint256 && <p className="break-all">SHA-256 fingerprint: {certificate.fingerprint256}</p>}
-        {(certificate?.authorizationError || certificate?.error) && (
-          <p className="text-warning">Verification message: {certificate.authorizationError || certificate.error}</p>
-        )}
-      </div>
-    </div>
-  );
-
-  const renderHostTrustConfirmation = () => {
-    if (!pendingHostTrust) return null;
-    return (
-      <div className="space-y-4 mt-4">
-        {pendingHostTrust.trust.warnings.length > 0 && (
-          <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
-            <p className="font-medium text-warning mb-2">Warnings</p>
-            <ul className="list-disc pl-5 space-y-1">
-              {pendingHostTrust.trust.warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
-              ))}
-            </ul>
-          </div>
-        )}
-        {pendingHostTrust.trust.certificates.imap && renderTrustSection('IMAP', pendingHostTrust.trust.assessments.imap, pendingHostTrust.trust.certificates.imap)}
-        {pendingHostTrust.trust.certificates.smtp && renderTrustSection('SMTP', pendingHostTrust.trust.assessments.smtp, pendingHostTrust.trust.certificates.smtp)}
-        {pendingHostTrust.trust.requiresInsecureTls && (
-          <p className="text-sm text-muted-foreground">
-            If you continue, this account will allow insecure TLS for this mail server. This is useful for self-hosted mail, but unsafe if you do not recognize the server.
-          </p>
-        )}
-        <div className="flex justify-end gap-3 pt-2">
-          <Button type="button" variant="outline" onClick={() => setPendingHostTrust(null)}>
-            Deny
-          </Button>
-          <Button type="button" onClick={handleConfirmHostTrust} disabled={addAccount.isPending || updateAccount.isPending}>
-            {(addAccount.isPending || updateAccount.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-            Continue and Trust Server
-          </Button>
-        </div>
-      </div>
-    );
-  };
-  
-  const handleEditAccount = (account: MailAccount) => {
-    setEditingAccount(account);
-    setAccountForm({
-      email_address: account.email_address,
-      display_name: account.display_name || '',
-      provider: account.provider,
-      username: account.username || account.email_address,
-      password: '',
-      imap_host: account.imap_host || '',
-      smtp_host: account.smtp_host || '',
-      imap_port: account.imap_port || 993,
-      smtp_port: account.smtp_port || 587,
-      sync_fetch_limit: account.sync_fetch_limit || 'all',
-      sync_mode: account.sync_mode || 'download',
-      sync_mode_confirmed: false,
-      delete_emails_on_server: account.delete_emails_on_server === true,
-      try_calendar_sync: false,
-      caldav_url: '',
-    });
-    setIsAddAccountOpen(true);
-  };
-  
   const addComposeFiles = (files: FileList | File[]) => {
     const incomingFiles = Array.from(files || []);
     if (incomingFiles.length === 0) return;
@@ -1543,193 +1301,11 @@ const MailPage = () => {
                 Accounts
               </span>
             )}
-            <Dialog open={isAddAccountOpen} onOpenChange={(open) => {
-              setIsAddAccountOpen(open);
-              if (!open) {
-                setEditingAccount(null);
-                setAccountForm(initialAccountForm);
-                setPendingHostTrust(null);
-              }
-            }}>
-              <DialogTrigger asChild>
-                <Button variant="ghost" size="icon" className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`} title={(sidebarCollapsed && !isMobile) ? 'Add Account' : undefined}>
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </DialogTrigger>
-              <DialogContent className={pendingHostTrust
-                ? 'w-[calc(100vw-1rem)] max-w-2xl max-h-[calc(100dvh-1rem)] overflow-y-auto p-4 sm:max-h-[85vh] sm:p-6'
-                : 'w-[calc(100vw-1rem)] max-w-lg max-h-[calc(100dvh-1rem)] overflow-y-auto p-4 sm:max-h-[85vh] sm:p-6'}>
-                <DialogHeader>
-                  <DialogTitle>
-                    {pendingHostTrust ? 'Confirm Mail Server Authenticity' : editingAccount ? 'Edit Mail Account' : 'Add Mail Account'}
-                  </DialogTitle>
-                  <DialogDescription>
-                    {pendingHostTrust
-                      ? 'Review the server and certificate details below. Continue only if you trust this mail server.'
-                      : 'Connect an email account to view and manage your mail.'}
-                  </DialogDescription>
-                </DialogHeader>
-                {pendingHostTrust ? (
-                  renderHostTrustConfirmation()
-                ) : (
-                  <form onSubmit={handleAddAccount} className="space-y-4 mt-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="provider">Email Provider</Label>
-                      <Select
-                        value={accountForm.provider}
-                        onValueChange={handleProviderChange}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select provider" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {mailProviders.map((provider) => (
-                            <SelectItem key={provider.value} value={provider.value}>
-                              {provider.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="email_address">Email Address</Label>
-                      <Input
-                        id="email_address"
-                        type="email"
-                        value={accountForm.email_address}
-                        onChange={(e) => setAccountForm({ ...accountForm, email_address: e.target.value })}
-                        placeholder="you@example.com"
-                        required
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="display_name">Display Name</Label>
-                      <Input
-                        id="display_name"
-                        value={accountForm.display_name}
-                        onChange={(e) => setAccountForm({ ...accountForm, display_name: e.target.value })}
-                        placeholder="John Doe"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="username">Username</Label>
-                      <Input
-                        id="username"
-                        value={accountForm.username}
-                        onChange={(e) => setAccountForm({ ...accountForm, username: e.target.value })}
-                        placeholder={accountForm.provider === 'gmail' ? 'Usually your email' : 'IMAP/SMTP username'}
-                        required
-                      />
-                      {(accountForm.provider === 'gmail' || accountForm.provider === 'yahoo') && (
-                        <p className="text-xs text-muted-foreground">
-                          {accountForm.provider === 'gmail' ? 'Use an App Password (not your regular password). Generate one at myaccount.google.com/apppasswords' : 'You may need an App Password for Yahoo Mail'}
-                        </p>
-                      )}
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="password">Password {editingAccount && (editingAccount.disconnected_at ? '(required to reconnect; leaving blank keeps local mail disconnected)' : '(leave blank to keep current)')}</Label>
-                      <Input
-                        id="password"
-                        type="password"
-                        value={accountForm.password}
-                        onChange={(e) => setAccountForm({ ...accountForm, password: e.target.value })}
-                        placeholder="Password or App Password"
-                        required={!editingAccount}
-                      />
-                    </div>
-                    {!editingAccount && (
-                      <div className="rounded-md border border-border p-3 space-y-3">
-                        <label className="flex items-start gap-3 text-sm">
-                          <Checkbox
-                            checked={accountForm.try_calendar_sync}
-                            onCheckedChange={(checked) => setAccountForm({ ...accountForm, try_calendar_sync: checked === true })}
-                          />
-                          <span>
-                            <span className="font-medium text-foreground">Try calendar sync too</span>
-                            <span className="block text-muted-foreground">
-                              Uses CalDAV with the same username and password. Mail setup continues even if calendar discovery fails.
-                            </span>
-                          </span>
-                        </label>
-                        {accountForm.try_calendar_sync && (
-                          <div className="space-y-2">
-                            <Label htmlFor="caldav_url">Advanced CalDAV URL</Label>
-                            <Input
-                              id="caldav_url"
-                              value={accountForm.caldav_url}
-                              onChange={(e) => setAccountForm({ ...accountForm, caldav_url: e.target.value })}
-                              placeholder="https://mail.example.com/.well-known/caldav"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
-                    <MailAccountModeSettings
-                      mode={accountForm.sync_mode}
-                      deleteOnServer={accountForm.delete_emails_on_server}
-              saveDownloadFirst={editingAccount?.sync_mode === 'sync'}
-                      requiresConfirmation={Boolean(editingAccount && (editingAccount.sync_mode || 'download') !== 'sync')}
-                      confirmed={accountForm.sync_mode_confirmed}
-                      onModeChange={mode => setAccountForm({ ...accountForm, sync_mode: mode, sync_mode_confirmed: false, delete_emails_on_server: false })}
-                      onDeleteChange={enabled => setAccountForm({ ...accountForm, delete_emails_on_server: enabled })}
-                      onConfirmChange={confirmed => setAccountForm({ ...accountForm, sync_mode_confirmed: confirmed })}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Server details are filled from the provider; you can change any value.
-                    </p>
-                    <div className="space-y-2">
-                      <Label htmlFor="imap_host">IMAP Server</Label>
-                      <Input
-                        id="imap_host"
-                        value={accountForm.imap_host}
-                        onChange={(e) => setAccountForm({ ...accountForm, imap_host: e.target.value })}
-                        placeholder="e.g. imap.gmail.com"
-                        required
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="imap_port">IMAP Port</Label>
-                      <Input
-                        id="imap_port"
-                        type="number"
-                        value={accountForm.imap_port}
-                        onChange={(e) => setAccountForm({ ...accountForm, imap_port: parseInt(e.target.value) || 993 })}
-                        placeholder="993"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="smtp_host">SMTP Server</Label>
-                      <Input
-                        id="smtp_host"
-                        value={accountForm.smtp_host}
-                        onChange={(e) => setAccountForm({ ...accountForm, smtp_host: e.target.value })}
-                        placeholder="e.g. smtp.gmail.com"
-                        required
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="smtp_port">SMTP Port</Label>
-                      <Input
-                        id="smtp_port"
-                        type="number"
-                        value={accountForm.smtp_port}
-                        onChange={(e) => setAccountForm({ ...accountForm, smtp_port: parseInt(e.target.value) || 587 })}
-                        placeholder="587"
-                      />
-                    </div>
-                    <div className="flex justify-end gap-3 pt-2">
-                      <Button type="button" variant="outline" onClick={() => setIsAddAccountOpen(false)}>
-                        Cancel
-                      </Button>
-                      <Button type="submit" disabled={addAccount.isPending || updateAccount.isPending}>
-                        {(addAccount.isPending || updateAccount.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                        {editingAccount ? 'Save Changes' : 'Add Account'}
-                      </Button>
-                    </div>
-                  </form>
-                )}
-              </DialogContent>
-            </Dialog>
+            <MailAccountDialog editor={accountEditor} trigger={
+              <Button variant="ghost" size="icon" className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`} title={(sidebarCollapsed && !isMobile) ? 'Add Account' : undefined}>
+                <Plus className="h-4 w-4" />
+              </Button>
+            } />
           </div>
           
           <div className="px-2 space-y-1">
@@ -1818,7 +1394,7 @@ const MailPage = () => {
                           className="h-7 w-7"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleEditAccount(account);
+                            accountEditor.startEdit(account);
                           }}
                         >
                           <Edit className="h-3.5 w-3.5" />
@@ -2086,7 +1662,7 @@ const MailPage = () => {
               <p className="text-muted-foreground mb-4 max-w-sm">
                 Select an email account from the sidebar or add a new one to get started.
               </p>
-              <Button onClick={() => setIsAddAccountOpen(true)}>
+              <Button onClick={() => accountEditor.openAdd()}>
                 <Plus className="h-4 w-4 mr-2" />
                 Add Mail Account
               </Button>
