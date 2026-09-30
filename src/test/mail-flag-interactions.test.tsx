@@ -169,13 +169,13 @@ describe('mail flag interactions with slow HTTP and provider writebacks', () => 
     fireEvent.click(await screen.findByText('Subject a'));
     await screen.findByText(bodyText('a'));
     fireEvent.click(screen.getByRole('button', { name: /Owner owner@example\.test/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Request mail sync' }));
-    expect(screen.getByRole('button', { name: 'Request mail sync' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Sync mail' }));
+    expect(screen.getByRole('button', { name: 'Requesting mail sync' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Star message' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/emails/a/star', { is_starred: true }, expect.objectContaining({ headers: { 'Idempotency-Key': expect.any(String) } })));
     fireEvent.click(screen.getByRole('button', { name: /Second second@example\.test/ }));
-    expect(screen.getByRole('button', { name: 'Request mail sync' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Request mail sync' }));
+    expect(screen.getByRole('button', { name: 'Sync mail' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Sync mail' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/sync', { account_id: 'account-2' }));
     fireEvent.click(screen.getByRole('button', { name: 'Inbox' }));
     expect(await screen.findByText('Subject c')).toBeInTheDocument();
@@ -186,13 +186,15 @@ describe('mail flag interactions with slow HTTP and provider writebacks', () => 
   });
 
   it('distinguishes already running from completion and refreshes once on terminal success or failure', async () => {
-    syncStatus = [job('account-1', 'running', 'Scanning folders')];
+    // The scheduler started a job the status poll has not seen yet.
+    syncStatus = [job('account-1', 'idle')];
     vi.mocked(api.post).mockResolvedValue({ data: { success: true, started: false, alreadyRunning: true, account_id: 'account-1', message: 'Already running' } });
     mount();
-    await screen.findByText(/Scanning folders/);
-    fireEvent.click(screen.getByRole('button', { name: /Owner owner@example\.test/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Request mail sync' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Owner owner@example\.test/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sync mail' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync already in progress' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Sync details' }));
+    await screen.findByRole('dialog', { name: 'Mail sync' });
     expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync finished' }));
     syncStatus = [job('account-1', 'idle')];
     await act(async () => { await client.invalidateQueries({ queryKey: ['mail-sync-jobs'] }); });
@@ -217,7 +219,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', () => 
       mount();
       await act(async () => { await vi.advanceTimersByTimeAsync(100); });
       await act(async () => { await vi.advanceTimersByTimeAsync(100); });
-      expect(screen.getByText(/Scanning/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Syncing — open sync details' })).toBeInTheDocument();
       const initialChecks = vi.mocked(api.get).mock.calls.filter(([path]) => path === '/mail/sync/status').length;
       syncStatus = [job('account-1', 'idle')];
       await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
@@ -274,6 +276,8 @@ describe('mail flag interactions with slow HTTP and provider writebacks', () => 
     syncStatus = [job('account-1', 'running', 'Importing')];
     vi.mocked(api.post).mockResolvedValue({ error: 'Cancellation unavailable' });
     mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Syncing — open sync details' }));
+    expect(api.post).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel sync for owner@example.test' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/sync/cancel', { account_id: 'account-1' }));
     expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not cancel mail sync', variant: 'destructive' }));
@@ -284,7 +288,8 @@ describe('mail flag interactions with slow HTTP and provider writebacks', () => 
     syncStatus = [job('account-1', 'queued', 'Waiting for provider')];
     vi.mocked(api.post).mockResolvedValue({ data: { success: true } });
     mount();
-    await screen.findByText(/Queued for sync · Waiting for provider/);
+    fireEvent.click(await screen.findByRole('button', { name: 'Syncing — open sync details' }));
+    await screen.findByText('Queued · Waiting for provider · 2 of 10');
     fireEvent.click(screen.getByRole('button', { name: 'Cancel sync for owner@example.test' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/sync/cancel', { account_id: 'account-1' }));
     expect(toast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Mail sync cancelled' }));
@@ -357,7 +362,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', () => 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unstar message' })).toBeEnabled());
     expect(screen.queryByText('Saving change…')).not.toBeInTheDocument();
     expect(screen.getAllByText('Star change awaiting provider')).toHaveLength(2);
-    await screen.findByText(/waiting for provider confirmation/);
+    await screen.findByRole('button', { name: 'Sync mail — 1 change waiting — open sync details' });
 
     stored[0].star_sync_pending = false;
     operations = [outcome('done')];
