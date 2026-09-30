@@ -9,6 +9,7 @@ import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { calendarApi, calendarQueryKeys, formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
 
 type Stats = {
@@ -34,7 +35,7 @@ const Dashboard = () => {
   const todayStart = startOfDay(now);
   const todayEnd = endOfDay(now);
 
-  const { data: stats = { contacts: 0, upcomingEvents: 0, unreadEmails: 0 } } = useQuery({
+  const statsQuery = useQuery({
     queryKey: ['stats'],
     enabled: modulesReady,
     queryFn: async () => {
@@ -43,8 +44,9 @@ const Dashboard = () => {
       return response.data || { contacts: 0, upcomingEvents: 0, unreadEmails: 0 };
     },
   });
+  const stats = statsQuery.data;
 
-  const { data: todayEvents = [] } = useQuery({
+  const todayEventsQuery = useQuery({
     enabled: isEnabled('calendar'),
     queryKey: calendarQueryKeys.list({
       includeTodos: false,
@@ -61,14 +63,16 @@ const Dashboard = () => {
       rangeEnd: todayEnd.toISOString(),
     }),
   });
+  const todayEvents = todayEventsQuery.data ?? [];
 
-  const { data: taskEvents = [] } = useQuery({
+  const taskEventsQuery = useQuery({
     enabled: isEnabled('calendar'),
     queryKey: calendarQueryKeys.list({ includeTodos: true, includeDone: false, respectAutoTodo: true }),
     queryFn: () => calendarApi.fetchEvents({ includeTodos: true, includeDone: false, respectAutoTodo: true }),
   });
+  const taskEvents = taskEventsQuery.data ?? [];
 
-  const { data: unreadEmails = [] } = useQuery({
+  const unreadEmailsQuery = useQuery({
     queryKey: mailQueryKeys.dashboardUnread,
     enabled: isEnabled('mail'),
     queryFn: async () => {
@@ -77,6 +81,7 @@ const Dashboard = () => {
       return response.data?.emails || [];
     },
   });
+  const unreadEmails = unreadEmailsQuery.data ?? [];
 
   const activeTasks = taskEvents
     .filter((event) => event.todo_status !== 'done' && event.todo_status !== 'cancelled')
@@ -92,10 +97,10 @@ const Dashboard = () => {
   const tomorrow = addDays(todayStart, 1);
 
   const metrics = [
-    { label: 'Contacts', value: stats.contacts, href: '/contacts', icon: Users },
-    { label: 'Today', value: todayEvents.length, href: '/calendar', icon: Calendar },
-    { label: 'Unread', value: stats.unreadEmails, href: '/mail', icon: Mail },
-    { label: 'Overdue', value: overdueTasks.length, href: '/todo', icon: CheckCircle2 },
+    { label: 'Contacts', value: stats?.contacts, href: '/contacts', icon: Users },
+    { label: 'Today', value: todayEventsQuery.isSuccess ? todayEvents.length : undefined, href: '/calendar', icon: Calendar },
+    { label: 'Unread', value: stats?.unreadEmails, href: '/mail', icon: Mail },
+    { label: 'Overdue', value: taskEventsQuery.isSuccess ? overdueTasks.length : undefined, href: '/todo', icon: CheckCircle2 },
   ];
 
   return (
@@ -120,6 +125,15 @@ const Dashboard = () => {
         </div>
       </div>
 
+      {statsQuery.error && (
+        <ErrorState
+          title="Could not load counts"
+          error={statsQuery.error}
+          onRetry={() => void statsQuery.refetch()}
+          retrying={statsQuery.isFetching}
+        />
+      )}
+
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {metrics.filter(metric => canNavigate(metric.href)).map((metric) => (
           <Link key={metric.label} to={metric.href} className="rounded-md border bg-card p-4 hover:border-accent/50 transition-colors">
@@ -127,7 +141,9 @@ const Dashboard = () => {
               <metric.icon className="h-5 w-5 text-muted-foreground" />
               <ArrowRight className="h-4 w-4 text-muted-foreground" />
             </div>
-            <p className="mt-3 text-2xl font-semibold">{metric.value}</p>
+            <p className="mt-3 text-2xl font-semibold">
+              {metric.value ?? <><span aria-hidden="true">–</span><span className="sr-only">Not available</span></>}
+            </p>
             <p className="text-sm text-muted-foreground">{metric.label}</p>
           </Link>
         ))}
@@ -142,8 +158,17 @@ const Dashboard = () => {
             </Button>
           </CardHeader>
           <CardContent>
-            {todayEvents.length === 0 ? (
-              <EmptyState icon={Calendar} title="No events today" actionHref="/calendar?action=new" actionLabel="Create event" />
+            {todayEventsQuery.isLoading ? (
+              <LoadingState compact label="Loading today's events…" />
+            ) : todayEventsQuery.error ? (
+              <ErrorState
+                title="Could not load today's events"
+                error={todayEventsQuery.error}
+                onRetry={() => void todayEventsQuery.refetch()}
+                retrying={todayEventsQuery.isFetching}
+              />
+            ) : todayEvents.length === 0 ? (
+              <DashboardEmpty icon={Calendar} title="No events today" actionHref="/calendar?action=new" actionLabel="Create event" />
             ) : (
               <div className="space-y-3">
                 {todayEvents.slice(0, 7).map((event) => (
@@ -162,6 +187,16 @@ const Dashboard = () => {
             </Button>
           </CardHeader>
           <CardContent className="space-y-4">
+            {taskEventsQuery.isLoading ? (
+              <LoadingState compact label="Loading tasks…" />
+            ) : taskEventsQuery.error ? (
+              <ErrorState
+                title="Could not load tasks"
+                error={taskEventsQuery.error}
+                onRetry={() => void taskEventsQuery.refetch()}
+                retrying={taskEventsQuery.isFetching}
+              />
+            ) : (<>
             {overdueTasks.length > 0 && (
               <div>
                 <Badge variant="destructive" className="mb-3">Overdue</Badge>
@@ -176,13 +211,14 @@ const Dashboard = () => {
                 <span className="text-xs text-muted-foreground">through {format(tomorrow, 'MMM d')}</span>
               </div>
               {nextTasks.length === 0 ? (
-                <EmptyState icon={CheckCircle2} title="No active tasks" actionHref="/todo" actionLabel="Open ToDo" compact />
+                <DashboardEmpty icon={CheckCircle2} title="No active tasks" actionHref="/todo" actionLabel="Open ToDo" compact />
               ) : (
                 <div className="space-y-2">
                   {nextTasks.map((event) => <TaskRow key={event.id} event={event} timezone={timezone} />)}
                 </div>
               )}
             </div>
+            </>)}
           </CardContent>
         </Card>)}
       </div>
@@ -196,8 +232,17 @@ const Dashboard = () => {
             </Button>
           </CardHeader>
           <CardContent>
-            {unreadEmails.length === 0 ? (
-              <EmptyState icon={Mail} title="Inbox is caught up" actionHref="/mail" actionLabel="Open mail" compact />
+            {unreadEmailsQuery.isLoading ? (
+              <LoadingState compact label="Loading unread mail…" />
+            ) : unreadEmailsQuery.error ? (
+              <ErrorState
+                title="Could not load unread mail"
+                error={unreadEmailsQuery.error}
+                onRetry={() => void unreadEmailsQuery.refetch()}
+                retrying={unreadEmailsQuery.isFetching}
+              />
+            ) : unreadEmails.length === 0 ? (
+              <DashboardEmpty icon={Mail} title="Inbox is caught up" actionHref="/mail" actionLabel="Open mail" compact />
             ) : (
               <div className="space-y-3">
                 {unreadEmails.map((email) => (
@@ -261,8 +306,8 @@ const TaskRow = ({ event, timezone }: { event: CalendarEvent; timezone?: string 
   </Link>
 );
 
-const EmptyState = ({
-  icon: Icon,
+const DashboardEmpty = ({
+  icon,
   title,
   actionHref,
   actionLabel,
@@ -274,13 +319,16 @@ const EmptyState = ({
   actionLabel: string;
   compact?: boolean;
 }) => (
-  <div className={`text-center text-muted-foreground ${compact ? 'py-4' : 'py-8'}`}>
-    <Icon className="h-9 w-9 mx-auto mb-3 opacity-50" />
-    <p>{title}</p>
-    <Button asChild variant="link" className="mt-1">
-      <Link to={actionHref}>{actionLabel}</Link>
-    </Button>
-  </div>
+  <EmptyState
+    icon={icon}
+    title={title}
+    compact={compact}
+    action={(
+      <Button asChild variant="link" className="h-auto p-0">
+        <Link to={actionHref}>{actionLabel}</Link>
+      </Button>
+    )}
+  />
 );
 
 const getTimeOfDay = () => {

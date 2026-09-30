@@ -167,9 +167,11 @@ function canCancel(op) {
   if (Number(op.dispatched)) return op.action !== 'move' && op.state === 'needs_attention';
   return CANCEL_STATES.includes(op.state);
 }
+// Mirrors the WHERE clause of acceptServerState.
+const canAcceptServerState = op => Boolean(moveCheck(op)) && op.state === 'needs_attention';
 function projectOperation(op) {
   return { ...op, is_current: Boolean(Number(op.is_current)), can_retry: canRetry(op), can_cancel: canCancel(op),
-    retry_action: moveCheck(op) ? 'check_outcome' : 'retry' };
+    can_accept_server_state: canAcceptServerState(op), retry_action: moveCheck(op) ? 'check_outcome' : 'retry' };
 }
 async function listWritebacks(userId, { accountId = null, includeHistory = false, limit = 100 } = {}) {
   limit = String(Math.floor(Math.min(200, Math.max(1, Number(limit) || 100))));
@@ -191,6 +193,36 @@ async function cancelWriteback(userId, id) {
     throw fail(op ? 'This change may already be at the provider; check its outcome instead' : 'Change not found', op ? 409 : 404);
   }
   return { message: 'Change discarded' };
+}
+// A sent MOVE whose bounded check could not prove its outcome stops being
+// tracked: no provider write, the attempts and evidence stay, and it becomes
+// terminal (superseded by the provider's state) so it no longer blocks purge or
+// a newer move. A manual sync then files the message wherever it really is.
+async function acceptServerState(userId, id) {
+  if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore in progress');
+  const cx = await db.getConnection(); let op;
+  try {
+    await cx.beginTransaction();
+    [[op]] = await cx.execute('SELECT id,mail_account_id,action,dispatched,state FROM mail_writebacks WHERE id=? AND user_id=? FOR UPDATE', [id, userId]);
+    if (!op) throw fail('Change not found', 404);
+    const [result] = canAcceptServerState(op) ? await cx.execute(`UPDATE mail_writebacks SET state='superseded',status='done',
+      is_current=FALSE,error=NULL,evidence_json=JSON_SET(COALESCE(evidence_json,JSON_OBJECT()),'$.reason','user_accepted_server_state')
+      WHERE id=? AND user_id=? AND mail_account_id=? AND action='move' AND dispatched=TRUE AND state='needs_attention'`,
+    [id, userId, op.mail_account_id]) : [{ affectedRows: 0 }];
+    if (!result.affectedRows) throw fail('Only a sent folder move with an unconfirmed outcome can follow the server state');
+    await cx.commit();
+  } catch (error) { await cx.rollback(); throw error; }
+  finally { cx.release(); }
+  const [[account]] = await db.execute('SELECT is_active,disconnected_at FROM mail_accounts WHERE id=? AND user_id=?',
+    [op.mail_account_id, userId]);
+  let syncQueued = false;
+  if (account && Number(account.is_active) && !account.disconnected_at) {
+    // Resolution is committed; a failed enqueue leaves the next sync to do this.
+    try { await require('./mail').scheduleMailAccountSync(op.mail_account_id); syncQueued = true; }
+    catch (error) { console.error('[MAIL WRITEBACK] Sync after accepting server state failed:', error.code || 'unavailable'); }
+  }
+  return { message: syncQueued ? 'UniHub stopped tracking this move and is syncing from the server'
+    : 'UniHub stopped tracking this move; the next sync follows the server', sync_queued: syncQueued };
 }
 async function cancelForAccount(cx, accountId, userId) {
   // Disconnect/settings pause does not erase an accepted or uncertain provider effect.
@@ -436,5 +468,5 @@ async function executeOperation(connection, op, { markDispatched, read = legacyR
   return { value: Number(op.target_value) };
 }
 module.exports = { mutateMessages, queueChanges, processPending, startWritebacks, stopWritebacks, runDueWritebacks, drainWritebacks,
-  retryWriteback, cancelForAccount, cancelWriteback, getOperationReceipt, listWritebacks, executeOperation,
+  retryWriteback, acceptServerState, cancelForAccount, cancelWriteback, getOperationReceipt, listWritebacks, executeOperation,
   isWritebackRunning: () => active.size > 0, remoteEligible, verifiedIdentity, keyCheck, canonicalRequest };

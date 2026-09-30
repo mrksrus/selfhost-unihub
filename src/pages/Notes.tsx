@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 
 export default function Notes() {
   const client = useQueryClient();
@@ -23,7 +24,7 @@ export default function Notes() {
   const generation = useRef(0);
   const dirty = noteDraftDirty(draft);
   const search = useDebouncedValue(query, 200);
-  const { data: notes = [], isPending, error: listError } = useQuery({ queryKey: ['notes', search, trash], queryFn: async ({ signal }) => (await noteResponse(api.get<{ notes: Note[] }>(`/notes?q=${encodeURIComponent(search)}&trash=${trash}`, { signal }))).notes });
+  const { data: notes = [], isPending, error: listError, refetch: refetchNotes, isFetching: notesFetching } = useQuery({ queryKey: ['notes', search, trash], queryFn: async ({ signal }) => (await noteResponse(api.get<{ notes: Note[] }>(`/notes?q=${encodeURIComponent(search)}&trash=${trash}`, { signal }))).notes });
   const apply = (detail: NoteDetail) => { setDraft({ detail, title: detail.note.title, body: detail.note.body, links: detail.links.map(link => link.id) }); setConflict(false); setEditing(true); };
   const allowDiscard = () => !dirty || window.confirm('Discard the unsaved changes to this note?');
   const openNote = async (id: string) => {
@@ -68,8 +69,8 @@ export default function Notes() {
         <Button className="w-full" disabled={busy} onClick={() => { if (allowDiscard()) { setDraft(emptyNoteDraft()); setEditing(true); setParams({}, { replace: true }); setError(''); setConflict(false); } }}>New note</Button>
         <Input aria-label="Search notes" placeholder="Search notes" value={query} onChange={event => setQuery(event.target.value)} />
         <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={trash} onChange={event => setTrash(event.target.checked)} />Show trash</label>
-        {isPending && <p role="status">Loading notes…</p>}{listError && <p role="alert">{listError.message}</p>}
-        {!isPending && notes.length === 0 && <p className="text-sm text-muted-foreground">{trash ? 'No notes in trash.' : 'No notes found. Create a note to get started.'}</p>}
+        {isPending && <LoadingState compact label="Loading notes…" />}{listError && <ErrorState title="Could not load notes" error={listError} onRetry={() => void refetchNotes()} retrying={notesFetching} />}
+        {!isPending && !listError && notes.length === 0 && <EmptyState compact title={trash ? 'No notes in trash' : search ? 'No notes found' : 'No notes yet'} description={trash ? undefined : search ? 'Try a different search.' : 'Create a note to get started.'} />}
         <ul className="divide-y">{notes.map(note => <li key={note.id}><button className="w-full text-left py-3 px-2 rounded focus-visible:ring-2 focus-visible:ring-ring hover:bg-muted" aria-current={saved?.note.id === note.id ? 'page' : undefined} disabled={busy} onClick={() => void openNote(note.id)}><span className="block truncate font-medium">{note.title || 'Untitled note'}</span><span className="text-xs text-muted-foreground">Revision {note.revision}</span></button></li>)}</ul>
       </aside>
       <section className={`${editing ? '' : 'hidden md:block'} flex-1 min-w-0 p-4 sm:p-6 space-y-4`} aria-label="Note editor">

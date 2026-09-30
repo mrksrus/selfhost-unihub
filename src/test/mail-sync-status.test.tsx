@@ -75,6 +75,36 @@ describe('mail server change feedback', () => {
     expect(api.post).toHaveBeenCalledTimes(1);
   });
 
+  it('accepts the server state for an unprovable sent move only after confirmation', async () => {
+    setup([
+      { ...operation('sent', 'conflict', 'move'), state: 'needs_attention', can_retry: true, can_cancel: false,
+        can_accept_server_state: true, retry_action: 'check_outcome' },
+      { ...operation('flag', 'conflict', 'star'), state: 'needs_attention', can_retry: true, can_cancel: true,
+        can_accept_server_state: false, retry_action: 'retry' },
+    ]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept server state' }));
+    expect(screen.queryByRole('button', { name: 'Accept server state' })).not.toBeInTheDocument();
+    expect(screen.getByText(/stop tracking this move and sync the account again/)).toBeInTheDocument();
+    expect(api.post).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep tracking' }));
+    expect(api.post).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Accept server state' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking and sync' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/writebacks/sent/accept-server-state'));
+    expect(api.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows an accept failure without repeating the request', async () => {
+    setup([{ ...operation('sent', 'conflict', 'move'), state: 'needs_attention', can_retry: true,
+      can_accept_server_state: true, retry_action: 'check_outcome' }]);
+    vi.mocked(api.post).mockResolvedValue({ error: 'private provider details' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Accept server state' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop tracking and sync' }));
+    expect(await screen.findByText(/server state could not be accepted/)).toBeInTheDocument();
+    expect(api.post).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
+  });
+
   it('refreshes the affected open message when a pending action settles', async () => {
     const { client, onSettled } = setup([operation('pending', 'pending', 'read')]);
     await screen.findByText(/waiting for provider confirmation/);

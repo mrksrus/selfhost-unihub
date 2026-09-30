@@ -8,7 +8,10 @@ import { setOfflineMode } from '@/lib/offline';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn() } }));
 vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }));
-vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
+// The real hook returns a stable toast function. A new vi.fn() per render
+// would change every callback/effect that depends on toast on each render.
+const { toast } = vi.hoisted(() => ({ toast: vi.fn() }));
+vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
 let disconnected = false;
 let blocked = false;
 beforeEach(() => {
@@ -35,10 +38,19 @@ function mount() {
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/mail']}><MailPage /></MemoryRouter></QueryClientProvider>);
 }
 
-describe('mail retention controls', () => {
-  it('disconnects by default without purging, then requires preview and typed ID for explicit purge', async () => {
+describe('mail retention controls', { timeout: 15000 }, () => {
+  // These tests drive the whole mail page, where each *ByRole query computes
+  // roles and names for a large DOM. Wait for data with cheap text queries and
+  // run role queries once afterwards: a cold role query polled by findByRole
+  // could use up its 1 s budget on its own under load. Disconnect and purge are
+  // separate tests because as one ~20-step test the flow ran close to the 5 s
+  // per-test limit when the full suite competed for CPU. The first test in a
+  // worker also pays the cold first render and role computation, so the
+  // describe timeout is for CPU time, not for waiting on anything asynchronous.
+  it('disconnects by default without purging and keeps retained mail readable', async () => {
     mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect owner@example.test' }));
+    await screen.findByText('owner@example.test');
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect owner@example.test' }));
     expect(screen.getByText(/Your local emails and attachments stay in UniHub/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Disconnect and keep mail' }));
     await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1'));
@@ -47,7 +59,13 @@ describe('mail retention controls', () => {
     fireEvent.click(screen.getByText('Retained subject'));
     expect(await screen.findByText('Disconnected · retained locally; provider presence unverified')).toBeInTheDocument();
     expect(screen.getAllByText('Retained body')).toHaveLength(2);
-    fireEvent.click(await screen.findByRole('button', { name: 'Preview purge for owner@example.test' }));
+    expect(screen.getByRole('button', { name: 'Preview purge for owner@example.test' })).toBeInTheDocument();
+    expect(api.delete).toHaveBeenCalledTimes(1);
+  });
+  it('requires a preview and the typed account ID before an explicit purge', async () => {
+    disconnected = true; mount();
+    await screen.findByText('Disconnected · local mail retained');
+    fireEvent.click(screen.getByRole('button', { name: 'Preview purge for owner@example.test' }));
     expect(await screen.findByText(/2 emails, 1 attachments, 2 raw messages; 0 unresolved operations/)).toBeInTheDocument();
     const button = screen.getByRole('button', { name: 'Purge local mail' });
     expect(button).toBeDisabled();
@@ -56,11 +74,12 @@ describe('mail retention controls', () => {
     fireEvent.change(screen.getByLabelText(/Type the account ID/), { target: { value: 'account-1' } });
     expect(button).toBeEnabled();
     fireEvent.click(button);
-    await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/mail/accounts/account-1?purge=true&confirm_purge=account-1'));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1?purge=true&confirm_purge=account-1'));
   });
   it('does not offer purge while provider effects are unresolved', async () => {
     disconnected = true; blocked = true; mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'Preview purge for owner@example.test' }));
+    await screen.findByText('Disconnected · local mail retained');
+    fireEvent.click(screen.getByRole('button', { name: 'Preview purge for owner@example.test' }));
     expect(await screen.findByText(/Purge blocked: Move outcome unresolved/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Purge local mail' })).toBeDisabled();
     expect(api.delete).not.toHaveBeenCalled();

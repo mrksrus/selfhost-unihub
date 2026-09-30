@@ -4,7 +4,6 @@ import { MotionConfig } from 'framer-motion';
 import UpdatePrompt from '@/components/pwa/UpdatePrompt';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
 import { Toaster } from "@/components/ui/toaster";
-import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { lazy, Suspense } from "react";
 import { SessionQueryProvider } from "@/components/SessionQueryProvider";
@@ -36,7 +35,6 @@ const AuthenticatedApp = () => {
     <SessionQueryProvider key={user?.id ?? "signed-out"}>
       <NoteDraftProvider><TooltipProvider>
         <Toaster />
-        <Sonner />
         <BrowserRouter>
           <Suspense fallback={<div role="status" className="flex min-h-[40vh] items-center justify-center text-muted-foreground">Loading…</div>}>
           <Routes>

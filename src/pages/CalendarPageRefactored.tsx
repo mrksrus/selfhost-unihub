@@ -4,6 +4,7 @@ import { addDays, addMonths, eachDayOfInterval, endOfDay, endOfMonth, endOfWeek,
 import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Edit, Loader2, MapPin, Plus, Trash2 } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { useNotificationEventLink } from '@/hooks/use-notification-event-link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -16,6 +17,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { calendarApi, calendarQueryKeys, formatEventTime, localDatetimeToIso, toDatetimeLocalValue, type CalendarAccount, type CalendarCalendar, type CalendarEvent, type CalendarProvider, type CalendarRsvpStatus } from '@/lib/calendar-api';
 
 type CalendarViewMode = 'day' | 'week' | 'month';
+const EMPTY_ACCOUNTS: CalendarAccount[] = [];
+const EMPTY_CALENDARS: CalendarCalendar[] = [];
 const STORAGE_VIEW_KEY = 'calendar_view_mode';
 const STORAGE_CURRENT_DATE_KEY = 'calendar_current_date';
 const STORAGE_SELECTED_DATE_KEY = 'calendar_selected_date';
@@ -118,15 +121,17 @@ const CalendarPage = () => {
     queryClient.invalidateQueries({ queryKey: calendarQueryKeys.stats });
   };
 
-  const { data: accounts = [] } = useQuery({
+  const accountsQuery = useQuery({
     queryKey: calendarQueryKeys.accounts,
     queryFn: () => calendarApi.fetchAccounts(),
   });
+  const accounts = accountsQuery.data ?? EMPTY_ACCOUNTS;
 
-  const { data: calendars = [] } = useQuery({
+  const calendarsQuery = useQuery({
     queryKey: calendarQueryKeys.calendars,
     queryFn: () => calendarApi.fetchCalendars(),
   });
+  const calendars = calendarsQuery.data ?? EMPTY_CALENDARS;
 
   useEffect(() => {
     if (selectedCalendarIds.length > 0 || calendars.length === 0) return;
@@ -150,7 +155,7 @@ const CalendarPage = () => {
     localStorage.setItem(STORAGE_SELECTED_CALENDAR_IDS_KEY, JSON.stringify(selectedCalendarIds));
   }, [selectedCalendarIds]);
 
-  const { data: events = [], isLoading } = useQuery({
+  const { data: events = [], isLoading, error: eventsError, refetch: refetchEvents, isFetching: eventsFetching } = useQuery({
     queryKey: calendarQueryKeys.list({
       includeTodos: false,
       includeDone: true,
@@ -501,7 +506,7 @@ const CalendarPage = () => {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader2 className="h-8 w-8 animate-spin text-accent" />
+        <LoadingState label="Loading calendar…" />
       </div>
     );
   }
@@ -633,6 +638,21 @@ const CalendarPage = () => {
             </div>
 
             <div className="space-y-3 max-h-[65vh] overflow-y-auto pr-1">
+              {(accountsQuery.error || calendarsQuery.error) ? (
+                <ErrorState
+                  title="Could not load calendars"
+                  error={calendarsQuery.error ?? accountsQuery.error}
+                  onRetry={() => {
+                    if (accountsQuery.error) void accountsQuery.refetch();
+                    if (calendarsQuery.error) void calendarsQuery.refetch();
+                  }}
+                  retrying={accountsQuery.isFetching || calendarsQuery.isFetching}
+                />
+              ) : calendarsQuery.isLoading || accountsQuery.isLoading ? (
+                <LoadingState compact label="Loading calendars…" />
+              ) : groupedCalendars.length === 0 ? (
+                <EmptyState compact title="No calendars yet" description="Add an account, then create a calendar." />
+              ) : null}
               {groupedCalendars.map(({ account, calendars: accountCalendars }) => (
                 <div key={account?.id || `unknown-${accountCalendars[0]?.account_id}`} className="rounded-md border p-3">
                   <div className="flex items-center justify-between mb-2">
@@ -878,6 +898,15 @@ const CalendarPage = () => {
               </CardTitle>
             </CardHeader>
             <CardContent>
+              {eventsError && (
+                <ErrorState
+                  className="mb-4"
+                  title="Could not load events"
+                  error={eventsError}
+                  onRetry={() => void refetchEvents()}
+                  retrying={eventsFetching}
+                />
+              )}
               {viewMode === 'month' && (
                 <div className="space-y-2">
                   <div className="grid grid-cols-7 text-sm text-muted-foreground">

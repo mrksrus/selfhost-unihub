@@ -184,3 +184,108 @@ test('a worker holding a stale copy cannot revive a cancelled or superseded chan
     assert(!log.some(entry => entry.sql.startsWith('UPDATE mail_writebacks SET state=?')));
   }
 });
+
+// Synthetic store for acceptServerState: evaluates the endpoint's own WHERE
+// clause against the row and records every statement and follow-up sync.
+function acceptStore(t, op, { account = { is_active: 1, disconnected_at: null, sync_mode: 'sync' } } = {}) {
+  const old = getDb(); t.after(() => setDb(old));
+  const log = [], syncs = [];
+  const execute = async (sql, args = []) => {
+    log.push({ sql, args });
+    if (sql.includes('backup_restore_jobs') || sql.includes('user_settings')) return [[]];
+    if (sql.includes('SELECT id,email_id,action')) return [[op]];
+    if (sql.startsWith('SELECT id,mail_account_id,action,dispatched,state FROM mail_writebacks'))
+      return [[args[0] === op.id && args[1] === op.user_id ? op : null].filter(Boolean)];
+    if (sql.startsWith("UPDATE mail_writebacks SET state='superseded'")) {
+      const ok = args[0] === op.id && args[1] === op.user_id && args[2] === op.mail_account_id
+        && op.action === 'move' && Number(op.dispatched) === 1 && op.state === 'needs_attention';
+      if (ok) Object.assign(op, { state: 'superseded', status: 'done', is_current: 0, error: null,
+        evidence: { ...op.evidence, reason: 'user_accepted_server_state' } });
+      return [{ affectedRows: ok ? 1 : 0 }];
+    }
+    if (sql.startsWith('SELECT is_active,disconnected_at FROM mail_accounts')) return [[account]];
+    return [{ affectedRows: 1 }];
+  };
+  const cx = { execute, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {} };
+  setDb({ execute, getConnection: async () => cx });
+  t.mock.method(require('../src/services/mail'), 'scheduleMailAccountSync', async (accountId, options) => {
+    syncs.push({ accountId, options }); return { started: true };
+  });
+  for (const name of ['selectMailbox', 'fetchMetadataWindow', 'nativeMove', 'setFlag'])
+    t.mock.method(transport, name, () => assert.fail(`${name} must not run`));
+  t.mock.method(runtime, 'enqueueJob', async () => assert.fail('no provider job may be queued'));
+  return { log, syncs };
+}
+
+test('accept server state flag matches what the endpoint accepts for every state', async t => {
+  const states = ['queued', 'executing', 'verifying', 'reconciling', 'retry_wait', 'needs_attention', 'confirmed', 'rejected', 'cancelled', 'superseded'];
+  const rows = [];
+  for (const state of states) for (const action of ['move', 'read', 'star']) for (const dispatched of [0, 1]) for (const current of [0, 1])
+    rows.push({ state, action, dispatched, is_current: current });
+  for (const row of rows) {
+    const op = moveOp({ id: 'op', ...row, evidence: { kind: 'bounded_move_check' } });
+    const label = JSON.stringify(row), expected = row.action === 'move' && row.dispatched === 1 && row.state === 'needs_attention';
+    const { log, syncs } = acceptStore(t, op);
+    const [view] = (await writes.listWritebacks('owner')).operations;
+    assert.equal(view.can_accept_server_state, expected, label);
+    const accepted = await writes.acceptServerState('owner', 'op').then(() => true, error => { assert.equal(error.status, 409, label); return false; });
+    assert.equal(accepted, expected, `accept ${label}`);
+    assert.equal(syncs.length, expected ? 1 : 0, label);
+    if (!expected) assert.equal(op.state, row.state, `unchanged ${label}`);
+    assert(!log.some(entry => /DELETE/i.test(entry.sql)), 'never deletes accepted operations');
+    t.mock.restoreAll();
+  }
+});
+
+test('accepting the server state resolves a sent MOVE without provider writes and queues a manual sync', async t => {
+  const op = moveOp({ id: 'older', intent_revision: 1, state: 'needs_attention', status: 'conflict', dispatched: 1, attempts: 3,
+    error: 'MOVE has no correlated COPYUID', evidence: { kind: 'bounded_move_check', sourcePresent: false } });
+  const { log, syncs } = acceptStore(t, op);
+  assert.deepEqual(await writes.acceptServerState('owner', 'older'),
+    { message: 'UniHub stopped tracking this move and is syncing from the server', sync_queued: true });
+  assert.deepEqual(syncs, [{ accountId: 'account', options: undefined }], 'manual (non-background, non-follow-up) sync');
+  assert.equal(op.state, 'superseded'); assert.equal(op.status, 'done'); assert.equal(op.is_current, 0);
+  assert.equal(op.dispatched, 1, 'dispatch record is kept'); assert.equal(op.attempts, 3);
+  const update = log.find(entry => entry.sql.startsWith("UPDATE mail_writebacks SET state='superseded'"));
+  assert.match(update.sql, /evidence_json=JSON_SET\(COALESCE\(evidence_json,JSON_OBJECT\(\)\),'\$\.reason','user_accepted_server_state'\)/);
+  assert.match(update.sql, /WHERE id=\? AND user_id=\? AND mail_account_id=\? AND action='move' AND dispatched=TRUE AND state='needs_attention'/);
+  assert.deepEqual(update.args, ['older', 'owner', 'account']);
+  assert(!log.some(entry => /mail_operation_attempts/.test(entry.sql)), 'attempt journal untouched');
+  await assert.rejects(writes.acceptServerState('owner', 'older'), { status: 409 });
+  await assert.rejects(writes.acceptServerState('intruder', 'older'), { status: 404 });
+  assert.equal(syncs.length, 1);
+});
+
+test('accepting on a disconnected account resolves without a sync and the result says so', async t => {
+  const op = moveOp({ id: 'older', state: 'needs_attention', dispatched: 1 });
+  const { syncs } = acceptStore(t, op, { account: { is_active: 0, disconnected_at: new Date(), sync_mode: 'sync' } });
+  assert.equal((await writes.acceptServerState('owner', 'older')).sync_queued, false);
+  assert.equal(op.state, 'superseded'); assert.deepEqual(syncs, []);
+});
+
+test('after the server state is accepted a newer MOVE of that message is no longer blocked', async t => {
+  const older = { id: 'older', state: 'needs_attention' };
+  const op = moveOp();
+  const { log } = store(t, op, { email: { remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9 } });
+  // Evaluate the prior-MOVE query's own terminal-state list.
+  const execute = getDb().execute;
+  const priorAware = async (sql, args) => {
+    if (sql.includes('SELECT id,state FROM mail_writebacks WHERE user_id=')) {
+      const terminal = /state NOT IN \(([^)]*)\)/.exec(sql)[1].split(',').map(s => s.trim().replace(/'/g, ''));
+      return [[older].filter(row => !terminal.includes(row.state))];
+    }
+    return execute(sql, args);
+  };
+  setDb({ execute: priorAware, getConnection: async () => ({ execute: priorAware, beginTransaction: async () => {},
+    commit: async () => {}, rollback: async () => {}, release() {} }) });
+  await ops.applyMove(op, {}, 1, null, 'worker', 'job');
+  assert.deepEqual(op.evidence, { kind: 'blocked_by_unconfirmed_move', prior: 'older' });
+  older.state = 'superseded'; // what acceptServerState commits
+  Object.assign(op, { state: 'queued', status: 'pending', evidence: null });
+  t.mock.method(transport, 'selectMailbox', async () => ({ uidvalidity: 10, capabilities: {} }));
+  log.length = 0;
+  await ops.applyMove(op, {}, 1, null, 'worker', 'job');
+  assert.notDeepEqual(op.evidence, { kind: 'blocked_by_unconfirmed_move', prior: 'older' });
+  assert.equal(transport.selectMailbox.mock.callCount(), 1, 'the newer move proceeds to its own source check');
+  assert.equal(op.dispatched, 0, 'epoch mismatch here: still nothing sent');
+});

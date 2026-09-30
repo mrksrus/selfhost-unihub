@@ -82,6 +82,9 @@ async function claimDueJob({ workerId, leaseSeconds = 30, kinds = null, accountI
       const [accounts] = await cx.execute('SELECT * FROM mail_engine_accounts WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [job.mail_account_id, job.user_id]);
       const account = accounts[0];
       if (!account || account.paused_reason || (account.lease_until && new Date(account.lease_until).getTime() > Date.now())) continue;
+      // An expired lease that recovery has not cleared yet may still have a
+      // running job whose provider outcome is unknown; wait for recovery.
+      if (account.lease_owner != null) continue;
       const generation = Number(account.generation) + 1;
       if (!Number.isSafeInteger(generation)) throw new RangeError('Generation exhausted');
       await cx.execute(`UPDATE mail_engine_accounts SET generation = ?, lease_owner = ?,
@@ -242,6 +245,35 @@ async function recoverExpiredJobs(executor = db) {
     return { jobs: jobs.affectedRows, operations: ops.affectedRows };
   });
 }
+// Finished jobs are scheduling history, not evidence. Keep the latest job of
+// each account/kind/mailbox (status, discovery cadence) and every job of an
+// unsettled operation (runDueWritebacks backs off on its job count).
+const FINISHED_JOB_STATES = ['idle', 'cancelled', 'error'];
+const SETTLED_OPERATION_STATES = ['confirmed', 'cancelled', 'superseded', 'rejected'];
+async function pruneFinishedJobs({ olderThanDays = 7, batchSize = 1000, maxBatches = 20 } = {}, executor = db) {
+  int(olderThanDays, 1, 3650, 'olderThanDays'); int(batchSize, 1, 1000, 'batchSize'); int(maxBatches, 1, 1000, 'maxBatches');
+  const finished = FINISHED_JOB_STATES.map(() => '?').join(','), settled = SETTLED_OPERATION_STATES.map(() => '?').join(',');
+  let deleted = 0, batches = 0;
+  while (batches < maxBatches) {
+    batches++;
+    const [rows] = await executor.execute(`SELECT j.id FROM mail_engine_jobs j
+      WHERE j.state IN (${finished}) AND j.completed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)
+        AND EXISTS (SELECT 1 FROM mail_engine_jobs n WHERE n.user_id = j.user_id AND n.mail_account_id = j.mail_account_id
+          AND n.kind = j.kind AND n.mailbox_id <=> j.mailbox_id
+          AND (n.created_at > j.created_at OR (n.created_at = j.created_at AND n.id > j.id)))
+        AND (j.operation_id IS NULL OR NOT EXISTS (SELECT 1 FROM mail_writebacks w WHERE w.id = j.operation_id
+          AND w.user_id = j.user_id AND (w.state IS NULL OR w.state NOT IN (${settled}))))
+      ORDER BY j.completed_at, j.id LIMIT ?`, [...FINISHED_JOB_STATES, olderThanDays, ...SETTLED_OPERATION_STATES, String(batchSize)]);
+    if (!rows.length) break;
+    // Short autocommit statement by primary key; finished states are final.
+    const [result] = await executor.execute(`DELETE FROM mail_engine_jobs WHERE id IN (${rows.map(() => '?').join(',')})
+      AND state IN (${finished}) AND completed_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? DAY)`,
+    [...rows.map(row => row.id), ...FINISHED_JOB_STATES, olderThanDays]);
+    deleted += Number(result.affectedRows) || 0;
+    if (rows.length < batchSize) break;
+  }
+  return { deleted, batches };
+}
 async function getJobStatus({ userId, accountId }, executor = db) {
   const [rows] = await executor.execute(`SELECT * FROM mail_engine_jobs WHERE user_id = ? AND mail_account_id = ?
     ORDER BY (state IN ('running','queued','paused')) DESC, created_at DESC LIMIT 1`, [userId, accountId]);
@@ -292,4 +324,4 @@ async function finishOperationAttempt({ attemptId, operationId, userId, accountI
     return state;
   });
 }
-module.exports = { enqueueJob, claimDueJob, assertFence, updateJob, releaseUnstartedJob, completeJob, requestCancellation, pauseAccount, resumeAccount, recoverExpiredJobs, getJobStatus, beginOperationAttempt, finishOperationAttempt };
+module.exports = { enqueueJob, claimDueJob, assertFence, updateJob, releaseUnstartedJob, completeJob, requestCancellation, pauseAccount, resumeAccount, recoverExpiredJobs, pruneFinishedJobs, getJobStatus, beginOperationAttempt, finishOperationAttempt };

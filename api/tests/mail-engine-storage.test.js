@@ -203,7 +203,7 @@ test('durable scheduler uses repository claims and persists progress before succ
     await scheduler.start(); await scheduler.enqueue({ userId: 'u', accountId: 'a' });
     await tick(); await tick();
     assert.deepEqual(resolved, ['idle']);
-    assert(recoveryCount >= 2, 'recover before startup and before each replacement claim');
+    assert.equal(recoveryCount, 1, 'recover at startup; later drains are time-gated');
     assert.equal(updates[0].phase, 'recent');
     assert.equal(await scheduler.state({ userId: 'u', accountId: 'a' }).then(s => s.state), 'idle');
   } finally { scheduler.stop(); }

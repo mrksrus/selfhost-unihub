@@ -13,13 +13,17 @@ comes after.
 
 ## Open from the P1 work
 
-- **A sent MOVE that cannot be proven can stay in attention forever.** When a
+- **Done (2026-09-30): A sent MOVE that cannot be proven can stay in attention forever.** When a
   MOVE was sent but no COPYUID arrived and the bounded outcome check cannot find
   the message, it stays `needs_attention`. By design it cannot be discarded
   (the move may have happened), so it blocks account purge and any newer move
   of that message. Add an explicit "Accept server state" action: mark the
   operation resolved without any provider write, then run a manual sync so the
   local copy follows wherever the message really is.
+  *Done:* `POST /api/mail/writebacks/:id/accept-server-state` (only a
+  dispatched MOVE in `needs_attention`) sets it `superseded`/`done`, not
+  current, evidence reason `user_accepted_server_state`, attempts untouched,
+  then queues a manual sync; the UI shows it behind a confirmation.
 - **New SQL not yet run on MySQL.** The due-scan backoff subquery, cancel/retry
   transactions, epoch-change updates and canary-hold precedence are covered by
   unit tests with fake databases only. Run the MySQL integration suite
@@ -30,31 +34,54 @@ comes after.
 
 ## P2: Looks right in the UI and never gets stuck
 
-1. **Prune finished mail engine jobs.** `enqueueJob` inserts a new
+1. **Done (2026-09-30): Prune finished mail engine jobs.** `enqueueJob` inserts a new
    `mail_engine_jobs` row whenever the previous job of that kind has finished,
    and nothing deletes finished rows. Periodic sync and retries add many rows per
    account per day. Delete `idle`/`cancelled`/`error` jobs older than N days on a
    timer (like the existing session cleanup in `api/src/app.js`), keep the latest
    row per account/kind for status, and check backup/export expectations.
-2. **Run expired-lease recovery on a timer, not every poll.**
+   *Done:* `runtime.pruneFinishedJobs`, hourly from `app.js`: 7 days, 1,000
+   rows per statement, 20 batches per run; keeps the newest job per
+   account/kind/mailbox and all jobs of an unsettled operation. Jobs are
+   ephemeral in backups, so nothing else depends on the history.
+2. **Done (2026-09-30): Run expired-lease recovery on a timer, not every poll.**
    `recoverExpiredJobs` (runtime.js) runs from the durable scheduler's `drain()`
    on every 1 s poll, enqueue and job completion. It updates rows for all
    accounts and takes locks on `mail_writebacks` and `mail_engine_accounts`
    (`lease_owner IS NOT NULL` has no index). Run it at startup and every
    10–30 s instead; lease expiry is measured in tens of seconds anyway.
+   *Done:* time-gated in `drain()` (start, then every 15 s); `claimDueJob`
+   skips an account whose expired lease is not yet recovered. No new index:
+   `mail_engine_accounts` has one row per mail account and already has
+   `idx_engine_account_lease`; the job and writeback updates use
+   `idx_job_lease` and `idx_mail_writeback_state`.
 3. **Fix the flaky frontend test** `src/test/mail-retention-controls.test.tsx`
    ("disconnects by default without purging…"). It failed once in a full
    `vitest run` and passed three times in isolation, so it is likely a timeout
    or timing race under load.
+   *Done 2026-09-30* (commit "Fix flaky mail retention controls test").
+   *Still open:* `src/test/mail-flag-interactions.test.tsx` ("keeps an unresolved
+   HTTP admission visible…") failed once in two full runs and passes alone.
 4. **Split `src/pages/MailPage.tsx` (3,184 lines, ~42 `useState`).** Extract the
    message list, reader, toolbar/bulk actions and dialogs into
    `src/components/mail/`, each with its own hook. Smaller units make it easier
    to guarantee that a late response never shows the wrong account or message.
+   *Not done.* A first extraction step was started and saved, unmerged, as
+   branch `worktree-agent-ab4ba6c5408d19dbc` ("WIP: start splitting MailPage",
+   `src/components/mail/mail-page-model.ts`). Continue from there or restart.
 5. **Use one toast system.** `use-toast` (Radix) is used in 16 files and
    `sonner` in 2, and both `<Toaster />` and `<Sonner />` are mounted in
    `src/App.tsx`. Pick one and remove the other.
+   *Done 2026-09-30:* kept Radix `use-toast`; removed the `<Sonner />` mount,
+   `src/components/ui/sonner.tsx`, the unused `src/components/ui/use-toast.ts`
+   re-export and the `sonner` package.
 6. **Consistent loading, empty and error states** across pages (mail, contacts,
    calendar, todo, recordings), reusing the same components.
+   *Done 2026-09-30 for non-mail pages:* `LoadingState`, `EmptyState` and
+   `ErrorState` (with "Try again") in `src/components/ui/page-states.tsx`, used by
+   contacts, calendar, todo, recordings, music, notes, dashboard, admin users and
+   settings (general, security, modules, data, mail rules). The mail page is
+   not converted yet; do that with the split in item 4.
 
 ## P3: Future-proofing and tech debt
 

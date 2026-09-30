@@ -18,6 +18,7 @@ import { Separator } from '@/components/ui/separator';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
+import { ErrorState, LoadingState } from '@/components/ui/page-states';
 import { api } from '@/lib/api';
 import { calendarQueryKeys } from '@/lib/calendar-api';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -169,7 +170,7 @@ const Settings = () => {
     is_active: true,
   });
 
-  const { data: mailSenderCandidates, isLoading: mailSenderCandidatesLoading, refetch: refetchMailSenderCandidates } = useQuery({
+  const { data: mailSenderCandidates, isLoading: mailSenderCandidatesLoading, error: mailSenderCandidatesError, isFetching: mailSenderCandidatesFetching, refetch: refetchMailSenderCandidates } = useQuery({
     queryKey: ['mail-sender-candidates'],
     enabled: activeTab === 'mail',
     queryFn: async () => {
@@ -202,7 +203,7 @@ const Settings = () => {
     },
   });
 
-  const { data: preferencesData } = useQuery({
+  const { data: preferencesData, error: preferencesError, isFetching: preferencesFetching, refetch: refetchPreferences } = useQuery({
     queryKey: ['settings', 'preferences'],
     queryFn: async () => {
       const response = await api.get<{ preferences: UserPreferences }>('/settings/preferences');
@@ -239,7 +240,7 @@ const Settings = () => {
   const [newRecoveryCodes, setNewRecoveryCodes] = useState<string[] | null>(null);
   const [twoFactorLoading, setTwoFactorLoading] = useState(false);
 
-  const { data: twoFactorStatus, refetch: refetchTwoFactorStatus } = useQuery({
+  const { data: twoFactorStatus, isLoading: twoFactorStatusLoading, error: twoFactorStatusError, isFetching: twoFactorStatusFetching, refetch: refetchTwoFactorStatus } = useQuery({
     queryKey: ['auth', '2fa-status'],
     queryFn: async () => {
       const response = await api.get<TwoFactorStatus>('/auth/2fa/status');
@@ -716,6 +717,14 @@ const Settings = () => {
                 Save Profile
               </Button>
               <Separator />
+              {preferencesError && (
+                <ErrorState
+                  title="Could not load your preferences"
+                  error={preferencesError}
+                  onRetry={() => void refetchPreferences()}
+                  retrying={preferencesFetching}
+                />
+              )}
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label>Default start page</Label>
@@ -753,7 +762,7 @@ const Settings = () => {
                   </Select>
                 </div>
               </div>
-              <Button onClick={handleSavePreferences} disabled={preferencesSaving}>
+              <Button onClick={handleSavePreferences} disabled={preferencesSaving || (!!preferencesError && !preferencesData)}>
                 {preferencesSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                 Save Preferences
               </Button>
@@ -845,7 +854,9 @@ const Settings = () => {
                 <div>
                   <p className="font-medium text-foreground">Two-Factor Authentication</p>
                   <p className="text-sm text-muted-foreground">
-                    {twoFactorStatus?.enabled
+                    {twoFactorStatusLoading
+                      ? 'Checking two-factor status…'
+                      : twoFactorStatus?.enabled
                       ? `Enabled. ${twoFactorStatus.recoveryCodesRemaining} recovery code${twoFactorStatus.recoveryCodesRemaining === 1 ? '' : 's'} remaining.`
                       : 'Require an authenticator code when signing in.'}
                   </p>
@@ -927,7 +938,7 @@ const Settings = () => {
                         </DialogContent>
                       </Dialog>
                     </>
-                  ) : (
+                  ) : twoFactorStatusLoading || twoFactorStatusError ? null : (
                     <Button variant="outline" onClick={startTwoFactorSetup} disabled={twoFactorLoading}>
                       {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                       Set Up 2FA
@@ -935,6 +946,14 @@ const Settings = () => {
                   )}
                 </div>
               </div>
+              {twoFactorStatusError && (
+                <ErrorState
+                  title="Could not check two-factor status"
+                  error={twoFactorStatusError}
+                  onRetry={() => void refetchTwoFactorStatus()}
+                  retrying={twoFactorStatusFetching}
+                />
+              )}
               {newRecoveryCodes && newRecoveryCodes.length > 0 && (
                 <div className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
                   <p className="font-medium text-foreground mb-2">Recovery codes</p>
@@ -1149,7 +1168,14 @@ const Settings = () => {
                   <p className="font-medium text-foreground">Top domains</p>
                 </div>
                 {mailSenderCandidatesLoading ? (
-                  <p className="text-sm text-muted-foreground">Loading domains...</p>
+                  <LoadingState compact label="Loading domains…" />
+                ) : mailSenderCandidatesError ? (
+                  <ErrorState
+                    title="Could not load domains and senders"
+                    error={mailSenderCandidatesError}
+                    onRetry={() => void refetchMailSenderCandidates()}
+                    retrying={mailSenderCandidatesFetching}
+                  />
                 ) : (mailSenderCandidates?.domains?.length ?? 0) === 0 ? (
                   <p className="text-sm text-muted-foreground">No domains found yet. Sync some emails first.</p>
                 ) : (
@@ -1186,7 +1212,9 @@ const Settings = () => {
                   <p className="font-medium text-foreground">Top senders</p>
                 </div>
                 {mailSenderCandidatesLoading ? (
-                  <p className="text-sm text-muted-foreground">Loading senders...</p>
+                  <LoadingState compact label="Loading senders…" />
+                ) : mailSenderCandidatesError ? (
+                  <p className="text-sm text-muted-foreground">Senders are unavailable until the list loads.</p>
                 ) : (mailSenderCandidates?.senders?.length ?? 0) === 0 ? (
                   <p className="text-sm text-muted-foreground">No senders found yet. Sync some emails first.</p>
                 ) : (

@@ -34,6 +34,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import {
   Download,
   Edit,
@@ -702,16 +703,20 @@ const Recordings = () => {
         </CardHeader>
         <CardContent>
           {recordingsQuery.isLoading ? (
-            <div className="flex justify-center py-10">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
+            <LoadingState label="Loading recordings…" />
           ) : recordingsQuery.error ? (
-            <p className="text-sm text-destructive">Could not load recordings.</p>
+            <ErrorState
+              title="Could not load recordings"
+              error={recordingsQuery.error}
+              onRetry={() => void recordingsQuery.refetch()}
+              retrying={recordingsQuery.isFetching}
+            />
           ) : recordings.length === 0 ? (
-            <div className="py-10 text-center text-muted-foreground">
-              <FileAudio className="h-10 w-10 mx-auto mb-3 opacity-50" />
-              <p>No recordings yet.</p>
-            </div>
+            <EmptyState
+              icon={FileAudio}
+              title={search || tagFilter || categoryFilter !== 'all' ? 'No recordings found' : 'No recordings yet'}
+              description={search || tagFilter || categoryFilter !== 'all' ? 'Try a different search or filter.' : undefined}
+            />
           ) : (
             <div className="space-y-3">
               {recordings.map((recording) => (

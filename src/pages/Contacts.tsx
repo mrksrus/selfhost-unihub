@@ -32,6 +32,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import {
   Plus,
   Search,
@@ -132,7 +133,7 @@ const Contacts = () => {
   }, []);
 
   // Complete the paginated API before applying client group/duplicate semantics.
-  const { data: allContacts = [], isLoading, error: contactsError } = useQuery(contactsQueryOptions);
+  const { data: allContacts = [], isLoading, error: contactsError, refetch: refetchContacts, isFetching: contactsFetching } = useQuery(contactsQueryOptions);
 
   const duplicateMeta = useMemo(() => {
     const normalizeEmail = (value: string | null | undefined) => (value || '').trim().toLowerCase();
@@ -774,36 +775,30 @@ const Contacts = () => {
 
       {/* Contacts list */}
       {isLoading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="h-8 w-8 animate-spin text-accent" />
-        </div>
+        <LoadingState label="Loading contacts…" />
       ) : contactsError ? (
-        <Card>
-          <CardContent className="py-8">
-            <h3 className="text-lg font-medium text-foreground mb-2">Failed to load contacts</h3>
-            <p className="text-muted-foreground">
-              {contactsError instanceof Error ? contactsError.message : 'Unknown error'}
-            </p>
-          </CardContent>
-        </Card>
+        <ErrorState
+          title="Could not load contacts"
+          error={contactsError}
+          onRetry={() => void refetchContacts()}
+          retrying={contactsFetching}
+        />
       ) : contacts.length === 0 ? (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <Users className="h-12 w-12 text-muted-foreground/50 mb-4" />
-            <h3 className="text-lg font-medium text-foreground mb-1">
-              {searchQuery || group !== 'all' ? 'No contacts found' : 'No contacts yet'}
-            </h3>
-            <p className="text-muted-foreground text-center mb-4">
-              {searchQuery || group !== 'all'
+          <CardContent className="p-0">
+            <EmptyState
+              icon={Users}
+              title={searchQuery || group !== 'all' ? 'No contacts found' : 'No contacts yet'}
+              description={searchQuery || group !== 'all'
                 ? 'Try a different search or group'
                 : 'Add your first contact to get started'}
-            </p>
-            {!searchQuery && group === 'all' && (
-              <Button onClick={() => setIsDialogOpen(true)}>
-                <Plus className="h-4 w-4 mr-2" />
-                Add Contact
-              </Button>
-            )}
+              action={!searchQuery && group === 'all' ? (
+                <Button onClick={() => setIsDialogOpen(true)}>
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Contact
+                </Button>
+              ) : undefined}
+            />
           </CardContent>
         </Card>
       ) : (

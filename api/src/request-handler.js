@@ -137,7 +137,7 @@ async function dispatchRequest(req, res) {
   } else if (routeKey.includes('/api/mail/attachments/')) {
     routeKey = `${req.method} /api/mail/attachments/:id`;
   } else if (url.pathname.startsWith('/api/mail/writebacks/')) {
-    const match = /^\/api\/mail\/writebacks\/([^/]+)\/(retry|cancel)$/.exec(url.pathname);
+    const match = /^\/api\/mail\/writebacks\/([^/]+)\/(retry|cancel|accept-server-state)$/.exec(url.pathname);
     if (match) {
       req.params.id = match[1];
       routeKey = `${req.method} /api/mail/writebacks/:id/${match[2]}`;

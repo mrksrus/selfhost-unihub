@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
+import { ErrorState, LoadingState } from '@/components/ui/page-states';
 import { api } from '@/lib/api';
 import { getBackupDownloadAction } from '@/lib/backup';
 import { jobPollInterval } from '@/lib/job-polling';
@@ -22,7 +23,7 @@ import { motion } from 'framer-motion';
 export default function BackupSettings({ active }: { active: boolean }) {
   const { user } = useAuth();
   const { toast } = useToast();
-  const { data: capabilities } = useQuery({
+  const { data: capabilities, isLoading: capabilitiesLoading, error: capabilitiesError, isFetching: capabilitiesFetching, refetch: refetchCapabilities } = useQuery({
     queryKey: ['backup-capabilities'],
     queryFn: async ({ signal }) => {
       const response = await api.get<BackupCapabilities>('/backup/capabilities', { signal });
@@ -50,7 +51,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
   const [backupConflictMode, setBackupConflictMode] = useState<'keep_existing' | 'replace' | 'keep_both'>('keep_existing');
   const [backupCalendarMode, setBackupCalendarMode] = useState<'merge_same_name' | 'copy'>('merge_same_name');
   const [backupCredentialsMode, setBackupCredentialsMode] = useState<'keep_existing' | 'restore'>('keep_existing');
-  const { data: backupJobs = [], refetch: refetchBackupJobs } = useQuery({
+  const { data: backupJobs = [], refetch: refetchBackupJobs, isLoading: backupJobsLoading, error: backupJobsError, isFetching: backupJobsFetching } = useQuery({
     queryKey: ['backup-jobs'],
     queryFn: async ({ signal }) => {
       const response = await api.get<{ jobs: BackupJob[] }>('/backup/jobs', { signal });
@@ -61,7 +62,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
     enabled: !!user && active,
   });
 
-  const { data: restoreJobs = [], refetch: refetchRestoreJobs } = useQuery({
+  const { data: restoreJobs = [], refetch: refetchRestoreJobs, isLoading: restoreJobsLoading, error: restoreJobsError, isFetching: restoreJobsFetching } = useQuery({
     queryKey: ['backup-restore-jobs'],
     queryFn: async ({ signal }) => {
       const response = await api.get<{ jobs: RestoreJob[] }>('/backup/restore-jobs', { signal });
@@ -348,8 +349,18 @@ export default function BackupSettings({ active }: { active: boolean }) {
             <p>These features are experimental. Do not rely on them as your only copy of important data.</p>
             <p>Keep an independent backup of your database, uploads, configuration and secrets, especially before deleting emails from your email provider.</p>
           </div>
+          {capabilitiesError && (
+            <ErrorState
+              title="Could not check backup availability"
+              error={capabilitiesError}
+              onRetry={() => void refetchCapabilities()}
+              retrying={capabilitiesFetching}
+            />
+          )}
           <p role="status" className="rounded-md border border-border p-4 text-sm">
-            {backupAvailable
+            {capabilitiesLoading
+              ? 'Checking backup availability…'
+              : backupAvailable
               ? 'Account exports include your selected data and files. Keep a downloaded copy and its recovery password away from this server.'
               : 'Backup creation and restore are unavailable. Existing completed backups can still be downloaded.'}
             {' '}Full backups include data from hidden and disabled modules. Browser-only game saves are not included. A full server recovery also needs the database, uploads and configuration.
@@ -403,7 +414,16 @@ export default function BackupSettings({ active }: { active: boolean }) {
               <div className="space-y-3">
                 <h3 className="font-medium">Download saved backups</h3>
                 <p className="text-sm text-muted-foreground">Creating a backup does not download it to this device.</p>
-                {backupJobs.length === 0 ? (
+                {backupJobsLoading ? (
+                  <LoadingState compact label="Loading backups…" />
+                ) : backupJobsError && backupJobs.length === 0 ? (
+                  <ErrorState
+                    title="Could not load backups"
+                    error={backupJobsError}
+                    onRetry={() => void refetchBackupJobs()}
+                    retrying={backupJobsFetching}
+                  />
+                ) : backupJobs.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No backup jobs yet.</p>
                 ) : backupJobs.map((job) => (
                   <div key={job.id} className="rounded-md border border-border p-3 space-y-2">
@@ -675,7 +695,16 @@ export default function BackupSettings({ active }: { active: boolean }) {
                     Completed backups remain until deleted. Uploaded archives are removed after a successful restore or when you delete them; automatic expiry is paused.
                   </p>
                 </div>
-                {restoreJobs.length === 0 ? (
+                {restoreJobsLoading ? (
+                  <LoadingState compact label="Loading restore jobs…" />
+                ) : restoreJobsError && restoreJobs.length === 0 ? (
+                  <ErrorState
+                    title="Could not load restore jobs"
+                    error={restoreJobsError}
+                    onRetry={() => void refetchRestoreJobs()}
+                    retrying={restoreJobsFetching}
+                  />
+                ) : restoreJobs.length === 0 ? (
                   <p className="text-sm text-muted-foreground">No restore jobs yet.</p>
                 ) : restoreJobs.map((job) => (
                   <div key={job.id} className="space-y-2 rounded-md border border-border p-3">

@@ -145,6 +145,15 @@ executes up to 50 other due, undispatched operations of the same account on its
 transport, each with its own fence check and attempt record, so a bulk change
 normally needs a single LOGIN.
 
+Expired-lease recovery (a crashed or stalled worker) runs when the durable
+scheduler starts and then at most every 15 seconds, not on every poll. Until it
+has run, a claim skips an account whose expired lease still names a worker, so
+a successor never starts beside an unrecovered job. Finished jobs (`idle`,
+`cancelled`, `error`) are pruned hourly once completed more than 7 days ago, in
+batches of 1,000. The newest job of each account/kind/mailbox is kept for
+status and discovery cadence, and every job of an unsettled operation is kept
+for its retry backoff. Jobs are not part of backups.
+
 ## IMAP Folder Strategy
 
 The sync service lists provider folders and selects common folder names:
@@ -343,6 +352,10 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 | PUT | `/api/mail/drafts/:id` | Update an app-local draft |
 | DELETE | `/api/mail/drafts/:id` | Delete an app-local draft and its attachments |
 | POST | `/api/mail/drafts/:id/send` | Send an app-local draft and remove it after SMTP succeeds |
+| GET | `/api/mail/writebacks` | Unsettled provider changes with `can_retry`, `can_cancel`, `can_accept_server_state` |
+| POST | `/api/mail/writebacks/:id/retry` | Retry, or for a sent MOVE a read-only outcome check |
+| POST | `/api/mail/writebacks/:id/cancel` | Discard an unsent change or a stopped read/star change |
+| POST | `/api/mail/writebacks/:id/accept-server-state` | Stop tracking a sent MOVE in attention and run a manual sync |
 | POST | `/api/mail/sync` | Manual sync for one account |
 | POST | `/api/mail/sync/background` | Non-blocking background sync trigger |
 | POST | `/api/mail/send` | Send mail through SMTP |

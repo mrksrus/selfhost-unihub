@@ -76,11 +76,11 @@ const runtime = require('./mail-engine/runtime');
 const { randomUUID } = require('node:crypto');
 const READ_ONLY_MAIL_JOB_KINDS = new Set(['sync', 'recent', 'flags', 'history', 'presence', 'body']);
 function createDurableMailScheduler(run, { repository = runtime, concurrency = 2,
-  workerId = randomUUID(), onState = () => {}, pollMs = 1000, leaseSeconds = 30 } = {}) {
+  workerId = randomUUID(), onState = () => {}, pollMs = 1000, leaseSeconds = 30, recoveryMs = 15000, now = Date.now } = {}) {
   if (typeof run !== 'function' || !Number.isInteger(concurrency) || concurrency < 1) throw new TypeError('Invalid mail worker');
   const running = new Map();
   let draining = false, stopped = false, initialized = false, timer = null, startPromise = null;
-  let drainFinished = Promise.resolve();
+  let drainFinished = Promise.resolve(), recoveredAt = null;
   function start() {
     if (initialized) return Promise.resolve();
     if (startPromise) return startPromise;
@@ -194,9 +194,15 @@ function createDurableMailScheduler(run, { repository = runtime, concurrency = 2
     let finishDrain;
     drainFinished = new Promise(resolve => { finishDrain = resolve; });
     try {
-      // Recovery precedes every replacement claim. Lease expiry alone cannot
-      // prove a provider mutation was not transmitted.
-      await repository.recoverExpiredJobs();
+      // Recovery runs at start and then at most every recoveryMs; it touches
+      // every account. Between passes claimDueJob skips any account whose
+      // expired lease is not yet recovered, so a replacement claim still never
+      // follows an unrecovered lease: expiry alone cannot prove that a provider
+      // mutation was not transmitted.
+      if (recoveredAt === null || now() - recoveredAt >= recoveryMs) {
+        await repository.recoverExpiredJobs();
+        recoveredAt = now();
+      }
       while (running.size < concurrency && !stopped) {
         const job = await repository.claimDueJob({ workerId, leaseSeconds });
         if (!job) break;

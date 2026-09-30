@@ -6,6 +6,7 @@ const { db } = require('./state');
 const { initDatabase, ensurePerformanceIndexes } = require('./services/database');
 const { schedulePeriodicMailWork, runMailServerDeletionPass } = require('./services/mail');
 const { runDueWritebacks } = require('./services/mail-writebacks');
+const { pruneFinishedJobs } = require('./services/mail-engine/runtime');
 const { cleanupExpiredRecordingUploads } = require('./services/recordings');
 const { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } = require('./services/backup-availability');
 const { resumePendingDataExportJobs } = require('./services/export-jobs');
@@ -123,6 +124,18 @@ async function start() {
     }
   }, 60 * 60 * 1000); // 1 hour
 
+  // Finished mail engine jobs older than 7 days, in bounded batches.
+  const pruneMailJobs = async () => {
+    try {
+      const { deleted } = await pruneFinishedJobs();
+      if (deleted > 0) console.log(`[CLEANUP] Deleted ${deleted} finished mail engine job(s)`);
+    } catch (error) {
+      console.error('[CLEANUP] Error pruning mail engine jobs:', error.message);
+    }
+  };
+  setTimeout(pruneMailJobs, 60 * 1000).unref?.();
+  setInterval(pruneMailJobs, 60 * 60 * 1000);
+
   setInterval(async () => {
     try {
       const deleted = await cleanupExpiredRecordingUploads();
@@ -176,6 +189,7 @@ async function start() {
   console.log('✓ Mail server deletion worker enabled (every minute)');
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Expired recording upload cleanup enabled (every hour)');
+  console.log('✓ Finished mail engine job pruning enabled (every hour, older than 7 days)');
   console.log('✓ Database connection pool health check enabled (every 15 minutes)');
 }
 

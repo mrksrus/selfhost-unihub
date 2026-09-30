@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { mailQueryKeys, type MailWriteback } from '@/lib/mail-api';
@@ -66,6 +66,18 @@ export function MailSyncStatus({ onSettled }: { onSettled?: (emailIds: string[])
     retry: false,
     onSuccess: () => { void client.invalidateQueries({ queryKey: mailQueryKeys.writebacks }); },
   });
+  const [confirmAccept, setConfirmAccept] = useState<string | null>(null);
+  const accept = useMutation({
+    mutationFn: async (id: string) => {
+      const response = await api.post(`/mail/writebacks/${encodeURIComponent(id)}/accept-server-state`);
+      if (response.error) throw new Error('The server state could not be accepted. Check your connection and try again.');
+    },
+    retry: false,
+    onSuccess: () => {
+      setConfirmAccept(null);
+      void client.invalidateQueries({ queryKey: mailQueryKeys.writebacks });
+    },
+  });
   const operations = status.data ?? [];
   const queued = operations.filter(operation => ['queued', 'executing', 'verifying', 'retry_wait'].includes(lifecycle(operation)));
   const checking = operations.filter(operation => lifecycle(operation) === 'reconciling');
@@ -79,6 +91,7 @@ export function MailSyncStatus({ onSettled }: { onSettled?: (emailIds: string[])
       {status.isError && <p>Server change status is unavailable. Accepted changes may still be waiting.</p>}
       {retry.isError && <p className="text-destructive">{retry.error.message}</p>}
       {discard.isError && <p className="text-destructive">{discard.error.message}</p>}
+      {accept.isError && <p className="text-destructive">{accept.error.message}</p>}
       {problems.length > 0 && <p>Changes needing your attention:</p>}
     </div>
     {(checking.length > 0 || problems.length > 0) && <ul className="mt-1 max-h-32 space-y-1 overflow-y-auto">
@@ -103,7 +116,27 @@ export function MailSyncStatus({ onSettled }: { onSettled?: (emailIds: string[])
             onClick={() => discard.mutate(operation.id)}>
             {discard.isPending && discard.variables === operation.id ? 'Discarding…' : 'Discard'}
           </Button>}
+          {operation.can_accept_server_state && confirmAccept !== operation.id && <Button size="sm" variant="ghost" className="h-7 text-xs"
+            disabled={accept.isPending || !navigator.onLine}
+            onClick={() => setConfirmAccept(operation.id)}>
+            Accept server state
+          </Button>}
           </span>
+          {operation.can_accept_server_state && confirmAccept === operation.id && <div className="flex w-full flex-wrap items-center justify-end gap-2">
+            <span id={`accept-server-state-${operation.id}`} className="text-muted-foreground">
+              UniHub will stop tracking this move and sync the account again. The message stays wherever the provider has it; nothing is sent to the provider.
+            </span>
+            <span className="flex gap-1">
+              <Button size="sm" variant="outline" className="h-7 text-xs" aria-describedby={`accept-server-state-${operation.id}`}
+                disabled={accept.isPending || !navigator.onLine} onClick={() => accept.mutate(operation.id)}>
+                {accept.isPending && accept.variables === operation.id ? 'Accepting…' : 'Stop tracking and sync'}
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={accept.isPending}
+                onClick={() => setConfirmAccept(null)}>
+                Keep tracking
+              </Button>
+            </span>
+          </div>}
         </li>;
       })}
     </ul>}

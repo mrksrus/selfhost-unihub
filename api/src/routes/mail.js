@@ -1577,6 +1577,11 @@ module.exports = {
     try { return await mailWritebacks.retryWriteback(userId, req.params.id); }
     catch (error) { return { error: error.status ? error.message : 'Could not retry provider update', status: error.status || 500 }; }
   },
+  'POST /api/mail/writebacks/:id/accept-server-state': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try { return await mailWritebacks.acceptServerState(userId, req.params.id); }
+    catch (error) { return { error: error.status ? error.message : 'Could not accept the server state', status: error.status || 500 }; }
+  },
 
   'PUT /api/mail/emails/:id/read': async (req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };

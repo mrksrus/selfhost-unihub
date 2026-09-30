@@ -104,6 +104,7 @@ export interface MailWriteback {
   is_current?: boolean;
   can_retry?: boolean;
   can_cancel?: boolean;
+  can_accept_server_state?: boolean;
   retry_action?: 'check_outcome' | 'retry' | null;
   attempts?: number;
   due_at?: string | null;

@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Checkbox } from '@/components/ui/checkbox';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { useNotificationEventLink } from '@/hooks/use-notification-event-link';
 import { CheckCircle2, Clock, XCircle, Edit, Loader2, Plus, X, ChevronDown, ChevronUp, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -99,7 +100,7 @@ const TodoPage = () => {
     }
   }, [queryClient]);
 
-  const { data: events = [], isLoading } = useQuery({
+  const { data: events = [], isLoading, error: eventsError, refetch: refetchEvents, isFetching: eventsFetching } = useQuery({
     queryKey: calendarQueryKeys.list({ includeTodos: true, respectAutoTodo: true }),
     queryFn: () => calendarApi.fetchEvents({ includeTodos: true, respectAutoTodo: true }),
   });
@@ -339,7 +340,7 @@ const TodoPage = () => {
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader2 className="h-8 w-8 animate-spin text-accent" />
+        <LoadingState label="Loading tasks…" />
       </div>
     );
   }
@@ -722,12 +723,21 @@ const TodoPage = () => {
 
       <div className="mb-6">
         <h2 className="text-lg font-semibold mb-3">Planned / Active</h2>
-        {plannedEvents.length === 0 ? (
+        {eventsError ? (
+          <ErrorState
+            title="Could not load tasks"
+            error={eventsError}
+            onRetry={() => void refetchEvents()}
+            retrying={eventsFetching}
+          />
+        ) : plannedEvents.length === 0 ? (
           <Card>
-            <CardContent className="flex flex-col items-center justify-center py-12">
-              <CheckCircle2 className="h-16 w-16 text-muted-foreground/30 mb-4" />
-              <h3 className="text-lg font-medium mb-2">No active tasks</h3>
-              <p className="text-muted-foreground">Create a todo or schedule tasks from Calendar.</p>
+            <CardContent className="p-0">
+              <EmptyState
+                icon={CheckCircle2}
+                title="No active tasks"
+                description="Create a todo or schedule tasks from Calendar."
+              />
             </CardContent>
           </Card>
         ) : (

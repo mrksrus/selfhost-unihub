@@ -8,6 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { recordingsApi, recordingsQueryKeys, type Recording } from '@/lib/recordings-api';
 
 const EMPTY_RECORDINGS: Recording[] = [];
@@ -194,11 +195,17 @@ const Music = () => {
         </CardHeader>
         <CardContent>
           {isLoading ? (
-            <div className="flex justify-center py-10">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
+            <LoadingState label="Loading music recordings…" />
           ) : hasError ? (
-            <p className="text-sm text-destructive">Could not load music recordings.</p>
+            <ErrorState
+              title="Could not load music recordings"
+              error={hasError}
+              onRetry={() => {
+                if (musicQuery.error) void musicQuery.refetch();
+                if (missingChordsQuery.error) void missingChordsQuery.refetch();
+              }}
+              retrying={musicQuery.isFetching || missingChordsQuery.isFetching}
+            />
           ) : (
             <Tabs defaultValue="has-chords">
               <TabsList className="mb-4">
@@ -208,10 +215,7 @@ const Music = () => {
 
               <TabsContent value="has-chords" className="space-y-3">
                 {hasChords.length === 0 ? (
-                  <div className="py-10 text-center text-muted-foreground">
-                    <FileAudio className="h-10 w-10 mx-auto mb-3 opacity-50" />
-                    <p>No music recordings with chords yet.</p>
-                  </div>
+                  <EmptyState icon={FileAudio} title="No music recordings with chords yet" />
                 ) : (
                   hasChords.map((recording) => renderRecordingCard(recording, 'read'))
                 )}
@@ -219,10 +223,7 @@ const Music = () => {
 
               <TabsContent value="missing-chords" className="space-y-3">
                 {missingChords.length === 0 ? (
-                  <div className="py-10 text-center text-muted-foreground">
-                    <Music2 className="h-10 w-10 mx-auto mb-3 opacity-50" />
-                    <p>No music recordings are missing chords.</p>
-                  </div>
+                  <EmptyState icon={Music2} title="No music recordings are missing chords" />
                 ) : (
                   missingChords.map((recording) => renderRecordingCard(recording, 'missing'))
                 )}

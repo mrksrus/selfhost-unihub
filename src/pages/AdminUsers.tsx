@@ -21,6 +21,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
+import { ErrorState, LoadingState } from '@/components/ui/page-states';
 import { Shield, Key, Trash2, Loader2, UserCheck, UserX, UserCog } from 'lucide-react';
 import { motion } from 'framer-motion';
 
@@ -41,7 +42,7 @@ const AdminUsers = () => {
   const [newPassword, setNewPassword] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['admin', 'users'],
     queryFn: async () => {
       const response = await api.get<{ users: UserRow[] }>('/admin/users');
@@ -161,11 +162,14 @@ const AdminUsers = () => {
           </CardHeader>
           <CardContent>
             {isLoading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-              </div>
+              <LoadingState label="Loading users…" />
             ) : error ? (
-              <p className="text-destructive text-sm">Failed to load users</p>
+              <ErrorState
+                title="Could not load users"
+                error={error}
+                onRetry={() => void refetch()}
+                retrying={isFetching}
+              />
             ) : (
               <Table>
                 <TableHeader>

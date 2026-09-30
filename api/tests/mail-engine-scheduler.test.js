@@ -155,3 +155,62 @@ test('sync cancellation selects only read-only jobs, not accepted mutation or ou
   assert.deepEqual(paused, [{ userId: 'owner', accountId: 'A', reason: 'Disconnected' }]);
   assert.deepEqual(interrupted, ['A']);
 });
+
+test('expired-lease recovery runs at start and then at most once per interval', async () => {
+  const clock = { now: 1000 }, calls = [];
+  const repository = {
+    recoverExpiredJobs: async () => { calls.push('recover'); return { jobs: 0, operations: 0 }; },
+    async claimDueJob() { calls.push('claim'); return null; },
+    async enqueueJob(input) { return { id: 'j', ...input }; },
+  };
+  const scheduler = createDurableMailScheduler(() => ({ success: true }),
+    { repository, pollMs: 60000, recoveryMs: 15000, now: () => clock.now });
+  try {
+    await scheduler.start();
+    assert.deepEqual(calls, ['recover', 'claim'], 'startup recovery precedes the first claim');
+    for (let i = 0; i < 5; i++) { clock.now += 1000; await scheduler.enqueue({ userId: 'u', accountId: 'a' }); await scheduler.drain(); }
+    assert.equal(calls.filter(call => call === 'recover').length, 1, 'polls, enqueues and completions do not rescan every lease');
+    clock.now = 1000 + 15000;
+    await scheduler.drain();
+    assert.equal(calls.filter(call => call === 'recover').length, 2);
+    assert.deepEqual(calls.slice(-2), ['recover', 'claim']);
+  } finally { scheduler.stop(); }
+});
+
+test('a failed recovery pass is retried on the next drain before any claim', async () => {
+  const calls = [];
+  let fail = true;
+  const repository = {
+    recoverExpiredJobs: async () => { calls.push('recover'); if (fail) throw new Error('lock wait timeout'); },
+    async claimDueJob() { calls.push('claim'); return null; },
+  };
+  const scheduler = createDurableMailScheduler(() => ({ success: true }), { repository, pollMs: 60000, now: () => 0 });
+  try {
+    await assert.rejects(scheduler.start(), /lock wait timeout/);
+    assert.deepEqual(calls, ['recover']);
+    fail = false;
+    await scheduler.start();
+    assert.deepEqual(calls, ['recover', 'recover', 'claim']);
+  } finally { scheduler.stop(); }
+});
+
+test('a claim skips an account whose expired lease has not been recovered yet', async () => {
+  const runtime = require('../src/services/mail-engine/runtime');
+  const account = { generation: 4, lease_owner: 'crashed-worker', lease_until: new Date(Date.now() - 60000), paused_reason: null };
+  const calls = [];
+  const cx = { async execute(sql) {
+    calls.push(sql);
+    if (sql.includes('FROM mail_engine_jobs j JOIN mail_accounts')) return [[{ id: 'next', user_id: 'u', mail_account_id: 'a', state: 'queued' }]];
+    if (sql.startsWith('INSERT INTO mail_engine_accounts')) return [{ affectedRows: 1 }];
+    if (sql.includes('SELECT * FROM mail_engine_accounts')) return [[{ ...account }]];
+    if (sql.includes('SELECT * FROM mail_engine_jobs WHERE id')) return [[{ id: 'next', state: 'running', worker_generation: account.generation + 1 }]];
+    if (sql.startsWith('UPDATE')) return [{ affectedRows: 1 }];
+    throw new Error(sql);
+  } };
+  assert.equal(await runtime.claimDueJob({ workerId: 'successor' }, cx), null);
+  assert(!calls.some(sql => sql.startsWith('UPDATE')), 'no takeover of an unrecovered lease');
+  // Recovery bumps the generation and clears the owner; only then may a successor claim.
+  Object.assign(account, { generation: 5, lease_owner: null, lease_until: null });
+  const claimed = await runtime.claimDueJob({ workerId: 'successor' }, cx);
+  assert.equal(claimed.id, 'next'); assert.equal(claimed.worker_generation, 6);
+});
