@@ -37,15 +37,16 @@ async function accountFence(cx, op, generation, workerId, jobId) {
     WHERE e.mail_account_id=? AND e.user_id=? FOR UPDATE`, [op.mail_account_id, op.user_id]);
   return !!a && same(a.generation, generation) && Number(a.is_active) === 1 && a.sync_mode === 'sync' && !a.disconnected_at;
 }
-async function setState(op, state, error = null, { attemptId, transmission = null, evidence = null, due = null, generation, workerId, jobId, clearDispatch = false } = {}) {
+async function setState(op, state, error = null, { attemptId, transmission = null, evidence = null, due = null, generation, workerId, jobId, clearDispatch = false, bump = false } = {}) {
   return transaction(async cx => {
     const [[row]] = await cx.execute(`SELECT * FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`, [op.id, op.user_id, op.mail_account_id]);
-    if (!row || row.state === 'confirmed' || !await accountFence(cx, op, generation, workerId, jobId)) return false;
+    // A user cancel or newer intent may land while this worker holds a stale copy.
+    if (!row || ['confirmed', 'cancelled', 'superseded'].includes(row.state) || !await accountFence(cx, op, generation, workerId, jobId)) return false;
     const status = ['confirmed', 'superseded', 'cancelled'].includes(state) ? 'done'
       : ['needs_attention', 'rejected'].includes(state) ? 'conflict' : 'pending';
-    await cx.execute(`UPDATE mail_writebacks SET state=?,status=?,error=?,evidence_json=COALESCE(?,evidence_json),dispatched=IF(?,FALSE,dispatched),available_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND)
+    await cx.execute(`UPDATE mail_writebacks SET state=?,status=?,error=?,evidence_json=COALESCE(?,evidence_json),dispatched=IF(?,FALSE,dispatched),available_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND),attempts=attempts+?
       WHERE id=? AND user_id=? AND mail_account_id=?`,
-    [state, status, error && safeText(error), evidence && JSON.stringify(evidence), clearDispatch, due || 0, op.id, op.user_id, op.mail_account_id]);
+    [state, status, error && safeText(error), evidence && JSON.stringify(evidence), clearDispatch, due || 0, bump ? 1 : 0, op.id, op.user_id, op.mail_account_id]);
     if (attemptId) await cx.execute(`UPDATE mail_operation_attempts SET outcome=?,transmission=?,evidence_json=?,
       completed_at=IF(? IN ('reconciling','needs_attention','verifying','executing'),NULL,UTC_TIMESTAMP())
       WHERE id=? AND operation_id=? AND user_id=? AND mail_account_id=? AND completed_at IS NULL`,
@@ -58,6 +59,15 @@ async function setState(op, state, error = null, { attemptId, transmission = nul
     // a later verified reconciliation can still settle this same attempt.
     return true;
   });
+}
+// No provider progress was possible on this pass (evidence must settle first).
+// Back off so the 1s due scan cannot become a login loop; a bounded count of
+// stalls ends in an actionable attention state instead of waiting forever.
+async function stall(op, reason, ctx) {
+  const attempts = Number(op.attempts || 0) + 1;
+  await setState(op, attempts >= 8 ? 'needs_attention' : Number(op.dispatched) ? op.state : 'retry_wait', reason,
+    { ...ctx, due: retryDelay(attempts), bump: true });
+  return { needsSync: true };
 }
 async function beginDispatch(op, generation, observedModseq, workerId, jobId) {
   return transaction(async cx => {
@@ -115,8 +125,8 @@ async function applyFlag(op, connection, generation, signal, workerId, jobId) {
       accountId: latest.mail_account_id, workerGeneration: generation, workerId, jobId, source: { folder: latest.remote_folder,
         uid: latest.remote_uid, uidvalidity: latest.remote_uidvalidity }, flags: before.item.flags,
       modseq: before.item.modseq, observationRevision: before.observationRevision });
-    if (!result.settled && result.reason === 'stale_observation') return { needsSync: true };
-    return {};
+    if (result.settled || result.reason === 'stale_or_missing') return {};
+    return stall(latest, 'Provider flag matches; waiting for sync to confirm local identity', { generation, workerId, jobId });
   }
   // A flag delta sets a value idempotently. Refresh and re-evaluate the *latest*
   // intent after a lost ACK; no full flags replacement or two-attempt discard.
@@ -161,7 +171,8 @@ async function applyFlag(op, connection, generation, signal, workerId, jobId) {
       accountId: latest.mail_account_id, attemptId, workerGeneration: generation, workerId, jobId, source: { folder: latest.remote_folder,
         uid: latest.remote_uid, uidvalidity: latest.remote_uidvalidity }, flags: after.item.flags, modseq: after.item.modseq,
       observationRevision: before.observationRevision });
-    if (!settled.settled) await setState(latest, 'reconciling', 'Observation changed during verification', { generation, workerId, jobId, attemptId });
+    if (!settled.settled) await setState(latest, 'reconciling', 'Observation changed during verification',
+      { generation, workerId, jobId, attemptId, due: retryDelay(Number(latest.attempts) + 1) });
     return { needsSync: !settled.settled };
   } catch (error) {
     await setState(latest, error.code === 'MAIL_EPOCH_STALE' ? 'needs_attention' : attemptId ? 'reconciling' : 'retry_wait', safeText(error),
@@ -175,13 +186,24 @@ async function applyMove(op, connection, generation, signal, workerId, jobId) {
     // A dispatched MOVE is read-only on every subsequent pass; never repeat it.
     return reconcileMoveOutcome(op, connection, generation, signal, workerId, jobId);
   }
-  const [prior] = await db.execute(`SELECT id FROM mail_writebacks WHERE user_id=? AND mail_account_id=? AND email_id=?
+  const ctx = { generation, workerId, jobId };
+  const [prior] = await db.execute(`SELECT id,state FROM mail_writebacks WHERE user_id=? AND mail_account_id=? AND email_id=?
     AND action='move' AND intent_revision<? AND dispatched=TRUE AND state NOT IN ('confirmed','cancelled','superseded','rejected')
-    LIMIT 1`, [op.user_id, op.mail_account_id, op.email_id, op.intent_revision]);
-  if (prior.length) return { needsSync: true }; // prior MOVE's effect must settle first
+    ORDER BY intent_revision DESC LIMIT 25`, [op.user_id, op.mail_account_id, op.email_id, op.intent_revision]);
+  // A prior MOVE's effect must settle first: the message may already have left
+  // this source. Once its bounded check ended unresolved, waiting could be
+  // forever, so this intent asks the user instead (retry after the outcome
+  // check or sync; or discard). It is never dispatched on a guessed location.
+  const unresolved = prior.find(row => row.state === 'needs_attention');
+  if (unresolved) {
+    await setState(op, 'needs_attention', 'Earlier move outcome is unconfirmed; check it, then retry or discard this move',
+      { ...ctx, evidence: { kind: 'blocked_by_unconfirmed_move', prior: unresolved.id } });
+    return {};
+  }
+  if (prior.length) return stall(op, 'Waiting for earlier move outcome check', ctx);
   const [[email]] = await db.execute('SELECT remote_folder,remote_uid,remote_uidvalidity FROM emails WHERE id=? AND user_id=? AND mail_account_id=?',
     [op.email_id, op.user_id, op.mail_account_id]);
-  if (!email) return { needsSync: true };
+  if (!email) return stall(op, 'Message is unavailable locally', ctx);
   if (email.remote_folder !== op.remote_folder || !same(email.remote_uid, op.remote_uid)
     || !same(email.remote_uidvalidity, op.remote_uidvalidity)) {
     const rebased = await transaction(async cx => {
@@ -203,7 +225,7 @@ async function applyMove(op, connection, generation, signal, workerId, jobId) {
       [actual.remote_folder, actual.remote_uid, actual.remote_uidvalidity, occ.id, op.id, op.user_id, op.mail_account_id]);
       Object.assign(op, actual, { source_occurrence_id: occ.id }); return true;
     });
-    if (!rebased) return { needsSync: true };
+    if (!rebased) return stall(op, 'Message location changed; waiting for sync to verify it', ctx);
   }
   const before = await readSource(connection, op, signal, ready);
   if (before.staleEpoch || !before.item) {
@@ -377,6 +399,10 @@ async function deferAccountOffline(accountId, userId, error) {
     available_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL LEAST(3600,15*POW(2,LEAST(8,attempts))) SECOND),attempts=attempts+1
     WHERE mail_account_id=? AND user_id=? AND is_current=TRUE AND dispatched=FALSE
     AND state IN ('queued','retry_wait') AND available_at<=UTC_TIMESTAMP()`, [safeText(error), accountId, userId]);
+  // Uncertain dispatched work keeps its state; only its next read-only check waits.
+  await db.execute(`UPDATE mail_writebacks SET available_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL LEAST(3600,15*POW(2,LEAST(8,attempts))) SECOND)
+    WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN ('executing','verifying','reconciling')
+    AND available_at<=UTC_TIMESTAMP()`, [accountId, userId]);
   return result.affectedRows;
 }
 module.exports = { processDueOperations, recoverUncertainOperations, deferAccountOffline, retryDelay,

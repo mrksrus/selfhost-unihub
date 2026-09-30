@@ -58,6 +58,14 @@ export function MailSyncStatus({ onSettled }: { onSettled?: (emailIds: string[])
     retry: false,
     onSuccess: () => { void client.invalidateQueries({ queryKey: mailQueryKeys.writebacks }); },
   });
+  const discard = useMutation({
+    mutationFn: async (id: string) => {
+      const response = await api.post(`/mail/writebacks/${encodeURIComponent(id)}/cancel`);
+      if (response.error) throw new Error('The change could not be discarded. Check your connection and try again.');
+    },
+    retry: false,
+    onSuccess: () => { void client.invalidateQueries({ queryKey: mailQueryKeys.writebacks }); },
+  });
   const operations = status.data ?? [];
   const queued = operations.filter(operation => ['queued', 'executing', 'verifying', 'retry_wait'].includes(lifecycle(operation)));
   const checking = operations.filter(operation => lifecycle(operation) === 'reconciling');
@@ -70,22 +78,32 @@ export function MailSyncStatus({ onSettled }: { onSettled?: (emailIds: string[])
       {checking.length > 0 && <p>{checking.length} {checking.length === 1 ? 'change is' : 'changes are'} being checked against the provider. The outcome is not yet confirmed.</p>}
       {status.isError && <p>Server change status is unavailable. Accepted changes may still be waiting.</p>}
       {retry.isError && <p className="text-destructive">{retry.error.message}</p>}
+      {discard.isError && <p className="text-destructive">{discard.error.message}</p>}
       {problems.length > 0 && <p>Changes needing your attention:</p>}
     </div>
     {(checking.length > 0 || problems.length > 0) && <ul className="mt-1 max-h-32 space-y-1 overflow-y-auto">
       {[...checking, ...problems].map(operation => {
-        const check = operation.action === 'move' || operation.retry_action === 'check_outcome';
+        // Only a dispatched MOVE is an outcome check; an unsent move is retried normally.
+        const check = operation.retry_action ? operation.retry_action === 'check_outcome' : operation.action === 'move';
         const canRetry = operation.can_retry ?? (operation.status === 'failed' && operation.action !== 'move');
         return <li key={operation.id} className="flex flex-wrap items-center justify-between gap-2">
           <span>{actionLabels[operation.action]}: {lifecycle(operation) === 'reconciling' ? 'checking what happened at the provider.' :
             lifecycle(operation) === 'rejected' ? 'request rejected; no provider confirmation.' :
             check ? 'outcome uncertain; do not send this move again.' : 'provider change needs review.'}</span>
+          <span className="flex gap-1">
           {canRetry && <Button size="sm" variant="outline" className="h-7 text-xs"
             disabled={retry.isPending || !navigator.onLine}
             aria-label={`${check ? 'Check outcome of' : 'Retry'} ${actionLabels[operation.action].toLowerCase()}`}
             onClick={() => retry.mutate(operation.id)}>
             {retry.isPending && retry.variables === operation.id ? 'Checking…' : check ? 'Check outcome' : 'Retry'}
           </Button>}
+          {operation.can_cancel && <Button size="sm" variant="ghost" className="h-7 text-xs"
+            disabled={discard.isPending || !navigator.onLine}
+            aria-label={`Discard ${actionLabels[operation.action].toLowerCase()}`}
+            onClick={() => discard.mutate(operation.id)}>
+            {discard.isPending && discard.variables === operation.id ? 'Discarding…' : 'Discard'}
+          </Button>}
+          </span>
         </li>;
       })}
     </ul>}

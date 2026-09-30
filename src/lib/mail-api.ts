@@ -103,6 +103,7 @@ export interface MailWriteback {
   state?: 'queued' | 'executing' | 'verifying' | 'reconciling' | 'retry_wait' | 'confirmed' | 'needs_attention' | 'rejected' | 'cancelled' | 'superseded';
   is_current?: boolean;
   can_retry?: boolean;
+  can_cancel?: boolean;
   retry_action?: 'check_outcome' | 'retry' | null;
   attempts?: number;
   due_at?: string | null;

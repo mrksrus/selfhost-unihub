@@ -51,11 +51,16 @@ async function ensureMailbox({ userId, accountId, folderName, epoch = null, meta
     await cx.execute("UPDATE mail_remote_occurrences SET presence = 'quarantined', quarantine_reason = 'epoch_changed' WHERE mailbox_id = ? AND presence = 'present'", [mailbox.id]);
     await cx.execute('DELETE FROM mail_engine_cursors WHERE mailbox_id = ?', [mailbox.id]);
     // Old addresses may have been reused; never dispatch accepted work on them.
-    await cx.execute(`UPDATE mail_writebacks SET state = 'reconciling', status = 'pending',
-      evidence_json = JSON_OBJECT('reason','epoch_changed')
-      WHERE mail_account_id = ? AND (BINARY remote_folder = BINARY ?
+    // Only a dispatched effect needs a provider outcome check. Undispatched
+    // intents are kept but need a user retry (rebased after sync) or discard.
+    const stale = `user_id = ? AND mail_account_id = ? AND (BINARY remote_folder = BINARY ?
         OR (? = 'INBOX' AND remote_folder REGEXP '^[iI][nN][bB][oO][xX]$')) AND remote_uidvalidity <> ?
-        AND state IN ('queued','executing','verifying','retry_wait')`, [accountId, name, name, epoch]);
+        AND state IN ('queued','executing','verifying','retry_wait')`;
+    await cx.execute(`UPDATE mail_writebacks SET state = 'reconciling', status = 'pending',
+      evidence_json = JSON_OBJECT('reason','epoch_changed') WHERE dispatched = TRUE AND ${stale}`, [userId, accountId, name, name, epoch]);
+    await cx.execute(`UPDATE mail_writebacks SET state = 'needs_attention', status = 'conflict',
+      error = 'Provider reset this mailbox; sync, then retry or discard this change',
+      evidence_json = JSON_OBJECT('reason','epoch_changed') WHERE dispatched = FALSE AND ${stale}`, [userId, accountId, name, name, epoch]);
     await cx.execute(`UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?`, [epoch, mailbox.id]);
   } else if (epoch !== null && mailbox.uidvalidity === null) {
     await cx.execute("UPDATE mail_remote_mailboxes SET uidvalidity = ?, state = 'active', epoch_revision = epoch_revision + 1 WHERE id = ?", [epoch, mailbox.id]);

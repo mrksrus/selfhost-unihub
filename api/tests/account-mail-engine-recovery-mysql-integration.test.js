@@ -265,7 +265,8 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
     await runtime.completeJob({jobId:job.id,accountId:account,workerId:'new-worker',generation:Number(resumed.worker_generation)},pool);
     const stale = await insertOp({emailId:item,state:'queued',uid:50,epoch:9,folder:'Recovery'});
     await box('Recovery',10);
-    assert.equal((await one(pool,'SELECT state FROM mail_writebacks WHERE id=?',[stale])).state,'reconciling');
+    assert.deepEqual(await one(pool,'SELECT state,status FROM mail_writebacks WHERE id=?',[stale]),
+      {state:'needs_attention',status:'conflict'},'Undispatched intent on a reset epoch waits for user retry or discard');
     assert.equal((await one(pool,'SELECT presence FROM mail_remote_occurrences WHERE id=?',[observed.id])).presence,'quarantined');
     assert.equal((await one(pool,'SELECT state FROM mail_writebacks WHERE id=?',[op])).state,'reconciling');
   });

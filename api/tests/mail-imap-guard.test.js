@@ -98,7 +98,7 @@ for (const action of ['read', 'star', 'move']) {
         if (sql.includes('SELECT observation_revision FROM emails')) return [[{ observation_revision: 0 }]];
         if (sql.includes('SELECT remote_folder,remote_uid,remote_uidvalidity FROM emails'))
           return [[{ remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9 }]];
-        if (sql.includes('SELECT id FROM mail_writebacks WHERE user_id=')) return [[]];
+        if (sql.includes('SELECT id,state FROM mail_writebacks WHERE user_id=')) return [[]];
         if (sql.includes('FROM mail_engine_accounts a') && sql.includes('lease_owner')) return [[{ generation: 1 }]];
         if (sql.includes('SELECT e.generation, a.is_active')) return [[{ generation: 1, is_active: 1, sync_mode: 'sync' }]];
         if (sql.includes('SELECT * FROM mail_writebacks WHERE id')) return [[op]];

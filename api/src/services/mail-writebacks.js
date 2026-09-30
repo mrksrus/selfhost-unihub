@@ -151,9 +151,25 @@ async function getOperationReceipt(userId, key) {
     [userId, ...response.operation_ids]);
   return { found: true, response, operations: ops.map(projectOperation) };
 }
+// These predicates mirror the WHERE clauses of retryWriteback/cancelWriteback.
+// A dispatched MOVE only gets a read-only outcome check and is never discarded:
+// its provider effect may have happened. Flag set/clear is idempotent, so a
+// stuck flag is retried from a fresh provider read or discarded.
+const RETRY_STATES = ['needs_attention', 'retry_wait', 'rejected', 'reconciling'];
+const CANCEL_STATES = ['queued', 'retry_wait', 'needs_attention', 'reconciling'];
+const moveCheck = op => op.action === 'move' && Number(op.dispatched);
+function canRetry(op) {
+  if (moveCheck(op)) return ['needs_attention', 'reconciling', 'retry_wait'].includes(op.state);
+  if (!Number(op.is_current)) return false;
+  return Number(op.dispatched) ? op.state === 'needs_attention' : RETRY_STATES.includes(op.state);
+}
+function canCancel(op) {
+  if (Number(op.dispatched)) return op.action !== 'move' && op.state === 'needs_attention';
+  return CANCEL_STATES.includes(op.state);
+}
 function projectOperation(op) {
-  return { ...op, is_current: Boolean(Number(op.is_current)), can_retry: ['needs_attention', 'reconciling', 'retry_wait'].includes(op.state),
-    retry_action: op.action === 'move' && Number(op.dispatched) ? 'check_outcome' : 'retry' };
+  return { ...op, is_current: Boolean(Number(op.is_current)), can_retry: canRetry(op), can_cancel: canCancel(op),
+    retry_action: moveCheck(op) ? 'check_outcome' : 'retry' };
 }
 async function listWritebacks(userId, { accountId = null, includeHistory = false, limit = 100 } = {}) {
   limit = String(Math.floor(Math.min(200, Math.max(1, Number(limit) || 100))));
@@ -165,13 +181,16 @@ async function listWritebacks(userId, { accountId = null, includeHistory = false
   return { operations: ops.map(projectOperation) };
 }
 async function cancelWriteback(userId, id) {
+  // Row lock arbitrates with beginDispatch: once dispatched=TRUE commits, only
+  // a stopped flag (needs_attention) may still be discarded.
   const [result] = await db.execute(`UPDATE mail_writebacks SET state='cancelled',status='done',is_current=FALSE,error=NULL
-    WHERE id=? AND user_id=? AND state='queued' AND dispatched=FALSE`, [id, userId]);
+    WHERE id=? AND user_id=? AND ((dispatched=FALSE AND state IN (${CANCEL_STATES.map(() => '?').join(',')}))
+      OR (dispatched=TRUE AND action IN ('read','star') AND state='needs_attention'))`, [id, userId, ...CANCEL_STATES]);
   if (!result.affectedRows) {
     const [[op]] = await db.execute('SELECT id FROM mail_writebacks WHERE id=? AND user_id=?', [id, userId]);
-    throw fail(op ? 'Only undispatched queued changes can be cancelled' : 'Change not found', op ? 409 : 404);
+    throw fail(op ? 'This change may already be at the provider; check its outcome instead' : 'Change not found', op ? 409 : 404);
   }
-  return { message: 'Queued change cancelled' };
+  return { message: 'Change discarded' };
 }
 async function cancelForAccount(cx, accountId, userId) {
   // Disconnect/settings pause does not erase an accepted or uncertain provider effect.
@@ -293,10 +312,18 @@ function startWritebacks(accountId, { background = false } = {}) {
   queued.set(id, { promise, resolve, reject, background }); drainWritebacks(); return promise;
 }
 async function runDueWritebacks() {
+  // Only rows processDueOperations can act on. Whatever an executor path does
+  // (including a failed connect), an operation whose last job ended recently
+  // waits an exponential interval in its job count, never a 1s login loop.
   const dueSql = `SELECT w.id,w.user_id,w.mail_account_id,w.state,w.action FROM mail_writebacks w
     JOIN mail_accounts a ON a.id=w.mail_account_id AND a.user_id=w.user_id
-    WHERE w.state IN ('queued','retry_wait','executing','verifying','reconciling') AND w.available_at<=UTC_TIMESTAMP()
+    WHERE ((w.is_current=TRUE AND w.state IN ('queued','retry_wait'))
+        OR (w.dispatched=TRUE AND w.state IN ('executing','verifying','reconciling')))
+      AND w.available_at<=UTC_TIMESTAMP()
       AND a.is_active=TRUE AND a.disconnected_at IS NULL AND a.sync_mode='sync' AND w.mail_account_id>?
+      AND NOT EXISTS (SELECT 1 FROM mail_engine_jobs j WHERE j.operation_id=w.id AND j.user_id=w.user_id
+        AND j.completed_at>DATE_SUB(UTC_TIMESTAMP(), INTERVAL LEAST(3600,15*POW(2,LEAST(8,
+          (SELECT COUNT(*) FROM mail_engine_jobs c WHERE c.operation_id=w.id AND c.user_id=w.user_id)-1))) SECOND))
     ORDER BY w.mail_account_id,w.created_at LIMIT 20`;
   let [rows] = await db.execute(dueSql, [dueCursor]);
   if (!rows.length && dueCursor) { dueCursor = ''; [rows] = await db.execute(dueSql, [dueCursor]); }
@@ -335,11 +362,40 @@ async function retryWriteback(userId, id) {
     // No provider mutation. The bounded outcome checker takes this ID.
     return { message: 'Move outcome check queued', retry_action: 'check_outcome' };
   }
-  const [result] = await db.execute(`UPDATE mail_writebacks SET state='queued',status='pending',error=NULL,available_at=UTC_TIMESTAMP()
-    WHERE id=? AND user_id=? AND is_current=TRUE AND dispatched=FALSE AND state IN ('needs_attention','retry_wait','rejected')`, [id, userId]);
-  if (!result.affectedRows) throw fail('This change cannot be safely retried; check provider outcome.');
+  if (!await requeue(userId, op)) throw fail('This change cannot be safely retried; check provider outcome.');
   await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id, kind: 'operation', priority: 0, foreground: true });
   startWritebacks(op.mail_account_id); return { message: 'Retry queued', retry_action: 'retry' };
+}
+// User retry gives a fresh bounded attempt budget. A stopped dispatched flag is
+// idempotent: clearing dispatch sends it back through the executor, which reads
+// provider state first and only writes if the bit still differs. An address made
+// stale by a mailbox reset or a confirmed move is rebased onto the item's
+// currently verified occurrence, as applyMove does; otherwise it stays as-is and
+// the executor marks attention again without writing.
+async function requeue(userId, op) {
+  const cx = await db.getConnection();
+  try {
+    await cx.beginTransaction();
+    const [[row]] = await cx.execute('SELECT * FROM mail_writebacks WHERE id=? AND user_id=? FOR UPDATE', [op.id, userId]);
+    if (!row || moveCheck(row) || !canRetry(row)) { await cx.rollback(); return false; }
+    const [[email]] = await cx.execute(`SELECT remote_folder,remote_uid,remote_uidvalidity FROM emails
+      WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`, [row.email_id, userId, row.mail_account_id]);
+    if (email?.remote_folder && (email.remote_folder !== row.remote_folder || String(email.remote_uid) !== String(row.remote_uid)
+      || String(email.remote_uidvalidity) !== String(row.remote_uidvalidity))) {
+      const [[occ]] = await cx.execute(`SELECT o.id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id=o.mailbox_id
+        AND m.user_id=o.user_id AND m.mail_account_id=o.mail_account_id AND m.state='active' AND m.uidvalidity=o.uidvalidity
+        WHERE o.email_id=? AND o.user_id=? AND o.mail_account_id=? AND o.presence='present'
+        AND BINARY m.remote_name=BINARY ? AND o.uid=? AND o.uidvalidity=? LIMIT 1`,
+      [row.email_id, userId, row.mail_account_id, email.remote_folder, email.remote_uid, email.remote_uidvalidity]);
+      if (occ) await cx.execute(`UPDATE mail_writebacks SET remote_folder=?,remote_uid=?,remote_uidvalidity=?,source_occurrence_id=?
+        WHERE id=? AND user_id=? AND mail_account_id=?`,
+      [email.remote_folder, email.remote_uid, email.remote_uidvalidity, occ.id, row.id, userId, row.mail_account_id]);
+    }
+    await cx.execute(`UPDATE mail_writebacks SET state='queued',status='pending',error=NULL,dispatched=FALSE,attempts=0,
+      available_at=UTC_TIMESTAMP() WHERE id=? AND user_id=? AND mail_account_id=?`, [row.id, userId, row.mail_account_id]);
+    await cx.commit(); return true;
+  } catch (error) { await cx.rollback(); throw error; }
+  finally { cx.release(); }
 }
 // Compatibility pure protocol probe retained for older dependency-injected tests.
 // The durable worker above exclusively uses the guarded transport adapter.
