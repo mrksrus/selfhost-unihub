@@ -32,15 +32,15 @@ test('mail compose upload limits allow base64 attachment overhead through nginx'
   assert.ok(MAIL_COMPOSE_REQUEST_MAX_SIZE > Math.ceil((25 * 1024 * 1024) / 3) * 4);
 });
 
-test('static MySQL schema contains current backup job tables and indexes', () => {
+test('generated MySQL schema contains current backup job tables and indexes', () => {
   const schema = fs.readFileSync(
     path.join(repoRoot, 'docker/mysql/init/01-schema.sql'),
     'utf8'
   );
 
-  assert.match(schema, /CREATE TABLE IF NOT EXISTS backup_restore_jobs/);
-  assert.match(schema, /CREATE TABLE IF NOT EXISTS backup_archive_keys/);
-  assert.match(schema, /recovery_password_revealed_at TIMESTAMP NULL/);
-  assert.match(schema, /idx_data_export_jobs_user_backup \(user_id, backup_uuid\)/);
-  assert.match(schema, /idx_backup_restore_jobs_user_backup \(user_id, backup_uuid\)/);
+  assert.match(schema, /^CREATE TABLE `backup_restore_jobs` \(/m);
+  assert.match(schema, /^CREATE TABLE `backup_archive_keys` \(/m);
+  assert.match(schema, /`recovery_password_revealed_at` timestamp NULL DEFAULT NULL/);
+  assert.match(schema, /KEY `idx_data_export_jobs_user_backup` \(`user_id`,`backup_uuid`\)/);
+  assert.match(schema, /KEY `idx_backup_restore_jobs_user_backup` \(`user_id`,`backup_uuid`\)/);
 });

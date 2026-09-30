@@ -97,7 +97,19 @@ npm run test:mysql   # MySQL integration suite like CI (stops the server again i
 npm run db:stop      # scripts/local-mysql.sh stop
 scripts/local-mysql.sh sql -e 'SHOW DATABASES'
 scripts/local-mysql.sh dev --reset   # drop all unihub_dev tables and seed again
+scripts/local-mysql.sh migrate-check # upgrade the 0.9.23.0 fixture (or a given dump), compare with a fresh install
+scripts/local-mysql.sh schema-dump   # regenerate docker/mysql/init/01-schema.sql
 ```
+
+The app creates and upgrades its own schema at startup. `ensureLegacySchema` in
+`api/src/services/database.js` is a frozen baseline; every schema change is a new
+numbered migration in `ensureSchema`. `docker/mysql/init/01-schema.sql` is
+generated, never edited: `schema-dump` runs the startup schema code
+(`api/scripts/dump-schema.cjs`) on an empty database and writes a sorted
+`SHOW CREATE TABLE` dump. Commit the regenerated file with the migration;
+`database-schema-file-mysql-integration.test.js` fails in CI when it is stale.
+`migrate-check` warns and prints a diff when an upgraded old database ends up
+different from a fresh install.
 
 `db:dev` runs `api/scripts/seed-dev.cjs`, which refuses any database not ending
 in `_dev`, builds the schema with the app's own startup code and inserts

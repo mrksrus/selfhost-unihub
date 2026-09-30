@@ -297,6 +297,12 @@ async function ensureSchema() {
   ]);
 }
 
+// ── FROZEN BASELINE (as of 0.11.1) ── never edit ─────────────────────
+// Migration 1 upgrades every pre-0.10.5 installation (down to 0.9.x) to one
+// verified baseline, detecting each step's prior state. Changing it would make
+// old and new installs diverge. Every schema change, however small, is a new
+// numbered migration in ensureSchema() above; afterwards regenerate
+// docker/mysql/init/01-schema.sql with scripts/local-mysql.sh schema-dump.
 async function ensureLegacySchema() {
   console.log('Checking database schema…');
 

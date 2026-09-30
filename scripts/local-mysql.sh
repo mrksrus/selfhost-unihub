@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # On-demand local MySQL 8.4 for UniHub development and tests.
 # Runs as the current user from an unpacked official tarball: no service, no
-# sudo, nothing at boot. `test` and `migrate-check` stop the server afterwards
+# sudo, nothing at boot. `test`, `migrate-check` and `schema-dump` stop the server afterwards
 # unless it was already running when they started.
 #
 #   scripts/local-mysql.sh start|stop|status|sql [args]
 #   scripts/local-mysql.sh test [api/tests/file.test.js ...]   full MySQL suite (like CI) or given files
 #   scripts/local-mysql.sh migrate-check [dump.sql]            run upgrades on the 0.9.23.0 fixture or a dump
+#   scripts/local-mysql.sh schema-dump                         regenerate docker/mysql/init/01-schema.sql
 #   scripts/local-mysql.sh dev                                 start, seed unihub_dev, print API env
 #   scripts/local-mysql.sh reset                               delete all local data (asks first)
 #
@@ -140,10 +141,25 @@ migrate() {
   echo "local-mysql: loading $(basename "$source")"
   rootsql unihub_migrate_test < "$source"
   app_env unihub_migrate_test
-  (cd "$REPO/api" && node -e "require('./src/services/database').initDatabase()
-    .then(async () => { console.log('local-mysql: upgrades completed and verified'); await require('./src/state').db.end(); })
-    .catch(error => { console.error(error); process.exit(1); })")
-  rootsql -e 'DROP DATABASE unihub_migrate_test'
+  # Runs every startup upgrade (failing on any error), then compares the result
+  # with the generated fresh-install schema. Old installs may legitimately keep
+  # small differences, so a mismatch is reported but not fatal.
+  local status=0
+  (cd "$REPO/api" && node scripts/dump-schema.cjs --existing --check) || status=$?
+  rootsql -e 'DROP DATABASE unihub_migrate_test' >/dev/null
+  case $status in
+    0) echo 'local-mysql: upgrades completed and verified; schema matches a fresh install' ;;
+    2) echo 'local-mysql: upgrades completed and verified; WARNING: schema differs from a fresh install (see above)' ;;
+    *) die 'upgrade failed' ;;
+  esac
+}
+schema_dump() {
+  fresh_db unihub_schema_test
+  app_env unihub_schema_test
+  local status=0
+  (cd "$REPO/api" && node scripts/dump-schema.cjs) || status=$?
+  rootsql -e 'DROP DATABASE unihub_schema_test' >/dev/null
+  return $status
 }
 dev() {
   start; load_env
@@ -171,10 +187,11 @@ case "$cmd" in
   sql) load_env; write_config; running || die "not running (scripts/local-mysql.sh start)"; rootsql "$@" ;;
   test) with_server run_tests "$@" ;;
   migrate-check) with_server migrate "$@" ;;
+  schema-dump) with_server schema_dump ;;
   dev) dev "$@" ;;
   reset)
     load_env; write_config; running && die "stop the server first"
     read -r -p "Delete all local UniHub MySQL data in $DATA? Type yes: " ok
     [ "$ok" = yes ] && rm -rf "$DATA" "$CNF" "$DATA.err" "$ENV_FILE" && echo "local-mysql: data removed" ;;
-  *) sed -n '2,13p' "$0"; exit 1 ;;
+  *) sed -n '2,14p' "$0"; exit 1 ;;
 esac
