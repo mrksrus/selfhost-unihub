@@ -5,10 +5,7 @@ const runtime = require('./runtime');
 
 async function transaction(fn, executor) {
   if (executor) return fn(executor);
-  const cx = await db.getConnection();
-  try { await cx.beginTransaction(); const result = await fn(cx); await cx.commit(); return result; }
-  catch (error) { await cx.rollback(); throw error; }
-  finally { cx.release(); }
+  return require('./repository').withTransaction(fn, db); // retries deadlocks
 }
 const uint = value => Number.isSafeInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 4294967295;
 const same = (a, b) => String(a) === String(b);

@@ -73,6 +73,10 @@ async function claimDueJob({ workerId, leaseSeconds = 30, kinds = null, accountI
       LEFT JOIN mail_engine_accounts held ON held.mail_account_id = a.id
       WHERE j.state = 'queued' AND j.due_at <= UTC_TIMESTAMP() AND j.cancellation_requested = FALSE
       AND a.is_active = TRUE AND a.disconnected_at IS NULL AND held.paused_reason IS NULL
+      -- Only candidates from accounts that can be claimed now: a busy account's
+      -- backlog must not fill the candidate window and starve every other account.
+      AND (held.mail_account_id IS NULL OR (held.lease_owner IS NULL
+        AND (held.lease_until IS NULL OR held.lease_until <= UTC_TIMESTAMP())))
       ${kinds ? `AND j.kind IN (${kinds.map(() => '?').join(',')})` : ''}
       ${accountId === null ? '' : 'AND j.mail_account_id = ?'}
       ORDER BY GREATEST(-1000, j.priority - (TIMESTAMPDIFF(SECOND, j.created_at, UTC_TIMESTAMP()) DIV 30)) ASC,

@@ -595,6 +595,7 @@ async function registerCustomImapFoldersForUser(userId, accountId, availableFold
     const remoteName = includeAll ? String(rawFolderName || '') : String(rawFolderName || '').trim();
     const displayName = normalizeMailFolderDisplayName(remoteName);
     if (!remoteName || !displayName || (!includeAll && isVirtualMailFolderName(remoteName))) continue;
+    let demotedSystemFolder = false;
     const [mapped] = await connection.execute(
       `SELECT f.id, f.slug, f.display_name
        FROM mail_folder_remote_boxes b
@@ -618,9 +619,15 @@ async function registerCustomImapFoldersForUser(userId, accountId, availableFold
         VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE folder_id = folder_id`, [systemRows[0].id, accountId, remoteName]);
       const [verified] = await connection.execute(`SELECT folder_id FROM mail_folder_remote_boxes
         WHERE mail_account_id = ? AND BINARY remote_name = BINARY ? LIMIT 1`, [accountId, remoteName]);
-      if (verified[0]?.folder_id !== systemRows[0].id) throw new Error('Remote system folder mapping conflicts with another mailbox');
-      registered.push({ slug, displayName, remoteName });
-      continue;
+      if (verified[0]?.folder_id === systemRows[0].id) {
+        registered.push({ slug, displayName, remoteName });
+        continue;
+      }
+      // The system folder is already mapped to another remote mailbox of this
+      // account (e.g. Gmail's [Gmail]/Sent Mail plus a user label named Sent).
+      // Established mappings never move; list this mailbox as its own folder.
+      if (verified.length) throw new Error('Remote system folder mapping conflicts with another mailbox');
+      demotedSystemFolder = true;
     }
     if (!includeAll && !specialUses.has(remoteName) && (isProviderManagedImapFolder(remoteName) || standardNames.has(remoteName.toLowerCase()))) continue;
     // Only reuse a folder from this account. Legacy shared rows remain untouched.
@@ -641,7 +648,7 @@ async function registerCustomImapFoldersForUser(userId, accountId, availableFold
       await connection.execute(
         `INSERT INTO mail_folders (id, user_id, mail_account_id, special_use, slug, display_name, is_system, position)
          VALUES (?, ?, ?, ?, ?, ?, FALSE, ?)`,
-        [folderId, userId, accountId, specialUses.get(remoteName) || null, slug, displayName, Number(positionRows[0]?.max_position || 100) + 10]
+        [folderId, userId, accountId, demotedSystemFolder ? null : specialUses.get(remoteName) || null, slug, displayName, Number(positionRows[0]?.max_position || 100) + 10]
       );
     }
     await connection.execute(

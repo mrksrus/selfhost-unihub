@@ -6,13 +6,12 @@ const reconciliation = require('./reconciliation');
 const runtime = require('./runtime');
 const { isSectionRestoreActive } = require('../restore-locks');
 const { isModuleEnabled, isModuleBackgroundEnabled } = require('../module-settings');
-async function transaction(fn) {
-  const cx = await db.getConnection();
-  try { await cx.beginTransaction(); const result = await fn(cx); await cx.commit(); return result; }
-  catch (error) { await cx.rollback(); throw error; }
-  finally { cx.release(); }
-}
+const transaction = fn => require('./repository').withTransaction(fn, db); // retries deadlocks
 const bitFlag = { read: '\\Seen', star: '\\Flagged' };
+// The IMAP session survived a failed command and can serve the next operation.
+function transportUsable(connection) {
+  return require('../mail-imap-guard').imapGuardIdle(connection) && connection?.imap?.state === 'authenticated';
+}
 const safeText = error => {
   if (error && typeof error !== 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(String(error.code || ''))) return error.code;
   if (typeof error === 'string' && error.length <= 240 && (/^[A-Z][A-Z0-9_]{1,63}$/.test(error) || /^[A-Za-z0-9 ,.';:()\-]+$/.test(error))) return error;
@@ -380,9 +379,16 @@ async function processDueOperations(account, connection, { background = false, w
       if (connectionFailed) break;
     } catch (error) {
       if (error.code === 'MAIL_WORKER_FENCED' || signal?.aborted) { connectionFailed = true; break; }
-      await setState(op, op.dispatched ? 'reconciling' : 'retry_wait', safeText(error),
-        { generation: workerGeneration, workerId, jobId, due: retryDelay(Number(op.attempts) + 1) });
-      connectionFailed = true; break;
+      // Operator log only (never stored): the stored/UI text is reduced by safeText.
+      console.error(`[MAIL OPERATION] ${op.action} ${op.id} failed:`, error.code || error.name || 'Error',
+        String(error.message || '').slice(0, 200));
+      // Count every failure so a persistent provider refusal backs off and
+      // ends in attention instead of being retried at the same pace forever.
+      const attempts = Number(op.attempts) + 1;
+      await setState(op, op.dispatched ? 'reconciling' : attempts >= 8 ? 'needs_attention' : 'retry_wait', safeText(error),
+        { generation: workerGeneration, workerId, jobId, due: retryDelay(attempts), bump: !op.dispatched });
+      // A per-message refusal must not block the rest of the account's queue.
+      if (!transportUsable(connection)) { connectionFailed = true; break; }
     }
   }
   return { needsSync, connectionFailed };

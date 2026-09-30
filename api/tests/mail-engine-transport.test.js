@@ -6,7 +6,7 @@ const imaps = require('imap-simple');
 const { guardImapConnection } = require('../src/services/mail-imap-guard');
 const { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove } = require('../src/services/mail-engine/transport');
 
-async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidity = 9, raw = Buffer.from([0, 255, 128, 13, 10, 0x3d, 0x20, 0x0a]), stall = false, metadata = 'normal' } = {}) {
+async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidity = 9, raw = Buffer.from([0, 255, 128, 13, 10, 0x3d, 0x20, 0x0a]), stall = false, metadata = 'normal', highest = '9007199254740993123', itemModseq = '9007199254740993123' } = {}) {
   const commands = [], sockets = new Set();
   const server = net.createServer(socket => {
     sockets.add(socket); socket.on('close', () => sockets.delete(socket));
@@ -25,13 +25,13 @@ async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidi
         else if (cmd.startsWith('LOGIN ')) ok();
         else if (cmd.startsWith('LIST ')) { socket.write('* LIST (\\Noselect) "/" ""\r\n'); ok(); }
         else if (/^(SELECT|EXAMINE) "(INBOX|Filed)"(?: \(CONDSTORE\))?$/.test(cmd)) {
-          socket.write(`* FLAGS (\\Seen \\Flagged)\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY ${uidvalidity}] valid\r\n* OK [UIDNEXT 106] next\r\n* OK [HIGHESTMODSEQ 9007199254740993123] highest\r\n* OK [PERMANENTFLAGS (\\Seen \\Flagged)] flags\r\n`);
+          socket.write(`* FLAGS (\\Seen \\Flagged)\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY ${uidvalidity}] valid\r\n* OK [UIDNEXT 106] next\r\n* OK [HIGHESTMODSEQ ${highest}] highest\r\n* OK [PERMANENTFLAGS (\\Seen \\Flagged)] flags\r\n`);
           ok(`[${cmd.startsWith('EXAMINE') ? 'READ-ONLY' : 'READ-WRITE'}] selected`);
         } else if (/^UID FETCH (\d+):(\d+) /.test(cmd)) {
           assert.match(cmd, /^UID FETCH \d+:\d+ \(MODSEQ UID FLAGS INTERNALDATE\)$/);
           if (metadata !== 'empty') {
             const uid = metadata === 'wrong' ? 106 : 103;
-            socket.write(`* 1 FETCH (UID ${uid} FLAGS (\\Seen $custom) MODSEQ (9007199254740993123) INTERNALDATE "29-Sep-2026 12:00:00 +0000")\r\n`);
+            socket.write(`* 1 FETCH (UID ${uid} FLAGS (\\Seen $custom) MODSEQ (${itemModseq}) INTERNALDATE "29-Sep-2026 12:00:00 +0000")\r\n`);
             if (metadata === 'duplicate') socket.write(`* 2 FETCH (UID ${uid} FLAGS (\\Seen) MODSEQ (9007199254740993123) INTERNALDATE "29-Sep-2026 12:00:00 +0000")\r\n`);
           }
           ok();
@@ -76,6 +76,13 @@ async function setup(t, options, guarded) {
   const box = await selectMailbox(connection, { folder: 'INBOX' });
   return { fixture, connection, box };
 }
+test('an out-of-spec HIGHESTMODSEQ/MODSEQ (iCloud-style 0) degrades to no CONDSTORE instead of failing sync', async t => {
+  const { connection, box } = await setup(t, { highest: '0', itemModseq: '0' });
+  assert.equal(box.highestmodseq, null);
+  assert.equal(box.capabilities.condstore, false);
+  const result = await fetchMetadataWindow(connection, { folder: 'INBOX', uidvalidity: 9, startUid: 102, endUid: 105 });
+  assert.deepEqual(result.items, [{ uid: 103, flags: ['\\Seen', '$custom'], modseq: null, gmailMsgId: null }]);
+});
 const moveRequest = { uid: 103, uidvalidity: 9, sourceFolder: 'INBOX', targetFolder: 'Filed' };
 test('finite UID metadata uses real UID FETCH and keeps 64-bit MODSEQ lossless', async t => {
   const { fixture, connection, box } = await setup(t);

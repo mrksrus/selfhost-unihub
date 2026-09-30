@@ -15,6 +15,7 @@ function store(t, op, { prior = [], email = null, occurrence = null } = {}) {
   const execute = async (sql, args = []) => {
     log.push({ sql, args });
     if (sql.includes('backup_restore_jobs') || sql.includes('user_settings')) return [[]];
+    if (sql.includes("j.state='paused'")) return [[]];
     if (sql.includes('SELECT id,state FROM mail_writebacks WHERE user_id=')) return [prior];
     if (sql.includes('SELECT e.generation, a.is_active')) return [[{ generation: 1, is_active: 1, sync_mode: 'sync' }]];
     if (sql.includes('SELECT * FROM mail_writebacks WHERE id')) return [[args[0] === op.id && args[1] === op.user_id ? op : null].filter(Boolean)];

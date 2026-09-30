@@ -5,16 +5,26 @@ const { assertUid32, assertDecimal64 } = require('./repository-identity');
 const STREAMS = new Set(['recent', 'history', 'flags', 'presence', 'bodies']);
 const requireId = (v, label) => { if (typeof v !== 'string' || !v.trim()) throw new TypeError(`${label} required`); return v; };
 const fail = (code, message) => Object.assign(new Error(message), { code });
+// InnoDB picks a deadlock victim and rolls its whole transaction back, so the
+// callback can run again from the start. Callbacks here only touch the
+// database; provider commands never run inside a transaction.
+const DEADLOCK_RETRIES = 3;
+const isDeadlock = error => error?.code === 'ER_LOCK_DEADLOCK' || error?.errno === 1213;
 async function withTransaction(callback, executor = db) {
   if (typeof executor.getConnection !== 'function') throw new TypeError('withTransaction requires a pool; pass your existing connection directly to helpers');
-  const cx = await executor.getConnection();
-  try {
-    await cx.beginTransaction();
-    const result = await callback(cx);
-    await cx.commit();
-    return result;
-  } catch (error) { await cx.rollback(); throw error; }
-  finally { cx.release(); }
+  for (let attempt = 1; ; attempt++) {
+    const cx = await executor.getConnection();
+    try {
+      await cx.beginTransaction();
+      const result = await callback(cx);
+      await cx.commit();
+      return result;
+    } catch (error) {
+      await cx.rollback();
+      if (!isDeadlock(error) || attempt > DEADLOCK_RETRIES) throw error;
+    } finally { cx.release(); }
+    await new Promise(resolve => setTimeout(resolve, 20 * attempt + Math.floor(Math.random() * 30)));
+  }
 }
 async function ownAccount(cx, userId, accountId, lock = false) {
   requireId(userId, 'userId'); requireId(accountId, 'accountId');
@@ -197,4 +207,4 @@ async function recordReceipt({ userId, clientKey, requestHash, response }, execu
   return { response: typeof accepted[0].response_json === 'string' ? JSON.parse(accepted[0].response_json) : accepted[0].response_json,
     replayed: false };
 }
-module.exports = { withTransaction, ownAccount, ownMailbox, ensureMailbox, upsertOccurrence, getOccurrence, loadCursor, saveCursor, markAbsentInWindow, getReceipt, recordReceipt };
+module.exports = { withTransaction, isDeadlock, ownAccount, ownMailbox, ensureMailbox, upsertOccurrence, getOccurrence, loadCursor, saveCursor, markAbsentInWindow, getReceipt, recordReceipt };

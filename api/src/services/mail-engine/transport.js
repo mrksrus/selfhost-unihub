@@ -21,6 +21,13 @@ function decimal(value, name) {
   if (!/^[1-9]\d{0,19}$/.test(String(value)) || BigInt(value) > 0xffffffffffffffffn) throw new TypeError(`Invalid ${name}`);
   return String(value);
 }
+// Some providers (seen with iCloud) report HIGHESTMODSEQ/MODSEQ values outside
+// RFC 7162, e.g. 0. Treat such a value as "no mod-sequence": the mailbox is then
+// handled like a server without CONDSTORE instead of failing the whole sync.
+function optionalModseq(value) {
+  if (value == null) return null;
+  try { return decimal(value, 'MODSEQ'); } catch { return null; }
+}
 function folderName(value) {
   if (typeof value !== 'string' || !value || /[\r\n\0]/.test(value)) throw new TypeError('Invalid mailbox path');
   return value;
@@ -55,9 +62,9 @@ async function selectMailbox(connection, { folder, readOnly = false, signal } = 
       : await connection.openBox(folder);
     const uidvalidity = uint32(box.uidvalidity, 'UIDVALIDITY');
     const uidnext = box.uidnext ? uint32(box.uidnext, 'UIDNEXT') : null;
-    const highestmodseq = box.highestmodseq == null ? null : decimal(box.highestmodseq, 'HIGHESTMODSEQ');
+    const highestmodseq = optionalModseq(box.highestmodseq);
     return { folder, uidvalidity, uidnext, highestmodseq, nomodseq: !!box.nomodseq, readOnly: !!box.readOnly,
-      capabilities: { move: connection.imap.serverSupports('MOVE'), condstore: connection.imap.serverSupports('CONDSTORE') && !box.nomodseq,
+      capabilities: { move: connection.imap.serverSupports('MOVE'), condstore: connection.imap.serverSupports('CONDSTORE') && !box.nomodseq && highestmodseq !== null,
         uidplus: connection.imap.serverSupports('UIDPLUS'), xGmExt1: connection.imap.serverSupports('X-GM-EXT-1') } };
   } finally { detach(); }
 }
@@ -125,7 +132,7 @@ async function fetchMetadataWindow(connection, { folder, uidvalidity, startUid, 
     const uid = uint32(attrs.uid, 'fetched UID');
     if (uid < startUid || uid > endUid || seen.has(uid) || !Array.isArray(attrs.flags)) throw new Error('Malformed/duplicate/out-of-range UID metadata');
     seen.add(uid);
-    return { uid, flags: attrs.flags.slice(), modseq: attrs.modseq == null ? null : decimal(attrs.modseq, 'MODSEQ'),
+    return { uid, flags: attrs.flags.slice(), modseq: optionalModseq(attrs.modseq),
       gmailMsgId: attrs['x-gm-msgid'] == null ? null : decimal(attrs['x-gm-msgid'], 'X-GM-MSGID') };
   });
   selected(connection, folder, uidvalidity);

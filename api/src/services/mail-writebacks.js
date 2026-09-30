@@ -361,22 +361,28 @@ async function runDueWritebacks() {
   if (!rows.length && dueCursor) { dueCursor = ''; [rows] = await db.execute(dueSql, [dueCursor]); }
   for (const row of rows) {
     dueCursor = row.mail_account_id;
-    if (!await isModuleBackgroundEnabled(row.user_id, 'mail')) continue;
-    if (row.state === 'reconciling' && row.action === 'move') {
-      // Exactly one bounded, nonmutating outcome check. It reaches confirmed
-      // on direct evidence or needs_attention, never a perpetual sync loop.
-      await runtime.enqueueJob({ userId: row.user_id, accountId: row.mail_account_id,
-        operationId: row.id, kind: 'reconcile', priority: 0 });
+    try {
+      if (!await isModuleBackgroundEnabled(row.user_id, 'mail')) continue;
+      if (row.state === 'reconciling' && row.action === 'move') {
+        // Exactly one bounded, nonmutating outcome check. It reaches confirmed
+        // on direct evidence or needs_attention, never a perpetual sync loop.
+        await runtime.enqueueJob({ userId: row.user_id, accountId: row.mail_account_id,
+          operationId: row.id, kind: 'reconcile', priority: 0 });
+      } else {
+        // Plain read first: a locking multi-table UPDATE every second contends
+        // with claims and heartbeats on the same job and account rows.
+        const [paused] = await db.execute(`SELECT j.id FROM mail_engine_jobs j JOIN mail_engine_accounts a ON a.mail_account_id=j.mail_account_id
+          WHERE j.operation_id=? AND j.user_id=? AND j.mail_account_id=? AND j.state='paused' AND a.user_id=? AND a.paused_reason IS NULL`,
+        [row.id, row.user_id, row.mail_account_id, row.user_id]);
+        for (const job of paused) await db.execute(`UPDATE mail_engine_jobs SET state='queued',due_at=UTC_TIMESTAMP()
+          WHERE id=? AND user_id=? AND state='paused'`, [job.id, row.user_id]);
+        await runtime.enqueueJob({ userId: row.user_id, accountId: row.mail_account_id,
+          operationId: row.id, kind: 'operation', priority: 0 });
+      }
       startWritebacks(row.mail_account_id, { background: true });
-    } else {
-      await db.execute(`UPDATE mail_engine_jobs j JOIN mail_engine_accounts a ON a.mail_account_id=j.mail_account_id
-        SET j.state='queued',j.due_at=UTC_TIMESTAMP()
-        WHERE j.operation_id=? AND j.user_id=? AND j.mail_account_id=? AND j.state='paused'
-          AND a.user_id=? AND a.paused_reason IS NULL`,
-      [row.id, row.user_id, row.mail_account_id, row.user_id]);
-      await runtime.enqueueJob({ userId: row.user_id, accountId: row.mail_account_id,
-        operationId: row.id, kind: 'operation', priority: 0 });
-      startWritebacks(row.mail_account_id, { background: true });
+    } catch (error) {
+      // One contended row must not abort the pass; the row is due again next second.
+      if (!require('./mail-engine/repository').isDeadlock(error)) throw error;
     }
   }
   return rows.length;
