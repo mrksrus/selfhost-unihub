@@ -29,7 +29,7 @@ These examples explain the policy; the full public licence controls its permissi
 
 For a use outside the public license's permitted purposes, obtain a separate written commercial license before using that release commercially. This includes ordinary use in a for-profit business, a paid hosted service, or incorporation into a commercial product where not otherwise permitted by the public license.
 
-Contact **[smrus@rus.family](mailto:smrus@rus.family)** with your intended use case, organization, deployment size and distribution or hosting needs. Scope and pricing are agreed for that use case.
+Open an issue titled "Commercial licence enquiry" at [https://github.com/mrksrus/selfhost-unihub/issues](https://github.com/mrksrus/selfhost-unihub/issues) with your intended use case, organization, deployment size and distribution or hosting needs; leave out anything confidential, and the details are then agreed privately. Scope and pricing are agreed for that use case.
 
 This page invites commercial licensing enquiries; it does not itself grant commercial permission or set a price. A commercial agreement specifies the rights purchased. It does not change the free permissions other users receive under the public license.
 

@@ -18,7 +18,7 @@ Release CI runs API and frontend tests, lint, TypeScript checks and a production
 
 ## Reporting a vulnerability
 
-Email **[smrus@rus.family](mailto:smrus@rus.family)** with the affected version, a description of the issue, reproduction steps and its impact. Use a private report for exploitable issues so a correction can be prepared before public disclosure.
+Report it privately through **[GitHub private vulnerability reporting](https://github.com/mrksrus/selfhost-unihub/security/advisories/new)** (repository **Security** tab, **Report a vulnerability**) with the affected version, a description of the issue, reproduction steps and its impact. Use a private report for exploitable issues so a correction can be prepared before public disclosure.
 
 Use sample data in reports. Keep passwords, session cookies, encryption keys, mail content and other personal data out of public issues.
 

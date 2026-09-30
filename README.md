@@ -8,7 +8,7 @@ installed as a PWA. Your server stores the application data.
 
 Free for private noncommercial self-hosting, including multi-user home labs.
 Company/business use, including internal operations, requires a separate paid licence;
-contact [smrus@rus.family](mailto:smrus@rus.family). The public licence also permits
+see [Licensing](LICENSING.md) for how to ask. The public licence also permits
 the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENSING.md).
 
 ## What you can do
@@ -93,8 +93,8 @@ undo database changes. Read [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md)
 
 For reproducible bugs, open a [GitHub issue](https://github.com/mrksrus/selfhost-unihub/issues)
 with the version and steps to reproduce. Remove passwords, keys and personal mail
-from logs. Report security vulnerabilities privately to
-[smrus@rus.family](mailto:smrus@rus.family); see [Security](SECURITY.md).
+from logs. Report security vulnerabilities privately through
+[GitHub private vulnerability reporting](https://github.com/mrksrus/selfhost-unihub/security/advisories/new); see [Security](SECURITY.md).
 
 ## Project and limits
 

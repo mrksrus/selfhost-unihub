@@ -20,8 +20,8 @@ deployment settings.
 
 Starting with **0.10.1**, project-owned code and documentation use **PolyForm
 Noncommercial 1.0.0**: noncommercial use is free, and commercial use is welcome
-under a separate paid written agreement. Contact **smrus@rus.family** with your
-use case for scope and pricing. See [Licensing](../LICENSING.md).
+under a separate paid written agreement. See Licensing for how to send a
+commercial licence enquiry. See [Licensing](../LICENSING.md).
 
 The project is source-available. Earlier releases retain the permissions they
 were supplied with; this change is prospective. Third-party components retain
