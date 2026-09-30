@@ -6,8 +6,18 @@ services:
   # Password must be at least 12 characters.
   #
   unihub:
+    # Image tag options:
+    #   :latest   newest build of the main branch; combined with pull_policy:
+    #             always, a container restart is the update (default)
+    #   :0.11.0   one exact tagged release; update by editing this tag
+    # Database upgrades run on startup and cannot be undone by switching back to
+    # an older image. Take a backup before a restart that may pull a new release.
     image: ghcr.io/mrksrus/selfhost-unihub:latest
-    pull_policy: always  # Always pull latest image on container start
+    # Pull policy options:
+    #   always    check the registry on every start (default, restart-to-update)
+    #   missing   pull only when no local copy exists; update with docker compose pull
+    #   never     use only a locally built or loaded image
+    pull_policy: always
     container_name: unihub
     init: true
     restart: unless-stopped
@@ -69,7 +79,9 @@ services:
 
   # ── MySQL Database ──────────────────────────────────────────────
   unihub-mysql:
-    image: mysql:8.0
+    # MySQL 8.4 LTS. An existing 8.0 data volume upgrades in place on first
+    # start; MySQL cannot downgrade it afterwards, so back up before switching.
+    image: mysql:8.4
     container_name: unihub-mysql
     init: true
     restart: unless-stopped
@@ -85,7 +97,7 @@ services:
       - --collation-server=utf8mb4_unicode_ci
       - --max-connections=100
       - --innodb-buffer-pool-size=192M
-      - --innodb-log-file-size=48M
+      - --innodb-redo-log-capacity=96M
       - --skip-name-resolve
     volumes:
       - mysql_data:/var/lib/mysql

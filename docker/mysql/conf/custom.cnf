@@ -7,7 +7,7 @@ collation-server = utf8mb4_unicode_ci
 # Buffer pool: 192M balances startup speed (smaller than 256M) with performance (larger than 128M)
 # Rule of thumb: buffer pool should be 50-70% of available RAM for small-medium databases
 innodb_buffer_pool_size = 192M
-innodb_log_file_size = 48M      # Balanced: smaller than 64M for faster startup, but not too small
+innodb_redo_log_capacity = 96M   # Replaces deprecated innodb_log_file_size (2 x 48M in the 8.0 layout)
 innodb_flush_log_at_trx_commit = 2
 innodb_flush_method = O_DIRECT
 innodb_buffer_pool_instances = 1  # Single instance for faster startup (fine for <1GB buffer pool)
@@ -39,7 +39,6 @@ slow_query_log = 0             # Disabled by default, enable if debugging perfor
 
 # Security
 local_infile = 0
-skip-symbolic-links = 1
 
 [client]
 default-character-set = utf8mb4

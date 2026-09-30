@@ -27,7 +27,7 @@ the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENS
 
 ## Install: start here
 
-The published deployment uses **two containers: UniHub and MySQL 8.0**. You need
+The published deployment uses **two containers: UniHub and MySQL 8.4 LTS**. You need
 Docker with Compose, persistent storage for both containers, and an HTTPS reverse
 proxy for normal browser access. A reverse proxy is the service that accepts your
 HTTPS address and forwards requests to UniHub's internal HTTP port.

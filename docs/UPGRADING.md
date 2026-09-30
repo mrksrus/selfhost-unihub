@@ -33,6 +33,17 @@ Preserve the new operation/attempt journal, keep the restored old writer disable
 and reconcile provider state before enabling writes. Do not blindly restart an old
 pending queue or discard the newer journal to manufacture a clean rollback.
 
+### MySQL 8.4 LTS
+
+The bundled `docker-compose.yml` now uses `mysql:8.4` (MySQL 8.0 reached end of
+life in April 2026). On first start with an existing 8.0 data volume, MySQL
+upgrades the data dictionary in place. **MySQL cannot downgrade that volume back to
+8.0**, so take the consistent MySQL backup above before changing the image. Update
+the application first and confirm it is healthy on 8.0, then switch the database
+image as a separate step. If you keep your own MySQL configuration, replace
+`innodb_log_file_size` with `innodb_redo_log_capacity` and remove
+`skip-symbolic-links`, which 8.4 deprecates or no longer needs.
+
 ### Staged Sync-account cutover
 
 The image includes `/app/api/mail-rollout.js` for an operator-controlled canary.

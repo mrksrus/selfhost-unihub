@@ -10,7 +10,7 @@ UniHub runs as two containers in the included Docker Compose setup:
 | Container | Image | Purpose |
 | --- | --- | --- |
 | `unihub` | `ghcr.io/mrksrus/selfhost-unihub:latest` | React frontend served by Nginx plus Node.js API on port 4000 inside the container |
-| `unihub-mysql` | `mysql:8.0` | MySQL database |
+| `unihub-mysql` | `mysql:8.4` | MySQL database |
 
 Request flow:
 
