@@ -1715,15 +1715,25 @@ durableScheduler = createDurableMailScheduler(runDurableMailJob, { onState: stat
   // durable scheduler. An in-memory callback must not create extra work.
 } });
 async function startMailEngineScheduler() { await durableScheduler.start(); }
+// background: periodic/service-worker work; skipped while the user's mail
+// background setting is off. followUp: internal refresh after a user action;
+// runs regardless of that setting. Neither is manual: no pause resume, no
+// forced flags/presence resweep. Background is enforced here at admission
+// because durable stream jobs carry no origin and manual Sync spawns them too.
 async function scheduleMailAccountSync(accountId, options = {}) {
   const id = normalizeMailAccountId(accountId);
   if (!id) throw new Error('Account ID required');
   const [accounts] = await db.execute('SELECT user_id FROM mail_accounts WHERE id = ?', [id]);
   if (!accounts.length) throw new Error('Mail account not found');
+  if (options.background && !await isModuleBackgroundEnabled(accounts[0].user_id, 'mail')) {
+    const result = { success: false, skipped: true, error: 'Mail background sync disabled' };
+    return { started: false, alreadyRunning: false, skipped: true, job_id: null, promise: Promise.resolve(result) };
+  }
+  const manual = !options.background && !options.followUp;
   // A manual request may reopen only a background/module pause, never a
   // disconnect, settings fence or active restore. The route calls this entry
   // directly, so the resume belongs at admission, not only syncMailAccount.
-  if (!options.background && await isModuleEnabled(accounts[0].user_id, 'mail')
+  if (manual && await isModuleEnabled(accounts[0].user_id, 'mail')
       && !await isSectionRestoreActive(accounts[0].user_id, 'mail'))
     await require('./mail-engine/runtime').resumeAccount({ userId: accounts[0].user_id,
       accountId: id, resumeStreams: true, reasons: ['Mail module disabled', 'Mail background paused'] });
@@ -1731,7 +1741,7 @@ async function scheduleMailAccountSync(accountId, options = {}) {
   const prior = await durableScheduler.state({ userId: accounts[0].user_id, accountId: id });
   const alreadyRunning = prior && prior.kind === 'sync' && ['queued', 'running'].includes(prior.state);
   const job = await durableScheduler.enqueue({ userId: accounts[0].user_id, accountId: id,
-    kind: 'sync', priority: 5, manualRefresh: !options.background });
+    kind: 'sync', priority: 5, manualRefresh: manual });
   return { started: !alreadyRunning, alreadyRunning: !!alreadyRunning, job_id: job.id,
     promise: Promise.resolve({ success: true, started: !alreadyRunning, alreadyRunning: !!alreadyRunning, job_id: job.id }) };
 }

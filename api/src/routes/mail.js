@@ -70,8 +70,9 @@ function operationOptions(req) {
   return { idempotencyKey: key };
 }
 
-async function startMailSyncInBackground(accountId, label = accountId) {
-  const job = await scheduleMailAccountSync(accountId);
+async function startMailSyncInBackground(accountId, label = accountId, options = {}) {
+  const job = await scheduleMailAccountSync(accountId, options);
+  if (job.skipped) return null;
   job.promise
     .then((result) => {
       if (result?.success === false) {
@@ -1783,8 +1784,10 @@ module.exports = {
           continue;
         }
 
-        const didStart = await startMailSyncInBackground(account.id);
-        if (didStart) {
+        const didStart = await startMailSyncInBackground(account.id, account.id, { background: true });
+        if (didStart === null) {
+          skipped.push(account.id);
+        } else if (didStart) {
           started.push(account.id);
         } else {
           alreadyRunning.push(account.id);

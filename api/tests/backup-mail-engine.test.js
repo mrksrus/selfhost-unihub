@@ -38,6 +38,8 @@ test('restore pauses dispatch and preserves installation intent journal instead 
   assert.ok(db.calls.every(call => call.params.at(-1) === 'owner'));
   assert.match(db.calls[0].sql, /is_active = FALSE/);
   assert.match(db.calls[1].sql, /generation = generation \+ 1/);
+  assert.match(db.calls[1].sql, /IF\(paused_reason <=> \?, paused_reason,/, 'restore never replaces an operator canary hold');
+  assert.equal(db.calls[1].params[0], 'Deployment canary hold');
   assert.match(db.calls.at(-1).sql, /restore_requires_revalidation/);
   assert.match(db.calls.at(-1).sql, /is_current = FALSE/);
   // Additive migration leaves pre-classification operations with state=NULL;
