@@ -1,10 +1,10 @@
-import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MailPage from '@/pages/MailPage';
 import { api } from '@/lib/api';
+import type { Email } from '@/lib/mail-api';
 import { setOfflineMode } from '@/lib/offline';
 import { applyMailPageWaitBudget, MAIL_PAGE_TEST_TIMEOUT } from '@/test/helpers/mail-page-budget';
 
@@ -38,7 +38,7 @@ const folders = [
   { id: 'f-trash', slug: 'trash', display_name: 'Trash', is_system: true, position: 40, total_count: 0, unread_count: 0 },
 ];
 
-const inboxEmail = {
+const inboxEmail: Email = {
   id: 'email-1',
   mail_account_id: 'account-1',
   subject: 'Inbox subject',
@@ -55,7 +55,7 @@ const inboxEmail = {
   has_attachments: false,
 };
 
-const draftEmail = {
+const draftEmail: Email = {
   id: 'draft-1',
   mail_account_id: 'account-1',
   subject: 'Draft subject',
@@ -96,7 +96,7 @@ function setupApi(emails = [inboxEmail], accountPatch: Record<string, unknown> =
   vi.mocked(api.delete).mockResolvedValue({ data: { deleted: true } });
 }
 
-function renderMailPage(emails = [inboxEmail], initialEntry = '/mail', accountPatch: Record<string, unknown> = {}) {
+function renderMailPage(emails: Email[] = [inboxEmail], initialEntry = '/mail', accountPatch: Record<string, unknown> = {}) {
   setupApi(emails, accountPatch);
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -148,7 +148,7 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
   });
 
   it('shows a save/discard prompt when closing a dirty compose', async () => {
-    const { container } = renderMailPage();
+    renderMailPage();
 
     fireEvent.click(await screen.findByRole('button', { name: /compose/i }));
     fireEvent.change(await screen.findByLabelText('Subject'), { target: { value: 'Long draft' } });
@@ -207,7 +207,7 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
   });
 
   it('keeps compose footer actions rendered with long content', async () => {
-    const { container } = renderMailPage();
+    renderMailPage();
 
     fireEvent.click(await screen.findByRole('button', { name: /compose/i }));
     const editor = getComposeEditor();

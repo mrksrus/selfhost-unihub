@@ -61,6 +61,9 @@ function getUnexpectedResponseMessage(response: Response, contentType: string) {
   return `${getHttpErrorMessage(response.status, response.statusText)} The response was not JSON (${received}).`;
 }
 
+// Headers are a plain object so the client can merge the CSRF token into them.
+type ApiRequestInit = Omit<RequestInit, 'headers'> & { headers?: Record<string, string> };
+
 class ApiClient {
   private baseUrl: string;
   private csrfToken: string | null = null;
@@ -86,7 +89,7 @@ class ApiClient {
 
   private async request<T>(
     endpoint: string,
-    options: RequestInit = {}
+    options: ApiRequestInit = {}
   ): Promise<ApiResponse<T>> {
     let url: string;
     try {
@@ -97,7 +100,7 @@ class ApiClient {
       };
     }
     
-    const headers: HeadersInit = {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...options.headers,
     };
@@ -276,7 +279,7 @@ class ApiClient {
     }
   }
 
-  async post<T>(endpoint: string, body?: unknown, options: Pick<RequestInit, 'headers'> = {}): Promise<ApiResponse<T>> {
+  async post<T>(endpoint: string, body?: unknown, options: Pick<ApiRequestInit, 'headers'> = {}): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, {
       ...options,
       method: 'POST',
@@ -284,7 +287,7 @@ class ApiClient {
     });
   }
 
-  async put<T>(endpoint: string, body?: unknown, options: Pick<RequestInit, 'headers'> = {}): Promise<ApiResponse<T>> {
+  async put<T>(endpoint: string, body?: unknown, options: Pick<ApiRequestInit, 'headers'> = {}): Promise<ApiResponse<T>> {
     return this.request<T>(endpoint, {
       ...options,
       method: 'PUT',

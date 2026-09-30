@@ -31,7 +31,7 @@ export const useCalendarNotifications = () => {
     const timers: number[] = [];
     const now = Date.now();
     for (const event of events) {
-      if (['done', 'cancelled'].includes(event.todo_status)) continue;
+      if (event.todo_status === 'done' || event.todo_status === 'cancelled') continue;
       const start = new Date(event.start_time).getTime();
       if (!Number.isFinite(start)) continue;
       const source = event.reminders?.length ? event.reminders : event.reminder_minutes == null ? [] : [event.reminder_minutes];

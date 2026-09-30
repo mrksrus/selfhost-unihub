@@ -9,13 +9,13 @@ import {
   type AITickEffectEvent,
   type CollisionEffectEvent,
   type FloorStartEffectEvent,
+  type GameUpgradeDefinition,
   type MoveEffectEvent,
 } from './ai-game/upgrades';
 import {
   getAIIntervalForFloor,
   getBandProgression,
   getEventChances,
-  getFloorBand,
   getGridSizeForFloor,
   getMapTierForFloor,
   getWallDensity,
@@ -352,7 +352,13 @@ const getDirectionFromGamepad = (gp: Gamepad): Direction | null => {
   return null;
 };
 
-const getOwnedUpgradeDefs = (ownedUpgrades: string[]) => ownedUpgrades.map((id) => UPGRADE_MAP.get(id)).filter(Boolean);
+const getUpgradeDefs = (upgradeIds: string[]): GameUpgradeDefinition[] =>
+  upgradeIds.flatMap((id) => {
+    const upgrade = UPGRADE_MAP.get(id);
+    return upgrade ? [upgrade] : [];
+  });
+
+const getOwnedUpgradeDefs = (ownedUpgrades: string[]) => getUpgradeDefs(ownedUpgrades);
 
 const runUpgradeHook = <TEvent,>(ownedUpgrades: string[], hook: 'on_move' | 'on_ai_tick' | 'on_collision' | 'on_floor_start', event: TEvent) => {
   const upgradeDefs = getOwnedUpgradeDefs(ownedUpgrades);
@@ -1166,7 +1172,7 @@ const AIGame = () => {
   const wallsSet = useMemo(() => new Set(state.walls), [state.walls]);
   const ownedUpgradeDetails = useMemo(() => getOwnedUpgradeDefs(state.ownedUpgrades), [state.ownedUpgrades]);
   const draftChoices = useMemo(
-    () => state.upgradeChoices.map((id) => UPGRADE_MAP.get(id)).filter(Boolean),
+    () => getUpgradeDefs(state.upgradeChoices),
     [state.upgradeChoices]
   );
   const unlockedMeta = useMemo(() => getAIGameStartingBonuses(), []);

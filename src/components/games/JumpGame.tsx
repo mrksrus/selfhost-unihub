@@ -45,7 +45,6 @@ export const JumpGame = () => {
   });
   const rafRef = useRef<number>(0);
   const prevJumpRef = useRef<boolean>(false);
-  const [score, setScore] = useState(0);
   const [status, setStatus] = useState<GameStatus>('idle');
   const [gamepadConnected, setGamepadConnected] = useState(false);
 
@@ -74,7 +73,6 @@ export const JumpGame = () => {
     state.speed = START_SPEED;
     state.nextGap = OBSTACLE_MIN_GAP + Math.random() * (OBSTACLE_MAX_GAP - OBSTACLE_MIN_GAP);
     setStatus('playing');
-    setScore(0);
   }, []);
 
   const handleGameInput = useCallback(
@@ -118,7 +116,6 @@ export const JumpGame = () => {
 
         state.score += SCORE_PER_FRAME;
         state.speed = Math.min(MAX_SPEED, START_SPEED + state.score * SPEED_RAMP_PER_POINT);
-        setScore(Math.floor(state.score));
 
         state.obstacles.forEach((obs) => {
           obs.x -= state.speed;

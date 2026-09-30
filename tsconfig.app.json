@@ -17,10 +17,9 @@
     "allowSyntheticDefaultImports": true,
 
     /* Linting */
-    "strict": false,
-    "noUnusedLocals": false,
+    "strict": true,
+    "noUnusedLocals": true,
     "noUnusedParameters": false,
-    "noImplicitAny": false,
     "noFallthroughCasesInSwitch": false,
 
     "baseUrl": ".",
