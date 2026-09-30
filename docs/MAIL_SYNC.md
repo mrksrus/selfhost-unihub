@@ -128,7 +128,7 @@ reopens a module pause or forces an immediate flags/presence resweep.
 Only one mail sync runs at a time. A second request returns an already-running
 result or skips starting a new sync.
 
-### Provider connections (0.11.0 engine)
+### Provider connections
 
 Durable jobs of one account are serialized by the account lease. After a job
 completes successfully and unaborted, its authenticated IMAP session is parked

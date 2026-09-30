@@ -9,7 +9,7 @@ Choose a mode in each account's settings. Upgrading preserves the selected mode;
 | Download | Import messages; filing and read/star changes stay local | Optional, with the existing ten-minute grace period and verified-archive checks |
 | Sync | Import provider observations; explicitly accepted read/star/MOVE actions can update the provider | Unavailable |
 
-## Durable changes in 0.11.0
+## Durable changes since 0.10.13
 
 The browser first receives confirmation that UniHub **accepted** a request, not that the provider completed it. Accepted intents and request receipts are stored in MySQL. A retry with the same idempotency key returns the same accepted result; using that key for a different request is rejected. The browser must reach UniHub to submit an action. This is not offline browser editing.
 

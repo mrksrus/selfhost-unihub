@@ -5,7 +5,7 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
-## 0.11.0 durable mail engine
+## 0.10.13 durable mail engine (0.11 preview)
 
 Migrations 6 and 7 add mailbox occurrences, bounded jobs/cursors, operation attempts,
 request receipts and explicit raw-archive provenance. Backfill commits progress in

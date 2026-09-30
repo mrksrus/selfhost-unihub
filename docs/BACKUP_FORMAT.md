@@ -2,7 +2,7 @@
 
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
-0.11.0 writes account backups with data schema 4 and retains readers for schemas 1–3.
+0.10.13 and later write account backups with data schema 4 and retains readers for schemas 1–3.
 `manifest.json` is the version file. Users do not select conversion scripts.
 
 ## Independent version fields
