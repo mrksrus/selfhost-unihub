@@ -245,3 +245,8 @@ export function MailReader({ email, accounts, location, backLabel, isMobile, isR
     </div>
   );
 }
+
+/** Shown while a message loads; cancelling abandons the request. */
+export function MailReaderLoading({ onCancel }: { onCancel: () => void }) {
+  return <div role="status" className="fixed bottom-24 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-md border bg-card p-3 shadow-lg"><Loader2 className="h-4 w-4 animate-spin" />Loading email…<Button size="sm" variant="ghost" onClick={onCancel}>Cancel</Button></div>;
+}
