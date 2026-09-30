@@ -114,8 +114,9 @@ this policy remain inactive with a warning.
 | Trigger | Endpoint/process | Behavior |
 | --- | --- | --- |
 | Initial account add | account creation route | starts non-blocking sync when no other sync is running |
-| Periodic server sync | `api/src/app.js` interval | every 10 minutes for active accounts |
-| Manual sync | `POST /api/mail/sync` | waits for sync result for one account |
+| Periodic INBOX follow-up | `api/src/app.js` interval | every 30 seconds: one `recent` job for the account's INBOX |
+| Periodic folder discovery | same interval | at most every 5 minutes (or after a failed pass): folder LIST plus per-folder `recent`/`flags`/`history`/`presence` jobs |
+| Manual sync | `POST /api/mail/sync` | immediate, complete folder discovery and fan-out |
 | Service worker sync | `POST /api/mail/sync/background` | starts at most one sync if data is stale |
 | Writeback follow-up | provider operation worker | ordinary (throttled) sync after an unsettled flag/move |
 
@@ -126,6 +127,23 @@ reopens a module pause or forces an immediate flags/presence resweep.
 
 Only one mail sync runs at a time. A second request returns an already-running
 result or skips starting a new sync.
+
+### Provider connections (0.11.0 engine)
+
+Durable jobs of one account are serialized by the account lease. After a job
+completes successfully and unaborted, its authenticated IMAP session is parked
+per account (`api/src/services/mail-engine/connection-pool.js`) for up to 90
+seconds (30-minute maximum age) and handed to the account's next job after a
+NOOP health check, rebound to that job's cancellation signal. A session is
+never shared by two running jobs and is destroyed, not reused, after an error,
+abort, cancellation, lost fence, credential/host/TLS-trust change, account
+stop/disconnect or module pause. The host policy check still runs before every
+job. Jobs with provably no provider work finish without connecting: an
+operation already settled by a sibling batch, and background `flags`/`presence`
+sweeps completed within their 15-minute throttle. An `operation` job also
+executes up to 50 other due, undispatched operations of the same account on its
+transport, each with its own fence check and attempt record, so a bulk change
+normally needs a single LOGIN.
 
 ## IMAP Folder Strategy
 

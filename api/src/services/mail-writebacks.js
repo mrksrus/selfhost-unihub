@@ -1,7 +1,8 @@
 const crypto = require('node:crypto');
 const { db } = require('../state');
 const { withMailAccountLock } = require('./mail-account-lock');
-const { guardImapConnection } = require('./mail-imap-guard');
+const { acquireImapConnection, releaseImapConnection } = require('./mail-engine/connection-pool');
+const { operationDue, processOperationBatch } = require('./mail-engine/operation-batch');
 const { isSectionRestoreActive } = require('./restore-locks');
 const { isModuleEnabled, isModuleBackgroundEnabled } = require('./module-settings');
 const engine = require('./mail-engine/operations');
@@ -196,7 +197,7 @@ function runWritebacks(accountId, background) {
     processedAccount = job.mail_account_id;
     await require('./mail').yieldMailReadWork?.(processedAccount);
     await withMailAccountLock(processedAccount, async () => {
-      let connection, account, state = 'idle', errorText = null;
+      let connection, account, state = 'idle', errorText = null, connectionFailed = false;
       const controller = new AbortController();
       activeControllers.set(processedAccount, controller);
       const generation = Number(job.worker_generation);
@@ -224,14 +225,15 @@ function runWritebacks(accountId, background) {
         const config = await buildImapConnectionConfig(account, { keepalive: false });
         if (!config) throw new Error('Missing credentials');
         config.imap.connTimeout = 15000; config.imap.authTimeout = 15000; config.imap.socketTimeout = 30000;
-        const connected = await require('imap-simple').connect(config);
-        connection = guardImapConnection(connected, { signal: controller.signal });
-        connection.on('error', () => {});
+        if (job.kind === 'operation' && job.operation_id && !await operationDue(account, job.operation_id)) return;
+        connection = await acquireImapConnection(account, config, { signal: controller.signal });
         await pulse();
         if (controller.signal.aborted) { state = 'cancelled'; return; }
-        ({ needsSync } = await processPending(account, connection, { background, workerId,
-          workerGeneration: generation, jobId: job.id, operationId: job.operation_id,
-          signal: controller.signal }));
+        const options = { background, workerId, workerGeneration: generation, jobId: job.id,
+          operationId: job.operation_id, signal: controller.signal };
+        ({ needsSync, connectionFailed } = job.kind === 'operation'
+          ? await processOperationBatch(account, connection, options, { process: processPending })
+          : await processPending(account, connection, options));
       } catch (error) {
         if (controller.signal.aborted || error.code === 'MAIL_WORKER_FENCED') {
           state = 'cancelled';
@@ -244,11 +246,16 @@ function runWritebacks(accountId, background) {
         clearInterval(heartbeat);
         if (activeControllers.get(processedAccount) === controller) activeControllers.delete(processedAccount);
         await heartbeatPending;
-        if (connection) connection.end();
+        // Close before completion releases the lease; park only after this
+        // generation's completion committed.
+        const reusable = !!connection && state === 'idle' && !connectionFailed && !controller.signal.aborted;
+        if (connection && !reusable) connection.end();
+        let completed = false;
         // Expired/paused generation must not commit a stale completion.
         try { await runtime.completeJob({ jobId: job.id, accountId: processedAccount, workerId,
-          generation, state: controller.signal.aborted ? 'cancelled' : state, error: errorText }); }
+          generation, state: controller.signal.aborted ? 'cancelled' : state, error: errorText }); completed = true; }
         catch (error) { if (error.code !== 'MAIL_WORKER_FENCED') throw error; }
+        finally { if (reusable) releaseImapConnection(connection, { reusable: completed && !controller.signal.aborted }); }
       }
     });
   })().catch(error => console.error('[MAIL WRITEBACK] Worker failed:', error.code || 'provider unavailable')).finally(() => {
