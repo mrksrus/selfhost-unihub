@@ -1,5 +1,7 @@
 import { MailAccountDialog } from '@/components/mail/MailAccountDialog';
 import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
+import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/components/mail/MailCompose';
+import { useMailCompose } from '@/hooks/use-mail-compose';
 import { MailAccountRemovalDialogs } from '@/components/mail/MailAccountRemovalDialogs';
 import { useMailAccountRemoval } from '@/hooks/use-mail-account-removal';
 import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
@@ -142,9 +144,7 @@ const MailPage = () => {
     }).catch(() => { /* A failed status refresh must not replace the current message. */ });
   }, [selectedEmailId, setSelectedEmail, queryClient]);
   const accountEditor = useMailAccountEditor();
-  const [isComposeOpen, setIsComposeOpen] = useState(false);
-  const [composeMode, setComposeMode] = useState<'new' | 'reply' | 'forward'>('new');
-  const [isReplying, setIsReplying] = useState(false);
+  const compose = useMailCompose({ activeMailAccountId, selectedAccount, setSelectedAccount, isMobile });
   const accountRemoval = useMailAccountRemoval(() => setSelectedAccount(ALL_ACCOUNTS));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -174,56 +174,10 @@ const MailPage = () => {
   const [recoveryFolder, setRecoveryFolder] = useState('inbox');
   const [editingFolderSlug, setEditingFolderSlug] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState('');
-  const [composeForm, setComposeForm] = useState({
-    to: '',
-    subject: '',
-    body: '',
-  });
-  const [composeReturnTo, setComposeReturnTo] = useState<string | null>(null);
-  const [focusedRecipientInput, setFocusedRecipientInput] = useState<string | null>(null);
-  const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
-  const [existingDraftAttachments, setExistingDraftAttachments] = useState<EmailAttachment[]>([]);
-  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
-  const [isComposeDirty, setIsComposeDirty] = useState(false);
-  const [attachmentsDirty, setAttachmentsDirty] = useState(false);
-  const [isDraftSaving, setIsDraftSaving] = useState(false);
-  const [draftSavedAt, setDraftSavedAt] = useState<string | null>(null);
-  const [composeClosePromptOpen, setComposeClosePromptOpen] = useState(false);
-  const [draftToDelete, setDraftToDelete] = useState<Email | null>(null);
-  const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
-  const inlineComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
-  const dialogComposeEditorRef = React.useRef<HTMLDivElement | null>(null);
-
-  // Open compose dialog if linked from dashboard
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('action') === 'compose') {
-      const returnTo = sanitizeReturnTo(params.get('returnTo'));
-      setComposeMode('new');
-      setComposeForm({
-        to: params.get('to') || '',
-        subject: params.get('subject') || '',
-        body: params.get('body') ? plainTextToHtml(params.get('body') || '') : '',
-      });
-      setComposeReturnTo(returnTo);
-      setIsComposeOpen(true);
-      window.history.replaceState({}, '', window.location.pathname);
-    }
-  }, []);
-
-  useEffect(() => {
-    for (const editorRef of [inlineComposeEditorRef, dialogComposeEditorRef]) {
-      if (editorRef.current && editorRef.current.innerHTML !== composeForm.body) {
-        editorRef.current.innerHTML = composeForm.body;
-      }
-    }
-  }, [composeForm.body, isComposeOpen, isReplying]);
-
   const { data: accounts = [], isLoading: accountsLoading } = useMailAccounts();
   const { jobs: syncJobs, requestSync, syncingAccountIds, requestCancel, cancellingAccountIds } = useMailSyncJobs(accounts);
   const writebacks = useMailWritebacks(refreshSettledEmail);
   const [syncPanel, setSyncPanel] = useState<SyncPanelFocus | null>(null);
-  const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
   const { data: mailFolders = [] } = useMailFolders();
 
   const legacyCount = mailFolders.reduce((total, folder) => total + (folder.legacy_count || 0), 0);
@@ -329,46 +283,15 @@ const MailPage = () => {
   const totalMatchingEmails = pagination?.total ?? emails.length;
   const totalPages = pagination?.totalPages ?? 1;
 
-  const contactEmailSuggestions = React.useMemo<ContactEmailSuggestion[]>(() => {
-    return contactsForCompose.flatMap((contact) => {
-      const name = getContactDisplayName(contact);
-      return [contact.email, contact.email2, contact.email3]
-        .filter((email): email is string => Boolean(email?.trim()))
-        .map((email, index) => ({
-          key: `${contact.id}-${index}-${email}`,
-          name,
-          email,
-        }));
-    });
-  }, [contactsForCompose]);
-
-  const openDraftForCompose = React.useCallback((draft: Email) => {
-    setComposeMode('new');
-    setActiveDraftId(draft.id);
-    setExistingDraftAttachments(draft.attachments || []);
-    setComposeAttachments([]);
-    setAttachmentsDirty(false);
-    setIsComposeDirty(false);
-    setDraftSavedAt(draft.received_at || new Date().toISOString());
-    setComposeForm({
-      to: draft.to_addresses?.join(', ') || '',
-      subject: draft.subject || '',
-      body: draft.body_html || (draft.body_text ? plainTextToHtml(draft.body_text) : ''),
-    });
-    setSelectedAccount(draft.mail_account_id);
-    setIsReplying(false);
-    setIsComposeOpen(true);
-  }, [setSelectedAccount]);
-
   const loadEmailForReader = React.useCallback((emailId: string) => {
     ++detailRefreshRevision.current;
     return loadEmail(emailId, {
-      onDraft: openDraftForCompose,
+      onDraft: compose.openDraftForCompose,
       reconcileEmail: captureMailFlagReconciler(queryClient),
       onMarkRead: (email) => requestFlag(email, 'read', true),
       onError: (message) => toast({ title: 'Failed to load email', description: message, variant: 'destructive' }),
     });
-  }, [loadEmail, openDraftForCompose, requestFlag, queryClient, toast]);
+  }, [loadEmail, compose.openDraftForCompose, requestFlag, queryClient, toast]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -600,592 +523,6 @@ const MailPage = () => {
   };
 
 
-  // Send email mutation
-  const sendEmailMutation = useMutation({
-    mutationFn: async (data: {
-      account_id: string;
-      to: string;
-      subject: string;
-      body: string;
-      isHtml?: boolean;
-      attachments?: Array<{
-        filename: string;
-        contentType: string;
-        size: number;
-        dataBase64: string;
-      }>;
-    }) => {
-      const response = await api.post('/mail/send', data);
-      if (response.error) {
-        throw new Error(response.error);
-      }
-      return response.data;
-    },
-    onSuccess: () => {
-      toast({ title: '✓ Email sent successfully' });
-      closeComposeFlow({ force: true });
-    },
-    onError: (error: Error) => {
-      toast({ 
-        title: 'Failed to send email', 
-        description: error.message,
-        variant: 'destructive',
-        duration: 8000,
-      });
-    },
-  });
-
-  const addComposeFiles = (files: FileList | File[]) => {
-    const incomingFiles = Array.from(files || []);
-    if (incomingFiles.length === 0) return;
-
-    const existingKeys = new Set(
-      composeAttachments.map(attachment =>
-        `${attachment.file.name}:${attachment.file.size}:${attachment.file.lastModified}`
-      )
-    );
-    const uniqueIncomingFiles = incomingFiles.filter(file => {
-      const key = `${file.name}:${file.size}:${file.lastModified}`;
-      if (existingKeys.has(key)) return false;
-      existingKeys.add(key);
-      return true;
-    });
-    if (uniqueIncomingFiles.length === 0) return;
-
-    const validationError = validateComposeAttachments(
-      [
-        ...existingDraftAttachments.map(attachment => ({
-          filename: attachment.filename,
-          size: attachment.size_bytes,
-        })),
-        ...composeAttachments.map(attachment => ({
-          filename: attachment.file.name,
-          size: attachment.file.size,
-        })),
-      ],
-      uniqueIncomingFiles
-    );
-    if (validationError) {
-      toast({
-        title: 'Attachment not added',
-        description: validationError,
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    setComposeAttachments(prev => [
-      ...prev,
-      ...uniqueIncomingFiles.map(file => ({ id: crypto.randomUUID(), file })),
-    ]);
-    setAttachmentsDirty(true);
-    setIsComposeDirty(true);
-  };
-
-  const removeComposeAttachment = (attachmentId: string) => {
-    setComposeAttachments(prev => prev.filter(att => att.id !== attachmentId));
-    setAttachmentsDirty(true);
-    setIsComposeDirty(true);
-  };
-
-  const removeExistingDraftAttachment = (attachmentId: string) => {
-    setExistingDraftAttachments(prev => prev.filter(att => att.id !== attachmentId));
-    setAttachmentsDirty(true);
-    setIsComposeDirty(true);
-  };
-
-  const updateComposeForm = (patch: Partial<typeof composeForm>, dirty = true) => {
-    setComposeForm(prev => ({ ...prev, ...patch }));
-    if (dirty) setIsComposeDirty(true);
-  };
-
-  const resetComposeState = () => {
-    setComposeMode('new');
-    setComposeForm({ to: '', subject: '', body: '' });
-    setFocusedRecipientInput(null);
-    setComposeAttachments([]);
-    setExistingDraftAttachments([]);
-    setActiveDraftId(null);
-    setIsComposeDirty(false);
-    setAttachmentsDirty(false);
-    setIsDraftSaving(false);
-    setDraftSavedAt(null);
-    setIsAttachmentDragOver(false);
-    setIsReplying(false);
-  };
-
-  const closeComposeFlow = (options: { force?: boolean } = {}) => {
-    const hasUnsavedWork = (isComposeDirty || attachmentsDirty) &&
-      isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length);
-    if (!options.force && hasUnsavedWork) {
-      setComposeClosePromptOpen(true);
-      return;
-    }
-    const target = composeReturnTo;
-    setIsComposeOpen(false);
-    resetComposeState();
-    setComposeReturnTo(null);
-    if (target) navigate(target);
-  };
-
-  const replaceActiveRecipient = (suggestion: ContactEmailSuggestion) => {
-    setComposeForm(prev => {
-      const parts = prev.to.split(',');
-      parts[parts.length - 1] = ` ${formatRecipient(suggestion)}`;
-      const nextValue = parts
-        .map((part, index) => (index === 0 ? part.trimStart() : part.trim()))
-        .filter(Boolean)
-        .join(', ');
-      return { ...prev, to: `${nextValue}, ` };
-    });
-    setIsComposeDirty(true);
-  };
-
-  const renderRecipientInput = (inputId: string) => {
-    const searchTerm = getActiveRecipientSearchTerm(composeForm.to);
-    const suggestions = contactEmailSuggestions
-      .filter((suggestion) => {
-        const haystack = `${suggestion.name} ${suggestion.email}`.toLowerCase();
-        return !searchTerm || haystack.includes(searchTerm);
-      })
-      .slice(0, 8);
-    const showSuggestions = focusedRecipientInput === inputId && suggestions.length > 0;
-
-    return (
-      <div className="relative">
-        <Input
-          id={inputId}
-          type="text"
-          placeholder="recipient@example.com"
-          value={composeForm.to}
-          onChange={(e) => updateComposeForm({ to: e.target.value })}
-          onFocus={() => setFocusedRecipientInput(inputId)}
-          onBlur={() => window.setTimeout(() => setFocusedRecipientInput((current) => current === inputId ? null : current), 100)}
-          autoComplete="off"
-          required
-        />
-        {showSuggestions && (
-          <div className="absolute left-0 right-0 top-full z-[80] mt-1 max-h-64 overflow-auto rounded-md border border-border bg-popover p-1 shadow-lg">
-            {suggestions.map((suggestion) => (
-              <button
-                key={suggestion.key}
-                type="button"
-                className="flex w-full flex-col rounded-sm px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  replaceActiveRecipient(suggestion);
-                  setFocusedRecipientInput(inputId);
-                }}
-              >
-                <span className="font-medium truncate">{suggestion.name || suggestion.email}</span>
-                {suggestion.name && (
-                  <span className="text-xs text-muted-foreground truncate">{suggestion.email}</span>
-                )}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const fileToBase64 = React.useCallback((file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result !== 'string') {
-          reject(new Error('Failed to read attachment'));
-          return;
-        }
-        const base64 = reader.result.split(',')[1] || '';
-        resolve(base64);
-      };
-      reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-      reader.readAsDataURL(file);
-    }), []);
-
-  const buildAttachmentPayload = React.useCallback(async () =>
-    Promise.all(
-      composeAttachments.map(async ({ file }) => ({
-        filename: file.name,
-        contentType: file.type || 'application/octet-stream',
-        size: file.size,
-        dataBase64: await fileToBase64(file),
-      }))
-    ), [composeAttachments, fileToBase64]);
-
-  const saveCurrentDraft = React.useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean } = {}) => {
-    if (!activeMailAccountId) {
-      if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
-      return null;
-    }
-    if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) {
-      return null;
-    }
-
-    setIsDraftSaving(true);
-    try {
-      const includeAttachments = options.includeAttachments ?? attachmentsDirty;
-      const payload: {
-        account_id: string;
-        to: string;
-        subject: string;
-        body: string;
-        isHtml: boolean;
-        existing_attachment_ids?: string[];
-        attachments?: Array<{ filename: string; contentType: string; size: number; dataBase64: string }>;
-      } = {
-        account_id: activeMailAccountId,
-        to: composeForm.to,
-        subject: composeForm.subject,
-        body: composeForm.body || '<p></p>',
-        isHtml: true,
-      };
-
-      if (includeAttachments) {
-        payload.existing_attachment_ids = existingDraftAttachments.map(attachment => attachment.id);
-        payload.attachments = await buildAttachmentPayload();
-      }
-
-      const response = activeDraftId
-        ? await api.put<{ draft: Email }>(`/mail/drafts/${activeDraftId}`, payload)
-        : await api.post<{ draft: Email }>('/mail/drafts', payload);
-
-      if (response.error || !response.data?.draft) {
-        throw new Error(response.error || 'Failed to save draft');
-      }
-
-      const savedDraft = response.data.draft;
-      setActiveDraftId(savedDraft.id);
-      setExistingDraftAttachments(savedDraft.attachments || []);
-      if (includeAttachments) {
-        setComposeAttachments([]);
-        setAttachmentsDirty(false);
-      }
-      setIsComposeDirty(false);
-      setDraftSavedAt(new Date().toISOString());
-      void invalidateMailQueries(queryClient);
-      if (!options.quiet) toast({ title: 'Draft saved' });
-      return savedDraft;
-    } catch (error) {
-      if (!options.quiet) {
-        toast({
-          title: 'Failed to save draft',
-          description: error instanceof Error ? error.message : 'Could not save the draft',
-          variant: 'destructive',
-        });
-      }
-      throw error;
-    } finally {
-      setIsDraftSaving(false);
-    }
-  }, [
-    activeDraftId,
-    attachmentsDirty,
-    buildAttachmentPayload,
-    composeAttachments,
-    composeForm,
-    existingDraftAttachments,
-    queryClient,
-    activeMailAccountId,
-    toast,
-  ]);
-
-  React.useEffect(() => {
-    if (!isComposeDirty || !activeMailAccountId) return;
-    if (!isComposeOpen && !isReplying) return;
-    if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) return;
-
-    const timeout = window.setTimeout(() => {
-      saveCurrentDraft({ quiet: true }).catch(() => {
-        // Explicit saves and sends surface errors. Autosave should not interrupt typing.
-      });
-    }, 1500);
-
-    return () => window.clearTimeout(timeout);
-  }, [
-    composeAttachments.length,
-    composeForm,
-    existingDraftAttachments.length,
-    isComposeDirty,
-    isComposeOpen,
-    isReplying,
-    saveCurrentDraft,
-    selectedAccount,
-    activeMailAccountId,
-  ]);
-
-  const deleteDraftById = async (draftId: string) => {
-    const response = await api.delete(`/mail/drafts/${draftId}`);
-    if (response.error) throw new Error(response.error);
-    void invalidateMailQueries(queryClient);
-  };
-
-  const discardCurrentCompose = async () => {
-    try {
-      if (activeDraftId) {
-        await deleteDraftById(activeDraftId);
-      }
-      setComposeClosePromptOpen(false);
-      closeComposeFlow({ force: true });
-    } catch (error) {
-      toast({
-        title: 'Failed to discard draft',
-        description: error instanceof Error ? error.message : 'Could not discard the draft',
-        variant: 'destructive',
-      });
-    }
-  };
-
-  const handleComposeAttachmentInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      addComposeFiles(e.target.files);
-    }
-    // Allow re-selecting the same file later
-    e.target.value = '';
-  };
-
-
-  const updateComposeBodyFromEditor = (editorRef: React.RefObject<HTMLDivElement>) => {
-    setComposeForm(prev => ({ ...prev, body: editorRef.current?.innerHTML || '' }));
-    setIsComposeDirty(true);
-  };
-
-  const applyComposeCommand = (editorRef: React.RefObject<HTMLDivElement>, command: string, value?: string) => {
-    editorRef.current?.focus();
-    document.execCommand(command, false, value);
-    updateComposeBodyFromEditor(editorRef);
-  };
-
-  const renderRichComposeEditor = (
-    editorId: string,
-    editorRef: React.RefObject<HTMLDivElement>,
-    editorClassName = ''
-  ) => (
-    <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''}`}>
-      <div className="flex flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Bold" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'bold')}>
-          <Bold className="h-4 w-4" />
-        </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Italic" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'italic')}>
-          <Italic className="h-4 w-4" />
-        </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Underline" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'underline')}>
-          <Underline className="h-4 w-4" />
-        </Button>
-        <div className="h-5 w-px bg-border mx-1" />
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Bullet list" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'insertUnorderedList')}>
-          <List className="h-4 w-4" />
-        </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Numbered list" onMouseDown={(e) => e.preventDefault()} onClick={() => applyComposeCommand(editorRef, 'insertOrderedList')}>
-          <ListOrdered className="h-4 w-4" />
-        </Button>
-        <div className="h-5 w-px bg-border mx-1" />
-        <label className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground" title="Text color">
-          <Palette className="h-4 w-4" />
-          <input
-            type="color"
-            className="sr-only"
-            onChange={(event) => applyComposeCommand(editorRef, 'foreColor', event.target.value)}
-          />
-        </label>
-        <select
-          aria-label="Text size"
-          className="h-8 rounded-md border border-input bg-background px-2 text-xs"
-          defaultValue=""
-          onChange={(event) => {
-            if (event.target.value) applyComposeCommand(editorRef, 'fontSize', event.target.value);
-            event.target.value = '';
-          }}
-        >
-          <option value="" disabled>Size</option>
-          <option value="2">Small</option>
-          <option value="3">Normal</option>
-          <option value="5">Large</option>
-          <option value="6">Huge</option>
-        </select>
-        <div className="h-5 w-px bg-border mx-1" />
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8"
-          title="Insert link"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => {
-            const url = window.prompt('Link URL');
-            if (url?.trim()) applyComposeCommand(editorRef, 'createLink', url.trim());
-          }}
-        >
-          <LinkIcon className="h-4 w-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8"
-          title="Insert image URL"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => {
-            const url = window.prompt('Image URL');
-            if (url?.trim()) applyComposeCommand(editorRef, 'insertImage', url.trim());
-          }}
-        >
-          <ImageIcon className="h-4 w-4" />
-        </Button>
-      </div>
-      <div
-        id={editorId}
-        ref={editorRef}
-        role="textbox"
-        aria-multiline="true"
-        contentEditable
-        suppressContentEditableWarning
-        data-placeholder="Write your message..."
-        className={`p-3 text-sm outline-none overflow-y-auto overscroll-contain break-words [&:empty:before]:content-[attr(data-placeholder)] [&:empty:before]:text-muted-foreground [&_a]:text-accent [&_a]:underline [&_img]:max-w-full [&_img]:rounded-md [&_ol]:list-decimal [&_ol]:pl-6 [&_ul]:list-disc [&_ul]:pl-6 ${editorClassName}`}
-        onInput={() => updateComposeBodyFromEditor(editorRef)}
-        onBlur={() => updateComposeBodyFromEditor(editorRef)}
-      />
-    </div>
-  );
-
-  const renderComposeAttachmentsSection = (inputId: string) => (
-    <div className="space-y-2">
-      <Label>Attachments</Label>
-      <input
-        id={inputId}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={handleComposeAttachmentInput}
-      />
-
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setIsAttachmentDragOver(true);
-        }}
-        onDragLeave={(e) => {
-          e.preventDefault();
-          setIsAttachmentDragOver(false);
-        }}
-        onDrop={(e) => {
-          e.preventDefault();
-          setIsAttachmentDragOver(false);
-          if (e.dataTransfer?.files?.length) {
-            addComposeFiles(e.dataTransfer.files);
-          }
-        }}
-        className={`rounded-lg border border-dashed p-3 transition-colors ${
-          isAttachmentDragOver ? 'border-accent bg-accent/5' : 'border-border'
-        }`}
-      >
-        <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <span>Drag and drop files here, or</span>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => {
-              const input = document.getElementById(inputId) as HTMLInputElement | null;
-              input?.click();
-            }}
-          >
-            <Paperclip className="h-4 w-4 mr-2" />
-            Add attachments
-          </Button>
-        </div>
-      </div>
-
-      {(existingDraftAttachments.length > 0 || composeAttachments.length > 0) && (
-        <div className="space-y-2">
-          {existingDraftAttachments.map((attachment) => (
-            <div key={attachment.id} className="flex items-center justify-between gap-2 rounded border border-border px-3 py-2">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{attachment.filename}</p>
-                <p className="text-xs text-muted-foreground">{formatAttachmentSize(attachment.size_bytes)}</p>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                onClick={() => removeExistingDraftAttachment(attachment.id)}
-                title="Remove attachment"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
-          {composeAttachments.map(({ id, file }) => (
-            <div key={id} className="flex items-center justify-between gap-2 rounded border border-border px-3 py-2">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{file.name}</p>
-                <p className="text-xs text-muted-foreground">{formatAttachmentSize(file.size)}</p>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
-                onClick={() => removeComposeAttachment(id)}
-                title="Remove attachment"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-
-  const handleSendEmail = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeMailAccountId) {
-      toast({ title: 'Please select an account', variant: 'destructive' });
-      return;
-    }
-    if (!composeForm.to.trim()) {
-      toast({ title: 'Please enter a recipient', variant: 'destructive' });
-      return;
-    }
-    if (isComposeHtmlEmpty(composeForm.body) && composeAttachments.length === 0) {
-      toast({ title: 'Please enter a message or add an attachment', variant: 'destructive' });
-      return;
-    }
-
-    try {
-      if (activeDraftId) {
-        const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
-        const draftId = savedDraft?.id || activeDraftId;
-        const response = await api.post(`/mail/drafts/${draftId}/send`);
-        if (response.error) throw new Error(response.error);
-        toast({ title: '✓ Email sent successfully' });
-        void invalidateMailQueries(queryClient);
-        closeComposeFlow({ force: true });
-        return;
-      }
-
-      const attachmentPayload = await buildAttachmentPayload();
-
-      sendEmailMutation.mutate({
-        account_id: activeMailAccountId,
-        to: composeForm.to,
-        subject: composeForm.subject.trim() || '(No subject)',
-        body: composeForm.body || '<p></p>',
-        isHtml: true,
-        attachments: attachmentPayload,
-      });
-    } catch (error) {
-      toast({
-        title: 'Attachment error',
-        description: error instanceof Error ? error.message : 'Failed to prepare attachments',
-        variant: 'destructive',
-      });
-    }
-  };
-
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
   const selectedFolderData = folders.find((folder) => folder.id === selectedFolder);
   const folderLabel = selectedFolder === ALL_MAIL ? 'All mail' : selectedFolderData?.label || selectedFolder;
@@ -1193,7 +530,7 @@ const MailPage = () => {
     ? 'All accounts'
     : selectedAccountData?.display_name || selectedAccountData?.email_address || 'No account selected';
   const senderAlreadyInContacts = selectedEmail
-    ? contactEmailSuggestions.some((suggestion) => suggestion.email.toLowerCase() === selectedEmail.from_address.toLowerCase())
+    ? compose.contactEmailSuggestions.some((suggestion) => suggestion.email.toLowerCase() === selectedEmail.from_address.toLowerCase())
     : false;
 
   return (
@@ -1241,7 +578,7 @@ const MailPage = () => {
           )}
           <Button 
             className="w-full" 
-            onClick={() => setIsComposeOpen(true)}
+            onClick={compose.openCompose}
             title={sidebarCollapsed && !isMobile ? 'Compose' : undefined}
           >
             <PenSquare className={`h-4 w-4 ${(sidebarCollapsed && !isMobile) ? '' : 'mr-2'}`} />
@@ -1879,7 +1216,7 @@ const MailPage = () => {
             className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2 text-destructive"
             onClick={() => {
               if (contextMenuEmail.email.is_draft || contextMenuEmail.email.folder === 'drafts') {
-                setDraftToDelete(contextMenuEmail.email);
+                compose.setDraftToDelete(contextMenuEmail.email);
               } else {
                 runBulk('delete', createTrashMovePayload([contextMenuEmail.email.id]), bulkDelete.mutateAsync);
               }
@@ -1908,12 +1245,12 @@ const MailPage = () => {
                   aria-label={`Back to ${accountLabel}, ${folderLabel}`}
                   title={`Back to ${accountLabel}, ${folderLabel}`}
                   onClick={() => {
-                    if (isReplying && (isComposeDirty || attachmentsDirty)) {
-                      closeComposeFlow();
+                    if (compose.isReplying && compose.isDirty) {
+                      compose.closeComposeFlow();
                       return;
                     }
                     closeReader();
-                    resetComposeState();
+                    compose.resetComposeState();
                   }}
                 >
                   <ArrowLeft className="h-5 w-5" />
@@ -1923,31 +1260,7 @@ const MailPage = () => {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      if ((isReplying || isComposeOpen) && (isComposeDirty || attachmentsDirty) && isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) {
-                        setComposeClosePromptOpen(true);
-                        return;
-                      }
-                      setComposeMode('reply');
-                      setComposeAttachments([]);
-                      setExistingDraftAttachments([]);
-                      setActiveDraftId(null);
-                      setAttachmentsDirty(false);
-                      setIsComposeDirty(false);
-                      if (!activeMailAccountId) {
-                        setSelectedAccount(selectedEmail.mail_account_id);
-                      }
-                      setComposeForm({
-                        to: selectedEmail.from_address,
-                        subject: `Re: ${selectedEmail.subject || ''}`,
-                        body: `<p><br></p><hr><p><strong>Original Message</strong><br>From: ${escapeHtml(selectedEmail.from_name || selectedEmail.from_address)}<br>Date: ${escapeHtml(format(new Date(selectedEmail.received_at), 'PPpp'))}</p><blockquote>${plainTextToHtml(selectedEmail.body_text || '')}</blockquote>`,
-                      });
-                      if (isMobile) {
-                        setIsComposeOpen(true);
-                      } else {
-                        setIsReplying(true);
-                      }
-                    }}
+                    onClick={() => compose.startResponse(selectedEmail, 'reply')}
                   >
                     <Reply className="h-4 w-4 mr-2" />
                     Reply
@@ -1955,31 +1268,7 @@ const MailPage = () => {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      if ((isReplying || isComposeOpen) && (isComposeDirty || attachmentsDirty) && isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) {
-                        setComposeClosePromptOpen(true);
-                        return;
-                      }
-                      setComposeMode('forward');
-                      setComposeAttachments([]);
-                      setExistingDraftAttachments([]);
-                      setActiveDraftId(null);
-                      setAttachmentsDirty(false);
-                      setIsComposeDirty(false);
-                      if (!activeMailAccountId) {
-                        setSelectedAccount(selectedEmail.mail_account_id);
-                      }
-                      setComposeForm({
-                        to: '',
-                        subject: `Fwd: ${selectedEmail.subject || ''}`,
-                        body: `<p><br></p><hr><p><strong>Forwarded Message</strong><br>From: ${escapeHtml(selectedEmail.from_name || selectedEmail.from_address)}<br>Date: ${escapeHtml(format(new Date(selectedEmail.received_at), 'PPpp'))}</p><blockquote>${plainTextToHtml(selectedEmail.body_text || '')}</blockquote>`,
-                      });
-                      if (isMobile) {
-                        setIsComposeOpen(true);
-                      } else {
-                        setIsReplying(true);
-                      }
-                    }}
+                    onClick={() => compose.startResponse(selectedEmail, 'forward')}
                   >
                     <Forward className="h-4 w-4 mr-2" />
                     Forward
@@ -2022,7 +1311,7 @@ const MailPage = () => {
             </div>
             
             {/* Email Content */}
-            <div className={`flex-1 overflow-auto p-6 ${!isMobile && isReplying ? 'pb-0' : ''}`}>
+            <div className={`flex-1 overflow-auto p-6 ${!isMobile && compose.isReplying ? 'pb-0' : ''}`}>
               <div className="max-w-4xl mx-auto space-y-4">
                 <div>
                   <h1 className="text-2xl font-bold mb-4">{selectedEmail.subject || '(No subject)'}</h1>
@@ -2140,78 +1429,7 @@ const MailPage = () => {
             </div>
 
             {/* Desktop: Inline Compose Editor */}
-            {!isMobile && isReplying && (
-              <div className="max-h-[52vh] shrink-0 border-t border-border bg-card">
-                <div className="mx-auto flex h-full max-w-4xl flex-col p-4">
-                  <div className="mb-4 flex shrink-0 items-center justify-between">
-                    <h2 className="text-lg font-semibold">
-                      {composeMode === 'reply' ? 'Reply' : composeMode === 'forward' ? 'Forward' : 'Compose'}
-                    </h2>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        closeComposeFlow();
-                      }}
-                    >
-                      <X className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <form onSubmit={handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                    <div className="grid shrink-0 gap-3 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor="compose-to-inline">To</Label>
-                        {renderRecipientInput('compose-to-inline')}
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="compose-subject-inline">Subject</Label>
-                        <Input
-                          id="compose-subject-inline"
-                          placeholder="Enter subject"
-                          value={composeForm.subject}
-                          onChange={(e) => updateComposeForm({ subject: e.target.value })}
-                        />
-                      </div>
-                    </div>
-                    <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-3">
-                      <div className="space-y-2">
-                        <Label htmlFor="compose-body-inline">Message</Label>
-                        {renderRichComposeEditor('compose-body-inline', inlineComposeEditorRef, 'h-[220px] min-h-[180px]')}
-                      </div>
-                      {renderComposeAttachmentsSection('compose-attachments-inline')}
-                    </div>
-                    <div className="flex shrink-0 justify-end gap-3 border-t border-border pt-3">
-                      <Button type="button" variant="secondary" onClick={() => saveCurrentDraft({ includeAttachments: true })} disabled={isDraftSaving || sendEmailMutation.isPending}>
-                        {isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                        Save draft
-                      </Button>
-                      <Button 
-                        type="button" 
-                        variant="outline" 
-                        onClick={() => {
-                          closeComposeFlow();
-                        }}
-                      >
-                        Cancel
-                      </Button>
-                      <Button type="submit" disabled={sendEmailMutation.isPending || isDraftSaving}>
-                        {sendEmailMutation.isPending || isDraftSaving ? (
-                          <>
-                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                            Sending...
-                          </>
-                        ) : (
-                          <>
-                            <Send className="h-4 w-4 mr-2" />
-                            Send
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  </form>
-                </div>
-              </div>
-            )}
+            {!isMobile && compose.isReplying && <MailInlineCompose compose={compose} />}
           </div>
         </div>
       )}
@@ -2309,42 +1527,7 @@ const MailPage = () => {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={composeClosePromptOpen} onOpenChange={setComposeClosePromptOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Save this draft?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This message has unsaved changes. Save it as a draft, discard it, or keep editing.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Keep editing</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={(event) => {
-                event.preventDefault();
-                void discardCurrentCompose();
-              }}
-            >
-              Discard
-            </AlertDialogAction>
-            <AlertDialogAction
-              onClick={(event) => {
-                event.preventDefault();
-                saveCurrentDraft({ includeAttachments: true })
-                  .then(() => {
-                    setComposeClosePromptOpen(false);
-                    closeComposeFlow({ force: true });
-                  })
-                  .catch(() => {});
-              }}
-            >
-              {isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-              Save draft
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <MailComposeDialogs compose={compose} />
 
       <AlertDialog open={!!folderToDelete} onOpenChange={(open) => !open && setFolderToDelete(null)}>
         <AlertDialogContent>
@@ -2371,127 +1554,7 @@ const MailPage = () => {
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={!!draftToDelete} onOpenChange={(open) => !open && setDraftToDelete(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete draft?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This draft and its attachments will be removed from UniHub.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => {
-                if (!draftToDelete) return;
-                deleteDraftById(draftToDelete.id)
-                  .then(() => {
-                    toast({ title: 'Draft deleted' });
-                    if (activeDraftId === draftToDelete.id) closeComposeFlow({ force: true });
-                    setDraftToDelete(null);
-                  })
-                  .catch((error) => {
-                    toast({
-                      title: 'Failed to delete draft',
-                      description: error instanceof Error ? error.message : 'Could not delete draft',
-                      variant: 'destructive',
-                    });
-                  });
-              }}
-            >
-              Delete draft
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
-      {/* Compose Dialog - Mobile or New Message */}
-      <Dialog open={isComposeOpen} onOpenChange={(open) => {
-        if (open) setIsComposeOpen(true);
-        else closeComposeFlow();
-      }}>
-        <DialogContent className={`${isMobile ? 'max-w-full h-[calc(100dvh-5.5rem)] max-h-[calc(100dvh-5.5rem)] translate-y-[-50%] rounded-t-lg rounded-b-none' : 'sm:max-w-3xl max-h-[90dvh]'} !flex flex-col overflow-hidden p-0`}>
-          <DialogHeader className="shrink-0 border-b border-border px-4 py-3 pr-10">
-            <DialogTitle>
-              {composeMode === 'reply' ? 'Reply' : composeMode === 'forward' ? 'Forward' : 'New Message'}
-            </DialogTitle>
-            <DialogDescription className={activeDraftId || isDraftSaving || draftSavedAt ? undefined : 'sr-only'}>
-              {isDraftSaving ? 'Saving draft...' : draftSavedAt ? `Draft saved ${format(new Date(draftSavedAt), 'HH:mm')}` : 'Compose email message'}
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="shrink-0 space-y-4 px-4 py-3">
-              <div className="space-y-2">
-                <Label>From</Label>
-                <Select
-                  value={activeMailAccountId || ''}
-                  onValueChange={(value) => setSelectedAccount(value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select account" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {accounts.map((account) => (
-                      <SelectItem key={account.id} value={account.id}>
-                        {account.email_address}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="compose-to">To</Label>
-                {renderRecipientInput('compose-to')}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="compose-subject">Subject</Label>
-                <Input 
-                  id="compose-subject"
-                  placeholder="Enter subject"
-                  value={composeForm.subject}
-                  onChange={(e) => updateComposeForm({ subject: e.target.value })}
-                />
-              </div>
-            </div>
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3">
-              <div className="flex min-h-0 flex-col space-y-2">
-                <Label htmlFor="compose-body">Message</Label>
-                {renderRichComposeEditor(
-                  'compose-body',
-                  dialogComposeEditorRef,
-                  isMobile ? 'h-[36dvh] min-h-[180px]' : 'h-[min(44vh,420px)] min-h-[220px]'
-                )}
-              </div>
-              {renderComposeAttachmentsSection('compose-attachments-dialog')}
-            </div>
-            <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border bg-background px-4 py-3">
-              <Button type="button" variant="secondary" onClick={() => saveCurrentDraft({ includeAttachments: true })} disabled={isDraftSaving || sendEmailMutation.isPending}>
-                {isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Save draft
-              </Button>
-              <Button type="button" variant="outline" onClick={() => {
-                closeComposeFlow();
-              }}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={sendEmailMutation.isPending || isDraftSaving}>
-                {sendEmailMutation.isPending || isDraftSaving ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Sending...
-                  </>
-                ) : (
-                  <>
-                    <Send className="h-4 w-4 mr-2" />
-                    Send
-                  </>
-                )}
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
+      <MailComposeDialog compose={compose} accounts={accounts} isMobile={isMobile} onSelectAccount={setSelectedAccount} />
 
     </div>
   );
