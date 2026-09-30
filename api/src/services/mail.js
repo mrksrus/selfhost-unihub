@@ -1790,6 +1790,9 @@ async function schedulePeriodicMailWork(accountId, { executor = db, scheduler = 
   const [accounts] = await executor.execute('SELECT user_id FROM mail_accounts WHERE id = ?', [id]);
   if (!accounts.length) throw new Error('Mail account not found');
   const userId = accounts[0].user_id;
+  // Background off is enforced at admission; the INBOX follow-up is background work too.
+  if (!await isModuleBackgroundEnabled(userId, 'mail'))
+    return { started: false, alreadyRunning: false, skipped: true, promise: Promise.resolve({ success: true, skipped: true }) };
   const [[discovery]] = await executor.execute(`SELECT COUNT(*) AS n FROM mail_engine_jobs
     WHERE user_id = ? AND mail_account_id = ? AND kind = 'sync' AND (state IN ('queued','running')
       OR (state = 'idle' AND completed_at >= UTC_TIMESTAMP() - INTERVAL ? SECOND))`, [userId, id, MAIL_DISCOVERY_INTERVAL_SECONDS]);

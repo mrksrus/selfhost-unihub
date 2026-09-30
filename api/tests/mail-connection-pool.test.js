@@ -184,16 +184,23 @@ test('a throttled background sweep and an already settled operation finish witho
 
 test('periodic cadence follows INBOX only and fans out folder discovery at most every few minutes', async t => {
   const old = getDb(); t.after(() => setDb(old));
-  let recentDiscovery = 1;
+  let recentDiscovery = 1, background = true;
   const enqueued = [], queries = [];
   const executor = { execute: async (sql, params) => {
     queries.push(sql);
+    if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { enabled: true, background } }) }]];
     if (sql.includes('SELECT user_id FROM mail_accounts')) return [[{ user_id: 'owner' }]];
     if (sql.includes("kind = 'sync'")) { assert.equal(params[2], mail.MAIL_DISCOVERY_INTERVAL_SECONDS); return [[{ n: recentDiscovery }]]; }
     if (sql.includes("f.slug='inbox'")) return [[{ id: 'inbox-box' }]];
     assert.fail(`Unexpected SQL: ${sql}`);
   } };
   const scheduler = { start: async () => {}, enqueue: async input => { enqueued.push(input); return { id: 'j' }; } };
+  setDb(executor);
+  // Background off: the INBOX follow-up is background work and is not admitted.
+  background = false;
+  assert.equal((await mail.schedulePeriodicMailWork('A', { executor, scheduler })).skipped, true);
+  assert.equal(enqueued.length, 0);
+  background = true;
   for (let tickNo = 0; tickNo < 10; tickNo++) await mail.schedulePeriodicMailWork('A', { executor, scheduler });
   assert.equal(enqueued.length, 10);
   assert.ok(enqueued.every(job => job.kind === 'recent' && job.mailboxId === 'inbox-box'), 'no per-folder fan-out on a 30s tick');
