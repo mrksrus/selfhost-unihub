@@ -149,7 +149,7 @@ async function computeModeImpact(account, { mode, syncWindowDays, trashWindowDay
   const [[duplicates]] = await executor.execute(`SELECT COALESCE(SUM(n - 1), 0) AS n FROM (
       SELECT o.gmail_msgid, COUNT(DISTINCT o.email_id) AS n FROM mail_remote_occurrences o
       WHERE o.user_id = ? AND o.mail_account_id = ? AND o.gmail_msgid IS NOT NULL AND o.presence IN ('present','absent')
-      GROUP BY o.gmail_msgid HAVING COUNT(DISTINCT o.email_id) > 1) groups`, owner);
+      GROUP BY o.gmail_msgid HAVING COUNT(DISTINCT o.email_id) > 1) duplicate_groups`, owner);
   const result = { mode, local_only: localOnly, outside_window: Number(outside.regular) || 0,
     outside_trash_window: Number(outside.trash) || 0, gmail_duplicates: Number(duplicates.n) || 0 };
   result.total_removals = result.local_only + result.outside_window + result.outside_trash_window + result.gmail_duplicates;
