@@ -555,18 +555,6 @@ async function importBackupForUser(userId, backup, {
       await validateRestoredMailDestinations(connection, userId, [...writtenEmailIds].map(id => emailIdMap.get(id)), checkRestoreCancelled);
     }
 
-    for (const score of data.tetris_scores || []) {
-      await checkRestoreCancelled();
-      const [existing] = await connection.execute('SELECT score, `lines` FROM tetris_scores WHERE user_id = ? FOR UPDATE', [userId]);
-      // One personal best per user. keep_both retains the better score.
-      if (existing.length && (conflictMode === 'keep_existing' || conflictMode === 'keep_both'
-        && (existing[0].score > score.score || existing[0].score === score.score && existing[0].lines >= score.lines))) continue;
-      await writeOwnedRow(connection, userId, 'tetris_scores',
-        ['user_id', 'score', 'lines', 'level', 'achieved_at'],
-        [userId, score.score, score.lines, score.level, normalizeMysqlDateTime(score.achieved_at, new Date())],
-        ['score', 'lines', 'level', 'achieved_at']);
-    }
-
     await reportRestoreProgress('recordings', 90);
     for (const recording of data.recordings || []) {
       await checkRestoreCancelled();

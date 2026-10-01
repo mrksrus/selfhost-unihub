@@ -23,7 +23,6 @@ the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENS
 | Optional modules | Hide features or disable their access/background work. Disabling a module keeps its data and full-backup coverage. |
 | Backups / imports (ALPHA) | Experimental encrypted account exports and imports. Do not use them as your only backup. |
 | Mobile and offline | Installable PWA and opt-in read-only snapshots of up to 100 non-draft emails, contacts and calendar/tasks, subject to a 32 MiB limit. Notifications depend on browser and OS support. |
-| Games | Nine browser games. Some progress stays only in the browser and is not included in account backups. |
 
 ## Install: start here
 

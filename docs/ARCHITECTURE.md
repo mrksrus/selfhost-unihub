@@ -66,7 +66,7 @@ normalized in `request-handler.js`.
 | --- | --- |
 | `src/App.tsx` | Main router |
 | `src/pages/` | Page-level views |
-| `src/components/` | Layout, UI, game, mail, and PWA components |
+| `src/components/` | Layout, UI, mail, and PWA components |
 | `src/contexts/AuthContext.tsx` | Session validation, cross-tab account changes, CSRF, and offline viewing identity |
 | `src/components/SessionQueryProvider.tsx` | Private query cache lifetime tied to the signed-in account |
 | `src/lib/api.ts` | Cookie-based API client, request cancellation, and network-failure-only offline reads |
@@ -87,13 +87,12 @@ Main routes:
 - `/todo`
 - `/mail`
 - `/recordings`
-- `/games`
 - `/more`
 - `/settings`
 - `/admin/users`
 - `/admin/settings`
 
-Routes and individual game implementations load in separate chunks. Account
+Routes load in separate chunks. Account
 changes unmount the previous private query cache and cancel its requests before
 rendering the next account. Mail search is debounced, and a reader request that
 finishes after selection changes cannot replace the selected message. The Data
@@ -336,7 +335,7 @@ The frontend uses vite-plugin-pwa for an installable shell and a prompted update
 flow. The client overrides the plugin's automatic reload callback: worker
 activation is shared, but each tab must explicitly request its own refresh.
 Native worker activation/controller events complete the requesting tab's update,
-with a bounded timeout and retry if activation fails. Routes and games load
+with a bounded timeout and retry if activation fails. Routes load
 lazily; Workbox still precaches the offline-capable chunks, so startup savings do
 not imply smaller total installation downloads.
 

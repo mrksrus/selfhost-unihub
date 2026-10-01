@@ -11,7 +11,6 @@ module.exports = {
   ...require('./calendar'),
   ...require('./mail'),
   ...require('./admin'),
-  ...require('./games'),
   ...require('./notifications'),
   ...require('./offline'),
   ...require('./events'),

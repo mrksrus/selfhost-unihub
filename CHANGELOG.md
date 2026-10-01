@@ -19,6 +19,17 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   A custom reverse proxy in front of UniHub should not buffer `/api/events`;
   see [architecture](docs/ARCHITECTURE.md#live-status-events).
 
+### Removed
+
+- **The Games module is gone.** Its page, navigation entries, module setting and
+  `/api/games` endpoints were removed. Saved module settings that still mention
+  Games are ignored, so nothing else changes for existing accounts. Saved Tetris
+  scores stay in the database but are no longer used or included in new
+  backups; older backups that contain them still import, with a warning that the
+  scores were skipped. Game progress saved only in the browser is no longer read.
+  See [upgrading](docs/UPGRADING.md#0120-games-removed).
+
+## 0.11.1
 
 ### Security
 

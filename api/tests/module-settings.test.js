@@ -3,10 +3,11 @@ const assert = require('node:assert/strict');
 const { MODULE_CATALOG, getModuleForPath } = require('../src/services/module-catalog');
 const { modulesFromValue, validateModuleUpdates, getUserModules, setUserModules, isModuleEnabled, isModuleBackgroundEnabled } = require('../src/services/module-settings');
 const { SECTION_POLICIES } = require('../src/services/backup-catalog');
+const { validateBackupPayload } = require('../src/services/backup-validate');
 
 test('all built-in modules default on and reference recoverable data', () => {
   const modules = modulesFromValue(null);
-  assert.deepEqual(modules.map(m => m.id), ['mail', 'calendar', 'contacts', 'recordings', 'games', 'notes']);
+  assert.deepEqual(modules.map(m => m.id), ['mail', 'calendar', 'contacts', 'recordings', 'notes']);
   for (const module of modules) {
     assert.equal(module.visible && module.enabled && module.background, true);
     assert.ok(SECTION_POLICIES[module.recoverySection]);
@@ -45,6 +46,28 @@ test('saved owner settings retain independent hide, disable and background choic
   assert.equal(writes.length, 2);
   await assert.rejects(setUserModules('owner', { modules: { mail: { enabled: 'no' } } }, connection));
   assert.equal(writes.length, 2);
+});
+test('legacy saved games choice is ignored on read, backup validation and later saves', async () => {
+  const stored = { games: { visible: false }, mail: { visible: false } };
+  const modules = modulesFromValue(JSON.stringify(stored));
+  assert.deepEqual(modules.map(m => m.id), ['mail', 'calendar', 'contacts', 'recordings', 'notes']);
+  assert.equal(modules.find(m => m.id === 'mail').visible, false);
+  assert.deepEqual(validateBackupPayload({ version: 1, user: { id: 'u', email: 'a@example.com' },
+    data: { user_settings: [{ user_id: 'u', setting_key: 'module_preferences', setting_value: JSON.stringify(stored) }] } })
+    .errors.filter(error => /module preferences/.test(error)), []);
+  const connection = { async execute(sql, params) {
+    if (sql.startsWith('INSERT INTO user_settings')) {
+      for (const [id, values] of Object.entries(JSON.parse(params[2]))) stored[id] = { ...stored[id], ...values };
+      return [{ affectedRows: 1 }];
+    }
+    return [[{ setting_value: JSON.stringify(stored) }]];
+  } };
+  const updated = await setUserModules('owner', { modules: { notes: { enabled: false } } }, connection);
+  assert.equal(updated.find(m => m.id === 'notes').enabled, false);
+  assert.equal(updated.some(m => m.id === 'games'), false);
+  assert.equal(await isModuleEnabled('owner', 'mail', connection), true);
+  assert.throws(() => validateModuleUpdates({ modules: { games: { visible: true } } }), { status: 400 });
+  assert.equal(getModuleForPath('/api/games/tetris/leaderboard'), null);
 });
 test('module checks fail closed on database failure and malformed saved settings', async () => {
   await assert.rejects(isModuleEnabled('u', 'mail', { execute: async () => { throw new Error('Database unavailable'); } }), /Database unavailable/);

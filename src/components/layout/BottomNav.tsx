@@ -23,7 +23,7 @@ const BottomNav = () => {
       {navItems.filter(item => canNavigate(item.href)).map((item) => {
         const isActive =
           item.href === '/more'
-            ? ['/more', '/music', '/games', '/dashboard', '/contacts', '/notes'].some((path) => location.pathname.startsWith(path))
+            ? ['/more', '/music', '/dashboard', '/contacts', '/notes'].some((path) => location.pathname.startsWith(path))
             : location.pathname.startsWith(item.href);
         return (
           <NavLink

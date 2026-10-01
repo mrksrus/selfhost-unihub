@@ -33,13 +33,14 @@ framing and a password-wrapped data key.
 
 Schema 3 preserves account-scoped folder metadata, source and filing identities,
 Legacy state, per-account sender-rule overrides, recovery journals and translated
-completion markers. Completed recording transcripts and server-side Tetris scores
-are included. Mail mode, separate current provider bindings and the remote-missing
+completion markers. Completed recording transcripts
+are included. Server-side Tetris scores were included until 0.12.0 removed
+Games; they are now skipped on import with a warning. Mail mode, separate current provider bindings and the remote-missing
 marker are included. Notes text, all revisions, Trash state, owned note links and
 attachment bytes are included, even when Notes is hidden or disabled. Module
 preferences are archived with settings. Old archives default to Download; Sync restores as pending.
 Automatic deletion is always reset off. Different provider mailbox identities
-cannot be merged. Browser-only game saves are outside server recovery.
+cannot be merged.
 
 The reader registry is `api/src/services/backup-format.js`, with dedicated readers
 in `backup-formats/`. Original archive checksums are validated before converting

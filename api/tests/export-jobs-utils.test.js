@@ -18,12 +18,14 @@ const os = require('node:os');
 const path = require('node:path');
 
 test('normalizeSections returns all sections for full export', () => {
-  assert.deepEqual(normalizeSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings', 'notes', 'games']);
+  assert.deepEqual(normalizeSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings', 'notes']);
 });
 
 test('normalizeSections rejects unknown sections and removes duplicates', () => {
   assert.throws(() => normalizeSections(['mail', 'unknown']), /Unsupported backup section/);
   assert.deepEqual(normalizeSections(['mail', 'mail', 'recordings']), ['mail', 'recordings']);
+  // Jobs persisted before 0.12.0 may still name the removed games section.
+  assert.deepEqual(normalizeSections(['mail', 'games']), ['mail']);
 });
 
 test('parseRequestedSections accepts JSON arrays returned as strings', () => {

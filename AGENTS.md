@@ -1,6 +1,6 @@
 # UniHub agent guide
 
-UniHub is a self-hosted app for mail, contacts, calendars, tasks, notes, recordings, and optional games. People trust it with private data. Favor correct ownership, recoverability (Data Structure for backups and imports), and clear behavior over clever abstractions. These are project defaults; the task and the maintainer's instructions take priority.
+UniHub is a self-hosted app for mail, contacts, calendars, tasks, notes, and recordings. People trust it with private data. Favor correct ownership, recoverability (Data Structure for backups and imports), and clear behavior over clever abstractions. These are project defaults; the task and the maintainer's instructions take priority.
 The goal of the App is to have a centralized Service as a PWA that connects to Mailing and has contacts and events, so you can access them with only one log in. So if you move to a newer device you sign in once and get the PWA and you have access to everything again. 
 ## How the app fits together
 

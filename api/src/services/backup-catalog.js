@@ -9,7 +9,6 @@ const SECTION_POLICIES = Object.freeze({
   mail: { tables: ["mail_accounts", "mail_folders", "mail_folder_remote_boxes", "mail_sender_rules", "emails", "email_attachments", "mail_email_scores", "mail_folder_reconciliations", "mail_folder_recovery_items", "mail_folder_rule_overrides", ...Object.keys(ARCHIVE_COLUMNS)], fileKinds: ["email_attachment", "raw_email"] },
   recordings: { tables: ["recordings", "recording_tags", "recording_tag_links", "recording_transcription_jobs"], fileKinds: ["recording"] },
   notes: { tables: ['notes', 'note_revisions', 'note_attachments', 'note_links'], fileKinds: ['note_attachment'] },
-  games: { tables: ["tetris_scores"], fileKinds: [] },
 });
 
 function table(section, columns, keyColumns = ['id'], overrides = {}, introducedIn = {}) {
@@ -53,7 +52,6 @@ const BASE_TABLE_POLICIES = Object.freeze({
   recording_tags: table('recordings', 'id user_id name color created_at updated_at', ["id"], {}),
   recording_tag_links: table('recordings', 'recording_id tag_id user_id created_at', ["recording_id", "tag_id"], {}),
   recording_transcription_jobs: Object.freeze({ ...table('recordings', 'id user_id recording_id status provider model language transcript_text error created_at updated_at', ['id'], { status: 'completed_only', error: 'reset', created_at: 'preserve', updated_at: 'preserve' }), rowPolicy: 'Only completed transcripts are exported; queued, running and failed attempts are not resumed.' }),
-  tetris_scores: table('games', 'user_id score lines level achieved_at', ["user_id"], {}),
 });
 
 
@@ -118,11 +116,10 @@ const WRITE_PATHS = Object.freeze({
   calendar: ['/api/calendar', '/api/settings/clear-calendar'],
   mail: ['/api/mail', '/api/settings/clear-mail-accounts'],
   recordings: ['/api/recordings', '/api/settings/clear-recordings'],
-  games: ['/api/games'],
 });
 
 const BACKGROUND_WRITERS = Object.freeze({
-  notes: [], settings: [], contacts: [], games: [], recordings: [],
+  notes: [], settings: [], contacts: [], recordings: [],
   mail: ['mail.runDurableMailJob', 'mail.syncMailAccount', 'mail.runMailServerDeletionPass', 'notifications.deliverPending'],
   calendar: ['notifications.reconcileReminders', 'notifications.enqueueDueReminders', 'notifications.deliverPending'],
 });
@@ -171,6 +168,11 @@ function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POL
 }
 assertRecoveryCatalog();
 
+// Removed modules: older archives and persisted job requests may still name them.
+// Their sections are skipped and their tables are dropped with a warning on import.
+const RETIRED_SECTIONS = Object.freeze(['games']);
+const RETIRED_TABLES = Object.freeze({ tetris_scores: 'Saved Tetris scores from the removed Games module were skipped.' });
+
 function normalizeBackupSections(value = 'full') {
   if (value == null) value = 'full';
   const all = Object.keys(SECTION_POLICIES);
@@ -180,6 +182,7 @@ function normalizeBackupSections(value = 'full') {
     const section = typeof item === 'string' ? item.trim().toLowerCase() : '';
     if (section === 'full') { for (const name of all) sections.add(name); }
     else if (section === 'todo') sections.add('calendar');
+    else if (RETIRED_SECTIONS.includes(section)) continue;
     else if (Object.hasOwn(SECTION_POLICIES, section)) sections.add(section);
     else throw Object.assign(new Error(`Unsupported backup section: ${String(item)}`), { status: 400, code: 'BACKUP_SECTION_UNSUPPORTED' });
   }
@@ -187,4 +190,4 @@ function normalizeBackupSections(value = 'full') {
   return Array.from(sections);
 }
 
-module.exports = { SECTION_POLICIES, TABLE_POLICIES, REFERENCES, FILE_POLICIES, WRITE_PATHS, BACKGROUND_WRITERS, assertRecoveryCatalog, getRestoreSectionForWrite, normalizeBackupSections };
+module.exports = { RETIRED_SECTIONS, RETIRED_TABLES, SECTION_POLICIES, TABLE_POLICIES, REFERENCES, FILE_POLICIES, WRITE_PATHS, BACKGROUND_WRITERS, assertRecoveryCatalog, getRestoreSectionForWrite, normalizeBackupSections };

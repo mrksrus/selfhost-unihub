@@ -1,4 +1,4 @@
-import { legacyOfflineModules, moduleForPath, type ModulePreference } from '@/lib/modules';
+import { knownModules, legacyOfflineModules, moduleForPath, type ModulePreference } from '@/lib/modules';
 import type { User } from '@/contexts/auth-context';
 
 type Row = Record<string, unknown>;
@@ -237,7 +237,7 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   const path = url.pathname.replace(/^\/api(?=\/)/,'');
   const params = url.searchParams;
   if (path.startsWith('/auth/')) return null;
-  const modules = snapshot.modules || legacyOfflineModules;
+  const modules = snapshot.modules ? knownModules(snapshot.modules) : legacyOfflineModules;
   if (path === '/modules') return { data: { modules } };
   const moduleId = moduleForPath(path);
   if (moduleId && !modules.some(module => module.id === moduleId && module.enabled)) return { error: 'This module was disabled when the offline copy was saved.', status: 403 };

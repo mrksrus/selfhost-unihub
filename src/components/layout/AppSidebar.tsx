@@ -13,7 +13,6 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
-  Gamepad2,
   Mic,
   MoreHorizontal,
   NotebookPen,
@@ -35,7 +34,6 @@ const navigation = [
 
 const moreNavigation = [
   { name: 'More', href: '/more', icon: MoreHorizontal },
-  { name: 'Games', href: '/games', icon: Gamepad2 },
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
 ];
 
@@ -125,7 +123,7 @@ const AppSidebar = () => {
         <div className="pt-3 mt-3 border-t border-sidebar-border/70">
           {moreNavigation.filter(item => canNavigate(item.href)).map((item) => {
             const isActive = location.pathname === item.href || (
-              item.href === '/more' && ['/music', '/games', '/dashboard'].includes(location.pathname)
+              item.href === '/more' && ['/music', '/dashboard'].includes(location.pathname)
             );
             return (
               <NavLink

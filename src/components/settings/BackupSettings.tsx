@@ -363,7 +363,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
               : backupAvailable
               ? 'Account exports include your selected data and files. Keep a downloaded copy and its recovery password away from this server.'
               : 'Backup creation and restore are unavailable. Existing completed backups can still be downloaded.'}
-            {' '}Full backups include data from hidden and disabled modules. Browser-only game saves are not included. A full server recovery also needs the database, uploads and configuration.
+            {' '}Full backups include data from hidden and disabled modules. A full server recovery also needs the database, uploads and configuration.
             {capabilities?.exclusions.map(item => <span key={item} className="mt-1 block text-muted-foreground">Not included: {item}.</span>)}
           </p>
           <Card>

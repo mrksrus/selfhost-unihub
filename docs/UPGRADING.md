@@ -5,6 +5,21 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.12.0 Games removed
+
+The Games module was removed. No migration runs and no data is deleted.
+
+- **Tetris scores stay in the database.** The `tetris_scores` table is kept as it
+  is but is no longer used, exported or restored. You can drop it yourself once you
+  no longer need it; UniHub does not depend on it.
+- **Older backups still import.** Archives that contain Tetris scores, or restores
+  that request the old `games` section, are accepted; the scores are skipped and
+  the review shows a warning.
+- **Saved module settings are kept.** A `games` entry in module preferences is
+  ignored; other module choices are unchanged.
+- **Browser-only game saves** (Tamagotchi, AI game, best times) remain in each
+  browser's local storage until site data is cleared; UniHub no longer reads them.
+
 ## 0.11.1 non-root API
 
 The Node API now runs as the unprivileged `unihub` user (uid/gid **10001**) inside

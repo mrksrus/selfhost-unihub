@@ -1,5 +1,5 @@
 const { db } = require('../state');
-const { MODULE_CATALOG } = require('./module-catalog');
+const { MODULE_CATALOG, RETIRED_MODULE_IDS } = require('./module-catalog');
 const SETTING_KEY = 'module_preferences';
 const ids = new Set(MODULE_CATALOG.map(module => module.id));
 const fields = new Set(['visible', 'enabled', 'background']);
@@ -18,7 +18,10 @@ function validateModuleUpdates(input) {
 }
 
 function modulesFromValue(value) {
-  const saved = value == null ? {} : typeof value === 'string' ? JSON.parse(value) : value;
+  const parsed = value == null ? {} : typeof value === 'string' ? JSON.parse(value) : value;
+  // Older releases saved choices for since-removed modules (e.g. games); drop them
+  // so existing settings and backups stay readable.
+  const saved = isObject(parsed) ? Object.fromEntries(Object.entries(parsed).filter(([id]) => !RETIRED_MODULE_IDS.includes(id))) : parsed;
   validateModuleUpdates({ modules: saved });
   return MODULE_CATALOG.map(module => ({ ...module, ...(saved[module.id] || {}) }));
 }

@@ -39,7 +39,7 @@ function inserted(calls, table) {
 
 const archive = data => ({ app: 'unihub', version: 3, data, files: [] });
 
-test('contacts-only schema 3 export never reads mail, credentials, games or recording tables', async t => {
+test('contacts-only schema 3 export never reads mail, credentials or recording tables', async t => {
   const calls = database(t, async sql => sql.includes('FROM contacts ')
     ? [[{ id: 'contact', user_id: 'owner', first_name: 'Local' }]] : [[]]);
   const backup = await buildBackupForUser('owner', { sections: 'contacts', includeFileData: false });
@@ -115,18 +115,23 @@ test('schema 3 import remaps source, filing, folders, overrides and recovery his
   assert.equal(calls.at(-1).sql, 'COMMIT');
 });
 
-test('saved Tetris personal best restores with target ownership and achieved date', async t => {
+test('older archives with Tetris scores or a games section import without the removed Games data', async t => {
   const calls = database(t);
-  const result = await importBackupForUser('destination', archive({ tetris_scores: [
-    { user_id: 'source', score: 5000, lines: 25, level: 4, achieved_at: '2026-09-01T10:00:00Z' },
-  ] }), { mode: 'apply', sections: 'games' });
+  const scores = [{ user_id: 'source', score: 5000, lines: 25, level: 4, achieved_at: '2026-09-01T10:00:00Z' }];
+  const contacts = [{ id: 'contact', user_id: 'source', first_name: 'Local' }];
+  const validation = validateBackupPayload(archive({ tetris_scores: scores, contacts }));
+  assert.equal(validation.valid, true);
+  assert.match(validation.warnings.join(' '), /Tetris scores from the removed Games module were skipped/);
+  assert.ok(!Object.hasOwn(normalizeBackupPayload(archive({ tetris_scores: scores })).data, 'tetris_scores'));
+  const result = await importBackupForUser('destination', archive({ tetris_scores: scores, contacts }), { mode: 'apply', sections: ['contacts', 'games'] });
   assert.equal(result.valid, true);
-  assert.deepEqual(inserted(calls, 'tetris_scores'), [{ user_id: 'destination', score: 5000, lines: 25, level: 4, achieved_at: '2026-09-01 10:00:00' }]);
+  assert.equal(inserted(calls, 'contacts').length, 1);
+  assert.equal(calls.some(call => call.sql.includes('tetris_scores')), false);
+  assert.equal(Object.hasOwn(SECTION_POLICIES, 'games'), false);
 });
 
-test('unknown required tables, fields, file kinds and unsafe game or transcript rows fail review', () => {
+test('unknown required tables, fields, file kinds and unsafe transcript rows fail review', () => {
   for (const data of [{ future_notes: [] }, { contacts: [{ id: 'a', future_required: 'data' }] },
-    { tetris_scores: [{ score: -1, lines: 1, level: 1 }] },
     { recording_transcription_jobs: [{ id: 'a', recording_id: 'r', status: 'queued', transcript_text: 'text' }] },
     { email_attachments: [{ id: 'missing-file', email_id: 'email' }] }]) {
     assert.equal(validateBackupPayload(archive(data)).valid, false);

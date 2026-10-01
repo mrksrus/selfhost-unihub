@@ -87,12 +87,6 @@ function validateRestoreRows(data) {
       errors.push('Only completed recording transcripts can be restored');
     }
   }
-  for (const row of Array.isArray(data?.tetris_scores) ? data.tetris_scores : []) {
-    if (!row || !['score', 'lines', 'level'].every(key => Number.isSafeInteger(row[key]) && row[key] >= (key === 'level' ? 1 : 0) && row[key] <= 4294967295)) {
-      errors.push('Backup has an invalid tetris_scores row');
-    }
-  }
-  if (Array.isArray(data?.tetris_scores) && data.tetris_scores.length > 1) errors.push('Backup has duplicate tetris_scores rows');
   for (const table of ['mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides']) {
     if (data?.[table] === undefined) continue;
     if (!Array.isArray(data[table])) { errors.push(`Backup ${table} must be an array`); continue; }

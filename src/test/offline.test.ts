@@ -192,8 +192,14 @@ describe('offline module preferences', () => {
   });
   it('preserves default access for old snapshots without inventing offline notes', () => {
     const result = resolveOfflineEndpoint(snapshot(), '/modules') as { data: { modules: { enabled: boolean }[] } };
-    expect(result.data.modules).toHaveLength(6);
+    expect(result.data.modules).toHaveLength(5);
     expect(result.data.modules.every(module => module.enabled)).toBe(true);
     expect(resolveOfflineEndpoint(snapshot(), '/notes')).toEqual(expect.objectContaining({ status: 503 }));
+  });
+  it('drops a removed Games module saved by an older snapshot', () => {
+    const stored = snapshot();
+    const mail = { id: 'mail' as const, label: 'Mail', enabled: true, visible: true, background: true };
+    stored.modules = [mail, { ...mail, id: 'games' as never, label: 'Games' }];
+    expect(resolveOfflineEndpoint(stored, '/modules')).toEqual({ data: { modules: [mail] } });
   });
 });
