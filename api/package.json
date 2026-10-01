@@ -13,6 +13,7 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "imap-simple": "^5.1.0",
+    "imapflow": "2.1.2",
     "jsonwebtoken": "^9.0.2",
     "mailparser": "3.9.16",
     "mysql2": "3.23.1",
