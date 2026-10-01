@@ -6,7 +6,7 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of MySQL, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.11.1 (unreleased)
+## 0.11.1
 
 ### Security
 
@@ -35,6 +35,17 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   accounts are syncing long folders.
 - Split the three largest API files (mail service, mail routes, backup service)
   into smaller modules by area. No behavior change.
+- Upgraded pre-0.9.23 installations now get the same calendar colour default as
+  fresh installs (migration 9).
+- `docker/mysql/init/01-schema.sql` is generated from the app's own upgrades
+  (`scripts/local-mysql.sh schema-dump`) and checked by a MySQL test; the legacy
+  baseline upgrade is frozen and every schema change is a numbered migration.
+- Frontend: strict TypeScript, and unused pages, UI components and 18 packages
+  removed.
+- Development: an on-demand local MySQL 8.4 (`scripts/local-mysql.sh`, nothing runs
+  at boot) and deterministic sample data (`npm run db:dev`). See
+  [development](docs/DEVELOPMENT.md#local-mysql-and-sample-data).
+- Release notes are collected in this changelog.
 
 ## 0.11.0
 
