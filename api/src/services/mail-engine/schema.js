@@ -171,6 +171,32 @@ async function verifyManualMailRefresh(db) {
     throw new Error('Missing mail_engine_jobs.manual_refresh');
 }
 
+// 0.13.0: per-account Sync retention windows and the upgrade safety gate.
+// Existing accounts keep sync_policy_confirmed_at NULL: nothing is deleted for
+// absence or retention until the user confirms per account.
+async function migrateMailSyncPolicy(db) {
+  await addColumns(db, 'mail_accounts', [
+    ['sync_window_days', 'sync_window_days INT NULL'],
+    ['trash_window_days', 'trash_window_days INT NULL DEFAULT 30'],
+    ['sync_policy_confirmed_at', 'sync_policy_confirmed_at DATETIME NULL'],
+  ]);
+  await addColumns(db, 'mail_remote_occurrences', [
+    ['internal_date', 'internal_date DATETIME NULL'],
+  ]);
+  await addColumns(db, 'data_export_jobs', [
+    ['mail_account_id', 'mail_account_id CHAR(36) NULL'],
+  ]);
+}
+async function verifyMailSyncPolicy(db) {
+  for (const [table, names] of [['mail_accounts', ['sync_window_days', 'trash_window_days', 'sync_policy_confirmed_at']],
+    ['mail_remote_occurrences', ['internal_date']], ['data_export_jobs', ['mail_account_id']]]) {
+    const present = await columns(db, table);
+    for (const name of names) if (!present.has(name)) throw new Error(`Missing ${table}.${name}`);
+  }
+  const [[trash]] = await db.execute("SHOW COLUMNS FROM mail_accounts WHERE Field = 'trash_window_days'");
+  if (String(trash?.Default) !== '30') throw new Error('mail_accounts.trash_window_days must default to 30');
+}
+
 // Never suppress unexpected SQL errors. The progress checkpoint and each bounded
 // batch are committed together so process death cannot skip accepted records.
 async function backfillMailEngine(db, { batchSize = 200 } = {}) {
@@ -285,4 +311,4 @@ async function verifyMailEngineSchema(db) {
   if (await indexExists(db, 'mail_writebacks', 'uq_mail_writeback')) throw new Error('Legacy writeback unique index still present');
 }
 module.exports = { migrateMailEngineSchema, backfillMailEngine, verifyMailEngineSchema,
-  migrateManualMailRefresh, verifyManualMailRefresh };
+  migrateManualMailRefresh, verifyManualMailRefresh, migrateMailSyncPolicy, verifyMailSyncPolicy };

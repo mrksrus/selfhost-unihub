@@ -304,8 +304,14 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     [3, 'mail-server-follow-mode'], [4, 'notes-with-revisions-and-attachments'],
     [5, 'explicit-mail-writebacks'], [6, 'mail-engine-additive-storage'],
     [7, 'mail-engine-resumable-backfill'], [8, 'mail-engine-manual-refresh-intent'],
-    [9, 'calendar-color-default'],
+    [9, 'calendar-color-default'], [10, 'mail-sync-policy'],
   ]);
+  const [policyColumns] = await db.execute(`SELECT COLUMN_NAME AS name, COLUMN_DEFAULT AS dflt, IS_NULLABLE AS nullable
+    FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mail_accounts'
+      AND COLUMN_NAME IN ('sync_window_days','trash_window_days','sync_policy_confirmed_at') ORDER BY COLUMN_NAME`);
+  assert.deepEqual(policyColumns.map(row => [row.name, row.dflt == null ? null : String(row.dflt), row.nullable]), [
+    ['sync_policy_confirmed_at', null, 'YES'], ['sync_window_days', null, 'YES'], ['trash_window_days', '30', 'YES'],
+  ], 'Upgraded accounts keep every window open and the destructive Sync policy unconfirmed');
   const [[owner]] = await db.execute('SELECT id FROM users LIMIT 1');
   const sentId = crypto.randomUUID();
   const sentAccountId = crypto.randomUUID();
