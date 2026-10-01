@@ -31,7 +31,7 @@ test('add mail account maps strict IMAP TLS failures to host trust confirmation'
     else delete require.cache[encryptionPath];
   });
 
-  delete require.cache[routePath];
+  t.after(require('./helpers/mail-service-modules').evictMailRouteModules());
   setRequireStub(statePath, { db: { execute: async () => [[]] } });
   setRequireStub(encryptionPath, { encrypt: value => `encrypted:${value}` });
   setRequireStub(mailServicePath, {
@@ -127,7 +127,7 @@ test('add mail account keeps server deletion off by default and can enable grace
     else delete require.cache[encryptionPath];
   });
 
-  delete require.cache[routePath];
+  t.after(require('./helpers/mail-service-modules').evictMailRouteModules());
   setRequireStub(statePath, {
     db: {
       execute: async (sql, params = []) => {
@@ -242,7 +242,7 @@ test('update mail account can disable server deletion without password changes',
     else delete require.cache[encryptionPath];
   });
 
-  delete require.cache[routePath];
+  t.after(require('./helpers/mail-service-modules').evictMailRouteModules());
   setRequireStub(statePath, {
     db: {
       execute: async (sql, params = []) => {

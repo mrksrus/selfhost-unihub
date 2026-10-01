@@ -10,7 +10,7 @@ test('HTTP sync acknowledgement is prompt and status never includes another owne
   const oldRoute = require.cache[routePath], oldService = require.cache[servicePath], oldDb = getDb();
   t.after(() => { setDb(oldDb); if (oldRoute) require.cache[routePath] = oldRoute; else delete require.cache[routePath];
     if (oldService) require.cache[servicePath] = oldService; else delete require.cache[servicePath]; });
-  delete require.cache[routePath];
+  t.after(require('./helpers/mail-service-modules').evictMailRouteModules());
   const jobs = new Map(), cancellations = [];
   require.cache[servicePath] = { id: servicePath, filename: servicePath, loaded: true, exports: {
     scheduleMailAccountSync: id => {

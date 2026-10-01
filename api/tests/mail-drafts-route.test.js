@@ -216,7 +216,7 @@ async function createDraftRouteHarness(t, options = {}) {
     await fs.rm(uploadRoot, { recursive: true, force: true });
   });
 
-  delete require.cache[routePath];
+  t.after(require('./helpers/mail-service-modules').evictMailRouteModules());
   process.env.MAIL_ATTACHMENT_UPLOAD_ROOT = uploadRoot;
   setRequireStub(statePath, { db });
   setRequireStub(encryptionPath, { encrypt: value => `encrypted:${value}` });
