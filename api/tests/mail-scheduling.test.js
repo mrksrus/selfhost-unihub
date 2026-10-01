@@ -208,7 +208,7 @@ test('the mail scheduler reserves a slot for provider changes and a nudge yields
       return { yieldReadWork: async id => { calls.push(['yield', id]); return true; },
         drain: async () => { calls.push(['drain']); } };
     } } };
-  delete require.cache[service];
+  t.after(require('./helpers/mail-service-modules').evictMailServiceModules());
   t.after(() => { for (const [p, entry] of old) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
   const mail = require(service);
   assert.deepEqual([options.concurrency, options.readConcurrency], [3, 2]);

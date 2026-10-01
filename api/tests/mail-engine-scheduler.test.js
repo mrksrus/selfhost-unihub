@@ -227,7 +227,7 @@ test('sync cancellation selects only read-only jobs, not accepted mutation or ou
     createDurableMailScheduler: () => ({ cancel: async x => (cancelled.push(x.jobId), true),
       yieldReadWork: async () => false, interruptAccount: id => interrupted.push(id) }),
   } };
-  delete require.cache[service];
+  t.after(require('./helpers/mail-service-modules').evictMailServiceModules());
   t.after(() => { for (const [p, entry] of old) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
   const mail = require(service);
   const runtime = require('../src/services/mail-engine/runtime');

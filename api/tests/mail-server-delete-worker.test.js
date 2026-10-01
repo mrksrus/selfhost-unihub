@@ -54,7 +54,7 @@ test(`server deletion worker: ${scenario}`, async (t) => {
     else delete require.cache[imapSimplePath];
   });
 
-  delete require.cache[mailPath];
+  t.after(require('./helpers/mail-service-modules').evictMailServiceModules());
   let enabledChecks = 0;
   let modulePaused = scenario === 'module-paused';
   const statusUpdates = [];

@@ -27,7 +27,7 @@ function mailFixture(t, { active = 1, disconnected = null, failCopy = false } = 
     [settings, { isModuleEnabled: async () => true, isModuleBackgroundEnabled: async () => true }],
   ];
   for (const [p, exports] of stubs) require.cache[p] = { id: p, filename: p, loaded: true, exports };
-  delete require.cache[mailPath];
+  t.after(require('./helpers/mail-service-modules').evictMailServiceModules());
   const { sendEmail } = require(mailPath);
   t.after(() => { for (const [p, entry] of original) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
   return { send: () => sendEmail(account.id, { to: 'receiver@example.test', subject: 'Fixture', body: 'hello' }),
