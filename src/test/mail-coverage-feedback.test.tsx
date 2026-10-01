@@ -47,7 +47,7 @@ describe('coverage-aware sync feedback in the sync panel', () => {
     expect(panel.queryByText(/Recent mail and older history have separate coverage/)).not.toBeInTheDocument();
     fireEvent.click(toggle);
     expect(panel.getByText(/recent mail and older history have separate coverage/)).toBeInTheDocument();
-    expect(panel.getByText(/Missing server messages stay as local copies/)).toBeInTheDocument();
+    expect(panel.getByText(/Mail removed from the server is removed here too/)).toBeInTheDocument();
   });
   it('has no sync coverage note for download-only accounts', () => {
     const panel = view({ ...base, state: 'idle' }, [{ ...accounts[0], sync_mode: 'download' as const }]);

@@ -2,7 +2,7 @@ import { useRef } from 'react';
 import { skipToken, useQuery } from '@tanstack/react-query';
 import { formatDistanceToNowStrict } from 'date-fns';
 import { ChevronDown, ChevronRight, RefreshCw, X } from 'lucide-react';
-import type { MailAccount, MailWriteback } from '@/lib/mail-api';
+import { needsSyncPolicyDecision, type MailAccount, type MailWriteback } from '@/lib/mail-api';
 import type { MailSyncJob } from '@/hooks/use-mail-sync-jobs';
 import { groupWritebacks } from '@/hooks/use-mail-writebacks';
 import { useUpdateModule, type ModulePreference } from '@/hooks/use-modules';
@@ -14,9 +14,10 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 import { Switch } from '@/components/ui/switch';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { MailPendingChanges } from '@/components/mail/MailPendingChanges';
+import { MailAccountSyncWarnings, MailSyncPolicyNotice } from '@/components/mail/MailSyncPolicyGate';
 
 /** Which part of the sync panel receives focus when it opens. */
-export type SyncPanelFocus = 'default' | 'cancel' | 'attention';
+export type SyncPanelFocus = 'default' | 'cancel' | 'attention' | 'decision';
 
 const activeJob = (job?: MailSyncJob) => job?.state === 'queued' || job?.state === 'running';
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
@@ -83,7 +84,7 @@ function SyncCoverageNote() {
     </CollapsibleTrigger>
     <CollapsibleContent>
       <p className="py-1 text-muted-foreground">
-        For accounts that sync with the server, recent mail and older history have separate coverage. Pending read, star and connected-folder moves show your requested state while UniHub checks the provider; uncertain moves are not blindly repeated. Missing server messages stay as local copies.
+        For accounts that sync with the server, recent mail and older history have separate coverage. Pending read, star and connected-folder moves show your requested state while UniHub checks the provider; uncertain moves are not blindly repeated. Mail removed from the server is removed here too, once mail-client behavior is on for the account.
       </p>
     </CollapsibleContent>
   </Collapsible>;
@@ -106,11 +107,16 @@ interface ControlProps {
   touch: boolean;
 }
 
-function PanelBody({ accounts, jobs, jobsError, operations, operationsError, syncing, cancelling, onSync, onCancel, panel, viewAccountIds }: ControlProps) {
+function PanelBody({ accounts, jobs, jobsError, operations, operationsError, syncing, cancelling, onSync, onCancel, panel, viewAccountIds, touch }: ControlProps) {
   const offline = isOfflineMode();
   const firstCancel = accounts.find(account => viewAccountIds.includes(account.id) && activeJob(jobs.find(job => job.account_id === account.id)))?.id
     ?? accounts.find(account => activeJob(jobs.find(job => job.account_id === account.id)))?.id;
+  const decisions = offline ? [] : accounts.filter(needsSyncPolicyDecision);
   return <div className="space-y-4">
+    {decisions.length > 0 && <section aria-label="Decisions" className="space-y-2">
+      {decisions.map((account, index) => <MailSyncPolicyNotice key={account.id} account={account} touch={touch}
+        autoFocus={panel === 'decision' && index === 0} />)}
+    </section>}
     {offline && <p className="text-xs text-muted-foreground">You are offline. Sync status and actions return when you reconnect.</p>}
     {jobsError && <p role="alert" className="text-xs">Mail sync status is unavailable. An accepted sync may still be running.</p>}
     <section aria-label="Accounts">
@@ -119,24 +125,27 @@ function PanelBody({ accounts, jobs, jobsError, operations, operationsError, syn
           const job = jobs.find(item => item.account_id === account.id);
           const status = accountStatus(account, job);
           const requested = cancelling.has(account.id) || job?.cancellation_requested === true;
-          return <li key={account.id} className="flex items-center gap-2 py-2">
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-medium" title={account.email_address}>{account.email_address}</p>
-              <p className={cn('break-words text-xs', status.error ? 'text-destructive' : 'text-muted-foreground')}>
-                {account.is_active ? status.text : 'Not connected'}
-              </p>
-              {status.coverage && <p className="break-words text-xs text-muted-foreground">{status.coverage}</p>}
+          return <li key={account.id} className="py-2">
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium" title={account.email_address}>{account.email_address}</p>
+                <p className={cn('break-words text-xs', status.error ? 'text-destructive' : 'text-muted-foreground')}>
+                  {account.is_active ? status.text : 'Not connected'}
+                </p>
+                {status.coverage && <p className="break-words text-xs text-muted-foreground">{status.coverage}</p>}
+              </div>
+              {activeJob(job) ? <Button size="sm" variant="outline" className="h-8 shrink-0 text-xs"
+                data-autofocus={panel === 'cancel' && account.id === firstCancel ? '' : undefined}
+                disabled={requested || offline} onClick={() => onCancel(account.id)}
+                aria-label={`Cancel sync for ${account.email_address}`}>
+                {requested ? 'Cancelling…' : 'Cancel'}
+              </Button> : account.is_active && <Button size="sm" variant="ghost" className="h-8 shrink-0 text-xs"
+                disabled={syncing.has(account.id) || offline} onClick={() => onSync(account.id)}
+                aria-label={`Sync ${account.email_address} now`}>
+                {syncing.has(account.id) ? 'Requesting…' : 'Sync now'}
+              </Button>}
             </div>
-            {activeJob(job) ? <Button size="sm" variant="outline" className="h-8 shrink-0 text-xs"
-              data-autofocus={panel === 'cancel' && account.id === firstCancel ? '' : undefined}
-              disabled={requested || offline} onClick={() => onCancel(account.id)}
-              aria-label={`Cancel sync for ${account.email_address}`}>
-              {requested ? 'Cancelling…' : 'Cancel'}
-            </Button> : account.is_active && <Button size="sm" variant="ghost" className="h-8 shrink-0 text-xs"
-              disabled={syncing.has(account.id) || offline} onClick={() => onSync(account.id)}
-              aria-label={`Sync ${account.email_address} now`}>
-              {syncing.has(account.id) ? 'Requesting…' : 'Sync now'}
-            </Button>}
+            <MailAccountSyncWarnings account={account} className="mt-1 text-muted-foreground" />
           </li>;
         })}
       </ul>
@@ -244,14 +253,24 @@ export function MailSyncControl(props: ControlProps) {
   </Popover>;
 }
 
-/** The only inline sync element: shown while a change needs the user's decision. */
-export function MailSyncAttentionLine({ operations, onReview }: { operations: MailWriteback[]; onReview: () => void }) {
+/**
+ * The only inline sync element: one line while a change needs the user's
+ * decision or an existing Sync account waits for its cleanup confirmation.
+ */
+export function MailSyncAttentionLine({ operations, accounts = [], onReview }: {
+  operations: MailWriteback[]; accounts?: MailAccount[]; onReview: (focus: 'attention' | 'decision') => void;
+}) {
   const count = groupWritebacks(operations).attention.length;
-  if (!count || isOfflineMode()) return null;
+  const decisions = accounts.filter(needsSyncPolicyDecision).length;
+  if ((!count && !decisions) || isOfflineMode()) return null;
+  const text = [
+    count > 0 && `${plural(count, 'change needs', 'changes need')} your attention`,
+    decisions > 0 && `${plural(decisions, 'account needs', 'accounts need')} a decision`,
+  ].filter(Boolean).join(' · ');
   return <div role="status" className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3 text-xs sm:px-4">
     <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-warning" />
-    <span className="truncate">{plural(count, 'change needs', 'changes need')} your attention</span>
+    <span className="truncate">{text}</span>
     <span aria-hidden="true" className="text-muted-foreground">·</span>
-    <Button variant="link" size="sm" className="h-auto shrink-0 p-0 text-xs" onClick={onReview}>Review</Button>
+    <Button variant="link" size="sm" className="h-auto shrink-0 p-0 text-xs" onClick={() => onReview(count ? 'attention' : 'decision')}>Review</Button>
   </div>;
 }

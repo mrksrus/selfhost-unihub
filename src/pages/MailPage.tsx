@@ -109,7 +109,7 @@ const MailPage = () => {
         mobileOpen={mobileSidebarOpen} onMobileOpenChange={setMobileSidebarOpen} onCompose={compose.openCompose}>
         <MailAccountList accounts={accounts} loading={accountsLoading} selectedAccount={selectedAccount} legacyCount={folderView.legacyCount}
           compact={sidebarCollapsed && !isMobile}
-          addAccount={<MailAccountDialog editor={accountEditor} trigger={
+          addAccount={<MailAccountDialog editor={accountEditor} touch={isMobile} trigger={
             <Button variant="ghost" size="icon" className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`} title={(sidebarCollapsed && !isMobile) ? 'Add Account' : undefined}>
               <Plus className="h-4 w-4" />
             </Button>
@@ -138,7 +138,7 @@ const MailPage = () => {
 
       {/* Main Content */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <MailSyncAttentionLine operations={writebacks.data ?? []} onReview={() => setSyncPanel('attention')} />
+        <MailSyncAttentionLine operations={writebacks.data ?? []} accounts={accounts} onReview={setSyncPanel} />
         {selectedAccount === LEGACY_ACCOUNT && (
           <MailLegacyRecovery accounts={accounts} folders={folderView.mailFolders} selectedIds={selectedIds}
             onRecover={(accountId, folder) => bulk.move(selectedIds, folder, accountId)} />
