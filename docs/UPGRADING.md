@@ -5,6 +5,25 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.12.0 IMAP IDLE for INBOX
+
+No migration runs. Each mail account with background sync on now keeps **one
+long-lived IMAP connection** to its provider (an IDLE session on INBOX) in
+addition to the short-lived sync connections, so new mail shows up within
+seconds.
+
+- **Provider connection limits.** Most providers allow 10 or more simultaneous
+  connections per account, so this normally needs no action. If a provider
+  reports too many connections, or you run many accounts against one small
+  server, lower or disable IDLE with `UNIHUB_MAIL_IDLE_MAX_SESSIONS` in the app's
+  Compose environment (default `50` per UniHub instance; `0` turns IDLE off and
+  restores the 30-second INBOX check for every account).
+- **Firewalls and proxies** between UniHub and the mail server must allow an
+  idle TLS connection for about 10 minutes; UniHub re-issues IDLE every 10
+  minutes and reconnects with backoff when a connection drops.
+- **Turning background sync off** for Mail in a user's module settings closes
+  that user's IDLE connections.
+
 ## 0.12.0 Games removed
 
 The Games module was removed. No migration runs and no data is deleted.

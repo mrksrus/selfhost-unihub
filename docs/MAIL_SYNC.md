@@ -114,14 +114,15 @@ this policy remain inactive with a warning.
 | Trigger | Endpoint/process | Behavior |
 | --- | --- | --- |
 | Initial account add | account creation route | starts non-blocking sync when no other sync is running |
-| Periodic INBOX follow-up | `api/src/app.js` interval | every 30 seconds: one `recent` job for the account's INBOX |
+| INBOX push (IMAP IDLE) | `api/src/services/mail-idle.js` | a change announced on the account's INBOX: `recent` (plus throttled `flags`/`presence` in Sync mode) about 2 seconds later; see [IMAP IDLE](#imap-idle-for-inbox) |
+| Periodic INBOX follow-up | `api/src/app.js` interval | every 30 seconds: one `recent` job for the account's INBOX; every 5 minutes while the account's IDLE session is healthy |
 | Periodic folder discovery | same interval | at most every 5 minutes (or after a failed pass): folder LIST plus per-folder `recent`/`flags`/`history`/`presence` jobs |
 | Manual sync | `POST /api/mail/sync` | immediate, complete folder discovery and fan-out |
 | Service worker sync | `POST /api/mail/sync/background` | starts at most one sync if data is stale |
 | Writeback follow-up | provider operation worker | ordinary (throttled) sync after an unsettled flag/move |
 
-Periodic and service-worker sync are background work: they are skipped while the
-Mail module's background setting is off. Manual Sync, flag/move actions and their
+Periodic, IDLE-triggered and service-worker sync are background work: they are
+skipped while the Mail module's background setting is off. Manual Sync, flag/move actions and their
 follow-up refresh still run and do not change that setting. Only manual Sync
 reopens a module pause or forces an immediate flags/presence resweep.
 
@@ -145,6 +146,12 @@ executes up to 50 other due, undispatched operations of the same account on its
 transport, each with its own fence check and attempt record, so a bulk change
 normally needs a single LOGIN.
 
+Connections per account: at most one running job's session (jobs of an account
+are serialized; at most three jobs run process-wide) or one parked session, plus
+one long-lived IDLE session on INBOX while background sync is on and the server
+supports IDLE. Server deletion and the connection test open their own short
+sessions. Providers commonly allow 10 or more simultaneous sessions per account.
+
 ### IMAP transport
 
 All IMAP traffic uses [ImapFlow](https://imapflow.com/). Only
@@ -154,7 +161,8 @@ the account's trust decision) unchanged, so TLS verifies the account hostname
 and only an explicit, confirmed trust decision accepts an unverified
 certificate. Library logging is off (`logger: false`): protocol traffic carries
 credentials and message content. Automatic IDLE and COMPRESS are disabled, so
-the wire carries only the engine's own commands. Setup (TCP, TLS, greeting,
+the wire carries only the engine's own commands; the IDLE supervisor below calls
+IDLE explicitly on its own session. Setup (TCP, TLS, greeting,
 login, capability negotiation) is bounded by the connect plus authentication
 timeouts; literals above 32 MiB are refused before they are read.
 
@@ -179,6 +187,58 @@ reported as such, and `UID MOVE` only when the server advertises MOVE, with
 (which falls back to COPY + EXPUNGE) and `messageDelete()` (which can fall back
 to a mailbox-wide EXPUNGE) are never used. Server deletion likewise issues
 `UID STORE +FLAGS.SILENT (\Deleted)` and `UID EXPUNGE <uid>` only with UIDPLUS.
+
+### IMAP IDLE for INBOX
+
+`api/src/services/mail-idle.js` keeps at most one dedicated IDLE session
+(RFC 2177) per eligible account, separate from the job connection pool, so new
+INBOX mail is imported within seconds instead of at the next 30-second tick.
+
+- **Eligible:** the account is active, connected and not paused for any reason
+  (module, settings change, recovery, deployment canary hold), it has a mapped
+  INBOX (after its first folder discovery), the user's Mail module and
+  background sync are on, no mail restore is running, and its mode is Sync or
+  Download (both import new INBOX mail). A server that does not advertise IDLE
+  is skipped (polling stays at 30 seconds) and asked again after 6 hours or a
+  settings change.
+- **Read-only:** the session logs in with the same host policy, pinned address
+  and TLS trust decision as every job, opens INBOX with `EXAMINE`, and then only
+  issues `IDLE`/`DONE` (plus ImapFlow's read-only `LIST`/`LSUB` before opening
+  and a keepalive `NOOP` after a long silence). It never fetches, stores,
+  moves, expunges or appends. Library logging stays off.
+- **Changes become ordinary jobs:** an untagged `EXISTS` queues the account's
+  durable `recent` job for that INBOX; in Sync mode `FLAGS` queues a `flags`
+  job and `EXPUNGE`/`VANISHED` a `presence` job. Both are the normal
+  background sweeps with their 15-minute throttle (a throttled one finishes
+  without connecting), never a manual resweep. Events are coalesced for 2
+  seconds into one admission (`enqueueIdleRefresh` in `mail-sync-control.js`),
+  which rechecks the account, pause, background setting and restore state,
+  persists the jobs and nudges the scheduler. Fencing, leases and imports all
+  stay in the durable jobs; the browser hears about the result through the
+  usual `mail.job`/`mail.changed` events. Each new session also queues one
+  `recent` job, since mail that arrived while nobody listened raises no event.
+- **Cadence:** while an account's session is healthy (selected and idling) the
+  30-second periodic INBOX follow-up runs only every 5 minutes as a safety net;
+  it returns to 30 seconds as soon as the session is down. Folder discovery
+  stays every 5 minutes.
+- **Robustness:** IDLE is re-issued every 10 minutes on the same connection
+  (RFC 2177 asks for less than 29). A lost session reconnects with exponential
+  backoff (5 seconds doubling up to 15 minutes, with jitter; reset after a
+  session stayed up for a minute). A rejected login stops IDLE for that account
+  until its connection settings (host, port, user, password, trust) change, so
+  the provider never sees repeated failed logins from it.
+- **Limits:** one session per account and at most 50 in the process
+  (`UNIHUB_MAIL_IDLE_MAX_SESSIONS` in the app environment; `0` turns IDLE off
+  and keeps 30-second polling for everyone).
+- **Lifecycle:** the supervisor starts after the first periodic pass at API
+  startup and recomputes eligibility every 60 seconds. That one database pass is
+  the backstop for every change (account add or reconnect, settings, canary hold
+  or release, restore, recovery pauses) instead of hooks in every route. Paths
+  that must close the socket at once do so directly: `stopMailAccountWork`
+  (disconnect, purge, settings change, module off) and turning background sync
+  off. SIGTERM/SIGINT close all sessions on the same path that ends the live
+  event streams; sockets and timers are unreferenced so they never hold the
+  process open.
 
 ### One job runner
 

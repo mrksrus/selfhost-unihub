@@ -49,6 +49,7 @@ background jobs and do not depend on the proxy connection after job creation.
 | `api/src/services/mail-drafts.js` | Atomic draft replacements |
 | `api/src/services/mail-import.js` | Complete-message transactions and durable queue insertion |
 | `api/src/services/mail-sync-state.js` | Per-folder UID progress and resets |
+| `api/src/services/mail-idle.js` | IMAP IDLE supervisor: one read-only INBOX session per eligible account; changes become ordinary durable jobs |
 | `api/src/services/offline.js` | Owner-scoped, size-bounded offline snapshots |
 | `api/src/services/notifications.js` | Durable notification events, delivery state and reminder worker |
 | `api/src/security/encryption.js` | AES-256-GCM helpers |
@@ -242,7 +243,8 @@ The Docker Compose file mounts `/app/uploads` as `uploads_data`.
 | Interval | Job |
 | --- | --- |
 | 30 seconds | Reconcile due reminders and process durable notification deliveries |
-| 10 minutes | Periodic mail sync for active accounts when no sync is running |
+| 30 seconds | Mail INBOX follow-up per active account (every 5 minutes while its IMAP IDLE session is healthy); folder discovery at most every 5 minutes |
+| 60 seconds | Mail IDLE supervisor eligibility pass (`mail-idle.js`): opens/closes one read-only INBOX IDLE session per eligible account |
 | 1 minute | Process eligible mail-server deletion queue rows |
 | 1 hour | Delete expired sessions |
 | 1 hour | Delete expired recording upload temp files |

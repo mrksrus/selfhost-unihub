@@ -202,8 +202,13 @@ comes after.
     operation and list-change events from an in-process bus; the UI refetches on
     events and keeps 3–60 s polling only as the fallback when the stream is
     down (see `docs/ARCHITECTURE.md`, Live Status Events).
-19. **IMAP IDLE for INBOX** once on ImapFlow, so new mail arrives without
+19. **Done (0.12.0): IMAP IDLE for INBOX** once on ImapFlow, so new mail arrives without
     periodic polling.
+    *Done (0.12.0):* `mail-idle.js` keeps one read-only IDLE session per
+    eligible account (global cap 50, `UNIHUB_MAIL_IDLE_MAX_SESSIONS`); EXISTS
+    (and FLAGS/EXPUNGE in Sync mode) queue the ordinary durable jobs after a
+    2 s coalescing window, and the 30 s INBOX poll relaxes to 5 min while IDLE
+    is healthy. See [MAIL_SYNC](MAIL_SYNC.md#imap-idle-for-inbox).
 
 ## Notes on decisions kept on purpose
 

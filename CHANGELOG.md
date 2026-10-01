@@ -32,6 +32,18 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   failing), and connection-test error details may be worded differently.
   Server deletion now has the same per-command time limit as sync.
 
+- **New mail arrives within seconds.** For each mail account with background
+  sync on, UniHub now keeps one read-only IMAP IDLE connection to INBOX, so the
+  server announces new mail and UniHub imports it right away instead of
+  checking every 30 seconds. In Sync mode, read/star changes and deletions
+  made on other devices also prompt the regular flag and deletion checks
+  (which still run at most every 15 minutes). While IDLE works for an
+  account, the regular INBOX check runs only every 5 minutes as a safety net;
+  servers without IDLE keep the 30-second check. A rejected login stops IDLE for
+  that account until its settings change. Up to 50 accounts use IDLE at once
+  (`UNIHUB_MAIL_IDLE_MAX_SESSIONS`, `0` turns it off). See
+  [mail sync](docs/MAIL_SYNC.md#imap-idle-for-inbox).
+
 ### Removed
 
 - **The Games module is gone.** Its page, navigation entries, module setting and
