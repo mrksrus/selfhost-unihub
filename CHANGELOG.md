@@ -6,7 +6,19 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of MySQL, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.11.1
+## 0.12.0 (unreleased)
+
+### Improvements
+
+- **Mail sync and server-change status update live.** The app now receives
+  sync progress, provider change outcomes and new-mail notices over a
+  Server-Sent Events stream (`/api/events`) instead of asking the server every
+  few seconds. Status changes appear within about a second, and an idle app
+  sends far fewer requests. If the stream is unavailable (for example behind a
+  proxy that buffers responses), the app falls back to the previous polling.
+  A custom reverse proxy in front of UniHub should not buffer `/api/events`;
+  see [architecture](docs/ARCHITECTURE.md#live-status-events).
+
 
 ### Security
 

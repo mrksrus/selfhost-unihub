@@ -190,9 +190,11 @@ comes after.
 17. **Decide the scope of the Games module.** `AIGame.tsx` alone is 1,463 lines
     and holds most of the strict-mode errors. Freeze it, or move it to a
     separate optional package.
-18. **Push instead of polling** for sync/operation status (Server-Sent Events).
-    The UI polls every 3–30 s today (`use-mail-sync-jobs.ts`, `MailSyncStatus.tsx`,
-    `use-mail-queries.ts`).
+18. **Done (2026-10-01): Push instead of polling** for sync/operation status
+    (Server-Sent Events). `GET /api/events` streams per-user mail job,
+    operation and list-change events from an in-process bus; the UI refetches on
+    events and keeps 3–60 s polling only as the fallback when the stream is
+    down (see `docs/ARCHITECTURE.md`, Live Status Events).
 19. **IMAP IDLE for INBOX** once on ImapFlow, so new mail arrives without
     periodic polling.
 

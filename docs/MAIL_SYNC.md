@@ -181,6 +181,36 @@ batches of 1,000. The newest job of each account/kind/mailbox is kept for
 status and discovery cadence, and every job of an unsettled operation is kept
 for its retry backoff. Jobs are not part of backups.
 
+### Status updates
+
+The browser learns about job and provider-change progress from the live event
+stream (`GET /api/events`, see [Architecture](ARCHITECTURE.md#live-status-events)).
+Producers are small hooks:
+
+- the durable scheduler's state callback (`mail-durable-jobs.js`) publishes
+  `mail.job` for every job start, progress report and completion; admission of a
+  sync (`mail-sync-control.js`) publishes `queued`, and `/sync/cancel` publishes
+  `cancelled` for queued jobs it stopped;
+- a finished job publishes `mail.changed` when it imported or changed rows
+  (`recent`/`history` imports, `flags`/`presence` changes, a fetched body, folder
+  discovery) and after operation/reconcile jobs; a scan that changed rows and
+  every operation/reconcile job also publish `mail.operation`;
+- the writeback executor publishes each committed operation state, and
+  admission, retry, discard and accept-server-state publish theirs.
+
+Events are throttled to one per second per account and type, carry ids, states
+and counters only, and are hints: the client refetches `/mail/sync/status`,
+`/mail/writebacks` and the affected lists. While the stream is connected the
+client polls only as a safety net (sync status and writebacks every 60 seconds,
+mail lists every 5 minutes). When it is not connected (stream refused, network
+error, server restart, offline mode, or a browser without EventSource) the
+previous polling applies: sync status every 3 seconds while a job is active and
+30 seconds otherwise, writebacks every 3/15 seconds, lists every 60 seconds.
+Reconnects back off exponentially (2 seconds up to 5 minutes, with jitter); a
+reconnect refetches status, writebacks and lists once, because events sent
+while disconnected are not replayed. A hidden tab keeps its stream but defers
+refetches until it is visible again.
+
 ## IMAP Folder Strategy
 
 The sync service lists provider folders and selects common folder names:

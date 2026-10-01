@@ -15,6 +15,7 @@ Inside the app container:
 ```text
 Nginx :80
   /assets, /icons, SPA fallback -> /usr/share/nginx/html
+  /api/events (unbuffered SSE)  -> Node.js API :4000
   /api/*, /health              -> Node.js API :4000
 
 Node.js API
@@ -119,6 +120,63 @@ recordings and backup archives reuse the file-stream response contract, includin
 byte ranges. Client disconnects destroy the corresponding stream.
 Request URL parsing is inside the outer error boundary. Malformed Host headers
 or request targets return HTTP 400 without terminating the API.
+
+A route that streams its own response (only `GET /api/events`) returns
+`{ __handled: true }` after writing; the handler then leaves the response alone.
+
+## Live Status Events
+
+`GET /api/events` is a Server-Sent Events stream (`text/event-stream`) that
+replaces most status polling in the browser. It passes the normal request
+boundary: the session must be valid (401 otherwise), a foreign `Origin` is
+refused (403), and as a GET it needs no CSRF token. The stream belongs to one
+user and one session.
+
+- **Bus.** `api/src/services/server-events.js` holds an in-process bus. UniHub
+  runs exactly one API process, so every event published by the mail workers
+  reaches every stream. A second API replica would not share events (or the
+  existing in-process mail and backup locks); see Operational Notes.
+- **Owner scoping.** Events are published for a user id taken from the row that
+  changed (`mail_engine_jobs.user_id`, `mail_writebacks.user_id`) and are written
+  only to that user's streams. Events of a disabled module are withheld per
+  stream; the module set is read at connect, on `PUT /api/modules` and at every
+  heartbeat.
+- **Content.** Events carry ids, states and counters only: never message
+  content, subjects, addresses, folder names or provider error text. The
+  browser refetches the real data through the ordinary owner-scoped routes.
+- **Event types.** `ready` (`{v}`), `mail.job` (`{accountId, jobId, kind, state,
+  phase, processed, total}`; states `queued`, `running`, `idle`, `error`,
+  `cancelled`, `paused`), `mail.operation` (`{accountId, operationIds, state}`;
+  writeback states such as `accepted`, `queued`, `confirmed`, `needs_attention`,
+  or `null` for a coalesced mix), `mail.changed` (`{accountId, reason}`; reasons
+  `import`, `flags`, `folders`, `content`, `operation`, `local`) and `end`
+  (`{reason}`: `signed_out`, `session_ended` or `shutdown`). `accountId` may be
+  `null` when a change spans accounts.
+- **Rate.** Each event type is throttled to one per second per account; the last
+  event of a burst is always delivered when the interval ends.
+- **Lifetime.** The stream starts with a `retry:` hint and a `ready` event and
+  sends a `: ping` comment every 25 seconds. Each heartbeat re-checks the session
+  with the same lookup as `verifyToken`, so a revoked, expired or deactivated
+  session ends at the latest one heartbeat later. Sign-out, password changes,
+  2FA disable (other sessions), and admin password reset, deactivation or
+  deletion end the affected streams at once. A stream is closed when the client
+  disconnects or stops reading (more than 256 KiB buffered).
+- **Limits.** At most 5 streams per user and 200 in total; further requests get
+  429 or 503 with `Retry-After: 60`.
+- **Shutdown.** On SIGTERM/SIGINT (the supervisor's stop path, including the
+  IPC disconnect of the unprivileged API) the API sends `end` with reason
+  `shutdown`, closes every stream and stops accepting connections, then lets the
+  signal end the process.
+- **Proxy.** Nginx proxies `location = /api/events` with `proxy_buffering off`,
+  no gzip and a one-hour read timeout; the API also sends `X-Accel-Buffering: no`.
+  The service worker has no route for `/api/events`, so the browser reads the
+  stream from the network directly and nothing is cached.
+
+In the browser, `ServerEventsProvider` (inside `SessionQueryProvider`, so it ends
+with the session) opens the stream for an authenticated online session only,
+never for an offline profile. It turns events into coalesced TanStack Query
+invalidations and defers them while the tab is hidden. See
+[Mail sync](MAIL_SYNC.md#status-updates) for the polling fallback.
 
 ## Authentication and CSRF
 
@@ -283,6 +341,8 @@ lazily; Workbox still precaches the offline-capable chunks, so startup savings d
 not imply smaller total installation downloads.
 
 The service worker does not cache API responses; API GET routes use NetworkOnly.
+`/api/events` is excluded from that route so the event stream bypasses the
+worker entirely.
 The custom worker removes obsolete API caches on activation and owns Web Push
 display, persistent per-user deduplication and same-origin click navigation.
 Mail, calendar and to-do notification links open the referenced item after
@@ -318,6 +378,9 @@ Important boundaries in the current code:
   against the same database without reviewing in-memory locks and rate limits.
 - Mail and backup workers use in-process execution locks and are not designed
   for multiple app containers. Backup/restore job state itself is durable.
+- Live status events (`/api/events`) use an in-process bus: one API process
+  serves every stream. Behind several API processes, browsers would miss events
+  and fall back to slow polling.
 - Use external backups for MySQL and the uploads volume.
 - Download important application backups off-server. A generated backup retained
   in the uploads volume is not protection against loss of that volume.
