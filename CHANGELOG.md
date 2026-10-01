@@ -6,7 +6,7 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of MySQL, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.12.0 (unreleased)
+## 0.12.0
 
 ### Improvements
 
