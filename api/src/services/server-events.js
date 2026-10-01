@@ -27,7 +27,7 @@ const MAIL_JOB_STATES = new Set(['queued', 'running', 'idle', 'error', 'cancelle
 const MAIL_OPERATION_STATES = new Set(['accepted', 'queued', 'executing', 'verifying', 'retry_wait', 'reconciling',
   'confirmed', 'needs_attention', 'rejected', 'cancelled', 'superseded']);
 const MAIL_CHANGE_REASONS = new Set(['import', 'flags', 'folders', 'content', 'operation', 'local']);
-const MAIL_JOB_KINDS = new Set(['sync', 'recent', 'flags', 'history', 'presence', 'body', 'operation', 'reconcile']);
+const MAIL_JOB_KINDS = new Set(['sync', 'recent', 'flags', 'history', 'presence', 'body', 'prune', 'operation', 'reconcile']);
 
 const id = value => {
   const text = value === null || value === undefined ? '' : String(value);
@@ -277,6 +277,8 @@ function publishMailJob(job, bus = serverEvents) {
   if (kind === 'operation' || kind === 'reconcile') reason = 'operation';
   else if (kind === 'sync' && job.state === 'idle') reason = 'folders';
   else if (kind === 'body' && count(result.processed) > 0) reason = 'content';
+  // Sync policy removed, merged or refiled local copies in this batch.
+  else if (kind === 'prune' && count(result.processed) > 0) reason = 'content';
   else if (changedRows > 0) reason = kind === 'recent' || kind === 'history' ? 'import' : 'flags';
   if (reason) publishMailChanged(userId, accountId, reason, bus);
   // A scan can settle a flag or move by observation; mutation jobs settle them directly.

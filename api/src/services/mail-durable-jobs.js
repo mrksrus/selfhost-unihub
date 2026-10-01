@@ -184,14 +184,19 @@ async function runDurableMailJob(job, signal, report) {
     checkCancelled(signal);
     await runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner,
       generation: Number(job.worker_generation) });
+    if (job.kind === 'prune') {
+      // Local Sync policy only: no credentials, no provider connection.
+      const result = await require('./mail-sync-policy').runPruneSlice({ account, job, signal, report });
+      return done({ success: true, ...result });
+    }
     const config = await buildImapConnectionConfig(account);
     if (!config) return { success: false, error: 'Mail credentials unavailable' };
     if (await durableJobIdle(job, account)) return { success: true, more: false, skipped: true };
     connection = await acquireImapConnection(account, config, { signal });
     checkCancelled(signal);
     if (job.kind === 'sync') {
-      const specialUses = new Map();
-      const names = await listAvailableImapFolders(connection, specialUses, true);
+      const specialUses = new Map(), allMailboxes = new Set();
+      const names = await listAvailableImapFolders(connection, specialUses, true, allMailboxes);
       for (const planned of pickImapSyncFolders(names)) {
         if (names.includes(planned.folderName) && !specialUses.has(planned.folderName)) specialUses.set(planned.folderName, planned.dbFolderName);
       }
@@ -206,7 +211,8 @@ async function runDurableMailJob(job, signal, report) {
         const mailbox = await require('./mail-engine/repository').withTransaction(executor =>
           require('./mail-engine/repository').ensureMailbox({ userId: account.user_id,
             accountId, folderName: folder.remoteName, epoch: selected.uidvalidity,
-            metadata: { localFolderSlug: folder.slug, specialUse: specialUses.get(folder.remoteName) || null } }, executor), db);
+            metadata: { localFolderSlug: folder.slug,
+              specialUse: allMailboxes.has(folder.remoteName) ? 'all' : specialUses.get(folder.remoteName) || null } }, executor), db);
         // These are durable independent jobs, never a global inventory equality gate.
         for (const [kind, priority] of account.sync_mode === 'sync'
           ? [['recent', 10], ['flags', 20], ['history', 60], ['presence', 70]]
@@ -215,6 +221,9 @@ async function runDurableMailJob(job, signal, report) {
             kind, priority, manualRefresh: Number(job.manual_refresh) === 1 && ['flags', 'presence'].includes(kind) });
         }
       }
+      // Sync policy (retention, proven absence, Gmail merge, archive filing)
+      // is applied by a low-priority local job after each discovery pass.
+      if (account.sync_mode === 'sync') await require('./mail-sync-policy').enqueuePrune({ userId: account.user_id, accountId });
       // Stream jobs select a single mapped mailbox in account-scoped rounds.
       return done({ success: true, started: true, folders: registered.length });
     }

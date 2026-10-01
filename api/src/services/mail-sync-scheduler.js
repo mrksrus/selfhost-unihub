@@ -1,6 +1,8 @@
 const runtime = require('./mail-engine/runtime');
 const { randomUUID } = require('node:crypto');
-const READ_ONLY_MAIL_JOB_KINDS = new Set(['sync', 'recent', 'flags', 'history', 'presence', 'body']);
+// 'prune' never contacts the provider; it applies Sync policy to local copies
+// and yields to interactive work like the provider read jobs.
+const READ_ONLY_MAIL_JOB_KINDS = new Set(['sync', 'recent', 'flags', 'history', 'presence', 'body', 'prune']);
 // Provider writes and their outcome checks. Accepted user changes run as these.
 const MUTATION_MAIL_JOB_KINDS = ['operation', 'reconcile'];
 // readConcurrency caps the slots read-only jobs may hold. Below concurrency, the
@@ -85,7 +87,7 @@ function createDurableMailScheduler(run, { repository = runtime, concurrency = 2
             LIMIT 1 FOR UPDATE`, [job.user_id, job.mail_account_id, job.mailbox_id]);
           more = pending.length > 0;
         }
-        if (state === 'idle' && more && (job.mailbox_id || job.kind === 'reconcile')) {
+        if (state === 'idle' && more && (job.mailbox_id || job.kind === 'reconcile' || job.kind === 'prune')) {
           await repository.enqueueJob({ userId: job.user_id, accountId: job.mail_account_id,
             mailboxId: job.mailbox_id, operationId: job.operation_id, kind: job.kind,
             priority: job.priority, dueAt: result?.retryAt || null,

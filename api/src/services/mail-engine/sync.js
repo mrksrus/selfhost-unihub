@@ -3,6 +3,7 @@ const repository = require('./repository');
 const runtime = require('./runtime');
 const transport = require('./transport');
 const { uint32, DEFAULT_MAX_BYTES } = require('./content');
+const { outsideWindow } = require('../mail-sync-policy');
 
 const WINDOW = 128; // UID-span, not offset or message count; one fetch has <=128 items.
 const STREAMS = ['recent', 'flags', 'history', 'presence'];
@@ -141,19 +142,25 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
     // A reset in another worker invalidates the selection before any cursor write.
     const [epochs] = await executor.execute('SELECT uidvalidity FROM mail_remote_mailboxes WHERE id = ? AND user_id = ? AND mail_account_id = ? FOR UPDATE', [mailbox.id, userId, accountId]);
     if (!epochs.length || uint32(epochs[0].uidvalidity) !== epoch) throw new Error('Mailbox epoch changed; window not committed');
-    let inserted = 0, updated = 0;
+    let inserted = 0, updated = 0, skipped = 0;
     for (const item of items) {
       const started = snapshot.get(item.uid);
       const current = await repository.getOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch, uid: item.uid }, executor);
       if (current && (String(current.observation_revision) !== String(started?.observation_revision) || modseqOlder(item.modseq, current.observed_modseq))) continue;
       const mapped = await mappedMoveFor(executor, { userId, accountId, folderName: folder.folderName,
         mailboxId: mailbox.id, epoch, uid: item.uid });
+      // Sync retention: a message older than this mailbox's window is not
+      // imported (it stays on the server). Known items, a mapped MOVE
+      // destination and a further Gmail label of a known message still count.
+      if (!current && !mapped && outsideWindow(account, mailbox, item.internalDate)
+        && !await knownGmailMessage(executor, { userId, accountId, gmail, item })) { skipped++; continue; }
       const emailId = current?.email_id || await ensureItem(executor, { userId, accountId, mailboxId: mailbox.id, folder, epoch, item, gmail, mapped });
       const revision = Number(current?.observation_revision || 0) + 1;
       if (!Number.isSafeInteger(revision)) throw new RangeError('Observation revision exhausted');
       const occurrence = await repository.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch,
         uid: item.uid, emailId, flags: item.flags, modseq: item.modseq || null,
-        gmailMsgId: gmail ? item.gmailMsgId || null : null, observationRevision: revision }, executor);
+        gmailMsgId: gmail ? item.gmailMsgId || null : null, observationRevision: revision,
+        internalDate: item.internalDate || null }, executor);
       if (!current) inserted++; else updated++;
       // A fetch that started before a confirmed mutation cannot repaint it.
       // The occurrence repository also protects MODSEQ and its own revision.
@@ -185,11 +192,17 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       [userId, accountId, mailbox.id, epoch, window.start, window.end]);
       const protectedUids = currentRows.filter(row => !snapshot.has(Number(row.uid)) ||
         String(snapshot.get(Number(row.uid)).observation_revision) !== String(row.observation_revision)).map(row => Number(row.uid));
-      await repository.markAbsentInWindow({ userId, accountId, mailboxId: mailbox.id, epoch,
+      const absent = await repository.markAbsentInWindow({ userId, accountId, mailboxId: mailbox.id, epoch,
         windowStart: window.start, windowEnd: window.end,
         presentUids: [...new Set([...items.map(i => i.uid), ...protectedUids])], complete: true }, executor);
-      // Only this confirmed same-epoch absence may change a retained item's
-      // remote projection. Gmail's other active labels still keep it present;
+      // Sync: the server is the source of truth. The prune job removes items
+      // without any remaining occurrence (only after the account's policy
+      // confirmation) or, on Gmail without a visible All Mail, files them as
+      // archived. Download mode never sweeps presence.
+      if (absent > 0 && account.sync_mode === 'sync')
+        await require('../mail-sync-policy').enqueuePrune({ userId, accountId }, executor);
+      // Only this confirmed same-epoch absence may mark an item missing.
+      // Gmail's other active labels (All Mail included) keep it present;
       // old/quarantined epochs and partial windows can never prove absence.
       await executor.execute(`UPDATE emails e SET e.remote_missing = NOT EXISTS (
           SELECT 1 FROM mail_remote_occurrences live
@@ -207,8 +220,14 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
     if (saveCoverage) await repository.saveCursor({ userId, accountId, mailboxId: mailbox.id, stream, epoch,
       windowStart: window.start, windowEnd: window.end, coveredThrough: window.end,
       sweepGeneration, coverage: { bounded: true, observed: items.length, upper }, complete: true }, executor);
-    return { inserted, updated };
+    return { inserted, updated, skipped };
   }, db);
+}
+async function knownGmailMessage(executor, { userId, accountId, gmail, item }) {
+  if (!gmail || !item.gmailMsgId || !/^[0-9]+$/.test(String(item.gmailMsgId))) return false;
+  const [rows] = await executor.execute('SELECT email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ? AND gmail_msgid = ? LIMIT 1',
+    [accountId, userId, String(item.gmailMsgId)]);
+  return rows.length > 0;
 }
 
 async function scanMailboxSlice({ db, connection, account, folder, stream = 'recent', signal, job = null,

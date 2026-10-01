@@ -195,13 +195,13 @@ async function resumeAccount({ userId, accountId, resumeStreams = true, reasons 
         lease_owner = NULL, lease_until = NULL, worker_generation = NULL, due_at = UTC_TIMESTAMP(),
         phase = 'revalidation', completed_at = NULL, error = NULL
         WHERE mail_account_id = ? AND user_id = ? AND state = 'paused' AND operation_id IS NULL
-          AND kind IN ('sync','recent','flags','history','presence','body')`, [accountId, userId]);
+          AND kind IN ('sync','recent','flags','history','presence','body','prune')`, [accountId, userId]);
       return { resumed: resumed.affectedRows, retired: 0 };
     }
     await cx.execute(`UPDATE mail_engine_accounts SET paused_reason = IF(paused_reason <=> ?, paused_reason, NULL),
       generation = generation + 1, lease_owner = NULL, lease_until = NULL WHERE mail_account_id = ? AND user_id = ?`,
     [HOLD_REASON, accountId, userId]);
-    const readOnly = "operation_id IS NULL AND kind IN ('sync','recent','flags','history','presence','body')";
+    const readOnly = "operation_id IS NULL AND kind IN ('sync','recent','flags','history','presence','body','prune')";
     const [retired] = await cx.execute(`UPDATE mail_engine_jobs SET state = 'cancelled', cancellation_requested = TRUE,
       lease_owner = NULL, lease_until = NULL, completed_at = UTC_TIMESTAMP(),
       error = 'Reconnect retained prior provider intent for review; this historical job was not replayed'

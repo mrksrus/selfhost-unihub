@@ -84,14 +84,14 @@ test('an out-of-spec HIGHESTMODSEQ/MODSEQ (iCloud-style 0) degrades to no CONDST
   assert.equal(box.highestmodseq, null);
   assert.equal(box.capabilities.condstore, false);
   const result = await fetchMetadataWindow(connection, { folder: 'INBOX', uidvalidity: 9, startUid: 102, endUid: 105 });
-  assert.deepEqual(result.items, [{ uid: 103, flags: ['\\Seen', '$custom'], modseq: null, gmailMsgId: null }]);
+  assert.deepEqual(result.items, [{ uid: 103, flags: ['\\Seen', '$custom'], modseq: null, gmailMsgId: null, internalDate: '2026-09-29T12:00:00.000Z' }]);
 });
 const moveRequest = { uid: 103, uidvalidity: 9, sourceFolder: 'INBOX', targetFolder: 'Filed' };
 test('finite UID metadata uses real UID FETCH and keeps 64-bit MODSEQ lossless', async t => {
   const { fixture, connection, box } = await setup(t);
   assert.equal(box.highestmodseq, '9007199254740993123');
   const result = await fetchMetadataWindow(connection, { folder: 'INBOX', uidvalidity: 9, startUid: 102, endUid: 105 });
-  assert.deepEqual(result.items, [{ uid: 103, flags: ['\\Seen', '$custom'], modseq: '9007199254740993123', gmailMsgId: null }]);
+  assert.deepEqual(result.items, [{ uid: 103, flags: ['\\Seen', '$custom'], modseq: '9007199254740993123', gmailMsgId: null, internalDate: '2026-09-29T12:00:00.000Z' }]);
   assert.equal(result.complete, true);
   assert(fixture.commands.includes('UID FETCH 102:105 (UID FLAGS INTERNALDATE MODSEQ)'));
 });
