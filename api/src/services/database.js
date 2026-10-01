@@ -311,6 +311,22 @@ async function ensureSchema() {
       up: migrateManualMailRefresh,
       verify: verifyManualMailRefresh,
     },
+    {
+      // Installs from before 0.9.23 kept the old green default; fresh installs
+      // use the blue one. Only the column default changes, no existing rows.
+      id: 9,
+      name: 'calendar-color-default',
+      up: async connection => {
+        for (const table of ['calendar_calendars', 'calendar_events']) {
+          await connection.execute(`ALTER TABLE \`${table}\` ALTER COLUMN color SET DEFAULT '#2563eb'`);
+        }
+      },
+      verify: async connection => {
+        const [rows] = await connection.execute(`SELECT TABLE_NAME, COLUMN_DEFAULT FROM information_schema.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'color' AND TABLE_NAME IN ('calendar_calendars','calendar_events')`);
+        if (rows.length !== 2 || rows.some(row => row.COLUMN_DEFAULT !== '#2563eb')) throw new Error('Calendar color default not updated');
+      },
+    },
   ]);
 }
 

@@ -304,6 +304,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     [3, 'mail-server-follow-mode'], [4, 'notes-with-revisions-and-attachments'],
     [5, 'explicit-mail-writebacks'], [6, 'mail-engine-additive-storage'],
     [7, 'mail-engine-resumable-backfill'], [8, 'mail-engine-manual-refresh-intent'],
+    [9, 'calendar-color-default'],
   ]);
   const [[owner]] = await db.execute('SELECT id FROM users LIMIT 1');
   const sentId = crypto.randomUUID();
