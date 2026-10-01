@@ -174,11 +174,14 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
     const gmail = '9007199254740993123';
     await occurrence(boxes[1],copy,{uid:201,gmailMsgId:gmail});
     await occurrence(boxes[2],copy,{uid:202,gmailMsgId:gmail});
-    await assert.rejects(occurrence(boxes[3],rival,{uid:203,gmailMsgId:gmail}),{code:'GMAIL_IDENTITY_CONFLICT'});
+    // A legacy per-label copy keeps its own occurrence; the conflict is quarantined for review.
+    await occurrence(boxes[3],rival,{uid:203,gmailMsgId:gmail});
+    assert.equal((await one(pool,"SELECT COUNT(*) AS n FROM mail_engine_quarantine WHERE source_id=? AND reason='gmail_identity_conflict'",[rival])).n,1);
     await assert.rejects(pool.execute('INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id) VALUES (?,?,?,?)',
       [account,gmail,owner,rival]),{code:'ER_DUP_ENTRY'});
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_gmail_messages WHERE mail_account_id=? AND gmail_msgid=?',[account,gmail])).n,1);
-    assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_remote_occurrences WHERE mailbox_id=? AND uid=203',[boxes[3].id])).n,0);
+    assert.equal((await one(pool,'SELECT email_id FROM mail_remote_occurrences WHERE mailbox_id=? AND uid=203',[boxes[3].id])).email_id,rival);
+    assert.equal((await one(pool,'SELECT email_id FROM mail_gmail_messages WHERE mail_account_id=? AND gmail_msgid=?',[account,gmail])).email_id,copy);
     const otherBox = await box('Projects',7,secondAccount,owner);
     await txn(cx => repo.upsertOccurrence({userId:owner,accountId:secondAccount,mailboxId:otherBox.id,epoch:7,uid:201,emailId:cross,gmailMsgId:gmail},cx));
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_gmail_messages WHERE gmail_msgid=?',[gmail])).n,2);

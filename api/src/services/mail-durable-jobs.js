@@ -251,6 +251,10 @@ async function runDurableMailJob(job, signal, report) {
 durableScheduler = createDurableMailScheduler(runDurableMailJob, { concurrency: 3, readConcurrency: 2, onState: state => {
   if (!state.mail_account_id) return;
   publishMailJob(state); // live status for the account owner's open tabs
+  // Operator log: job kind, account id and the stored error text only — no
+  // addresses or mail content. Without this, failing jobs were invisible in logs.
+  if (state.state === 'error') console.error(`[MAIL JOB] ${state.kind || 'job'} failed for account ${state.mail_account_id}:`,
+    String(state.error || state.result?.error || 'unknown error').slice(0, 200));
   if (state.state === 'running') runningDurableAccounts.add(state.mail_account_id);
   else if (['idle', 'error', 'cancelled', 'paused'].includes(state.state)) runningDurableAccounts.delete(state.mail_account_id);
   // A continuation is committed atomically with the completed job by the

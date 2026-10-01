@@ -108,7 +108,14 @@ async function upsertOccurrence({ userId, accountId, mailboxId, epoch, uid, emai
   if (!items.length) throw fail('MAIL_ITEM_NOT_OWNED', 'Email not found for this account');
   if (gmailMsgId) {
     const [known] = await cx.execute('SELECT email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND gmail_msgid = ? FOR UPDATE', [accountId, gmailMsgId]);
-    if (known.length && known[0].email_id !== emailId) throw fail('GMAIL_IDENTITY_CONFLICT', 'Gmail identity belongs to another local item');
+    if (known.length && known[0].email_id !== emailId) {
+      // Mail imported before Gmail ids were read was stored as one local copy per
+      // label. Keep this occurrence on its own copy (never merge copies here) and
+      // record the conflict for review instead of failing the whole sync window.
+      await cx.execute(`INSERT INTO mail_engine_quarantine (source_table,source_id,user_id,mail_account_id,reason,evidence_json)
+        VALUES ('emails',?,?,?,'gmail_identity_conflict',JSON_OBJECT('mailboxId',?,'uid',?,'boundEmailId',?))
+        ON DUPLICATE KEY UPDATE source_id = source_id`, [emailId, userId, accountId, mailboxId, String(uid), known[0].email_id]);
+    }
     if (!known.length) await cx.execute('INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id) VALUES (?,?,?,?)', [accountId, gmailMsgId, userId, emailId]);
   }
   const [existing] = await cx.execute('SELECT * FROM mail_remote_occurrences WHERE mailbox_id = ? AND uidvalidity = ? AND uid = ? FOR UPDATE', [mailboxId, epoch, uid]);
