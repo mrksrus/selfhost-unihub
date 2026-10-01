@@ -149,7 +149,8 @@ user and one session.
   `cancelled`, `paused`), `mail.operation` (`{accountId, operationIds, state}`;
   writeback states such as `accepted`, `queued`, `confirmed`, `needs_attention`,
   or `null` for a coalesced mix), `mail.changed` (`{accountId, reason}`; reasons
-  `import`, `flags`, `folders`, `content`, `operation`, `local`) and `end`
+  `import`, `flags`, `folders`, `content` (fetched bodies, and Sync policy
+  removals/merges by the local `prune` job), `operation`, `local`) and `end`
   (`{reason}`: `signed_out`, `session_ended` or `shutdown`). `accountId` may be
   `null` when a change spans accounts.
 - **Rate.** Each event type is throttled to one per second per account; the last
