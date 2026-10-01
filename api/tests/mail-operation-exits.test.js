@@ -61,7 +61,8 @@ test('a stuck operation is not re-dispatched every second by the due scan', asyn
   const { clock, log } = store(t, op, { prior: [{ id: 'older', state: 'reconciling' }] });
   const enqueued = [];
   t.mock.method(runtime, 'enqueueJob', async job => { enqueued.push({ ...job, at: clock.now }); });
-  t.mock.method(runtime, 'claimDueJob', async () => null);
+  // Each enqueue nudges the durable scheduler; this test runs the job itself.
+  t.mock.method(require('../src/services/mail'), 'runMailOperationsNow', async () => true);
   for (clock.now = 0; clock.now < 120; clock.now++) {
     const before = enqueued.length;
     await writes.runDueWritebacks(); await tick();

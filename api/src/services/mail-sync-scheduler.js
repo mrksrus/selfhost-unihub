@@ -1,11 +1,18 @@
 const runtime = require('./mail-engine/runtime');
 const { randomUUID } = require('node:crypto');
 const READ_ONLY_MAIL_JOB_KINDS = new Set(['sync', 'recent', 'flags', 'history', 'presence', 'body']);
-function createDurableMailScheduler(run, { repository = runtime, concurrency = 2,
+// Provider writes and their outcome checks. Accepted user changes run as these.
+const MUTATION_MAIL_JOB_KINDS = ['operation', 'reconcile'];
+// readConcurrency caps the slots read-only jobs may hold. Below concurrency, the
+// remaining slots only ever take operation/reconcile jobs, so an accepted change
+// never waits behind other accounts' long history or body scans. (A read-only
+// job of the same account holds its lease; yieldReadWork releases that one.)
+function createDurableMailScheduler(run, { repository = runtime, concurrency = 2, readConcurrency = concurrency,
   workerId = randomUUID(), onState = () => {}, pollMs = 1000, leaseSeconds = 30, recoveryMs = 15000, now = Date.now } = {}) {
-  if (typeof run !== 'function' || !Number.isInteger(concurrency) || concurrency < 1) throw new TypeError('Invalid mail worker');
+  if (typeof run !== 'function' || !Number.isInteger(concurrency) || concurrency < 1
+    || !Number.isInteger(readConcurrency) || readConcurrency < 1 || readConcurrency > concurrency) throw new TypeError('Invalid mail worker');
   const running = new Map();
-  let draining = false, stopped = false, initialized = false, timer = null, startPromise = null;
+  let draining = false, redrain = false, stopped = false, initialized = false, timer = null, startPromise = null;
   let drainFinished = Promise.resolve(), recoveredAt = null;
   function start() {
     if (initialized) return Promise.resolve();
@@ -49,7 +56,10 @@ function createDurableMailScheduler(run, { repository = runtime, concurrency = 2
       if (heartbeatError) throw heartbeatError;
       const yielded = controller.signal.reason === 'interactive-yield' && !runningJob.cancellationRequested
         && READ_ONLY_MAIL_JOB_KINDS.has(job.kind);
-      const state = yielded ? 'idle' : controller.signal.aborted || result?.cancelled ? 'cancelled' : result?.success ? 'idle' : 'error';
+      // paused: the account cannot take provider writes now (module, restore,
+      // inactive); the due scan requeues the job once the account may run it.
+      const state = yielded ? 'idle' : controller.signal.aborted || result?.cancelled ? 'cancelled'
+        : result?.paused ? 'paused' : result?.success ? 'idle' : 'error';
       const completion = async cx => {
         await repository.completeJob({ jobId: job.id, accountId: job.mail_account_id,
           workerId, generation: Number(job.worker_generation), state, error: result?.error || null }, cx);
@@ -114,34 +124,44 @@ function createDurableMailScheduler(run, { repository = runtime, concurrency = 2
       if (!stopped) void drain().catch(error => onState({ state: 'error', error: error.message }));
     }
   }
+  const readsRunning = () => [...running.values()].filter(({ job }) => READ_ONLY_MAIL_JOB_KINDS.has(job.kind)).length;
+  // A drain requested while one is in progress repeats that pass afterwards:
+  // work committed after the running pass's claim query must not wait for the
+  // next poll (an accepted change nudges the scheduler this way).
   async function drain() {
-    if (stopped || draining) return;
+    if (stopped) return;
+    if (draining) { redrain = true; return drainFinished; }
     draining = true;
     let finishDrain;
     drainFinished = new Promise(resolve => { finishDrain = resolve; });
     try {
-      // Recovery runs at start and then at most every recoveryMs; it touches
-      // every account. Between passes claimDueJob skips any account whose
-      // expired lease is not yet recovered, so a replacement claim still never
-      // follows an unrecovered lease: expiry alone cannot prove that a provider
-      // mutation was not transmitted.
-      if (recoveredAt === null || now() - recoveredAt >= recoveryMs) {
-        await repository.recoverExpiredJobs();
-        recoveredAt = now();
-      }
-      while (running.size < concurrency && !stopped) {
-        const job = await repository.claimDueJob({ workerId, leaseSeconds });
-        if (!job) break;
-        // stop() can run during the database claim. Do not create a fresh,
-        // unaborted executor after shutdown; retain the same accepted job.
-        if (stopped) {
-          await repository.releaseUnstartedJob({ jobId: job.id, accountId: job.mail_account_id,
-            workerId, generation: Number(job.worker_generation) });
-          break;
+      do {
+        redrain = false;
+        // Recovery runs at start and then at most every recoveryMs; it touches
+        // every account. Between passes claimDueJob skips any account whose
+        // expired lease is not yet recovered, so a replacement claim still never
+        // follows an unrecovered lease: expiry alone cannot prove that a provider
+        // mutation was not transmitted.
+        if (recoveredAt === null || now() - recoveredAt >= recoveryMs) {
+          await repository.recoverExpiredJobs();
+          recoveredAt = now();
         }
-        void execute(job);
-      }
-    } finally { draining = false; finishDrain(); }
+        while (running.size < concurrency && !stopped) {
+          const claim = { workerId, leaseSeconds };
+          if (readsRunning() >= readConcurrency) claim.kinds = MUTATION_MAIL_JOB_KINDS;
+          const job = await repository.claimDueJob(claim);
+          if (!job) break;
+          // stop() can run during the database claim. Do not create a fresh,
+          // unaborted executor after shutdown; retain the same accepted job.
+          if (stopped) {
+            await repository.releaseUnstartedJob({ jobId: job.id, accountId: job.mail_account_id,
+              workerId, generation: Number(job.worker_generation) });
+            break;
+          }
+          void execute(job);
+        }
+      } while (redrain && !stopped);
+    } finally { draining = false; redrain = false; finishDrain(); }
   }
   async function enqueue(input) {
     if (!initialized) await start();
@@ -181,4 +201,4 @@ function createDurableMailScheduler(run, { repository = runtime, concurrency = 2
   return { start, enqueue, cancel, yieldReadWork, interruptAccount, state: input => repository.getJobStatus(input), drain, stop,
     ids: () => [...running.keys()] };
 }
-module.exports = { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS };
+module.exports = { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS, MUTATION_MAIL_JOB_KINDS };

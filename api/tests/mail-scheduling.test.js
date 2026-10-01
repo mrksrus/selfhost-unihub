@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { queueChanges, processPending, startWritebacks, stopWritebacks, drainWritebacks, runDueWritebacks } = require('../src/services/mail-writebacks');
+const { queueChanges, runDueWritebacks, mutateMessages } = require('../src/services/mail-writebacks');
 const { getDb, setDb } = require('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
@@ -117,7 +117,8 @@ test('startup/due pass schedules uncertain MOVE observation, never another mutat
   const calls = [], enqueued = [];
   const runtime = require('../src/services/mail-engine/runtime');
   t.mock.method(runtime, 'enqueueJob', async job => { enqueued.push(job); });
-  t.mock.method(runtime, 'claimDueJob', async () => null);
+  const nudged = [];
+  t.mock.method(require('../src/services/mail'), 'runMailOperationsNow', async id => { nudged.push(id); return true; });
   setDb({ execute: async (sql, params) => {
     calls.push({ sql, params });
     if (sql.includes('FROM user_settings')) return [[]];
@@ -128,89 +129,107 @@ test('startup/due pass schedules uncertain MOVE observation, never another mutat
   assert.equal(await runDueWritebacks(), 1);
   await tick();
   assert.deepEqual(enqueued, [{ userId: 'owner', accountId: 'due-account', operationId: 'move-op', kind: 'reconcile', priority: 0 }]);
+  assert.deepEqual(nudged, ['due-account']);
   assert(calls.some(item => item.sql.includes('available_at<=UTC_TIMESTAMP()')));
   assert(!calls.some(item => item.sql.includes('UPDATE mail_writebacks SET available_at=')),
     'uncertain MOVE must not loop indefinitely');
 });
 
-test('direct writeback intake is bounded; a slow read yields while mutation work blocks its own account', async t => {
-  const oldDb = getDb(); t.after(() => setDb(oldDb));
-  const mail = require('../src/services/mail');
-  const imaps = require('imap-simple');
+// Drives the module's own durable scheduler with a mocked runtime: the job is
+// claimed once, then runDurableMailJob executes it like any other durable job.
+function durableOperation(t, job) {
   const runtime = require('../src/services/mail-engine/runtime');
-  let writing = true, readRunning = true;
-  const connects = [], rejects = [], yields = [], claims = [], unexpected = [];
-  t.mock.method(mail, 'isMailAccountSyncRunning', id => readRunning && id === 'syncing');
-  t.mock.method(mail, 'isMailAccountWriteRunning', id => writing && id === 'six');
-  t.mock.method(mail, 'yieldMailReadWork', async id => {
-    yields.push(id);
-    if (id === 'syncing' && readRunning) { readRunning = false; return true; }
-    return false;
+  const repository = require('../src/services/mail-engine/repository');
+  let claimed = false;
+  const completions = [];
+  t.mock.method(runtime, 'recoverExpiredJobs', async () => ({}));
+  t.mock.method(runtime, 'claimDueJob', async () => {
+    if (claimed) return null;
+    claimed = true;
+    return { user_id: 'owner', lease_owner: 'worker', worker_generation: 1, kind: 'operation', operation_id: 'accepted-op', ...job };
   });
-  t.mock.method(mail, 'buildImapConnectionConfig', async () => ({ imap: {} }));
-  const claimable = new Set(['one', 'two', 'three', 'four', 'five', 'six', 'syncing']);
-  t.mock.method(runtime, 'claimDueJob', async ({ accountId }) => {
-    claims.push(accountId);
-    if (!claimable.delete(accountId)) return null;
-    return { id: `job-${accountId}`, user_id: 'owner', mail_account_id: accountId,
-      operation_id: `op-${accountId}`, worker_generation: 1 };
-  });
-  t.mock.method(runtime, 'completeJob', async () => {});
   t.mock.method(runtime, 'updateJob', async () => ({ cancellationRequested: false }));
-  t.mock.method(imaps, 'connect', async () => {
-    connects.push(1);
-    return new Promise((_resolve, reject) => rejects.push(reject));
-  });
-  setDb({ execute: async (sql, params) => {
+  t.mock.method(runtime, 'completeJob', async value => { completions.push(value); });
+  t.mock.method(runtime, 'enqueueJob', async () => assert.fail('an operation job queues no continuation'));
+  t.mock.method(repository, 'withTransaction', async callback => callback(undefined));
+  return { completions, async finished() {
+    for (let i = 0; i < 200 && !completions.length; i++) await tick();
+    // Let the scheduler's post-completion drain settle before mocks are restored.
+    for (let i = 0; i < 5; i++) await tick();
+    return completions[0];
+  } };
+}
+
+test('accepted changes nudge the durable scheduler as foreground work; the due scan as background', async t => {
+  const mail = require('../src/services/mail');
+  const runtime = require('../src/services/mail-engine/runtime');
+  const oldDb = getDb(); t.after(() => setDb(oldDb));
+  const nudges = [];
+  t.mock.method(mail, 'runMailOperationsNow', async (id, options) => { nudges.push([id, options]); return true; });
+  t.mock.method(runtime, 'enqueueJob', async job => ({ id: `job-${job.operationId}` }));
+  const email = { id: 'item', mail_account_id: 'acct', sync_mode: 'sync', is_active: 1, remote_folder: 'INBOX',
+    remote_uid: 4, remote_uidvalidity: 9, is_read: 0 };
+  const cx = { beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {},
+    execute: async sql => {
+      if (sql.includes('FROM emails e')) return [[email]];
+      if (sql.includes('SELECT * FROM mail_writebacks')) return [[]];
+      if (sql.includes('FROM mail_remote_occurrences')) return [[]];
+      return [{ affectedRows: 1 }];
+    } };
+  setDb({ getConnection: async () => cx, execute: async sql => {
     if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
-    if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: params[0], user_id: 'owner', sync_mode: 'sync', is_active: 1 }]];
-    if (sql.includes('UPDATE mail_writebacks')) return [{ affectedRows: 0 }];
-    unexpected.push(sql); assert.fail(sql);
+    if (sql.includes('SELECT w.id,w.user_id,w.mail_account_id')) return [[
+      { id: 'due-1', user_id: 'owner', mail_account_id: 'due-acct', state: 'retry_wait', action: 'read' },
+      { id: 'due-2', user_id: 'owner', mail_account_id: 'due-acct', state: 'queued', action: 'star' }]];
+    if (sql.includes("j.state='paused'")) return [[]];
+    assert.fail(sql);
   } });
-  const jobs = [startWritebacks('syncing')];
-  for (const id of ['one', 'two', 'three', 'four', 'five', 'six']) jobs.push(startWritebacks(id));
+  const result = await mutateMessages('owner', ['item'], { read: 1 });
+  assert.equal(result.sync_pending, true);
+  assert.deepEqual(nudges, [], 'the HTTP response does not wait for a read job to yield');
   await tick();
-  assert.equal(connects.length, 4, 'direct actions obey global connection cap');
-  assert.equal(startWritebacks('five'), jobs[5], 'one queued job per account');
-  assert(yields.includes('syncing'), 'writeback intake actually calls read-only yield on a slow same-account scan');
-  assert.equal(readRunning, false, 'read transport has yielded before the writeback connects');
-  rejects.shift()(new Error('synthetic connection failure'));
-  await tick(); await tick();
-  assert.equal(connects.length, 5, 'free slot goes to unrelated account despite blocked writer');
-  for (let i = 0; i < 50 && connects.length < 6; i++) {
-    while (rejects.length) rejects.shift()(new Error('synthetic connection failure'));
-    await tick();
-  }
-  while (rejects.length) { rejects.shift()(new Error('synthetic connection failure')); await tick(); }
-  assert.equal(connects.length, 6, JSON.stringify({ claims, claimable: [...claimable], yields, unexpected }));
-  assert.equal(claimable.has('six'), true, 'write-running account retains its unclaimed job');
-  writing = false;
-  drainWritebacks();
-  for (let i = 0; i < 20 && !rejects.length; i++) await tick();
-  assert.equal(rejects.length, 1);
-  rejects.shift()(new Error('synthetic connection failure'));
-  await Promise.all(jobs);
-  assert.equal(connects.length, 7);
-  assert.equal(claims.filter(id => id === 'six').length, 1, 'account-scoped claim never steals another account job');
-  assert.equal(claimable.size, 0);
+  assert.deepEqual(nudges, [['acct', { foreground: true }]]);
+  nudges.length = 0;
+  assert.equal(await runDueWritebacks(), 2);
+  await tick();
+  assert.deepEqual(nudges, [['due-acct', undefined]], 'one background nudge per account and pass');
 });
 
-test('active writeback heartbeat sees cancellation before connecting, retains the accepted operation', async t => {
+test('the mail scheduler reserves a slot for provider changes and a nudge yields same-account reads first', async t => {
+  const service = require.resolve('../src/services/mail');
+  const schedulerPath = require.resolve('../src/services/mail-sync-scheduler');
+  const old = new Map([service, schedulerPath].map(p => [p, require.cache[p]]));
+  const real = require(schedulerPath);
+  const calls = [];
+  let options;
+  require.cache[schedulerPath] = { id: schedulerPath, loaded: true, exports: { ...real,
+    createDurableMailScheduler: (_run, value) => {
+      options = value;
+      return { yieldReadWork: async id => { calls.push(['yield', id]); return true; },
+        drain: async () => { calls.push(['drain']); } };
+    } } };
+  delete require.cache[service];
+  t.after(() => { for (const [p, entry] of old) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
+  const mail = require(service);
+  assert.deepEqual([options.concurrency, options.readConcurrency], [3, 2]);
+  assert.equal(await mail.runMailOperationsNow(' acct '), true);
+  assert.deepEqual(calls, [['yield', 'acct'], ['drain']]);
+  assert.equal(await mail.runMailOperationsNow(''), false);
+});
+
+test('a durable operation job sees cancellation before connecting and retains the accepted operation', async t => {
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const mail = require('../src/services/mail');
   const imaps = require('imap-simple');
   const runtime = require('../src/services/mail-engine/runtime');
-  let connects = 0, heartbeats = 0, completion;
-  t.mock.method(mail, 'buildImapConnectionConfig', async () => ({ imap: {} }));
-  t.mock.method(runtime, 'claimDueJob', async () => ({ id: 'cancel-job', user_id: 'owner',
-    mail_account_id: 'cancel-account', worker_generation: 1, operation_id: 'accepted-op' }));
-  t.mock.method(runtime, 'updateJob', async () => { heartbeats++; return { cancellationRequested: true }; });
-  t.mock.method(runtime, 'completeJob', async value => { completion = value; });
+  let connects = 0, fences = 0;
+  const harness = durableOperation(t, { id: 'cancel-job', mail_account_id: 'cancel-account' });
+  t.mock.method(runtime, 'assertFence', async () => { fences++; return { cancellationRequested: true }; });
   t.mock.method(imaps, 'connect', async () => { connects++; assert.fail('cancelled worker connected'); });
   setDb({ execute: async () => assert.fail('cancelled worker queried account or discarded operation') });
-  await startWritebacks('cancel-account');
-  assert.equal(heartbeats, 1); assert.equal(connects, 0);
-  assert.equal(completion.state, 'cancelled');
+  await mail.runMailOperationsNow('cancel-account');
+  assert.equal((await harness.finished()).state, 'cancelled');
+  assert.equal(fences, 1); assert.equal(connects, 0);
 });
 
 test('lease lost after connect destroys transport before any provider operation', async t => {
@@ -220,31 +239,33 @@ test('lease lost after connect destroys transport before any provider operation'
   const imaps = require('imap-simple');
   const runtime = require('../src/services/mail-engine/runtime');
   const engine = require('../src/services/mail-engine/operations');
-  let pulses = 0, destroys = 0, completion;
+  let fences = 0, destroys = 0;
   const connection = new EventEmitter();
   connection.imap = { _sock: { destroy: () => { destroys++; } }, destroy: () => {} };
+  connection.end = () => {};
+  const harness = durableOperation(t, { id: 'lost-job', mail_account_id: 'lost-account' });
   t.mock.method(mail, 'buildImapConnectionConfig', async () => ({ imap: {} }));
   t.mock.method(imaps, 'connect', async () => connection);
-  t.mock.method(runtime, 'claimDueJob', async () => ({ id: 'lost-job', user_id: 'owner',
-    mail_account_id: 'lost-account', worker_generation: 1, operation_id: 'accepted-op' }));
-  t.mock.method(runtime, 'updateJob', async () => {
-    pulses++; if (pulses === 2) throw Object.assign(new Error('lease lost'), { code: 'MAIL_WORKER_FENCED' });
+  t.mock.method(runtime, 'assertFence', async () => {
+    fences++; if (fences === 2) throw Object.assign(new Error('lease lost'), { code: 'MAIL_WORKER_FENCED' });
     return { cancellationRequested: false };
   });
-  t.mock.method(runtime, 'completeJob', async value => { completion = value; });
   t.mock.method(engine, 'processDueOperations', () => assert.fail('provider commands after lease loss'));
   setDb({ execute: async sql => {
     if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: 'lost-account', user_id: 'owner',
       sync_mode: 'sync', is_active: 1 }]];
+    if (sql.includes('FROM mail_writebacks WHERE id=?')) return [[{ id: 'accepted-op' }]];
     if (sql.includes('backup_restore_jobs') || sql.includes('user_settings')) return [[]];
     throw new Error(`Unexpected ${sql}`);
   } });
-  await startWritebacks('lost-account');
-  assert.equal(pulses, 2); assert.equal(destroys, 1);
-  assert.equal(completion.state, 'cancelled');
+  await mail.runMailOperationsNow('lost-account');
+  for (let i = 0; i < 100 && !destroys; i++) await tick();
+  assert.equal(fences, 2); assert.equal(destroys, 1);
+  await harness.finished();
+  assert.deepEqual(harness.completions, [], 'a fenced generation never commits a completion');
 });
 
-test('account stop synchronously aborts an active direct writeback and destroys its guarded socket', async t => {
+test('account stop aborts a running operation job and destroys its guarded socket', async t => {
   const { EventEmitter } = require('node:events');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const mail = require('../src/services/mail');
@@ -252,29 +273,34 @@ test('account stop synchronously aborts an active direct writeback and destroys 
   const runtime = require('../src/services/mail-engine/runtime');
   const engine = require('../src/services/mail-engine/operations');
   const connection = new EventEmitter();
-  let socketDestroyed = 0, entered = false, completion, remoteCommands = 0;
+  let socketDestroyed = 0, entered = false, remoteCommands = 0;
+  const paused = [];
   connection.imap = { _sock: { destroy() { socketDestroyed++; } }, destroy() {} };
+  connection.end = () => {};
+  const harness = durableOperation(t, { id: 'stop-job', mail_account_id: 'stop-account' });
   t.mock.method(mail, 'buildImapConnectionConfig', async () => ({ imap: {} }));
   t.mock.method(imaps, 'connect', async () => connection);
-  t.mock.method(runtime, 'claimDueJob', async ({ accountId }) => accountId === 'stop-account'
-    ? { id: 'stop-job', user_id: 'owner', mail_account_id: accountId, operation_id: 'accepted-op', worker_generation: 1 } : null);
-  t.mock.method(runtime, 'updateJob', async () => ({ cancellationRequested: false }));
-  t.mock.method(runtime, 'completeJob', async value => { completion = value; });
+  t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
+  t.mock.method(runtime, 'pauseAccount', async input => { paused.push(input); });
   t.mock.method(engine, 'processDueOperations', (_account, _connection, { signal }) => {
     entered = true;
     return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('stopped')), { once: true }));
   });
   setDb({ execute: async sql => {
     if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: 'stop-account', user_id: 'owner', sync_mode: 'sync', is_active: 1 }]];
+    if (sql.includes('SELECT user_id FROM mail_accounts')) return [[{ user_id: 'owner' }]];
+    if (sql.includes('FROM mail_writebacks WHERE id=?')) return [[{ id: 'accepted-op' }]];
     if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
     remoteCommands++; assert.fail(`Unexpected provider/mutation SQL after stop: ${sql}`);
   } });
-  const worker = startWritebacks('stop-account');
-  for (let i = 0; i < 30 && !entered; i++) await tick();
+  await mail.runMailOperationsNow('stop-account', { foreground: true });
+  for (let i = 0; i < 50 && !entered; i++) await tick();
   assert.equal(entered, true);
-  assert.equal(stopWritebacks('stop-account'), true);
+  assert.equal(mail.isMailAccountSyncRunning('stop-account'), true);
+  assert.equal(await mail.stopMailAccountWork('stop-account', 'Account disconnected'), true);
+  assert.deepEqual(paused, [{ userId: 'owner', accountId: 'stop-account', reason: 'Account disconnected' }]);
   assert.equal(socketDestroyed, 1, 'abort immediately hard-closes the active IMAP socket');
-  await worker;
-  assert.equal(completion.state, 'cancelled');
+  assert.equal((await harness.finished()).state, 'cancelled');
+  assert.equal(mail.isMailAccountSyncRunning('stop-account'), false);
   assert.equal(remoteCommands, 0);
 });

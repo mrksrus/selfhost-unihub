@@ -1,5 +1,5 @@
 const { withMailAccountLock } = require('./mail-account-lock');
-const { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS } = require('./mail-sync-scheduler');
+const { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS, MUTATION_MAIL_JOB_KINDS } = require('./mail-sync-scheduler');
 const { acquireImapConnection, releaseImapConnection, evictImapConnections } = require('./mail-engine/connection-pool');
 const { operationDue, processOperationBatch } = require('./mail-engine/operation-batch');
 const crypto = require('crypto');
@@ -69,21 +69,34 @@ async function yieldMailReadWork(accountId) {
   if (!key) return false;
   return durableScheduler.yieldReadWork(key);
 }
+// Operation/reconcile jobs are ordinary durable jobs. Admission and the due scan
+// call this after enqueueing so the work starts now, not at the next poll: a
+// read-only job of the same account yields its lease at a safe boundary, and
+// the scheduler keeps a slot read-only jobs cannot take (see readConcurrency).
+// foreground marks the account's next mutation job as user-initiated: it runs
+// while background sync is off and refreshes with a follow-up sync.
+const foregroundMutationAccounts = new Set();
+async function runMailOperationsNow(accountId, { foreground = false } = {}) {
+  const key = normalizeMailAccountId(accountId);
+  if (!key) return false;
+  if (foreground) foregroundMutationAccounts.add(key);
+  await durableScheduler.yieldReadWork(key);
+  await durableScheduler.drain();
+  return true;
+}
 // Disconnect/settings/module shutdown is a different operation from /sync/cancel.
 // Fencing first prevents new provider dispatch; dispatched effects remain
-// inspectable until reconnect. Direct writeback workers must also close their
-// own transports when the account generation is invalidated.
+// inspectable until reconnect. A running operation job is aborted with the
+// account's other jobs, which hard-closes its guarded transport.
 async function stopMailAccountWork(accountId, reason = 'Account stopped') {
   const key = normalizeMailAccountId(accountId);
   const [accounts] = await db.execute('SELECT user_id FROM mail_accounts WHERE id = ?', [key]);
   if (!accounts.length) return false;
   await require('./mail-engine/runtime').pauseAccount({ userId: accounts[0].user_id, accountId: key, reason });
   mailDeleteStopRequests.add(key);
+  foregroundMutationAccounts.delete(key);
   durableScheduler.interruptAccount(key);
   evictImapConnections(key);
-  // The direct writeback runner owns a separate guarded transport; abort it
-  // after the generation fence, never wait for it while holding this call.
-  require('./mail-writebacks').stopWritebacks?.(key);
   return true;
 }
 const activeMailServerDeleteAccounts = new Set();
@@ -181,11 +194,8 @@ function isMailAccountSyncRunning(accountId) {
   return !!normalizedAccountId && runningDurableAccounts.has(normalizedAccountId);
 }
 
-function isMailAccountWriteRunning(accountId) {
-  return runningDurableMutationAccounts.has(normalizeMailAccountId(accountId));
-}
 function isAnyMailAccountSyncRunning() {
-  return runningDurableAccounts.size > 0 || require('./mail-writebacks').isWritebackRunning();
+  return runningDurableAccounts.size > 0;
 }
 
 function getRunningMailSyncAccountIds() {
@@ -1248,7 +1258,6 @@ async function testImapConnection(account) {
 }
 
 const runningDurableAccounts = new Set();
-const runningDurableMutationAccounts = new Set();
 let durableScheduler;
 async function runRecoveredReconcileJob({ job, account, connection, signal, report }) {
   const runtime = require('./mail-engine/runtime');
@@ -1324,7 +1333,64 @@ async function durableJobIdle(job, account) {
       mailboxId: job.mailbox_id, stream: job.kind });
   return false;
 }
+// Provider writes (operation) and their outcome checks (reconcile). The account
+// lock serializes them with settings changes and server deletion. Only the
+// account's next job after a foreground admission uses the interactive rules
+// (module enabled, follow-up refresh); due-scan retries are background work.
+async function runDurableMutationJob(job, signal, report) {
+  const runtime = require('./mail-engine/runtime');
+  const accountId = job.mail_account_id;
+  const background = !foregroundMutationAccounts.delete(accountId);
+  return withMailAccountLock(accountId, async () => {
+    let connection, account, needsSync = false, reusable = false;
+    const fence = () => runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner,
+      generation: Number(job.worker_generation) });
+    try {
+      // The lock may have waited for a settings change or deletion pass.
+      checkCancelled(signal);
+      if ((await fence()).cancellationRequested) return { cancelled: true };
+      [[account]] = await db.execute('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, job.user_id]);
+      if (!account || account.sync_mode !== 'sync' || !toBooleanFlag(account.is_active) || account.disconnected_at
+        || await isSectionRestoreActive(account.user_id, 'mail')
+        || !await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) return { paused: true };
+      const config = await module.exports.buildImapConnectionConfig(account, { keepalive: false });
+      if (!config) throw new Error('Missing credentials');
+      // A click should fail fast, not wait out the read-path timeouts.
+      config.imap.connTimeout = 15000; config.imap.authTimeout = 15000; config.imap.socketTimeout = 30000;
+      if (await durableJobIdle(job, account)) { reusable = true; return { success: true, more: false, skipped: true }; }
+      connection = await acquireImapConnection(account, config, { signal });
+      checkCancelled(signal);
+      if ((await fence()).cancellationRequested) return { cancelled: true };
+      if (job.kind === 'reconcile') {
+        const result = await runRecoveredReconcileJob({ job, account, connection, signal, report });
+        reusable = result.success === true;
+        return result;
+      }
+      const result = await processOperationBatch(account, connection, { background,
+        workerGeneration: Number(job.worker_generation), workerId: job.lease_owner, jobId: job.id,
+        operationId: job.operation_id, signal }, { process: require('./mail-engine/operations').processDueOperations });
+      needsSync = result.needsSync;
+      reusable = !result.connectionFailed;
+      return { success: !result.connectionFailed, more: false, ...result };
+    } catch (error) {
+      reusable = false;
+      if (error.code === 'MAIL_WORKER_FENCED') throw error;
+      if (signal.aborted || error.code === 'MAIL_SYNC_CANCELLED') return { success: false, cancelled: true };
+      // A connect/login failure backs off the account's due operations instead
+      // of retrying every second; accepted intents are never discarded.
+      if (account) await require('./mail-engine/operations').deferAccountOffline(account.id, account.user_id, error);
+      return { success: false, error: /^[A-Z][A-Z0-9_]{1,63}$/.test(String(error.code || '')) ? error.code : 'Provider connection unavailable' };
+    } finally {
+      if (connection) releaseImapConnection(connection, { reusable: reusable && !signal.aborted });
+      // Throttled refresh, never a manual resweep or pause resume. A foreground
+      // write still settles while background sync is off.
+      if (needsSync) setImmediate(() => module.exports.syncMailAccount(accountId,
+        background ? { background: true } : { followUp: true }).catch(() => {}));
+    }
+  });
+}
 async function runDurableMailJob(job, signal, report) {
+  if (MUTATION_MAIL_JOB_KINDS.includes(job.kind)) return runDurableMutationJob(job, signal, report);
   const runtime = require('./mail-engine/runtime');
   const { scanMailboxSlice } = require('./mail-engine/sync');
   const { processBodySlice } = require('./mail-engine/content');
@@ -1345,8 +1411,6 @@ async function runDurableMailJob(job, signal, report) {
     if (await durableJobIdle(job, account)) return { success: true, more: false, skipped: true };
     connection = await acquireImapConnection(account, config, { signal });
     checkCancelled(signal);
-    if (job.kind === 'reconcile')
-      return done(await runRecoveredReconcileJob({ job, account, connection, signal, report }));
     if (job.kind === 'sync') {
       const specialUses = new Map();
       const names = await listAvailableImapFolders(connection, specialUses, true);
@@ -1376,13 +1440,6 @@ async function runDurableMailJob(job, signal, report) {
       // Stream jobs select a single mapped mailbox in account-scoped rounds.
       return done({ success: true, started: true, folders: registered.length });
     }
-    if (job.kind === 'operation') {
-      if (account.sync_mode !== 'sync') return { success: false, error: 'Provider writes disabled in Download mode' };
-      const result = await processOperationBatch(account, connection, {
-        workerGeneration: Number(job.worker_generation), workerId: job.lease_owner, jobId: job.id,
-        operationId: job.operation_id, signal }, { process: require('./mail-engine/operations').processDueOperations });
-      return done({ success: !result.connectionFailed, more: false, ...result });
-    }
     if (!['recent', 'flags', 'history', 'presence', 'body'].includes(job.kind))
       return { success: false, error: 'Unsupported mail job kind' };
     if (account.sync_mode !== 'sync' && ['flags', 'presence'].includes(job.kind))
@@ -1411,15 +1468,12 @@ async function runDurableMailJob(job, signal, report) {
   }
 }
 
-durableScheduler = createDurableMailScheduler(runDurableMailJob, { onState: state => {
+// Three slots, at most two for read-only work: one is always free for accepted
+// provider changes of any account (see createDurableMailScheduler).
+durableScheduler = createDurableMailScheduler(runDurableMailJob, { concurrency: 3, readConcurrency: 2, onState: state => {
   if (!state.mail_account_id) return;
-  if (state.state === 'running') {
-    runningDurableAccounts.add(state.mail_account_id);
-    if (['operation', 'reconcile'].includes(state.kind)) runningDurableMutationAccounts.add(state.mail_account_id);
-  } else if (['idle', 'error', 'cancelled'].includes(state.state)) {
-    runningDurableAccounts.delete(state.mail_account_id);
-    if (['operation', 'reconcile'].includes(state.kind)) runningDurableMutationAccounts.delete(state.mail_account_id);
-  }
+  if (state.state === 'running') runningDurableAccounts.add(state.mail_account_id);
+  else if (['idle', 'error', 'cancelled', 'paused'].includes(state.state)) runningDurableAccounts.delete(state.mail_account_id);
   // A continuation is committed atomically with the completed job by the
   // durable scheduler. An in-memory callback must not create extra work.
 } });
@@ -1635,6 +1689,7 @@ module.exports = {
   schedulePeriodicMailWork,
   MAIL_DISCOVERY_INTERVAL_SECONDS,
   yieldMailReadWork,
+  runMailOperationsNow,
   KNOWN_MAIL_HOST_SUFFIXES,
   DEFAULT_MAIL_SYNC_FETCH_LIMIT,
   MAIL_SYNC_FETCH_LIMITS,
@@ -1655,7 +1710,6 @@ module.exports = {
   normalizeSyncFetchLimit,
   normalizeMailAccountId,
   isMailAccountSyncRunning,
-  isMailAccountWriteRunning,
   isAnyMailAccountSyncRunning,
   getRunningMailSyncAccountIds,
   isMailServerDeleteRunning,

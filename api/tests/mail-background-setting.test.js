@@ -3,7 +3,6 @@ const assert = require('node:assert/strict');
 process.env.ENCRYPTION_KEY = 'mail-background-setting-test-only-key';
 const mail = require('../src/services/mail');
 const runtime = require('../src/services/mail-engine/runtime');
-const { startWritebacks } = require('../src/services/mail-writebacks');
 const { getDb, setDb } = require('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const REASONS = ['Mail module disabled', 'Mail background paused'];
@@ -52,30 +51,75 @@ test('background on: periodic sync is admitted as non-manual and never resumes',
   assert.deepEqual([enqueued.length, enqueued[0].manualRefresh, resumes.length], [1, false, 0]);
 });
 
-for (const background of [false, true]) test(`post-writeback follow-up sync is ${background ? 'background' : 'follow-up'}, never manual`, async t => {
+// An operation job runs on the module's durable scheduler; the runtime is
+// mocked so the job is claimed exactly once.
+function operationJob(t, accountId, { prefs = {}, needsSync = true } = {}) {
   const { EventEmitter } = require('node:events');
-  const oldDb = getDb(); t.after(() => setDb(oldDb));
   const imaps = require('imap-simple');
   const engine = require('../src/services/mail-engine/operations');
-  const accountId = `follow-${background}`, followUps = [];
+  const repository = require('../src/services/mail-engine/repository');
+  const oldDb = getDb(); t.after(() => setDb(oldDb));
+  const followUps = [], completions = [], processed = [];
+  let claimed = false, connects = 0;
   const connection = new EventEmitter();
   connection.imap = { destroy() {} }; connection.end = () => {};
   t.mock.method(mail, 'buildImapConnectionConfig', async () => ({ imap: {} }));
-  t.mock.method(imaps, 'connect', async () => connection);
-  t.mock.method(runtime, 'claimDueJob', async () => ({ id: 'op-job', user_id: 'owner', mail_account_id: accountId,
-    worker_generation: 1, operation_id: 'accepted-op' }));
+  t.mock.method(imaps, 'connect', async () => { connects++; return connection; });
+  t.mock.method(runtime, 'recoverExpiredJobs', async () => ({}));
+  t.mock.method(runtime, 'claimDueJob', async () => {
+    if (claimed) return null;
+    claimed = true;
+    return { id: `op-job-${accountId}`, user_id: 'owner', mail_account_id: accountId, kind: 'operation',
+      lease_owner: 'worker', worker_generation: 1, operation_id: 'accepted-op' };
+  });
+  t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
   t.mock.method(runtime, 'updateJob', async () => ({ cancellationRequested: false }));
-  t.mock.method(runtime, 'completeJob', async () => {});
-  t.mock.method(engine, 'processDueOperations', async () => ({ needsSync: true, connectionFailed: false }));
+  t.mock.method(runtime, 'completeJob', async input => { completions.push(input.state); });
+  t.mock.method(repository, 'withTransaction', async callback => callback(undefined));
+  t.mock.method(engine, 'processDueOperations', async (_account, _connection, options) => {
+    processed.push(options.background); return { needsSync, connectionFailed: false };
+  });
   t.mock.method(mail, 'syncMailAccount', async (id, options) => { followUps.push([id, options]); return { success: true }; });
   setDb({ execute: async sql => {
     if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: accountId, user_id: 'owner', sync_mode: 'sync', is_active: 1 }]];
-    if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
+    if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: prefs }) }]];
+    if (sql.includes('FROM backup_restore_jobs')) return [[]];
+    if (sql.includes('FROM mail_writebacks WHERE id=?')) return [[{ id: 'accepted-op' }]];
+    if (sql.includes('FROM mail_writebacks WHERE mail_account_id=?')) return [[]];
     assert.fail(`Unexpected SQL: ${sql}`);
   } });
-  await startWritebacks(accountId, { background });
-  for (let i = 0; i < 5 && !followUps.length; i++) await tick();
-  assert.deepEqual(followUps, [[accountId, background ? { background: true } : { followUp: true }]]);
+  return { followUps, completions, processed, connects: () => connects, async finished() {
+    for (let i = 0; i < 100 && !completions.length; i++) await tick();
+    for (let i = 0; i < 5; i++) await tick();
+  } };
+}
+
+for (const background of [false, true]) test(`post-writeback follow-up sync is ${background ? 'background' : 'follow-up'}, never manual`, async t => {
+  const accountId = `follow-${background}`;
+  const job = operationJob(t, accountId);
+  await mail.runMailOperationsNow(accountId, { foreground: !background });
+  await job.finished();
+  assert.deepEqual(job.completions, ['idle']);
+  assert.deepEqual(job.processed, [background]);
+  assert.deepEqual(job.followUps, [[accountId, background ? { background: true } : { followUp: true }]]);
+});
+
+test('background off: a due-scan operation job pauses without connecting; a clicked change still runs', async t => {
+  const prefs = { enabled: true, background: false };
+  await t.test('background retry', async t => {
+    const job = operationJob(t, 'bg-off', { prefs });
+    await mail.runMailOperationsNow('bg-off');
+    await job.finished();
+    assert.deepEqual(job.completions, ['paused'], 'the due scan requeues it once background sync is on');
+    assert.equal(job.connects(), 0);
+  });
+  await t.test('foreground change', async t => {
+    const job = operationJob(t, 'bg-off', { prefs });
+    await mail.runMailOperationsNow('bg-off', { foreground: true });
+    await job.finished();
+    assert.deepEqual(job.completions, ['idle']);
+    assert.deepEqual(job.followUps, [['bg-off', { followUp: true }]]);
+  });
 });
 
 test('service-worker background trigger uses background admission and reports a disabled setting as skipped', async t => {

@@ -60,7 +60,7 @@ async function start() {
   });
   
   // A process restart cannot resume an IMAP connection; rescan safely using
-  // completed local imports and keep provider writebacks in their own queue.
+  // completed local imports. Accepted provider changes stay durable jobs.
   await db.execute("UPDATE mail_accounts SET sync_status = 'pending' WHERE sync_status = 'running'");
   const schedulePeriodicMail = async () => {
     if (periodicMailSyncRunning) return;
@@ -87,6 +87,8 @@ async function start() {
   // Let the API begin serving before starting the first bounded recovery pass.
   setImmediate(() => schedulePeriodicMail().catch(error => console.error('[SYNC] Startup pass failed:', error.message)));
   setInterval(schedulePeriodicMail, MAIL_SYNC_INTERVAL_MS);
+  // Re-enqueues due provider changes (with per-operation backoff) and nudges the
+  // durable mail scheduler, which is the only worker that runs them.
   const runWritebacks = () => runDueWritebacks().catch(error => console.error('[MAIL WRITEBACK] Due pass failed:', error.message));
   setImmediate(runWritebacks);
   setInterval(runWritebacks, 1000);

@@ -229,8 +229,9 @@ test('restored receipt warns instead of promising provider acceptance; default l
   assert.doesNotMatch(queries.at(-1).sql, /is_current=TRUE OR state IN/);
   assert.deepEqual(queries.at(-1).args, ['owner', '200']);
 });
-test('admission commits receipt, intent and job together; exact replay never appends', async () => {
-  const receipts = new Map(), admitted = [], jobs = [], history = [];
+test('admission commits receipt, intent and job together; exact replay never appends', async t => {
+  const receipts = new Map(), admitted = [], jobs = [], history = [], nudged = [];
+  t.mock.method(require('../src/services/mail'), 'runMailOperationsNow', async (id, options) => { nudged.push([id, options]); return true; });
   const email = { id: 'item', user_id: 'owner', mail_account_id: 'account', sync_mode: 'sync', is_active: 1,
     remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9, is_read: 0 };
   const cx = {
@@ -261,7 +262,6 @@ test('admission commits receipt, intent and job together; exact replay never app
       if (sql.includes('SELECT id FROM mail_writebacks WHERE id')) return [[{ id: admitted.at(-1).id }]];
       if (sql.includes('SELECT * FROM mail_engine_jobs')) return [[]];
       if (sql.startsWith('INSERT INTO mail_engine_jobs')) { jobs.push(args[4]); return [{ affectedRows: 1 }]; }
-      if (sql.includes('SELECT j.* FROM mail_engine_jobs')) return [[]];
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };
@@ -276,7 +276,9 @@ test('admission commits receipt, intent and job together; exact replay never app
   assert.notEqual(reversed.operation_ids[0], first.operation_ids[0]); assert.equal(admitted.length, 2);
   assert.equal(admitted[0].is_current, 0); assert.equal(admitted[1].is_current, 1);
   assert(history.some(sql => sql.includes('FOR UPDATE')));
-  await new Promise(resolve => setImmediate(resolve)); // drain synthetic wakeups before swapping fake DB
+  await new Promise(resolve => setImmediate(resolve));
+  // Each admission that queued a change starts it; a replay or refused key does not.
+  assert.deepEqual(nudged, [['account', { foreground: true }], ['account', { foreground: true }]]);
 });
 test('dispatch attempt is committed before mutation and stale lease cannot fence another write', async () => {
   const steps = [], op = { id: 'op', user_id: 'owner', mail_account_id: 'account', email_id: 'item', state: 'queued',

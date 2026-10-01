@@ -26,6 +26,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 ### Maintenance
 
 - Removed the retired pre-0.11 mail sync code and other unused mail helpers.
+- Mail has one job runner. Read/star/move changes now run on the same durable
+  scheduler as sync instead of a separate in-process queue. One worker slot is
+  kept free for these changes, so a click starts right away even while other
+  accounts are syncing long folders.
 
 ## 0.11.0
 

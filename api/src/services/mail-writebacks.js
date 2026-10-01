@@ -1,15 +1,9 @@
 const crypto = require('node:crypto');
 const { db } = require('../state');
-const { withMailAccountLock } = require('./mail-account-lock');
-const { acquireImapConnection, releaseImapConnection } = require('./mail-engine/connection-pool');
-const { operationDue, processOperationBatch } = require('./mail-engine/operation-batch');
 const { isSectionRestoreActive } = require('./restore-locks');
 const { isModuleEnabled, isModuleBackgroundEnabled } = require('./module-settings');
-const engine = require('./mail-engine/operations');
 const runtime = require('./mail-engine/runtime');
 const repository = require('./mail-engine/repository');
-const active = new Map(), queued = new Map(), foregroundReruns = new Set();
-const activeControllers = new Map();
 let dueCursor = '';
 const fields = { read: 'is_read', star: 'is_starred', move: 'folder' };
 function fail(message, status = 409) { return Object.assign(new Error(message), { status }); }
@@ -130,7 +124,7 @@ async function mutateMessages(userId, ids, changes, validate = async () => {}, o
     return result;
   }, db);
   if (replayed) return response;
-  for (const accountId of accounts) setImmediate(() => startWritebacks(accountId));
+  for (const accountId of accounts) runOperationsSoon(accountId, { foreground: true });
   return response;
 }
 async function getOperationReceipt(userId, key) {
@@ -223,119 +217,12 @@ async function cancelForAccount(cx, accountId, userId) {
   await cx.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',error='Account paused; check provider after reconnect'
     WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN ('executing','verifying','retry_wait')`, [accountId, userId]);
 }
-async function processPending(account, connection, options = {}) {
-  // The legacy full-scan caller has no durable lease. It must not become a
-  // second remote writer while the claimed operation scheduler runs.
-  if (!options.workerId || !options.workerGeneration) return { needsSync: false, connectionFailed: false };
-  return engine.processDueOperations(account, connection, options);
-}
-function runWritebacks(accountId, background) {
-  let needsSync = false, processedAccount = accountId;
-  const promise = (async () => {
-    const workerId = `writeback:${process.pid}:${crypto.randomUUID()}`;
-    // Cooperative admission: read-only backlog yields at a safe boundary.
-    await require('./mail').yieldMailReadWork?.(accountId);
-    // Claim a durable operation job, not an in-process queue entry. A different
-    // account may be first in fair priority order; serialize its provider writer.
-    const job = await runtime.claimDueJob({ workerId, accountId, kinds: ['operation', 'reconcile'], leaseSeconds: 60 });
-    if (!job) return;
-    processedAccount = job.mail_account_id;
-    await require('./mail').yieldMailReadWork?.(processedAccount);
-    await withMailAccountLock(processedAccount, async () => {
-      let connection, account, state = 'idle', errorText = null, connectionFailed = false;
-      const controller = new AbortController();
-      activeControllers.set(processedAccount, controller);
-      const generation = Number(job.worker_generation);
-      let heartbeat, heartbeatPending = Promise.resolve();
-      const pulse = async () => {
-        if (controller.signal.aborted) return;
-        try {
-          const status = await runtime.updateJob({ jobId: job.id, accountId: processedAccount,
-            workerId, generation, phase: 'operations', leaseSeconds: 60 });
-          if (status.cancellationRequested) controller.abort();
-        } catch { controller.abort(); }
-      };
-      try {
-        heartbeat = setInterval(() => { heartbeatPending = heartbeatPending.then(pulse); }, 10000);
-        heartbeat.unref?.();
-        await pulse();
-        if (controller.signal.aborted) { state = 'cancelled'; return; }
-        [[account]] = await db.execute('SELECT * FROM mail_accounts WHERE id=? AND user_id=?', [processedAccount, job.user_id]);
-        if (!account || account.sync_mode !== 'sync' || !Number(account.is_active) || account.disconnected_at
-          || await isSectionRestoreActive(account.user_id, 'mail')
-          || !await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) {
-          state = 'paused'; return;
-        }
-        const { buildImapConnectionConfig } = require('./mail');
-        const config = await buildImapConnectionConfig(account, { keepalive: false });
-        if (!config) throw new Error('Missing credentials');
-        config.imap.connTimeout = 15000; config.imap.authTimeout = 15000; config.imap.socketTimeout = 30000;
-        if (job.kind === 'operation' && job.operation_id && !await operationDue(account, job.operation_id)) return;
-        connection = await acquireImapConnection(account, config, { signal: controller.signal });
-        await pulse();
-        if (controller.signal.aborted) { state = 'cancelled'; return; }
-        const options = { background, workerId, workerGeneration: generation, jobId: job.id,
-          operationId: job.operation_id, signal: controller.signal };
-        ({ needsSync, connectionFailed } = job.kind === 'operation'
-          ? await processOperationBatch(account, connection, options, { process: processPending })
-          : await processPending(account, connection, options));
-      } catch (error) {
-        if (controller.signal.aborted || error.code === 'MAIL_WORKER_FENCED') {
-          state = 'cancelled';
-        } else {
-          state = 'error'; errorText = /^[A-Z][A-Z0-9_]{1,63}$/.test(String(error.code || ''))
-            ? error.code : 'Provider connection unavailable';
-          if (account) await engine.deferAccountOffline(account.id, account.user_id, error);
-        }
-      } finally {
-        clearInterval(heartbeat);
-        if (activeControllers.get(processedAccount) === controller) activeControllers.delete(processedAccount);
-        await heartbeatPending;
-        // Close before completion releases the lease; park only after this
-        // generation's completion committed.
-        const reusable = !!connection && state === 'idle' && !connectionFailed && !controller.signal.aborted;
-        if (connection && !reusable) connection.end();
-        let completed = false;
-        // Expired/paused generation must not commit a stale completion.
-        try { await runtime.completeJob({ jobId: job.id, accountId: processedAccount, workerId,
-          generation, state: controller.signal.aborted ? 'cancelled' : state, error: errorText }); completed = true; }
-        catch (error) { if (error.code !== 'MAIL_WORKER_FENCED') throw error; }
-        finally { if (reusable) releaseImapConnection(connection, { reusable: completed && !controller.signal.aborted }); }
-      }
-    });
-  })().catch(error => console.error('[MAIL WRITEBACK] Worker failed:', error.code || 'provider unavailable')).finally(() => {
-    active.delete(accountId);
-    // Throttled refresh, never a manual resweep or pause resume. A foreground
-    // write may still settle while background sync is off.
-    if (needsSync) setImmediate(() => require('./mail').syncMailAccount(processedAccount,
-      background ? { background: true } : { followUp: true }).catch(() => {}));
-    if (foregroundReruns.delete(accountId)) startWritebacks(accountId);
-    drainWritebacks();
-  });
-  active.set(accountId, promise); return promise;
-}
-function drainWritebacks() {
-  if (!queued.size || active.size >= 4) return;
-  for (const [id, job] of queued) {
-    if (active.size >= 4) break;
-    if (require('./mail').isMailAccountWriteRunning(id)) continue;
-    queued.delete(id); runWritebacks(id, job.background).then(job.resolve, job.reject);
-  }
-}
-function stopWritebacks(accountId) {
-  const id = String(accountId), controller = activeControllers.get(id), waiting = queued.get(id);
-  foregroundReruns.delete(id);
-  if (waiting) { queued.delete(id); waiting.resolve({ paused: true }); }
-  controller?.abort();
-  return Boolean(controller || waiting);
-}
-function startWritebacks(accountId, { background = false } = {}) {
-  const id = String(accountId);
-  if (active.has(id)) { if (!background) foregroundReruns.add(id); return active.get(id); }
-  if (queued.has(id)) { if (!background) queued.get(id).background = false; return queued.get(id).promise; }
-  let resolve, reject;
-  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
-  queued.set(id, { promise, resolve, reject, background }); drainWritebacks(); return promise;
+// Operation and reconcile jobs run on the durable mail scheduler
+// (mail.js runDurableMutationJob). This only starts them without waiting for
+// its next poll; the HTTP response never waits for a read job to yield.
+function runOperationsSoon(accountId, options) {
+  setImmediate(() => require('./mail').runMailOperationsNow(accountId, options)
+    .catch(error => console.error('[MAIL WRITEBACK] Could not start provider changes:', error.code || 'unavailable')));
 }
 async function runDueWritebacks() {
   // Only rows processDueOperations can act on. Whatever an executor path does
@@ -353,6 +240,7 @@ async function runDueWritebacks() {
     ORDER BY w.mail_account_id,w.created_at LIMIT 20`;
   let [rows] = await db.execute(dueSql, [dueCursor]);
   if (!rows.length && dueCursor) { dueCursor = ''; [rows] = await db.execute(dueSql, [dueCursor]); }
+  const enqueuedAccounts = new Set();
   for (const row of rows) {
     dueCursor = row.mail_account_id;
     try {
@@ -373,12 +261,13 @@ async function runDueWritebacks() {
         await runtime.enqueueJob({ userId: row.user_id, accountId: row.mail_account_id,
           operationId: row.id, kind: 'operation', priority: 0 });
       }
-      startWritebacks(row.mail_account_id, { background: true });
+      enqueuedAccounts.add(row.mail_account_id);
     } catch (error) {
       // One contended row must not abort the pass; the row is due again next second.
       if (!require('./mail-engine/repository').isDeadlock(error)) throw error;
     }
   }
+  for (const accountId of enqueuedAccounts) runOperationsSoon(accountId);
   return rows.length;
 }
 async function retryWriteback(userId, id) {
@@ -390,13 +279,14 @@ async function retryWriteback(userId, id) {
       WHERE id=? AND user_id=? AND state IN ('needs_attention','reconciling','retry_wait')`, [id, userId]);
     await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id,
       kind: 'reconcile', priority: 0, foreground: true });
-    startWritebacks(op.mail_account_id);
+    runOperationsSoon(op.mail_account_id, { foreground: true });
     // No provider mutation. The bounded outcome checker takes this ID.
     return { message: 'Move outcome check queued', retry_action: 'check_outcome' };
   }
   if (!await requeue(userId, op)) throw fail('This change cannot be safely retried; check provider outcome.');
   await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id, kind: 'operation', priority: 0, foreground: true });
-  startWritebacks(op.mail_account_id); return { message: 'Retry queued', retry_action: 'retry' };
+  runOperationsSoon(op.mail_account_id, { foreground: true });
+  return { message: 'Retry queued', retry_action: 'retry' };
 }
 // User retry gives a fresh bounded attempt budget. A stopped dispatched flag is
 // idempotent: clearing dispatch sends it back through the executor, which reads
@@ -429,6 +319,6 @@ async function requeue(userId, op) {
   } catch (error) { await cx.rollback(); throw error; }
   finally { cx.release(); }
 }
-module.exports = { mutateMessages, queueChanges, processPending, startWritebacks, stopWritebacks, runDueWritebacks, drainWritebacks,
+module.exports = { mutateMessages, queueChanges, runDueWritebacks,
   retryWriteback, acceptServerState, cancelForAccount, cancelWriteback, getOperationReceipt, listWritebacks,
-  isWritebackRunning: () => active.size > 0, remoteEligible, verifiedIdentity, keyCheck, canonicalRequest };
+  remoteEligible, verifiedIdentity, keyCheck, canonicalRequest };

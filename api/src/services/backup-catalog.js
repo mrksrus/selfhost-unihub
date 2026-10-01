@@ -123,7 +123,7 @@ const WRITE_PATHS = Object.freeze({
 
 const BACKGROUND_WRITERS = Object.freeze({
   notes: [], settings: [], contacts: [], games: [], recordings: [],
-  mail: ['mail-writebacks.startWritebacks', 'mail.syncMailAccount', 'mail.runMailServerDeletionPass', 'notifications.deliverPending'],
+  mail: ['mail.runDurableMailJob', 'mail.syncMailAccount', 'mail.runMailServerDeletionPass', 'notifications.deliverPending'],
   calendar: ['notifications.reconcileReminders', 'notifications.enqueueDueReminders', 'notifications.deliverPending'],
 });
 const WRITE_ROUTES = Object.entries(WRITE_PATHS).flatMap(([section, paths]) => paths.map(path => ({ section, path })))

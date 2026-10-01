@@ -66,6 +66,93 @@ test('interactive wake yields a slow same-account body, preserves it, and never 
   } finally { scheduler.stop(); }
 });
 
+test('a foreground change starts at once while both read slots hold other accounts\' slow scans', async () => {
+  // Aged read backlog outranks a fresh operation in the fair claim order, so
+  // only the reserved slot keeps the click from waiting for a scan to finish.
+  const jobs = [
+    { id: 'history-b', user_id: 'owner', mail_account_id: 'B', mailbox_id: 'box-b', kind: 'history', priority: -500, state: 'queued' },
+    { id: 'body-c', user_id: 'owner', mail_account_id: 'C', mailbox_id: 'box-c', kind: 'body', priority: -400, state: 'queued' },
+    { id: 'history-d', user_id: 'owner', mail_account_id: 'D', mailbox_id: 'box-d', kind: 'history', priority: -300, state: 'queued' },
+  ];
+  const started = [], claims = [], leased = new Set(), releases = new Map();
+  const repo = {
+    withTransaction: fn => fn(undefined),
+    recoverExpiredJobs: async () => ({}),
+    async claimDueJob({ kinds }) {
+      claims.push(kinds || null);
+      const next = jobs.filter(j => j.state === 'queued' && !leased.has(j.mail_account_id) && (!kinds || kinds.includes(j.kind)))
+        .sort((a, b) => a.priority - b.priority)[0];
+      if (!next) return null;
+      next.state = 'running'; leased.add(next.mail_account_id);
+      return { ...next, lease_owner: 'worker', worker_generation: 1 };
+    },
+    async enqueueJob(input) { const job = { ...input, id: `job-${jobs.length}`, state: 'queued' }; jobs.push(job); return job; },
+    async updateJob() { return { cancellationRequested: false }; },
+    async completeJob({ jobId, accountId, state }) { jobs.find(j => j.id === jobId).state = state; leased.delete(accountId); },
+  };
+  const scheduler = createDurableMailScheduler((job, signal) => {
+    started.push(job.id);
+    if (job.kind === 'operation') return { success: true };
+    return new Promise(resolve => {
+      releases.set(job.id, resolve);
+      signal.addEventListener('abort', () => resolve({ success: false, cancelled: true }), { once: true });
+    });
+  }, { repository: repo, concurrency: 3, readConcurrency: 2, pollMs: 60000 });
+  try {
+    await scheduler.start();
+    await until(() => started.length === 2);
+    assert.deepEqual(started, ['history-b', 'body-c']);
+    assert.deepEqual(claims.at(-1), ['operation', 'reconcile'], 'the third slot is never offered to read-only work');
+    assert.equal(jobs.find(j => j.id === 'history-d').state, 'queued');
+    // Accepted change on an idle account A; the nudge drains without any yield.
+    jobs.push({ id: 'op-a', user_id: 'owner', mail_account_id: 'A', operation_id: 'accepted', kind: 'operation', priority: 0, state: 'queued' });
+    assert.equal(await scheduler.yieldReadWork('A'), false, 'no read job of A to yield');
+    await scheduler.drain();
+    await until(() => jobs.find(j => j.id === 'op-a').state === 'idle' && scheduler.ids().length === 2);
+    assert.equal(started[2], 'op-a');
+    assert.deepEqual(scheduler.ids().sort(), ['body-c', 'history-b'], 'both slow scans keep running');
+    assert.equal(jobs.find(j => j.id === 'history-d').state, 'queued', 'the freed slot again waits for provider changes');
+    releases.get('history-b')({ success: true });
+    await until(() => started.includes('history-d'));
+  } finally { await scheduler.stop(); }
+});
+
+test('a drain requested during a claim repeats the pass instead of waiting for the next poll', async () => {
+  const jobs = [];
+  let releaseClaim, claimCount = 0;
+  const started = [];
+  const repo = {
+    withTransaction: fn => fn(undefined),
+    recoverExpiredJobs: async () => ({}),
+    async claimDueJob() {
+      claimCount++;
+      if (claimCount === 1) await new Promise(resolve => { releaseClaim = resolve; }); // query ran before the commit
+      else { const job = jobs.shift(); if (job) return job; }
+      return null;
+    },
+    async updateJob() { return { cancellationRequested: false }; },
+    async completeJob() {},
+  };
+  const scheduler = createDurableMailScheduler(job => { started.push(job.id); return { success: true }; },
+    { repository: repo, concurrency: 3, readConcurrency: 2, pollMs: 60000 });
+  try {
+    const first = scheduler.drain();
+    await until(() => !!releaseClaim);
+    jobs.push({ id: 'op', mail_account_id: 'A', kind: 'operation', worker_generation: 1 });
+    const nudge = scheduler.drain();
+    releaseClaim();
+    await Promise.all([first, nudge]);
+    await until(() => started.length === 1);
+    assert.deepEqual(started, ['op']);
+  } finally { await scheduler.stop(); }
+});
+
+test('read concurrency must leave the total within bounds', () => {
+  for (const readConcurrency of [0, 4, 1.5]) {
+    assert.throws(() => createDurableMailScheduler(() => {}, { concurrency: 3, readConcurrency }), TypeError);
+  }
+});
+
 test('stop during an outstanding claim returns unstarted work without invoking its executor', async () => {
   let releaseClaim, claiming = false, executed = 0, released;
   const job = { id: 'claimed', mail_account_id: 'A', worker_generation: 7, kind: 'operation' };

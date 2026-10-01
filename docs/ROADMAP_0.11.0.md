@@ -139,11 +139,16 @@ comes after.
    receipts now claim the key with an INSERT first (`recordReceipt`/`finishReceipt`),
    proven by a concurrent same-key MySQL test. The two `transaction()` helpers were
    already one-line wrappers around `repository.withTransaction` and stay.
-10. **Two mail job runners.** `mail-writebacks.js runWritebacks` (in-process
+10. **Done (2026-10-01): Two mail job runners.** `mail-writebacks.js runWritebacks` (in-process
     queue that claims `operation`/`reconcile` jobs) and the durable scheduler's
     `runDurableMailJob` both execute operation jobs. Consolidate on the durable
     scheduler so there is one worker path, one connection lifecycle and one
     place for pause/background rules.
+    *Done:* the in-process queue (`runWritebacks`/`startWritebacks`/`drainWritebacks`/
+    `stopWritebacks`/`processPending`) is gone; `runDurableMutationJob` in `mail.js`
+    runs operation/reconcile jobs. Admission and the due scan enqueue and call
+    `runMailOperationsNow` (yield same-account reads, then drain). The scheduler runs
+    3 jobs, at most 2 read-only, so one slot is always free for provider changes.
 11. **One source of truth for the database schema.** Today the schema lives in
     `docker/mysql/init/01-schema.sql` (tests only), ~900 lines of
     add-column-if-missing code in `database.js ensureLegacySchema` that runs on

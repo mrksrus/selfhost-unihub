@@ -206,11 +206,12 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     const name = Object.fromEntries(Object.entries(ops).map(([key, id]) => [id, key]));
     const enqueued = [];
     t.mock.method(runtime, 'enqueueJob', async job => { enqueued.push({ op: name[job.operationId], kind: job.kind }); return { id: uuid() }; });
-    // startWritebacks follows every enqueue; it must find nothing to claim or dial.
-    t.mock.method(runtime, 'claimDueJob', async () => null);
+    // Each pass nudges the durable scheduler once per account; nothing may dial here.
+    const nudged = [];
+    t.mock.method(mail, 'runMailOperationsNow', async id => { nudged.push(id); return true; });
     const selected = await writebacks.runDueWritebacks();
-    for (let i = 0; writebacks.isWritebackRunning() && i < 200; i++) await sleep(10);
-    assert.equal(writebacks.isWritebackRunning(), false);
+    await sleep(10);
+    assert.deepEqual(nudged, [owner.accountId]);
     assert.deepEqual(enqueued.map(entry => entry.op).sort(), ['move_waited', 'none', 'one_waited', 'ten_waited', 'three_waited']);
     assert.equal(enqueued.find(entry => entry.op === 'move_waited').kind, 'reconcile', 'a sent move gets an outcome check');
     assert(enqueued.filter(entry => entry.op !== 'move_waited').every(entry => entry.kind === 'operation'));
