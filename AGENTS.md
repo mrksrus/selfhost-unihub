@@ -17,11 +17,11 @@ The standard deployment is one app container and one MySQL container. Nginx serv
 | UI primitives, tokens, and theme | src/components/ui/, src/index.css, tailwind.config.ts, src/components/theme/ |
 | Browser API calls and state | src/lib/, src/hooks/, src/contexts/AuthContext.tsx, src/components/SessionQueryProvider.tsx |
 | Offline and PWA behavior | src/lib/offline.ts, src/lib/pwa-update.ts, src/utils/service-worker.ts, public/sw-custom.js |
-| API startup and request boundary | api/server.js, api/src/app.js, api/src/request-handler.js, api/src/routes/ |
-| Domain logic and persistence | api/src/services/, api/src/security/, api/src/services/database.js |
+| API startup and request boundary | api/server.js, api/src/app.js, api/src/request-handler.js, api/src/routes/ (routes/mail.js combines the routes/mail-* area files) |
+| Domain logic and persistence | api/src/services/, api/src/security/, api/src/services/database.js; services/mail.js and services/backup.js are facades over the mail-* and backup-* modules |
 | Tests and deployment | src/test/, api/tests/, Dockerfile, docker-compose.yml, .github/workflows/ |
 
-For feature details, follow the corresponding file in docs/ rather than treating this guide as a second specification. Mail work usually spans src/pages/MailPage.tsx, src/lib/mail-api.ts, src/hooks/use-mail-queries.ts, api/src/routes/mail.js, and the api/src/services/mail-* files. Backup and restore work spans api/src/services/backup*, export-jobs.js, and docs/DATA_RECOVERY.md.
+For feature details, follow the corresponding file in docs/ rather than treating this guide as a second specification. Mail work usually spans src/pages/MailPage.tsx, src/lib/mail-api.ts, src/hooks/use-mail-queries.ts, api/src/routes/mail-* (combined in routes/mail.js), and the api/src/services/mail-* files (re-exported by services/mail.js). Backup and restore work spans api/src/services/backup*, export-jobs.js, and docs/DATA_RECOVERY.md.
 
 ## Contracts to keep intact
 

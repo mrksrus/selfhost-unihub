@@ -145,7 +145,7 @@ comes after.
     scheduler so there is one worker path, one connection lifecycle and one
     place for pause/background rules.
     *Done:* the in-process queue (`runWritebacks`/`startWritebacks`/`drainWritebacks`/
-    `stopWritebacks`/`processPending`) is gone; `runDurableMutationJob` in `mail.js`
+    `stopWritebacks`/`processPending`) is gone; `runDurableMutationJob` (now in `mail-durable-jobs.js`)
     runs operation/reconcile jobs. Admission and the due scan enqueue and call
     `runMailOperationsNow` (yield same-account reads, then drain). The scheduler runs
     3 jobs, at most 2 read-only, so one slot is always free for provider changes.
@@ -164,9 +164,15 @@ comes after.
     *Done:* the supervisor spawns the API as `unihub` (10001:10001); `start.sh`
     chowns uploads only when ownership differs; the container smoke test checks
     the API's uid/gid/capabilities and a root-owned legacy volume.
-13. **Split the largest backend files** by area: `api/src/services/mail.js`
+13. **Done (2026-10-01): Split the largest backend files** by area: `api/src/services/mail.js`
     (~2,000 lines), `api/src/routes/mail.js` (~1,900), `api/src/services/backup.js`
     (~2,400).
+    *Done:* pure moves. `services/mail.js` re-exports `mail-host-policy`, `mail-folders`,
+    `mail-durable-jobs`, `mail-sync-control`, `mail-server-delete` and `mail-send`;
+    `routes/mail.js` combines `mail-folders`, `mail-accounts`, `mail-drafts`, `mail-messages`,
+    `mail-operations` and `mail-sync` (helpers in `mail-route-helpers`); `services/backup.js`
+    re-exports `backup-common`, `backup-export`, `backup-validate`, `backup-restore-mapping`,
+    `backup-zip-reader` and `backup-import`. `importBackupForUser` stays one ~650-line function.
 14. **Done (2026-09-30): One changelog.** Merge the 13 `docs/RELEASE_0.10.*.md` files and the root
     `RELEASE_v0.9.20.0.md` into `CHANGELOG.md`.
     *Done:* root `CHANGELOG.md`; only `RELEASE_0.10.13.md` and `RELEASE_0.11.0.md`

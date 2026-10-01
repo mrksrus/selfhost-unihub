@@ -43,7 +43,7 @@ outbound mail through SMTP. The mail system includes:
 | Parser | `mailparser` | Parse RFC 822 messages |
 | SMTP sender | `nodemailer` | Send composed mail |
 | Encryption | `api/src/security/encryption.js` | AES-256-GCM encryption for stored credentials |
-| Host policy | `api/src/services/mail.js` | DNS/private-IP checks and known-provider classification |
+| Host policy | `api/src/services/mail-host-policy.js` | DNS/private-IP checks and known-provider classification |
 | Import persistence | `api/src/services/mail-import.js` | Stage files and commit complete message metadata atomically |
 | Attachment handling | `api/src/services/mail-attachments.js` | Shared validation, file staging and inline CID rewriting |
 | Draft persistence | `api/src/services/mail-drafts.js` | Transactional draft and attachment replacement |
@@ -150,7 +150,7 @@ normally needs a single LOGIN.
 Every mail job, including accepted provider changes (`operation`) and their
 outcome checks (`reconcile`), runs on the one durable scheduler
 (`api/src/services/mail-sync-scheduler.js`, executor `runDurableMailJob` in
-`api/src/services/mail.js`). It runs at most three jobs at once, of which at
+`api/src/services/mail-durable-jobs.js`). It runs at most three jobs at once, of which at
 most two may be read-only (`sync`, `recent`, `flags`, `history`, `presence`,
 `body`); the third slot only ever takes operation/reconcile work, so a click is
 never queued behind other accounts' long scans. After a read/star/move is

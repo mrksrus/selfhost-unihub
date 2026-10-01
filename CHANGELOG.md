@@ -33,6 +33,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   scheduler as sync instead of a separate in-process queue. One worker slot is
   kept free for these changes, so a click starts right away even while other
   accounts are syncing long folders.
+- Split the three largest API files (mail service, mail routes, backup service)
+  into smaller modules by area. No behavior change.
 
 ## 0.11.0
 

@@ -40,8 +40,10 @@ background jobs and do not depend on the proxy connection after job creation.
 | `api/src/service-supervisor.js` | Supervises API/nginx and essential-service failure |
 | `api/src/app.js` | Initializes DB, starts HTTP server, schedules background jobs |
 | `api/src/request-handler.js` | CORS, auth, CSRF, body parsing, route dispatch |
-| `api/src/routes/` | Route handlers grouped by feature |
+| `api/src/routes/` | Route handlers grouped by feature; `routes/mail.js` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync` |
 | `api/src/services/` | Database, mail, calendar, backup creation/encryption/restore workers, recordings, 2FA logic |
+| `api/src/services/mail.js` | Facade re-exporting `mail-host-policy` (host checks, IMAP config), `mail-folders` (folders, sender rules), `mail-durable-jobs` (job executor, scheduler), `mail-sync-control` (sync admission, cancel/stop), `mail-server-delete` and `mail-send` |
+| `api/src/services/backup.js` | Facade re-exporting `backup-common`, `backup-export`, `backup-validate`, `backup-restore-mapping`, `backup-zip-reader` and `backup-import` |
 | `api/src/services/mail-attachments.js` | Attachment validation, staging and inline references |
 | `api/src/services/mail-drafts.js` | Atomic draft replacements |
 | `api/src/services/mail-import.js` | Complete-message transactions and durable queue insertion |
@@ -241,7 +243,7 @@ that page limit so users with more than 2,000 contacts receive their entire list
 
 The canonical backup data remains an uncompressed, stored-entry ZIP built by
 `api/src/services/export-jobs.js` from data assembled in
-`api/src/services/backup.js`.
+`api/src/services/backup-export.js` (through the `backup.js` facade).
 
 Encrypted backups add a streaming container implemented by
 `api/src/services/backup-container.js`:
