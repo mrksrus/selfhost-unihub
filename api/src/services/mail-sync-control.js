@@ -74,6 +74,10 @@ async function stopMailAccountWork(accountId, reason = 'Account stopped') {
   foregroundMutationAccounts.delete(key);
   durableScheduler.interruptAccount(key);
   evictImapConnections(key);
+  // The IDLE session is a provider connection too; a paused account is not
+  // eligible again until it resumes.
+  require('./mail-idle').idleSupervisor.stopAccount(key);
+  inboxFollowUps.delete(key);
   return true;
 }
 
@@ -128,12 +132,40 @@ async function syncMailAccount(accountId, options = {}) {
   return job.promise;
 }
 
+// A change seen by the account's IDLE session (mail-idle.js). It goes through
+// ordinary admission: background work, only while the account may run it now,
+// never a manual resweep. scheduler.enqueue persists the job and nudges a drain.
+const IDLE_STREAM_PRIORITY = { recent: 10, flags: 20, presence: 70 };
+async function enqueueIdleRefresh({ accountId, userId, mailboxId, kinds }, { executor = db, scheduler = durableScheduler } = {}) {
+  const id = normalizeMailAccountId(accountId);
+  if (!id || !mailboxId || !Array.isArray(kinds)) return { enqueued: [] };
+  const [accounts] = await executor.execute(`SELECT a.user_id, a.sync_mode FROM mail_accounts a
+    LEFT JOIN mail_engine_accounts e ON e.mail_account_id = a.id
+    WHERE a.id = ? AND a.user_id = ? AND a.is_active = TRUE AND a.disconnected_at IS NULL AND e.paused_reason IS NULL`, [id, userId]);
+  const account = accounts[0];
+  if (!account || !await isModuleBackgroundEnabled(account.user_id, 'mail')
+    || await isSectionRestoreActive(account.user_id, 'mail')) return { enqueued: [] };
+  const enqueued = [];
+  await scheduler.start();
+  for (const kind of [...new Set(kinds)]) {
+    if (!(kind in IDLE_STREAM_PRIORITY) || (kind !== 'recent' && account.sync_mode !== 'sync')) continue;
+    await scheduler.enqueue({ userId: account.user_id, accountId: id, mailboxId, kind, priority: IDLE_STREAM_PRIORITY[kind] });
+    enqueued.push(kind);
+  }
+  return { enqueued };
+}
+
 // Periodic cadence. Each tick only follows INBOX arrivals ('recent', usually on
 // a parked session). Folder discovery and its per-folder recent/flags/history/
 // presence fan-out run at most every MAIL_DISCOVERY_INTERVAL_SECONDS, or again
-// after a failed pass. Manual Sync stays immediate and complete.
+// after a failed pass. Manual Sync stays immediate and complete. While the
+// account's IDLE session is healthy, new INBOX mail already triggers 'recent',
+// so the INBOX follow-up becomes a safety net every MAIL_IDLE_SAFETY_NET_SECONDS.
 const MAIL_DISCOVERY_INTERVAL_SECONDS = 5 * 60;
-async function schedulePeriodicMailWork(accountId, { executor = db, scheduler = durableScheduler } = {}) {
+const MAIL_IDLE_SAFETY_NET_SECONDS = 5 * 60;
+const inboxFollowUps = new Map();
+async function schedulePeriodicMailWork(accountId, { executor = db, scheduler = durableScheduler,
+  idleHealthy = key => require('./mail-idle').idleSupervisor.isHealthy(key), now = Date.now } = {}) {
   const id = normalizeMailAccountId(accountId);
   if (!id) throw new Error('Account ID required');
   const [accounts] = await executor.execute('SELECT user_id FROM mail_accounts WHERE id = ?', [id]);
@@ -150,6 +182,10 @@ async function schedulePeriodicMailWork(accountId, { executor = db, scheduler = 
     JOIN mail_folders f ON f.id=b.folder_id AND f.user_id=m.user_id
     WHERE m.user_id=? AND m.mail_account_id=? AND m.state='active' AND f.slug='inbox'`, [userId, id]) : [[]];
   if (!inboxes.length) return scheduleMailAccountSync(id, { background: true });
+  const last = inboxFollowUps.get(id);
+  if (idleHealthy(id) && last != null && now() - last < MAIL_IDLE_SAFETY_NET_SECONDS * 1000)
+    return { started: false, alreadyRunning: false, discovery: false, skipped: true, idle: true, promise: Promise.resolve({ success: true, skipped: true }) };
+  inboxFollowUps.set(id, now());
   await scheduler.start();
   for (const box of inboxes) await scheduler.enqueue({ userId, accountId: id, mailboxId: box.id, kind: 'recent', priority: 10 });
   return { started: false, alreadyRunning: false, discovery: false, promise: Promise.resolve({ success: true }) };
@@ -167,5 +203,7 @@ module.exports = {
   getMailSyncState,
   syncMailAccount,
   MAIL_DISCOVERY_INTERVAL_SECONDS,
+  MAIL_IDLE_SAFETY_NET_SECONDS,
   schedulePeriodicMailWork,
+  enqueueIdleRefresh,
 };

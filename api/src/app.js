@@ -14,6 +14,7 @@ const { verifyDatabaseInventory } = require('./services/data-inventory');
 const { isSectionRestoreActive } = require('./services/restore-locks');
 const { handleRequest } = require('./request-handler');
 const { installShutdownHandler } = require('./services/server-events');
+const { idleSupervisor } = require('./services/mail-idle');
 const { ensureNotificationSchema, processNotificationJobs } = require('./services/notifications');
 
 // Wake recent discovery independently of historical backfill. The durable
@@ -50,7 +51,7 @@ async function start() {
     });
   });
   
-  installShutdownHandler({ server });
+  installShutdownHandler({ server, onShutdown: [() => idleSupervisor.stop()] });
   server.listen(PORT, () => {
     console.log(`✓ UniHub API server running on port ${PORT}`);
     setTimeout(() => {
@@ -86,7 +87,9 @@ async function start() {
     }
   };
   // Let the API begin serving before starting the first bounded recovery pass.
-  setImmediate(() => schedulePeriodicMail().catch(error => console.error('[SYNC] Startup pass failed:', error.message)));
+  // IDLE sessions start after the first pass has started the durable scheduler.
+  setImmediate(() => schedulePeriodicMail().catch(error => console.error('[SYNC] Startup pass failed:', error.message))
+    .finally(() => idleSupervisor.start()));
   setInterval(schedulePeriodicMail, MAIL_SYNC_INTERVAL_MS);
   // Re-enqueues due provider changes (with per-operation backoff) and nudges the
   // durable mail scheduler, which is the only worker that runs them.
@@ -188,7 +191,9 @@ async function start() {
     }
   }, 15 * 60 * 1000); // 15 minutes
   
-  console.log('✓ Mail INBOX follow-up every 30 seconds; folder discovery every 5 minutes');
+  console.log('✓ Mail INBOX follow-up every 30 seconds (every 5 minutes while IMAP IDLE is up); folder discovery every 5 minutes');
+  console.log(idleSupervisor.options.maxSessions > 0
+    ? `✓ Mail INBOX IMAP IDLE enabled (up to ${idleSupervisor.options.maxSessions} sessions)` : '✓ Mail INBOX IMAP IDLE disabled');
   console.log('✓ Mail server deletion worker enabled (every minute)');
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Expired recording upload cleanup enabled (every hour)');

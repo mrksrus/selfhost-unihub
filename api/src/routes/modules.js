@@ -28,6 +28,11 @@ module.exports = {
                 resumeStreams: mail.background, reasons: USER_PAUSES });
             if (!mail.background) await cancelMailAccountSync(account.id);
           }
+          // The IDLE session is background work: close it now, or start it
+          // without waiting for the supervisor's next eligibility pass.
+          const { idleSupervisor } = require('../services/mail-idle');
+          if (!mail.background) for (const account of accounts) idleSupervisor.stopAccount(account.id);
+          else void idleSupervisor.refresh();
         }
       }
       return { modules };

@@ -313,11 +313,14 @@ function publishMailChanged(userId, accountId, reason, bus = serverEvents) {
 // which drop-privileges.js turns into SIGTERM). End every stream with a final
 // 'end' event first so browsers back off instead of seeing a broken
 // connection, then let the signal terminate the process as it did before.
+// onShutdown hooks (e.g. the mail IDLE supervisor) close long-lived provider
+// sockets on the same path; they must not throw or block the re-raise.
 function installShutdownHandler({ bus = serverEvents, server = null, signals = process,
-  kill = signal => process.kill(process.pid, signal), graceMs = 200, timers = { setTimeout } } = {}) {
+  kill = signal => process.kill(process.pid, signal), graceMs = 200, timers = { setTimeout }, onShutdown = [] } = {}) {
   const handlers = {};
   const onSignal = signal => {
     for (const [name, handler] of Object.entries(handlers)) signals.removeListener(name, handler);
+    for (const hook of onShutdown) { try { hook(); } catch { /* shutting down anyway */ } }
     bus.closeAll({ reason: 'shutdown' });
     try { server?.close?.(); } catch { /* not listening */ }
     // Give the final writes a moment to flush, then re-raise with no handler.

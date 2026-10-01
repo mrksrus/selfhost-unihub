@@ -34,6 +34,9 @@ function imapFlowOptions(config) {
   const tls = { ...(imap.tlsOptions || {}) };
   if (!tls.servername) delete tls.servername;
   const socketTimeout = positive(imap.socketTimeout, 60000);
+  // An IDLE session (mail-idle.js) re-issues IDLE every maxIdleTime itself; the
+  // socket watchdog only has to catch a peer that went silent for longer.
+  const idleMs = positive(imap.idleRestartMs, 0);
   return {
     host: imap.host,
     port: Number(imap.port) || 993,
@@ -47,13 +50,16 @@ function imapFlowOptions(config) {
     auth: { user: imap.user, pass: imap.password },
     connectionTimeout: positive(imap.connTimeout, 60000),
     greetingTimeout: positive(imap.authTimeout, 30000),
-    socketTimeout: imap.keepalive ? Math.max(socketTimeout, KEEPALIVE_SOCKET_TIMEOUT_MS) : socketTimeout,
+    socketTimeout: idleMs ? idleMs + 60 * 1000
+      : imap.keepalive ? Math.max(socketTimeout, KEEPALIVE_SOCKET_TIMEOUT_MS) : socketTimeout,
+    ...(idleMs ? { maxIdleTime: idleMs } : {}),
     // Never log protocol traffic: it carries credentials and message content.
     logger: false,
     logRaw: false,
     emitLogs: false,
     // No background IDLE/NOOP between our own commands and no COMPRESS: the
-    // command stream on the wire is exactly what the mail engine issues.
+    // command stream on the wire is exactly what the mail engine issues. The
+    // IDLE supervisor calls idle() explicitly on its own dedicated session.
     disableAutoIdle: true,
     disableCompression: true,
     maxLiteralSize: MAX_LITERAL_BYTES,
