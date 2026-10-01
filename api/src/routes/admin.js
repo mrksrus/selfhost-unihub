@@ -5,6 +5,7 @@ const { MIN_PASSWORD_LENGTH } = require('../config');
 const { MAIL_RAW_STORAGE_ROOT } = require('../services/mail');
 const { RECORDINGS_ROOT, deleteRecordingFiles } = require('../services/recordings');
 const { BACKUPS_ROOT } = require('../services/export-jobs');
+const { serverEvents } = require('../services/server-events');
 const {
   isAdmin,
   hashPassword,
@@ -276,6 +277,7 @@ module.exports = {
       await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, targetId]);
       // Invalidate all sessions so the user must re-login
       await db.execute('DELETE FROM sessions WHERE user_id = ?', [targetId]);
+      serverEvents.closeUser(targetId);
       return { message: 'Password updated successfully' };
     } catch (error) {
       return { error: 'Failed to update password', status: 500 };
@@ -306,6 +308,7 @@ module.exports = {
         await deleteRecordingFiles(recording.storage_path);
       }
       await db.execute('DELETE FROM users WHERE id = ?', [id]);
+      serverEvents.closeUser(id);
       return { message: 'User deleted' };
     } catch (error) {
       return { error: 'Failed to delete user', status: 500 };
@@ -354,6 +357,7 @@ module.exports = {
       await db.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
       if (!is_active) {
         await db.execute('DELETE FROM sessions WHERE user_id = ?', [id]);
+        serverEvents.closeUser(id);
       }
       return { message: is_active ? 'User activated' : 'User deactivated' };
     } catch (error) {

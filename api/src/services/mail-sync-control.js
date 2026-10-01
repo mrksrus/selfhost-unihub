@@ -6,6 +6,7 @@ const { isSectionRestoreActive } = require('./restore-locks');
 const { toBooleanFlag } = require('./mail-host-policy');
 const { durableScheduler, foregroundMutationAccounts, normalizeMailAccountId } = require('./mail-durable-jobs');
 const { mailDeleteStopRequests } = require('./mail-server-delete');
+const { publishMailJob } = require('./server-events');
 
 const DEFAULT_MAIL_SYNC_FETCH_LIMIT = 'all';
 const MAIL_SYNC_FETCH_LIMITS = new Set(['all']);
@@ -37,6 +38,8 @@ async function cancelMailAccountSync(accountId) {
     }
     cursor = jobs[jobs.length - 1].id;
   }
+  // A queued job is cancelled without reaching the scheduler's state callback.
+  if (changed) publishMailJob({ user_id: accounts[0].user_id, mail_account_id: key, state: 'cancelled' });
   return changed;
 }
 async function yieldMailReadWork(accountId) {
@@ -101,6 +104,7 @@ async function scheduleMailAccountSync(accountId, options = {}) {
   const alreadyRunning = prior && prior.kind === 'sync' && ['queued', 'running'].includes(prior.state);
   const job = await durableScheduler.enqueue({ userId: accounts[0].user_id, accountId: id,
     kind: 'sync', priority: 5, manualRefresh: manual });
+  if (!alreadyRunning) publishMailJob({ ...job, user_id: accounts[0].user_id, mail_account_id: id, kind: 'sync', state: 'queued' });
   return { started: !alreadyRunning, alreadyRunning: !!alreadyRunning, job_id: job.id,
     promise: Promise.resolve({ success: true, started: !alreadyRunning, alreadyRunning: !!alreadyRunning, job_id: job.id }) };
 }

@@ -14,4 +14,5 @@ module.exports = {
   ...require('./games'),
   ...require('./notifications'),
   ...require('./offline'),
+  ...require('./events'),
 };

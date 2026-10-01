@@ -28,6 +28,7 @@ const {
   consumeTwoFactorLoginChallenge,
   deleteTwoFactorLoginChallenge,
 } = require('../services/two-factor');
+const { serverEvents } = require('../services/server-events');
 
 async function createSessionResponse(user, res, connection = db, afterCommit = null) {
   const token = generateToken(user.id);
@@ -353,6 +354,7 @@ module.exports = {
       if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
       await disableTwoFactor(userId);
       await db.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, getAuthTokenFromRequest(req) || '']);
+      serverEvents.closeUser(userId, { exceptToken: getAuthTokenFromRequest(req) });
       return { enabled: false };
     } catch (error) {
       console.error('2FA disable error:', error);
@@ -396,6 +398,7 @@ module.exports = {
       const token = getAuthTokenFromRequest(req);
       if (token) {
         await db.execute('DELETE FROM sessions WHERE token = ?', [token]);
+        serverEvents.closeToken(token, { reason: 'signed_out' });
       }
       clearAuthCookie(res);
       clearCsrfCookie(res);
@@ -462,6 +465,7 @@ module.exports = {
       const newHash = await hashPassword(new_password);
       await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId]);
       await db.execute('DELETE FROM sessions WHERE user_id = ?', [userId]);
+      serverEvents.closeUser(userId);
       clearAuthCookie(res);
       clearCsrfCookie(res);
 

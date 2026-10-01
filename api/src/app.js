@@ -14,6 +14,7 @@ const { resumePendingRestoreJobs } = require('./services/backup-restore-jobs');
 const { verifyDatabaseInventory } = require('./services/data-inventory');
 const { isSectionRestoreActive } = require('./services/restore-locks');
 const { handleRequest } = require('./request-handler');
+const { installShutdownHandler } = require('./services/server-events');
 const { ensureNotificationSchema, processNotificationJobs } = require('./services/notifications');
 
 // Wake recent discovery independently of historical backfill. The durable
@@ -50,6 +51,7 @@ async function start() {
     });
   });
   
+  installShutdownHandler({ server });
   server.listen(PORT, () => {
     console.log(`✓ UniHub API server running on port ${PORT}`);
     setTimeout(() => {

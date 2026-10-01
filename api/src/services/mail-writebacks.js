@@ -4,6 +4,7 @@ const { isSectionRestoreActive } = require('./restore-locks');
 const { isModuleEnabled, isModuleBackgroundEnabled } = require('./module-settings');
 const runtime = require('./mail-engine/runtime');
 const repository = require('./mail-engine/repository');
+const { publishMailChanged, publishMailOperation } = require('./server-events');
 let dueCursor = '';
 const fields = { read: 'is_read', star: 'is_starred', move: 'folder' };
 function fail(message, status = 409) { return Object.assign(new Error(message), { status }); }
@@ -124,6 +125,11 @@ async function mutateMessages(userId, ids, changes, validate = async () => {}, o
     return result;
   }, db);
   if (replayed) return response;
+  // Other open tabs and devices of this user refresh their lists and changes.
+  const onlyAccount = accounts.size === 1 ? [...accounts][0] : null;
+  publishMailChanged(userId, onlyAccount, 'local');
+  if (response.operation_ids?.length) publishMailOperation(userId, { accountId: onlyAccount,
+    operationIds: response.operation_ids, state: 'accepted' });
   for (const accountId of accounts) runOperationsSoon(accountId, { foreground: true });
   return response;
 }
@@ -180,6 +186,7 @@ async function cancelWriteback(userId, id) {
     const [[op]] = await db.execute('SELECT id FROM mail_writebacks WHERE id=? AND user_id=?', [id, userId]);
     throw fail(op ? 'This change may already be at the provider; check its outcome instead' : 'Change not found', op ? 409 : 404);
   }
+  publishMailOperation(userId, { operationIds: [id], state: 'cancelled' });
   return { message: 'Change discarded' };
 }
 // A sent MOVE whose bounded check could not prove its outcome stops being
@@ -201,6 +208,7 @@ async function acceptServerState(userId, id) {
     await cx.commit();
   } catch (error) { await cx.rollback(); throw error; }
   finally { cx.release(); }
+  publishMailOperation(userId, { accountId: op.mail_account_id, operationIds: [id], state: 'superseded' });
   const [[account]] = await db.execute('SELECT is_active,disconnected_at FROM mail_accounts WHERE id=? AND user_id=?',
     [op.mail_account_id, userId]);
   let syncQueued = false;
@@ -280,12 +288,14 @@ async function retryWriteback(userId, id) {
     await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id,
       kind: 'reconcile', priority: 0, foreground: true });
     runOperationsSoon(op.mail_account_id, { foreground: true });
+    publishMailOperation(userId, { accountId: op.mail_account_id, operationIds: [id], state: 'reconciling' });
     // No provider mutation. The bounded outcome checker takes this ID.
     return { message: 'Move outcome check queued', retry_action: 'check_outcome' };
   }
   if (!await requeue(userId, op)) throw fail('This change cannot be safely retried; check provider outcome.');
   await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id, kind: 'operation', priority: 0, foreground: true });
   runOperationsSoon(op.mail_account_id, { foreground: true });
+  publishMailOperation(userId, { accountId: op.mail_account_id, operationIds: [id], state: 'queued' });
   return { message: 'Retry queued', retry_action: 'retry' };
 }
 // User retry gives a fresh bounded attempt budget. A stopped dispatched flag is

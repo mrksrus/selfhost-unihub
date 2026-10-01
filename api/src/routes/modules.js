@@ -8,6 +8,8 @@ module.exports = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
       const modules = await setUserModules(userId, body);
+      require('../services/server-events').serverEvents.setUserModules(userId,
+        modules.filter(module => module.enabled).map(module => module.id));
       if (body.modules?.mail) {
         const { db } = require('../state');
         const { stopMailAccountWork, cancelMailAccountSync } = require('../services/mail');

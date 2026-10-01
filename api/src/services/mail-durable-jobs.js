@@ -3,6 +3,7 @@ const { createDurableMailScheduler, MUTATION_MAIL_JOB_KINDS } = require('./mail-
 const { acquireImapConnection, releaseImapConnection } = require('./mail-engine/connection-pool');
 const { operationDue, processOperationBatch } = require('./mail-engine/operation-batch');
 const { db } = require('../state');
+const { publishMailJob } = require('./server-events');
 const { isModuleEnabled, isModuleBackgroundEnabled } = require('./module-settings');
 const { isSectionRestoreActive } = require('./restore-locks');
 const { toBooleanFlag, buildImapConnectionConfig } = require('./mail-host-policy');
@@ -249,6 +250,7 @@ async function runDurableMailJob(job, signal, report) {
 // provider changes of any account (see createDurableMailScheduler).
 durableScheduler = createDurableMailScheduler(runDurableMailJob, { concurrency: 3, readConcurrency: 2, onState: state => {
   if (!state.mail_account_id) return;
+  publishMailJob(state); // live status for the account owner's open tabs
   if (state.state === 'running') runningDurableAccounts.add(state.mail_account_id);
   else if (['idle', 'error', 'cancelled', 'paused'].includes(state.state)) runningDurableAccounts.delete(state.mail_account_id);
   // A continuation is committed atomically with the completed job by the

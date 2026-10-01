@@ -351,6 +351,9 @@ async function dispatchRequest(req, res) {
 
     const result = await handler(req, userId, body, res);
 
+    // A streaming route (GET /api/events) has written and owns the response.
+    if (result?.__handled === true) return;
+
     if (result.__redirect) {
       res.writeHead(302, { Location: result.__redirect });
       res.end();

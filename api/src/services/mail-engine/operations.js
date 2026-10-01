@@ -36,8 +36,15 @@ async function accountFence(cx, op, generation, workerId, jobId) {
     WHERE e.mail_account_id=? AND e.user_id=? FOR UPDATE`, [op.mail_account_id, op.user_id]);
   return !!a && same(a.generation, generation) && Number(a.is_active) === 1 && a.sync_mode === 'sync' && !a.disconnected_at;
 }
+// Committed operation states reach the owner's open tabs as a refetch hint.
+async function publishedState(op, state, committed) {
+  const changed = await committed;
+  if (changed) require('../server-events').publishMailOperation(op.user_id,
+    { accountId: op.mail_account_id, operationIds: [op.id], state });
+  return changed;
+}
 async function setState(op, state, error = null, { attemptId, transmission = null, evidence = null, due = null, generation, workerId, jobId, clearDispatch = false, bump = false } = {}) {
-  return transaction(async cx => {
+  return publishedState(op, state, transaction(async cx => {
     const [[row]] = await cx.execute(`SELECT * FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`, [op.id, op.user_id, op.mail_account_id]);
     // A user cancel or newer intent may land while this worker holds a stale copy.
     if (!row || ['confirmed', 'cancelled', 'superseded'].includes(row.state) || !await accountFence(cx, op, generation, workerId, jobId)) return false;
@@ -57,7 +64,7 @@ async function setState(op, state, error = null, { attemptId, transmission = nul
     // Keep the original transmission/evidence and its unresolved timestamp;
     // a later verified reconciliation can still settle this same attempt.
     return true;
-  });
+  }));
 }
 // No provider progress was possible on this pass (evidence must settle first).
 // Back off so the 1s due scan cannot become a login loop; a bounded count of

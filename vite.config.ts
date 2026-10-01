@@ -21,8 +21,11 @@ export default defineConfig(() => ({
         navigateFallbackDenylist: [
           /^\/api\//,
         ],
+        // /api/events (Server-Sent Events) is left out on purpose: no
+        // service-worker route answers it, so the browser streams it straight
+        // from the network and a worker stop cannot cut the stream.
         runtimeCaching: [{
-          urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
+          urlPattern: ({ url }) => url.pathname.startsWith('/api/') && url.pathname !== '/api/events',
           handler: 'NetworkOnly',
         }],
         // Inject custom service worker code
