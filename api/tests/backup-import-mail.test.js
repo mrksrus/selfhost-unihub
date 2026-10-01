@@ -28,7 +28,7 @@ test('backup import maps restored mail to existing account and email sync identi
     else delete require.cache[mailPath];
   });
 
-  delete require.cache[backupPath];
+  t.after(require('./helpers/backup-service-modules').evictBackupServiceModules());
   setRequireStub(mailPath, {
     MAIL_RAW_STORAGE_ROOT: '/tmp/unihub-test-mail-raw',
     DEFAULT_MAIL_SYNC_FETCH_LIMIT: 'all',

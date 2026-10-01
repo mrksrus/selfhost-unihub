@@ -32,7 +32,7 @@ test('backup import preserves calendar event field order and MySQL values', asyn
     else delete require.cache[mailPath];
   });
 
-  delete require.cache[backupPath];
+  t.after(require('./helpers/backup-service-modules').evictBackupServiceModules());
   setRequireStub(mailPath, {
     MAIL_RAW_STORAGE_ROOT: '/tmp/unihub-test-mail-raw',
     DEFAULT_MAIL_SYNC_FETCH_LIMIT: 'all',

@@ -13,7 +13,7 @@ async function fixture(t, failure) {
   const originalRecordings = require.cache[recordingsPath];
   const originalBackup = require.cache[backupPath];
   require.cache[recordingsPath] = { id: recordingsPath, filename: recordingsPath, loaded: true, exports: { RECORDINGS_ROOT: directory } };
-  delete require.cache[backupPath];
+  t.after(require('./helpers/backup-service-modules').evictBackupServiceModules());
   const { importBackupForUser, buildBackupArchiveEntriesForUser } = require('../src/services/backup');
   t.after(async () => {
     setDb(null);

@@ -56,7 +56,7 @@ test('MySQL restores colliding backup IDs without changing another user in every
   const backupPath = require.resolve('../src/services/backup');
   const originalBackup = require.cache[backupPath];
   require.cache[recordingsPath].exports = { ...originalRecordings, RECORDINGS_ROOT: directory };
-  delete require.cache[backupPath];
+  t.after(require('./helpers/backup-service-modules').evictBackupServiceModules());
   const { importBackupForUser } = require(backupPath);
   const { encrypt } = require('../src/security/encryption');
   setDb({ execute: (...args) => connection.execute(...args), getConnection: async () => ({ execute: (...args) => connection.execute(...args), beginTransaction: () => connection.beginTransaction(), commit: () => connection.commit(), rollback: () => connection.rollback(), release() {} }) });
