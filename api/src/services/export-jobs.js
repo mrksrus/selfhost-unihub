@@ -301,6 +301,7 @@ function serializeJob(row) {
     progress: Number(row.progress) || 0,
     cancel_requested: Boolean(row.cancel_requested),
     requested_sections: parseRequestedSections(row.requested_sections),
+    mail_account_id: row.mail_account_id || null,
     file_size: row.file_size === null || row.file_size === undefined ? null : Number(row.file_size),
     file_sha256: row.file_sha256 || null,
     content_type: row.content_type || null,
@@ -361,6 +362,7 @@ async function runDataExportJob(jobId) {
     const dataKey = encrypted ? crypto.randomBytes(32) : null;
     const recoveryPassword = encrypted ? generateRecoveryPassword() : null;
     entries = await collectExportEntries(job.user_id, sections, {
+      mailAccountId: job.mail_account_id || null,
       portableCredentialKey: dataKey,
       checkCancelled: () => checkExportCancelled(jobId),
     });
@@ -473,19 +475,29 @@ async function runDataExportJob(jobId) {
   }
 }
 
-async function startDataExportJob(userId, { sections, scope, encrypt = true } = {}) {
+// mailAccountId limits a mail-only export to one owned account (the backup
+// offered before switching that account to Sync).
+async function startDataExportJob(userId, { sections, scope, encrypt = true, mailAccountId = null } = {}) {
   const normalizedSections = normalizeSections(sections || scope || 'full');
+  if (mailAccountId !== null) {
+    if (normalizedSections.length !== 1 || normalizedSections[0] !== 'mail') {
+      throw Object.assign(new Error('An account backup contains only mail.'), { status: 400, code: 'BACKUP_SECTION_UNSUPPORTED' });
+    }
+    const [owned] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [mailAccountId, userId]);
+    if (!owned.length) throw Object.assign(new Error('Mail account not found'), { status: 404 });
+  }
   const jobId = crypto.randomUUID();
   await db.execute(
     `INSERT INTO data_export_jobs
-       (id, user_id, scope, status, phase, progress, requested_sections, encryption_enabled)
-     VALUES (?, ?, ?, 'queued', 'queued', 0, ?, ?)`,
+       (id, user_id, scope, status, phase, progress, requested_sections, encryption_enabled, mail_account_id)
+     VALUES (?, ?, ?, 'queued', 'queued', 0, ?, ?, ?)`,
     [
       jobId,
       userId,
-      normalizedSections.length === EXPORT_SECTIONS.size ? 'full' : 'partial',
+      normalizedSections.length === EXPORT_SECTIONS.size && mailAccountId === null ? 'full' : 'partial',
       JSON.stringify(normalizedSections),
       encrypt === false ? 0 : 1,
+      mailAccountId,
     ]
   );
   scheduleDataExportWorker();

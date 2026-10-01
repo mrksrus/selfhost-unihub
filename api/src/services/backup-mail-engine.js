@@ -11,8 +11,10 @@ const bool = value => value === true || value === 1 || value === '1';
 async function pauseMailRestore(connection, userId) {
   // A section restore already holds the mail restore exclusion guard. Preserve
   // all accepted commands; do not DELETE the installation's operation journal.
+  // A restore can bring back local copies the server no longer has; Sync must
+  // not remove them before the user confirms the account's policy again.
   await connection.execute(`UPDATE mail_accounts SET is_active = FALSE, delete_emails_on_server = FALSE,
-    server_delete_enabled_at = NULL, server_delete_grace_until = NULL WHERE user_id = ?`, [userId]);
+    server_delete_enabled_at = NULL, server_delete_grace_until = NULL, sync_policy_confirmed_at = NULL WHERE user_id = ?`, [userId]);
   // A canary hold survives; is_active = FALSE already forces revalidation
   // before the operator can release it.
   await connection.execute(`UPDATE mail_engine_accounts SET generation = generation + 1,

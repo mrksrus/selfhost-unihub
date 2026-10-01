@@ -169,7 +169,31 @@ function assertBackupFilesComplete(backup) {
   }
 }
 
-async function readBackupSnapshot(userId, sections, checkCancelled) {
+// Per-account mail export: each mail table restricted to one account's rows.
+// Shared folders and global sender rules stay included because the account's
+// folder mappings and rule overrides refer to them. Command receipts are not
+// account-scoped and are left out.
+const ACCOUNT_MAIL_FILTERS = Object.freeze({
+  mail_accounts: 'b.id = ?',
+  mail_folders: '(b.mail_account_id = ? OR b.mail_account_id IS NULL)',
+  mail_folder_remote_boxes: 'b.mail_account_id = ?',
+  mail_sender_rules: '(b.mail_account_id = ? OR b.mail_account_id IS NULL)',
+  emails: 'b.mail_account_id = ?',
+  email_attachments: 'b.email_id IN (SELECT ae.id FROM emails ae WHERE ae.user_id = b.user_id AND ae.mail_account_id = ?)',
+  mail_email_scores: 'b.email_id IN (SELECT se.id FROM emails se WHERE se.user_id = b.user_id AND se.mail_account_id = ?)',
+  mail_folder_reconciliations: 'b.mail_account_id = ?',
+  mail_folder_recovery_items: 'b.source_account_id = ?',
+  mail_folder_rule_overrides: 'b.mail_account_id = ? AND (r.mail_account_id IS NULL OR r.mail_account_id = b.mail_account_id)',
+  mail_remote_mailboxes: 'b.mail_account_id = ?',
+  mail_remote_occurrences: 'b.mail_account_id = ?',
+  mail_gmail_messages: 'b.mail_account_id = ?',
+  mail_writebacks: 'b.mail_account_id = ?',
+  mail_operation_attempts: 'b.mail_account_id = ?',
+  mail_command_receipts: 'FALSE',
+  mail_engine_quarantine: 'b.mail_account_id = ?',
+});
+
+async function readBackupSnapshot(userId, sections, checkCancelled, mailAccountId = null) {
   const connection = await db.getConnection();
   try {
     if (checkCancelled) await checkCancelled();
@@ -192,10 +216,23 @@ async function readBackupSnapshot(userId, sections, checkCancelled) {
           where = 'r.user_id = ? AND a.user_id = ?'; params = [userId, userId];
         }
         if (table === 'recording_transcription_jobs') where += " AND b.status = 'completed'";
+        if (mailAccountId !== null && SECTION_POLICIES.mail.tables.includes(table)) {
+          const filter = ACCOUNT_MAIL_FILTERS[table];
+          if (!filter) throw new Error(`No account filter for mail table ${table}`);
+          where += ` AND ${filter}`;
+          if (filter.includes('?')) params = [...params, mailAccountId];
+        }
         const order = policy.keyColumns.map(column => `b.\`${column}\``).join(', ');
         const [rows] = await connection.execute(`SELECT ${columns} FROM ${from} WHERE ${where} ORDER BY ${order}`, params);
         if (table === 'user' && !rows.length) throw new Error('User not found');
         data[table] = table === 'user' ? normalizeRows(rows)[0] : normalizeRows(rows);
+      }
+    }
+    // Filing in another account is local organisation outside this export;
+    // the restored copy is filed under its own account instead.
+    if (mailAccountId !== null) {
+      for (const email of data.emails || []) {
+        if (email.filing_account_id && email.filing_account_id !== mailAccountId) email.filing_account_id = null;
       }
     }
     await connection.commit();
@@ -213,8 +250,9 @@ async function buildBackupForUser(userId, {
   portableCredentialKey = null,
   checkCancelled = null,
   sections = 'full',
+  mailAccountId = null,
 } = {}) {
-  const data = await readBackupSnapshot(userId, sections, checkCancelled);
+  const data = await readBackupSnapshot(userId, sections, checkCancelled, mailAccountId);
   const fileEntries = [];
   for (const [kind, policy] of Object.entries(FILE_POLICIES)) {
     const rootPath = BACKUP_FILE_ROOTS[kind];
@@ -286,10 +324,12 @@ async function buildBackupForUser(userId, {
 async function buildBackupArchiveEntriesForUser(userId, sections = 'full', {
   portableCredentialKey = null,
   checkCancelled = null,
+  mailAccountId = null,
 } = {}) {
   const fullBackup = await buildBackupForUser(userId, {
     includeFileData: false,
     sections,
+    mailAccountId,
     portableCredentialKey,
     checkCancelled,
   });

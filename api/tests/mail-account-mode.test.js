@@ -5,10 +5,14 @@ const { readV3 } = require('../src/services/backup-formats/v3');
 const { validateRestoreRows } = require('../src/services/backup-ownership');
 
 test('mode switches require confirmation and never carry deletion across modes', () => {
-  const download = { sync_mode: 'download', delete_emails_on_server: 1 };
-  assert.throws(() => change(download, { sync_mode: 'sync' }), /Confirm/);
-  assert.throws(() => change(download, { sync_mode: 'sync', sync_mode_confirmed: true, delete_emails_on_server: true }), /unavailable/);
-  assert.deepEqual(change(download, { sync_mode: 'sync', sync_mode_confirmed: true }), { mode: 'sync', changed: true, deleteSettingProvided: true, deleteEnabled: false });
+  const download = { sync_mode: 'download', delete_emails_on_server: 1, email_address: 'Owner@Example.test' };
+  const requiresAddress = error => error.status === 400 && error.requiresConfirmation === true && /Type the account email address/.test(error.message);
+  assert.throws(() => change(download, { sync_mode: 'sync' }), requiresAddress);
+  // The old checkbox alone is no longer enough; the typed address is required.
+  assert.throws(() => change(download, { sync_mode: 'sync', sync_mode_confirmed: true }), requiresAddress);
+  assert.throws(() => change(download, { sync_mode: 'sync', sync_mode_confirmed: true, confirm_address: 'other@example.test' }), requiresAddress);
+  assert.throws(() => change(download, { sync_mode: 'sync', confirm_address: ' owner@example.test ', delete_emails_on_server: true }), /unavailable/);
+  assert.deepEqual(change(download, { sync_mode: 'sync', sync_mode_confirmed: true, confirm_address: ' owner@EXAMPLE.test ' }), { mode: 'sync', changed: true, deleteSettingProvided: true, deleteEnabled: false });
   assert.equal(change({ sync_mode: 'sync' }, { sync_mode: 'download' }).deleteEnabled, false);
   assert.throws(() => change({ sync_mode: 'sync' }, { sync_mode: 'download', delete_emails_on_server: true }), /Save Download/);
   assert.equal(change(download, {}).deleteEnabled, true);

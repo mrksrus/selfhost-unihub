@@ -65,6 +65,9 @@ function validateRestoreRows(data) {
   const errors = [];
   for (const account of Array.isArray(data?.mail_accounts) ? data.mail_accounts : []) {
     if (account?.sync_mode !== undefined && !['download', 'sync'].includes(account.sync_mode)) errors.push('Backup has an invalid mail account mode');
+    for (const field of ['sync_window_days', 'trash_window_days']) {
+      if (account?.[field] != null && ![14, 30, 90, 180, 365].includes(Number(account[field]))) errors.push('Backup has an invalid mail retention window');
+    }
   }
   for (const email of Array.isArray(data?.emails) ? data.emails : []) {
     if (email?.remote_missing !== undefined && ![true, false, 0, 1].includes(email.remote_missing)) errors.push('Backup has an invalid remote message state');

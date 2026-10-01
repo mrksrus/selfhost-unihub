@@ -8,14 +8,23 @@ function mailAccountModeChange(account, body) {
   const changed = !!account && current !== mode;
   const requestedDelete = enabled(body.delete_emails_on_server);
   if (mode === 'sync' && requestedDelete) fail('Automatic server deletion is unavailable in Sync mode.');
-  if (changed && mode === 'sync' && body.sync_mode_confirmed !== true) {
-    fail('Confirm that Sync follows server state and sends new read, star and move actions to the provider, retains missing messages locally, and stops automatic server deletion.');
+  // Sync makes the server the source of truth: local copies the server no
+  // longer has (and, with windows, older mail) are removed. Switching requires
+  // the account address typed by the user; that confirmation also confirms the
+  // account's Sync policy (sync_policy_confirmed_at).
+  if (changed && mode === 'sync' && !addressConfirmed(account, body.confirm_address)) {
+    throw Object.assign(new Error('Type the account email address to confirm switching to Sync. Sync follows the server: local copies of mail deleted on the server, and mail outside the chosen windows, are removed from UniHub.'),
+      { status: 400, requiresConfirmation: true });
   }
   if (changed && mode === 'download' && requestedDelete) fail('Save Download mode first, then explicitly enable server deletion if wanted.');
   const deleteSettingProvided = changed || mode === 'sync' || Object.hasOwn(body, 'delete_emails_on_server');
   return { mode, changed, deleteSettingProvided, deleteEnabled: mode === 'download' && !changed && (deleteSettingProvided ? requestedDelete : enabled(account?.delete_emails_on_server)) };
 }
-module.exports = { mailAccountModeChange };
+function addressConfirmed(account, typed) {
+  const expected = String(account?.email_address || '').trim().toLowerCase();
+  return !!expected && typeof typed === 'string' && typed.trim().toLowerCase() === expected;
+}
+module.exports = { mailAccountModeChange, addressConfirmed };
 
 // UID namespaces belong to one provider mailbox, not merely its display address.
 function sameProviderMailbox(left, right) {
