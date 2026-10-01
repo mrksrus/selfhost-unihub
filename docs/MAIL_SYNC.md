@@ -145,6 +145,33 @@ executes up to 50 other due, undispatched operations of the same account on its
 transport, each with its own fence check and attempt record, so a bulk change
 normally needs a single LOGIN.
 
+### One job runner
+
+Every mail job, including accepted provider changes (`operation`) and their
+outcome checks (`reconcile`), runs on the one durable scheduler
+(`api/src/services/mail-sync-scheduler.js`, executor `runDurableMailJob` in
+`api/src/services/mail.js`). It runs at most three jobs at once, of which at
+most two may be read-only (`sync`, `recent`, `flags`, `history`, `presence`,
+`body`); the third slot only ever takes operation/reconcile work, so a click is
+never queued behind other accounts' long scans. After a read/star/move is
+accepted (or retried), the API enqueues the job and nudges the scheduler: a
+read-only job of the same account, which holds the account lease, yields at a
+safe boundary (its progress is kept and it continues afterwards), then the
+scheduler claims immediately instead of at its next one-second poll. A nudge
+that arrives during a claim pass repeats that pass.
+
+Operation and reconcile jobs also hold the in-process account lock (shared with
+settings changes and server deletion), dial with shorter timeouts, and on a
+connect/login failure back off the account's due operations. A job started by
+a user action runs while background sync is off and is followed by a follow-up
+sync; a retry found by the one-second due scan (`runDueWritebacks`, with
+per-operation exponential backoff) is background work: with background sync off
+it finishes as `paused` without connecting and is requeued once background sync
+is on again, and its refresh is a background sync. Stopping an account
+(disconnect, settings, module off) fences its generation, aborts its running
+jobs including an operation (hard-closing that transport) and evicts its parked
+session.
+
 Expired-lease recovery (a crashed or stalled worker) runs when the durable
 scheduler starts and then at most every 15 seconds, not on every poll. Until it
 has run, a claim skips an account whose expired lease still names a worker, so

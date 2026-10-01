@@ -180,11 +180,14 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
     assert.equal(refused.status, 409);
     assert.equal(refused.message, 'Idempotency-Key already used for a different request');
     assert.equal((await pool.execute('SELECT COUNT(*) AS n FROM mail_writebacks WHERE email_id=?', [itemId]))[0][0].n, 2);
-    // Accepted commands start a writeback pass; this account has no credentials,
-    // so it defers. Let it finish before the pool closes.
+    // Accepted commands start their durable operation jobs; this account has no
+    // credentials, so they defer. Let them finish before the pool closes.
+    const mail = require('../src/services/mail');
     for (let i = 0; i < 100; i++) {
       await new Promise(resolve => setTimeout(resolve, 50));
-      if (!service.isWritebackRunning()) break;
+      const [[open]] = await pool.execute(`SELECT COUNT(*) AS n FROM mail_engine_jobs WHERE mail_account_id=?
+        AND state IN ('queued','running')`, [accountId]);
+      if (!Number(open.n) && !mail.isAnyMailAccountSyncRunning()) break;
     }
   });
 });

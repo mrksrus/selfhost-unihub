@@ -57,10 +57,12 @@ test('a deadlock on one due operation does not abort the rest of the due pass', 
   } });
   const enqueued = [];
   t.mock.method(runtime, 'enqueueJob', async job => { if (job.operationId === 'op1') throw deadlock(); enqueued.push(job.operationId); });
-  t.mock.method(runtime, 'claimDueJob', async () => null);
+  const nudged = [];
+  t.mock.method(mail, 'runMailOperationsNow', async id => { nudged.push(id); return true; });
   assert.equal(await writebacks.runDueWritebacks(), 2);
   assert.deepEqual(enqueued, ['op2']);
   await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(nudged, ['a2'], 'only the account whose job was enqueued is started');
 });
 
 test('a second remote mailbox for an already mapped system folder becomes its own folder instead of failing sync', async t => {
