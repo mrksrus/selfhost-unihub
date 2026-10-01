@@ -84,8 +84,10 @@ export const addressMatches = (typed: string, account: Pick<MailAccount, 'email_
   typed.trim() !== '' && sameAddress(typed, account.email_address);
 
 /** Existing Sync accounts keep their local mail until the owner confirms the cleanup once. */
+// Every unconfirmed Sync account needs the decision: until it is confirmed the
+// backend never removes anything, including mail deleted on the server later.
 export const needsSyncPolicyDecision = (account: MailAccount) => account.sync_mode === 'sync'
-  && account.sync_policy_confirmed === false && (account.sync_policy_pending_removals ?? 0) > 0;
+  && account.sync_policy_confirmed === false;
 
 export async function fetchMailModeImpact(accountId: string, params: { mode: 'download' | 'sync'; syncWindow: MailWindowDays; trashWindow: MailWindowDays }, signal?: AbortSignal) {
   const search = new URLSearchParams({ mode: params.mode,

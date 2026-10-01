@@ -195,18 +195,19 @@ describe('sync policy upgrade gate', () => {
   const mountPanel = (accounts: MailAccount[]) =>
     render(<QueryClientProvider client={client}><PanelHarness accounts={accounts} /></QueryClientProvider>);
 
-  it('appears only for Sync accounts awaiting confirmation with removals, and confirm posts the typed address', async () => {
+  it('appears for every unconfirmed Sync account (with or without removals), and confirm posts the typed address', async () => {
     vi.mocked(api.post).mockResolvedValue({ data: { confirmed: true, queued: true } });
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     mountPanel([pending, nothingPending, confirmed, archive]);
-    expect(screen.getByRole('status')).toHaveTextContent('1 account needs a decision');
+    expect(screen.getByRole('status')).toHaveTextContent('2 accounts need a decision');
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     const panel = await screen.findByRole('dialog');
     const notices = within(panel).getAllByRole('group');
-    expect(notices).toHaveLength(1);
+    expect(notices).toHaveLength(2);
     expect(notices[0]).toHaveTextContent('Turn on mail-client behavior for old@example.test: 5 emails that are no longer on the server will be removed from UniHub.');
+    expect(notices[1]).toHaveTextContent('Turn on mail-client behavior for empty@example.test: nothing is removed now');
     expect(within(notices[0]).getByRole('button', { name: 'Back up first' })).toBeInTheDocument();
-    await waitFor(() => expect(within(panel).getByText(/Turn on mail-client behavior for/).closest('p')).toHaveFocus());
+    await waitFor(() => expect(within(panel).getAllByText(/Turn on mail-client behavior for/)[0].closest('p')).toHaveFocus());
 
     fireEvent.click(within(notices[0]).getByRole('button', { name: 'Confirm…' }));
     const confirmDialog = await screen.findByRole('dialog', { name: 'Turn on mail-client behavior' });
@@ -222,7 +223,7 @@ describe('sync policy upgrade gate', () => {
   });
 
   it('shows nothing when no account needs a decision', () => {
-    mountPanel([nothingPending, confirmed, archive]);
+    mountPanel([confirmed, archive]);
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 

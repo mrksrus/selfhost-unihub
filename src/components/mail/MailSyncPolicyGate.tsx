@@ -64,7 +64,9 @@ export function MailSyncPolicyConfirmDialog({ account, open, onOpenChange, touch
     description={<>UniHub will follow the server for <span className="break-all">{account.email_address}</span>. Nothing changes on the server.</>}>
     <form className="space-y-4 text-sm" onSubmit={event => { event.preventDefault(); if (matches && !confirm.isPending) confirm.mutate(); }}>
       <p>
-        <span className="font-medium">{emailCount(removals)}</span> that {removals === 1 ? 'is' : 'are'} no longer on the server will be removed from UniHub, including attachments. UniHub can’t bring them back afterwards.
+        {removals > 0
+          ? <><span className="font-medium">{emailCount(removals)}</span> that {removals === 1 ? 'is' : 'are'} no longer on the server will be removed from UniHub, including attachments. UniHub can’t bring them back afterwards.</>
+          : <>Nothing is removed now. From then on, mail deleted or moved on the server is removed or moved here too, including attachments.</>}
       </p>
       <MailAccountBackupButton accountId={account.id} />
       <TypedAddressConfirm id={`mail-sync-policy-address-${account.id}`} address={account.email_address}
@@ -74,7 +76,7 @@ export function MailSyncPolicyConfirmDialog({ account, open, onOpenChange, touch
         <Button type="button" variant="outline" disabled={confirm.isPending} onClick={() => change(false)}>Cancel</Button>
         <Button type="submit" variant="destructive" disabled={!matches || confirm.isPending || isOfflineMode()}>
           {confirm.isPending && <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 motion-safe:animate-spin" />}
-          Turn on and remove {emailCount(removals)}
+          {removals > 0 ? <>Turn on and remove {emailCount(removals)}</> : 'Turn on'}
         </Button>
       </div>
     </form>
@@ -96,7 +98,9 @@ export function MailSyncPolicyNotice({ account, touch, autoFocus, className }: {
       className="rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
       <span aria-hidden="true" className="mr-1.5 inline-block h-2 w-2 rounded-full bg-warning" />
       <span className="font-medium">Turn on mail-client behavior for <span className="break-all">{account.email_address}</span>:</span>{' '}
-      {emailCount(removals)} that {removals === 1 ? 'is' : 'are'} no longer on the server will be removed from UniHub.
+      {removals > 0
+        ? <>{emailCount(removals)} that {removals === 1 ? 'is' : 'are'} no longer on the server will be removed from UniHub.</>
+        : <>nothing is removed now; from then on, mail deleted or moved on the server is removed or moved here too.</>}
     </p>
     <div className="flex flex-wrap items-start gap-2">
       <MailAccountBackupButton accountId={account.id} label="Back up first" />
