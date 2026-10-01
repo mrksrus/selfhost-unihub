@@ -30,6 +30,79 @@ export interface MailAccount {
     skipped: number;
   };
   unread_count?: number;
+  /** Sync mode only: days of mail kept in UniHub; null keeps all mail. */
+  sync_window_days?: MailWindowDays;
+  /** Sync mode only: days of trash and spam kept in UniHub; null keeps all. */
+  trash_window_days?: MailWindowDays;
+  /** False until the owner accepts server-is-source-of-truth cleanup for an existing Sync account. */
+  sync_policy_confirmed?: boolean;
+  /** Local emails the first confirmed cleanup would remove; null while unknown. */
+  sync_policy_pending_removals?: number | null;
+  /** Provider setup problems the owner can fix; unknown codes are ignored. */
+  sync_warnings?: string[];
+}
+
+const SYNC_WARNING_TEXT: Record<string, string> = {
+  gmail_all_mail_hidden: 'Gmail’s “All Mail” is hidden from IMAP, so UniHub can’t tell archived mail from deleted mail and keeps it. In Gmail: Settings → Labels → All Mail → Show in IMAP.',
+};
+/** Readable text for the account's known sync warnings. */
+export const mailSyncWarnings = (account: MailAccount) => (Array.isArray(account.sync_warnings) ? account.sync_warnings : [])
+  .filter((code): code is string => typeof code === 'string' && Object.prototype.hasOwnProperty.call(SYNC_WARNING_TEXT, code))
+  .map(code => ({ code, text: SYNC_WARNING_TEXT[code] }));
+
+export type MailWindowDays = 14 | 30 | 90 | 180 | 365 | null;
+export const MAIL_WINDOW_CHOICES: { value: MailWindowDays; label: string }[] = [
+  { value: 14, label: '2 weeks' },
+  { value: 30, label: '1 month' },
+  { value: 90, label: '3 months' },
+  { value: 180, label: '6 months' },
+  { value: 365, label: '1 year' },
+  { value: null, label: 'All' },
+];
+export const DEFAULT_SYNC_WINDOW_DAYS: MailWindowDays = null;
+export const DEFAULT_TRASH_WINDOW_DAYS: MailWindowDays = 30;
+export const mailWindowKey = (value: MailWindowDays) => value === null ? 'all' : String(value);
+export const parseMailWindow = (key: string): MailWindowDays => {
+  const match = MAIL_WINDOW_CHOICES.find(choice => mailWindowKey(choice.value) === key);
+  return match ? match.value : null;
+};
+
+/** What saving a mode/window change would remove from UniHub (never from the server). */
+export interface MailModeImpact {
+  mode: 'download' | 'sync';
+  local_only: number;
+  outside_window: number;
+  outside_trash_window: number;
+  gmail_duplicates: number;
+  total_removals: number;
+  notes: string[];
+}
+
+export const emailCount = (count: number) => `${count.toLocaleString()} ${count === 1 ? 'email' : 'emails'}`;
+const sameAddress = (left: string, right: string) => left.trim().toLowerCase() === right.trim().toLowerCase();
+export const addressMatches = (typed: string, account: Pick<MailAccount, 'email_address'>) =>
+  typed.trim() !== '' && sameAddress(typed, account.email_address);
+
+/** Existing Sync accounts keep their local mail until the owner confirms the cleanup once. */
+export const needsSyncPolicyDecision = (account: MailAccount) => account.sync_mode === 'sync'
+  && account.sync_policy_confirmed === false && (account.sync_policy_pending_removals ?? 0) > 0;
+
+export async function fetchMailModeImpact(accountId: string, params: { mode: 'download' | 'sync'; syncWindow: MailWindowDays; trashWindow: MailWindowDays }, signal?: AbortSignal) {
+  const search = new URLSearchParams({ mode: params.mode,
+    sync_window_days: params.syncWindow === null ? '' : String(params.syncWindow),
+    trash_window_days: params.trashWindow === null ? '' : String(params.trashWindow) });
+  const response = await api.get<MailModeImpact>(`/mail/accounts/${encodeURIComponent(accountId)}/mode-impact?${search}`, { signal });
+  if (response.error) throw new Error(response.error);
+  const data = response.data;
+  if (!data || typeof data.total_removals !== 'number') throw new Error('Invalid mode impact response');
+  return { ...data, notes: Array.isArray(data.notes) ? data.notes : [] };
+}
+
+export async function confirmMailSyncPolicy(accountId: string, confirmAddress: string) {
+  const response = await api.post<{ confirmed: boolean; queued: boolean }>(
+    `/mail/accounts/${encodeURIComponent(accountId)}/confirm-sync-policy`, { confirm_address: confirmAddress.trim() });
+  if (response.error) throw new Error(response.error);
+  return response.data;
 }
 
 
