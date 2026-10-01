@@ -1,7 +1,7 @@
 const crypto = require('crypto');
-require('../imap-patch');
-const imaps = require('imap-simple');
 const { db } = require('../state');
+const imapClient = require('./mail-imap-client');
+const { guardImapConnection, runGuardedImap, closeImapConnection } = require('./mail-imap-guard');
 const { buildImapConnectionConfig } = require('./mail-host-policy');
 
 const MAIL_FOLDER_DEFINITIONS = [
@@ -174,32 +174,33 @@ async function ensureDefaultMailFoldersForUser(userId, connection = db) {
     );
 }
 
-function flattenImapBoxes(boxes, prefix = '', specialUses = new Map()) {
+const SPECIAL_USE_ROLES = { '\\sent': 'sent', '\\drafts': 'drafts', '\\junk': 'junk', '\\trash': 'trash', '\\archive': 'archive', '\\all': 'archive', '\\important': 'important' };
+
+// Maps ImapFlow LIST entries to selectable mailbox paths. Only the attributes
+// the server sent (RFC 6154 special-use or Gmail XLIST) assign a role; the
+// library's name-based specialUse guess is deliberately ignored.
+function imapListToFolders(entries, specialUses = new Map()) {
   const results = [];
-  for (const [name, box] of Object.entries(boxes || {})) {
-    const delimiter = box?.delimiter || '/';
-    const fullName = prefix ? `${prefix}${delimiter}${name}` : name;
-    const attributes = (box?.attribs || []).map(value => String(value).toLowerCase());
-    const roles = { '\\sent': 'sent', '\\drafts': 'drafts', '\\junk': 'junk', '\\trash': 'trash', '\\archive': 'archive', '\\all': 'archive', '\\important': 'important' };
-    const role = attributes.map(attribute => roles[attribute]).find(Boolean);
+  for (const entry of entries || []) {
+    const fullName = typeof entry?.path === 'string' ? entry.path : '';
+    if (!fullName) continue;
+    const attributes = [...(entry.flags || [])].map(value => String(value).toLowerCase());
+    const role = attributes.map(attribute => SPECIAL_USE_ROLES[attribute]).find(Boolean);
     if (role) specialUses.set(fullName, role);
-    if (!attributes.includes('\\noselect')) results.push(fullName);
-    if (box?.children) {
-      results.push(...flattenImapBoxes(box.children, fullName, specialUses));
-    }
+    if (!attributes.includes('\\noselect') && !attributes.includes('\\nonexistent')) results.push(fullName);
   }
   return results;
 }
 
 async function listAvailableImapFolders(connection, specialUses = new Map(), strict = false) {
   try {
-    if (typeof connection.getBoxes !== 'function') {
+    if (typeof connection?.list !== 'function') {
       if (strict) throw new Error('Server folder listing unavailable');
       return ['INBOX'];
     }
-    const boxes = await connection.getBoxes();
-    if (strict && (!boxes || typeof boxes !== 'object' || Array.isArray(boxes))) throw new Error('Invalid server folder listing');
-    const folders = flattenImapBoxes(boxes, '', specialUses);
+    const entries = await runGuardedImap(connection, () => connection.list());
+    if (strict && !Array.isArray(entries)) throw new Error('Invalid server folder listing');
+    const folders = imapListToFolders(entries, specialUses);
     if (strict && folders.length === 0) throw new Error('Server returned no selectable folders; retry required');
     return folders;
   } catch (error) {
@@ -342,14 +343,13 @@ function pickImapSyncFolders(availableFolders, customFolderSlugs = new Map()) {
   return picked;
 }
 
-function createImapBox(connection, folderName) {
-  return new Promise((resolve, reject) => {
-    if (typeof connection?.imap?.addBox !== 'function') {
-      reject(new Error('The configured IMAP client does not support remote folder creation.'));
-      return;
-    }
-    connection.imap.addBox(folderName, error => error ? reject(error) : resolve());
-  });
+// Resolves with { created } (false when the server reports it already exists).
+async function createImapBox(connection, folderName) {
+  if (typeof connection?.mailboxCreate !== 'function') {
+    throw new Error('The configured IMAP client does not support remote folder creation.');
+  }
+  const result = await runGuardedImap(connection, () => connection.mailboxCreate(folderName));
+  return { created: result?.created !== false };
 }
 
 async function ensureCustomImapFoldersForUser(userId, connection, availableFolders, dbConnection = db) {
@@ -388,20 +388,18 @@ async function createRemoteMailFolderForUserAccounts(userId, folderName, account
     try {
       const config = await buildImapConnectionConfig(account);
       if (!config) throw new Error('No password configured');
-      connection = await imaps.connect(config);
+      connection = guardImapConnection(await imapClient.connectImap(config));
       const availableFolders = await listAvailableImapFolders(connection);
       if (availableFolders.some(name => String(name).toLowerCase() === displayName.toLowerCase())) {
         results.push({ accountId: account.id, remoteName: displayName, status: 'existing' });
       } else {
-        await createImapBox(connection, displayName);
-        results.push({ accountId: account.id, remoteName: displayName, status: 'created' });
+        const { created } = await createImapBox(connection, displayName);
+        results.push({ accountId: account.id, remoteName: displayName, status: created ? 'created' : 'existing' });
       }
     } catch (error) {
       results.push({ accountId: account.id, remoteName: displayName, status: 'failed', retryable: true, error: error.message || String(error) });
     } finally {
-      if (connection) {
-        try { connection.end(); } catch { /* already closed */ }
-      }
+      if (connection) closeImapConnection(connection);
     }
   }
   return {
@@ -432,7 +430,7 @@ module.exports = {
   resolveMailSenderTargetFolder,
   createMailRoutingContext,
   ensureDefaultMailFoldersForUser,
-  flattenImapBoxes,
+  imapListToFolders,
   listAvailableImapFolders,
   isVirtualMailFolderName,
   registerCustomImapFoldersForUser,

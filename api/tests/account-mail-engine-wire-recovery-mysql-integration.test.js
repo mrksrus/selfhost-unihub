@@ -1,4 +1,4 @@
-// Requires an empty disposable MySQL 8 schema ending in _test. Real imap-simple/node-imap sockets.
+// Requires an empty disposable MySQL 8 schema ending in _test. Real ImapFlow sockets.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -7,8 +7,8 @@ const { fork } = require('node:child_process');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const mysql = require('mysql2/promise');
-const imaps = require('imap-simple');
-const { guardImapConnection } = require('../src/services/mail-imap-guard');
+const { connectImap } = require('../src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../src/services/mail-imap-guard');
 const { selectMailbox } = require('../src/services/mail-engine/transport');
 
 const rows = async (db, sql, params = []) => (await db.execute(sql, params))[0];
@@ -33,21 +33,23 @@ async function peer(db, opId, { ack = 'mapped', deferAck = false, firstDestinati
       let index;
       while ((index = input.indexOf('\r\n')) >= 0) {
         const line = input.slice(0, index); input = input.slice(index + 2);
-        const match = /^(A\d+) (.*)$/.exec(line);
+        const match = /^([0-9A-F]+) (.*)$/.exec(line);
         if (!match) continue;
         const [, tag, cmd] = match;
         queue = queue.then(async () => {
           commands.push(cmd);
           const ok = text => write(`${tag} OK ${text || 'completed'}\r\n`);
-          if (cmd === 'CAPABILITY') { write('* CAPABILITY IMAP4rev1 UIDPLUS MOVE CONDSTORE\r\n'); ok(); }
+          if (cmd === 'CAPABILITY') { write('* CAPABILITY IMAP4rev1 UIDPLUS MOVE CONDSTORE ENABLE\r\n'); ok(); }
           else if (cmd.startsWith('LOGIN ')) ok();
+          else if (cmd === 'ENABLE CONDSTORE') { write('* ENABLED CONDSTORE\r\n'); ok(); }
           else if (cmd.startsWith('LIST ')) { write('* LIST (\\Noselect) "/" ""\r\n'); ok(); }
-          else if (/^(SELECT|EXAMINE) "(INBOX|Filed)"(?: \(CONDSTORE\))?$/.test(cmd)) {
-            selected = /"INBOX"/.test(cmd) ? 'INBOX' : 'Filed';
+          else if (cmd.startsWith('LSUB ')) ok();
+          else if (/^(SELECT|EXAMINE) "?(INBOX|Filed)"?$/.test(cmd)) {
+            selected = /INBOX/.test(cmd) ? 'INBOX' : 'Filed';
             const present = selected === 'INBOX' ? sourcePresent : destinationPresent;
             write(`* FLAGS (\\Seen)\r\n* ${present ? 1 : 0} EXISTS\r\n* OK [UIDVALIDITY ${selected === 'INBOX' ? 9 : 10}] valid\r\n* OK [UIDNEXT ${selected === 'INBOX' ? 104 : 208}] next\r\n`);
             ok(`[${cmd.startsWith('EXAMINE') ? 'READ-ONLY' : 'READ-WRITE'}] selected`);
-          } else if (/^UID FETCH \d+:\d+ \(MODSEQ UID FLAGS INTERNALDATE\)$/.test(cmd)) {
+          } else if (/^UID FETCH \d+:\d+ \(UID FLAGS INTERNALDATE MODSEQ\)$/.test(cmd)) {
             const [, low, high] = /^UID FETCH (\d+):(\d+)/.exec(cmd).map(Number);
             const uid = selected === 'INBOX' ? 103 : 207;
             if (Number.isFinite(low) && low <= uid && high >= uid &&
@@ -80,11 +82,10 @@ async function peer(db, opId, { ack = 'mapped', deferAck = false, firstDestinati
     get sourcePresent() { return sourcePresent; }, get destinationPresent() { return destinationPresent; },
     release() { assert.ok(releaseAck, 'ACK must be deferred'); releaseAck(); },
     async connect() {
-      const connection = guardImapConnection(await imaps.connect({ imap: {
+      const connection = guardImapConnection(await connectImap({ imap: {
         host: '127.0.0.1', port: server.address().port, user: 'fixture', password: 'fixture',
         tls: false, keepalive: false, connTimeout: 1000, authTimeout: 1000, socketTimeout: 1000,
       } }), { timeoutMs: 3000 });
-      connection.on('error', () => {});
       return connection;
     },
     async close() {
@@ -158,7 +159,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     const claimed = await runtime.claimDueJob({ workerId,kinds:['operation'] }, pool);
     assert.equal(claimed.id,job.id);
     const fixture = await peer(pool,opId,options); t.after(() => fixture.close());
-    const connection = await fixture.connect(); t.after(() => connection.end());
+    const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
     await selectMailbox(connection, { folder: 'INBOX' });
     const account = { id:accountId,user_id:userId,sync_mode:'sync' };
     const op = { id:opId,user_id:userId,mail_account_id:accountId,
@@ -180,7 +181,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
       const scanned = await scanMailboxSlice({ db:pool,connection:scanner,account:f.account,
         folder:{ folderName:'Filed',dbFolderName:'filed' },stream:'recent' });
       assert.equal(scanned.inserted,1);
-    } finally { scanner.end(); }
+    } finally { closeImapConnection(scanner); }
     const provisional = await one(pool, `SELECT o.id,o.email_id FROM mail_remote_occurrences o
       JOIN mail_remote_mailboxes m ON m.id=o.mailbox_id WHERE m.mail_account_id=? AND m.remote_name='Filed' AND o.uid=207`, [f.accountId]);
     assert.ok(provisional); assert.notEqual(provisional.email_id,f.emailId);
@@ -219,7 +220,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
       const result = await runRecoveredReconcileJob({ job,account:f.account,connection:fresh,
         signal:new AbortController().signal,report(){} });
       assert.equal(result.success,true);
-    } finally { fresh.end(); }
+    } finally { closeImapConnection(fresh); }
     const op = await opRow(f.opId);
     if (op.state !== 'needs_attention') throw new Error('Lost ACK diagnosis: ' + JSON.stringify({ commands:f.fixture.commands, op }));
     assert.notEqual(op.status,'done');
@@ -260,7 +261,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     try {
       assert.equal((await runRecoveredReconcileJob({ job,account:f.account,connection:fresh,
         signal:new AbortController().signal,report(){} })).success,true);
-    } finally { fresh.end(); }
+    } finally { closeImapConnection(fresh); }
     const op = await opRow(f.opId);
     assert.equal(op.state,'needs_attention'); assert.equal(op.dispatched,1); assert.equal(op.attempts,1);
     assert.equal(decode(op.evidence_json).kind,'bounded_move_check');
@@ -285,7 +286,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     try {
       assert.equal((await runRecoveredReconcileJob({ job,account:f.account,connection:fresh,
         signal:new AbortController().signal,report(){} })).success,true);
-    } finally { fresh.end(); }
+    } finally { closeImapConnection(fresh); }
     const checked = await opRow(f.opId);
     assert.equal(checked.state,'needs_attention'); assert.equal(checked.attempts,1);
     assert.equal(decode(checked.evidence_json).kind,'bounded_move_check');
@@ -305,7 +306,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
       const scanned = await scanMailboxSlice({ db:pool,connection:scanner,account:f.account,
         folder:{ folderName:'Filed',dbFolderName:'filed' },stream:'recent' });
       assert.equal(scanned.inserted,1);
-    } finally { scanner.end(); }
+    } finally { closeImapConnection(scanner); }
     const op = await opRow(f.opId);
     assert.equal(op.state,'confirmed'); assert.equal(op.id,f.opId); assert.equal(op.attempts,1);
     assert.equal((await one(pool,'SELECT outcome FROM mail_operation_attempts WHERE operation_id=?',[f.opId])).outcome,'confirmed');
@@ -334,7 +335,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
       const result = await runRecoveredReconcileJob({ job,account:f.account,connection:fresh,
         signal:new AbortController().signal,report(){} });
       assert.equal(result.success,true);
-    } finally { fresh.end(); }
+    } finally { closeImapConnection(fresh); }
     const settled = await opRow(f.opId);
     assert.equal(settled.state,'confirmed'); assert.equal(settled.id,f.opId); assert.equal(settled.attempts,1);
     assert.equal(decode(settled.evidence_json).kind,'copyuid_verified');

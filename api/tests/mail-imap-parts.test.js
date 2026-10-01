@@ -78,32 +78,34 @@ test('loads existing imported UIDs before message download', async () => {
   assert.deepEqual(calls[0].params, ['account-1', 'INBOX', 1, 2, 3, 123]);
 });
 
-test('server delete helper uses UID-scoped expunge', async () => {
+// A guarded stand-in for an ImapFlow client: exec() is its command queue.
+function deleteClient(capabilities, reject = null) {
   const calls = [];
-  const connection = {
-    imap: {
-      serverSupports: capability => capability === 'UIDPLUS',
-      addFlags: (uid, flag, callback) => {
-        calls.push(['addFlags', uid, flag]);
-        callback(null);
-      },
-      expunge: (uid, callback) => {
-        calls.push(['expunge', uid]);
-        callback(null);
-      },
-      delFlags: (uid, flag, callback) => {
-        calls.push(['delFlags', uid, flag]);
-        callback(null);
-      },
+  const flat = node => Array.isArray(node) ? node.flatMap(flat) : [node.value];
+  const connection = require('../src/services/mail-imap-guard').guardImapConnection(Object.assign(new (require('node:events'))(), {
+    capabilities: new Map(capabilities.map(name => [name, true])), close() {},
+    exec: async (command, attributes) => {
+      calls.push([command, ...attributes.flatMap(flat)]);
+      if (reject === command) throw Object.assign(new Error('Command failed'), { responseStatus: 'NO', responseText: 'synthetic refusal' });
+      return { next() {}, response: {} };
     },
-  };
+  }));
+  return { connection, calls };
+}
 
+test('server delete helper uses UID-scoped expunge', async () => {
+  const { connection, calls } = deleteClient(['UIDPLUS']);
   await deleteImapUid(connection, 42);
-
   assert.deepEqual(calls, [
-    ['addFlags', 42, '\\Deleted'],
-    ['expunge', 42],
+    ['UID STORE', '42', '+FLAGS.SILENT', '\\Deleted'],
+    ['UID EXPUNGE', '42'],
   ]);
+});
+
+test('a refused UID EXPUNGE clears the \\Deleted flag it set and reports the provider text', async () => {
+  const { connection, calls } = deleteClient(['UIDPLUS'], 'UID EXPUNGE');
+  await assert.rejects(deleteImapUid(connection, 42), /UID EXPUNGE rejected: synthetic refusal/);
+  assert.deepEqual(calls.map(call => call.slice(0, 3)), [['UID STORE', '42', '+FLAGS.SILENT'], ['UID EXPUNGE', '42'], ['UID STORE', '42', '-FLAGS.SILENT']]);
 });
 
 test('server deletion queue skips messages without a usable raw archive', async () => {
@@ -129,15 +131,7 @@ test('server deletion queue skips messages without a usable raw archive', async 
 });
 
 test('server delete helper refuses mailbox-wide expunge fallback', async () => {
-  const calls = [];
-  const connection = {
-    imap: {
-      serverSupports: () => false,
-      addFlags: () => calls.push('addFlags'),
-      expunge: () => calls.push('expunge'),
-    },
-  };
-
+  const { connection, calls } = deleteClient(['MOVE']);
   await assert.rejects(
     () => deleteImapUid(connection, 42),
     /UIDPLUS/

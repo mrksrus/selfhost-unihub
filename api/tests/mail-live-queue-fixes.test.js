@@ -113,7 +113,7 @@ test('a failing operation is counted, backs off, and does not block the next cha
   t.mock.method(transport, 'fetchMetadataWindow', async () => ({ items: [] }));
   const errors = t.mock.method(console, 'error', () => {});
   // A session that survived the refusal: guard idle and authenticated.
-  const guarded = Object.assign(new (require('node:events'))(), { imap: { state: 'authenticated', serverSupports: () => false } });
+  const guarded = Object.assign(new (require('node:events'))(), { usable: true, isClosed: false, close() {} });
   require('../src/services/mail-imap-guard').guardImapConnection(guarded, {});
   const result = await operations.processDueOperations({ id: 'acct', user_id: 'u' }, guarded,
     { workerGeneration: 1, workerId: 'w', jobId: 'j' });

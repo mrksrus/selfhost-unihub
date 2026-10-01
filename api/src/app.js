@@ -1,6 +1,5 @@
 const { prepareFolderReconciliation } = require('./services/mail-folder-reconciliation');
 const http = require('http');
-require('./imap-patch');
 const { PORT } = require('./config');
 const { db } = require('./state');
 const { initDatabase, ensurePerformanceIndexes } = require('./services/database');

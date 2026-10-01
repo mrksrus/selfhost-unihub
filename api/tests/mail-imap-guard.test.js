@@ -1,41 +1,49 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { guardImapConnection } = require('../src/services/mail-imap-guard');
+const { guardImapConnection, runGuardedImap, closeImapConnection } = require('../src/services/mail-imap-guard');
 const { withMailAccountLock } = require('../src/services/mail-account-lock');
 const operations = require('../src/services/mail-engine/operations');
 const transport = require('../src/services/mail-engine/transport');
 const { getDb, setDb } = require('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+// Stands in for an ImapFlow client: close() is its synchronous hard close
+// (socket and parser destroyed, 'close' emitted); commands are promises.
 function fixture(options = {}) {
   const connection = new EventEmitter();
-  let destroyed = 0, socketDestroyed = 0, commands = 0, reply;
-  connection.imap = { _sock: { destroy() { socketDestroyed++; } },
-    destroy() { assert.equal(socketDestroyed, 1); destroyed++; }, addFlags(...args) { commands++; reply = args.at(-1); } };
+  let destroyed = 0, commands = 0, reply;
+  Object.assign(connection, { usable: true, isClosed: false });
+  connection.close = () => {
+    destroyed++;
+    if (connection.isClosed) return;
+    Object.assign(connection, { usable: false, isClosed: true });
+    connection.emit('close');
+  };
   connection.search = () => { commands++; return new Promise(resolve => { reply = (_error, value) => resolve(value); }); };
-  connection.openBox = async () => ({ uidvalidity: 9 });
-  connection.getBoxes = async () => ({ INBOX: {} });
-  return { connection: guardImapConnection(connection, options), get destroyed() { return destroyed; }, get socketDestroyed() { return socketDestroyed; },
+  connection.mailboxOpen = async () => ({ uidValidity: 9n });
+  guardImapConnection(connection, options);
+  const command = name => runGuardedImap(connection, () => connection[name]());
+  return { connection, command, get destroyed() { return destroyed; },
     get commands() { return commands; }, reply: (...args) => reply(...args) };
 }
 
 test('command timeout destroys transport, rejects stalled promises and ignores late success', async () => {
   const f = fixture({ timeoutMs: 10 });
   let continued = false;
-  const wait = f.connection.search(['ALL'], {}).then(() => { continued = true; });
+  const wait = f.command('search').then(() => { continued = true; });
   await assert.rejects(wait, { code: 'MAIL_IMAP_TIMEOUT' });
   assert.equal(f.destroyed, 1);
-  assert.equal(f.socketDestroyed, 1);
+  assert.equal(f.connection.isClosed, true);
   f.reply(null, []); await tick();
   assert.equal(continued, false);
-  await assert.rejects(f.connection.openBox('INBOX'), { code: 'MAIL_IMAP_TIMEOUT' });
+  await assert.rejects(f.command('mailboxOpen'), { code: 'MAIL_IMAP_TIMEOUT' });
   assert.equal(f.commands, 1);
 });
 
-for (const event of ['error', 'close', 'end']) test(`socket ${event} settles a wait even if imap-simple never calls back`, async () => {
+for (const event of ['error', 'close']) test(`client ${event} settles a wait even if the command never settles`, async () => {
   const f = fixture();
-  const wait = f.connection.search(['ALL'], {});
+  const wait = f.command('search');
   f.connection.emit(event, event === 'error' ? new Error('socket timeout') : undefined);
   await assert.rejects(wait, /socket timeout|unexpectedly/);
   assert.equal(f.destroyed, 1);
@@ -47,7 +55,7 @@ test('abort keeps account locked through cleanup and late replies cannot mutate 
   const controller = new AbortController(), f = fixture({ signal: controller.signal });
   let cleanup, cleanupStarted = false, mutated = false;
   const worker = withMailAccountLock('guarded', async () => {
-    try { await f.connection.search(['ALL'], {}); mutated = true; }
+    try { await f.command('search'); mutated = true; }
     finally { cleanupStarted = true; await new Promise(resolve => { cleanup = resolve; }); }
   });
   await tick(); controller.abort(); await tick();
@@ -62,7 +70,7 @@ test('abort keeps account locked through cleanup and late replies cannot mutate 
 test('cancelled connection cannot dispatch any new commands', async () => {
   const controller = new AbortController(); controller.abort();
   const f = fixture({ signal: controller.signal });
-  await assert.rejects(f.connection.search(['ALL'], {}), { code: 'MAIL_SYNC_CANCELLED' });
+  await assert.rejects(f.command('search'), { code: 'MAIL_SYNC_CANCELLED' });
   assert.equal(f.commands, 0); assert.equal(f.destroyed, 1);
 });
 
@@ -104,7 +112,7 @@ for (const action of ['read', 'star', 'move']) {
     const lost = async (_conn, _input, { beforeDispatch }) => {
       await beforeDispatch();
       assert(trace.includes('commit'), 'Dispatch journal must commit before any mutation bytes');
-      try { await f.connection.search(['UID', 12], {}); }
+      try { await f.command('search'); }
       catch (error) { assert.equal(error.code, 'MAIL_IMAP_TIMEOUT'); }
       return { transmission: 'possible', completion: 'lost', mapping: null, mappingStatus: 'missing' };
     };
@@ -123,9 +131,10 @@ for (const action of ['read', 'star', 'move']) {
 test('each command gets a fresh deadline; completing many commands has no global sync cutoff', async () => {
   const f = fixture({ timeoutMs: 100 });
   for (let i = 0; i < 5; i++) {
-    const wait = f.connection.search(['ALL'], {});
+    const wait = f.command('search');
     f.reply(null, [i]); assert.deepEqual(await wait, [i]);
   }
   assert.equal(f.destroyed, 0);
-  f.connection.end(); assert.equal(f.destroyed, 1);
+  closeImapConnection(f.connection); assert.equal(f.destroyed, 1);
+  closeImapConnection(f.connection); assert.equal(f.destroyed, 1, 'closing is idempotent');
 });

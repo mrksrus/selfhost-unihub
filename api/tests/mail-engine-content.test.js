@@ -40,7 +40,7 @@ test('legacy raw, missing epoch, wrong tuple or modified archive cannot authoriz
   ]) assert.equal(await eligibleForProviderErasure({ ...input, ...override }), false);
 });
 test('raw fetch refuses decoded text and aborts slow reads at deadline', async () => {
-  const connection = { ended: false, end() { this.ended = true; } };
+  const connection = { ended: false, close() { this.ended = true; } };
   const address = { folder: 'INBOX', uidvalidity: 40, uid: 7 };
   await assert.rejects(fetchRawBounded({ fetchRawMessage: async () => ({ raw: 'decoded' }) }, connection, address), /octets/);
   await assert.rejects(fetchRawBounded({ fetchRawMessage: async () => new Promise(() => {}) }, connection, address,

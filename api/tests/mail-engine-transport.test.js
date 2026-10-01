@@ -2,8 +2,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
-const imaps = require('imap-simple');
-const { guardImapConnection } = require('../src/services/mail-imap-guard');
+const { connectImap } = require('../src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../src/services/mail-imap-guard');
 const { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove } = require('../src/services/mail-engine/transport');
 
 async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidity = 9, raw = Buffer.from([0, 255, 128, 13, 10, 0x3d, 0x20, 0x0a]), stall = false, metadata = 'normal', highest = '9007199254740993123', itemModseq = '9007199254740993123' } = {}) {
@@ -17,18 +17,20 @@ async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidi
       let i;
       while ((i = buffer.indexOf('\r\n')) !== -1) {
         const line = buffer.slice(0, i); buffer = buffer.slice(i + 2);
-        const m = /^(A\d+) (.*)$/.exec(line);
+        const m = /^([0-9A-F]+) (.*)$/.exec(line);
         if (!m) continue;
         const [, tag, cmd] = m; commands.push(cmd);
         const ok = (body = 'done') => socket.write(`${tag} OK ${body}\r\n`);
-        if (cmd === 'CAPABILITY') { socket.write(`* CAPABILITY IMAP4rev1 UIDPLUS${move ? ' MOVE' : ''}${condstore ? ' CONDSTORE' : ''}\r\n`); ok(); }
+        if (cmd === 'CAPABILITY') { socket.write(`* CAPABILITY IMAP4rev1 UIDPLUS${move ? ' MOVE' : ''}${condstore ? ' CONDSTORE ENABLE' : ''}\r\n`); ok(); }
         else if (cmd.startsWith('LOGIN ')) ok();
+        else if (cmd === 'ENABLE CONDSTORE') { socket.write('* ENABLED CONDSTORE\r\n'); ok(); }
         else if (cmd.startsWith('LIST ')) { socket.write('* LIST (\\Noselect) "/" ""\r\n'); ok(); }
-        else if (/^(SELECT|EXAMINE) "(INBOX|Filed)"(?: \(CONDSTORE\))?$/.test(cmd)) {
+        else if (cmd.startsWith('LSUB ')) ok();
+        else if (/^(SELECT|EXAMINE) "?(INBOX|Filed)"?$/.test(cmd)) {
           socket.write(`* FLAGS (\\Seen \\Flagged)\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY ${uidvalidity}] valid\r\n* OK [UIDNEXT 106] next\r\n* OK [HIGHESTMODSEQ ${highest}] highest\r\n* OK [PERMANENTFLAGS (\\Seen \\Flagged)] flags\r\n`);
           ok(`[${cmd.startsWith('EXAMINE') ? 'READ-ONLY' : 'READ-WRITE'}] selected`);
         } else if (/^UID FETCH (\d+):(\d+) /.test(cmd)) {
-          assert.match(cmd, /^UID FETCH \d+:\d+ \(MODSEQ UID FLAGS INTERNALDATE\)$/);
+          assert.match(cmd, /^UID FETCH \d+:\d+ \(UID FLAGS INTERNALDATE MODSEQ\)$/);
           if (metadata !== 'empty') {
             const uid = metadata === 'wrong' ? 106 : 103;
             socket.write(`* 1 FETCH (UID ${uid} FLAGS (\\Seen $custom) MODSEQ (${itemModseq}) INTERNALDATE "29-Sep-2026 12:00:00 +0000")\r\n`);
@@ -36,7 +38,9 @@ async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidi
           }
           ok();
         } else if (/^UID FETCH 103 /.test(cmd)) {
-          assert.match(cmd, /^UID FETCH 103 \(MODSEQ UID FLAGS INTERNALDATE BODY\.PEEK\[\]\)$/);
+          assert.match(cmd, /^UID FETCH 103 \(UID BODY\.PEEK\[\] MODSEQ\)$/);
+          // Announce a body above the 32 MiB ceiling and never send it.
+          if (metadata === 'oversized') { socket.write('* 1 FETCH (UID 103 BODY[] {33554433}\r\n'); continue; }
           socket.write(Buffer.concat([Buffer.from(`* 1 FETCH (UID 103 FLAGS (\\Seen) MODSEQ (9007199254740993123) INTERNALDATE "29-Sep-2026 12:00:00 +0000" BODY[] {${raw.length}}\r\n`, 'ascii'), raw, Buffer.from(')\r\n', 'ascii')])); ok();
         } else if (cmd.startsWith('UID MOVE')) {
           assert.equal(cmd, 'UID MOVE 103 "Filed"');
@@ -62,17 +66,16 @@ async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidi
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { commands, async connect({ timeoutMs = 1500, signal } = {}) {
-    const connection = guardImapConnection(await imaps.connect({ imap: {
+    const connection = guardImapConnection(await connectImap({ imap: {
       host: '127.0.0.1', port: server.address().port, user: 'fixture', password: 'fixture',
       tls: false, keepalive: false, connTimeout: 1000, authTimeout: 1000, socketTimeout: 1000,
     } }), { timeoutMs, signal });
-    connection.on('error', () => {});
     return connection;
   }, async close() { for (const socket of sockets) socket.destroy(); await new Promise(resolve => server.close(resolve)); } };
 }
 async function setup(t, options, guarded) {
   const fixture = await peer(options); t.after(() => fixture.close());
-  const connection = await fixture.connect(guarded); t.after(() => connection.end());
+  const connection = await fixture.connect(guarded); t.after(() => closeImapConnection(connection));
   const box = await selectMailbox(connection, { folder: 'INBOX' });
   return { fixture, connection, box };
 }
@@ -90,7 +93,7 @@ test('finite UID metadata uses real UID FETCH and keeps 64-bit MODSEQ lossless',
   const result = await fetchMetadataWindow(connection, { folder: 'INBOX', uidvalidity: 9, startUid: 102, endUid: 105 });
   assert.deepEqual(result.items, [{ uid: 103, flags: ['\\Seen', '$custom'], modseq: '9007199254740993123', gmailMsgId: null }]);
   assert.equal(result.complete, true);
-  assert(fixture.commands.includes('UID FETCH 102:105 (MODSEQ UID FLAGS INTERNALDATE)'));
+  assert(fixture.commands.includes('UID FETCH 102:105 (UID FLAGS INTERNALDATE MODSEQ)'));
 });
 test('raw BODY.PEEK[] preserves non-UTF8 octets, NUL and CRLF as Buffer', async t => {
   const raw = Buffer.from([0, 255, 128, 13, 10, 0x3d, 0x20, 0x0a]);
@@ -160,7 +163,7 @@ test('read-only mailbox uses EXAMINE and cannot dispatch MOVE', async t => {
   const { fixture, connection } = await setup(t);
   const box = await selectMailbox(connection, { folder: 'Filed', readOnly: true });
   assert.equal(box.readOnly, true);
-  assert(fixture.commands.includes('EXAMINE "Filed" (CONDSTORE)'));
+  assert(fixture.commands.includes('EXAMINE Filed'));
   await assert.rejects(nativeMove(connection, { ...moveRequest, sourceFolder: 'Filed', targetFolder: 'INBOX' }, { beforeDispatch: async () => {} }), /identity\/permissions/);
   assert(!fixture.commands.some(cmd => cmd.startsWith('UID MOVE')));
 });
@@ -173,18 +176,20 @@ test('MOVE deadline retains possible transmission; late reply cannot confirm', a
 test('aborted in-flight MOVE closes the connection and preserves uncertain transmission', async t => {
   const { fixture, connection } = await setup(t, { stall: true });
   const controller = new AbortController();
+  const socket = connection.socket;
   const attempt = nativeMove(connection, moveRequest, { beforeDispatch: async () => {}, signal: controller.signal });
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(fixture.commands.filter(cmd => cmd.startsWith('UID MOVE')).length, 1);
   controller.abort();
   const result = await attempt;
   assert.equal(result.transmission, 'possible'); assert.equal(result.completion, 'lost');
-  assert.equal(connection.imap._sock.destroyed, true);
+  assert.equal(socket.destroyed, true);
+  assert.equal(connection.isClosed, true);
 });
 test('capability downgrade before fenced MOVE cannot enter library fallback', async t => {
   const { fixture, connection } = await setup(t);
   const result = await nativeMove(connection, moveRequest, { beforeDispatch: async () => {
-    connection.imap._caps = connection.imap._caps.filter(capability => capability !== 'MOVE');
+    connection.capabilities.delete('MOVE');
   } });
   assert.equal(result.transmission, 'not_sent'); assert.equal(result.completion, 'unsupported');
   assert(!fixture.commands.some(cmd => /\b(?:MOVE|COPY|STORE|EXPUNGE)\b/.test(cmd)));
@@ -192,4 +197,10 @@ test('capability downgrade before fenced MOVE cannot enter library fallback', as
 test('duplicate metadata UID is rejected; no partial window reported complete', async t => {
   const { connection } = await setup(t, { metadata: 'duplicate' });
   await assert.rejects(fetchMetadataWindow(connection, { folder: 'INBOX', uidvalidity: 9, startUid: 102, endUid: 105 }), /duplicate/);
+});
+test('a literal announced above the raw ceiling fails before it is buffered and closes the session', async t => {
+  const { connection } = await setup(t, { metadata: 'oversized' });
+  await assert.rejects(fetchRawMessage(connection, { folder: 'INBOX', uidvalidity: 9, uid: 103 }), { code: 'MAIL_IMAP_LIMIT' });
+  assert.equal(connection.isClosed, true);
+  await assert.rejects(selectMailbox(connection, { folder: 'INBOX' }), { code: 'MAIL_IMAP_LIMIT' });
 });

@@ -88,7 +88,7 @@ async function fetchRawBounded(transport, connection, address, { maxBytes = DEFA
   if (signal?.aborted) throw Object.assign(new Error('Body fetch cancelled'), { code: 'MAIL_SYNC_CANCELLED' });
   let timer;
   const timeout = new Promise((_, reject) => { timer = setTimeout(() => {
-    try { connection.end(); } catch { /* already closed */ }
+    require('../mail-imap-guard').closeImapConnection(connection);
     reject(Object.assign(new Error('Body fetch deadline exceeded'), { code: 'MAIL_BODY_TIMEOUT' }));
   }, timeoutMs); });
   try {

@@ -13,7 +13,7 @@ function setRequireStub(modulePath, exports) {
   };
 }
 
-for (const scenario of ['disabled-between-messages', 'already-sync', 'sync-during-search', 'lifecycle-stop-during-search', 'module-paused', 'module-paused-during-search', 'legacy-raw', 'unknown-epoch']) {
+for (const scenario of ['disabled-between-messages', 'already-sync', 'sync-during-search', 'lifecycle-stop-during-search', 'module-paused', 'module-paused-during-search', 'legacy-raw', 'unknown-epoch', 'no-uidplus']) {
 test(`server deletion worker: ${scenario}`, async (t) => {
   const oldRoot = process.env.MAIL_RAW_STORAGE_ROOT;
   const root = await fs.mkdtemp(path.join(require('node:os').tmpdir(), 'mail-delete-'));
@@ -33,14 +33,14 @@ test(`server deletion worker: ${scenario}`, async (t) => {
   const mailPath = require.resolve('../src/services/mail');
   const statePath = require.resolve('../src/state');
   const encryptionPath = require.resolve('../src/security/encryption');
-  const imapSimplePath = require.resolve('imap-simple');
+  const imapClientPath = require.resolve('../src/services/mail-imap-client');
   const modulesPath = require.resolve('../src/services/module-settings');
   const originalModules = require.cache[modulesPath];
   delete require.cache[modulesPath];
   const originalMail = require.cache[mailPath];
   const originalState = require.cache[statePath];
   const originalEncryption = require.cache[encryptionPath];
-  const originalImapSimple = require.cache[imapSimplePath];
+  const originalImapClient = require.cache[imapClientPath];
 
   t.after(() => {
     if (originalModules) require.cache[modulesPath] = originalModules; else delete require.cache[modulesPath];
@@ -50,8 +50,8 @@ test(`server deletion worker: ${scenario}`, async (t) => {
     else delete require.cache[statePath];
     if (originalEncryption) require.cache[encryptionPath] = originalEncryption;
     else delete require.cache[encryptionPath];
-    if (originalImapSimple) require.cache[imapSimplePath] = originalImapSimple;
-    else delete require.cache[imapSimplePath];
+    if (originalImapClient) require.cache[imapClientPath] = originalImapClient;
+    else delete require.cache[imapClientPath];
   });
 
   t.after(require('./helpers/mail-service-modules').evictMailServiceModules());
@@ -108,36 +108,28 @@ test(`server deletion worker: ${scenario}`, async (t) => {
 
   setRequireStub(statePath, { db });
   setRequireStub(encryptionPath, { decrypt: value => value === 'encrypted-secret' ? 'secret' : null });
-  setRequireStub(imapSimplePath, {
-    connect: async () => ({
-      imap: {
-        _box: { uidvalidity: 123 },
-        serverSupports: capability => capability === 'UIDPLUS',
-        addFlags: (uid, flag, callback) => {
-          imapCalls.push(['addFlags', uid, flag]);
-          callback(null);
-        },
-        delFlags: (uid, flag, callback) => {
-          imapCalls.push(['delFlags', uid, flag]);
-          callback(null);
-        },
-        expunge: (uid, callback) => {
-          imapCalls.push(['expunge', uid]);
-          callback(null);
-        },
-      },
-      on: () => {},
-      openBox: async () => {},
-      search: async criteria => {
+  // Stands in for an authenticated ImapFlow client with INBOX selected.
+  const flat = node => Array.isArray(node) ? node.flatMap(flat) : [node.value];
+  setRequireStub(imapClientPath, {
+    connectImap: async () => Object.assign(new (require('node:events'))(), {
+      usable: true, isClosed: false, states: { SELECTED: 3 }, state: 3,
+      mailbox: { path: 'INBOX', uidValidity: 123n },
+      capabilities: new Map([['IMAP4REV1', true], ...(scenario === 'no-uidplus' ? [] : [['UIDPLUS', true]])]),
+      close() {},
+      mailboxOpen: async () => ({ path: 'INBOX', uidValidity: 123n }),
+      search: async query => {
         if (scenario === 'module-paused-during-search') modulePaused = true;
         if (scenario === 'lifecycle-stop-during-search') {
           const runtime = require('../src/services/mail-engine/runtime');
           t.mock.method(runtime, 'pauseAccount', async () => {});
           await require('../src/services/mail').stopMailAccountWork('account-1', 'Disconnected');
         }
-        return [{ attributes: { uid: criteria[0][1] } }];
+        return [Number(query.uid)];
       },
-      end: () => {},
+      exec: async (command, attributes) => {
+        imapCalls.push([command, ...attributes.flatMap(flat)]);
+        return { next() {}, response: {} };
+      },
     }),
   });
 
@@ -148,6 +140,13 @@ test(`server deletion worker: ${scenario}`, async (t) => {
     assert.equal(result.skipped, true);
     assert.deepEqual(imapCalls, []);
     assert.deepEqual(statusUpdates, []);
+    return;
+  }
+  if (scenario === 'no-uidplus') {
+    // Without UIDPLUS only a mailbox-wide EXPUNGE exists: nothing is flagged or expunged.
+    assert.equal(result.deleted, 0);
+    assert.deepEqual(imapCalls, []);
+    assert.equal(statusUpdates[0].status, 'failed');
     return;
   }
   if (['legacy-raw', 'unknown-epoch'].includes(scenario)) {
@@ -169,8 +168,8 @@ test(`server deletion worker: ${scenario}`, async (t) => {
   assert.equal(result.stopped, true);
   assert.deepEqual(statusUpdates, [{ status: 'deleted', id: 'queue-1' }]);
   assert.deepEqual(imapCalls, [
-    ['addFlags', 10, '\\Deleted'],
-    ['expunge', 10],
+    ['UID STORE', '10', '+FLAGS.SILENT', '\\Deleted'],
+    ['UID EXPUNGE', '10'],
   ]);
 });
 

@@ -1,9 +1,13 @@
 'use strict';
 
-// All node-imap private parser/request coupling stays inside the transport.
-// Pinned imap@0.8.19 discards untagged COPYUID and only returns the tagged
-// destination UID set; observe the response codes before its own listeners.
-const { runGuardedImap } = require('../mail-imap-guard');
+// All ImapFlow protocol coupling of the mail engine stays inside the transport.
+// SELECT/EXAMINE and FETCH use the library API. UID STORE and UID MOVE are
+// issued through ImapFlow's command queue (exec) with explicitly built
+// arguments: the convenience methods hide NO/BAD and MODIFIED, filter flags by
+// PERMANENTFLAGS, put UNCHANGEDSINCE after the flag list, and messageMove()
+// silently falls back to COPY + STORE + EXPUNGE when MOVE is not advertised.
+const { runGuardedImap, closeImapConnection } = require('../mail-imap-guard');
+const imapTools = require('imapflow/lib/tools.js');
 const MAX_UID = 0xffffffff;
 const MAX_WINDOW = 250;
 const MAX_METADATA_BYTES = 1048576;
@@ -25,7 +29,7 @@ function decimal(value, name) {
 // RFC 7162, e.g. 0. Treat such a value as "no mod-sequence": the mailbox is then
 // handled like a server without CONDSTORE instead of failing the whole sync.
 function optionalModseq(value) {
-  if (value == null) return null;
+  if (value == null || value === false) return null;
   try { return decimal(value, 'MODSEQ'); } catch { return null; }
 }
 function folderName(value) {
@@ -41,13 +45,19 @@ function aborted(signal) {
 }
 function bindAbort(connection, signal) {
   aborted(signal);
-  const onAbort = () => connection.end();
+  const onAbort = () => closeImapConnection(connection);
   signal?.addEventListener('abort', onAbort, { once: true });
   return () => signal?.removeEventListener('abort', onAbort);
 }
+// Only capabilities the server advertises count; a missing MOVE is never
+// emulated and a missing UIDPLUS never widens an EXPUNGE.
+function advertised(connection, capability) {
+  return connection.capabilities instanceof Map && connection.capabilities.has(capability);
+}
 function selected(connection, folder, uidvalidity, writable = false) {
-  const box = connection.imap._box;
-  if (!box || box.name !== folder || uint32(box.uidvalidity, 'selected UIDVALIDITY') !== uint32(uidvalidity, 'UIDVALIDITY')
+  const box = connection.mailbox;
+  if (!box || connection.state !== connection.states?.SELECTED || box.path !== imapTools.normalizePath(connection, folder)
+      || uint32(box.uidValidity, 'selected UIDVALIDITY') !== uint32(uidvalidity, 'UIDVALIDITY')
       || writable && box.readOnly) throw Object.assign(new Error('Selected mailbox identity/permissions changed'), { code: 'MAIL_IMAP_EPOCH' });
   return box;
 }
@@ -55,71 +65,37 @@ async function selectMailbox(connection, { folder, readOnly = false, signal } = 
   folderName(folder); aborted(signal);
   const detach = bindAbort(connection, signal);
   try {
-    // imap-simple.openBox does not expose readOnly; use the guarded connection's
-    // callback deadline for the underlying EXAMINE when requested.
-    const box = readOnly
-      ? await runGuardedImap(connection, done => connection.imap.openBox(folder, true, done))
-      : await connection.openBox(folder);
-    const uidvalidity = uint32(box.uidvalidity, 'UIDVALIDITY');
-    const uidnext = box.uidnext ? uint32(box.uidnext, 'UIDNEXT') : null;
-    const highestmodseq = optionalModseq(box.highestmodseq);
-    return { folder, uidvalidity, uidnext, highestmodseq, nomodseq: !!box.nomodseq, readOnly: !!box.readOnly,
-      capabilities: { move: connection.imap.serverSupports('MOVE'), condstore: connection.imap.serverSupports('CONDSTORE') && !box.nomodseq && highestmodseq !== null,
-        uidplus: connection.imap.serverSupports('UIDPLUS'), xGmExt1: connection.imap.serverSupports('X-GM-EXT-1') } };
+    const box = await runGuardedImap(connection, () => connection.mailboxOpen(folder, { readOnly: !!readOnly }));
+    if (!box || box.path !== imapTools.normalizePath(connection, folder))
+      throw Object.assign(new Error('Selected mailbox identity changed'), { code: 'MAIL_IMAP_EPOCH' });
+    const uidvalidity = uint32(box.uidValidity, 'UIDVALIDITY');
+    const uidnext = box.uidNext ? uint32(box.uidNext, 'UIDNEXT') : null;
+    const highestmodseq = optionalModseq(box.highestModseq);
+    return { folder, uidvalidity, uidnext, highestmodseq, nomodseq: !!box.noModseq, readOnly: !!box.readOnly,
+      capabilities: { move: advertised(connection, 'MOVE'),
+        condstore: connection.enabled?.has('CONDSTORE') === true && !box.noModseq && highestmodseq !== null,
+        uidplus: advertised(connection, 'UIDPLUS'), xGmExt1: advertised(connection, 'X-GM-EXT-1') } };
   } finally { detach(); }
 }
-function fetchItems(connection, range, options, limit, signal, onMessage) {
-  return (async () => {
-    const detach = bindAbort(connection, signal);
-    try {
-      return await runGuardedImap(connection, done => {
-        let failed = false, inFlight = 0, ended = false, total = 0;
+// Streams one UID FETCH. Any failure (budget, malformed or out-of-range data,
+// NO/BAD) tears the session down: a half-consumed FETCH must never be followed
+// by another command on the same connection.
+async function fetchItems(connection, range, query, signal, onMessage) {
+  const detach = bindAbort(connection, signal);
+  try {
+    return await runGuardedImap(connection, async () => {
+      try {
         const items = [];
-        const fail = error => {
-          if (failed) return;
-          failed = true;
-          // Parser may still be processing the same socket frame. Destroying
-          // synchronously clears _curReq inside node-imap's FETCH handler.
-          // Queue teardown before the rejected promise resumes its caller.
-          queueMicrotask(() => connection.end());
-          done(error);
-        };
-        const maybeDone = () => { if (ended && !inFlight && !failed) done(null, { items, bytes: total }); };
-        const fetch = connection.imap.fetch(range, options);
-        fetch.on('error', fail);
-        fetch.on('message', message => {
-          inFlight++;
-          let attrs, bodyCount = 0, rawSize = 0, literalSize = null;
-          const chunks = [];
-          message.on('attributes', value => { attrs = value; });
-          message.on('body', (stream, info) => {
-            bodyCount++;
-            literalSize = info.size;
-            stream.on('data', chunk => {
-              rawSize += chunk.length;
-              if (rawSize > limit || !Number.isSafeInteger(literalSize) || literalSize > limit) fail(Object.assign(new Error('Raw message exceeds byte budget'), { code: 'MAIL_IMAP_LIMIT' }));
-              else chunks.push(chunk);
-            });
-            stream.on('error', fail);
-          });
-          message.on('error', fail);
-          message.on('end', () => {
-            if (failed) return;
-            try {
-              const item = onMessage(attrs, { bodyCount, rawSize, literalSize, chunks });
-              total += options.bodies?.length ? rawSize : Buffer.byteLength(JSON.stringify(item));
-              if (total > limit) throw Object.assign(new Error('IMAP response exceeds byte budget'), { code: 'MAIL_IMAP_LIMIT' });
-              items.push(item);
-              if (items.length > MAX_WINDOW && !options.bodies?.length) throw new Error('IMAP metadata exceeds message budget');
-              inFlight--; maybeDone();
-            } catch (error) { fail(error); }
-          });
-        });
-        fetch.on('end', () => { ended = true; maybeDone(); });
-      });
-    } finally { detach(); }
-  })();
+        for await (const message of connection.fetch(range, query, { uid: true })) items.push(onMessage(message, items));
+        return items;
+      } catch (error) {
+        closeImapConnection(connection, error);
+        throw error;
+      }
+    });
+  } finally { detach(); }
 }
+function limitError(message) { return Object.assign(new Error(message), { code: 'MAIL_IMAP_LIMIT' }); }
 async function fetchMetadataWindow(connection, { folder, uidvalidity, startUid, endUid, maxMessages = 200, maxBytes = MAX_METADATA_BYTES } = {}, { signal } = {}) {
   folderName(folder); uint32(uidvalidity, 'UIDVALIDITY');
   startUid = uint32(startUid, 'start UID'); endUid = uint32(endUid, 'end UID');
@@ -127,13 +103,21 @@ async function fetchMetadataWindow(connection, { folder, uidvalidity, startUid, 
   if (endUid < startUid || endUid - startUid + 1 > maxMessages) throw new TypeError('UID window exceeds message budget');
   selected(connection, folder, uidvalidity);
   const seen = new Set();
-  const { items, bytes } = await fetchItems(connection, `${startUid}:${endUid}`, { bodies: [], markSeen: false }, maxBytes, signal, attrs => {
-    if (!attrs) throw new Error('Missing FETCH attributes');
-    const uid = uint32(attrs.uid, 'fetched UID');
-    if (uid < startUid || uid > endUid || seen.has(uid) || !Array.isArray(attrs.flags)) throw new Error('Malformed/duplicate/out-of-range UID metadata');
+  // X-GM-MSGID is only Gmail's numeric id when the server has no OBJECTID
+  // (ImapFlow reports either as emailId).
+  const gmail = advertised(connection, 'X-GM-EXT-1') && !advertised(connection, 'OBJECTID');
+  let bytes = 0;
+  const items = await fetchItems(connection, `${startUid}:${endUid}`, { uid: true, flags: true, internalDate: true }, signal, (message, collected) => {
+    if (!message) throw new Error('Missing FETCH attributes');
+    const uid = uint32(message.uid, 'fetched UID');
+    if (uid < startUid || uid > endUid || seen.has(uid) || !(message.flags instanceof Set)) throw new Error('Malformed/duplicate/out-of-range UID metadata');
     seen.add(uid);
-    return { uid, flags: attrs.flags.slice(), modseq: optionalModseq(attrs.modseq),
-      gmailMsgId: attrs['x-gm-msgid'] == null ? null : decimal(attrs['x-gm-msgid'], 'X-GM-MSGID') };
+    const item = { uid, flags: [...message.flags], modseq: optionalModseq(message.modseq),
+      gmailMsgId: gmail && message.emailId != null ? decimal(message.emailId, 'X-GM-MSGID') : null };
+    bytes += Buffer.byteLength(JSON.stringify(item));
+    if (bytes > maxBytes) throw limitError('IMAP response exceeds byte budget');
+    if (collected.length >= MAX_WINDOW) throw new Error('IMAP metadata exceeds message budget');
+    return item;
   });
   selected(connection, folder, uidvalidity);
   if (items.length > maxMessages) throw new Error('Metadata response exceeds message budget');
@@ -142,58 +126,70 @@ async function fetchMetadataWindow(connection, { folder, uidvalidity, startUid, 
 async function fetchRawMessage(connection, { folder, uidvalidity, uid, maxBytes = MAX_RAW_BYTES } = {}, { signal } = {}) {
   folderName(folder); uid = uint32(uid, 'UID'); uint32(uidvalidity, 'UIDVALIDITY'); budget(maxBytes, MAX_RAW_BYTES, 'raw byte budget');
   selected(connection, folder, uidvalidity);
-  const { items } = await fetchItems(connection, uid, { bodies: [''], markSeen: false }, maxBytes, signal, (attrs, body) => {
-    if (!attrs || uint32(attrs.uid, 'fetched UID') !== uid || body.bodyCount !== 1
-        || body.rawSize !== body.literalSize) throw new Error('Incomplete or mismatched raw BODY.PEEK[] response');
-    return Buffer.concat(body.chunks, body.rawSize);
+  // BODY.PEEK[] arrives as one literal Buffer: exact octets, never decoded.
+  // ImapFlow refuses literals above MAX_RAW_BYTES before reading them.
+  const items = await fetchItems(connection, String(uid), { uid: true, source: true }, signal, message => {
+    if (!message || uint32(message.uid, 'fetched UID') !== uid || !Buffer.isBuffer(message.source))
+      throw new Error('Incomplete or mismatched raw BODY.PEEK[] response');
+    if (message.source.length > maxBytes) throw limitError('Raw message exceeds byte budget');
+    return message.source;
   });
   selected(connection, folder, uidvalidity);
   if (items.length !== 1) throw new Error('Raw fetch must return exactly one message');
   return { uid, uidvalidity: uint32(uidvalidity, 'UIDVALIDITY'), raw: items[0], bytes: items[0].length };
 }
-function completion(error) { return error?.type === 'no' ? 'no' : error?.type === 'bad' ? 'bad' : error ? 'lost' : 'ok'; }
-function isCode(info, key) { return String(info?.textCode?.key).toUpperCase() === key; }
+// Tagged NO/BAD reach exec() as a rejection carrying responseStatus; anything
+// else (closed socket, deadline, abort) leaves the outcome unknown.
+function completion(error) {
+  const status = String(error?.responseStatus || '').toUpperCase();
+  return status === 'NO' ? 'no' : status === 'BAD' ? 'bad' : error ? 'lost' : 'ok';
+}
+function responseCode(parsed) {
+  const section = parsed?.attributes?.[0]?.section;
+  if (!Array.isArray(section) || typeof section[0]?.value !== 'string') return null;
+  return { key: section[0].value.toUpperCase(), args: section.slice(1) };
+}
 function outcomeBase() { return { transmission: 'not_sent', completion: 'unsupported' }; }
+// Sends one command on the selected mailbox and settles with the tagged
+// response (or the rejection). The response must be released with next().
+async function execTagged(connection, command, attributes, options) {
+  const reply = await connection.exec(command, attributes, options);
+  reply.next();
+  return reply.response;
+}
 async function setFlag(connection, { uid, uidvalidity, sourceFolder, flag, value, modseq = null } = {}, { beforeDispatch, signal } = {}) {
   if (typeof beforeDispatch !== 'function') throw new TypeError('A durable beforeDispatch fence is required');
   uid = uint32(uid, 'UID'); folderName(sourceFolder); uint32(uidvalidity, 'UIDVALIDITY');
   if (!['\\Seen', '\\Flagged'].includes(flag) || typeof value !== 'boolean') throw new TypeError('Unsupported flag/value');
   if (modseq != null) modseq = decimal(modseq, 'MODSEQ');
   selected(connection, sourceFolder, uidvalidity, true); aborted(signal);
-  if (modseq && (!connection.imap.serverSupports('CONDSTORE') || connection.imap._box.nomodseq))
+  if (modseq && (connection.enabled?.has('CONDSTORE') !== true || connection.mailbox.noModseq))
     return { ...outcomeBase(), modified: false, modseq };
   const detach = bindAbort(connection, signal);
-  const imap = connection.imap;
-  let modified = false, taggedType = null;
-  const observe = info => {
-    if (imap._curReq?.fullcmd?.startsWith(`UID STORE ${uid} `)) {
-      taggedType = info.type;
-      if (isCode(info, 'MODIFIED')) modified = true;
-    }
-  };
   try {
-    await beforeDispatch?.();
+    await beforeDispatch();
     aborted(signal); selected(connection, sourceFolder, uidvalidity, true);
-    imap._parser?.prependListener('tagged', observe);
-    const method = `${value ? 'add' : 'del'}Flags${modseq ? 'Since' : ''}`;
-    let transmission = 'possible';
+    // One verified UID, exactly one flag, retaining every unrelated server
+    // flag: UID STORE <uid> [(UNCHANGEDSINCE <modseq>)] ±FLAGS.SILENT (<flag>).
+    const attributes = [{ type: 'SEQUENCE', value: String(uid) },
+      ...(modseq ? [[{ type: 'ATOM', value: 'UNCHANGEDSINCE' }, { type: 'ATOM', value: modseq }]] : []),
+      { type: 'ATOM', value: `${value ? '+' : '-'}FLAGS.SILENT` }, [{ type: 'ATOM', value: flag }]];
+    const transmission = 'possible';
     try {
-      await new Promise((resolve, reject) => imap[method](uid, flag, ...(modseq ? [modseq] : []), error => error ? reject(error) : resolve()));
-      return { transmission, completion: 'ok', modified, modseq };
+      const tagged = await runGuardedImap(connection, () => execTagged(connection, 'UID STORE', attributes));
+      return { transmission, completion: 'ok', modified: responseCode(tagged)?.key === 'MODIFIED', modseq };
     } catch (error) {
-      return { transmission, completion: taggedType === 'no' ? 'no' : error.code === 'MAIL_IMAP_MODIFIED' ? 'ok' : completion(error),
-        modified: modified || error.code === 'MAIL_IMAP_MODIFIED', modseq };
+      return { transmission, completion: completion(error), modified: completion(error) === 'no' && responseCode(error.response)?.key === 'MODIFIED', modseq };
     }
-  } finally { imap._parser?.removeListener('tagged', observe); detach(); }
+  } finally { detach(); }
 }
-function parseCopyUid(code, uid) {
-  const val = code?.val;
-  if (!Array.isArray(val) || val.length !== 3) return null;
+// For a single-UID command no ranges/multi-UID sets are admissible.
+function parseCopyUid(args, uid) {
+  if (!Array.isArray(args) || args.length !== 3 || args.some(arg => typeof arg?.value !== 'string')) return null;
   try {
-    const epoch = uint32(val[0], 'COPYUID UIDVALIDITY');
-    // For a single-UID command no ranges/multi-UID sets are admissible.
-    const source = uint32(val[1], 'COPYUID source UID');
-    const destination = uint32(val[2], 'COPYUID destination UID');
+    const epoch = uint32(args[0].value, 'COPYUID UIDVALIDITY');
+    const source = uint32(args[1].value, 'COPYUID source UID');
+    const destination = uint32(args[2].value, 'COPYUID destination UID');
     if (source !== uid) return null;
     return { uidvalidity: epoch, sourceUids: [source], destinationUids: [destination] };
   } catch { return null; }
@@ -203,29 +199,34 @@ async function nativeMove(connection, { uid, uidvalidity, sourceFolder, targetFo
   uid = uint32(uid, 'UID'); uint32(uidvalidity, 'UIDVALIDITY'); folderName(sourceFolder); folderName(targetFolder);
   if (sourceFolder === targetFolder) throw new TypeError('MOVE destination must differ from source');
   selected(connection, sourceFolder, uidvalidity, true); aborted(signal);
-  // Critical: node-imap's move() silently performs COPY/STORE/EXPUNGE without MOVE.
-  if (!connection.imap.serverSupports('MOVE'))
+  // Critical: never messageMove(), which emulates MOVE with COPY + EXPUNGE.
+  if (!advertised(connection, 'MOVE'))
     return { ...outcomeBase(), mapping: null, mappingStatus: 'missing', evidence: { placement: null, reason: 'MOVE capability unavailable' } };
   const detach = bindAbort(connection, signal);
-  const imap = connection.imap, codes = [];
-  const observe = (info, placement) => {
-    if (imap._curReq?.fullcmd?.startsWith(`UID MOVE ${uid} `) && isCode(info, 'COPYUID'))
-      codes.push({ placement, mapping: parseCopyUid(info.textCode, uid) });
+  const codes = [];
+  const observe = (parsed, placement) => {
+    const code = responseCode(parsed);
+    if (code?.key === 'COPYUID') codes.push({ placement, mapping: parseCopyUid(code.args, uid) });
   };
-  const untagged = info => observe(info, 'untagged');
-  const tagged = info => observe(info, 'tagged');
   try {
-    await beforeDispatch?.();
+    await beforeDispatch();
     aborted(signal); selected(connection, sourceFolder, uidvalidity, true);
-    if (!imap.serverSupports('MOVE'))
+    if (!advertised(connection, 'MOVE'))
       return { ...outcomeBase(), mapping: null, mappingStatus: 'missing', evidence: { placement: null, reason: 'MOVE capability changed before dispatch' } };
-    imap._parser?.prependListener('untagged', untagged);
-    imap._parser?.prependListener('tagged', tagged);
+    const attributes = [{ type: 'SEQUENCE', value: String(uid) },
+      { type: 'STRING', value: imapTools.encodePath(connection, targetFolder) }];
     let result;
     try {
-      await new Promise((resolve, reject) => imap.move(uid, targetFolder, error => error ? reject(error) : resolve()));
+      // The command-scoped untagged OK handler sees an untagged [COPYUID]
+      // before ImapFlow's global handlers; EXPUNGE stays with the library.
+      const tagged = await runGuardedImap(connection, () => execTagged(connection, 'UID MOVE', attributes,
+        { untagged: { OK: async untagged => observe(untagged, 'untagged') } }));
+      observe(tagged, 'tagged');
       result = 'ok';
-    } catch (error) { result = completion(error); }
+    } catch (error) {
+      if (error?.response) observe(error.response, 'tagged');
+      result = completion(error);
+    }
     const valid = codes.filter(code => code.mapping);
     const duplicatePlacement = codes.length > 2 || codes.length === 2 && codes[0].placement === codes[1].placement;
     const conflicting = valid.length > 1 && valid.some(code => JSON.stringify(code.mapping) !== JSON.stringify(valid[0].mapping));
@@ -233,6 +234,6 @@ async function nativeMove(connection, { uid, uidvalidity, sourceFolder, targetFo
     return { transmission: 'possible', completion: result, mapping: mappingStatus === 'valid' ? valid[0].mapping : null, mappingStatus,
       evidence: { placement: codes.length === 2 && codes.some(c => c.placement === 'tagged') && codes.some(c => c.placement === 'untagged')
         ? 'both' : codes[0]?.placement || null, reason: mappingStatus === 'valid' ? null : mappingStatus === 'missing' ? 'COPYUID not provided' : 'COPYUID malformed or inconsistent' } };
-  } finally { imap._parser?.removeListener('untagged', untagged); imap._parser?.removeListener('tagged', tagged); detach(); }
+  } finally { detach(); }
 }
 module.exports = { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove };

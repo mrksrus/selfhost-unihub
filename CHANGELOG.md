@@ -19,6 +19,19 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   A custom reverse proxy in front of UniHub should not buffer `/api/events`;
   see [architecture](docs/ARCHITECTURE.md#live-status-events).
 
+- **New IMAP library.** Mail now talks to IMAP servers through the maintained
+  [ImapFlow](https://imapflow.com/) library instead of `imap-simple`/`node-imap`,
+  which were no longer maintained. Sync, read/star/move writebacks, folder
+  listing and creation, the connection test and optional server deletion behave
+  as before: moves still require native IMAP MOVE (never COPY plus delete),
+  conditional flag changes still respect concurrent server changes, and
+  certificate checks, the trusted-host policy and confirmed self-signed
+  certificates apply unchanged. Small visible differences: the account
+  connection test opens INBOX read-only, a newly created remote folder is also
+  subscribed (and an already existing one counts as present instead of
+  failing), and connection-test error details may be worded differently.
+  Server deletion now has the same per-command time limit as sync.
+
 ### Removed
 
 - **The Games module is gone.** Its page, navigation entries, module setting and

@@ -39,7 +39,7 @@ outbound mail through SMTP. The mail system includes:
 
 | Component | Module/library | Role |
 | --- | --- | --- |
-| IMAP client | `imap-simple` | Connect, search, fetch messages |
+| IMAP client | `imapflow` (pinned 2.1.2) via `api/src/services/mail-imap-client.js` | Connect, list, select, fetch, flag, move |
 | Parser | `mailparser` | Parse RFC 822 messages |
 | SMTP sender | `nodemailer` | Send composed mail |
 | Encryption | `api/src/security/encryption.js` | AES-256-GCM encryption for stored credentials |
@@ -144,6 +144,41 @@ sweeps completed within their 15-minute throttle. An `operation` job also
 executes up to 50 other due, undispatched operations of the same account on its
 transport, each with its own fence check and attempt record, so a bulk change
 normally needs a single LOGIN.
+
+### IMAP transport
+
+All IMAP traffic uses [ImapFlow](https://imapflow.com/). Only
+`api/src/services/mail-imap-client.js` constructs clients: it translates the
+host-policy config (pinned address, TLS `servername`, `rejectUnauthorized` from
+the account's trust decision) unchanged, so TLS verifies the account hostname
+and only an explicit, confirmed trust decision accepts an unverified
+certificate. Library logging is off (`logger: false`): protocol traffic carries
+credentials and message content. Automatic IDLE and COMPRESS are disabled, so
+the wire carries only the engine's own commands. Setup (TCP, TLS, greeting,
+login, capability negotiation) is bounded by the connect plus authentication
+timeouts; literals above 32 MiB are refused before they are read.
+
+`api/src/services/mail-imap-guard.js` gives every command its own deadline
+(120 s). A deadline, abort signal, socket error or close stops the session for
+good: the client is hard-closed (`close()`: socket and parser destroyed, no
+LOGOUT queued behind a stalled command), every waiting command is rejected, and
+nothing is dispatched on it again. A pooled session is rebound to each job's
+signal; the pool probes it with `NOOP` and reuses it only while it is usable
+and no command is outstanding.
+
+`api/src/services/mail-engine/transport.js` selects with SELECT/EXAMINE
+(UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ; CONDSTORE counts only when the server
+enabled it via ENABLE and reports a valid mod-sequence, so iCloud-style `0`
+degrades to no CONDSTORE) and fetches metadata (`UID FLAGS INTERNALDATE`,
+`MODSEQ`, Gmail `X-GM-MSGID`) and raw `BODY.PEEK[]` as exact octets. Flag and
+move writebacks are issued as single explicit commands through ImapFlow's
+command queue, not its convenience methods: `UID STORE <uid> [(UNCHANGEDSINCE
+<modseq>)] ±FLAGS.SILENT (<flag>)` with tagged `MODIFIED`, `NO` and `BAD`
+reported as such, and `UID MOVE` only when the server advertises MOVE, with
+`COPYUID` evidence from the untagged and tagged responses. `messageMove()`
+(which falls back to COPY + EXPUNGE) and `messageDelete()` (which can fall back
+to a mailbox-wide EXPUNGE) are never used. Server deletion likewise issues
+`UID STORE +FLAGS.SILENT (\Deleted)` and `UID EXPUNGE <uid>` only with UIDPLUS.
 
 ### One job runner
 

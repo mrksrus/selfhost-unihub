@@ -26,14 +26,11 @@ test('mail sync includes standard and custom IMAP folders while ignoring provide
 
 test('mail sync creates missing local custom folders on a newly connected IMAP account', async () => {
   const added = [];
-  const connection = {
-    imap: {
-      addBox(name, callback) {
-        added.push(name);
-        callback(null);
-      },
-    },
-  };
+  // A guarded stand-in for an ImapFlow client.
+  const connection = require('../src/services/mail-imap-guard').guardImapConnection(Object.assign(new (require('node:events'))(), {
+    close() {},
+    async mailboxCreate(name) { added.push(name); return { path: name, created: true }; },
+  }));
   const db = {
     execute: async () => [[
       { display_name: 'Receipts' },
@@ -48,16 +45,20 @@ test('mail sync creates missing local custom folders on a newly connected IMAP a
 });
 
 test('provider special-use attributes survive nesting and existing folder mappings win', () => {
-  const { flattenImapBoxes } = require('../src/services/mail');
+  const { imapListToFolders } = require('../src/services/mail');
   const roles = new Map();
-  const names = flattenImapBoxes({
-    INBOX: { attribs: [], delimiter: '/' },
-    '[Provider]': { attribs: ['\\Noselect'], delimiter: '/', children: {
-      Gesendet: { attribs: ['\\Sent'] },
-      Entwürfe: { attribs: ['\\Drafts'] },
-      Spam: { attribs: ['\\Junk'] },
-    } },
-  }, '', roles);
+  const entry = (path, flags) => ({ path, delimiter: '/', flags: new Set(flags) });
+  // ImapFlow LIST entries; a name-based specialUse guess must not assign a role.
+  const names = imapListToFolders([
+    entry('INBOX', []),
+    entry('[Provider]', ['\\Noselect']),
+    entry('[Provider]/Gesendet', ['\\Sent']),
+    entry('[Provider]/Entwürfe', ['\\Drafts']),
+    entry('[Provider]/Spam', ['\\Junk']),
+    { ...entry('Trash', []), specialUse: '\\Trash' },
+  ], roles);
+  assert(!roles.has('Trash'));
+  assert(names.includes('Trash'));
   assert(!names.includes('[Provider]'));
   assert.equal(roles.get('[Provider]/Gesendet'), 'sent');
   assert.equal(roles.get('[Provider]/Entwürfe'), 'drafts');

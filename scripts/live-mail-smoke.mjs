@@ -10,7 +10,7 @@ import { writeFile } from 'node:fs/promises';
 import { performance } from 'node:perf_hooks';
 
 const require = createRequire(new URL('../api/package.json', import.meta.url));
-const Imap = require('imap');
+const { ImapFlow } = require('imapflow');
 const { simpleParser } = require('mailparser');
 const env = process.env;
 assert.equal(env.UNIHUB_SMOKE_CONFIRM, 'I own this test mailbox', 'Explicitly authorize a dedicated test mailbox');
@@ -76,46 +76,30 @@ async function until(label, predicate) {
   }
   throw new Error(`${label} did not complete within ${timeoutMs} ms`);
 }
-const imapCall = (method, ...args) => new Promise((resolve, reject) => {
-  provider[method](...args, (error, result) => error ? reject(error) : resolve(result));
-});
 async function connectProvider() {
-  provider = new Imap({
-    user: env.UNIHUB_IMAP_USER, password: env.UNIHUB_IMAP_PASSWORD,
-    host: env.UNIHUB_IMAP_HOST, port: Number(env.UNIHUB_IMAP_PORT || 993), tls: true,
-    tlsOptions: { servername: env.UNIHUB_IMAP_HOST, rejectUnauthorized: true },
-    connTimeout: 15000, authTimeout: 15000, socketTimeout: 30000,
+  provider = new ImapFlow({
+    host: env.UNIHUB_IMAP_HOST, port: Number(env.UNIHUB_IMAP_PORT || 993), secure: true,
+    servername: env.UNIHUB_IMAP_HOST, tls: { servername: env.UNIHUB_IMAP_HOST, rejectUnauthorized: true },
+    auth: { user: env.UNIHUB_IMAP_USER, pass: env.UNIHUB_IMAP_PASSWORD },
+    connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000,
+    logger: false, disableAutoIdle: true,
   });
-  await new Promise((resolve, reject) => {
-    provider.once('ready', resolve);
-    provider.on('error', reject);
-    provider.connect();
-  });
+  provider.on('error', () => {});
+  await provider.connect();
 }
 async function providerMessage(folder = 'INBOX', writable = false) {
   const selection = `${folder}:${writable}`;
   if (selection !== selectedBox) {
-    await imapCall('openBox', folder, !writable);
+    await provider.mailboxOpen(folder, { readOnly: !writable });
     selectedBox = selection;
   }
-  const uids = await imapCall('search', [['HEADER', 'SUBJECT', subject]]);
+  const uids = await provider.search({ subject }, { uid: true });
+  assert(Array.isArray(uids), `SEARCH failed in ${folder}`);
   assert(uids.length <= 1, `Duplicate smoke fixture in ${folder}; refusing ambiguous mutation`);
   if (!uids.length) return null;
-  const message = await new Promise((resolve, reject) => {
-    const fetcher = provider.fetch(uids, { bodies: [''], markSeen: false });
-    const result = { raw: Buffer.alloc(0), flags: [], uid: uids[0] };
-    fetcher.on('message', item => {
-      item.on('body', stream => {
-        const chunks = [];
-        stream.on('data', data => chunks.push(data));
-        stream.on('error', reject);
-        stream.on('end', () => { result.raw = Buffer.concat(chunks); });
-      });
-      item.on('attributes', attributes => { result.flags = attributes.flags; });
-    });
-    fetcher.on('error', reject);
-    fetcher.once('end', () => resolve(result));
-  });
+  const fetched = await provider.fetchOne(String(uids[0]), { uid: true, flags: true, source: true }, { uid: true });
+  assert(fetched && Buffer.isBuffer(fetched.source), `FETCH failed in ${folder}`);
+  const message = { raw: fetched.source, flags: [...(fetched.flags || [])], uid: uids[0] };
   const parsed = await simpleParser(message.raw);
   assert.equal(parsed.subject, subject);
   assert(parsed.from?.value.some(item => item.address?.toLowerCase() === address.toLowerCase()), 'Fixture sender must be the authorized test mailbox');
@@ -231,7 +215,7 @@ try {
   const external = await providerMessage('INBOX', true);
   // This deliberately simulates another mail client, AFTER outbound writes
   // passed independent readback. It is not used to make a failed app write pass.
-  await imapCall('addFlags', external.uid, '\\Flagged');
+  assert.equal(await provider.messageFlagsAdd(String(external.uid), ['\\Flagged'], { uid: true }), true, 'external flag change failed');
   await sync();
   await flagsMatch(false, true);
   await putFlag('star', false);
@@ -272,7 +256,7 @@ try {
   results.push({ check: phase, passed: false, error: error.message });
   process.exitCode = 1;
 } finally {
-  provider?.end();
+  await provider?.logout().catch(() => provider?.close());
   const report = { passed: phase === 'complete', base, account_id: account?.id, email_id: emailId, subject, phase, results };
   if (env.UNIHUB_SMOKE_REPORT) await writeFile(env.UNIHUB_SMOKE_REPORT, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
   console.log(JSON.stringify(report, null, 2));

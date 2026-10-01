@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const dns = require('node:dns').promises;
-const imaps = require('imap-simple');
+const imapClient = require('../src/services/mail-imap-client');
 process.env.ENCRYPTION_KEY = 'mail-sync-cancellation-test-only-key';
 const mail = require('../src/services/mail');
 const runtime = require('../src/services/mail-engine/runtime');
@@ -16,11 +16,11 @@ for (const failure of ['cancel', 'socket', 'deadline']) test(`stalled durable sy
     imap_host: 'imap.example.test', encrypted_password: encrypt('synthetic-test-password') };
   const queries = []; let destroyed = 0, finishList, inList = false;
   const connection = new EventEmitter();
-  connection.imap = { destroy() { destroyed++; } };
-  connection.getBoxes = () => { inList = true; return new Promise(resolve => { finishList = resolve; }); };
+  connection.close = () => { destroyed++; };
+  connection.list = () => { inList = true; return new Promise(resolve => { finishList = resolve; }); };
   t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
   t.mock.method(dns, 'lookup', async () => [{ address: '8.8.8.8', family: 4 }]);
-  t.mock.method(imaps, 'connect', async config => {
+  t.mock.method(imapClient, 'connectImap', async config => {
     assert.equal(config.imap.socketTimeout, 60000);
     assert.equal(config.imap.connTimeout, 60000);
     assert.equal(config.imap.authTimeout, 30000);
@@ -45,7 +45,7 @@ for (const failure of ['cancel', 'socket', 'deadline']) test(`stalled durable sy
   else assert.deepEqual(await worker, { success: false, cancelled: true });
   assert.equal(destroyed, 1, 'hard teardown is idempotent');
   const savedQueries = queries.length;
-  finishList({ INBOX: { children: {} } }); await tick();
+  finishList([{ path: 'INBOX', flags: new Set(), delimiter: '/' }]); await tick();
   assert.equal(queries.length, savedQueries, 'Late LIST cannot register folders or advance coverage');
 });
 

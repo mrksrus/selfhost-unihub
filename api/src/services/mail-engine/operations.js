@@ -10,7 +10,7 @@ const transaction = fn => require('./repository').withTransaction(fn, db); // re
 const bitFlag = { read: '\\Seen', star: '\\Flagged' };
 // The IMAP session survived a failed command and can serve the next operation.
 function transportUsable(connection) {
-  return require('../mail-imap-guard').imapGuardIdle(connection) && connection?.imap?.state === 'authenticated';
+  return require('../mail-imap-guard').imapSessionUsable(connection);
 }
 const safeText = error => {
   if (error && typeof error !== 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(String(error.code || ''))) return error.code;

@@ -55,16 +55,16 @@ test('background on: periodic sync is admitted as non-manual and never resumes',
 // mocked so the job is claimed exactly once.
 function operationJob(t, accountId, { prefs = {}, needsSync = true } = {}) {
   const { EventEmitter } = require('node:events');
-  const imaps = require('imap-simple');
+  const imapClient = require('../src/services/mail-imap-client');
   const engine = require('../src/services/mail-engine/operations');
   const repository = require('../src/services/mail-engine/repository');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const followUps = [], completions = [], processed = [];
   let claimed = false, connects = 0;
   const connection = new EventEmitter();
-  connection.imap = { destroy() {} }; connection.end = () => {};
+  connection.close = () => {};
   t.mock.method(mail, 'buildImapConnectionConfig', async () => ({ imap: {} }));
-  t.mock.method(imaps, 'connect', async () => { connects++; return connection; });
+  t.mock.method(imapClient, 'connectImap', async () => { connects++; return connection; });
   t.mock.method(runtime, 'recoverExpiredJobs', async () => ({}));
   t.mock.method(runtime, 'claimDueJob', async () => {
     if (claimed) return null;

@@ -1,7 +1,7 @@
 const { withMailAccountLock } = require('./mail-account-lock');
 const crypto = require('crypto');
-require('../imap-patch');
-const imaps = require('imap-simple');
+const imapClient = require('./mail-imap-client');
+const { guardImapConnection, runGuardedImap, closeImapConnection } = require('./mail-imap-guard');
 const fs = require('fs');
 const path = require('path');
 const { promisify } = require('util');
@@ -85,13 +85,9 @@ function isUsableRawEmailArchive(storagePath) {
 }
 
 function getCurrentBoxUidValidity(connection) {
-  const candidates = [
-    connection?.imap?._box?.uidvalidity,
-    connection?.imap?._box?.uidValidity,
-    connection?._box?.uidvalidity,
-    connection?._box?.uidValidity,
-  ];
-  const value = candidates.find(candidate => candidate !== undefined && candidate !== null);
+  const box = connection?.state === connection?.states?.SELECTED ? connection?.mailbox : null;
+  const value = box?.uidValidity;
+  if (value === undefined || value === null || value === false) return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
@@ -219,38 +215,31 @@ async function markMailServerMessageDeleteStatus({ connection = db, id, status, 
 }
 
 function imapSupportsUidExpunge(connection) {
+  return connection?.capabilities instanceof Map && connection.capabilities.has('UIDPLUS');
+}
+
+// UID STORE/UID EXPUNGE go through ImapFlow's command queue directly: its
+// messageDelete() falls back to a mailbox-wide EXPUNGE without UIDPLUS and its
+// flag helpers report a rejected command only as `false`.
+async function runImapUidCommand(connection, command, attributes) {
   try {
-    return !!connection?.imap?.serverSupports?.('UIDPLUS');
-  } catch {
-    return false;
+    await runGuardedImap(connection, async () => {
+      const reply = await connection.exec(command, attributes);
+      reply.next();
+    });
+  } catch (error) {
+    if (!error?.responseStatus) throw error;
+    throw new Error(`IMAP ${command} rejected${error.responseText ? `: ${error.responseText}` : ''}`);
   }
 }
 
-function addImapUidFlag(connection, uid, flag) {
-  return new Promise((resolve, reject) => {
-    connection.imap.addFlags(uid, flag, (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
-}
-
-function removeImapUidFlag(connection, uid, flag) {
-  return new Promise((resolve, reject) => {
-    connection.imap.delFlags(uid, flag, (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
+function setImapUidFlag(connection, uid, flag, add) {
+  return runImapUidCommand(connection, 'UID STORE', [{ type: 'SEQUENCE', value: String(uid) },
+    { type: 'ATOM', value: `${add ? '+' : '-'}FLAGS.SILENT` }, [{ type: 'ATOM', value: flag }]]);
 }
 
 function expungeImapUid(connection, uid) {
-  return new Promise((resolve, reject) => {
-    connection.imap.expunge(uid, (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
-  });
+  return runImapUidCommand(connection, 'UID EXPUNGE', [{ type: 'SEQUENCE', value: String(uid) }]);
 }
 
 async function deleteImapUid(connection, uid) {
@@ -260,13 +249,13 @@ async function deleteImapUid(connection, uid) {
 
   let markedDeleted = false;
   try {
-    await addImapUidFlag(connection, uid, '\\Deleted');
+    await setImapUidFlag(connection, uid, '\\Deleted', true);
     markedDeleted = true;
     await expungeImapUid(connection, uid);
   } catch (error) {
     if (markedDeleted) {
       try {
-        await removeImapUidFlag(connection, uid, '\\Deleted');
+        await setImapUidFlag(connection, uid, '\\Deleted', false);
       } catch (removeError) {
         console.error(`[SERVER DELETE] Failed to remove \\Deleted flag from UID ${uid}:`, removeError.message);
       }
@@ -349,10 +338,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
     }
 
     console.log(`[SERVER DELETE] Connecting to delete ${messages.length} queued message(s) for ${account.email_address}`);
-    connection = await imaps.connect(config);
-    connection.on('error', (err) => {
-      console.error('[SERVER DELETE] IMAP connection error (handled):', err.message);
-    });
+    connection = guardImapConnection(await imapClient.connectImap(config));
 
     let currentFolder = null;
     let processed = 0;
@@ -381,7 +367,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
 
       try {
         if (currentFolder !== sourceFolder) {
-          await connection.openBox(sourceFolder);
+          await runGuardedImap(connection, () => connection.mailboxOpen(sourceFolder));
           currentFolder = sourceFolder;
         }
 
@@ -401,8 +387,8 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
           skipped++; processed++; continue;
         }
 
-        const found = await connection.search([['UID', uid]], { bodies: ['HEADER.FIELDS (MESSAGE-ID)'], markSeen: false });
-        if (!Array.isArray(found) || found.some(item => uint32(item?.attributes?.uid) !== uid)) {
+        const found = await runGuardedImap(connection, () => connection.search({ uid: String(uid) }, { uid: true }));
+        if (!Array.isArray(found) || found.some(item => uint32(item) !== uid)) {
           throw new Error('Malformed provider UID verification; deletion withheld');
         }
         if (found.length === 0) {
@@ -450,9 +436,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId, { limit = 
     console.error(`[SERVER DELETE] Account ${normalizedAccountId} failed:`, error.message);
     return { accountId: normalizedAccountId, success: false, error: error.message || String(error) };
   } finally {
-    if (connection) {
-      try { connection.end(); } catch (e) { /* ignore */ }
-    }
+    if (connection) closeImapConnection(connection);
     activeMailServerDeleteAccounts.delete(normalizedAccountId);
     mailDeleteStopRequests.delete(normalizedAccountId);
   }
