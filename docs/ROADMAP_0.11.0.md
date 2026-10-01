@@ -29,8 +29,8 @@ comes after.
   unit tests with fake databases only. Run the MySQL integration suite
   (`npm --prefix api run test:ci` with a disposable database, or CI) before
   tagging.
-- **Connection reuse relies on node-imap internals** (`_enqueue('NOOP')`,
-  `_queue`, `_curReq`). Pinned to node-imap 0.8.19; revisit with ImapFlow.
+- **Done (0.12.0): Connection reuse relies on node-imap internals.** The pool
+  now uses ImapFlow's `noop()`, `usable` state and the guard's idle check.
 
 ## P2: Looks right in the UI and never gets stuck
 
@@ -181,12 +181,16 @@ comes after.
 
 ## P4: Next version (0.12)
 
-16. **Replace `imap-simple`/`node-imap` with ImapFlow.** Both are unmaintained
+16. **Done (0.12.0): Replace `imap-simple`/`node-imap` with ImapFlow.** Both are unmaintained
     since around 2019–2022. 0.11.0 already works around them
     (`mail-imap-conditional-store.js` uses raw `imap` for CONDSTORE). ImapFlow is
     maintained, promise-based, supports CONDSTORE/QRESYNC/MOVE/IDLE, and
     serializes commands on one connection. Do this after 0.11 has settled so
     the engine and the transport do not change at the same time.
+    *Done (0.12.0):* `mail-imap-client.js` (only constructor), guard, pool,
+    transport, folders, connection test and server deletion run on ImapFlow
+    2.1.2; `mail-imap-conditional-store.js` and `imap-patch.js` are gone. See
+    the transport section in [MAIL_SYNC](MAIL_SYNC.md#imap-transport).
 17. **Decide the scope of the Games module.** `AIGame.tsx` alone is 1,463 lines
     and holds most of the strict-mode errors. Freeze it, or move it to a
     separate optional package.
