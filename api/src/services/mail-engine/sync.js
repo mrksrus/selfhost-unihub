@@ -18,7 +18,7 @@ function gmailCapable(selected, connection) {
   const caps = selected.capabilities || {};
   return caps.gmail === true || caps.xGmExt1 === true ||
     (Array.isArray(caps) && caps.includes('X-GM-EXT-1')) ||
-    connection?.imap?.serverSupports?.('X-GM-EXT-1') === true;
+    (connection?.capabilities instanceof Map && connection.capabilities.has('X-GM-EXT-1'));
 }
 function upperBoundary(selected) {
   if (selected.uidnext === null) throw new Error('Cannot establish a finite mailbox UID boundary');

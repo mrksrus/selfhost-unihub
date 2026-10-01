@@ -1,13 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
-const imaps = require('imap-simple');
-const { guardImapConnection } = require('../src/services/mail-imap-guard');
-const { installConditionalStore } = require('../src/services/mail-imap-conditional-store');
+const { connectImap } = require('../src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../src/services/mail-imap-guard');
 const { selectMailbox, fetchMetadataWindow, setFlag, nativeMove } = require('../src/services/mail-engine/transport');
 
-// Loopback protocol peer, not a mocked imap object: imap-simple -> node-imap
-// parser/queue -> socket -> tagged replies -> the production guard/transport.
+// Loopback protocol peer, not a mocked imap object: ImapFlow parser/queue ->
+// socket -> tagged replies -> the production guard/transport.
 async function peer({ conditional = true } = {}) {
   const commands = [], sockets = new Set();
   const messages = new Map([
@@ -26,16 +25,18 @@ async function peer({ conditional = true } = {}) {
       let newline;
       while ((newline = buffer.indexOf('\r\n')) !== -1) {
         const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 2);
-        const match = /^(A\d+) (.+)$/.exec(line);
+        const match = /^([0-9A-F]+) (.+)$/.exec(line);
         if (!match) continue;
         const [, tag, cmd] = match;
         commands.push(cmd);
         const ok = (text = 'complete') => socket.write(`${tag} OK ${text}\r\n`);
         if (cmd === 'CAPABILITY') {
-          socket.write(`* CAPABILITY IMAP4rev1${conditional ? ' CONDSTORE' : ''} MOVE UIDPLUS\r\n`); ok();
+          socket.write(`* CAPABILITY IMAP4rev1${conditional ? ' CONDSTORE ENABLE' : ''} MOVE UIDPLUS\r\n`); ok();
         } else if (cmd.startsWith('LOGIN ')) ok();
+        else if (cmd === 'ENABLE CONDSTORE') { socket.write('* ENABLED CONDSTORE\r\n'); ok(); }
         else if (cmd.startsWith('LIST ')) { socket.write('* LIST (\\Noselect) "/" ""\r\n'); ok(); }
-        else if (cmd === 'SELECT "INBOX"' + (conditional ? ' (CONDSTORE)' : '')) {
+        else if (cmd.startsWith('LSUB ')) ok();
+        else if (cmd === 'SELECT INBOX') {
           socket.write('* FLAGS (\\Seen \\Flagged)\r\n* 2 EXISTS\r\n* OK [UIDVALIDITY 9] valid\r\n* OK [PERMANENTFLAGS (\\Seen \\Flagged \\*)] flags\r\n');
           ok('[READ-WRITE] selected');
         } else if (/^UID SEARCH UID \d+$/.test(cmd)) {
@@ -88,11 +89,10 @@ async function peer({ conditional = true } = {}) {
     holdStore() { holdStore = true; },
     releaseStore() { heldReply?.(); },
     async connect(options) {
-      const connection = guardImapConnection(await imaps.connect({ imap: {
+      const connection = guardImapConnection(await connectImap({ imap: {
         host: '127.0.0.1', port: server.address().port, user: 'fixture', password: 'fixture',
         tls: false, keepalive: false, connTimeout: 1000, authTimeout: 1000, socketTimeout: 1000,
       } }), options);
-      connection.on('error', () => {});
       return connection;
     },
     async close() {
@@ -111,7 +111,7 @@ async function readSource(connection, box) {
 async function changeFlag(connection, action, value, dispatches) {
   const box = await selectMailbox(connection, { folder: 'INBOX' });
   const before = await readSource(connection, box);
-  const modseq = connection.imap.serverSupports('CONDSTORE') ? before.modseq : null;
+  const modseq = connection.enabled.has('CONDSTORE') ? before.modseq : null;
   const result = await setFlag(connection, { uid: 103, uidvalidity: box.uidvalidity, sourceFolder: 'INBOX',
     flag: action === 'read' ? '\\Seen' : '\\Flagged', value: Boolean(value), modseq },
   { beforeDispatch: async () => dispatches.push(modseq) });
@@ -122,7 +122,7 @@ const fetches = fixture => fixture.commands.filter(cmd => cmd.startsWith('UID FE
 
 test('real library serializes four UID-scoped conditional flag deltas and readback retains unrelated flags', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
-  const connection = await fixture.connect(); t.after(() => connection.end());
+  const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
   const dispatches = [];
   for (const [action, value, base, verb, flag] of [
     ['read', 1, 0, '+', '\\Seen'], ['star', 1, 0, '+', '\\Flagged'],
@@ -143,7 +143,7 @@ test('real library serializes four UID-scoped conditional flag deltas and readba
 
 test('tagged OK MODIFIED is a conflict even if another actor reached the target before readback', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
-  const connection = await fixture.connect(); t.after(() => connection.end());
+  const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
   fixture.rejectNext({ targetChanged: true });
   const dispatches = [];
   const result = await changeFlag(connection, 'read', 1, dispatches);
@@ -156,7 +156,7 @@ test('tagged OK MODIFIED is a conflict even if another actor reached the target 
 
 test('tagged NO MODIFIED also reports a conflict instead of treating it as a transient error', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
-  const connection = await fixture.connect(); t.after(() => connection.end());
+  const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
   fixture.rejectNext({ no: true });
   const result = await changeFlag(connection, 'star', 1, []);
   assert.equal(result.modified, true); assert.equal(result.completion, 'no');
@@ -165,16 +165,14 @@ test('tagged NO MODIFIED also reports a conflict instead of treating it as a tra
 
 test('queued conditional requests associate MODIFIED only with their own response', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
-  const connection = await fixture.connect(); t.after(() => connection.end());
-  await connection.openBox('INBOX');
+  const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
+  const box = await selectMailbox(connection, { folder: 'INBOX' });
   fixture.rejectNext();
-  const call = (method, uid, flag) => new Promise((resolve, reject) => {
-    connection.imap[method](uid, flag, '295', error => error ? reject(error) : resolve());
-  });
-  const first = call('addFlagsSince', 103, '\\Seen');
-  const second = call('addFlagsSince', 103, '\\Flagged');
-  await assert.rejects(first, { code: 'MAIL_IMAP_MODIFIED', status: 409 });
-  await second;
+  const change = flag => setFlag(connection, { uid: 103, uidvalidity: box.uidvalidity, sourceFolder: 'INBOX', flag, value: true, modseq: '295' },
+    { beforeDispatch: async () => {} });
+  const [first, second] = await Promise.all([change('\\Seen'), change('\\Flagged')]);
+  assert.deepEqual([first.completion, first.modified], ['ok', true]);
+  assert.deepEqual([second.completion, second.modified], ['ok', false]);
   assert(!fixture.messages.get(103).flags.has('\\Seen'));
   assert(fixture.messages.get(103).flags.has('\\Flagged'));
   assert.deepEqual(fixture.commands.filter(cmd => cmd.startsWith('UID STORE ')), [
@@ -183,21 +181,9 @@ test('queued conditional requests associate MODIFIED only with their own respons
   ]);
 });
 
-test('installing the adapter twice preserves one tagged observer and original methods', async t => {
-  const fixture = await peer(); t.after(() => fixture.close());
-  const connection = await fixture.connect(); t.after(() => connection.end());
-  const { imap } = connection;
-  const observers = imap._parser.listenerCount('tagged');
-  const add = imap.addFlagsSince, del = imap.delFlagsSince;
-  installConditionalStore(imap);
-  assert.equal(imap._parser.listenerCount('tagged'), observers);
-  assert.equal(imap.addFlagsSince, add);
-  assert.equal(imap.delFlagsSince, del);
-});
-
 test('tagged BAD preserves the provider protocol error and cannot confirm a local change', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
-  const connection = await fixture.connect(); t.after(() => connection.end());
+  const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
   fixture.badNext();
   const dispatches = [];
   const result = await changeFlag(connection, 'read', 1, dispatches);
@@ -210,7 +196,7 @@ test('tagged BAD preserves the provider protocol error and cannot confirm a loca
 test('large MODSEQ is kept as a decimal string on the actual wire', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
   fixture.messages.get(103).modseq = '9007199254740993123';
-  const connection = await fixture.connect(); t.after(() => connection.end());
+  const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
   const dispatches = [];
   const result = await changeFlag(connection, 'star', 1, dispatches);
   assert.equal(result.completion, 'ok'); assert(result.after.flags.includes('\\Flagged'));
@@ -220,7 +206,7 @@ test('large MODSEQ is kept as a decimal string on the actual wire', async t => {
 
 test('native MOVE returns COPYUID destination and never triggers COPY/EXPUNGE', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
-  const connection = await fixture.connect(); t.after(() => connection.end());
+  const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
   const box = await selectMailbox(connection, { folder: 'INBOX' });
   const result = await nativeMove(connection, { uid: 103, uidvalidity: box.uidvalidity, sourceFolder: 'INBOX', targetFolder: 'Filed' },
     { beforeDispatch: async () => {} });
@@ -232,7 +218,7 @@ test('native MOVE returns COPYUID destination and never triggers COPY/EXPUNGE', 
 
 test('non-CONDSTORE server sends only UID-scoped delta, not SET FLAGS', async t => {
   const fixture = await peer({ conditional: false }); t.after(() => fixture.close());
-  const connection = await fixture.connect(); t.after(() => connection.end());
+  const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
   const result = await changeFlag(connection, 'read', 1, []);
   assert.equal(result.completion, 'ok'); assert(result.after.flags.includes('\\Seen'));
   assert(fixture.commands.includes('UID STORE 103 +FLAGS.SILENT (\\Seen)'));
@@ -241,47 +227,49 @@ test('non-CONDSTORE server sends only UID-scoped delta, not SET FLAGS', async t 
 
 test('invalid UID/flag/modseq fail closed without dispatching wire commands', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
-  const connection = await fixture.connect(); t.after(() => connection.end());
-  await connection.openBox('INBOX');
-  for (const args of [[0, '\\Seen', '295'], [103, '\\Deleted', '295'], [103, '\\Seen', '2) +FLAGS.SILENT (\\Deleted)']]) {
-    await assert.rejects(new Promise((resolve, reject) => connection.imap.addFlagsSince(...args, error => error ? reject(error) : resolve())),
-      /Invalid conditional STORE/);
+  const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
+  const box = await selectMailbox(connection, { folder: 'INBOX' });
+  for (const [uid, flag, modseq, expected] of [[0, '\\Seen', '295', /Invalid UID/], [103, '\\Deleted', '295', /Unsupported flag/],
+    [103, '\\Seen', '2) +FLAGS.SILENT (\\Deleted)', /Invalid MODSEQ/]]) {
+    await assert.rejects(setFlag(connection, { uid, uidvalidity: box.uidvalidity, sourceFolder: 'INBOX', flag, value: true, modseq },
+      { beforeDispatch: async () => assert.fail('invalid input must not reach the dispatch fence') }), expected);
   }
   assert(!fixture.commands.some(cmd => cmd.startsWith('UID STORE ')));
 });
 
-test('timed-out conditional wire command rejects once; late reply cannot confirm local state', async t => {
+test('timed-out conditional wire command settles once as lost; late reply cannot confirm local state', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
-  const connection = await fixture.connect({ timeoutMs: 50 }); t.after(() => connection.end());
-  await connection.openBox('INBOX');
+  const connection = await fixture.connect({ timeoutMs: 300 }); t.after(() => closeImapConnection(connection));
+  const box = await selectMailbox(connection, { folder: 'INBOX' });
+  const socket = connection.socket;
   fixture.holdStore();
-  let callbackCount = 0;
-  const command = new Promise((resolve, reject) => connection.imap.addFlagsSince(103, '\\Seen', '295', error => {
-    callbackCount++;
-    if (error) reject(error); else resolve();
-  }));
-  await assert.rejects(command, { code: 'MAIL_IMAP_TIMEOUT' });
+  const result = await setFlag(connection, { uid: 103, uidvalidity: box.uidvalidity, sourceFolder: 'INBOX', flag: '\\Seen', value: true, modseq: '295' },
+    { beforeDispatch: async () => {} });
+  assert.deepEqual([result.transmission, result.completion, result.modified], ['possible', 'lost', false]);
   assert(fixture.commands.includes('UID STORE 103 (UNCHANGEDSINCE 295) +FLAGS.SILENT (\\Seen)'));
-  assert.equal(connection.imap._sock.destroyed, true);
+  assert.equal(socket.destroyed, true);
   fixture.releaseStore();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(callbackCount, 1);
+  await assert.rejects(fetchMetadataWindow(connection, { folder: 'INBOX', uidvalidity: box.uidvalidity, startUid: 103, endUid: 103 }));
+  assert.equal(fixture.commands.filter(cmd => cmd.startsWith('UID FETCH ')).length, 0, 'no readback can follow a lost acknowledgement');
 });
 
 test('aborted conditional wire command cannot dispatch after cancellation', async t => {
   const fixture = await peer(); t.after(() => fixture.close());
   const controller = new AbortController();
-  const connection = await fixture.connect({ signal: controller.signal }); t.after(() => connection.end());
-  await connection.openBox('INBOX');
+  const connection = await fixture.connect({ signal: controller.signal }); t.after(() => closeImapConnection(connection));
+  const box = await selectMailbox(connection, { folder: 'INBOX' });
   fixture.holdStore();
-  const command = new Promise((resolve, reject) => connection.imap.addFlagsSince(103, '\\Seen', '295', error => error ? reject(error) : resolve()));
-  await new Promise(resolve => setImmediate(resolve));
+  const request = { uid: 103, uidvalidity: box.uidvalidity, sourceFolder: 'INBOX', flag: '\\Seen', value: true, modseq: '295' };
+  const attempt = setFlag(connection, request, { beforeDispatch: async () => {}, signal: controller.signal });
+  for (let i = 0; i < 50 && !fixture.commands.some(cmd => cmd.startsWith('UID STORE ')); i++) await new Promise(resolve => setTimeout(resolve, 5));
   controller.abort();
-  await assert.rejects(command, { code: 'MAIL_SYNC_CANCELLED' });
+  const result = await attempt;
+  assert.deepEqual([result.transmission, result.completion], ['possible', 'lost']);
   fixture.releaseStore();
   await new Promise(resolve => setImmediate(resolve));
   const previous = fixture.commands.length;
-  await assert.rejects(new Promise((resolve, reject) => connection.imap.delFlagsSince(103, '\\Seen', '295', error => error ? reject(error) : resolve())),
-    { code: 'MAIL_SYNC_CANCELLED' });
+  await assert.rejects(setFlag(connection, { ...request, value: false }, { beforeDispatch: async () => {} }));
+  await assert.rejects(selectMailbox(connection, { folder: 'INBOX' }), { code: 'MAIL_SYNC_CANCELLED' });
   assert.equal(fixture.commands.length, previous);
 });
