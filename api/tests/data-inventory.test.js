@@ -56,3 +56,13 @@ test('database verifier reads information_schema rather than assuming the catalo
   await assert.rejects(verifyDatabaseInventory({ async execute(query) { sql = query; return [[{ table_name: 'emails', column_name: 'surprise' }]]; } }), /Unclassified field emails.surprise/);
   assert.match(sql, /FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE\(\)/);
 });
+
+test('mail sync policy fields are required only after migration 10', () => {
+  const added = new Set(['mail_accounts.sync_window_days', 'mail_accounts.trash_window_days', 'mail_accounts.sync_policy_confirmed_at',
+    'mail_remote_occurrences.internal_date', 'data_export_jobs.mail_account_id']);
+  const all = productionColumns();
+  assert.equal(all.filter(row => added.has(row.table_name + '.' + row.column_name)).length, added.size);
+  const before = all.filter(row => !added.has(row.table_name + '.' + row.column_name));
+  assert.doesNotThrow(() => assertInventoryCoverage(before, { throughMigration: 9 }));
+  assert.throws(() => assertInventoryCoverage(before, { throughMigration: 10 }), /Missing declared field mail_accounts.sync_window_days/);
+});

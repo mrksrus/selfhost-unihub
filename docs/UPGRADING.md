@@ -5,6 +5,47 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.13.0 Sync follows the server
+
+Download and Sync are now two clearly different modes (see
+[Download and Sync](MAIL_MODES.md)). Download behaves as before. Sync makes the
+server the source of truth: mail deleted on the server is removed from UniHub,
+and optional windows limit how much old mail and Trash/Spam UniHub keeps.
+
+Database upgrade 10 (`mail-sync-policy`) adds three columns to `mail_accounts`
+(`sync_window_days`, `trash_window_days`, `sync_policy_confirmed_at`), the
+INTERNALDATE of each provider occurrence and the account of an account backup
+job. It changes no existing rows and is quick.
+
+**Nothing is deleted until you confirm, per account.**
+
+- Accounts that are already in Sync mode keep all their local mail after the
+  upgrade. They keep importing new mail and following read/star and moves, but
+  UniHub removes nothing, does not merge Gmail copies and applies no window
+  until you confirm. Mail the server no longer has stays visible in All mail.
+- **Back up first.** The confirmation dialog (sync panel or account settings,
+  *Turn on mail-client behavior*) offers a backup of just that account's mail
+  (`POST /api/mail/accounts/:id/backup-export`); save its recovery password and
+  download it under Settings › Backup. Keep your independent MySQL and uploads
+  backup as well.
+- **Then confirm.** The dialog shows how many local messages confirmation would
+  remove (mail the server no longer has, mail outside the windows and duplicate
+  Gmail copies). Confirm by typing the account's email address
+  (`POST /api/mail/accounts/:id/confirm-sync-policy` with `confirm_address`). The
+  removal runs in the background in small batches; the server is not changed.
+  An account with nothing to remove still needs this confirmation before later
+  server deletions are followed.
+- **Gmail:** keep *All Mail* visible in IMAP (Gmail settings → Labels → All Mail
+  → Show in IMAP). If it is hidden, UniHub cannot tell archived mail from
+  deleted mail; it keeps such mail in Archive and shows a warning on the account.
+- Switching an account from Download to Sync now asks for the account address
+  and shows the same counts first. Switching from Sync to Download deletes
+  nothing.
+- Restoring a backup resets the confirmation of every Sync account of that user;
+  confirm again afterwards.
+- Older UniHub releases cannot read the new account fields in backups made by
+  0.13.0; keep using 0.13.0 or later to restore them.
+
 ## 0.12.0 IMAP IDLE for INBOX
 
 No migration runs. Each mail account with background sync on now keeps **one

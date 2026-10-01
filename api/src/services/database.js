@@ -12,7 +12,7 @@ const { getDatabaseConfig } = require('./database-config');
 const { runMigrations } = require('./database-migrations');
 const { verifyDatabaseInventory } = require('./data-inventory');
 const { migrateMailEngineSchema, backfillMailEngine, verifyMailEngineSchema,
-  migrateManualMailRefresh, verifyManualMailRefresh } = require('./mail-engine/schema');
+  migrateManualMailRefresh, verifyManualMailRefresh, migrateMailSyncPolicy, verifyMailSyncPolicy } = require('./mail-engine/schema');
 
 function isPlaceholderSecret(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -326,6 +326,15 @@ async function ensureSchema() {
           WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'color' AND TABLE_NAME IN ('calendar_calendars','calendar_events')`);
         if (rows.length !== 2 || rows.some(row => row.COLUMN_DEFAULT !== '#2563eb')) throw new Error('Calendar color default not updated');
       },
+    },
+    {
+      // 0.13.0: Sync retention windows, the per-account confirmation gate before
+      // any local deletion, provider INTERNALDATE per occurrence, and
+      // per-account mail backup exports. Additive only; no existing row changes.
+      id: 10,
+      name: 'mail-sync-policy',
+      up: migrateMailSyncPolicy,
+      verify: verifyMailSyncPolicy,
     },
   ]);
 }

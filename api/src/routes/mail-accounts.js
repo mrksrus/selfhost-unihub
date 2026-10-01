@@ -1,6 +1,7 @@
 const mailWritebacks = require('../services/mail-writebacks');
 const mailAccountLifecycle = require('../services/mail-account-lifecycle');
-const { mailAccountModeChange, sameProviderMailbox } = require('../services/mail-account-mode');
+const { mailAccountModeChange, sameProviderMailbox, addressConfirmed } = require('../services/mail-account-mode');
+const mailSyncPolicy = require('../services/mail-sync-policy');
 const { withMailAccountLock } = require('../services/mail-account-lock');
 const { FILING_ACCOUNT_SQL } = require('../services/mail-folder-reconciliation');
 const crypto = require('crypto');
@@ -37,20 +38,46 @@ async function buildHostTrustConfirmationResponse({ imap_host, imap_port, smtp_h
   };
 }
 
+const ACCOUNT_COLUMNS = `id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+  smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
+  server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
+  is_active, disconnected_at, engine_version, last_synced_at, created_at,
+  sync_window_days, trash_window_days, sync_policy_confirmed_at`;
+
+// Sync policy fields of the account JSON. Removal counts are only computed for
+// Sync accounts whose policy is not confirmed yet (what confirming would remove).
+async function withPolicyFields(account) {
+  if (!account) return account;
+  const windows = mailSyncPolicy.storedWindows(account);
+  let pending = null, warnings = [];
+  if (account.sync_mode === 'sync') {
+    try { pending = await mailSyncPolicy.pendingRemovals(account); }
+    catch (error) { console.error('[ACCOUNT] Could not count pending Sync removals:', error.message); }
+    try { warnings = await mailSyncPolicy.syncWarnings(account); }
+    catch (error) { console.error('[ACCOUNT] Could not check Sync warnings:', error.message); }
+  }
+  const { sync_policy_confirmed_at: confirmedAt, ...rest } = account;
+  return { ...rest, delete_emails_on_server: toBooleanFlag(account.delete_emails_on_server),
+    sync_window_days: windows.sync, trash_window_days: windows.trash,
+    sync_policy_confirmed: !!confirmedAt, sync_policy_pending_removals: pending, sync_warnings: warnings };
+}
+async function loadAccountJson(userId, accountId) {
+  const [rows] = await db.execute(`SELECT ${ACCOUNT_COLUMNS} FROM mail_accounts WHERE id = ? AND user_id = ?`, [accountId, userId]);
+  return rows[0] ? withPolicyFields(rows[0]) : null;
+}
+// /api/mail/accounts/:id/<action>: the id is not the last path segment.
+const accountRouteId = req => req.params?.id || extractMailRouteId(req, 2);
+function routeError(error, fallback) {
+  return { error: error.status ? error.message : fallback, status: error.status || 500,
+    ...(error.requiresConfirmation ? { requires_confirmation: true } : {}) };
+}
+
 module.exports = {
   'GET /api/mail/accounts': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     
     try {
-      const [accounts] = await db.execute(
-        `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
-                smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
-                server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
-                is_active, disconnected_at, engine_version, last_synced_at, created_at
-         FROM mail_accounts
-         WHERE user_id = ?`,
-        [userId]
-      );
+      const [accounts] = await db.execute(`SELECT ${ACCOUNT_COLUMNS} FROM mail_accounts WHERE user_id = ?`, [userId]);
       await ensureDefaultMailFoldersForUser(userId);
 
       // Fetch unread email counts per account
@@ -88,9 +115,8 @@ module.exports = {
       }
       const runningDeleteAccountIds = new Set(getRunningMailServerDeleteAccountIds());
 
-      const accountsWithUnread = accounts.map((account) => ({
+      const accountsWithUnread = (await Promise.all(accounts.map(withPolicyFields))).map((account) => ({
         ...account,
-        delete_emails_on_server: toBooleanFlag(account.delete_emails_on_server),
         sync_fetch_limit: normalizeSyncFetchLimit(account.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT,
         unread_count: unreadByAccount[account.id] || 0,
         server_delete_counts: deleteCountsByAccount[account.id] || { pending: 0, failed: 0, deleted: 0, missing: 0, skipped: 0 },
@@ -100,6 +126,16 @@ module.exports = {
       return { accounts: accountsWithUnread };
     } catch (error) {
       return { error: 'Failed to get mail accounts', status: 500 };
+    }
+  },
+
+  'GET /api/mail/accounts/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const account = await loadAccountJson(userId, extractMailRouteId(req));
+      return account ? { account } : { error: 'Account not found', status: 404 };
+    } catch (error) {
+      return { error: 'Failed to get mail account', status: 500 };
     }
   },
 
@@ -141,6 +177,10 @@ module.exports = {
       const trustAccepted = toBooleanFlag(accept_host_trust);
       const modeChange = mailAccountModeChange(null, body);
       const serverDeleteEnabled = modeChange.deleteEnabled;
+      // Missing: all mail, and 30 days for Trash/Junk. Windows apply in Sync only.
+      const syncWindowDays = mailSyncPolicy.parseWindowDays(body.sync_window_days, 'sync_window_days') ?? null;
+      const parsedTrashWindow = mailSyncPolicy.parseWindowDays(body.trash_window_days, 'trash_window_days');
+      const trashWindowDays = parsedTrashWindow === undefined ? mailSyncPolicy.DEFAULT_TRASH_WINDOW_DAYS : parsedTrashWindow;
 
       console.log(`[ACCOUNT] Checking mail host policy for ${email_address}: IMAP ${imap_host}:${normalizedImapPort}, SMTP ${smtp_host}:${normalizedSmtpPort}`);
       const hostPolicyResult = await validateMailHostPolicy({
@@ -197,9 +237,11 @@ module.exports = {
            (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
             smtp_host, smtp_port, encrypted_password, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
             server_delete_enabled_at, server_delete_grace_until, allow_self_signed,
-            trusted_imap_fingerprint256, trusted_smtp_fingerprint256)
+            trusted_imap_fingerprint256, trusted_smtp_fingerprint256,
+            sync_window_days, trash_window_days, sync_policy_confirmed_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${serverDeleteEnabled ? 'UTC_TIMESTAMP()' : 'NULL'},
-                 ${serverDeleteEnabled ? 'DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)' : 'NULL'}, ?, ?, ?)`,
+                 ${serverDeleteEnabled ? 'DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)' : 'NULL'}, ?, ?, ?, ?, ?,
+                 ${modeChange.mode === 'sync' ? 'UTC_TIMESTAMP()' : 'NULL'})`,
         [
           accountId,
           userId,
@@ -219,19 +261,14 @@ module.exports = {
           trustAccepted ? 1 : 0,
           null,
           null,
+          syncWindowDays,
+          trashWindowDays,
         ]
       );
       await ensureDefaultMailFoldersForUser(userId);
-      
-      const [accounts] = await db.execute(
-        `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
-                smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
-                server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at, is_active
-         FROM mail_accounts
-         WHERE id = ?`,
-        [accountId]
-      );
-      if (accounts[0]) accounts[0].delete_emails_on_server = toBooleanFlag(accounts[0].delete_emails_on_server);
+      // A new Sync account has no local-only mail yet: its policy is
+      // confirmed at creation (sync_policy_confirmed_at above).
+      const accounts = [await loadAccountJson(userId, accountId)];
 
       let calendarSync = null;
       if (toBooleanFlag(try_calendar_sync)) {
@@ -279,7 +316,8 @@ module.exports = {
       };
     } catch (error) {
       console.error('[ACCOUNT] Create mail account error:', error);
-      return { error: error.message || 'Failed to create mail account', status: error.status || 500 };
+      return { error: error.message || 'Failed to create mail account', status: error.status || 500,
+        ...(error.requiresConfirmation ? { requires_confirmation: true } : {}) };
     }
   },
 
@@ -309,6 +347,9 @@ module.exports = {
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
       const requestedMode = mailAccountModeChange(accounts[0], body);
+      // Accepted in both modes (they only take effect in Sync); missing = unchanged.
+      const requestedSyncWindow = mailSyncPolicy.parseWindowDays(body.sync_window_days, 'sync_window_days');
+      const requestedTrashWindow = mailSyncPolicy.parseWindowDays(body.trash_window_days, 'trash_window_days');
       const stopRequired = Boolean(requestedMode.changed || body.is_active === true || body.encrypted_password
         || body.email_address || body.imap_host || body.imap_port || body.username !== undefined || body.delete_emails_on_server !== undefined);
       return await withMailAccountLock(id, async () => {
@@ -397,7 +438,18 @@ module.exports = {
       if (modeChange.changed) {
         updates.push('sync_mode = ?', 'sync_status = ?');
         params.push(modeChange.mode, modeChange.mode === 'sync' ? 'pending' : 'idle');
+        // The typed address confirmed Sync's removal policy for this account;
+        // leaving Sync drops the confirmation, a later switch asks again.
+        updates.push(`sync_policy_confirmed_at = ${modeChange.mode === 'sync' ? 'UTC_TIMESTAMP()' : 'NULL'}`);
       }
+      const previousWindows = mailSyncPolicy.storedWindows(existingAccount);
+      const nextWindows = { sync: requestedSyncWindow === undefined ? previousWindows.sync : requestedSyncWindow,
+        trash: requestedTrashWindow === undefined ? previousWindows.trash : requestedTrashWindow };
+      const wider = (before, after) => before !== null && (after === null || after > before);
+      const windowsChanged = nextWindows.sync !== previousWindows.sync || nextWindows.trash !== previousWindows.trash;
+      const windowsWidened = wider(previousWindows.sync, nextWindows.sync) || wider(previousWindows.trash, nextWindows.trash);
+      if (requestedSyncWindow !== undefined) { updates.push('sync_window_days = ?'); params.push(nextWindows.sync); }
+      if (requestedTrashWindow !== undefined) { updates.push('trash_window_days = ?'); params.push(nextWindows.trash); }
       if (email_address) { updates.push('email_address = ?'); params.push(email_address); }
       if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name || null); }
       if (username !== undefined) { updates.push('username = ?'); params.push(nextUsername); }
@@ -458,24 +510,79 @@ module.exports = {
       if (shouldSeedServerDeleteQueue) {
         await seedMailServerDeletionQueueForAccount({ userId, accountId: id });
       }
-      
-      const [updated] = await db.execute(
-        `SELECT id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
-                smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
-                server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at, is_active
-         FROM mail_accounts
-         WHERE id = ?`,
-        [id]
-      );
-      
-      const updatedAccount = updated[0] || null;
-      if (updatedAccount) updatedAccount.delete_emails_on_server = toBooleanFlag(updatedAccount.delete_emails_on_server);
+      if (modeChange.mode === 'sync' && (modeChange.changed || windowsChanged)) {
+        try {
+          // Wider windows: older history becomes eligible again, rescan it.
+          if (windowsWidened) await db.execute("DELETE FROM mail_engine_cursors WHERE mail_account_id = ? AND user_id = ? AND stream = 'history'", [id, userId]);
+          await mailSyncPolicy.enqueuePrune({ userId, accountId: id });
+        } catch (error) {
+          // The next discovery pass queues the same policy job.
+          console.warn('[ACCOUNT] Could not queue Sync policy job:', error.message);
+        }
+      }
+
+      const updatedAccount = await loadAccountJson(userId, id);
       if (body.is_active === true) setImmediate(() => startMailSyncInBackground(id).catch(error => console.error('[SYNC] Reconnect scheduling failed:', error.message)));
+      if (modeChange.changed && modeChange.mode === 'download') {
+        return { account: updatedAccount, message: 'Download mode keeps every local copy. Nothing is deleted; UniHub stops sending read, star, move and delete changes to the server.' };
+      }
       return { account: updatedAccount };
       });
     } catch (error) {
       console.error('[ACCOUNT] Update error:', error);
-      return { error: error.message || 'Failed to update mail account', status: error.status || 500 };
+      return { error: error.message || 'Failed to update mail account', status: error.status || 500,
+        ...(error.requiresConfirmation ? { requires_confirmation: true } : {}) };
+    }
+  },
+
+  'GET /api/mail/accounts/:id/mode-impact': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const query = new URL(req.url, 'http://localhost').searchParams;
+      // The browser sends "all mail" as an empty value; an absent parameter keeps the stored window.
+      const window = name => query.has(name) ? mailSyncPolicy.parseWindowDays(query.get(name), name) : undefined;
+      const [[account]] = await db.execute('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [accountRouteId(req), userId]);
+      if (!account) return { error: 'Account not found', status: 404 };
+      return await mailSyncPolicy.computeModeImpact(account, { mode: query.get('mode'),
+        syncWindowDays: window('sync_window_days'), trashWindowDays: window('trash_window_days') });
+    } catch (error) {
+      if (!error.status) console.error('[ACCOUNT] Mode impact error:', error);
+      return routeError(error, 'Could not estimate the mode change');
+    }
+  },
+
+  'POST /api/mail/accounts/:id/confirm-sync-policy': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const id = accountRouteId(req);
+      const [[account]] = await db.execute('SELECT id, user_id, email_address, sync_mode FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      if (!account) return { error: 'Account not found', status: 404 };
+      if (account.sync_mode !== 'sync') return { error: 'Only a Sync account has a Sync policy to confirm.', status: 409 };
+      if (!addressConfirmed(account, body?.confirm_address)) return { error: 'Type the account email address to confirm.', status: 400 };
+      await db.execute(`UPDATE mail_accounts SET sync_policy_confirmed_at = COALESCE(sync_policy_confirmed_at, UTC_TIMESTAMP())
+        WHERE id = ? AND user_id = ? AND sync_mode = 'sync'`, [id, userId]);
+      // Removal runs in the background as bounded durable jobs.
+      await require('../services/mail-durable-jobs').durableScheduler.enqueue({ userId, accountId: id,
+        kind: 'prune', priority: mailSyncPolicy.PRUNE_PRIORITY });
+      return { confirmed: true, queued: true };
+    } catch (error) {
+      if (!error.status) console.error('[ACCOUNT] Confirm Sync policy error:', error);
+      return { error: error.status ? error.message : 'Could not confirm the Sync policy', status: error.status || 500 };
+    }
+  },
+
+  'POST /api/mail/accounts/:id/backup-export': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const id = accountRouteId(req);
+      const [[account]] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      if (!account) return { error: 'Account not found', status: 404 };
+      const { startDataExportJob } = require('../services/export-jobs');
+      const job = await startDataExportJob(userId, { sections: ['mail'], mailAccountId: id, encrypt: body?.encrypt !== false });
+      return { job, status: 202 };
+    } catch (error) {
+      if (!error.status) console.error('[ACCOUNT] Account backup export error:', error);
+      return { error: error.status ? error.message : 'Could not start the account backup', status: error.status || 500 };
     }
   },
 

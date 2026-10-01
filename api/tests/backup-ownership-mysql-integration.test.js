@@ -95,6 +95,7 @@ test('MySQL restores colliding backup IDs without changing another user in every
   await connection.execute('ALTER TABLE emails ADD COLUMN import_complete BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN filing_account_id CHAR(36) NULL, ADD COLUMN is_legacy BOOLEAN NOT NULL DEFAULT FALSE');
   await connection.execute('ALTER TABLE mail_folders ADD COLUMN mail_account_id CHAR(36) NULL, ADD COLUMN special_use VARCHAR(32) NULL');
   await connection.execute("ALTER TABLE mail_accounts ADD COLUMN sync_mode VARCHAR(16) NOT NULL DEFAULT 'download', ADD COLUMN sync_status VARCHAR(16) NOT NULL DEFAULT 'idle'");
+  await connection.execute('ALTER TABLE mail_accounts ADD COLUMN sync_window_days INT NULL, ADD COLUMN trash_window_days INT NULL DEFAULT 30, ADD COLUMN sync_policy_confirmed_at DATETIME NULL');
   await connection.execute('ALTER TABLE emails ADD COLUMN remote_folder VARCHAR(255) NULL, ADD COLUMN remote_uid BIGINT NULL, ADD COLUMN remote_uidvalidity BIGINT NULL, ADD COLUMN remote_missing BOOLEAN NOT NULL DEFAULT FALSE');
   await connection.execute("ALTER TABLE emails ADD COLUMN observation_revision BIGINT NOT NULL DEFAULT 0, ADD COLUMN observed_modseq VARCHAR(32) NULL, ADD COLUMN raw_format VARCHAR(24) NOT NULL DEFAULT 'legacy_normalized', ADD COLUMN raw_bytes BIGINT NULL, ADD COLUMN raw_verified BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN content_state VARCHAR(24) NOT NULL DEFAULT 'legacy'");
   await connection.execute('CREATE TEMPORARY TABLE notification_config (id INT PRIMARY KEY, reminder_revision BIGINT DEFAULT 0)');

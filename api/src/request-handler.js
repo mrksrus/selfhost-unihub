@@ -129,7 +129,7 @@ async function dispatchRequest(req, res) {
       routeKey = `${req.method} /api/mail/drafts/:id`;
     }
   } else if (routeKey.includes('/api/mail/accounts/')) {
-    const match = /^\/api\/mail\/accounts\/([^/]+)(\/purge-preview)?$/.exec(url.pathname);
+    const match = /^\/api\/mail\/accounts\/([^/]+)(\/purge-preview|\/mode-impact|\/confirm-sync-policy|\/backup-export)?$/.exec(url.pathname);
     if (match) {
       req.params.id = match[1];
       routeKey = `${req.method} /api/mail/accounts/:id${match[2] || ''}`;

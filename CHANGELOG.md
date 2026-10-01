@@ -6,6 +6,52 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of MySQL, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.13.0 (unreleased)
+
+Read the [upgrade notes](docs/UPGRADING.md#0130-sync-follows-the-server) first:
+existing Sync accounts remove nothing until you confirm them.
+
+### Improvements
+
+- **Download and Sync are two distinct mail modes.** Download keeps importing
+  and archiving as before and never changes the server. Sync now behaves like a
+  full mail client with the server as the source of truth: mail deleted on the
+  server is removed from UniHub together with its stored files, moves and
+  read/star changes made elsewhere are followed, and your own read, star, move
+  and delete still go to the server (delete moves to Trash).
+- **Retention windows for Sync accounts.** Choose how much mail UniHub keeps
+  (2 weeks, 1, 3, 6 or 12 months, or all) and, separately, how long Trash and
+  Spam are kept (default 30 days). Older messages, by the date the server
+  received them, are not downloaded and existing local copies are removed; they
+  stay on the server.
+- **Gmail messages exist once.** In Sync mode a Gmail message is one item whose
+  labels are the folders it appears in. Copies stored per label by earlier
+  versions are merged by Gmail's message id (never by header or content), with
+  read and star taken from Gmail. All Mail is synced as a label, so archived
+  mail stays; a message is removed only when it is gone from every label and
+  All Mail.
+- **The account settings explain both modes** and show, before saving, how many
+  local emails a change would remove (not on the server, outside the windows,
+  duplicate Gmail copies). Switching to Sync asks you to type the account's
+  address and offers a backup of just that account's mail first.
+- **Upgrade safety gate.** Accounts that were already in Sync mode keep all
+  local mail after upgrading. The mail view and sync panel show how many local
+  emails confirming would remove; nothing is removed until you confirm with the
+  account address. The removal then runs in the background in small batches.
+- **Gmail All Mail warning.** When Gmail's All Mail is hidden from IMAP, UniHub
+  keeps mail that disappears from every label (it may only be archived), files
+  it in Archive, and asks you to enable "Show in IMAP" for All Mail.
+- **Per-account mail backup.** A backup job can now export a single mail
+  account (its mail, files and sync evidence); it is listed, downloaded and
+  restored like any other backup.
+
+### Changes
+
+- Switching from Sync to Download deletes nothing; it stops sending changes to
+  the server.
+- Restoring a backup leaves Sync accounts unconfirmed, so restored local copies
+  are not removed until you confirm again.
+
 ## 0.12.1
 
 ### Fixes

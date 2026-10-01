@@ -94,12 +94,13 @@ async function getOccurrence({ userId, accountId, mailboxId, epoch, uid }, execu
     WHERE o.user_id = ? AND o.mail_account_id = ? AND o.mailbox_id = ? AND o.uidvalidity = ? AND o.uid = ?`, [userId, accountId, mailboxId, epoch, uid]);
   return rows[0] || null;
 }
-async function upsertOccurrence({ userId, accountId, mailboxId, epoch, uid, emailId, flags = [], modseq = null, gmailMsgId = null, observationRevision = null }, executor = db) {
-  if (typeof executor.getConnection === 'function') return withTransaction(cx => upsertOccurrence({ userId, accountId, mailboxId, epoch, uid, emailId, flags, modseq, gmailMsgId, observationRevision }, cx), executor);
+async function upsertOccurrence({ userId, accountId, mailboxId, epoch, uid, emailId, flags = [], modseq = null, gmailMsgId = null, observationRevision = null, internalDate = null }, executor = db) {
+  if (typeof executor.getConnection === 'function') return withTransaction(cx => upsertOccurrence({ userId, accountId, mailboxId, epoch, uid, emailId, flags, modseq, gmailMsgId, observationRevision, internalDate }, cx), executor);
   const cx = executor;
   epoch = assertUid32(epoch); uid = assertUid32(uid); requireId(emailId, 'emailId');
   if (modseq != null) modseq = assertDecimal64(modseq);
   if (gmailMsgId != null) gmailMsgId = assertDecimal64(gmailMsgId);
+  internalDate = internalDateValue(internalDate);
   if (observationRevision != null && (!Number.isSafeInteger(observationRevision) || observationRevision < 0)) throw new RangeError('Invalid observation revision');
   if (!Array.isArray(flags) || flags.some(f => typeof f !== 'string' || f.length > 128) || flags.length > 128) throw new TypeError('Invalid flags');
   const mailbox = await ownMailbox(cx, userId, accountId, mailboxId, true);
@@ -127,13 +128,20 @@ async function upsertOccurrence({ userId, accountId, mailboxId, epoch, uid, emai
   const nextRevision = observationRevision ?? (Number(old?.observation_revision || 0) + 1);
   const id = old?.id ?? randomUUID();
   if (old) await cx.execute(`UPDATE mail_remote_occurrences SET observed_flags = ?, observed_modseq = ?, gmail_msgid = COALESCE(?,gmail_msgid),
-      presence = 'present', observation_revision = ?, observed_at = UTC_TIMESTAMP(), absent_at = NULL WHERE id = ?`,
-    [JSON.stringify(flags), modseq ?? old.observed_modseq, gmailMsgId, nextRevision, id]);
+      internal_date = COALESCE(?,internal_date), presence = 'present', observation_revision = ?, observed_at = UTC_TIMESTAMP(), absent_at = NULL WHERE id = ?`,
+    [JSON.stringify(flags), modseq ?? old.observed_modseq, gmailMsgId, internalDate, nextRevision, id]);
   else await cx.execute(`INSERT INTO mail_remote_occurrences
-    (id,user_id,mail_account_id,mailbox_id,uidvalidity,uid,email_id,observed_flags,observed_modseq,gmail_msgid,observation_revision,observed_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP())`,
-    [id, userId, accountId, mailboxId, epoch, uid, emailId, JSON.stringify(flags), modseq, gmailMsgId, nextRevision]);
+    (id,user_id,mail_account_id,mailbox_id,uidvalidity,uid,email_id,observed_flags,observed_modseq,gmail_msgid,observation_revision,observed_at,internal_date)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(),?)`,
+    [id, userId, accountId, mailboxId, epoch, uid, emailId, JSON.stringify(flags), modseq, gmailMsgId, nextRevision, internalDate]);
   return getOccurrence({ userId, accountId, mailboxId, epoch, uid }, cx);
+}
+// Provider INTERNALDATE as a UTC DATETIME string; anything else is unknown (NULL).
+function internalDateValue(value) {
+  if (value == null) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.toISOString().slice(0, 19).replace('T', ' ');
 }
 async function loadCursor({ userId, accountId, mailboxId, stream, epoch }, executor = db) {
   if (!STREAMS.has(stream)) throw new TypeError('Invalid coverage stream');

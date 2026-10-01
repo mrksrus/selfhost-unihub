@@ -15,12 +15,17 @@ const membershipTables = `mail_remote_occurrences o
   JOIN mail_folders f ON f.id = b.folder_id AND f.user_id = o.user_id`;
 const membershipWhere = `o.email_id = emails.id AND o.user_id = emails.user_id
   AND o.mail_account_id = emails.mail_account_id AND o.presence = 'present'`;
-// A vanished/quarantined remote occurrence is retained in All mail, not guessed
-// back into its old provider folder. Explicit Legacy/import/local filing and
-// pre-migration messages not observed by the engine retain their local folders.
+// Sync mode removes local copies the server no longer has once the account's
+// policy is confirmed. Until then a missing copy is not guessed back into its
+// old provider folder and appears only in All mail. On Gmail without a visible
+// All Mail, missing mail may only be archived: it is kept and filed in
+// 'archive' (mail-sync-policy.js), which this view honours. Explicit
+// Legacy/import/local filing and pre-migration messages not observed by the
+// engine retain their local folders.
 const fallbackFolderSql = `(CASE WHEN ${localFilingSql} OR (COALESCE(emails.remote_missing, FALSE) = FALSE
   AND NOT EXISTS(SELECT 1 FROM mail_remote_occurrences known WHERE known.email_id = emails.id
     AND known.user_id = emails.user_id AND known.mail_account_id = emails.mail_account_id))
+  OR (COALESCE(emails.remote_missing, FALSE) = TRUE AND emails.folder = 'archive')
   THEN emails.folder ELSE NULL END)`;
 
 // Takes three identical bound folder parameters. The latest accepted MOVE

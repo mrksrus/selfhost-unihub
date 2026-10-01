@@ -1,5 +1,39 @@
 # Mail Sync Technical Documentation
 
+## 0.13.0: Sync follows the server
+
+Download and Sync are two distinct modes; see [Download and Sync](MAIL_MODES.md)
+for the user-facing rules. Technically, Sync adds one local job kind and one
+module:
+
+- `api/src/services/mail-sync-policy.js` owns retention windows, proven-absence
+  removal, Gmail X-GM-MSGID merging, the per-account confirmation gate
+  (`mail_accounts.sync_policy_confirmed_at`), mode-impact counts and the
+  `gmail_all_mail_hidden` warning. Download accounts are never touched by it.
+- `commitWindow` (`mail-engine/sync.js`) skips a provider message whose
+  INTERNALDATE is older than its mailbox's window (Trash/Junk use
+  `trash_window_days`, everything else `sync_window_days`) unless it is already
+  known, is the mapped destination of an accepted MOVE, or is another Gmail label
+  of a known message. Skipped messages create no row and queue no body. Each
+  occurrence stores its INTERNALDATE (`mail_remote_occurrences.internal_date`).
+- A presence window that proves absence in a Sync account queues a `prune` job;
+  the folder discovery job queues one after every pass as well.
+- `prune` runs without a provider connection, at priority 80 (below every
+  provider job), as a read slot that yields to interactive work. Each slice is
+  fenced by the account lease and handles at most 200 rows: it files missing
+  Gmail mail as archived when All Mail is not visible (always), then, only when
+  the account is confirmed, merges up to 50 Gmail duplicate groups, removes
+  items with no present or quarantined occurrence left (never on Gmail without
+  a visible All Mail), and removes items whose every present occurrence is
+  outside its window. Candidates are re-checked on locked rows; items with an
+  unsettled operation, filed in another account, Legacy or drafts are never
+  removed. Raw and attachment files are deleted after COMMIT, only inside the
+  owner's directory and only when no row references them any more. A slice
+  that removed, merged or refiled rows publishes `mail.changed` with reason
+  `content`.
+- Folder discovery records a mailbox flagged `\All` as `special_use = 'all'`
+  on `mail_remote_mailboxes` (the local folder mapping still uses `archive`).
+
 ## 0.10.5: existing-folder reconciliation
 
 The [0.10.5 migration](../CHANGELOG.md#0105) supersedes the Legacy shared behavior
@@ -120,6 +154,7 @@ this policy remain inactive with a warning.
 | Manual sync | `POST /api/mail/sync` | immediate, complete folder discovery and fan-out |
 | Service worker sync | `POST /api/mail/sync/background` | starts at most one sync if data is stale |
 | Writeback follow-up | provider operation worker | ordinary (throttled) sync after an unsettled flag/move |
+| Sync policy (`prune`) | presence sweep, folder discovery, mode switch, window change, policy confirmation | local only: retention, proven absence, Gmail merge (see 0.13.0 above) |
 
 Periodic, IDLE-triggered and service-worker sync are background work: they are
 skipped while the Mail module's background setting is off. Manual Sync, flag/move actions and their
@@ -247,7 +282,7 @@ outcome checks (`reconcile`), runs on the one durable scheduler
 (`api/src/services/mail-sync-scheduler.js`, executor `runDurableMailJob` in
 `api/src/services/mail-durable-jobs.js`). It runs at most three jobs at once, of which at
 most two may be read-only (`sync`, `recent`, `flags`, `history`, `presence`,
-`body`); the third slot only ever takes operation/reconcile work, so a click is
+`body`, and the local `prune`); the third slot only ever takes operation/reconcile work, so a click is
 never queued behind other accounts' long scans. After a read/star/move is
 accepted (or retried), the API enqueues the job and nudges the scheduler: a
 read-only job of the same account, which holds the account lease, yields at a
@@ -484,8 +519,12 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 | --- | --- | --- |
 | GET | `/api/mail/accounts` | List accounts with unread counts |
 | POST | `/api/mail/accounts` | Add account and start initial sync |
-| PUT | `/api/mail/accounts/:id` | Update account settings and retest IMAP when needed |
-| DELETE | `/api/mail/accounts/:id` | Delete account and attachment files for that account |
+| GET | `/api/mail/accounts/:id` | One account, same fields as the list |
+| PUT | `/api/mail/accounts/:id` | Update account settings and retest IMAP when needed; windows; a switch to Sync needs `confirm_address` |
+| GET | `/api/mail/accounts/:id/mode-impact` | Local removals a mode/window choice would cause (counts only) |
+| POST | `/api/mail/accounts/:id/confirm-sync-policy` | Confirm Sync removal for an existing Sync account |
+| POST | `/api/mail/accounts/:id/backup-export` | Start a mail backup job of this account only |
+| DELETE | `/api/mail/accounts/:id` | Disconnect, or purge with explicit confirmation |
 
 ### Messages
 
@@ -584,7 +623,10 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 
 ## Limitations
 
-- Provider-side delete sync is not implemented.
+- In Download mode, deletions on the server are not followed; in Sync mode they
+  are, once the account's policy is confirmed (see [Download and Sync](MAIL_MODES.md)).
+- On generic IMAP a move by another client is followed as a deletion plus a new
+  message; the body is downloaded again.
 - App-local draft edits/uploads are not propagated to the provider; provider draft folders can be imported for viewing.
 - App folder moves are local and are not propagated to provider folders.
 - First full imports can be slow for large mailboxes.

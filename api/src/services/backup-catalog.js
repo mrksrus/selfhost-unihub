@@ -1,7 +1,7 @@
 // Recovery declarations are shared by export, section scoping and restore locks.
 // columns is an explicit archive allowlist. fieldPolicies describes import behavior;
 // metadata retained for inspection need not overwrite destination operational state.
-const { ARCHIVE_COLUMNS, ARCHIVE_KEYS, EXTRA_COLUMNS, NEW_OPERATION_COLUMNS } = require('./mail-engine/recovery-policy');
+const { ARCHIVE_COLUMNS, ARCHIVE_KEYS, EXTRA_COLUMNS, NEW_OPERATION_COLUMNS, LATER_ARCHIVE_FIELDS } = require('./mail-engine/recovery-policy');
 const SECTION_POLICIES = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
   contacts: { tables: ["contacts"], fileKinds: [] },
@@ -38,7 +38,7 @@ const BASE_TABLE_POLICIES = Object.freeze({
   calendar_event_subtasks: table('calendar', 'id event_id user_id title is_done position created_at updated_at', ["id"], {}),
   calendar_event_attendees: table('calendar', 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', ["id"], {}),
   calendar_event_external_refs: table('calendar', 'id user_id event_id calendar_id account_id provider external_event_id external_etag external_updated_at last_synced_at created_at updated_at', ["id"], {}),
-  mail_accounts: table('mail', 'id user_id email_address display_name provider username imap_host imap_port smtp_host smtp_port encrypted_password sync_fetch_limit sync_mode sync_status delete_emails_on_server server_delete_enabled_at server_delete_grace_until server_delete_last_run_at allow_self_signed trusted_imap_fingerprint256 trusted_smtp_fingerprint256 is_active last_synced_at created_at updated_at', ["id"], {"delete_emails_on_server": "reset_server_deletion", "server_delete_enabled_at": "reset_server_deletion", "server_delete_grace_until": "reset_server_deletion", "server_delete_last_run_at": "reset_server_deletion", "sync_status": "reset_sync_progress"}, { sync_mode: 3, sync_status: 3 }),
+  mail_accounts: table('mail', 'id user_id email_address display_name provider username imap_host imap_port smtp_host smtp_port encrypted_password sync_fetch_limit sync_mode sync_status delete_emails_on_server server_delete_enabled_at server_delete_grace_until server_delete_last_run_at allow_self_signed trusted_imap_fingerprint256 trusted_smtp_fingerprint256 is_active last_synced_at created_at updated_at sync_window_days trash_window_days sync_policy_confirmed_at', ["id"], {"delete_emails_on_server": "reset_server_deletion", "server_delete_enabled_at": "reset_server_deletion", "server_delete_grace_until": "reset_server_deletion", "server_delete_last_run_at": "reset_server_deletion", "sync_status": "reset_sync_progress", "sync_policy_confirmed_at": "reset_sync_policy_confirmation"}, { sync_mode: 3, sync_status: 3, sync_window_days: 10, trash_window_days: 10, sync_policy_confirmed_at: 10 }),
   mail_folders: table('mail', 'id user_id slug display_name is_system position created_at updated_at mail_account_id special_use', ["id"], {}),
   mail_folder_remote_boxes: table('mail', 'folder_id mail_account_id remote_name created_at updated_at', ["folder_id", "mail_account_id"], {}),
   mail_sender_rules: table('mail', 'id user_id mail_account_id match_type match_value target_folder priority is_active created_at updated_at', ["id"], {}),
@@ -69,7 +69,8 @@ const TABLE_POLICIES = Object.freeze({
   ...Object.fromEntries(Object.entries(ARCHIVE_COLUMNS).map(([name, columns]) => [name,
     table('mail', columns, ARCHIVE_KEYS[name] || ['id'],
       Object.fromEntries(columns.split(' ').map(field => [field, 'quarantine_provider_evidence'])),
-      Object.fromEntries(columns.split(' ').map(field => [field, name === 'mail_writebacks' && !NEW_OPERATION_COLUMNS.has(field) ? 5 : 6])))
+      Object.fromEntries(columns.split(' ').map(field => [field, LATER_ARCHIVE_FIELDS[`${name}.${field}`]
+        || (name === 'mail_writebacks' && !NEW_OPERATION_COLUMNS.has(field) ? 5 : 6)])))
   ])),
 });
 

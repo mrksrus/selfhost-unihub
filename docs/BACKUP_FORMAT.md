@@ -65,6 +65,17 @@ is required before reconnection. Existing accepted work is not silently discarde
 or converted into a fresh remote mutation. Restored receipt results include a
 recovery warning rather than an unqualified replay of the old HTTP response.
 
+0.13.0 adds three mail account fields to schema 4 without changing its version:
+`sync_window_days` and `trash_window_days` (restored as they are; archives
+without them restore as all mail and 30 days) and `sync_policy_confirmed_at`
+(exported for inspection, never restored: every restore leaves Sync accounts
+unconfirmed, so restored local copies are not removed before the user confirms
+again). Provider occurrences carry `internal_date` as quarantined evidence. An
+account backup started from a mail account (`POST
+/api/mail/accounts/:id/backup-export`) is an ordinary mail-section archive
+restricted to that account; messages filed in another account restore under
+their own account.
+
 Older applications that read only schemas 1–3 cannot import new schema-4 backups.
 Downgrading an image is not a database rollback. Preserve a matching full server
 snapshot before upgrading. Future changes must retain supported readers and

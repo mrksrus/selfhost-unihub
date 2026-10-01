@@ -179,7 +179,10 @@ const SPECIAL_USE_ROLES = { '\\sent': 'sent', '\\drafts': 'drafts', '\\junk': 'j
 // Maps ImapFlow LIST entries to selectable mailbox paths. Only the attributes
 // the server sent (RFC 6154 special-use or Gmail XLIST) assign a role; the
 // library's name-based specialUse guess is deliberately ignored.
-function imapListToFolders(entries, specialUses = new Map()) {
+// allMailboxes (optional Set) collects mailboxes flagged \All (Gmail's All Mail).
+// Sync mode needs it: on Gmail only absence from every label *and* All Mail
+// proves deletion; without a visible All Mail, missing mail may be archived.
+function imapListToFolders(entries, specialUses = new Map(), allMailboxes = null) {
   const results = [];
   for (const entry of entries || []) {
     const fullName = typeof entry?.path === 'string' ? entry.path : '';
@@ -187,12 +190,13 @@ function imapListToFolders(entries, specialUses = new Map()) {
     const attributes = [...(entry.flags || [])].map(value => String(value).toLowerCase());
     const role = attributes.map(attribute => SPECIAL_USE_ROLES[attribute]).find(Boolean);
     if (role) specialUses.set(fullName, role);
+    if (allMailboxes && attributes.includes('\\all')) allMailboxes.add(fullName);
     if (!attributes.includes('\\noselect') && !attributes.includes('\\nonexistent')) results.push(fullName);
   }
   return results;
 }
 
-async function listAvailableImapFolders(connection, specialUses = new Map(), strict = false) {
+async function listAvailableImapFolders(connection, specialUses = new Map(), strict = false, allMailboxes = null) {
   try {
     if (typeof connection?.list !== 'function') {
       if (strict) throw new Error('Server folder listing unavailable');
@@ -200,7 +204,7 @@ async function listAvailableImapFolders(connection, specialUses = new Map(), str
     }
     const entries = await runGuardedImap(connection, () => connection.list());
     if (strict && !Array.isArray(entries)) throw new Error('Invalid server folder listing');
-    const folders = imapListToFolders(entries, specialUses);
+    const folders = imapListToFolders(entries, specialUses, allMailboxes);
     if (strict && folders.length === 0) throw new Error('Server returned no selectable folders; retry required');
     return folders;
   } catch (error) {

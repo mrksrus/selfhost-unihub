@@ -112,8 +112,11 @@ async function fetchMetadataWindow(connection, { folder, uidvalidity, startUid, 
     const uid = uint32(message.uid, 'fetched UID');
     if (uid < startUid || uid > endUid || seen.has(uid) || !(message.flags instanceof Set)) throw new Error('Malformed/duplicate/out-of-range UID metadata');
     seen.add(uid);
+    // INTERNALDATE decides Sync retention windows; an unparsable date is unknown, never "old".
+    const internal = message.internalDate instanceof Date ? message.internalDate : message.internalDate ? new Date(message.internalDate) : null;
     const item = { uid, flags: [...message.flags], modseq: optionalModseq(message.modseq),
-      gmailMsgId: gmail && message.emailId != null ? decimal(message.emailId, 'X-GM-MSGID') : null };
+      gmailMsgId: gmail && message.emailId != null ? decimal(message.emailId, 'X-GM-MSGID') : null,
+      internalDate: internal && Number.isFinite(internal.getTime()) ? internal.toISOString() : null };
     bytes += Buffer.byteLength(JSON.stringify(item));
     if (bytes > maxBytes) throw limitError('IMAP response exceeds byte budget');
     if (collected.length >= MAX_WINDOW) throw new Error('IMAP metadata exceeds message budget');

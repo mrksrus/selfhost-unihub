@@ -330,13 +330,18 @@ test('update mail account can disable server deletion without password changes',
   assert.match(updates[0].sql, /delete_emails_on_server = FALSE/);
   assert.match(updates[0].sql, /server_delete_grace_until = NULL/);
   const put = body => routes['PUT /api/mail/accounts/:id']({ headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' }, 'user-1', body);
-  assert.equal((await put({ sync_mode: 'sync' })).status, 400);
+  const unconfirmed = await put({ sync_mode: 'sync', sync_mode_confirmed: true });
+  assert.equal(unconfirmed.status, 400);
+  assert.equal(unconfirmed.requires_confirmation, true);
+  assert.equal((await put({ sync_mode: 'sync', confirm_address: 'someone-else@example.test' })).status, 400);
+  assert.equal((await put({ sync_window_days: 7 })).status, 400, 'Only the offered windows are accepted');
   assert.equal(updates.length, 1, 'Unconfirmed switch cannot write');
   const { withMailAccountLock } = require('../src/services/mail-account-lock');
   let release;
   const holding = withMailAccountLock('account-1', () => new Promise(resolve => { release = resolve; }));
   await new Promise(resolve => setImmediate(resolve));
-  const switching = put({ sync_mode: 'sync', sync_mode_confirmed: true });
+  const switching = put({ sync_mode: 'sync', sync_mode_confirmed: true, confirm_address: 'USER@example.test',
+    sync_window_days: '', trash_window_days: '90' });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(cancellations, 1);
   assert.equal(updates.length, 1, 'Mode commit waits for the worker lock');
@@ -346,6 +351,9 @@ test('update mail account can disable server deletion without password changes',
   assert.equal(resumes.length, 2);
   assert.match(updates[1].sql, /sync_mode = .*sync_status = .*delete_emails_on_server = FALSE/);
   assert.deepEqual(updates[1].params.slice(0, 2), ['sync', 'pending']);
+  assert.match(updates[1].sql, /sync_policy_confirmed_at = UTC_TIMESTAMP\(\)/, 'The typed address confirms the Sync policy');
+  assert.match(updates[1].sql, /sync_window_days = \?, trash_window_days = \?/);
+  assert.deepEqual(updates[1].params.slice(2, 4), [null, 90], 'An empty window means all mail');
   assert.equal(queueUpdates.length, 1);
   assert.equal((await put({ imap_host: 'different.example.test' })).status, 409);
   assert.equal(imapTests, 0, 'Identity rejection precedes provider connection');

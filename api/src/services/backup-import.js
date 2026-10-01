@@ -1,4 +1,5 @@
 const { sameProviderMailbox } = require('./mail-account-mode');
+const { MAIL_WINDOW_DAYS, DEFAULT_TRASH_WINDOW_DAYS } = require('./mail-sync-policy');
 const fs = require('fs');
 const { db } = require('../state');
 const { DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } = require('./mail');
@@ -394,9 +395,16 @@ async function importBackupForUser(userId, backup, {
           [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, row.is_active === false || row.is_active === 0 ? 0 : 1, normalizeMysqlDateTime(row.last_synced_at)]
         );
       }
+      // Windows are preserved (archives before 0.13.0: all mail, Trash 30 days).
+      // The Sync removal policy is never restored as confirmed: restored local
+      // copies must not be deleted until the user confirms again.
+      const restoredWindow = (value, fallback) => value === undefined ? fallback
+        : value === null ? null : MAIL_WINDOW_DAYS.includes(Number(value)) ? Number(value) : fallback;
       await connection.execute(
-        'UPDATE mail_accounts SET sync_mode = ?, sync_status = ? WHERE id = ? AND user_id = ?',
-        [row.sync_mode === 'sync' ? 'sync' : 'download', row.sync_mode === 'sync' ? 'pending' : 'idle', targetAccountId, userId]
+        `UPDATE mail_accounts SET sync_mode = ?, sync_status = ?, sync_window_days = ?, trash_window_days = ?,
+           sync_policy_confirmed_at = NULL WHERE id = ? AND user_id = ?`,
+        [row.sync_mode === 'sync' ? 'sync' : 'download', row.sync_mode === 'sync' ? 'pending' : 'idle',
+          restoredWindow(row.sync_window_days, null), restoredWindow(row.trash_window_days, DEFAULT_TRASH_WINDOW_DAYS), targetAccountId, userId]
       );
     }
 
