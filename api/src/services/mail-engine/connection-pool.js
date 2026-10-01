@@ -6,7 +6,8 @@
 // jobs. Only a job that completed unaborted may park its transport; a failed,
 // aborted, cancelled or fenced job's transport is destroyed by its guard.
 const crypto = require('node:crypto');
-const { guardImapConnection, runGuardedImap, imapGuardIdle } = require('../mail-imap-guard');
+const imapClient = require('../mail-imap-client');
+const { guardImapConnection, runGuardedImap, imapSessionUsable, closeImapConnection } = require('../mail-imap-guard');
 
 const IDLE_MS = 90 * 1000;
 const MAX_AGE_MS = 30 * 60 * 1000;
@@ -21,29 +22,35 @@ function fingerprint(account) {
     String(account.imap_port || 993), account.username || account.email_address || null, account.encrypted_password || null,
     String(account.allow_self_signed ?? ''), account.trusted_imap_fingerprint256 || null])).digest('hex');
 }
+// No command may be in flight: every command of a guarded client runs through
+// runGuardedImap, so an idle guard means an idle session.
 function usable(connection, now = Date.now()) {
-  const owner = owners.get(connection), imap = connection?.imap;
-  return !!owner && now - owner.createdAt < MAX_AGE_MS && imapGuardIdle(connection) && imap?.state === 'authenticated'
-    && !imap._queue?.length && (!imap._curReq || imap._curReq.type === 'IDLE');
+  const owner = owners.get(connection);
+  return !!owner && now - owner.createdAt < MAX_AGE_MS && imapSessionUsable(connection) && connection.idling !== true;
+}
+// A parked socket must not keep the process alive; a checked-out one must.
+function referenceSocket(connection, ref) {
+  try { connection.socket?.[ref ? 'ref' : 'unref']?.(); } catch { /* closed */ }
 }
 function take(key) {
   const entry = parked.get(key);
   if (!entry) return null;
   parked.delete(key);
   clearTimeout(entry.timer);
-  try { entry.connection.imap?._sock?.ref?.(); } catch { /* closed */ }
+  referenceSocket(entry.connection, true);
   return entry;
 }
-function close(connection) { try { connection.end(); } catch { /* already closed */ } }
+function close(connection) { closeImapConnection(connection); }
 // A NAT/provider may have silently dropped the idle session. A bounded NOOP
-// is cheaper than a job failing on its first real command.
+// is cheaper than a job failing on its first real command. ImapFlow's noop()
+// does not reject on a failed NOOP, so the session state is checked after it.
 function probe(connection) {
-  if (typeof connection.imap?._enqueue !== 'function') return Promise.resolve(false);
+  if (typeof connection.noop !== 'function') return Promise.resolve(false);
   return new Promise(resolve => {
     const timer = setTimeout(() => { resolve(false); close(connection); }, PROBE_MS);
     timer.unref?.();
-    runGuardedImap(connection, done => connection.imap._enqueue('NOOP', done))
-      .then(() => { clearTimeout(timer); resolve(true); }, () => { clearTimeout(timer); resolve(false); });
+    runGuardedImap(connection, () => connection.noop())
+      .then(() => { clearTimeout(timer); resolve(imapSessionUsable(connection)); }, () => { clearTimeout(timer); resolve(false); });
   });
 }
 async function acquireImapConnection(account, config, { signal, connect } = {}) {
@@ -55,9 +62,8 @@ async function acquireImapConnection(account, config, { signal, connect } = {}) 
     }
     close(entry.connection);
   }
-  const raw = await (connect || require('imap-simple').connect)(config);
+  const raw = await (connect || imapClient.connectImap)(config);
   const connection = guardImapConnection(raw, { signal });
-  connection.on('error', () => {});
   owners.set(connection, { key, fingerprint: print, createdAt: Date.now() });
   stats.connects++;
   return connection;
@@ -73,7 +79,7 @@ function releaseImapConnection(connection, { reusable = false } = {}) {
   entry.timer = setTimeout(() => { if (parked.get(owner.key) === entry) close(take(owner.key).connection); },
     Math.max(1, Math.min(IDLE_MS, MAX_AGE_MS - (now - owner.createdAt))));
   entry.timer.unref?.();
-  try { connection.imap?._sock?.unref?.(); } catch { /* closed */ }
+  referenceSocket(connection, false);
   parked.set(owner.key, entry);
   return true;
 }

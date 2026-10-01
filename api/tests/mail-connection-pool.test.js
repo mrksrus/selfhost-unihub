@@ -2,9 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const dns = require('node:dns').promises;
-const imaps = require('imap-simple');
+const imapClient = require('../src/services/mail-imap-client');
 process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'mail-connection-pool-test-only-key';
 const pool = require('../src/services/mail-engine/connection-pool');
+const { runGuardedImap } = require('../src/services/mail-imap-guard');
 const mail = require('../src/services/mail');
 const runtime = require('../src/services/mail-engine/runtime');
 const operations = require('../src/services/mail-engine/operations');
@@ -12,12 +13,23 @@ const { encrypt } = require('../src/security/encryption');
 const { getDb, setDb } = require('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+// Stands in for an authenticated ImapFlow client. Like the library, a NOOP
+// that hits a dropped session closes the client and still resolves.
 function fakeImap() {
   const connection = new EventEmitter();
   connection.stats = { destroyed: 0, noops: 0 };
-  connection.imap = { state: 'authenticated', _queue: [], _curReq: undefined, _sock: { destroy() {}, ref() {}, unref() {} },
-    destroy() { connection.stats.destroyed++; connection.imap.state = 'disconnected'; },
-    _enqueue(cmd, cb) { assert.equal(cmd, 'NOOP'); connection.stats.noops++; setImmediate(() => cb(connection.noopError || null)); } };
+  Object.assign(connection, { usable: true, isClosed: false, idling: false, socket: { ref() {}, unref() {} } });
+  connection.close = () => {
+    if (connection.isClosed) return;
+    connection.stats.destroyed++;
+    Object.assign(connection, { usable: false, isClosed: true });
+    connection.emit('close');
+  };
+  connection.noop = () => new Promise(resolve => setImmediate(() => {
+    connection.stats.noops++;
+    if (connection.noopError) connection.close();
+    resolve();
+  }));
   connection.search = async () => [];
   return connection;
 }
@@ -55,7 +67,7 @@ test('a reused session is rebound: the previous job signal no longer reaches it,
   await c2.search(['ALL'], {});
   second.abort();
   assert.equal(made[0].stats.destroyed, 1);
-  await assert.rejects(c2.search(['ALL'], {}), { code: 'MAIL_SYNC_CANCELLED' });
+  await assert.rejects(runGuardedImap(c2, () => c2.search()), { code: 'MAIL_SYNC_CANCELLED' });
   assert.equal(pool.releaseImapConnection(c2, { reusable: true }), false, 'aborted transport is never parked');
   const c3 = await pool.acquireImapConnection(a, {}, { connect });
   assert.notEqual(c3, c2); assert.equal(made.length, 2);
@@ -122,7 +134,7 @@ function durableFixture(t, { due = new Set(), siblings = [], throttled = false }
     imap_host: 'imap.example.test', encrypted_password: encrypt('synthetic-test-password') };
   const made = [], processed = [];
   t.mock.method(dns, 'lookup', async () => [{ address: '8.8.8.8', family: 4 }]);
-  t.mock.method(imaps, 'connect', async () => { const c = fakeImap(); made.push(c); return c; });
+  t.mock.method(imapClient, 'connectImap', async () => { const c = fakeImap(); made.push(c); return c; });
   t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
   setDb({ execute: async (sql, params) => {
     if (sql.includes('SELECT * FROM mail_accounts')) return [[row]];
