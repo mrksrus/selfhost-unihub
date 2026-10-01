@@ -4,8 +4,8 @@
 
 In 0.10.6, backup creation/import/restore are enabled again. Schema 3 includes
 account-specific folders, local filing/Legacy identities, routing overrides,
-recovery history, completed recording transcripts and the server Tetris score.
-Browser-only game saves are excluded and identified in Data Management.
+recovery history and completed recording transcripts. Since 0.12.0 (Games removed),
+Tetris scores in older archives are skipped with a warning.
 
 Unknown sections, data tables/fields, file kinds and missing schema-3 file content
 are errors. Conflicting folder ownership or a merge that would hide restored

@@ -3,6 +3,7 @@ const { readV1 } = require('./backup-formats/v1');
 const { readV2 } = require('./backup-formats/v2');
 const { readV3 } = require('./backup-formats/v3');
 const { readV4 } = require('./backup-formats/v4');
+const { RETIRED_TABLES } = require('./backup-catalog');
 
 const BACKUP_VERSION = 4;
 const ZIP_BACKUP_FORMAT = 'unihub-restorable-backup';
@@ -46,7 +47,6 @@ function validateBackupVersionFields(backup) {
       && ['mail_accounts', 'mail_folders', 'emails'].some(table => Object.hasOwn(backup.data, table))) {
     warnings.push('This older backup may lack filing identities, Legacy state and folder recovery history. Missing fields use legacy defaults; provider reconciliation can run on the next successful sync.');
   }
-  if ([1, 2].includes(backup?.version)) warnings.push('Backup schemas 1 and 2 do not include saved game scores.');
   if ([1, 2, 3].includes(backup?.version) && backup.data?.mail_accounts) warnings.push('This older backup has no durable provider-operation journal. Restored mail stays retained; provider writes remain paused until the account is explicitly reconnected and its identity revalidated.');
   return { errors, warnings };
 }
@@ -73,7 +73,8 @@ function normalizeBackupPayload(backup) {
   // bytes stay file-backed; this does not duplicate a whole archive in memory.
   const normalized = {
     ...backup,
-    data: Object.fromEntries(Object.entries(backup.data).map(([table, rows]) => [table,
+    // Tables of removed modules (validation already warned) are never imported.
+    data: Object.fromEntries(Object.entries(backup.data).filter(([table]) => !Object.hasOwn(RETIRED_TABLES, table)).map(([table, rows]) => [table,
       Array.isArray(rows) ? rows.map(row => ({ ...row })) : rows && typeof rows === 'object' ? { ...rows } : rows,
     ])),
     files: backup.files.map(file => ({ ...file })),

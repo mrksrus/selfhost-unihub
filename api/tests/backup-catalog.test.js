@@ -6,8 +6,8 @@ const { assertArchiveRelationships } = require('../src/services/data-inventory')
 test('adding declared data still fails if its export section, parent or file handling is missing', () => {
   assert.doesNotThrow(() => assertRecoveryCatalog());
   const sections = structuredClone(SECTION_POLICIES);
-  sections.games.tables = [];
-  assert.throws(() => assertRecoveryCatalog({ sections }), /tetris_scores is not exported/);
+  sections.contacts.tables = [];
+  assert.throws(() => assertRecoveryCatalog({ sections }), /contacts is not exported/);
   const references = structuredClone(REFERENCES);
   delete references.emails.filing_account_id;
   assert.throws(() => assertRecoveryCatalog({ references }), /missing reference emails.filing_account_id/);
@@ -15,7 +15,7 @@ test('adding declared data still fails if its export section, parent or file han
   assert.throws(() => assertRecoveryCatalog({ files }), /missing file policy recordings.storage_path/);
   const tables = { ...TABLE_POLICIES, future_notes: { ...TABLE_POLICIES.contacts } };
   assert.throws(() => assertRecoveryCatalog({ tables }), /future_notes is not exported/);
-  assert.throws(() => assertRecoveryCatalog({ writePaths: { ...WRITE_PATHS, games: [] } }), /games has no write protection/);
+  assert.throws(() => assertRecoveryCatalog({ writePaths: { ...WRITE_PATHS, contacts: [] } }), /contacts has no write protection/);
 });
 
 test('changing an existing database FK cannot silently reuse a different restore mapping', () => {

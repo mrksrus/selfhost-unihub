@@ -61,10 +61,10 @@ module.exports = {
     const { SECTION_POLICIES } = require('../services/backup-catalog');
     const { BACKUP_VERSION } = require('../services/backup-format');
     const { DISABLED_BACKUP_ROUTES } = require('../services/backup-availability');
-    const labels = { settings: 'Settings', contacts: 'Contacts', calendar: 'Calendar/ToDo', mail: 'Mail', recordings: 'Recordings', games: 'Games' };
+    const labels = { settings: 'Settings', contacts: 'Contacts', calendar: 'Calendar/ToDo', mail: 'Mail', recordings: 'Recordings' };
     return { enabled: DISABLED_BACKUP_ROUTES.size === 0, version: BACKUP_VERSION,
       sections: Object.keys(SECTION_POLICIES).map(id => ({ id, label: labels[id] || id })),
-      exclusions: ['Game progress saved only in this browser', 'Other users, login sessions and server configuration'],
+      exclusions: ['Other users, login sessions and server configuration'],
     };
   },
   'GET /api/backup/jobs': async (req, userId) => {

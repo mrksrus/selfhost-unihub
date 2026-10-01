@@ -7,7 +7,7 @@ Settings has separate controls for each built-in module:
 - **Background work:** allow or pause automatic mail sync/deletion and calendar reminders. Manual actions remain available when the module itself is enabled.
 
 Calendar and ToDo share one module because they are two views of the same planning
-data. Contacts, recordings, games and Notes have no automatic provider worker to
+data. Contacts, recordings and Notes have no automatic provider worker to
 pause. Temporary-upload housekeeping continues to remove expired incomplete uploads.
 
 Core account settings and Data Management remain available. Full backups include
@@ -57,6 +57,12 @@ Trash, attachments and links, with IDs translated when restoring to another user
 The built-in module catalog defines page/API membership and worker capabilities.
 The recovery catalog declares durable data and remains independent of visibility.
 Settings are archived under `user_settings.module_preferences`.
+
+The Games module was removed in 0.12.0. Saved preferences and older backups may
+still contain a `games` entry; it is ignored when read (`RETIRED_MODULE_IDS` in
+`module-catalog.js`) and rejected in new updates. The `tetris_scores` table stays
+in the database but is no longer used, exported or restored; older archives that
+contain it or request the `games` section import with a warning.
 
 Migration 4 creates `notes`, `note_revisions`, `note_attachments` and `note_links`.
 `notes.js` owns editing and file access; `notes-recovery.js` owns validation and

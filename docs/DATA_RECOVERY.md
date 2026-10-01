@@ -70,7 +70,8 @@ including outbound commands are paused before restore.
 Provider deletion is disabled on restored mail accounts. Restore must not replay
 source-server deletion queues, sessions or notification delivery attempts.
 Completed recording transcripts are preserved; pending/failed transcription jobs
-are excluded. Server Tetris scores are included; browser-only saves are not.
+are excluded. Tetris scores from the removed Games module are neither exported
+nor restored.
 
 Strict schema-3 validation rejects unknown sections/tables/fields/file kinds and
 missing or corrupt required files before writes. Historical readers retain their

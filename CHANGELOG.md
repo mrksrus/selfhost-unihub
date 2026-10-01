@@ -6,6 +6,18 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of MySQL, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.12.0 (unreleased)
+
+### Removed
+
+- **The Games module is gone.** Its page, navigation entries, module setting and
+  `/api/games` endpoints were removed. Saved module settings that still mention
+  Games are ignored, so nothing else changes for existing accounts. Saved Tetris
+  scores stay in the database but are no longer used or included in new
+  backups; older backups that contain them still import, with a warning that the
+  scores were skipped. Game progress saved only in the browser is no longer read.
+  See [upgrading](docs/UPGRADING.md#0120-games-removed).
+
 ## 0.11.1
 
 ### Security

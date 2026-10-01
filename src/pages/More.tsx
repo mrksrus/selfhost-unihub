@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { LayoutDashboard, Gamepad2, Music2, Users, Settings, Shield, NotebookPen } from 'lucide-react';
+import { LayoutDashboard, Music2, Users, Settings, Shield, NotebookPen } from 'lucide-react';
 
 const More = () => {
   const { canNavigate } = useModules();
@@ -12,7 +12,6 @@ const More = () => {
     { title: 'Notes', description: 'Text, Markdown, attachments, and revision history', href: '/notes', icon: NotebookPen },
     { title: 'Music', description: 'Music recordings and chord notes', href: '/music', icon: Music2 },
     { title: 'Contacts', description: 'People, phone numbers, and email addresses', href: '/contacts', icon: Users },
-    { title: 'Games', description: 'Small extras and future modules', href: '/games', icon: Gamepad2 },
     { title: 'Dashboard', description: 'Legacy overview page', href: '/dashboard', icon: LayoutDashboard },
     { title: 'Settings', description: 'Profile, preferences, security, and data', href: '/settings', icon: Settings },
   ];

@@ -30,6 +30,7 @@ const NON_ARCHIVE_POLICIES = Object.freeze({
   notification_events: excluded('rebuilt', 'Expired or pending notifications must not be replayed during recovery.', 'id user_id event_key kind source_id payload expires_at created_at'),
   notification_deliveries: excluded('rebuilt', 'Delivery attempts belong to destination browser subscriptions.', 'event_id subscription_id status attempts available_at delivered_at last_error'),
   notification_reminders: excluded('rebuilt', 'Reminders are scheduled again from restored calendar events.', 'event_id user_id minutes due_at queued_at'),
+  tetris_scores: excluded('deliberately_excluded', 'The Games module was removed in 0.12.0; existing scores stay in the database but are no longer used or exported.', 'user_id score lines level achieved_at'),
   schema_migrations: excluded('deliberately_excluded', 'Database upgrade history describes this installation, never user archive contents.', 'id name completed_at'),
 });
 const NOTIFICATION_TABLES = new Set(['notification_config', 'push_subscriptions', 'notification_events', 'notification_deliveries', 'notification_reminders']);

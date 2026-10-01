@@ -187,9 +187,12 @@ comes after.
     maintained, promise-based, supports CONDSTORE/QRESYNC/MOVE/IDLE, and
     serializes commands on one connection. Do this after 0.11 has settled so
     the engine and the transport do not change at the same time.
-17. **Decide the scope of the Games module.** `AIGame.tsx` alone is 1,463 lines
+17. **Done (2026-10-01): Decide the scope of the Games module.** `AIGame.tsx` alone is 1,463 lines
     and holds most of the strict-mode errors. Freeze it, or move it to a
     separate optional package.
+    *Done:* removed in 0.12.0 (frontend, `/api/games`, module catalog, `games` backup
+    section). A stored `games` module preference is ignored; `tetris_scores` stays in
+    the database unused, and old archives containing it import with a warning.
 18. **Push instead of polling** for sync/operation status (Server-Sent Events).
     The UI polls every 3–30 s today (`use-mail-sync-jobs.ts`, `MailSyncStatus.tsx`,
     `use-mail-queries.ts`).

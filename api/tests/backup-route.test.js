@@ -115,5 +115,5 @@ test('backup capabilities expose the shared recoverable sections without authori
   assert.equal(capabilities.enabled, true);
   assert.equal(capabilities.version, 4);
   assert.deepEqual(capabilities.sections.map(section => section.id), Object.keys(require('../src/services/backup-catalog').SECTION_POLICIES));
-  assert.ok(capabilities.exclusions.some(value => /browser/.test(value)));
+  assert.ok(capabilities.exclusions.some(value => /Other users/.test(value)));
 });

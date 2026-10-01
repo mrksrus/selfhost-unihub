@@ -22,7 +22,6 @@ const TodoPage = lazy(() => import("./pages/TodoPage"));
 const Settings = lazy(() => import("./pages/Settings"));
 const AdminUsers = lazy(() => import("./pages/AdminUsers"));
 const NotFound = lazy(() => import("./pages/NotFound"));
-const Games = lazy(() => import("./pages/Games"));
 const Recordings = lazy(() => import("./pages/Recordings"));
 const Music = lazy(() => import("./pages/Music"));
 const More = lazy(() => import("./pages/More"));
@@ -48,7 +47,6 @@ const AuthenticatedApp = () => {
               <Route path="/mail" element={<ModuleGuard id="mail"><MailPage /></ModuleGuard>} />
               <Route path="/recordings" element={<ModuleGuard id="recordings"><Recordings /></ModuleGuard>} />
               <Route path="/music" element={<ModuleGuard id="recordings"><Music /></ModuleGuard>} />
-              <Route path="/games" element={<ModuleGuard id="games"><Games /></ModuleGuard>} />
               <Route path="/notes" element={<ModuleGuard id="notes"><Notes /></ModuleGuard>} />
               <Route path="/more" element={<More />} />
               <Route path="/settings" element={<Settings />} />

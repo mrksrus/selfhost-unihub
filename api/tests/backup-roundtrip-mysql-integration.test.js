@@ -8,7 +8,7 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime');
 
 const uuid = () => crypto.randomUUID();
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-const TABLES = ['notes', 'note_revisions', 'note_attachments', 'note_links', 'user_settings', 'contacts', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'tetris_scores', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides'];
+const TABLES = ['notes', 'note_revisions', 'note_attachments', 'note_links', 'user_settings', 'contacts', 'mail_folders', 'mail_accounts', 'mail_folder_remote_boxes', 'mail_sender_rules', 'emails', 'email_attachments', 'mail_email_scores', 'calendar_accounts', 'calendar_calendars', 'calendar_events', 'calendar_event_subtasks', 'calendar_event_attendees', 'calendar_event_external_refs', 'recordings', 'recording_tags', 'recording_tag_links', 'recording_transcription_jobs', 'mail_folder_reconciliations', 'mail_folder_recovery_items', 'mail_folder_rule_overrides'];
 
 function wav() {
   const bytes = Buffer.alloc(76);
@@ -103,7 +103,7 @@ test('production export and restore jobs round-trip every section through encryp
   await insert('contacts', { id: uuid(), user_id: unrelatedUser, first_name: 'Do not export or change', notes: 'Unrelated private data' });
   await pool.execute('UPDATE users SET full_name = ?, timezone = ? WHERE id = ?', ['Grüße Roundtrip', 'Europe/Vienna', sourceUser]);
   await insert('user_settings', { user_id: sourceUser, setting_key: 'calendar_preferences', setting_value: JSON.stringify({ firstDay: 1, custom: 'Grüße\nTwo lines' }) });
-  await insert('user_settings', { user_id: sourceUser, setting_key: 'module_preferences', setting_value: JSON.stringify({ notes: { visible: false, enabled: false, background: false } }) });
+  await insert('user_settings', { user_id: sourceUser, setting_key: 'module_preferences', setting_value: JSON.stringify({ notes: { visible: false, enabled: false, background: false }, games: { visible: false } }) });
   const noteService = source('services/notes');
   const linkedNote = await noteService.createNote(sourceUser, { title: 'Linked research', body: 'Second note' });
   const firstNote = await noteService.createNote(sourceUser, { title: 'Research note', body: 'First version' });
@@ -167,6 +167,7 @@ test('production export and restore jobs round-trip every section through encryp
     original_folder: 'old-research', original_filing_account_id: mailAccounts[0].id, target_folder: 'research', target_account_id: mailAccounts[1].id, action: 'manual', created_at: '2030-01-01 11:00:00' });
   const [rules] = await pool.execute('SELECT id FROM mail_sender_rules WHERE user_id = ? ORDER BY id', [sourceUser]);
   await insert('mail_folder_rule_overrides', { rule_id: rules[0].id, mail_account_id: mailAccounts[1].id, target_folder: 'research' });
+  // Legacy row from the removed Games module: kept in place, never exported.
   await insert('tetris_scores', { user_id: sourceUser, score: 13500, lines: 42, level: 5, achieved_at: '2030-01-01 11:00:00' });
   const calendarAccountId = uuid(), calendarId = uuid(), eventId = uuid();
   await insert('calendar_accounts', { id: calendarAccountId, user_id: sourceUser, provider: 'caldav', display_name: 'Roundtrip calendar', account_email: 'calendar@example.test', username: 'calendar-user', discovery_url: 'https://8.8.8.8/dav/', base_url: 'https://8.8.8.8/dav/', encrypted_password: sourceCrypto.encrypt('synthetic-calendar-password'), encrypted_access_token: sourceCrypto.encrypt('synthetic-access-token'), encrypted_refresh_token: sourceCrypto.encrypt('synthetic-refresh-token'), is_active: 1 });
@@ -314,7 +315,7 @@ test('production export and restore jobs round-trip every section through encryp
     compare('contacts', ['first_name', 'last_name', 'email', 'email2', 'phone', 'notes', 'is_favorite']);
     compare('user_settings', ['setting_key', 'setting_value']);
     compare('mail_folders', ['slug', 'display_name', 'position', 'is_system', 'special_use']);
-    compare('tetris_scores', ['score', 'lines', 'level', 'achieved_at']);
+    assert.deepEqual(await rowsFor('tetris_scores', userId), [], 'Removed Games scores are not restored');
     compare('recording_transcription_jobs', ['status', 'provider', 'model', 'language', 'transcript_text', 'created_at', 'updated_at']);
     compare('mail_folder_reconciliations', ['inventory', 'completed_at']);
     compare('mail_folder_recovery_items', ['original_folder', 'target_folder', 'action', 'created_at']);

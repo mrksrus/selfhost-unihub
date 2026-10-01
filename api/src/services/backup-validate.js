@@ -5,7 +5,7 @@ const { validateNotesData } = require('./notes-recovery');
 const { validateRestoreRows } = require('./backup-ownership');
 const { AUDIO_HEADER_BYTES, identifyRecordingAudio } = require('./recording-audio');
 const { validateBackupVersionFields } = require('./backup-format');
-const { SECTION_POLICIES, TABLE_POLICIES, normalizeBackupSections } = require('./backup-catalog');
+const { RETIRED_TABLES, SECTION_POLICIES, TABLE_POLICIES, normalizeBackupSections } = require('./backup-catalog');
 const {
   BACKUP_IMPORT_SECTION_TABLES,
   BACKUP_IMPORT_SECTION_FILE_KINDS,
@@ -32,6 +32,10 @@ function validateBackupPayload(backup, {
   if (!Array.isArray(backup.files)) errors.push('Backup files section must be an array');
   for (const [table, rows] of Object.entries(backup.data || {})) {
     const policy = TABLE_POLICIES[table];
+    if (!policy && Object.hasOwn(RETIRED_TABLES, table)) {
+      if (Array.isArray(rows) && rows.length) warnings.push(RETIRED_TABLES[table]);
+      continue;
+    }
     if (!policy) { errors.push(`Unsupported backup table: ${table}`); continue; }
     if (backup.version >= 3) {
       for (const row of table === 'user' ? [rows] : Array.isArray(rows) ? rows : []) {
