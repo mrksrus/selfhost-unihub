@@ -1,5 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import { useServerEventsConnected } from '@/hooks/use-server-events';
+import { LIVE_POLL_MS } from '@/lib/server-events';
 import { captureMailFlagReconciler, mailQueryKeys, fetchMailList, type MailAccount, type MailFolder, type MailUnreadCountsResponse, type MailListFilters } from '@/lib/mail-api';
 
 export const useMailAccounts = () => useQuery({
@@ -34,6 +36,7 @@ export const useMailUnreadCounts = (account: string | null) => useQuery({
 
 export const useMailList = (filters: MailListFilters) => {
   const client = useQueryClient();
+  const live = useServerEventsConnected();
   return useQuery({
     queryKey: mailQueryKeys.list(filters),
     queryFn: async ({ signal }) => {
@@ -43,8 +46,9 @@ export const useMailList = (filters: MailListFilters) => {
     },
     enabled: !!filters.account,
     staleTime: 60000,
-    // Fetch the bounded list directly; row count alone misses deletes/read/star changes.
-    refetchInterval: 60000,
+    // Fetch the bounded list directly; row count alone misses deletes/read/star
+    // changes. Live list-change events replace most of this while connected.
+    refetchInterval: live ? LIVE_POLL_MS.mailList : 60000,
     refetchIntervalInBackground: false,
   });
 };

@@ -3,6 +3,8 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import { mailQueryKeys, type MailWriteback } from '@/lib/mail-api';
 import { isOfflineMode } from '@/lib/offline';
+import { useServerEventsConnected } from '@/hooks/use-server-events';
+import { LIVE_POLL_MS } from '@/lib/server-events';
 
 export const writebackLifecycle = (operation: MailWriteback) => operation.state ?? (
   operation.status === 'done' ? 'confirmed' : operation.status === 'pending' ? 'queued' : 'needs_attention');
@@ -24,6 +26,7 @@ export function useMailWritebacks(onSettled?: (emailIds: string[]) => void) {
   const client = useQueryClient();
   const previous = useRef<MailWriteback[]>([]);
   const initialized = useRef(false);
+  const live = useServerEventsConnected();
   const status = useQuery({
     queryKey: mailQueryKeys.writebacks,
     queryFn: async ({ signal }) => {
@@ -32,7 +35,8 @@ export function useMailWritebacks(onSettled?: (emailIds: string[]) => void) {
       return response.data.operations;
     },
     enabled: !isOfflineMode(),
-    refetchInterval: query => query.state.data?.some(isUnsettledWriteback) ? 3000 : 15000,
+    // Operation events refetch this while the live stream is connected.
+    refetchInterval: query => live ? LIVE_POLL_MS.writebacks : query.state.data?.some(isUnsettledWriteback) ? 3000 : 15000,
     refetchIntervalInBackground: false,
     retry: false,
   });

@@ -4,6 +4,8 @@ import { api } from '@/lib/api';
 import { mailQueryKeys, type MailAccount } from '@/lib/mail-api';
 import { isOfflineMode } from '@/lib/offline';
 import { useToast } from '@/hooks/use-toast';
+import { useServerEventsConnected } from '@/hooks/use-server-events';
+import { LIVE_POLL_MS } from '@/lib/server-events';
 
 export interface MailSyncJob {
   account_id: string;
@@ -41,6 +43,7 @@ export function useMailSyncJobs(accounts: MailAccount[]) {
   const [syncingAccountIds, setSyncingAccountIds] = useState(new Set<string>());
   const cancellations = useRef(new Set<string>());
   const [cancellingAccountIds, setCancellingAccountIds] = useState(new Set<string>());
+  const live = useServerEventsConnected();
   const jobs = useQuery({
     queryKey: key,
     queryFn: async ({ signal }) => {
@@ -52,8 +55,10 @@ export function useMailSyncJobs(accounts: MailAccount[]) {
     enabled: accounts.length > 0 && !isOfflineMode(),
     retry: false,
     // Discover jobs started by the scheduler or another device, even after an
-    // idle response. Errors also retain this bounded recovery cadence.
-    refetchInterval: query => query.state.data?.some(active) ? 3000 : 30000,
+    // idle response. Errors also retain this bounded recovery cadence. While
+    // the live stream is connected, its job events trigger the refetches and
+    // this interval is only a safety net.
+    refetchInterval: query => live ? LIVE_POLL_MS.syncJobs : query.state.data?.some(active) ? 3000 : 30000,
     refetchIntervalInBackground: false,
   });
 

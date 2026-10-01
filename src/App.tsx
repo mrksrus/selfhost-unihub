@@ -30,9 +30,9 @@ const AdminSettings = lazy(() => import("./pages/AdminSettings"));
 const StartRedirect = lazy(() => import("./pages/StartRedirect"));
 
 const AuthenticatedApp = () => {
-  const { user } = useAuth();
+  const { user, session, isOffline } = useAuth();
   return (
-    <SessionQueryProvider key={user?.id ?? "signed-out"}>
+    <SessionQueryProvider key={user?.id ?? "signed-out"} liveUpdates={!!user && !!session && !isOffline}>
       <NoteDraftProvider><TooltipProvider>
         <Toaster />
         <BrowserRouter>
