@@ -7,6 +7,9 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
+import { MailModeImpactPanel } from '@/components/mail/MailModeImpactPanel';
+import { MailAccountSyncWarnings, MailSyncPolicyNotice } from '@/components/mail/MailSyncPolicyGate';
+import { needsSyncPolicyDecision } from '@/lib/mail-api';
 import { mailProviders, type MailHostAssessment, type MailHostCertificate } from '@/components/mail/mail-page-model';
 import type { MailAccountEditor } from '@/hooks/use-mail-account-editor';
 
@@ -81,7 +84,7 @@ function HostTrustConfirmation({ editor }: { editor: MailAccountEditor }) {
 }
 
 /** Add/edit mail account dialog. `trigger` is the sidebar button that opens it for a new account. */
-export function MailAccountDialog({ editor, trigger }: { editor: MailAccountEditor; trigger: ReactNode }) {
+export function MailAccountDialog({ editor, trigger, touch = false }: { editor: MailAccountEditor; trigger: ReactNode; touch?: boolean }) {
   return (
     <Dialog open={editor.isOpen} onOpenChange={editor.onOpenChange}>
       <DialogTrigger asChild>
@@ -100,6 +103,11 @@ export function MailAccountDialog({ editor, trigger }: { editor: MailAccountEdit
               : 'Connect an email account to view and manage your mail.'}
           </DialogDescription>
         </DialogHeader>
+        {!editor.pendingHostTrust && editor.editingAccount && needsSyncPolicyDecision(editor.editingAccount) && (
+          <MailSyncPolicyNotice account={editor.editingAccount} touch={touch} />
+        )}
+        {!editor.pendingHostTrust && editor.editingAccount && <MailAccountSyncWarnings account={editor.editingAccount}
+          className="rounded-md border border-warning/40 bg-warning/5 p-2.5" />}
         {editor.pendingHostTrust ? (
           <HostTrustConfirmation editor={editor} />
         ) : (
@@ -195,16 +203,6 @@ export function MailAccountDialog({ editor, trigger }: { editor: MailAccountEdit
                 )}
               </div>
             )}
-            <MailAccountModeSettings
-              mode={editor.accountForm.sync_mode}
-              deleteOnServer={editor.accountForm.delete_emails_on_server}
-              saveDownloadFirst={editor.editingAccount?.sync_mode === 'sync'}
-              requiresConfirmation={Boolean(editor.editingAccount && (editor.editingAccount.sync_mode || 'download') !== 'sync')}
-              confirmed={editor.accountForm.sync_mode_confirmed}
-              onModeChange={mode => editor.setAccountForm({ ...editor.accountForm, sync_mode: mode, sync_mode_confirmed: false, delete_emails_on_server: false })}
-              onDeleteChange={enabled => editor.setAccountForm({ ...editor.accountForm, delete_emails_on_server: enabled })}
-              onConfirmChange={confirmed => editor.setAccountForm({ ...editor.accountForm, sync_mode_confirmed: confirmed })}
-            />
             <p className="text-xs text-muted-foreground">
               Server details are filled from the provider; you can change any value.
             </p>
@@ -248,11 +246,28 @@ export function MailAccountDialog({ editor, trigger }: { editor: MailAccountEdit
                 placeholder="587"
               />
             </div>
+            <MailAccountModeSettings
+              mode={editor.accountForm.sync_mode}
+              syncWindow={editor.accountForm.sync_window_days}
+              trashWindow={editor.accountForm.trash_window_days}
+              deleteOnServer={editor.accountForm.delete_emails_on_server}
+              saveDownloadFirst={editor.editingAccount?.sync_mode === 'sync'}
+              onModeChange={mode => editor.changeModeChoice({ sync_mode: mode, delete_emails_on_server: false })}
+              onSyncWindowChange={days => editor.changeModeChoice({ sync_window_days: days })}
+              onTrashWindowChange={days => editor.changeModeChoice({ trash_window_days: days })}
+              onDeleteChange={enabled => editor.changeModeChoice({ delete_emails_on_server: enabled })}
+            />
+            {editor.editingAccount && <MailModeImpactPanel account={editor.editingAccount} review={editor.modeReview}
+              typedAddress={editor.typedAddress} onTypedAddressChange={editor.setTypedAddress} saveError={editor.saveError} />}
+            {editor.editingAccount && editor.modeReview.blocked && !editor.modeReview.loading && <p id="mail-account-save-hint" className="text-xs text-muted-foreground">
+              Type the account address above to save.
+            </p>}
             <div className="flex justify-end gap-3 pt-2">
               <Button type="button" variant="outline" onClick={() => editor.close()}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={editor.isSaving}>
+              <Button type="submit" disabled={editor.isSaving || Boolean(editor.editingAccount && editor.modeReview.blocked)}
+                aria-describedby={editor.editingAccount && editor.modeReview.blocked && !editor.modeReview.loading ? 'mail-account-save-hint' : undefined}>
                 {editor.isSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                 {editor.editingAccount ? 'Save Changes' : 'Add Account'}
               </Button>

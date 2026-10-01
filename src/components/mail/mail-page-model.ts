@@ -13,7 +13,7 @@ import {
   Megaphone,
   FileText,
 } from 'lucide-react';
-import type { Email, MailAccount, MailContact } from '@/lib/mail-api';
+import { DEFAULT_SYNC_WINDOW_DAYS, DEFAULT_TRASH_WINDOW_DAYS, type Email, type MailAccount, type MailContact, type MailWindowDays } from '@/lib/mail-api';
 
 export interface AccountFormState {
   email_address: string;
@@ -27,7 +27,8 @@ export interface AccountFormState {
   smtp_port: number;
   sync_fetch_limit: string;
   sync_mode: 'download' | 'sync';
-  sync_mode_confirmed: boolean;
+  sync_window_days: MailWindowDays;
+  trash_window_days: MailWindowDays;
   delete_emails_on_server: boolean;
   try_calendar_sync: boolean;
   caldav_url: string;
@@ -171,7 +172,8 @@ export const initialAccountForm: AccountFormState = {
   smtp_port: 587,
   sync_fetch_limit: 'all',
   sync_mode: 'download',
-  sync_mode_confirmed: false,
+  sync_window_days: DEFAULT_SYNC_WINDOW_DAYS,
+  trash_window_days: DEFAULT_TRASH_WINDOW_DAYS,
   delete_emails_on_server: false,
   try_calendar_sync: false,
   caldav_url: '',

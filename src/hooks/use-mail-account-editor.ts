@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import type { MailAccount } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
+import { accountSyncWindow, accountTrashWindow, useMailModeImpact } from '@/hooks/use-mail-mode-impact';
 import {
   initialAccountForm, mailProviders,
   type AccountFormState, type AddMailAccountResponse, type MailHostTrustError, type MailHostTrustResult, type PendingHostTrust,
@@ -14,6 +15,10 @@ const createHostTrustError = (message: string, mailHostTrust?: unknown) => {
   error.mailHostTrust = mailHostTrust as MailHostTrustResult | undefined;
   return error;
 };
+
+// The API refuses a switch to Sync without the typed account address.
+type ConfirmationError = Error & { requiresConfirmation?: boolean };
+const isConfirmationError = (error: Error): error is ConfirmationError => (error as ConfirmationError).requiresConfirmation === true;
 
 const isHostTrustError = (error: Error): error is MailHostTrustError => (
   Boolean((error as MailHostTrustError).requiresHostTrustConfirmation && (error as MailHostTrustError).mailHostTrust)
@@ -27,6 +32,13 @@ export function useMailAccountEditor() {
   const [editingAccount, setEditingAccount] = useState<MailAccount | null>(null);
   const [accountForm, setAccountForm] = useState<AccountFormState>(initialAccountForm);
   const [pendingHostTrust, setPendingHostTrust] = useState<PendingHostTrust | null>(null);
+  const [typedAddress, setTypedAddress] = useState('');
+  const [serverRequiresConfirmation, setServerRequiresConfirmation] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const modeReview = useMailModeImpact({
+    account: editingAccount, mode: accountForm.sync_mode, syncWindow: accountForm.sync_window_days,
+    trashWindow: accountForm.trash_window_days, typedAddress, serverRequiresConfirmation,
+  });
 
   // The backend verifies host safety, certificate trust, then IMAP auth.
   const addAccount = useMutation({
@@ -92,11 +104,14 @@ export function useMailAccountEditor() {
   });
 
   const updateAccount = useMutation({
-    mutationFn: async ({ id, ...data }: { id: string; is_active?: boolean } & Partial<AccountFormState> & { accept_host_trust?: boolean }) => {
+    mutationFn: async ({ id, ...data }: { id: string; is_active?: boolean; confirm_address?: string; sync_mode_confirmed?: boolean } & Partial<AccountFormState> & { accept_host_trust?: boolean }) => {
       const response = await api.put(`/mail/accounts/${id}`, {
         ...data,
         encrypted_password: data.password || undefined,
       });
+      if (response.status === 400 && response.requires_confirmation === true) {
+        throw Object.assign(new Error(response.error || 'Type the account address to confirm this change.'), { requiresConfirmation: true });
+      }
       if (response.status === 409 && response.requiresHostTrustConfirmation) {
         throw createHostTrustError(response.error || 'Review mail server authenticity before continuing.', response.mailHostTrust);
       }
@@ -107,15 +122,17 @@ export function useMailAccountEditor() {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
       setPendingHostTrust(null);
       toast({ title: '✓ Account updated successfully' });
-      setEditingAccount(null);
+      resetForm();
       setIsOpen(false);
-      setAccountForm(initialAccountForm);
     },
     onError: (error: Error, variables) => {
       if (isHostTrustError(error)) {
         setPendingHostTrust({ mode: 'edit', accountId: variables.id, account: { ...accountForm, ...variables }, trust: error.mailHostTrust! });
         return;
       }
+      // Keep every edit; show the reason next to the confirmation it needs.
+      setSaveError(error.message);
+      if (isConfirmationError(error)) setServerRequiresConfirmation(true);
       toast({
         title: 'Failed to update account',
         description: error.message,
@@ -124,14 +141,34 @@ export function useMailAccountEditor() {
     },
   });
 
+  const resetForm = () => {
+    setEditingAccount(null);
+    setAccountForm(initialAccountForm);
+    setPendingHostTrust(null);
+    setTypedAddress('');
+    setServerRequiresConfirmation(false);
+    setSaveError(null);
+  };
+
   const onOpenChange = (open: boolean) => {
     setIsOpen(open);
-    if (!open) {
-      setEditingAccount(null);
-      setAccountForm(initialAccountForm);
-      setPendingHostTrust(null);
+    if (!open) resetForm();
+  };
+
+  /** Mode and window edits invalidate an earlier typed confirmation: the counts it confirmed may differ. */
+  const changeModeChoice = (patch: Partial<Pick<AccountFormState, 'sync_mode' | 'sync_window_days' | 'trash_window_days' | 'delete_emails_on_server'>>) => {
+    setAccountForm(form => ({ ...form, ...patch }));
+    if (patch.sync_mode !== undefined || patch.sync_window_days !== undefined || patch.trash_window_days !== undefined) {
+      setTypedAddress('');
+      setServerRequiresConfirmation(false);
+      setSaveError(null);
     }
   };
+
+  // Sent with every confirmed change; the API requires it to switch to Sync.
+  const confirmation = () => modeReview.requiresAddress && modeReview.addressOk
+    ? { confirm_address: typedAddress.trim(), ...(modeReview.switchingToSync || serverRequiresConfirmation ? { sync_mode_confirmed: true } : {}) }
+    : {};
 
   const changeProvider = (provider: string) => {
     const providerConfig = mailProviders.find(p => p.value === provider);
@@ -148,7 +185,9 @@ export function useMailAccountEditor() {
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (editingAccount) {
-      updateAccount.mutate({ id: editingAccount.id, ...accountForm,
+      if (modeReview.blocked) return;
+      setSaveError(null);
+      updateAccount.mutate({ id: editingAccount.id, ...accountForm, ...confirmation(),
         ...(editingAccount.disconnected_at && accountForm.password ? { is_active: true } : {}) });
     } else {
       addAccount.mutate(accountForm);
@@ -161,6 +200,7 @@ export function useMailAccountEditor() {
       updateAccount.mutate({
         id: pendingHostTrust.accountId,
         ...pendingHostTrust.account,
+        ...confirmation(),
         accept_host_trust: true,
       });
     } else {
@@ -186,11 +226,15 @@ export function useMailAccountEditor() {
       smtp_port: account.smtp_port || 587,
       sync_fetch_limit: account.sync_fetch_limit || 'all',
       sync_mode: account.sync_mode || 'download',
-      sync_mode_confirmed: false,
+      sync_window_days: accountSyncWindow(account),
+      trash_window_days: accountTrashWindow(account),
       delete_emails_on_server: account.delete_emails_on_server === true,
       try_calendar_sync: false,
       caldav_url: '',
     });
+    setTypedAddress('');
+    setServerRequiresConfirmation(false);
+    setSaveError(null);
     setIsOpen(true);
   };
 
@@ -199,6 +243,7 @@ export function useMailAccountEditor() {
     editingAccount, startEdit, accountForm, setAccountForm, changeProvider, submit,
     pendingHostTrust, confirmHostTrust, denyHostTrust: () => setPendingHostTrust(null),
     isSaving: addAccount.isPending || updateAccount.isPending,
+    changeModeChoice, modeReview, typedAddress, setTypedAddress, saveError,
   };
 }
 
