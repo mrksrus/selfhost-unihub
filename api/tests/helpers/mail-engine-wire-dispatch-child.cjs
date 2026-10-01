@@ -1,8 +1,8 @@
 'use strict';
 // Disposable integration child: intentionally killed after the peer applies MOVE, before ACK.
 const mysql = require('mysql2/promise');
-const imaps = require('imap-simple');
-const { guardImapConnection } = require('../../src/services/mail-imap-guard');
+const { connectImap } = require('../../src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../../src/services/mail-imap-guard');
 const { selectMailbox } = require('../../src/services/mail-engine/transport');
 
 process.once('message', async ({ op, job, port }) => {
@@ -12,10 +12,9 @@ process.once('message', async ({ op, job, port }) => {
   require('../../src/state').setDb(pool);
   let connection;
   try {
-    connection = guardImapConnection(await imaps.connect({ imap:{host:'127.0.0.1',port,
+    connection = guardImapConnection(await connectImap({ imap:{host:'127.0.0.1',port,
       user:'fixture',password:'fixture',tls:false,keepalive:false,connTimeout:1000,authTimeout:1000,socketTimeout:1000} }),
     { timeoutMs:3000 });
-    connection.on('error', () => {});
     await selectMailbox(connection,{folder:'INBOX'});
     await require('../../src/services/mail-engine/operations').applyMove(op,connection,Number(job.worker_generation),
       new AbortController().signal,job.lease_owner,job.id);
@@ -23,6 +22,6 @@ process.once('message', async ({ op, job, port }) => {
   } catch (error) {
     process.send?.({ errorCode:error.code || 'UNEXPECTED_CHILD_FAILURE' });
   } finally {
-    connection?.end(); await pool.end();
+    if (connection) closeImapConnection(connection); await pool.end();
   }
 });

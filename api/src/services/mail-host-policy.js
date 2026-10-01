@@ -1,6 +1,5 @@
-require('../imap-patch');
-const imaps = require('imap-simple');
 const net = require('net');
+const imapClient = require('./mail-imap-client');
 const { decrypt } = require('../security/encryption');
 const { normalizeNetworkHost, isTrustedMailHost, isPublicNetworkAddress, resolveNetworkHost, resolveMailConnectionTarget } = require('../security/outbound-network');
 
@@ -217,20 +216,16 @@ async function testImapConnection(account) {
     const config = await buildImapConnectionConfig(account, { keepalive: false });
     if (!config) return { success: false, error: 'No password configured' };
 
-    connection = await imaps.connect(config);
-    connection.on('error', (err) => {
-      console.error('[ACCOUNT] IMAP connection error (handled):', err.message);
-    });
-    await connection.openBox('INBOX');
-    
-    // Connection successful
-    if (connection) connection.end();
+    connection = await imapClient.connectImap(config);
+    await connection.mailboxOpen('INBOX', { readOnly: true });
+    try { await connection.logout(); } catch { /* the check already succeeded */ }
+    connection.close();
     return { success: true };
   } catch (error) {
     if (connection) {
-      try { connection.end(); } catch (e) { /* ignore */ }
+      try { connection.close(); } catch (e) { /* ignore */ }
     }
-    const errorMsg = error.message || String(error);
+    const errorMsg = [error.message || String(error), error.responseText].filter(Boolean).join(': ');
     const tlsTrustError = isTlsTrustError(error);
     console.error('[ACCOUNT] IMAP test failed:', {
       host: account.imap_host,
@@ -245,15 +240,15 @@ async function testImapConnection(account) {
     let friendlyError = errorMsg;
     if (tlsTrustError && !toBooleanFlag(account.allow_self_signed)) {
       friendlyError = 'IMAP certificate could not be verified. Review and confirm mail server authenticity before continuing.';
-    } else if (errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
+    } else if (error.authenticationFailed || errorMsg.includes('AUTHENTICATIONFAILED') || errorMsg.includes('Invalid credentials')) {
       friendlyError = 'Authentication failed. Check your username and password (use App Password for Gmail/Yahoo).';
-    } else if (errorMsg.includes('ETIMEDOUT') || errorMsg.includes('timeout')) {
+    } else if (errorMsg.includes('ETIMEDOUT') || /timeout|timed out/i.test(errorMsg) || /TIMEOUT/.test(String(error.code || ''))) {
       friendlyError = 'Connection timeout. Check server address and port.';
     } else if (errorMsg.includes('ENOTFOUND')) {
       friendlyError = 'Server not found. Check the IMAP host address.';
     } else if (errorMsg.includes('ECONNREFUSED')) {
       friendlyError = 'Connection refused. Check the IMAP port and server settings.';
-    } else if (errorMsg.includes('Connection ended unexpectedly') || errorMsg.includes('ECONNRESET')) {
+    } else if (errorMsg.includes('Unexpected close') || errorMsg.includes('ECONNRESET') || ['NoConnection', 'EConnectionClosed'].includes(error.code)) {
       friendlyError = 'Connection closed by server. Check your credentials and server settings.';
     }
 

@@ -100,7 +100,9 @@ test('0.10.3 folder reconciliation and Legacy recovery on MySQL', { skip: !proce
   const read = async name => (await pool.execute('SELECT * FROM emails WHERE id = ?', [messages[name]]))[0][0];
   const originalColumns = Object.keys(originalRows[0]);
   await t.test('failed listing and a mid-migration failure leave all old assignments intact', async () => {
-    await assert.rejects(runtime('services/mail').listAvailableImapFolders({ getBoxes: async () => { throw new Error('offline'); } }, new Map(), true), /offline/);
+    const offline = runtime('services/mail-imap-guard').guardImapConnection(Object.assign(new (require('node:events'))(),
+      { close() {}, list: async () => { throw new Error('offline'); } }));
+    await assert.rejects(runtime('services/mail').listAvailableImapFolders(offline, new Map(), true), /offline/);
     await assert.rejects(migration.reconcileAccountFolders(user, accountA, []), /inventory/);
     let writes = 0;
     const faulty = { async getConnection() {

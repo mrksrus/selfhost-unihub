@@ -220,12 +220,12 @@ test('the mail scheduler reserves a slot for provider changes and a nudge yields
 test('a durable operation job sees cancellation before connecting and retains the accepted operation', async t => {
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const mail = require('../src/services/mail');
-  const imaps = require('imap-simple');
+  const imapClient = require('../src/services/mail-imap-client');
   const runtime = require('../src/services/mail-engine/runtime');
   let connects = 0, fences = 0;
   const harness = durableOperation(t, { id: 'cancel-job', mail_account_id: 'cancel-account' });
   t.mock.method(runtime, 'assertFence', async () => { fences++; return { cancellationRequested: true }; });
-  t.mock.method(imaps, 'connect', async () => { connects++; assert.fail('cancelled worker connected'); });
+  t.mock.method(imapClient, 'connectImap', async () => { connects++; assert.fail('cancelled worker connected'); });
   setDb({ execute: async () => assert.fail('cancelled worker queried account or discarded operation') });
   await mail.runMailOperationsNow('cancel-account');
   assert.equal((await harness.finished()).state, 'cancelled');
@@ -236,16 +236,15 @@ test('lease lost after connect destroys transport before any provider operation'
   const { EventEmitter } = require('node:events');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const mail = require('../src/services/mail');
-  const imaps = require('imap-simple');
+  const imapClient = require('../src/services/mail-imap-client');
   const runtime = require('../src/services/mail-engine/runtime');
   const engine = require('../src/services/mail-engine/operations');
   let fences = 0, destroys = 0;
   const connection = new EventEmitter();
-  connection.imap = { _sock: { destroy: () => { destroys++; } }, destroy: () => {} };
-  connection.end = () => {};
+  connection.close = () => { destroys++; };
   const harness = durableOperation(t, { id: 'lost-job', mail_account_id: 'lost-account' });
   t.mock.method(mail, 'buildImapConnectionConfig', async () => ({ imap: {} }));
-  t.mock.method(imaps, 'connect', async () => connection);
+  t.mock.method(imapClient, 'connectImap', async () => connection);
   t.mock.method(runtime, 'assertFence', async () => {
     fences++; if (fences === 2) throw Object.assign(new Error('lease lost'), { code: 'MAIL_WORKER_FENCED' });
     return { cancellationRequested: false };
@@ -269,17 +268,16 @@ test('account stop aborts a running operation job and destroys its guarded socke
   const { EventEmitter } = require('node:events');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const mail = require('../src/services/mail');
-  const imaps = require('imap-simple');
+  const imapClient = require('../src/services/mail-imap-client');
   const runtime = require('../src/services/mail-engine/runtime');
   const engine = require('../src/services/mail-engine/operations');
   const connection = new EventEmitter();
   let socketDestroyed = 0, entered = false, remoteCommands = 0;
   const paused = [];
-  connection.imap = { _sock: { destroy() { socketDestroyed++; } }, destroy() {} };
-  connection.end = () => {};
+  connection.close = () => { socketDestroyed++; };
   const harness = durableOperation(t, { id: 'stop-job', mail_account_id: 'stop-account' });
   t.mock.method(mail, 'buildImapConnectionConfig', async () => ({ imap: {} }));
-  t.mock.method(imaps, 'connect', async () => connection);
+  t.mock.method(imapClient, 'connectImap', async () => connection);
   t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
   t.mock.method(runtime, 'pauseAccount', async input => { paused.push(input); });
   t.mock.method(engine, 'processDueOperations', (_account, _connection, { signal }) => {

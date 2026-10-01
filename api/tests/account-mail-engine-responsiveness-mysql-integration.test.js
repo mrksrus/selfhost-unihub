@@ -1,12 +1,12 @@
-// Disposable MySQL 8 schema ending _test; real installed imap-simple/node-imap over loopback TCP.
+// Disposable MySQL 8 schema ending _test; real installed ImapFlow over loopback TCP.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
-const imaps = require('imap-simple');
-const { guardImapConnection } = require('../src/services/mail-imap-guard');
+const { connectImap } = require('../src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../src/services/mail-imap-guard');
 const transport = require('../src/services/mail-engine/transport');
 const { createDurableMailScheduler } = require('../src/services/mail-sync-scheduler');
 const { scanMailboxSlice } = require('../src/services/mail-engine/sync');
@@ -40,7 +40,7 @@ async function startPeer() {
       const raw = Buffer.from('From: fixture@example.test\r\nTo: fixture@example.test\r\nSubject: synthetic\r\n\r\nbody\r\n');
       send(`* 1 FETCH (UID ${uid} FLAGS (${item.flags.join(' ')}) MODSEQ (${item.modseq}) INTERNALDATE "29-Sep-2026 12:00:00 +0000" BODY[] {${raw.length}}\r\n`);
       if (!socket.destroyed) socket.write(raw);
-      send('\r\n)\r\n');
+      send(')\r\n');
       send(`${tag} OK done\r\n`);
     };
     socket.on('data', chunk => {
@@ -48,16 +48,18 @@ async function startPeer() {
       let index;
       while ((index = input.indexOf('\r\n')) !== -1) {
         const line = input.slice(0, index); input = input.slice(index + 2);
-        const match = /^(A\d+) (.*)$/.exec(line);
+        const match = /^([0-9A-F]+) (.*)$/.exec(line);
         if (!match) { errors.push(`unrecognized request shape: ${line.slice(0, 48)}`); socket.destroy(); break; }
         const [, tag, cmd] = match;
         chain = chain.then(async () => {
           commands.push({ identity, cmd, at: now() });
           const ok = suffix => send(`${tag} OK ${suffix || 'done'}\r\n`);
-          if (cmd === 'CAPABILITY') { send('* CAPABILITY IMAP4rev1 UIDPLUS MOVE CONDSTORE\r\n'); ok(); return; }
+          if (cmd === 'CAPABILITY') { send('* CAPABILITY IMAP4rev1 UIDPLUS MOVE CONDSTORE ENABLE\r\n'); ok(); return; }
+          if (cmd === 'ENABLE CONDSTORE') { send('* ENABLED CONDSTORE\r\n'); ok(); return; }
+          if (cmd.startsWith('LSUB ')) { ok(); return; }
           if (cmd.startsWith('LOGIN ')) { identity = /LOGIN "?(A|B|C)"? /.exec(cmd)?.[1]; assert(identity); ok(); return; }
           if (cmd.startsWith('LIST ')) { send('* LIST (\\Noselect) "/" ""\r\n'); ok(); return; }
-          const selected = /^(SELECT|EXAMINE) "(INBOX|Filed)"(?: \(CONDSTORE\))?$/.exec(cmd);
+          const selected = /^(SELECT|EXAMINE) "?(INBOX|Filed)"?$/.exec(cmd);
           if (selected) {
             folder = selected[2];
             const entries = folder === 'Filed' ? moved : mail[identity];
@@ -66,7 +68,7 @@ async function startPeer() {
             send(`* FLAGS (\\Seen \\Flagged)\r\n* ${entries.size} EXISTS\r\n* OK [UIDVALIDITY ${folder === 'Filed' ? 10 : 9}] valid\r\n* OK [UIDNEXT ${next}] next\r\n`);
             ok(`[${selected[1] === 'EXAMINE' ? 'READ-ONLY' : 'READ-WRITE'}] selected`); return;
           }
-          const fetch = /^UID FETCH (\d+)(?::(\d+))? \(MODSEQ UID FLAGS INTERNALDATE( BODY\.PEEK\[\])?\)$/.exec(cmd);
+          const fetch = /^UID FETCH (\d+)(?::(\d+))? \(UID (?:FLAGS INTERNALDATE|(BODY\.PEEK\[\])) MODSEQ\)$/.exec(cmd);
           if (fetch) {
             const low = Number(fetch[1]), high = Number(fetch[2] || fetch[1]);
             const entries = folder === 'Filed' ? moved : mail[identity];
@@ -114,15 +116,13 @@ async function startPeer() {
       held.delete(socket);
     } },
     async connect(identity, signal) {
-      const connected = await imaps.connect({ imap: { host: '127.0.0.1', port: server.address().port,
+      const connected = await connectImap({ imap: { host: '127.0.0.1', port: server.address().port,
         user: identity, password: 'fixture-only', tls: false, keepalive: false,
         // The deliberately held B BODY spans the arrivals/history checks;
         // transport must remain alive until the test explicitly releases it.
         // Connect/auth remain bounded independently of this fixture hold.
         connTimeout: 1000, authTimeout: 1000, socketTimeout: 60000 } });
-      const cx = guardImapConnection(connected, { timeoutMs: 60000, signal });
-      cx.on('error', () => {});
-      return cx;
+      return guardImapConnection(connected, { timeoutMs: 60000, signal });
     },
     async close() { for (const socket of sockets) socket.destroy(); await new Promise(r => server.close(r)); assert.deepEqual(errors, []); },
   };
@@ -228,7 +228,7 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
         if (signal.aborted) return { success:false,cancelled:true };
         issues.push(`${label}:${job.kind}:${error.code || error.message}`);
         throw error;
-      } finally { cx?.end(); }
+      } finally { if (cx) closeImapConnection(cx); }
     }, { concurrency:2, pollMs:100, leaseSeconds:30,
       onState:s => { if (s.id && s.state === 'running') start.push({ id:s.id,kind:s.kind,at:now() });
         if (s.id && ['idle','cancelled','error'].includes(s.state)) finish.push({ id:s.id,kind:s.kind,state:s.state,at:now() }); } });

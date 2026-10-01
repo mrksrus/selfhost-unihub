@@ -8,7 +8,7 @@ const {
 } = require('../src/security/outbound-network');
 const { encrypt } = require('../src/security/encryption');
 const mail = require('../src/services/mail');
-const imaps = require('imap-simple');
+const imapClient = require('../src/services/mail-imap-client');
 const nodemailer = require('nodemailer');
 const { setDb } = require('../src/state');
 
@@ -75,7 +75,7 @@ function installMailFixture(t, host) {
   t.after(() => setDb(null));
   const imapConfigs = [];
   const smtpConfigs = [];
-  t.mock.method(imaps, 'connect', async config => { imapConfigs.push(config); throw new Error('fixture transport stop'); });
+  t.mock.method(imapClient, 'connectImap', async config => { imapConfigs.push(config); throw new Error('fixture transport stop'); });
   t.mock.method(nodemailer, 'createTransport', config => { smtpConfigs.push(config); throw new Error('fixture transport stop'); });
   return { account, imapConfigs, smtpConfigs };
 }

@@ -63,7 +63,7 @@ module.exports = {
   getMailRawStoragePath: serverDelete.getMailRawStoragePath,
   isMailRawPathUnderRoot: serverDelete.isMailRawPathUnderRoot,
   isUsableRawEmailArchive: serverDelete.isUsableRawEmailArchive,
-  flattenImapBoxes: folders.flattenImapBoxes,
+  imapListToFolders: folders.imapListToFolders,
   listAvailableImapFolders: folders.listAvailableImapFolders,
   registerCustomImapFoldersForUser: folders.registerCustomImapFoldersForUser,
   pickImapSyncFolders: folders.pickImapSyncFolders,
