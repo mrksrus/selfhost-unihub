@@ -6,6 +6,20 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of MySQL, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.13.2
+
+### Fixes
+
+- **A large message no longer blocks every message behind it.** A message had
+  30 seconds to download in full, which large Gmail messages often missed;
+  since contents download newest first, the same message was tried again in
+  every job and the messages behind it stayed at "Loading message". A message
+  now has up to 5 minutes, and a download that stops sending data is still cut
+  off after 30 seconds. A message that misses the deadline is set aside so the
+  rest continue; **Sync now** tries it again.
+- **Messages up to 50 MiB are downloaded** (previously 32 MiB), the largest
+  message Gmail accepts.
+
 ## 0.13.1
 
 ### Fixes

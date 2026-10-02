@@ -199,10 +199,10 @@ credentials and message content. Automatic IDLE and COMPRESS are disabled, so
 the wire carries only the engine's own commands; the IDLE supervisor below calls
 IDLE explicitly on its own session. Setup (TCP, TLS, greeting,
 login, capability negotiation) is bounded by the connect plus authentication
-timeouts; literals above 32 MiB are refused before they are read.
+timeouts; literals above 50 MiB are refused before they are read.
 
 `api/src/services/mail-imap-guard.js` gives every command its own deadline
-(120 s). A deadline, abort signal, socket error or close stops the session for
+(120 s; a message body FETCH 5 minutes). A deadline, abort signal, socket error or close stops the session for
 good: the client is hard-closed (`close()`: socket and parser destroyed, no
 LOGOUT queued behind a stalled command), every waiting command is rejected, and
 nothing is dispatched on it again. A pooled session is rebound to each job's
@@ -300,6 +300,14 @@ remains; a yield or cancellation stops between messages and keeps the imported
 ones. The folder discovery pass (`sync`, every five minutes) queues a body job
 for every mailbox that still has queued content, so a chain stopped by an error
 or a cancellation resumes, and raises older body jobs to priority 15.
+
+A single message may take up to 5 minutes and 50 MiB to download; a transfer
+that stops sending data still ends after the job's 30-second socket inactivity
+timeout. A message whose download misses the 5-minute deadline is set aside
+(`content_state = 'slow'`) so the messages behind it continue, since newest
+first would otherwise pick it again in every job. A manual sync queues set-aside
+messages again (**Sync now**). A message above 50 MiB, or one that cannot be parsed, is set
+aside for good (`deferred`). Both keep the "Loading message" placeholder.
 
 Operation and reconcile jobs also hold the in-process account lock (shared with
 settings changes and server deletion), dial with shorter timeouts, and on a

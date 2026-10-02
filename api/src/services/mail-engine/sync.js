@@ -312,7 +312,11 @@ async function scanMailboxSlice({ db, connection, account, folder, stream = 'rec
 // sync left its mailbox without a body job until new mail arrived there. Queued
 // body jobs from before BODY_PRIORITY keep their old priority on continuation,
 // so they are promoted here as well; enqueueJob returns an active job as is.
-async function enqueuePendingBodies({ userId, accountId }, executor) {
+// A manual sync also queues again the messages set aside as 'slow' after their
+// download did not finish within the deadline.
+async function enqueuePendingBodies({ userId, accountId, retrySlow = false }, executor) {
+  if (retrySlow) await executor.execute(`UPDATE emails SET content_state = 'queued'
+    WHERE user_id = ? AND mail_account_id = ? AND content_state = 'slow' AND import_complete = FALSE`, [userId, accountId]);
   const [boxes] = await executor.execute(`SELECT DISTINCT o.mailbox_id FROM emails e
     JOIN mail_remote_occurrences o ON o.email_id = e.id AND o.user_id = e.user_id
       AND o.mail_account_id = e.mail_account_id AND o.presence = 'present'

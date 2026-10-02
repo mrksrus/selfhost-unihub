@@ -41,6 +41,20 @@ test('command timeout destroys transport, rejects stalled promises and ignores l
   assert.equal(f.commands, 1);
 });
 
+test('a command may set its own deadline; the connection keeps its default for others', async () => {
+  const f = fixture({ timeoutMs: 10 });
+  const slow = runGuardedImap(f.connection, () => f.connection.search(), { timeoutMs: 200 });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(f.destroyed, 0, 'the longer deadline outlives the connection default');
+  f.reply(null, ['done']);
+  assert.deepEqual(await slow, ['done']);
+  await assert.rejects(f.command('search'), { code: 'MAIL_IMAP_TIMEOUT' });
+  assert.equal(f.destroyed, 1);
+  for (const timeoutMs of [0, 300001, 1.5]) {
+    assert.throws(() => runGuardedImap(f.connection, () => {}, { timeoutMs }), /Invalid IMAP command deadline/);
+  }
+});
+
 for (const event of ['error', 'close']) test(`client ${event} settles a wait even if the command never settles`, async () => {
   const f = fixture();
   const wait = f.command('search');

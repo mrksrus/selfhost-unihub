@@ -39,8 +39,8 @@ async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidi
           ok();
         } else if (/^UID FETCH 103 /.test(cmd)) {
           assert.match(cmd, /^UID FETCH 103 \(UID BODY\.PEEK\[\] MODSEQ\)$/);
-          // Announce a body above the 32 MiB ceiling and never send it.
-          if (metadata === 'oversized') { socket.write('* 1 FETCH (UID 103 BODY[] {33554433}\r\n'); continue; }
+          // Announce a body above the 50 MiB ceiling and never send it.
+          if (metadata === 'oversized') { socket.write('* 1 FETCH (UID 103 BODY[] {52428801}\r\n'); continue; }
           socket.write(Buffer.concat([Buffer.from(`* 1 FETCH (UID 103 FLAGS (\\Seen) MODSEQ (9007199254740993123) INTERNALDATE "29-Sep-2026 12:00:00 +0000" BODY[] {${raw.length}}\r\n`, 'ascii'), raw, Buffer.from(')\r\n', 'ascii')])); ok();
         } else if (cmd.startsWith('UID MOVE')) {
           assert.equal(cmd, 'UID MOVE 103 "Filed"');

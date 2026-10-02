@@ -2,8 +2,14 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
-const DEFAULT_MAX_BYTES = 32 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
+// Sized for the largest allowed message on a slow provider (Gmail can serve
+// large messages at well under 1 MB/s); also the FETCH's own guard deadline. A
+// stalled transfer still ends after the job's socket inactivity timeout.
+const DEFAULT_TIMEOUT_MS = 300_000;
+// Deadline codes of fetchRawBounded and the per-command guard: data arrived,
+// but the whole message did not within the deadline.
+const BODY_DEADLINE_CODES = new Set(['MAIL_BODY_TIMEOUT', 'MAIL_IMAP_TIMEOUT']);
 const uint32 = value => {
   if (typeof value !== 'number' && typeof value !== 'string' && typeof value !== 'bigint') return null;
   if (!/^[0-9]+$/.test(String(value))) return null;
@@ -93,7 +99,7 @@ async function fetchRawBounded(transport, connection, address, { maxBytes = DEFA
   }, timeoutMs); });
   try {
     const result = await Promise.race([transport.fetchRawMessage(connection,
-      { folder: address.folder, uidvalidity: address.uidvalidity, uid: address.uid, maxBytes }, { signal }), timeout]);
+      { folder: address.folder, uidvalidity: address.uidvalidity, uid: address.uid, maxBytes }, { signal, timeoutMs }), timeout]);
     if (signal?.aborted) throw Object.assign(new Error('Body fetch cancelled'), { code: 'MAIL_SYNC_CANCELLED' });
     return requireRawBuffer(result?.raw, maxBytes);
   } finally { clearTimeout(timer); }
@@ -114,6 +120,8 @@ async function processBodySlice({ maxMessages = BODY_SLICE_MESSAGES, maxMs = BOD
     const item = await processBodyItem(input);
     if (!item.processed && !item.deferred) return { processed, deferred, emailId, more: false };
     if (item.deferred) deferred++;
+    // The deadline closed the session; the continuation reconnects.
+    if (item.connectionLost) return { processed, deferred, emailId, more: true };
     else { processed++; emailId = item.emailId; await report({ phase: 'bodies', processed, total: null }); }
   }
   return { processed, deferred, emailId, more: true };
@@ -122,11 +130,11 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
   const { simpleParser } = require('mailparser');
   const transport = require('./transport');
   const runtime = require('./runtime');
-  const markDeferred = async emailId => require('./repository').withTransaction(async cx => {
+  const markDeferred = async (emailId, state = 'deferred') => require('./repository').withTransaction(async cx => {
     if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id,
       workerId: job.lease_owner, generation: job.worker_generation }, cx);
-    await cx.execute(`UPDATE emails SET content_state = 'deferred' WHERE id = ? AND user_id = ? AND mail_account_id = ?
-      AND import_complete = FALSE`, [emailId, account.user_id, account.id]);
+    await cx.execute(`UPDATE emails SET content_state = ? WHERE id = ? AND user_id = ? AND mail_account_id = ?
+      AND import_complete = FALSE`, [state, emailId, account.user_id, account.id]);
   }, db);
   const [rows] = await db.execute(`SELECT o.id AS occurrence_id, o.uid, o.uidvalidity, o.email_id,
       e.raw_storage_path, e.raw_sha256, e.raw_bytes, e.raw_format, e.raw_verified,
@@ -167,6 +175,12 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
     } else if (['MAIL_IMAP_LIMIT', 'MAIL_BODY_TOO_LARGE'].includes(error.code)) {
       await markDeferred(row.email_id);
       return { processed: 0, deferred: true, reason: 'byte_budget', more: true };
+    } else if (BODY_DEADLINE_CODES.has(error.code) && !signal?.aborted) {
+      // Newest first, a message that never arrives in time would be picked
+      // again by every job and block the mailbox. Set it aside; a manual sync
+      // queues it again (enqueuePendingBodies).
+      await markDeferred(row.email_id, 'slow');
+      return { processed: 0, deferred: true, reason: 'timeout', connectionLost: true, more: true };
     } else throw error;
   }
   if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id, workerId: job.lease_owner,

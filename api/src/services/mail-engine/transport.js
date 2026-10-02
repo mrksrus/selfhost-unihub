@@ -11,7 +11,7 @@ const imapTools = require('imapflow/lib/tools.js');
 const MAX_UID = 0xffffffff;
 const MAX_WINDOW = 250;
 const MAX_METADATA_BYTES = 1048576;
-const MAX_RAW_BYTES = 33554432;
+const MAX_RAW_BYTES = 52428800;
 
 function uint32(value, name) {
   if (typeof value === 'bigint') value = value.toString();
@@ -80,7 +80,7 @@ async function selectMailbox(connection, { folder, readOnly = false, signal } = 
 // Streams one UID FETCH. Any failure (budget, malformed or out-of-range data,
 // NO/BAD) tears the session down: a half-consumed FETCH must never be followed
 // by another command on the same connection.
-async function fetchItems(connection, range, query, signal, onMessage) {
+async function fetchItems(connection, range, query, signal, onMessage, { timeoutMs } = {}) {
   const detach = bindAbort(connection, signal);
   try {
     return await runGuardedImap(connection, async () => {
@@ -92,7 +92,7 @@ async function fetchItems(connection, range, query, signal, onMessage) {
         closeImapConnection(connection, error);
         throw error;
       }
-    });
+    }, { timeoutMs });
   } finally { detach(); }
 }
 function limitError(message) { return Object.assign(new Error(message), { code: 'MAIL_IMAP_LIMIT' }); }
@@ -126,7 +126,7 @@ async function fetchMetadataWindow(connection, { folder, uidvalidity, startUid, 
   if (items.length > maxMessages) throw new Error('Metadata response exceeds message budget');
   return { folder, uidvalidity: uint32(uidvalidity, 'UIDVALIDITY'), startUid, endUid, items, complete: true, bytes };
 }
-async function fetchRawMessage(connection, { folder, uidvalidity, uid, maxBytes = MAX_RAW_BYTES } = {}, { signal } = {}) {
+async function fetchRawMessage(connection, { folder, uidvalidity, uid, maxBytes = MAX_RAW_BYTES } = {}, { signal, timeoutMs } = {}) {
   folderName(folder); uid = uint32(uid, 'UID'); uint32(uidvalidity, 'UIDVALIDITY'); budget(maxBytes, MAX_RAW_BYTES, 'raw byte budget');
   selected(connection, folder, uidvalidity);
   // BODY.PEEK[] arrives as one literal Buffer: exact octets, never decoded.
@@ -136,7 +136,7 @@ async function fetchRawMessage(connection, { folder, uidvalidity, uid, maxBytes 
       throw new Error('Incomplete or mismatched raw BODY.PEEK[] response');
     if (message.source.length > maxBytes) throw limitError('Raw message exceeds byte budget');
     return message.source;
-  });
+  }, { timeoutMs });
   selected(connection, folder, uidvalidity);
   if (items.length !== 1) throw new Error('Raw fetch must return exactly one message');
   return { uid, uidvalidity: uint32(uidvalidity, 'UIDVALIDITY'), raw: items[0], bytes: items[0].length };

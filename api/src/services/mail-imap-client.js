@@ -5,10 +5,11 @@
 // connectImap through this module object, never the library.
 const { ImapFlow } = require('imapflow');
 
-// Raw messages are capped at 32 MiB (mail-engine/transport.js). ImapFlow checks
-// a literal's announced size before buffering it, so a larger body fails the
-// connection instead of being read into memory.
-const MAX_LITERAL_BYTES = 32 * 1024 * 1024;
+// Raw messages are capped at 50 MiB (mail-engine/transport.js), the largest
+// message Gmail accepts. ImapFlow checks a literal's announced size before
+// buffering it, so a larger body fails the connection instead of being read
+// into memory.
+const MAX_LITERAL_BYTES = 50 * 1024 * 1024;
 const MAX_RESPONSE_BYTES = MAX_LITERAL_BYTES + 1024 * 1024;
 const MAX_LINE_BYTES = 8 * 1024 * 1024;
 // A keepalive session may sit parked or between commands for a while; its

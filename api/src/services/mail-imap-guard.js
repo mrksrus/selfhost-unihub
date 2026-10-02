@@ -3,6 +3,9 @@
 // Every IMAP command of a guarded ImapFlow client runs through runGuardedImap:
 // one deadline per command, and a stopped client never dispatches again.
 const IMAP_COMMAND_TIMEOUT_MS = 120000;
+// Upper bound for any command deadline, including a body FETCH's longer one.
+const MAX_IMAP_COMMAND_TIMEOUT_MS = 300000;
+const validDeadline = ms => Number.isSafeInteger(ms) && ms >= 1 && ms <= MAX_IMAP_COMMAND_TIMEOUT_MS;
 const guards = new WeakMap();
 // ImapFlow fails the whole connection when a literal/line/response exceeds its
 // configured size before buffering it; callers see the byte-budget code.
@@ -13,7 +16,7 @@ const LIMIT_CODES = new Set(['LiteralTooLarge', 'ResponseTooLarge', 'LineTooLarg
 function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIMEOUT_MS } = {}) {
   const existing = guards.get(connection);
   if (existing) { existing.bind(signal); return connection; }
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300000) throw new TypeError('Invalid IMAP command deadline');
+  if (!validDeadline(timeoutMs)) throw new TypeError('Invalid IMAP command deadline');
   const pending = new Set();
   let stopped = null, bound = null;
   const abortError = () => Object.assign(new Error('Mail sync cancelled; completed messages are retained.'), { code: 'MAIL_SYNC_CANCELLED' });
@@ -40,8 +43,9 @@ function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIME
     try { connection.close(); } catch { /* already disconnected */ }
     for (const reject of [...pending]) reject(stopped);
   }
-  // start() issues the command and returns its promise.
-  function run(start) {
+  // start() issues the command and returns its promise. A command may set its
+  // own deadline (a large message's FETCH); others use the connection's.
+  function run(start, deadlineMs = timeoutMs) {
     if (stopped) return Promise.reject(stopped);
     return new Promise((resolve, reject) => {
       let settled = false;
@@ -53,7 +57,7 @@ function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIME
         if (error || stopped) reject(stopped || error); else resolve(result);
       };
       const cancel = error => finish(error);
-      const timer = setTimeout(() => stop(Object.assign(new Error('IMAP command timeout; reconnect before retrying.'), { code: 'MAIL_IMAP_TIMEOUT' })), timeoutMs);
+      const timer = setTimeout(() => stop(Object.assign(new Error('IMAP command timeout; reconnect before retrying.'), { code: 'MAIL_IMAP_TIMEOUT' })), deadlineMs);
       pending.add(cancel);
       try { Promise.resolve(start()).then(value => finish(null, value), finish); } catch (error) { finish(error); }
     });
@@ -65,10 +69,11 @@ function guardImapConnection(connection, { signal, timeoutMs = IMAP_COMMAND_TIME
   return connection;
 }
 
-function runGuardedImap(connection, start) {
+function runGuardedImap(connection, start, { timeoutMs } = {}) {
   const guard = guards.get(connection);
   if (!guard) throw new Error('A guarded IMAP connection is required');
-  return guard.run(start);
+  if (timeoutMs !== undefined && !validDeadline(timeoutMs)) throw new TypeError('Invalid IMAP command deadline');
+  return guard.run(start, timeoutMs);
 }
 // Idempotent hard close for guarded and unguarded clients.
 function closeImapConnection(connection, error) {
@@ -86,4 +91,4 @@ function imapSessionUsable(connection) {
   return imapGuardIdle(connection) && connection.usable === true && !connection.isClosed;
 }
 
-module.exports = { guardImapConnection, runGuardedImap, closeImapConnection, imapGuardIdle, imapSessionUsable, IMAP_COMMAND_TIMEOUT_MS };
+module.exports = { guardImapConnection, runGuardedImap, closeImapConnection, imapGuardIdle, imapSessionUsable, IMAP_COMMAND_TIMEOUT_MS, MAX_IMAP_COMMAND_TIMEOUT_MS };
