@@ -221,6 +221,7 @@ async function runDurableMailJob(job, signal, report) {
             kind, priority, manualRefresh: Number(job.manual_refresh) === 1 && ['flags', 'presence'].includes(kind) });
         }
       }
+      await require('./mail-engine/sync').enqueuePendingBodies({ userId: account.user_id, accountId }, db);
       // Sync policy (retention, proven absence, Gmail merge, archive filing)
       // is applied by a low-priority local job after each discovery pass.
       if (account.sync_mode === 'sync') await require('./mail-sync-policy').enqueuePrune({ userId: account.user_id, accountId });

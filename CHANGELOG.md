@@ -6,6 +6,18 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of MySQL, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.13.1
+
+### Fixes
+
+- **Messages no longer stay at "Loading message" on large accounts.** Message
+  contents were downloaded one at a time at the lowest priority, behind
+  read/star and presence checks that on large Gmail accounts run almost
+  continuously, so thousands of messages could wait for days. Contents now
+  download in batches of up to 25, newest first, ahead of those background
+  checks. Messages whose download stopped after an error resume within five
+  minutes instead of only when new mail arrives.
+
 ## 0.13.0
 
 Read the [upgrade notes](docs/UPGRADING.md#0130-sync-follows-the-server) first:

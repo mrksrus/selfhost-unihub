@@ -208,9 +208,18 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
       try {
         cx = await peer.connect(label, signal);
         if (job.kind === 'body') {
+          // History slices queue C's own bodies ahead of further history. Like
+          // a real body slice, fetch C's newest queued message and mark a batch
+          // imported; the scheduler requeues the body while content stays queued.
+          const [queued] = label === 'C' ? await pool.execute(`SELECT e.id,o.uid FROM emails e
+            JOIN mail_remote_occurrences o ON o.email_id=e.id AND o.mail_account_id=e.mail_account_id
+            WHERE e.mail_account_id=? AND e.content_state='queued' ORDER BY o.uid DESC LIMIT 25`,[account.id]) : [[{ uid:499 }]];
+          if (!queued.length) return { success:true, more:false };
           await transport.selectMailbox(cx,{ folder:'INBOX', readOnly:true, signal });
-          const raw = await fetchRawBounded(transport, cx, { folder:'INBOX',uidvalidity:9,uid:499 },
+          const raw = await fetchRawBounded(transport, cx, { folder:'INBOX',uidvalidity:9,uid:Number(queued[0].uid) },
             { signal, timeoutMs:60000 });
+          if (label === 'C') await pool.query(`UPDATE emails SET content_state='complete',import_complete=TRUE
+            WHERE id IN (?)`,[queued.map(q=>q.id)]);
           bodies.push({ label, bytes:raw.length, at:now() });
           return { success:true, more:false };
         }

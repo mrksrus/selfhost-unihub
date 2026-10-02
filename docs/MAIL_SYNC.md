@@ -290,6 +290,17 @@ safe boundary (its progress is kept and it continues afterwards), then the
 scheduler claims immediately instead of at its next one-second poll. A nudge
 that arrives during a claim pass repeats that pass.
 
+Message bodies are fetched by `body` jobs, one per mailbox, at priority 15:
+behind manual sync (5) and new mail (`recent`, 10), ahead of the background
+`flags` (20), `history` (60) and `presence` (70) sweeps, so a "Loading message"
+backlog drains instead of waiting behind sweeps that on large Gmail accounts
+never finish. A job imports up to 25 messages of its mailbox, newest first, or
+stops after 20 seconds, then continues as a new job while queued content
+remains; a yield or cancellation stops between messages and keeps the imported
+ones. The folder discovery pass (`sync`, every five minutes) queues a body job
+for every mailbox that still has queued content, so a chain stopped by an error
+or a cancellation resumes, and raises older body jobs to priority 15.
+
 Operation and reconcile jobs also hold the in-process account lock (shared with
 settings changes and server deletion), dial with shorter timeouts, and on a
 connect/login failure back off the account's due operations. A job started by

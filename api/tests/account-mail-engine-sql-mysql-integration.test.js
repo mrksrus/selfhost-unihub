@@ -314,6 +314,39 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     assert.equal(Number(again.epoch_revision), Number(reset.epoch_revision), 'same epoch is not a reset');
   });
 
+  await t.test('enqueuePendingBodies queues one body job per mailbox with queued content and promotes old body jobs', async t => {
+    const { enqueuePendingBodies, BODY_PRIORITY } = require('../src/services/mail-engine/sync');
+    const owner = await seedAccount('bodies'), sibling = await seedAccount('bodies-sibling');
+    t.after(() => retire(owner, sibling));
+    const box = async (who, folderName) => repo.ensureMailbox({ userId: who.userId, accountId: who.accountId, folderName, epoch: 9 }, pool);
+    const [inbox, allMail, done, other] = [await box(owner, 'INBOX'), await box(owner, '[Gmail]/All Mail'),
+      await box(owner, 'Done'), await box(sibling, 'INBOX')];
+    const seed = async (who, mailbox, uid, contentState) => {
+      const id = await seedEmail(who, uid);
+      await pool.execute('UPDATE emails SET content_state = ?, import_complete = ? WHERE id = ?',
+        [contentState, contentState === 'complete', id]);
+      await repo.upsertOccurrence({ userId: who.userId, accountId: who.accountId, mailboxId: mailbox.id, epoch: 9, uid,
+        emailId: id, flags: [] }, pool);
+    };
+    await seed(owner, inbox, 1, 'queued');
+    await seed(owner, inbox, 2, 'queued');
+    await seed(owner, allMail, 3, 'queued');
+    await seed(owner, done, 4, 'complete');
+    await seed(sibling, other, 5, 'queued');
+    const stale = await seedJob(owner, { kind: 'body', jobState: 'queued', mailboxId: inbox.id, priority: 90, createdAgo: 60 });
+    assert.deepEqual(await enqueuePendingBodies({ userId: owner.userId, accountId: owner.accountId }, pool), { mailboxes: 2 });
+    const jobs = await rows(`SELECT id, mailbox_id, priority FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'body'
+      AND state = 'queued' ORDER BY mailbox_id`, [owner.accountId]);
+    assert.deepEqual(jobs.map(job => job.mailbox_id).sort(), [inbox.id, allMail.id].sort(), 'none for a complete mailbox');
+    assert(jobs.every(job => Number(job.priority) === BODY_PRIORITY));
+    assert(jobs.some(job => job.id === stale), 'the existing INBOX job is promoted, not duplicated');
+    assert.equal(Number((await one(`SELECT COUNT(*) AS n FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'body'`,
+      [sibling.accountId])).n), 0, 'another account is untouched');
+    await enqueuePendingBodies({ userId: owner.userId, accountId: owner.accountId }, pool);
+    assert.equal(Number((await one(`SELECT COUNT(*) AS n FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'body'`,
+      [owner.accountId])).n), 2, 'repeating the pass adds nothing');
+  });
+
   await t.test('withTransaction runs the callback again after InnoDB picks it as a real deadlock victim', async () => {
     await pool.query('CREATE TABLE tx_deadlock_probe (id INT PRIMARY KEY, v INT NOT NULL DEFAULT 0) ENGINE=InnoDB');
     await pool.query(`INSERT INTO tx_deadlock_probe (id) VALUES ${Array.from({ length: 202 }, (_, i) => `(${i + 1})`).join(',')}`);

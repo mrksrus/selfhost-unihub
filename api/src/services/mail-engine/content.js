@@ -99,7 +99,26 @@ async function fetchRawBounded(transport, connection, address, { maxBytes = DEFA
   } finally { clearTimeout(timer); }
 }
 
-async function processBodySlice({ db, connection, account, folder, mailboxId, signal, job = null, report = () => {} }) {
+// One body job imports up to BODY_SLICE_MESSAGES messages, each committed on
+// its own, before it hands the account lease back. A job per message made a
+// large backlog wait out every other stream's continuation, one message at a
+// time. The time budget keeps an interactive yield and other accounts prompt.
+const BODY_SLICE_MESSAGES = 25;
+const BODY_SLICE_MS = 20_000;
+async function processBodySlice({ maxMessages = BODY_SLICE_MESSAGES, maxMs = BODY_SLICE_MS, now = Date.now, ...input }) {
+  const { signal, report = () => {} } = input;
+  const started = now();
+  let processed = 0, deferred = 0, emailId = null;
+  while (processed + deferred < maxMessages && now() - started < maxMs) {
+    if (signal?.aborted) throw Object.assign(new Error('Body fetch cancelled'), { code: 'MAIL_SYNC_CANCELLED' });
+    const item = await processBodyItem(input);
+    if (!item.processed && !item.deferred) return { processed, deferred, emailId, more: false };
+    if (item.deferred) deferred++;
+    else { processed++; emailId = item.emailId; await report({ phase: 'bodies', processed, total: null }); }
+  }
+  return { processed, deferred, emailId, more: true };
+}
+async function processBodyItem({ db, connection, account, folder, mailboxId, signal, job = null }) {
   const { simpleParser } = require('mailparser');
   const transport = require('./transport');
   const runtime = require('./runtime');
@@ -177,8 +196,7 @@ async function processBodySlice({ db, connection, account, folder, mailboxId, si
       [row.occurrence_id, account.user_id, account.id, mailboxId, row.uidvalidity, row.uid]);
       if (!occ || occ.email_id !== emailId) throw new Error('Body occurrence changed before archive commit');
     } });
-  await report({ phase: 'bodies', processed: 1, total: null });
   return { processed: 1, emailId: result.emailId, more: true };
 }
 
-module.exports = { DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT_MS, requireRawBuffer, rawDigest, publishRaw, verifyArchive, eligibleForProviderErasure, fetchRawBounded, processBodySlice, uint32 };
+module.exports = { DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT_MS, BODY_SLICE_MESSAGES, BODY_SLICE_MS, requireRawBuffer, rawDigest, publishRaw, verifyArchive, eligibleForProviderErasure, fetchRawBounded, processBodySlice, uint32 };

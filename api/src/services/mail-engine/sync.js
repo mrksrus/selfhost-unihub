@@ -8,6 +8,12 @@ const { outsideWindow } = require('../mail-sync-policy');
 const WINDOW = 128; // UID-span, not offset or message count; one fetch has <=128 items.
 const STREAMS = ['recent', 'flags', 'history', 'presence'];
 const SWEEP_THROTTLE_MINUTES = 15;
+// Downloading a discovered message is what makes it readable, so bodies run
+// right after INBOX arrivals ('recent', 10) and ahead of the anti-entropy
+// flags/presence sweeps and older history. Those still interleave through the
+// claim query's ageing; at the old priority 90, a Gmail account whose sweeps
+// never finish left new messages without content for hours.
+const BODY_PRIORITY = 15;
 function cancelled(signal) {
   if (signal?.aborted) throw Object.assign(new Error('Mail sync cancelled; committed slices remain available'), { code: 'MAIL_SYNC_CANCELLED' });
 }
@@ -183,7 +189,7 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       }
     }
     if (inserted > 0) await runtime.enqueueJob({ userId, accountId, mailboxId: mailbox.id,
-      kind: 'body', priority: 90 }, executor);
+      kind: 'body', priority: BODY_PRIORITY }, executor);
     if (stream === 'presence') {
       // Never mark a newer concurrent observation absent using an older fetch.
       const [currentRows] = await executor.execute(`SELECT uid, observation_revision FROM mail_remote_occurrences
@@ -301,6 +307,25 @@ async function scanMailboxSlice({ db, connection, account, folder, stream = 'rec
     refreshPending, more: targetUid === null && (window.end < upper || refreshPending) };
 }
 
+// Folder discovery calls this for every mailbox still holding messages without
+// content. A body chain only continues on success, so an error or a cancelled
+// sync left its mailbox without a body job until new mail arrived there. Queued
+// body jobs from before BODY_PRIORITY keep their old priority on continuation,
+// so they are promoted here as well; enqueueJob returns an active job as is.
+async function enqueuePendingBodies({ userId, accountId }, executor) {
+  const [boxes] = await executor.execute(`SELECT DISTINCT o.mailbox_id FROM emails e
+    JOIN mail_remote_occurrences o ON o.email_id = e.id AND o.user_id = e.user_id
+      AND o.mail_account_id = e.mail_account_id AND o.presence = 'present'
+    JOIN mail_remote_mailboxes m ON m.id = o.mailbox_id AND m.uidvalidity = o.uidvalidity AND m.state = 'active'
+    WHERE e.user_id = ? AND e.mail_account_id = ? AND e.content_state = 'queued' AND e.import_complete = FALSE`,
+  [userId, accountId]);
+  await executor.execute(`UPDATE mail_engine_jobs SET priority = ? WHERE user_id = ? AND mail_account_id = ?
+    AND kind = 'body' AND state IN ('queued','paused') AND priority > ?`, [BODY_PRIORITY, userId, accountId, BODY_PRIORITY]);
+  for (const { mailbox_id: mailboxId } of boxes)
+    await runtime.enqueueJob({ userId, accountId, mailboxId, kind: 'body', priority: BODY_PRIORITY }, executor);
+  return { mailboxes: boxes.length };
+}
+
 // A background flags/presence job over a sweep completed within the throttle
 // would only re-read UIDs that 'recent' already observes. Decide from the
 // durable cursor before any transport is opened; manual refresh never skips.
@@ -315,4 +340,4 @@ async function sweepThrottled(db, { userId, accountId, mailboxId, stream }) {
   return rows.length > 0;
 }
 
-module.exports = { WINDOW, STREAMS, SWEEP_THROTTLE_MINUTES, sweepThrottled, windowFor, validateWindowReply, scanMailboxSlice, gmailCapable, upperBoundary, snapshotRevisions };
+module.exports = { WINDOW, STREAMS, SWEEP_THROTTLE_MINUTES, BODY_PRIORITY, enqueuePendingBodies, sweepThrottled, windowFor, validateWindowReply, scanMailboxSlice, gmailCapable, upperBoundary, snapshotRevisions };
