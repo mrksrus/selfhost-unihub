@@ -103,6 +103,7 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
   const typed = address.trim();
   const addressChanged = calendarAccount ? typed !== manualAddress(link) || (calendarAccount.provider === 'ics' && typed !== '') : false;
   const needsAddress = Boolean(subscriptionHint) && !typed;
+  const connect = () => change.mutate({ enabled: true, ...(typed ? { caldav_url: typed } : {}) });
 
   return (
     <section className="rounded-md border border-border p-3 space-y-3" aria-labelledby={`mail-calendar-${account.id}`}>
@@ -123,7 +124,7 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
             aria-labelledby={`mail-calendar-${account.id}`}
             onCheckedChange={(checked) => {
               if (!checked) { setConfirmOff(true); return; }
-              change.mutate({ enabled: true, ...(typed ? { caldav_url: typed } : {}) });
+              connect();
             }}
           />
         )}
@@ -161,10 +162,12 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
               ? 'Hidden. Paste a new address to replace it'
               : subscriptionHint ? 'https://… .ics' : 'Found automatically. Enter an address to override'}
             onKeyDown={(event) => {
-              // The section sits inside the mail account form; Enter applies the address instead of saving the account.
+              // The section sits inside the mail account form; Enter connects or applies the address instead of saving the account.
               if (event.key !== 'Enter') return;
               event.preventDefault();
-              if (link.enabled && addressChanged && !busy) change.mutate({ enabled: true, caldav_url: typed });
+              if (busy) return;
+              if (!link.enabled) { if (!needsAddress) connect(); }
+              else if (addressChanged) change.mutate({ enabled: true, caldav_url: typed });
             }}
             autoComplete="off"
             spellCheck={false}
@@ -173,6 +176,20 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
           {link.enabled && link.provider?.hint && link.provider.supported && (
             <p className="text-xs text-muted-foreground">{link.provider.hint}</p>
           )}
+        </div>
+      )}
+
+      {link && !link.enabled && (
+        <div className="space-y-2">
+          <Button type="button" size="sm" disabled={busy || needsAddress} onClick={connect}>
+            {change.isPending && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
+            Connect calendar
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            {subscriptionHint
+              ? 'Connects right away. Saving the mail account does not turn the calendar on.'
+              : 'Connects right away with the mail login, using the address above or finding the server automatically. Saving the mail account does not turn the calendar on.'}
+          </p>
         </div>
       )}
 
@@ -191,6 +208,10 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
         </div>
       )}
       {change.isPending && <p className="text-xs text-muted-foreground" aria-live="polite">Looking for the calendar server…</p>}
+      {/* Kept until the next attempt: the toast disappears before a long server error can be read. */}
+      {change.error && !change.isPending && (
+        <p className="text-xs text-destructive break-words" role="alert">Calendar not changed: {change.error.message}</p>
+      )}
 
       <AlertDialog open={confirmOff} onOpenChange={setConfirmOff}>
         <AlertDialogContent>

@@ -35,7 +35,11 @@ The **Calendar** section of a mail account's edit dialog turns the calendar of
 that account on or off, shows the sync status, the last sync, the server that
 was found and the synced calendars, and has **Sync now**. An address typed
 there replaces the found server; an empty address with **Find automatically**
-runs discovery again. Turning the calendar off removes the imported calendars,
+runs discovery again. While the calendar is off, **Connect calendar** (or
+Enter in the address field) turns it on with the typed address, or finds the
+server when the field is empty. These changes apply right away; saving the mail
+account does not change the calendar. A failed attempt keeps its error message
+below the section until the next attempt. Turning the calendar off removes the imported calendars,
 their events and their local ToDo state from UniHub. Nothing is changed on the
 server. The section and both requests need the Calendar module and are refused
 while a calendar restore runs.
@@ -74,6 +78,14 @@ calendars. Basic and Digest authentication are supported.
 | mailbox.org, Posteo | Built in |
 | Gmail / Google Workspace | No CalDAV with a password. Paste the calendar's secret iCal address (Google Calendar → Settings → your calendar → Integrate calendar); read-only |
 | Outlook.com, Microsoft 365, Exchange | No CalDAV. Publish the calendar in Outlook on the web (Settings → Calendar → Shared calendars) and paste the ICS link; read-only |
+
+A self-hosted server must serve CalDAV over HTTPS with a certificate valid for
+the name UniHub connects to. A host that only receives mail (the MX record) is
+not enough: Stalwart, for example, serves CalDAV from its HTTP listener under
+`/dav/` and `/.well-known/caldav`, so publish those paths under an HTTPS
+hostname, then type `https://<that host>/` or let discovery find it through the
+domain, the IMAP host or an SRV record. A server on a private address also
+needs `TRUSTED_MAIL_HOSTS`.
 
 The account shows how its server was found: typed, built-in provider, DNS, or
 `.well-known`. Error messages never pass a raw server 401/403 to the browser;

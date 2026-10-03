@@ -18,7 +18,7 @@ no application-data or database changes were needed.
 
 ## What exists today
 
-The image is `ghcr.io/mrksrus/selfhost-unihub:0.17.1`. The reference deployment is
+The image is `ghcr.io/mrksrus/selfhost-unihub:0.17.2`. The reference deployment is
 [our Compose file](../docker-compose.yml), with a separate MariaDB 11.8 container.
 Since 0.16.0 the file mounts nothing from the repository: database settings are
 command-line options and the schema is created by the app. Its `${…}` values

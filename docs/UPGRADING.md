@@ -5,6 +5,10 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.17.2 Connect calendar
+
+No database upgrade or configuration change.
+
 ## 0.17.1 Calendar sync fixes
 
 The database upgrade runs at startup (migration 13,
