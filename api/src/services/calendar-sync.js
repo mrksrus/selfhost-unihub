@@ -173,17 +173,25 @@ function externalEventId(objectId, recurrenceId) {
   return `${objectId}|${recurrenceId || ''}`;
 }
 
-// Rebuild the event rows of one server object. Returns the ids and start
-// times of rows that did not exist before.
-async function applyObject(ctx, calendar, object) {
-  let expanded;
+// Occurrences of one server object inside the sync window, or null when the
+// object cannot be read.
+function expandObject(ctx, ics) {
   try {
-    expanded = ical.expandCalendarObject(object.ics, {
+    return ical.expandCalendarObject(ics, {
       windowStartMs: ctx.windowStartMs, windowEndMs: ctx.windowEndMs, userTimeZone: ctx.timeZone,
     });
-  } catch (error) {
+  } catch {
+    return null;
+  }
+}
+
+// Rebuild the event rows of one server object. Returns the ids and start
+// times of rows that did not exist before. An object that cannot be read
+// keeps its last rows (and their ToDo state); the sync reports it instead.
+async function applyObject(ctx, calendar, object, expanded = expandObject(ctx, object.ics)) {
+  if (!expanded) {
     ctx.stats.unreadable += 1;
-    expanded = { occurrences: [], rrule: null };
+    return [];
   }
   const created = [];
   const connection = await db.getConnection();
@@ -297,8 +305,11 @@ async function storeObject(account, calendar, { id, href, etag, ics }) {
 }
 
 // Bring one calendar up to date from a listing of { href, url, etag }.
-// fetchObjects downloads the listed objects whose ETag changed.
+// fetchObjects downloads the listed objects whose ETag changed. Returns the
+// number of objects that could not be read; their last readable copy and its
+// ETag are kept, so the next sync downloads them again.
 async function syncCalendarObjects(ctx, calendar, listing, fetchObjects, { expandAll }) {
+  const unreadableBefore = ctx.stats.unreadable;
   const [stored] = await db.execute('SELECT id, href, href_hash, etag FROM calendar_remote_objects WHERE calendar_id = ?', [calendar.id]);
   const storedByHash = new Map(stored.map(row => [row.href_hash, row]));
   const listed = new Set();
@@ -318,9 +329,18 @@ async function syncCalendarObjects(ctx, calendar, listing, fetchObjects, { expan
   const applied = new Set();
   for (const item of fetched) {
     const known = storedByHash.get(hrefHash(item.href));
+    const expanded = expandObject(ctx, item.ics);
+    if (!expanded) {
+      ctx.stats.unreadable += 1;
+      continue;
+    }
     const object = await storeObject(ctx.account, calendar, { id: known?.id, href: item.href, etag: item.etag, ics: item.ics });
     applied.add(object.id);
-    const created = await applyObject(ctx, calendar, object);
+    const created = await applyObject(ctx, calendar, object, expanded).catch(async error => {
+      // Without its ETag the object is downloaded and applied again next time.
+      await db.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ?', [object.id]).catch(() => {});
+      throw error;
+    });
     ctx.stats.changedObjects += 1;
     if (ctx.notify && !known) {
       const upcoming = created.filter(event => event.startMs > Date.now()).sort((a, b) => a.startMs - b.startMs)[0];
@@ -336,6 +356,11 @@ async function syncCalendarObjects(ctx, calendar, listing, fetchObjects, { expan
       const [objects] = await db.execute(`SELECT id, href, etag, ics FROM calendar_remote_objects WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk);
       for (const object of objects) await applyObject(ctx, calendar, object);
     }
+  }
+  const unreadable = ctx.stats.unreadable - unreadableBefore;
+  if (expandAll && !unreadable) {
+    // Rows from before 0.17 are only dropped once every object was read, as
+    // an unreadable one may be what replaces them.
     const [orphans] = await db.execute(
       `SELECT r.event_id FROM calendar_event_external_refs r
        LEFT JOIN calendar_remote_objects o ON o.id = r.remote_object_id
@@ -351,6 +376,7 @@ async function syncCalendarObjects(ctx, calendar, listing, fetchObjects, { expan
       ctx.stats.removedEvents += ids.length;
     }
   }
+  return unreadable;
 }
 
 async function syncCalDavAccount(ctx, { full }) {
@@ -366,11 +392,13 @@ async function syncCalDavAccount(ctx, { full }) {
     const listing = await caldav.listCalendarObjects({
       calendarUrl: remote.url, ...login, windowStartMs: ctx.windowStartMs, windowEndMs: ctx.windowEndMs,
     });
-    await syncCalendarObjects(calendarCtx, calendar, listing,
+    const unreadable = await syncCalendarObjects(calendarCtx, calendar, listing,
       objects => caldav.fetchCalendarObjects({ calendarUrl: remote.url, objects, ...login }), { expandAll });
     ctx.newEvents = calendarCtx.newEvents;
+    // Without the ctag the next sync lists the calendar again and retries
+    // the objects it could not read.
     await db.execute('UPDATE calendar_calendars SET remote_ctag = ?, remote_expanded_on = ? WHERE id = ?',
-      [remote.ctag || null, today, calendar.id]);
+      [unreadable ? null : remote.ctag || null, today, calendar.id]);
     ctx.stats.calendars += 1;
   }
 }
@@ -402,10 +430,16 @@ async function syncIcsAccount(ctx, { full }) {
   const { objects } = ical.splitIcsFeed(feed.text);
   const listing = objects.map(object => ({ href: `#${object.uid}`, etag: object.etag, ics: object.ics }));
   const calendarCtx = { ...ctx, notify: ctx.notify && !isNew && !!calendar.remote_expanded_on };
-  await syncCalendarObjects(calendarCtx, calendar, listing, async changed => changed, { expandAll });
+  const unreadable = await syncCalendarObjects(calendarCtx, calendar, listing, async changed => changed, { expandAll });
   ctx.newEvents = calendarCtx.newEvents;
-  await db.execute('UPDATE calendar_calendars SET remote_ctag = ?, remote_expanded_on = ? WHERE id = ?', [feed.etag, today, calendar.id]);
+  await db.execute('UPDATE calendar_calendars SET remote_ctag = ?, remote_expanded_on = ? WHERE id = ?', [unreadable ? null : feed.etag, today, calendar.id]);
   ctx.stats.calendars += 1;
+}
+
+function unreadableMessage(count) {
+  return count === 1
+    ? '1 calendar entry could not be read. Its last readable version is kept.'
+    : `${count} calendar entries could not be read. Their last readable versions are kept.`;
 }
 
 function userFacingError(error) {
@@ -457,10 +491,13 @@ async function runAccountSync(accountId, { userId, reason, full }) {
     try {
       if (account.provider === 'ics') await syncIcsAccount(ctx, { full });
       else await syncCalDavAccount(ctx, { full });
+      // Everything readable is up to date; unreadable entries are reported
+      // and downloaded again by the next sync.
+      const unreadable = ctx.stats.unreadable;
       await db.execute(
-        `UPDATE calendar_accounts SET sync_status = 'ok', sync_error = NULL, last_synced_at = UTC_TIMESTAMP(),
+        `UPDATE calendar_accounts SET sync_status = ?, sync_error = ?, last_synced_at = UTC_TIMESTAMP(),
            next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND WHERE id = ?`,
-        [Math.round(SYNC_INTERVAL_MS / 1000), account.id]
+        [unreadable ? 'error' : 'ok', unreadable ? unreadableMessage(unreadable) : null, Math.round(SYNC_INTERVAL_MS / 1000), account.id]
       );
     } catch (error) {
       const retryMs = error?.status === 401 || error?.status === 403 ? AUTH_ERROR_RETRY_MS : ERROR_RETRY_MS;
@@ -571,6 +608,16 @@ async function loadEventLink(userId, eventId) {
   return { recurrenceId: row.recurrence_id || '', object: { id: row.object_id, href: row.href, etag: row.etag, ics: row.ics } };
 }
 
+// An event imported before 0.17 has a server reference but no server copy
+// yet; the next sync replaces it. A change made now would be undone by that
+// sync, so it is refused until then.
+async function assertNotPendingLink(ctx, userId, eventId) {
+  const [legacy] = await db.execute('SELECT id FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ? LIMIT 1', [eventId, userId]);
+  if (!legacy.length) return;
+  assertWritable(ctx);
+  throw syncError('This event is still being synced. Try again in a moment.', 409, 'CALENDAR_SYNC_PENDING');
+}
+
 function isRecurringIcs(ics) {
   return /^(RRULE|RDATE)[:;]/im.test(String(ics || ''));
 }
@@ -632,9 +679,7 @@ async function pushEventUpdate({ userId, event, changes, scope }) {
   assertWritable(base);
   const link = await loadEventLink(userId, event.id);
   if (!link) {
-    // Rows imported before 0.17 are replaced by the first sync.
-    const [legacy] = await db.execute('SELECT id FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ? LIMIT 1', [event.id, userId]);
-    if (legacy.length) throw syncError('This event is still being synced. Try again in a moment.', 409, 'CALENDAR_SYNC_PENDING');
+    await assertNotPendingLink(base, userId, event.id);
     return pushCreatedEvent({ userId, event: { ...event, ...changes } });
   }
   const ctx = await writeContext(base);
@@ -667,7 +712,10 @@ async function pushEventDelete({ userId, event, scope }) {
   const base = await loadCalendarContext(userId, event.calendar_id);
   if (!base) return null;
   const link = await loadEventLink(userId, event.id);
-  if (!link) return { localOnly: true };
+  if (!link) {
+    await assertNotPendingLink(base, userId, event.id);
+    return { localOnly: true };
+  }
   assertWritable(base);
   const ctx = await writeContext(base);
   const url = objectUrl(ctx.account, link.object);
@@ -696,6 +744,7 @@ async function pushEventMove({ userId, event, targetCalendarId, changes }) {
   if (!source.remote && !target) return null;
   if (source.recurring) throw syncError('Recurring events cannot be moved to another calendar.', 400, 'CALENDAR_RECURRING_MOVE');
   if (source.remote && source.link) assertWritable(source.ctx);
+  else if (source.remote) await assertNotPendingLink(source.ctx, userId, event.id);
   if (target) {
     // Create the copy before unlinking the old one so a failure leaves it as it was.
     const moved = { ...event, ...changes, calendar_id: targetCalendarId };

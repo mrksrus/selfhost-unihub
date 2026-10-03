@@ -37,7 +37,15 @@ was found and the synced calendars, and has **Sync now**. An address typed
 there replaces the found server; an empty address with **Find automatically**
 runs discovery again. Turning the calendar off removes the imported calendars,
 their events and their local ToDo state from UniHub. Nothing is changed on the
-server.
+server. The section and both requests need the Calendar module and are refused
+while a calendar restore runs.
+
+A calendar account belongs to a mail account through `mail_account_id`. Backups
+do not keep that link, so opening the settings links an unlinked calendar
+account with the same address, but only one that belonged to a mail account:
+one marked `mailLinked` in its configuration, or a CalDAV account from 0.16 or
+earlier (those could only be created together with a mail account). A calendar
+account added on the Calendar page is never taken over.
 
 New mail accounts try the calendar by default (**Sync the calendar too**). The
 mail account is created even when no calendar is found; the result says why.
@@ -233,6 +241,11 @@ rows from it: one row per occurrence within 365 days back and 730 days ahead.
   objects in the window and downloads only new or changed ones (by ETag) with
   `calendar-multiget`, in batches of 50. Objects missing from the listing are
   removed. ICS feeds use `If-None-Match`.
+- **Unreadable objects.** An object that cannot be parsed keeps its last
+  readable copy, its ETag and its event rows with their ToDo state. The sync
+  status shows how many entries could not be read, and the next sync downloads
+  them again. Rows imported before 0.17 are only replaced once every object of
+  their calendar was read.
 - **Recurrence and time zones.** `ical.js` expands `RRULE`, `RDATE`, `EXDATE`
   and overridden occurrences (`RECURRENCE-ID`), at most 1000 per series. Times
   are converted with the event's `VTIMEZONE` or IANA zone name. Floating times
@@ -264,6 +277,9 @@ are then rebuilt from the server's answer, so the server stays the authority.
   be moved.
 - **Read-only.** ICS subscriptions and calendars marked read-only reject
   changes with `403 CALENDAR_READ_ONLY`; the event dialog shows them read-only.
+- **Not yet synced.** Events imported before 0.17 have no server copy until the
+  first sync replaces them. Editing, deleting or moving one is refused with
+  `409 CALENDAR_SYNC_PENDING` instead of changing only the local copy.
 - **Not written.** Attendees and RSVP stay local. Standalone ToDos without a
   date cannot be saved to a server calendar.
 

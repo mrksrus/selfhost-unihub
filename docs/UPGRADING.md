@@ -5,6 +5,13 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.17.1 Calendar sync fixes
+
+No database upgrade. A calendar account that 0.17.0 linked to a mail account
+by address alone, although it was added on the Calendar page, stays linked;
+turn the calendar off in the mail account and add the account again on the
+Calendar page if it should be separate.
+
 ## 0.17.0 Calendar sync
 
 The database upgrade runs at startup (migration 12, `calendar-sync`): new

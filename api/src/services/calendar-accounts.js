@@ -50,6 +50,7 @@ async function insertCalDavAccount({ userId, emailAddress, displayName, username
     server: found.server,
     hint: found.hint || null,
     timeZone: cleanTimeZone(timeZone),
+    ...(mailAccountId ? { mailLinked: true } : {}),
   };
   await db.execute(
     `INSERT INTO calendar_accounts
@@ -75,7 +76,11 @@ async function insertIcsAccount({ userId, url, displayName, feedName, mailAccoun
      VALUES (?, ?, 'ics', ?, ?, NULL, ?, ?, NULL, ?, ?, TRUE, 'pending', NULL, ?, NULL)`,
     // The full address is a secret (it grants read access); only its origin is shown.
     [accountId, userId, emailAddress || null, (displayName || feedName || new URL(url).host).slice(0, 255), encrypt(url), origin,
-      JSON.stringify({ server: { url: origin, source: 'subscription', label: new URL(url).host }, timeZone: cleanTimeZone(timeZone) }),
+      JSON.stringify({
+        server: { url: origin, source: 'subscription', label: new URL(url).host },
+        timeZone: cleanTimeZone(timeZone),
+        ...(mailAccountId ? { mailLinked: true } : {}),
+      }),
       JSON.stringify(CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.ics), mailAccountId || null]
   );
   const [rows] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ?', [accountId]);
@@ -163,19 +168,45 @@ async function loadMailAccount(userId, mailAccountId) {
   return rows[0];
 }
 
+// The link to a mail account is not in backups, so it is recovered by
+// address, but only for accounts that belonged to a mail account: those
+// marked mailLinked, and CalDAV accounts from before 0.17 (their config has no
+// server entry), which could only be created when adding a mail account. A
+// calendar account added on its own is never taken over.
+function wasMailCalendar(account) {
+  const config = safeJsonParse(account.provider_config, {}) || {};
+  if (config.mailLinked === true) return true;
+  return account.provider === 'caldav' && !config.server;
+}
+
+async function markMailLinked(account) {
+  const config = safeJsonParse(account.provider_config, {}) || {};
+  if (config.mailLinked === true) return;
+  await db.execute('UPDATE calendar_accounts SET provider_config = ? WHERE id = ?', [JSON.stringify({ ...config, mailLinked: true }), account.id]);
+}
+
 async function linkedCalendarAccount(userId, mail) {
   const [linked] = await db.execute('SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC LIMIT 1', [userId, mail.id]);
-  if (linked[0]) return linked[0];
-  // Accounts connected before 0.17 (or restored from a backup) carry only the
-  // address; the first look links them.
+  if (linked[0]) {
+    // Accounts linked by 0.17.0 have no mark yet.
+    await markMailLinked(linked[0]);
+    return linked[0];
+  }
   const [unlinked] = await db.execute(
-    `SELECT * FROM calendar_accounts WHERE user_id = ? AND provider = 'caldav' AND mail_account_id IS NULL AND LOWER(account_email) = LOWER(?)
-     ORDER BY created_at ASC LIMIT 1`,
+    `SELECT * FROM calendar_accounts WHERE user_id = ? AND provider IN ('caldav', 'ics') AND mail_account_id IS NULL AND LOWER(account_email) = LOWER(?)
+     ORDER BY created_at ASC`,
     [userId, mail.email_address]
   );
-  if (!unlinked[0]) return null;
-  await db.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ? AND mail_account_id IS NULL', [mail.id, unlinked[0].id]);
-  return { ...unlinked[0], mail_account_id: mail.id };
+  const candidate = unlinked.find(wasMailCalendar);
+  if (!candidate) return null;
+  const [result] = await db.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ? AND mail_account_id IS NULL', [mail.id, candidate.id]);
+  if (!result.affectedRows) {
+    // A concurrent request linked it first.
+    const [again] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND mail_account_id = ?', [candidate.id, mail.id]);
+    return again[0] || null;
+  }
+  await markMailLinked(candidate);
+  return { ...candidate, mail_account_id: mail.id };
 }
 
 async function describeLink(userId, mail, account) {
@@ -204,6 +235,7 @@ async function describeLink(userId, mail, account) {
 
 async function getMailCalendarLink(userId, mailAccountId) {
   const mail = await loadMailAccount(userId, mailAccountId);
+  await assertCalendarAvailable(userId);
   return describeLink(userId, mail, await linkedCalendarAccount(userId, mail));
 }
 
@@ -220,13 +252,15 @@ async function setMailCalendar(userId, mailAccountId, { enabled, caldav_url: cal
   const requestedUrl = caldavUrl == null ? undefined : caldavUrl.trim();
   if (requestedUrl && requestedUrl.length > 2000) throw fail('Calendar address is too long', 400);
   const mail = await loadMailAccount(userId, mailAccountId);
+  // These routes are under /api/mail, so the request boundary checks only the
+  // Mail module; turning the calendar off deletes calendar data.
+  await assertCalendarAvailable(userId);
   const existing = await linkedCalendarAccount(userId, mail);
 
   if (!enabled) {
     if (existing) await removeCalendarAccount(userId, existing.id);
     return describeLink(userId, mail, null);
   }
-  await assertCalendarAvailable(userId);
 
   const existingUrl = existing?.provider === 'ics' ? null : currentManualUrl(existing);
   const addressChanged = requestedUrl !== undefined && (existing?.provider === 'ics' ? !!requestedUrl : requestedUrl !== existingUrl);
