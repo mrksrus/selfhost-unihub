@@ -120,6 +120,11 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     // A request from an admin session that was signed out meanwhile changes nothing.
     assert.equal((await reset(admin, person, 'synthetic-admin-password', 'admin-signed-out')).status, 401);
     assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, true);
+    // Deactivation commits before deleting sessions; an admin caught in between changes nothing either.
+    await pool.execute('UPDATE users SET is_active = FALSE WHERE id = ?', [admin]);
+    assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 401);
+    assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, true);
+    await pool.execute('UPDATE users SET is_active = TRUE WHERE id = ?', [admin]);
 
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).message, 'Two-factor authentication reset');
     const [[after]] = await pool.execute('SELECT two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE id = ?', [person]);
