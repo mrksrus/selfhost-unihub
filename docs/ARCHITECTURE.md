@@ -82,7 +82,7 @@ normalized in `request-handler.js`.
 
 Main routes:
 
-- `/dashboard`
+- `/dashboard` (Today: agenda, tasks and unread mail)
 - `/contacts`
 - `/calendar`
 - `/todo`

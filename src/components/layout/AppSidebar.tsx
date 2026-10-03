@@ -20,7 +20,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 const moreNavigation = [
   { name: 'More', href: '/more', icon: MoreHorizontal },
-  { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+  { name: 'Today', href: '/dashboard', icon: LayoutDashboard },
 ];
 
 const AppSidebar = () => {

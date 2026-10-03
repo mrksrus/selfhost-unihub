@@ -15,7 +15,7 @@ Temporary-upload housekeeping continues to remove expired incomplete uploads.
 
 Core account settings and Data Management remain available. Full backups include
 all saved modules, including hidden or paused ones. Restoring settings also restores
-module choices and their order. Search, dashboard counts and new offline snapshots
+module choices and their order. Search, `/api/stats` counts and new offline snapshots
 omit paused modules. Module controls are personal preferences, not a replacement
 for user ownership or access permissions.
 

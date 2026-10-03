@@ -582,7 +582,7 @@ const Settings = () => {
   const applySenderRulesNow = async () => {
     setRuleSorting(true);
     try {
-      const response = await api.post<{ scanned: number; matched: number; applied: number; complete?: boolean; has_more?: boolean; next_cursor?: string | null; remaining?: string | null }>('/mail/sender-rules/backfill', {
+      const response = await api.post<{ scanned: number; matched: number; applied: number; queued?: number; skipped?: number; complete?: boolean; has_more?: boolean; next_cursor?: string | null; remaining?: string | null }>('/mail/sender-rules/backfill', {
         mode: 'apply',
         limit: 5000,
         cursor: ruleSortCursor || undefined,
@@ -597,12 +597,13 @@ const Settings = () => {
       queryClient.invalidateQueries({ queryKey: ['mail-folders'] });
       queryClient.invalidateQueries({ queryKey: ['mail-unread-counts'] });
       await refetchMailSenderCandidates();
-      toast({
-        title: result?.complete === false ? 'Mail sorting incomplete' : 'Mail sorted',
-        description: result?.complete === false
-          ? `${result?.applied ?? 0} matching emails sorted from this batch of ${result?.scanned ?? 0}. ${result.remaining || 'More inbox messages remain; continue sorting to process the next batch.'}`
-          : `${result?.applied ?? 0} of ${result?.scanned ?? 0} inbox emails matched your current rules.`,
-      });
+      const details = [
+        `${result?.applied ?? 0} of ${result?.scanned ?? 0} inbox emails moved.`,
+        result?.queued ? `${result.queued} will also move on the mail server.` : '',
+        result?.skipped ? `${result.skipped} skipped (changed meanwhile or folder not on that server).` : '',
+        result?.complete === false ? 'More remain; continue sorting.' : '',
+      ].filter(Boolean).join(' ');
+      toast({ title: result?.complete === false ? 'Mail sorting incomplete' : 'Mail sorted', description: details });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Unknown error';
       toast({ title: 'Could not sort mail', description: message, variant: 'destructive' });
@@ -731,7 +732,7 @@ const Settings = () => {
                       <SelectItem value="todo">ToDo</SelectItem>
                       <SelectItem value="contacts">Contacts</SelectItem>
                       <SelectItem value="recordings">Recordings</SelectItem>
-                      <SelectItem value="dashboard">Dashboard</SelectItem>
+                      <SelectItem value="dashboard">Today</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1118,7 +1119,7 @@ const Settings = () => {
         </TabsContent>
 
         <TabsContent value="mail" className="mt-0">
-        {/* Mail categorization foundation */}
+        {/* Sender rules */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -1132,9 +1133,9 @@ const Settings = () => {
                     <AtSign className="h-5 w-5 text-accent" />
                   </div>
                   <div>
-                    <CardTitle className="text-lg">Mail categorization foundation</CardTitle>
+                    <CardTitle className="text-lg">Sender rules</CardTitle>
                     <CardDescription>
-                      Create and manage sender/domain routing rules used by inbound mail sync.
+                      Sort now moves matching inbox mail into folders.
                     </CardDescription>
                   </div>
                 </div>

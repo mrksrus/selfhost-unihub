@@ -28,7 +28,7 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
     const base = `http://127.0.0.1:${server.address().port}`;
     function session() {
       const cookies = new Map(); let csrf;
-      return async (method, route, body, expected = 200, binary = false) => {
+      const request = async (method, route, body, expected = 200, binary = false) => {
         const response = await fetch(base + '/api' + route, { method, headers: {
           ...(body === undefined ? {} : { 'Content-Type': Buffer.isBuffer(body) ? 'application/zip' : 'application/json' }),
           ...(cookies.size ? { Cookie: [...cookies].map(([key,value]) => `${key}=${value}`).join('; ') } : {}),
@@ -40,6 +40,9 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
         if (result.csrfToken) csrf = result.csrfToken;
         return result;
       };
+      request.get = (route, headers = {}) => fetch(base + '/api' + route, { headers: {
+        Cookie: [...cookies].map(([key,value]) => `${key}=${value}`).join('; '), ...headers }, signal: AbortSignal.timeout(15000) });
+      return request;
     }
     async function wait(read, status) {
       const deadline = Date.now() + 15000;
@@ -63,6 +66,14 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
     await destination('GET',`/backup/jobs/${id}/download`,undefined,404);
     const key = await source('POST',`/backup/jobs/${id}/recovery-password/reveal`,{});
     const archive = await source('GET',`/backup/jobs/${id}/download`,undefined,200,true);
+    // An interrupted download resumes only while the file is unchanged.
+    const first = await source.get(`/backup/jobs/${id}/download`);
+    const etag = first.headers.get('etag'); await first.arrayBuffer();
+    assert.match(etag, /^"[0-9a-f]+-[0-9a-f]+"$/); assert.ok(first.headers.get('last-modified'));
+    const resumed = await source.get(`/backup/jobs/${id}/download`, { Range: 'bytes=10-', 'If-Range': etag });
+    assert.equal(resumed.status, 206); assert.deepEqual(Buffer.from(await resumed.arrayBuffer()), archive.subarray(10));
+    const replaced = await source.get(`/backup/jobs/${id}/download`, { Range: 'bytes=10-', 'If-Range': '"0-0"' });
+    assert.equal(replaced.status, 200); assert.deepEqual(Buffer.from(await replaced.arrayBuffer()), archive);
     const imported = await destination('POST','/backup/import?sections=contacts,settings',archive,202);
     const restoreId = imported.job.id;
     await destination('POST',`/backup/restore-jobs/${restoreId}/unlock`,{password:'wrong-password'},400);

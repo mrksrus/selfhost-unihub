@@ -44,3 +44,16 @@ test('generated MySQL schema contains current backup job tables and indexes', ()
   assert.match(schema, /KEY `idx_data_export_jobs_user_backup` \(`user_id`,`backup_uuid`\)/);
   assert.match(schema, /KEY `idx_backup_restore_jobs_user_backup` \(`user_id`,`backup_uuid`\)/);
 });
+
+test('file downloads stream past nginx buffering and the service worker', () => {
+  const nginxConfig = fs.readFileSync(path.join(repoRoot, 'docker/nginx/default.conf'), 'utf8');
+  const viteConfig = fs.readFileSync(path.join(repoRoot, 'vite.config.ts'), 'utf8');
+  const nginxPattern = new RegExp(nginxConfig.match(/location ~ (\^\/api\/\(backup[^ ]+\$) \{[\s\S]*?proxy_buffering off;/)[1]);
+  const workerPattern = new RegExp(viteConfig.match(/!\/(\^\\\/api\\\/\(backup[^ ]+\$)\/\.test\(url\.pathname\)/)[1]);
+  for (const pathname of ['/api/backup/jobs/job-1/download', '/api/recordings/rec-1/file', '/api/mail/attachments/att-1']) {
+    assert.match(pathname, nginxPattern); assert.match(pathname, workerPattern);
+  }
+  for (const pathname of ['/api/backup/jobs/job-1', '/api/mail/emails', '/api/recordings/rec-1']) {
+    assert.doesNotMatch(pathname, nginxPattern); assert.doesNotMatch(pathname, workerPattern);
+  }
+});

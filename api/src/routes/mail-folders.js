@@ -2,6 +2,7 @@ const { folderConnections } = require('../services/mail-folder-reconciliation');
 const { membershipCountQuery, unreadMembershipQuery } = require('../services/mail-folder-view');
 const { filingAccountId, folderAcceptsAccount } = require('../services/mail-filing');
 const crypto = require('crypto');
+const mailWritebacks = require('../services/mail-writebacks');
 const { db } = require('../state');
 const {
   MAIL_SENDER_RULE_MATCH_TYPES,
@@ -17,6 +18,57 @@ const {
   createMailRoutingContext,
 } = require('../services/mail');
 const { EFFECTIVE_READ_SQL, validateUserMailFolder } = require('./mail-route-helpers');
+
+const MAIL_PAUSED_ERRORS = new Set(['Mail restore in progress', 'Mail module is disabled', 'Mail is paused']);
+const senderRuleChunk = 500;
+
+// Sort-now moves use the same path as moving mail by hand: Sync accounts queue
+// a move on the mail server, Download accounts change the local folder only.
+// Messages moved or refiled since the scan are left alone.
+async function applySenderRuleMoves(userId, updates, originals, links) {
+  const totals = { applied: 0, queued: 0, skipped: 0 };
+  const byFolder = new Map();
+  for (const item of updates) {
+    const original = originals.get(item.email_id);
+    const remote = original.sync_mode === 'sync' && filingAccountId(original) === original.mail_account_id;
+    // A Sync message can only move to a folder that exists on its own server.
+    if (remote && !(links.get(item.next_folder) || []).includes(original.mail_account_id)) { totals.skipped++; continue; }
+    if (!byFolder.has(item.next_folder)) byFolder.set(item.next_folder, []);
+    byFolder.get(item.next_folder).push(item.email_id);
+  }
+  const unchanged = async (_connection, selected) => {
+    for (const email of selected) {
+      const original = originals.get(email.id);
+      if (email.is_legacy || email.folder !== original.folder || email.mail_account_id !== original.mail_account_id
+        || (email.filing_account_id ?? null) !== (original.filing_account_id ?? null)) {
+        throw Object.assign(new Error('Message changed since sorting started'), { status: 409 });
+      }
+    }
+  };
+  const move = async (ids, folder) => {
+    const result = await mailWritebacks.mutateMessages(userId, ids, { move: folder }, unchanged);
+    totals.applied += ids.length;
+    totals.queued += result.operation_ids?.length || 0;
+  };
+  for (const [folder, ids] of byFolder) {
+    for (let i = 0; i < ids.length; i += senderRuleChunk) {
+      const chunk = ids.slice(i, i + senderRuleChunk);
+      try {
+        await move(chunk, folder);
+      } catch (error) {
+        if (MAIL_PAUSED_ERRORS.has(error.message) || !(error.status >= 400 && error.status < 500)) throw error;
+        // One blocked message refuses the whole batch; retry one by one.
+        for (const id of chunk) {
+          try { await move([id], folder); } catch (single) {
+            if (MAIL_PAUSED_ERRORS.has(single.message) || !(single.status >= 400 && single.status < 500)) throw single;
+            totals.skipped++;
+          }
+        }
+      }
+    }
+  }
+  return totals;
+}
 
 async function getMailFolderRowsWithCounts(userId, accountId = null) {
   const folders = await loadMailFoldersForUser(userId);
@@ -366,11 +418,11 @@ module.exports = {
         params.push(cursor.receivedAt, cursor.receivedAt, cursor.id);
       }
       const [emailRows] = await db.execute(
-        `SELECT e.id, e.mail_account_id, e.filing_account_id, e.from_address, e.folder,
+        `SELECT e.id, e.mail_account_id, e.filing_account_id, e.from_address, e.folder, a.sync_mode,
                 DATE_FORMAT(e.received_at, '%Y-%m-%d %H:%i:%s.%f') AS received_at_cursor
          FROM emails e
-         WHERE NOT EXISTS (SELECT 1 FROM mail_accounts a WHERE a.id = e.mail_account_id AND a.sync_mode = 'sync')
-           AND ${where.join(' AND ')}
+         LEFT JOIN mail_accounts a ON a.id = e.mail_account_id AND a.user_id = e.user_id
+         WHERE ${where.join(' AND ')}
          ORDER BY e.received_at DESC, e.id DESC
          LIMIT ${limit + 1}`,
         params
@@ -409,34 +461,14 @@ module.exports = {
           });
         }
       }
-      let applied = 0;
-      if (applyChanges && updates.length > 0) {
-        const connection = await db.getConnection();
-        try {
-          await connection.beginTransaction();
-          for (const item of updates) {
-            const original = originals.get(item.email_id);
-            // Skip messages moved or recovered since this batch was read.
-            const [result] = await connection.execute(`UPDATE emails SET folder = ?
-              WHERE id = ? AND user_id = ? AND folder = ? AND is_legacy = FALSE
-                AND mail_account_id <=> ? AND filing_account_id <=> ?
-                AND NOT EXISTS (SELECT 1 FROM mail_accounts a WHERE a.id = emails.mail_account_id AND a.sync_mode = 'sync')`,
-            [item.next_folder, item.email_id, userId, original.folder, original.mail_account_id, original.filing_account_id ?? null]);
-            applied += result.affectedRows;
-          }
-          await connection.commit();
-        } catch (error) {
-          await connection.rollback();
-          throw error;
-        } finally {
-          connection.release();
-        }
-      }
+      const result = applyChanges ? await applySenderRuleMoves(userId, updates, originals, links) : { applied: 0, queued: 0, skipped: 0 };
       return {
         dry_run: !applyChanges,
         scanned: emails.length,
         matched: updates.length,
-        applied,
+        applied: result.applied,
+        queued: result.queued,
+        skipped: result.skipped,
         complete: !hasMore,
         has_more: hasMore,
         next_cursor: nextCursor,
@@ -444,6 +476,7 @@ module.exports = {
         updates: updates.slice(0, 200),
       };
     } catch (error) {
+      if (MAIL_PAUSED_ERRORS.has(error.message)) return { error: error.message, status: 409 };
       console.error('Mail sender rule backfill error:', error);
       return { error: 'Failed to backfill mail routing', status: 500 };
     }

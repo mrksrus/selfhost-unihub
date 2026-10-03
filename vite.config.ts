@@ -21,11 +21,15 @@ export default defineConfig(() => ({
         navigateFallbackDenylist: [
           /^\/api\//,
         ],
-        // /api/events (Server-Sent Events) is left out on purpose: no
-        // service-worker route answers it, so the browser streams it straight
-        // from the network and a worker stop cannot cut the stream.
+        // /api/events (Server-Sent Events) and file downloads (backups,
+        // recordings, attachments) are left out on purpose: no service-worker
+        // route answers them, so the browser streams them straight from the
+        // network and a worker stop cannot cut the stream. Browsers can also
+        // resume such downloads. The pattern is copied into the worker, so it
+        // must not use outside names.
         runtimeCaching: [{
-          urlPattern: ({ url }) => url.pathname.startsWith('/api/') && url.pathname !== '/api/events',
+          urlPattern: ({ url }) => url.pathname.startsWith('/api/') && url.pathname !== '/api/events'
+            && !/^\/api\/(backup\/jobs\/[^/]+\/download|recordings\/[^/]+\/file|mail\/attachments\/[^/]+)$/.test(url.pathname),
           handler: 'NetworkOnly',
         }],
         // Inject custom service worker code

@@ -13,7 +13,7 @@ export default function ModuleSettings() {
     reorder.mutate(order);
   };
   const failure = update.error || reorder.error;
-  return <section className="space-y-5 max-w-4xl"><div><h2 className="text-xl font-semibold">Modules</h2><p className="text-sm text-muted-foreground mt-2 max-w-prose">Hide a module to remove navigation links. Disable it to stop access. Background work has its own switch and only runs for enabled modules. Your data stays in place and full backups include disabled modules. Calendar and ToDo share these settings. Disabling a module clears this browser’s offline copy. Refresh or clear saved offline data on other devices separately.</p></div>
+  return <section className="space-y-5 max-w-4xl"><div><h2 className="text-xl font-semibold">Modules</h2><p className="text-sm text-muted-foreground mt-2 max-w-prose">Disabled modules keep their data, and backups still include it.</p></div>
     {isPending && <LoadingState compact label="Loading modules…" />}
     {error && <ErrorState title="Could not load modules" error={error} onRetry={() => void refetch()} retrying={isFetching} />}
     {failure && <p role="alert" className="text-destructive">{failure.message}</p>}

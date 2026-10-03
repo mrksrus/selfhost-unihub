@@ -10,7 +10,7 @@ const {
   getAllowedOriginForRequest,
   isRequestBodyTooLarge,
 } = require('./http/request');
-const { parseSingleByteRange } = require('./http/range');
+const { parseSingleByteRange, fileValidators, rangeAllowed } = require('./http/range');
 const { getModuleForPath } = require('./services/module-catalog');
 const { isModuleEnabled } = require('./services/module-settings');
 const { getActiveRestoreSections } = require('./services/restore-locks');
@@ -383,10 +383,16 @@ async function dispatchRequest(req, res) {
         'Cache-Control': 'no-cache',
         'Accept-Ranges': 'bytes',
       };
+      const validators = fileValidators(await fs.promises.stat(result.__streamPath).catch(() => null));
+      if (validators) {
+        headers.ETag = validators.etag;
+        headers['Last-Modified'] = validators.lastModified;
+      }
 
       let status = 200;
       let streamOptions;
-      if (req.headers.range && Number.isSafeInteger(contentLength) && contentLength > 0) {
+      if (req.headers.range && Number.isSafeInteger(contentLength) && contentLength > 0
+        && rangeAllowed(req.headers['if-range'], validators)) {
         const range = parseSingleByteRange(req.headers.range, contentLength);
         if (!range) {
           res.writeHead(416, {

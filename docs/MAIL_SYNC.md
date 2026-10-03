@@ -501,7 +501,8 @@ re-queues safe, not-yet-deleted imported messages.
 
 ## Sender Routing Rules
 
-Rules route new inbound messages into app folders during sync.
+Rules sort inbox mail into folders. They are not applied while mail is fetched;
+Settings → Mail → **Sort now** applies them to the inbox.
 
 | Rule field | Notes |
 | --- | --- |
@@ -531,7 +532,15 @@ Rule endpoints:
 | POST | `/api/mail/sender-rules/backfill` | Dry-run or apply routing to existing inbox mail |
 
 `POST /api/mail/sender-rules/backfill` is dry-run by default. Use
-`{ "mode": "apply" }` to move matched existing messages.
+`{ "mode": "apply" }` to move matched existing messages. It scans up to `limit`
+inbox messages per call (at most 5000) and returns `next_cursor` while more remain.
+
+Applying uses the same move path as moving mail by hand. On a Sync account the
+move is also queued for the mail server; on a Download account only the UniHub
+folder changes. The response counts `applied` (moved), `queued` (server moves)
+and `skipped`. A message is skipped when it was moved or refiled after the scan,
+or when it is on a Sync account and the target folder is not connected to a
+folder on that account's server.
 
 ## Mail API Endpoints
 

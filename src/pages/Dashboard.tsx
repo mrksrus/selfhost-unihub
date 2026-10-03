@@ -2,8 +2,8 @@ import { useModules } from '@/hooks/use-modules';
 import { mailQueryKeys } from '@/lib/mail-api';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { addDays, endOfDay, format, isAfter, isBefore, parseISO, startOfDay } from 'date-fns';
-import { ArrowRight, Calendar, CheckCircle2, Clock, Mail, Plus, Search, Users } from 'lucide-react';
+import { endOfDay, format, isAfter, isBefore, parseISO, startOfDay } from 'date-fns';
+import { Calendar, CheckCircle2, Clock, Mail, Plus } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
@@ -11,12 +11,6 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { calendarApi, calendarQueryKeys, formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
-
-type Stats = {
-  contacts: number;
-  upcomingEvents: number;
-  unreadEmails: number;
-};
 
 type EmailSummary = {
   id: string;
@@ -30,21 +24,9 @@ const Dashboard = () => {
   const { user } = useAuth();
   const { canNavigate, isEnabled, isSuccess: modulesReady } = useModules();
   const timezone = user?.timezone ?? null;
-  const firstName = user?.full_name?.split(' ')[0] || 'there';
   const now = new Date();
   const todayStart = startOfDay(now);
   const todayEnd = endOfDay(now);
-
-  const statsQuery = useQuery({
-    queryKey: ['stats'],
-    enabled: modulesReady,
-    queryFn: async () => {
-      const response = await api.get<Stats>('/stats');
-      if (response.error) throw new Error(response.error);
-      return response.data || { contacts: 0, upcomingEvents: 0, unreadEmails: 0 };
-    },
-  });
-  const stats = statsQuery.data;
 
   const todayEventsQuery = useQuery({
     enabled: isEnabled('calendar'),
@@ -94,23 +76,14 @@ const Dashboard = () => {
   const nextTasks = activeTasks
     .filter((event) => event.is_todo_only || isAfter(parseISO(event.end_time), now))
     .slice(0, 5);
-  const tomorrow = addDays(todayStart, 1);
-
-  const metrics = [
-    { label: 'Contacts', value: stats?.contacts, href: '/contacts', icon: Users },
-    { label: 'Today', value: todayEventsQuery.isSuccess ? todayEvents.length : undefined, href: '/calendar', icon: Calendar },
-    { label: 'Unread', value: stats?.unreadEmails, href: '/mail', icon: Mail },
-    { label: 'Overdue', value: taskEventsQuery.isSuccess ? overdueTasks.length : undefined, href: '/todo', icon: CheckCircle2 },
-  ];
+  const sections = ['/calendar', '/todo', '/mail'].filter(href => canNavigate(href)).length;
 
   return (
     <div className="p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h1 className="text-3xl font-bold text-foreground">Today</h1>
-          <p className="text-muted-foreground mt-1">
-            Good {getTimeOfDay()}, {firstName}. {format(now, 'EEEE, MMMM d')}
-          </p>
+          <p className="text-muted-foreground mt-1">{format(now, 'EEEE, MMMM d')}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {canNavigate('/contacts') && (<Button asChild variant="outline">
@@ -125,34 +98,12 @@ const Dashboard = () => {
         </div>
       </div>
 
-      {statsQuery.error && (
-        <ErrorState
-          title="Could not load counts"
-          error={statsQuery.error}
-          onRetry={() => void statsQuery.refetch()}
-          retrying={statsQuery.isFetching}
-        />
-      )}
+      {modulesReady && sections === 0 && <EmptyState icon={Calendar} title="Nothing to show" description="Calendar, ToDo and Mail are hidden or disabled." />}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {metrics.filter(metric => canNavigate(metric.href)).map((metric) => (
-          <Link key={metric.label} to={metric.href} className="rounded-md border bg-card p-4 hover:border-accent/50 transition-colors">
-            <div className="flex items-center justify-between">
-              <metric.icon className="h-5 w-5 text-muted-foreground" />
-              <ArrowRight className="h-4 w-4 text-muted-foreground" />
-            </div>
-            <p className="mt-3 text-2xl font-semibold">
-              {metric.value ?? <><span aria-hidden="true">–</span><span className="sr-only">Not available</span></>}
-            </p>
-            <p className="text-sm text-muted-foreground">{metric.label}</p>
-          </Link>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
         {canNavigate('/calendar') && (<Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-lg">Today&apos;s Agenda</CardTitle>
+            <CardTitle className="text-lg">Agenda</CardTitle>
             <Button asChild variant="ghost" size="sm">
               <Link to="/calendar">Calendar</Link>
             </Button>
@@ -181,7 +132,7 @@ const Dashboard = () => {
 
         {canNavigate('/todo') && (<Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-lg">Task Queue</CardTitle>
+            <CardTitle className="text-lg">Tasks</CardTitle>
             <Button asChild variant="ghost" size="sm">
               <Link to="/todo">ToDo</Link>
             </Button>
@@ -206,10 +157,7 @@ const Dashboard = () => {
               </div>
             )}
             <div>
-              <div className="flex items-center justify-between mb-3">
-                <Badge variant="secondary">Next</Badge>
-                <span className="text-xs text-muted-foreground">through {format(tomorrow, 'MMM d')}</span>
-              </div>
+              {overdueTasks.length > 0 && <Badge variant="secondary" className="mb-3">Next</Badge>}
               {nextTasks.length === 0 ? (
                 <DashboardEmpty icon={CheckCircle2} title="No active tasks" actionHref="/todo" actionLabel="Open ToDo" compact />
               ) : (
@@ -221,12 +169,10 @@ const Dashboard = () => {
             </>)}
           </CardContent>
         </Card>)}
-      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {canNavigate('/mail') && (<Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle className="text-lg">Unread Mail</CardTitle>
+            <CardTitle className="text-lg">Unread mail</CardTitle>
             <Button asChild variant="ghost" size="sm">
               <Link to="/mail">Mail</Link>
             </Button>
@@ -258,21 +204,6 @@ const Dashboard = () => {
             )}
           </CardContent>
         </Card>)}
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Find Anything</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="rounded-md border border-dashed p-5">
-              <Search className="h-6 w-6 text-muted-foreground mb-3" />
-              <p className="font-medium">Global search and commands</p>
-              <p className="text-sm text-muted-foreground mt-1">
-                Press Ctrl+K or Cmd+K to search contacts, mail, calendar events, todos, and actions.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
       </div>
     </div>
   );
@@ -330,12 +261,5 @@ const DashboardEmpty = ({
     )}
   />
 );
-
-const getTimeOfDay = () => {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'morning';
-  if (hour < 17) return 'afternoon';
-  return 'evening';
-};
 
 export default Dashboard;

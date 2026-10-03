@@ -30,6 +30,30 @@ function parseSingleByteRange(value, size) {
   };
 }
 
+// Strong validators from size and modification time, so a browser can resume
+// an interrupted download and knows when the file changed in between.
+function fileValidators(stat) {
+  const mtime = stat?.mtime instanceof Date ? stat.mtime : null;
+  if (!mtime || !Number.isFinite(mtime.getTime()) || !Number.isSafeInteger(stat.size)) return null;
+  return {
+    etag: `"${stat.size.toString(16)}-${Math.floor(mtime.getTime()).toString(16)}"`,
+    lastModified: mtime.toUTCString(),
+  };
+}
+
+// RFC 9110 If-Range: send the range only if the client's copy is the current
+// file (strong ETag match or the exact Last-Modified date); otherwise send it all.
+function rangeAllowed(ifRange, validators) {
+  if (ifRange === undefined || ifRange === null || ifRange === '') return true;
+  if (!validators) return false;
+  const value = String(ifRange).trim();
+  if (value.startsWith('W/')) return false;
+  if (value.startsWith('"')) return value === validators.etag;
+  return value === validators.lastModified;
+}
+
 module.exports = {
   parseSingleByteRange,
+  fileValidators,
+  rangeAllowed,
 };

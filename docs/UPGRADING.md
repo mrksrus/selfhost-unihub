@@ -5,6 +5,20 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.15.0 Downloads and Sort now
+
+No database upgrade.
+
+- **Service worker.** After updating, reload UniHub or accept the update prompt.
+  Downloads bypass the service worker only once the new worker is installed.
+- **Your own reverse proxy.** If another proxy sits in front of UniHub, it should
+  pass the `Range` and `If-Range` request headers and the `ETag` and
+  `Last-Modified` response headers unchanged (most do by default). Buffering
+  large downloads to disk is not needed; UniHub's own nginx streams them.
+- **Sort now on Sync accounts** now changes the mail server. Each matched
+  message is moved on the server as if you moved it by hand. Check your sender
+  rules before pressing Sort now on a Sync account.
+
 ## 0.14.0 Notes removed
 
 **Database upgrade 11 permanently deletes all Notes**: the `notes`,

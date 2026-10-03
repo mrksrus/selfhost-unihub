@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const routes = require('../src/routes/mail');
 const { getDb, setDb } = require('../src/state');
 const { presentMailFiling, folderAcceptsAccount } = require('../src/services/mail-filing');
+const mailWritebacks = require('../src/services/mail-writebacks');
 
 const request = url => ({ url, headers: { host: 'localhost' } });
 const recovered = () => ({ id: 'message', user_id: 'user', mail_account_id: 'source', filing_account_id: 'receiving',
@@ -51,53 +52,52 @@ test('list and detail preserve provider identity while presenting the receiving 
   assert.equal(stored.imap_uidvalidity, 12);
 });
 
-function backfillDb({ concurrentChange = false, target = 'connected' } = {}) {
-  const stored = recovered();
-  let changed = 0;
-  const calls = [];
+function backfillDb(t, { concurrentChange = false, target = 'connected', syncMode = 'download', remoteLinks = ['receiving'] } = {}) {
+  const stored = { ...recovered(), sync_mode: syncMode };
+  const moves = [];
   const folders = [
     { slug: 'inbox', is_system: true },
+    { slug: 'archive', is_system: true },
     { slug: 'source-only', mail_account_id: 'source', is_system: false },
     { slug: 'connected', mail_account_id: null, is_system: false },
     { slug: 'unconnected', mail_account_id: null, is_system: false },
   ];
-  const db = { async execute(sql, params) {
-    calls.push({ sql, params });
+  installDb(t, { async execute(sql, params) {
     if (sql.includes('SELECT id FROM mail_accounts')) return [[{ id: 'receiving' }]];
     if (sql.includes('FROM emails e')) {
       assert.match(sql, /e.is_legacy = FALSE/);
       assert.match(sql, /COALESCE\(e.filing_account_id, e.mail_account_id\) = \?/);
+      assert.doesNotMatch(sql, /sync_mode = 'sync'/);
       assert.equal(params[1], 'receiving');
       return [[{ ...stored }]];
     }
     if (sql.includes('INSERT INTO mail_folders')) return [{ affectedRows: 0 }];
-    if (sql.includes('JOIN mail_folder_remote_boxes')) return [[{ slug: 'connected', mail_account_id: 'receiving' }]];
+    if (sql.includes('JOIN mail_folder_remote_boxes')) return [remoteLinks.map(account => ({ slug: 'connected', mail_account_id: account }))];
     if (sql.includes('FROM mail_folders')) return [folders];
     if (sql.includes('FROM mail_sender_rules')) {
       assert.deepEqual(params, ['receiving', 'user', 'receiving']);
       return [[{ id: 'receiving-rule', mail_account_id: 'receiving', match_type: 'email', match_value: 'sender@example.test', target_folder: target }]];
     }
-    if (sql.includes('UPDATE emails SET folder')) {
-      assert.match(sql, /folder = \? AND is_legacy = FALSE/);
-      assert.match(sql, /mail_account_id <=> \? AND filing_account_id <=> \?/);
-      const [folder, id, userId, originalFolder, source, filing] = params;
-      assert.equal(id, stored.id); assert.equal(userId, stored.user_id);
-      if (stored.folder !== originalFolder || stored.mail_account_id !== source || stored.filing_account_id !== filing || stored.is_legacy) return [{ affectedRows: 0 }];
-      stored.folder = folder; changed++; return [{ affectedRows: 1 }];
-    }
     throw new Error(`Unexpected SQL ${sql}`);
-  }, async getConnection() { return { execute: db.execute,
-    async beginTransaction() { if (concurrentChange) stored.filing_account_id = 'source'; },
-    async commit() {}, async rollback() {}, release() {},
-  }; } };
-  return { db, stored, calls, changed: () => changed };
+  } });
+  // Stands in for the shared move path: locks rows, validates, then moves.
+  t.mock.method(mailWritebacks, 'mutateMessages', async (userId, ids, changes, validate) => {
+    assert.equal(userId, 'user'); assert.deepEqual(ids, [stored.id]);
+    if (concurrentChange) stored.filing_account_id = 'source';
+    await validate(null, [{ ...stored }]);
+    moves.push({ ids, changes });
+    stored.folder = changes.move;
+    return { sync_pending: stored.sync_mode === 'sync', operation_ids: stored.sync_mode === 'sync' ? ['operation'] : [] };
+  });
+  return { stored, moves };
 }
 
 test('sender backfill uses receiving-account rules and connected destinations without rewriting provider IDs', async t => {
-  const f = backfillDb(); installDb(t, f.db);
+  const f = backfillDb(t);
   const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
-  assert.equal(result.matched, 1); assert.equal(result.applied, 1);
+  assert.equal(result.matched, 1); assert.equal(result.applied, 1); assert.equal(result.queued, 0);
   assert.equal(result.updates[0].rule_id, 'receiving-rule');
+  assert.deepEqual(f.moves, [{ ids: ['message'], changes: { move: 'connected' } }]);
   assert.equal(f.stored.folder, 'connected');
   assert.equal(f.stored.mail_account_id, 'source');
   assert.equal(f.stored.filing_account_id, 'receiving');
@@ -105,15 +105,39 @@ test('sender backfill uses receiving-account rules and connected destinations wi
   assert.equal(f.stored.imap_uid, 41);
 });
 
+test('sender backfill dry run reports matches without moving mail', async t => {
+  const f = backfillDb(t);
+  const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving' });
+  assert.equal(result.dry_run, true); assert.equal(result.matched, 1); assert.equal(result.applied, 0);
+  assert.deepEqual(f.moves, []);
+});
+
 test('sender backfill skips messages whose filing changed after scanning and reports actual applied count', async t => {
-  const f = backfillDb({ concurrentChange: true }); installDb(t, f.db);
+  const f = backfillDb(t, { concurrentChange: true });
   const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
-  assert.equal(result.matched, 1); assert.equal(result.applied, 0);
-  assert.equal(f.stored.folder, 'inbox'); assert.equal(f.changed(), 0);
+  assert.equal(result.matched, 1); assert.equal(result.applied, 0); assert.equal(result.skipped, 1);
+  assert.equal(f.stored.folder, 'inbox'); assert.deepEqual(f.moves, []);
+});
+
+test('sender backfill queues server moves for Sync accounts', async t => {
+  const f = backfillDb(t, { syncMode: 'sync' });
+  f.stored.mail_account_id = 'receiving';
+  const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
+  assert.equal(result.applied, 1); assert.equal(result.queued, 1); assert.equal(result.skipped, 0);
+  assert.deepEqual(f.moves, [{ ids: ['message'], changes: { move: 'connected' } }]);
+});
+
+test('sender backfill skips Sync messages when the folder is not on their server', async t => {
+  // System folders accept every account, but this one has no server folder.
+  const f = backfillDb(t, { syncMode: 'sync', target: 'archive' });
+  f.stored.mail_account_id = 'receiving';
+  const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
+  assert.equal(result.matched, 1); assert.equal(result.applied, 0); assert.equal(result.skipped, 1);
+  assert.deepEqual(f.moves, []); assert.equal(f.stored.folder, 'inbox');
 });
 
 for (const target of ['source-only', 'unconnected']) test(`sender backfill rejects destination ${target} outside receiving account`, async t => {
-  const f = backfillDb({ target }); installDb(t, f.db);
+  const f = backfillDb(t, { target });
   const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
   assert.equal(result.matched, 0); assert.equal(result.applied, 0);
   assert.equal(f.stored.folder, 'inbox');

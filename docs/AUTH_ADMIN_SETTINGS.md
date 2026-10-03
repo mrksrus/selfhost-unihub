@@ -288,7 +288,7 @@ Behavior:
 
 ## Stats Endpoint
 
-`GET /api/stats` returns dashboard counts for the current user:
+`GET /api/stats` returns counts for the current user (the Today page no longer shows them):
 
 - contact count
 - upcoming non-cancelled, non-done calendar events

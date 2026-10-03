@@ -34,7 +34,7 @@ const staticActions = [
   { id: 'new-contact', label: 'Add Contact', href: '/contacts?action=new', icon: Plus },
   { id: 'recordings', label: 'Open Recordings', href: '/recordings', icon: Mic },
   { id: 'more', label: 'Open More', href: '/more', icon: MoreHorizontal },
-  { id: 'dashboard', label: 'Open Dashboard', href: '/dashboard', icon: LayoutDashboard },
+  { id: 'dashboard', label: 'Open Today', href: '/dashboard', icon: LayoutDashboard },
   { id: 'settings', label: 'Open Settings', href: '/settings', icon: Settings },
 ];
 
