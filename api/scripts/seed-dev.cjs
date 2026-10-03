@@ -98,7 +98,7 @@ async function seedUsers(db) {
   return { admin: admin.id, alex: alexId };
 }
 
-// ── Contacts, calendar, todos, notes ──────────────────────────────
+// ── Contacts, calendar, todos ──────────────────────────────
 async function seedContacts(db, userId, n) {
   const people = [];
   for (let i = 0; i < n; i++) {
@@ -150,20 +150,6 @@ async function seedCalendar(db, userId, eventCount, todoCount) {
       todo_status: done ? 'done' : i % 7 === 5 ? 'changed' : null, done_at: done ? sqlDate(at(int(-4, 0), 16)) : null });
   }
   counts.calendar_events = (counts.calendar_events || 0) + eventCount + 2 + todoCount;
-}
-
-async function seedNotes(db, userId, n) {
-  const notes = require('../src/services/notes');
-  const topics = ['Grocery list', 'Meeting notes – roadmap', 'Book recommendations', 'Recipe: lentil soup', 'Ideas for the garden',
-    'Travel packing list', 'Home network setup', 'Gift ideas', 'Workout plan', 'Old draft (can go)'];
-  let last = null;
-  for (let i = 0; i < n; i++) {
-    const body = `# ${topics[i % topics.length]}\n\n- First point about ${pick(['plans', 'costs', 'dates', 'people'])}\n- Second point\n\nSynthetic note ${i + 1}.`;
-    const { note } = await notes.createNote(userId, { title: topics[i % topics.length], body, linked_note_ids: last && i === 3 ? [last] : [] });
-    last = note.id;
-  }
-  await db.execute('UPDATE notes SET trashed_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?', [last, userId]); // one note in trash
-  counts.notes = (counts.notes || 0) + n;
 }
 
 // ── Mail ──────────────────────────────────────────────────────────
@@ -309,7 +295,7 @@ async function inTransaction(db, callback) {
   catch (error) { await cx.rollback(); throw error; } finally { cx.release(); }
 }
 async function tableCounts(db) {
-  const tables = ['users', 'contacts', 'calendar_calendars', 'calendar_events', 'notes', 'mail_accounts', 'mail_folders',
+  const tables = ['users', 'contacts', 'calendar_calendars', 'calendar_events', 'mail_accounts', 'mail_folders',
     'mail_folder_remote_boxes', 'emails', 'email_attachments', 'mail_remote_mailboxes', 'mail_remote_occurrences', 'mail_writebacks', 'mail_engine_jobs'];
   const out = {};
   for (const table of tables) { const [[row]] = await db.query(`SELECT COUNT(*) AS n FROM \`${table}\``); out[table] = Number(row.n); }
@@ -338,8 +324,6 @@ async function main() {
       const alexPeople = await inTransaction(db, cx => seedContacts(cx, users.alex, 12));
       await inTransaction(db, cx => seedCalendar(cx, users.admin, 32, 16));
       await inTransaction(db, cx => seedCalendar(cx, users.alex, 8, 4));
-      await seedNotes(db, users.admin, 10);
-      await seedNotes(db, users.alex, 3);
       const work = await createAccount(db, users.admin, { email: 'admin@example.com', display: 'Avery Admin', mode: 'sync', custom: ['Projects', 'Receipts'] });
       const personal = await createAccount(db, users.admin, { email: 'avery.personal@example.org', display: 'Avery (personal)', mode: 'download' });
       const alexMail = await createAccount(db, users.alex, { email: 'alex@example.com', display: 'Alex Example', mode: 'sync', custom: ['Travel'] });

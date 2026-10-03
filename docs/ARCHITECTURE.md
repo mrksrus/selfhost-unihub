@@ -418,8 +418,6 @@ search, statistics, offline reads and provider workers apply their own relevant
 checks. Settings/auth/recovery remain core functions. This is an internal catalog,
 not a dynamic plugin or microservice system.
 
-Notes demonstrates domain-owned editing and recovery: `notes.js` handles ownership,
-revision conflicts and file access; `notes-recovery.js` validates and remaps Notes
-records inside the common restore transaction. UI draft state lives in the
-user-keyed session provider and is never written into persistent browser storage.
-See [Modules and Notes](MODULES_AND_NOTES.md).
+Each user's module order is a separate `module_order` setting. The API returns
+modules in that order, and the sidebar, mobile bar and More page follow it. See
+[Modules](MODULES.md).

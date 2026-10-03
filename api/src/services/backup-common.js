@@ -3,13 +3,12 @@ const fs = require('fs');
 const path = require('path');
 const { MAIL_RAW_STORAGE_ROOT } = require('./mail');
 const { RECORDINGS_ROOT } = require('./recordings');
-const { NOTES_ROOT } = require('./notes');
 const { BACKUP_METADATA_LIMITS } = require('./backup-format');
 const { SECTION_POLICIES } = require('./backup-catalog');
 
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
 
-const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: MAIL_RAW_STORAGE_ROOT, recording: RECORDINGS_ROOT, note_attachment: NOTES_ROOT });
+const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: MAIL_RAW_STORAGE_ROOT, recording: RECORDINGS_ROOT });
 
 const BACKUP_CONFLICT_MODES = new Set(['keep_existing', 'replace', 'keep_both']);
 
@@ -165,7 +164,6 @@ function getBackupArchivePath(file) {
   if (file.kind === 'raw_email') return `files/mail-raw/${safeId}-${safeName}`;
   if (file.kind === 'email_attachment') return `files/mail-attachments/${safeId}-${safeName}`;
   if (file.kind === 'recording') return `files/recordings/${safeId}-${safeName}`;
-  if (file.kind === 'note_attachment') return `files/notes/${safeId}-${safeName}`;
   return `files/other/${safeId}-${safeName}`;
 }
 

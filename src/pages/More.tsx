@@ -3,15 +3,16 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { LayoutDashboard, Music2, Users, Settings, Shield, NotebookPen } from 'lucide-react';
+import { LayoutDashboard, Music2, Settings, Shield } from 'lucide-react';
+import { BOTTOM_NAV_PAGES, orderedModulePages } from '@/lib/navigation';
 
 const More = () => {
-  const { canNavigate } = useModules();
+  const { modules, canNavigate } = useModules();
   const { user } = useAuth();
   const links = [
-    { title: 'Notes', description: 'Text, Markdown, attachments, and revision history', href: '/notes', icon: NotebookPen },
+    // Module pages that do not fit in the mobile bar, in the user's order.
+    ...orderedModulePages(modules, canNavigate).slice(BOTTOM_NAV_PAGES).map(page => ({ title: page.name, description: page.description, href: page.href, icon: page.icon })),
     { title: 'Music', description: 'Music recordings and chord notes', href: '/music', icon: Music2 },
-    { title: 'Contacts', description: 'People, phone numbers, and email addresses', href: '/contacts', icon: Users },
     { title: 'Dashboard', description: 'Legacy overview page', href: '/dashboard', icon: LayoutDashboard },
     { title: 'Settings', description: 'Profile, preferences, security, and data', href: '/settings', icon: Settings },
   ];

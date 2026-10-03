@@ -1,5 +1,5 @@
 const { db } = require('../state');
-const { getUserModules } = require('./module-settings');
+const { getOrderedUserModules } = require('./module-settings');
 const { presentMailFiling } = require('./mail-filing');
 const { folderConnections } = require('./mail-folder-reconciliation');
 const { serializeCalendarEvent, serializeCalendarAccount, serializeCalendarCalendar,
@@ -48,7 +48,7 @@ function parseRecipients(value) {
 
 async function collectOfflineSnapshot(connection, userId) {
   if (!userId) throw Object.assign(new Error('Unauthorized'), { status: 401 });
-  const moduleStates = await getUserModules(userId, connection);
+  const moduleStates = await getOrderedUserModules(userId, connection);
   const modules = new Map(moduleStates.map(module => [module.id, module.enabled]));
   const sectionModule = key => key === 'contacts' ? 'contacts' : ['emails', 'mailAccounts', 'folders'].includes(key) ? 'mail' : 'calendar';
   const selected = Object.entries(SECTIONS).filter(([key]) => modules.get(sectionModule(key)));

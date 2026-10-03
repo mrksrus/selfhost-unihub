@@ -116,21 +116,28 @@ exercises encrypted HTTP creation, download, upload, validation and restoration.
 Never regenerate a historical fixture merely to make a changed reader pass.
 
 
-## Built-in modules and Notes
+## Built-in modules
 
 `module-catalog.js` binds optional modules to their recovery sections and request
-paths; `module-settings.js` reads archived per-user preferences. Visibility and
-feature/background pause do not narrow full exports. Settings/recovery remain
-available. Search and offline snapshots filter disabled modules separately.
+paths; `module-settings.js` reads archived per-user preferences and module order.
+Visibility and feature/background pause do not narrow full exports.
+Settings/recovery remain available. Search and offline snapshots filter disabled
+modules separately.
 
-Migration 4 adds Notes with all fields classified at introducedIn 4. Notes owns
-its editing and restore rules in `notes.js` and `notes-recovery.js`; the common
-backup service owns file staging/transaction outcomes. Restore maps note links,
-revisions and attachments together, preserves distinct copies and uses origin
-lineage only within the destination user. A revision restore changes title/text,
-not the current attachment/link set. Removed or replaced attachment bytes remain
-until separate safe cleanup; a concurrent archive may still be reading them.
+## Removing a module
 
-`notes.test.js`, `module-settings.test.js`, `module-search.test.js` and the extended
-HTTP/full roundtrip tests cover these contracts. Updating module preference
-validation also requires checking archived settings and legacy offline defaults.
+Removing a module must not break older archives or databases. Notes (0.14.0) is
+the reference:
+
+- A new migration drops the tables and files. Earlier migrations stay frozen, so
+  a database upgraded from any version replays the creation and then the removal.
+- The data inventory keeps the removed tables with `removedIn` set to that
+  migration and marks them `deliberately_excluded`.
+- `RETIRED_MODULE_IDS`, `RETIRED_SECTIONS` and `RETIRED_FILE_KINDS` make the
+  readers skip the removed data with a warning and import everything else.
+- Saved preferences, saved module order and the start page ignore the removed ID.
+
+`module-settings.test.js`, `module-search.test.js`, `backup-schema3.test.js`
+(older archives that contain Notes) and the HTTP/full roundtrip and startup MySQL
+tests cover these contracts. Updating module preference validation also requires
+checking archived settings and legacy offline defaults.

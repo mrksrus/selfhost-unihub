@@ -113,7 +113,7 @@ different from a fresh install.
 
 `db:dev` runs `api/scripts/seed-dev.cjs`, which refuses any database not ending
 in `_dev`, builds the schema with the app's own startup code and inserts
-deterministic synthetic data: contacts, calendars with events and todos, notes,
+deterministic synthetic data: contacts, calendars with events and todos,
 four mail accounts (two Sync, one Download, one disconnected) with a few hundred
 messages, and mail sync operations in queued, retry, needs-attention and
 confirmed states. Re-running it without `--reset` changes nothing. The sample

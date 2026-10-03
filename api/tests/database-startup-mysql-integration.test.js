@@ -4,6 +4,9 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 
+// Migration 11 deletes this folder; never point it at real uploads.
+process.env.NOTES_UPLOAD_ROOT = path.join(require('node:os').tmpdir(), `unihub-notes-${process.pid}`);
+
 const schemaSmokeEnabled = process.env.MYSQL_TEST_HOST && process.env.MYSQL_TEST_SCHEMA_SMOKE === '1';
 
 function quoteIdentifier(value) {
@@ -304,7 +307,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     [3, 'mail-server-follow-mode'], [4, 'notes-with-revisions-and-attachments'],
     [5, 'explicit-mail-writebacks'], [6, 'mail-engine-additive-storage'],
     [7, 'mail-engine-resumable-backfill'], [8, 'mail-engine-manual-refresh-intent'],
-    [9, 'calendar-color-default'], [10, 'mail-sync-policy'],
+    [9, 'calendar-color-default'], [10, 'mail-sync-policy'], [11, 'remove-notes-module'],
   ]);
   const [policyColumns] = await db.execute(`SELECT COLUMN_NAME AS name, COLUMN_DEFAULT AS dflt, IS_NULLABLE AS nullable
     FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mail_accounts'
@@ -358,4 +361,25 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   assert.equal(devices.total, 0);
   assert.equal(deliveries.total, 0);
   await db.execute('DELETE FROM notification_events WHERE user_id = ? AND kind = ?', [user.id, 'test']);
+
+  // Replay migration 11 over leftovers from an older release: Notes tables,
+  // saved Notes choices and attachment files are all gone afterwards.
+  await db.execute('DELETE FROM schema_migrations WHERE id = 11');
+  await db.execute('CREATE TABLE notes (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, title VARCHAR(255)) ENGINE=InnoDB');
+  await db.execute('CREATE TABLE note_links (note_id CHAR(36) NOT NULL, FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE) ENGINE=InnoDB');
+  await db.execute("INSERT INTO notes (id, user_id, title) VALUES (?, ?, 'Example note')", [crypto.randomUUID(), user.id]);
+  await db.execute(`INSERT INTO user_settings (user_id, setting_key, setting_value) VALUES (?, 'module_preferences', ?), (?, 'default_start_page', 'notes')
+    ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`, [user.id, JSON.stringify({ notes: { enabled: false }, mail: { visible: false } }), user.id]);
+  await fs.mkdir(path.join(process.env.NOTES_UPLOAD_ROOT, user.id), { recursive: true });
+  await fs.writeFile(path.join(process.env.NOTES_UPLOAD_ROOT, user.id, 'attachment.txt'), 'Example attachment');
+  await getDb().end();
+  await initDatabase();
+  const [noteTables] = await db.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'note%'");
+  assert.deepEqual(noteTables, []);
+  const [settings] = await db.execute("SELECT setting_key, setting_value FROM user_settings WHERE user_id = ? AND setting_key IN ('module_preferences', 'default_start_page')", [user.id]);
+  assert.deepEqual(settings.map(row => [row.setting_key, typeof row.setting_value === 'string' ? JSON.parse(row.setting_value) : row.setting_value]),
+    [['module_preferences', { mail: { visible: false } }]]);
+  await assert.rejects(fs.access(process.env.NOTES_UPLOAD_ROOT), { code: 'ENOENT' });
+  const [[replayed]] = await db.execute('SELECT name FROM schema_migrations WHERE id = 11');
+  assert.equal(replayed.name, 'remove-notes-module');
 });

@@ -130,6 +130,32 @@ test('older archives with Tetris scores or a games section import without the re
   assert.equal(Object.hasOwn(SECTION_POLICIES, 'games'), false);
 });
 
+test('older archives with Notes, note files or a notes section import everything else', async t => {
+  const calls = database(t);
+  const crypto = require('node:crypto');
+  const bytes = Buffer.from('Example note attachment');
+  const notes = {
+    notes: [{ id: 'note', user_id: 'source', title: 'Example', body: 'Text', revision: 2 }],
+    note_revisions: [{ id: 'revision', user_id: 'source', note_id: 'note', revision: 1, title: 'Example', body: '' }],
+    note_attachments: [{ id: 'file', user_id: 'source', note_id: 'note', filename: 'a.txt', content_type: 'text/plain', size_bytes: bytes.length }],
+    note_links: [{ user_id: 'source', note_id: 'note', linked_note_id: 'note' }],
+  };
+  const contacts = [{ id: 'contact', user_id: 'source', first_name: 'Local' }];
+  const old = () => ({ ...archive({ ...notes, contacts }), files: [{ kind: 'note_attachment', id: 'file', archive_path: 'files/notes/file',
+    sha256: crypto.createHash('sha256').update('different').digest('hex'), data_base64: bytes.toString('base64') }] });
+  const validation = validateBackupPayload(old());
+  assert.equal(validation.valid, true, validation.errors.join('\n'));
+  assert.deepEqual(validation.warnings, ['Notes from the removed Notes module were skipped.']);
+  const normalized = normalizeBackupPayload(old());
+  assert.deepEqual(Object.keys(normalized.data), ['contacts']);
+  assert.deepEqual(normalized.files, []);
+  const result = await importBackupForUser('destination', old(), { mode: 'apply', sections: ['contacts', 'notes'] });
+  assert.equal(result.valid, true);
+  assert.equal(inserted(calls, 'contacts').length, 1);
+  assert.equal(calls.some(call => /\b(INTO|FROM|UPDATE) `?note/.test(call.sql)), false);
+  assert.equal(Object.hasOwn(SECTION_POLICIES, 'notes'), false);
+});
+
 test('unknown required tables, fields, file kinds and unsafe transcript rows fail review', () => {
   for (const data of [{ future_notes: [] }, { contacts: [{ id: 'a', future_required: 'data' }] },
     { recording_transcription_jobs: [{ id: 'a', recording_id: 'r', status: 'queued', transcript_text: 'text' }] },

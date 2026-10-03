@@ -1,11 +1,10 @@
 const fs = require('fs');
 const { db } = require('../state');
 const { modulesFromValue } = require('./module-settings');
-const { validateNotesData } = require('./notes-recovery');
 const { validateRestoreRows } = require('./backup-ownership');
 const { AUDIO_HEADER_BYTES, identifyRecordingAudio } = require('./recording-audio');
 const { validateBackupVersionFields } = require('./backup-format');
-const { RETIRED_TABLES, SECTION_POLICIES, TABLE_POLICIES, normalizeBackupSections } = require('./backup-catalog');
+const { RETIRED_FILE_KINDS, RETIRED_TABLES, SECTION_POLICIES, TABLE_POLICIES, normalizeBackupSections } = require('./backup-catalog');
 const {
   BACKUP_IMPORT_SECTION_TABLES,
   BACKUP_IMPORT_SECTION_FILE_KINDS,
@@ -33,7 +32,7 @@ function validateBackupPayload(backup, {
   for (const [table, rows] of Object.entries(backup.data || {})) {
     const policy = TABLE_POLICIES[table];
     if (!policy && Object.hasOwn(RETIRED_TABLES, table)) {
-      if (Array.isArray(rows) && rows.length) warnings.push(RETIRED_TABLES[table]);
+      if (Array.isArray(rows) && rows.length && !warnings.includes(RETIRED_TABLES[table])) warnings.push(RETIRED_TABLES[table]);
       continue;
     }
     if (!policy) { errors.push(`Unsupported backup table: ${table}`); continue; }
@@ -46,10 +45,10 @@ function validateBackupPayload(backup, {
     }
   }
   for (const file of Array.isArray(backup.files) ? backup.files : []) {
+    if (RETIRED_FILE_KINDS.includes(file?.kind)) continue;
     if (!Object.values(SECTION_POLICIES).some(policy => policy.fileKinds.includes(file?.kind))) errors.push(`Unsupported backup file kind: ${file?.kind}`);
   }
   errors.push(...validateRestoreRows(backup.data));
-  errors.push(...validateNotesData(backup.data));
   for (const row of Array.isArray(backup.data?.user_settings) ? backup.data.user_settings : []) {
     if (row?.setting_key === 'module_preferences') {
       try { modulesFromValue(row.setting_value); } catch { errors.push('Backup has invalid module preferences.'); }
@@ -58,6 +57,7 @@ function validateBackupPayload(backup, {
 
   if (Array.isArray(backup.files)) {
     for (const file of backup.files) {
+      if (RETIRED_FILE_KINDS.includes(file?.kind)) continue;
       if (file?.missing) {
         warnings.push(`File ${file.kind}:${file.id} was missing when backup was created`);
         continue;
@@ -68,11 +68,6 @@ function validateBackupPayload(backup, {
       if ((!file?.data_base64 && !fileBuffer) || !file.sha256) {
         errors.push(`File ${file?.kind || 'unknown'}:${file?.id || 'unknown'} is incomplete`);
         continue;
-      }
-      if (file?.kind === 'note_attachment') {
-        const attachment = (Array.isArray(backup.data?.note_attachments) ? backup.data.note_attachments : []).find(row => row?.id === file.id);
-        const actualSize = Buffer.isBuffer(fileBuffer) ? fileBuffer.length : fileBuffer?.size ?? (file.data_base64 ? Buffer.from(String(file.data_base64), 'base64').length : null);
-        if (!attachment || actualSize !== attachment.size_bytes) errors.push(`Note attachment ${file.id} has inconsistent file size or ownership.`);
       }
       if (skipFileHashValidation) continue;
       if (fileBuffer && !Buffer.isBuffer(fileBuffer)) {
@@ -102,7 +97,6 @@ function validateBackupPayload(backup, {
     const required = [
       ...rows('email_attachments').map(row => `email_attachment:${row.id}`),
       ...rows('recordings').map(row => `recording:${row.id}`),
-      ...rows('note_attachments').map(row => `note_attachment:${row.id}`),
       ...rows('emails').filter(row => row.raw_storage_path || row.import_complete === true || row.import_complete === 1).map(row => `raw_email:${row.id}`),
     ];
     for (const key of required) if (!files.has(key)) errors.push(`Schema 3 backup has no referenced file: ${key}`);
@@ -226,12 +220,6 @@ async function countRestoreConflicts(userId, backup) {
   }
   if (recordingConflicts) conflicts.recordings = recordingConflicts;
 
-  let noteConflicts = 0;
-  for (const note of data.notes || []) {
-    const [rows] = await db.execute('SELECT id FROM notes WHERE user_id = ? AND (id = ? OR origin_key = ?) LIMIT 1', [userId, note.id, note.origin_key]);
-    if (rows.length) noteConflicts++;
-  }
-  if (noteConflicts) conflicts.notes = noteConflicts;
   return conflicts;
 }
 

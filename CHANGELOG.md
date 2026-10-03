@@ -6,6 +6,41 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of MySQL, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.14.0
+
+**This release permanently deletes all Notes.** Export any note you want to keep
+before updating (open the note and use **Download Markdown**, or keep a 0.13.x
+backup that includes Notes). Database upgrade 11 removes them on first start.
+
+### Removed
+
+- **Notes.** The Notes page, its API, search results, command palette entries and
+  backup section are gone. Database upgrade 11 drops the `notes`,
+  `note_revisions`, `note_attachments` and `note_links` tables and deletes the
+  attachment files under `/app/uploads/notes`. If that folder cannot be deleted
+  (for example because it is a separate mount), UniHub logs a warning and starts
+  normally; delete the folder by hand.
+- A Notes start page falls back to the default start page.
+- Older backups that contain Notes still import. Notes are skipped with a
+  warning and everything else is restored.
+
+### New
+
+- **Module order.** Settings → Modules has up and down buttons for each module.
+  The sidebar, the mobile bar and the More page follow this order. The mobile
+  bar shows the first four pages (Calendar and ToDo count as two); the rest are
+  on More. The order is saved per user and included in settings backups.
+
+### Changed
+
+- The default mobile bar is now Mail, Calendar, ToDo and Contacts. Recordings
+  moved to More. Move Recordings up in Settings → Modules to bring it back.
+
+### After updating
+
+Check the log for `[DB] Could not remove old note attachments` and delete the
+named folder if it appears. See [Upgrading](docs/UPGRADING.md#0140-notes-removed).
+
 ## 0.13.3
 
 ### Fixes
@@ -705,7 +740,7 @@ notes, bounded attachments and readable Markdown downloads. Revision conflicts
 preserve the editor draft rather than overwriting another device's changes. Notes
 is online-only for now. Migration 4 is additive; schema-3 recovery includes all
 four Notes tables and attachment bytes, including disabled Notes and trashed notes.
-See [Modules and Notes](docs/MODULES_AND_NOTES.md) for limits and recovery behavior.
+See [Modules and Notes](docs/MODULES.md) for limits and recovery behavior.
 
 Wide desktop mail now shows folders, list and reader together; mobile retains its
 account/folder context when returning from a message. Data Management separates

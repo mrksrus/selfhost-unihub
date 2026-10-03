@@ -753,64 +753,6 @@ CREATE TABLE `mail_writebacks` (
   CONSTRAINT `mail_writebacks_ibfk_3` FOREIGN KEY (`email_id`) REFERENCES `emails` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE `note_attachments` (
-  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `note_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `filename` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `content_type` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `size_bytes` int unsigned NOT NULL,
-  `storage_path` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `user_id` (`user_id`),
-  KEY `note_id` (`note_id`),
-  CONSTRAINT `note_attachments_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `note_attachments_ibfk_2` FOREIGN KEY (`note_id`) REFERENCES `notes` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE `note_links` (
-  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `note_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `linked_note_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  PRIMARY KEY (`note_id`,`linked_note_id`),
-  KEY `user_id` (`user_id`),
-  KEY `linked_note_id` (`linked_note_id`),
-  CONSTRAINT `note_links_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `note_links_ibfk_2` FOREIGN KEY (`note_id`) REFERENCES `notes` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `note_links_ibfk_3` FOREIGN KEY (`linked_note_id`) REFERENCES `notes` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE `note_revisions` (
-  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `note_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `revision` int unsigned NOT NULL,
-  `title` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `body` mediumtext COLLATE utf8mb4_unicode_ci NOT NULL,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_note_revision` (`note_id`,`revision`),
-  KEY `user_id` (`user_id`),
-  CONSTRAINT `note_revisions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
-  CONSTRAINT `note_revisions_ibfk_2` FOREIGN KEY (`note_id`) REFERENCES `notes` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE `notes` (
-  `id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `origin_key` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `user_id` char(36) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `title` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `body` mediumtext COLLATE utf8mb4_unicode_ci NOT NULL,
-  `revision` int unsigned NOT NULL DEFAULT '1',
-  `trashed_at` datetime DEFAULT NULL,
-  `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  KEY `idx_notes_owner` (`user_id`,`trashed_at`,`updated_at`),
-  CONSTRAINT `notes_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE `notification_config` (
   `id` tinyint NOT NULL,
   `public_key` varchar(128) COLLATE utf8mb4_unicode_ci NOT NULL,

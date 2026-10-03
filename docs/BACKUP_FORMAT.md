@@ -36,9 +36,9 @@ Legacy state, per-account sender-rule overrides, recovery journals and translate
 completion markers. Completed recording transcripts
 are included. Server-side Tetris scores were included until 0.12.0 removed
 Games; they are now skipped on import with a warning. Mail mode, separate current provider bindings and the remote-missing
-marker are included. Notes text, all revisions, Trash state, owned note links and
-attachment bytes are included, even when Notes is hidden or disabled. Module
-preferences are archived with settings. Old archives default to Download; Sync restores as pending.
+marker are included. Hidden or disabled modules are included. Module
+preferences and module order are archived with settings. Notes data from
+archives made before 0.14.0 is skipped on import with a warning. Old archives default to Download; Sync restores as pending.
 Automatic deletion is always reset off. Different provider mailbox identities
 cannot be merged.
 

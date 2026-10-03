@@ -3,6 +3,7 @@ import { Navigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { orderedModulePages } from '@/lib/navigation';
 
 const startPagePaths: Record<string, string> = {
   mail: '/mail',
@@ -10,7 +11,6 @@ const startPagePaths: Record<string, string> = {
   todo: '/todo',
   contacts: '/contacts',
   recordings: '/recordings',
-  notes: '/notes',
   dashboard: '/dashboard',
 };
 
@@ -35,7 +35,7 @@ const StartRedirect = () => {
   }
 
   const desired = startPagePaths[data?.default_start_page || 'mail'] || '/mail';
-  const target = modules.canNavigate(desired) ? desired : Object.values(startPagePaths).find(path => modules.canNavigate(path)) || '/settings';
+  const target = modules.canNavigate(desired) ? desired : orderedModulePages(modules.modules, modules.canNavigate)[0]?.href || '/dashboard';
   return <Navigate to={target} replace />;
 };
 

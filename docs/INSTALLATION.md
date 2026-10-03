@@ -12,7 +12,7 @@ volumes by following the fresh-install steps on an existing installation.
 ## 1. Prepare your server and browser address
 
 You need Docker with the Compose plugin, Git, and persistent disk space for mail,
-recordings, Notes attachments, backups and the database. The supplied images use
+recordings, backups and the database. The supplied images use
 MySQL 8.0; do not substitute MariaDB without separate compatibility testing.
 
 Choose a browser address such as `https://hub.example.com`, with DNS pointing to
@@ -149,8 +149,8 @@ certificate verification. It is not required to start UniHub.
 
 | Container/mount | Contents | Must persist? |
 | --- | --- | --- |
-| MySQL `/var/lib/mysql`, Compose volume `mysql_data` | Users, mail metadata/bodies, contacts, events/tasks, Notes text/revisions, settings and jobs | Yes |
-| UniHub `/app/uploads`, Compose volume `uploads_data` | Mail originals/attachments, recordings, Notes attachments, generated backups and restore uploads | Yes |
+| MySQL `/var/lib/mysql`, Compose volume `mysql_data` | Users, mail metadata/bodies, contacts, events/tasks, settings and jobs | Yes |
+| UniHub `/app/uploads`, Compose volume `uploads_data` | Mail originals/attachments, recordings, generated backups and restore uploads | Yes |
 | MySQL `/etc/mysql/conf.d/custom.cnf` | Read-only configuration from the repository | Keep the source file available |
 
 Use writable storage suitable for each container's actual user/permissions. Do

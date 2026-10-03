@@ -3,7 +3,7 @@ const { readV1 } = require('./backup-formats/v1');
 const { readV2 } = require('./backup-formats/v2');
 const { readV3 } = require('./backup-formats/v3');
 const { readV4 } = require('./backup-formats/v4');
-const { RETIRED_TABLES } = require('./backup-catalog');
+const { RETIRED_TABLES, RETIRED_FILE_KINDS } = require('./backup-catalog');
 
 const BACKUP_VERSION = 4;
 const ZIP_BACKUP_FORMAT = 'unihub-restorable-backup';
@@ -77,7 +77,7 @@ function normalizeBackupPayload(backup) {
     data: Object.fromEntries(Object.entries(backup.data).filter(([table]) => !Object.hasOwn(RETIRED_TABLES, table)).map(([table, rows]) => [table,
       Array.isArray(rows) ? rows.map(row => ({ ...row })) : rows && typeof rows === 'object' ? { ...rows } : rows,
     ])),
-    files: backup.files.map(file => ({ ...file })),
+    files: backup.files.filter(file => !RETIRED_FILE_KINDS.includes(file?.kind)).map(file => ({ ...file })),
   };
   let result = READERS.get(backup.version)(normalized);
   if (backup.version < 3) result = readV3(result, { legacyDefaults: true });

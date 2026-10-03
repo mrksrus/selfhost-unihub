@@ -1,4 +1,6 @@
 const mysql = require('mysql2/promise');
+const fs = require('node:fs');
+const path = require('node:path');
 const { db, setDb, getDb } = require('../state');
 const {
   JWT_SECRET,
@@ -13,6 +15,23 @@ const { runMigrations } = require('./database-migrations');
 const { verifyDatabaseInventory } = require('./data-inventory');
 const { migrateMailEngineSchema, backfillMailEngine, verifyMailEngineSchema,
   migrateManualMailRefresh, verifyManualMailRefresh, migrateMailSyncPolicy, verifyMailSyncPolicy } = require('./mail-engine/schema');
+
+// Attachment files of the Notes module removed in 0.14.0 (migration 11).
+const NOTES_UPLOAD_ROOT = process.env.NOTES_UPLOAD_ROOT || '/app/uploads/notes';
+
+// Note attachment files are removed with the Notes module. The folder may be its
+// own mount, so its contents go first; a file that cannot be removed is reported
+// rather than keeping the whole server from starting.
+async function removeNotesFiles() {
+  try {
+    for (const entry of await fs.promises.readdir(NOTES_UPLOAD_ROOT)) {
+      await fs.promises.rm(path.join(NOTES_UPLOAD_ROOT, entry), { recursive: true, force: true });
+    }
+    await fs.promises.rmdir(NOTES_UPLOAD_ROOT).catch(error => { if (error.code !== 'EBUSY') throw error; });
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.warn(`[DB] Could not remove old note attachments in ${NOTES_UPLOAD_ROOT}: ${error.message}. Delete that folder by hand.`);
+  }
+}
 
 function isPlaceholderSecret(value) {
   const normalized = String(value || '').trim().toLowerCase();
@@ -335,6 +354,28 @@ async function ensureSchema() {
       name: 'mail-sync-policy',
       up: migrateMailSyncPolicy,
       verify: verifyMailSyncPolicy,
+    },
+    {
+      // 0.14.0: the Notes module is removed. Its tables, attachment files and
+      // saved choices go with it. Every step can run again after a crash.
+      id: 11,
+      name: 'remove-notes-module',
+      up: async connection => {
+        for (const table of ['note_links', 'note_attachments', 'note_revisions', 'notes']) {
+          await connection.execute(`DROP TABLE IF EXISTS ${quoteIdentifier(table)}`);
+        }
+        await connection.execute(`UPDATE user_settings SET setting_value = JSON_REMOVE(setting_value, '$.notes')
+          WHERE setting_key = 'module_preferences' AND JSON_VALID(setting_value) AND JSON_CONTAINS_PATH(setting_value, 'one', '$.notes')`);
+        await connection.execute("DELETE FROM user_settings WHERE setting_key = 'default_start_page' AND setting_value = 'notes'");
+        await removeNotesFiles();
+      },
+      verify: async connection => {
+        await verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 11 });
+        const [[left]] = await connection.execute(`SELECT COUNT(*) AS n FROM user_settings WHERE (setting_key = 'module_preferences'
+          AND JSON_VALID(setting_value) AND JSON_CONTAINS_PATH(setting_value, 'one', '$.notes'))
+          OR (setting_key = 'default_start_page' AND setting_value = 'notes')`);
+        if (Number(left.n) !== 0) throw new Error('Notes settings remain');
+      },
     },
   ]);
 }

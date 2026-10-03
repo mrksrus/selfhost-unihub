@@ -82,16 +82,7 @@ async function dispatchRequest(req, res) {
   req.params = {};
   
   // Handle parameterized routes
-  if (url.pathname.startsWith('/api/notes/')) {
-    const match = /^\/api\/notes\/([^/]+)(?:\/(restore|export|attachments|revisions)(?:\/([^/]+)(?:\/(download|restore))?)?)?$/.exec(url.pathname);
-    if (match) {
-      req.params.id = match[1];
-      req.params.attachmentId = match[2] === 'attachments' ? match[3] : undefined;
-      req.params.revision = match[2] === 'revisions' ? match[3] : undefined;
-      const suffix = match[2] ? `/${match[2]}${match[3] ? (match[2] === 'revisions' ? '/:revision' : '/:attachmentId') : ''}${match[4] ? `/${match[4]}` : ''}` : '';
-      routeKey = `${req.method} /api/notes/:id${suffix}`;
-    }
-  } else if (routeKey.includes('/api/contacts/') && req.method !== 'GET' && req.method !== 'POST') {
+  if (routeKey.includes('/api/contacts/') && req.method !== 'GET' && req.method !== 'POST') {
     routeKey = `${req.method} /api/contacts/:id`;
     if (url.pathname.includes('/favorite')) {
       routeKey = `${req.method} /api/contacts/:id/favorite`;
@@ -284,8 +275,6 @@ async function dispatchRequest(req, res) {
     let maxBodySize = 1000; // Default for most endpoints
     if (url.pathname === '/api/modules') {
       maxBodySize = 16384;
-    } else if (url.pathname.startsWith('/api/notes')) {
-      maxBodySize = routeKey === 'POST /api/notes/:id/attachments' ? 3 * 1024 * 1024 : 1024 * 1024;
     } else if (url.pathname.startsWith('/api/notifications/')) {
       maxBodySize = 16384;
     } else if (routeKey === 'POST /api/contacts/import') {

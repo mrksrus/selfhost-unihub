@@ -3,7 +3,7 @@ import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, MoreHorizontal, Plus, Search, Settings, Users, NotebookPen } from 'lucide-react';
+import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, MoreHorizontal, Plus, Search, Settings, Users } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
   CommandDialog,
@@ -18,14 +18,13 @@ import {
 
 type SearchResult = {
   id: string;
-  type: 'contact' | 'mail' | 'calendar' | 'todo' | 'recording' | 'note';
+  type: 'contact' | 'mail' | 'calendar' | 'todo' | 'recording';
   title: string;
   subtitle?: string;
   href: string;
 };
 
 const staticActions = [
-  { id: 'notes', label: 'Open Notes', href: '/notes', icon: NotebookPen },
   { id: 'mail', label: 'Open Mail', href: '/mail', icon: Mail },
   { id: 'compose', label: 'Compose Email', href: '/mail?action=compose', icon: Plus },
   { id: 'calendar', label: 'Open Calendar', href: '/calendar', icon: Calendar },
@@ -40,7 +39,6 @@ const staticActions = [
 ];
 
 function getResultIcon(type: SearchResult['type']) {
-  if (type === 'note') return NotebookPen;
   if (type === 'contact') return Users;
   if (type === 'mail') return Mail;
   if (type === 'recording') return Mic;

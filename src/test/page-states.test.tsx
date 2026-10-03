@@ -4,10 +4,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { Users } from 'lucide-react';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
-import { NoteDraftProvider } from '@/hooks/use-note-draft';
 import { api } from '@/lib/api';
 import AdminUsers from '@/pages/AdminUsers';
-import Notes from '@/pages/Notes';
 
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'admin-1', role: 'admin' } }) }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
@@ -15,7 +13,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 function renderPage(children: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-  return render(<QueryClientProvider client={client}><MemoryRouter><NoteDraftProvider>{children}</NoteDraftProvider></MemoryRouter></QueryClientProvider>);
+  return render(<QueryClientProvider client={client}><MemoryRouter>{children}</MemoryRouter></QueryClientProvider>);
 }
 
 describe('shared page states', () => {
@@ -75,16 +73,5 @@ describe('page error states', () => {
     expect(await screen.findByText('ada@example.test')).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(get).toHaveBeenCalledTimes(2);
-  });
-
-  it('does not show an empty notes message when the list failed to load', async () => {
-    vi.spyOn(api, 'get')
-      .mockResolvedValueOnce({ error: 'Notes are unavailable' })
-      .mockResolvedValue({ data: { notes: [] } });
-    renderPage(<Notes />);
-    expect(await screen.findByText('Notes are unavailable')).toBeInTheDocument();
-    expect(screen.queryByText('No notes yet')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByText('No notes yet')).toBeInTheDocument();
   });
 });

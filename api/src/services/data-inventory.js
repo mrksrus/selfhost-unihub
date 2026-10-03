@@ -6,6 +6,8 @@ const { EPHEMERAL_COLUMNS } = require('./mail-engine/recovery-policy');
 // Fields present in the adopted baseline default to migration 1. Future fields
 // declare introducedIn: { column_name: migrationId } on their owning policy so
 // baseline verification never requires DDL from a later, pending upgrade.
+// Dropped tables declare removedIn: the migration that drops them; from then on
+// they must be absent.
 function excluded(treatment, reason, columns) {
   return Object.freeze({ treatment, reason, columns: Object.freeze(columns.split(' ')) });
 }
@@ -32,6 +34,14 @@ const NON_ARCHIVE_POLICIES = Object.freeze({
   notification_deliveries: excluded('rebuilt', 'Delivery attempts belong to destination browser subscriptions.', 'event_id subscription_id status attempts available_at delivered_at last_error'),
   notification_reminders: excluded('rebuilt', 'Reminders are scheduled again from restored calendar events.', 'event_id user_id minutes due_at queued_at'),
   tetris_scores: excluded('deliberately_excluded', 'The Games module was removed in 0.12.0; existing scores stay in the database but are no longer used or exported.', 'user_id score lines level achieved_at'),
+  ...Object.fromEntries(Object.entries({
+    notes: 'id origin_key user_id title body revision trashed_at created_at updated_at',
+    note_revisions: 'id user_id note_id revision title body created_at',
+    note_attachments: 'id user_id note_id filename content_type size_bytes storage_path created_at',
+    note_links: 'user_id note_id linked_note_id',
+  }).map(([name, columns]) => [name, Object.freeze({
+    ...excluded('deliberately_excluded', 'The Notes module was removed in 0.14.0; migration 11 drops its tables and files.', columns),
+    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 4])), removedIn: 11 })])),
   schema_migrations: excluded('deliberately_excluded', 'Database upgrade history describes this installation, never user archive contents.', 'id name completed_at'),
 });
 const NOTIFICATION_TABLES = new Set(['notification_config', 'push_subscriptions', 'notification_events', 'notification_deliveries', 'notification_reminders']);
@@ -39,10 +49,10 @@ const NOTIFICATION_TABLES = new Set(['notification_config', 'push_subscriptions'
 function declaredFields() {
   assertRecoveryCatalog();
   const fields = new Map();
-  function add(table, column, policy, introducedIn = 1) {
+  function add(table, column, policy, introducedIn = 1, removedIn = Infinity) {
     const key = `${table}.${column}`;
-    if (!policy || !Number.isSafeInteger(introducedIn) || introducedIn < 1 || fields.has(key)) throw new Error(`Invalid or duplicate data policy: ${key}`);
-    fields.set(key, { treatment: policy, introducedIn });
+    if (!policy || !Number.isSafeInteger(introducedIn) || introducedIn < 1 || !(removedIn > introducedIn) || fields.has(key)) throw new Error(`Invalid or duplicate data policy: ${key}`);
+    fields.set(key, { treatment: policy, introducedIn, removedIn });
   }
   for (const [key, policy] of Object.entries(TABLE_POLICIES)) {
     const table = key === 'user' ? 'users' : key;
@@ -51,13 +61,14 @@ function declaredFields() {
   }
   for (const [table, policy] of Object.entries(NON_ARCHIVE_POLICIES)) {
     if (!policy.reason) throw new Error(`Missing exclusion reason: ${table}`);
-    for (const column of policy.columns) add(table, column, policy.treatment, policy.introducedIn?.[column]);
+    for (const column of policy.columns) add(table, column, policy.treatment, policy.introducedIn?.[column], policy.removedIn);
   }
   return fields;
 }
 
 function assertInventoryCoverage(rows, { includeNotifications = true, requireAll = true, throughMigration = Infinity } = {}) {
   const fields = declaredFields();
+  const removed = policy => Number.isFinite(policy.removedIn) && policy.removedIn <= throughMigration;
   const actual = new Set();
   const failures = [];
   for (const row of rows) {
@@ -65,9 +76,10 @@ function assertInventoryCoverage(rows, { includeNotifications = true, requireAll
     const key = `${row.table_name}.${row.column_name}`;
     actual.add(key);
     if (!fields.has(key)) failures.push(`Unclassified field ${key}`);
+    else if (removed(fields.get(key))) failures.push(`Removed field still present ${key}`);
   }
   if (requireAll) for (const [key, policy] of fields) {
-    if (policy.introducedIn > throughMigration) continue;
+    if (policy.introducedIn > throughMigration || removed(policy)) continue;
     if (!includeNotifications && NOTIFICATION_TABLES.has(key.split('.')[0])) continue;
     if (!actual.has(key)) failures.push(`Missing declared field ${key}`);
   }

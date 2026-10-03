@@ -1,6 +1,6 @@
 # UniHub
 
-Your mail, contacts, calendar, tasks, notes and recordings in one self-hosted web app.
+Your mail, contacts, calendar, tasks and recordings in one self-hosted web app.
 UniHub has a black-and-blue interface, works on desktop and mobile, and can be
 installed as a PWA. Your server stores the application data.
 
@@ -18,9 +18,8 @@ the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENS
 | Mail | Read and send mail, attachments, folders, search and bulk actions. Download mode can optionally delete downloaded mail from the provider. Sync mode follows server read/star/folder changes and retains missing messages locally. Sync also sends new read/star/move actions back, with visible pending/failure status and server-authoritative conflict handling. |
 | Contacts | Search, favourites, vCard import/export and duplicate merging. |
 | Calendar and tasks | Plan events and work through tasks using shared calendar data, reminders and subtasks. CalDAV imports supported non-recurring events; it does not send edits back. |
-| Notes | Text/Markdown editing, revision history, links, attachments and Trash. Currently online-only. |
 | Recordings | Record in the browser or import audio, then organise, play and download it. |
-| Optional modules | Hide features or disable their access/background work. Disabling a module keeps its data and full-backup coverage. |
+| Optional modules | Reorder, hide or disable modules and their background work. Disabling a module keeps its data and full-backup coverage. |
 | Backups / imports (ALPHA) | Experimental encrypted account exports and imports. Do not use them as your only backup. |
 | Mobile and offline | Installable PWA and opt-in read-only snapshots of up to 100 non-draft emails, contacts and calendar/tasks, subject to a 32 MiB limit. Notifications depend on browser and OS support. |
 
@@ -70,7 +69,7 @@ safe. Backups left only on the UniHub server do not protect you if that server o
 its storage is lost. There is no built-in scheduled infrastructure backup.
 
 Version 0.10.6 enables backup creation/import again. Its schema-3 archives include
-Notes and disabled modules; older schema-1/2 archives are read automatically.
+disabled modules; older schema-1/2 archives are read automatically.
 Older applications cannot read schema-3 archives. Downgrading an image does not
 undo database changes. Read [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md) and
 [Upgrading](docs/UPGRADING.md) before relying on either operation.
@@ -84,7 +83,7 @@ undo database changes. Read [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md)
 | Update without replacing my data | [Upgrade guide](docs/UPGRADING.md) |
 | Back up or restore my account | [Backup and restore (ALPHA)](docs/BACKUP_RESTORE.md) |
 | Choose Download or Sync | [Mail modes](docs/MAIL_MODES.md) |
-| Use Notes or optional features | [Modules and Notes](docs/MODULES_AND_NOTES.md) |
+| Reorder, hide or disable modules | [Modules](docs/MODULES.md) |
 | Configure administrators and trusted proxies | [Authentication and administration](docs/AUTH_ADMIN_SETTINGS.md) |
 | Install the PWA or troubleshoot notifications | [PWA guide](docs/PWA.md) |
 | Read saved data without a connection | [Offline reading](docs/OFFLINE.md) |

@@ -51,7 +51,7 @@ from administrator-accessible configuration. Never provide shared default secret
 | Private mail/CalDAV hosts | Optional; hostname or literal IP list; no schemes/ports/CIDRs | `TRUSTED_MAIL_HOSTS`, default empty. “Only servers intentionally hosted at private addresses. A hostname also covers its subdomains; use a narrow hostname.” |
 | Web port / bind address | Required port with catalog-compliant default; valid available host port | Map selected host port to app port 80. “Your HTTPS proxy forwards here. This port itself serves HTTP.” |
 | Database storage | Required persistent storage selection | MySQL `/var/lib/mysql`. “Contains your accounts and database. Do not replace with an empty location when updating.” |
-| Uploaded-file storage | Required persistent storage selection | UniHub `/app/uploads`. “Mail originals/attachments, recordings, Notes attachments and account backups.” |
+| Uploaded-file storage | Required persistent storage selection | UniHub `/app/uploads`. “Mail originals/attachments, recordings and account backups.” |
 
 Provide a visible setup note: “HTTPS must already be configured outside this app.
 A healthy container does not prove browser login works. Open the HTTPS address
@@ -133,7 +133,7 @@ including the maintainer's lack of professional development qualifications.
 - Slow MySQL readiness can use five minutes and continues as soon as ready.
 - Restart and catalog update preserve secrets, the same storage and existing data;
   bootstrap fields do not reset users. Invalid credentials fail visibly.
-- Mail files and Notes attachments survive an app upgrade using disposable data.
+- Mail files and recordings survive an app upgrade using disposable data.
   Account backup/import/restore are ALPHA and excluded from this installation
   validation. No recovery validation is claimed.
 - The installer renders without repository-relative host files, and storage works

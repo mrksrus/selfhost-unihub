@@ -8,7 +8,6 @@ const { MAIL_RAW_STORAGE_ROOT, validateMailHostPolicy } = require('./mail');
 const { validateDavUrlPolicy } = require('./caldav');
 const { resolveCalDavUrl } = require('../security/caldav-transport');
 const { RECORDINGS_ROOT } = require('./recordings');
-const { NOTES_ROOT } = require('./notes');
 const { resolveOwnedReference } = require('./backup-ownership');
 const {
   ATTACHMENTS_ROOT,
@@ -477,7 +476,7 @@ async function writeRestoredFile(userId, file, {
   if (!source) return null;
   const root = file.kind === 'raw_email'
     ? MAIL_RAW_STORAGE_ROOT
-    : file.kind === 'recording' ? RECORDINGS_ROOT : file.kind === 'note_attachment' ? NOTES_ROOT : ATTACHMENTS_ROOT;
+    : file.kind === 'recording' ? RECORDINGS_ROOT : ATTACHMENTS_ROOT;
   const targetDir = restoreJobId
     ? path.join(root, String(userId), 'restores', sanitizeArchivePathPart(restoreJobId))
     : path.join(root, String(userId));

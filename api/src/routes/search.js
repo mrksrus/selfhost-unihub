@@ -1,6 +1,5 @@
 const { db } = require('../state');
 const { getUserModules } = require('../services/module-settings');
-const { searchNotes } = require('../services/notes');
 
 function escapeLike(value) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
@@ -77,9 +76,7 @@ module.exports = {
         [userId, like, like, like, like]
       );
 
-      const notes = modules.get('notes') ? await searchNotes(userId, q, perTypeLimit) : [];
       const results = [
-        ...notes.map(note => ({ id: `note:${note.id}`, type: 'note', title: note.title || 'Untitled note', subtitle: String(note.body || '').slice(0, 160), href: `/notes?note=${encodeURIComponent(note.id)}`, entity_id: note.id, date: isoDate(note.updated_at) })),
         ...contacts.map((contact) => {
           const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || contact.email || 'Contact';
           return {

@@ -32,7 +32,7 @@ export default function OfflineSettings() {
   const clear=async()=>{request.current?.abort();request.current=null;setBusy('clearing');setError('');try{await clearOfflineData();setInfo(null);}catch(error){setError(error instanceof Error?error.message:'Could not clear offline data.');}finally{setBusy(null);}};
   return <section className="space-y-3 rounded-lg border bg-card p-4" aria-labelledby="offline-heading">
     <h2 id="offline-heading" className="font-semibold">Offline reading</h2>
-    <p className="text-sm text-muted-foreground">Keep the latest 100 full emails, contacts and events from enabled modules on this device. Notes stay online. Attachments stay online. Offline data is read-only and cleared when you sign out.</p>
+    <p className="text-sm text-muted-foreground">Keep the latest 100 full emails, contacts and events from enabled modules on this device. Attachments stay online. Offline data is read-only and cleared when you sign out.</p>
     {loadingInfo ? <p role="status" className="text-sm text-muted-foreground">Checking saved data…</p> : info ? <p className="text-sm">{info.emails} emails · {info.contacts} contacts · {info.events} events · {(info.bytes/1024/1024).toFixed(1)} MiB<br/><span className="text-muted-foreground">Last saved {new Date(info.savedAt).toLocaleString()}</span></p> : <p className="text-sm text-muted-foreground">Offline reading is not enabled on this device.</p>}
     <div className="flex flex-wrap gap-2">
       <Button type="button" onClick={()=>void sync()} disabled={!!busy||loadingInfo||isOffline||!navigator.onLine}>{info?<RefreshCw className="mr-2 h-4 w-4"/>:<Download className="mr-2 h-4 w-4"/>}{busy==='saving'?'Saving…':info?'Refresh offline data':'Enable offline reading'}</Button>

@@ -4,7 +4,6 @@ const fs = require('fs');
 const { db } = require('../state');
 const { DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } = require('./mail');
 const { resolveCalDavUrl } = require('../security/caldav-transport');
-const { restoreNotes } = require('./notes-recovery');
 const { chooseTargetId, writeOwnedRow, resolveOwnedReference, assertOwnedRelationship } = require('./backup-ownership');
 const { inspectRecordingAudio } = require('./recording-audio');
 const { normalizeBackupPayload } = require('./backup-format');
@@ -653,9 +652,6 @@ async function importBackupForUser(userId, backup, {
         ['user_id']
       );
     }
-
-    await reportRestoreProgress('notes', 97);
-    await restoreNotes({ connection, userId, data, restoredPaths, conflictMode, checkCancelled: checkRestoreCancelled });
 
     const result = {
       dry_run: false,

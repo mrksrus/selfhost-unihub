@@ -1,4 +1,3 @@
-import { NoteDraftProvider } from '@/hooks/use-note-draft';
 import ModuleGuard from '@/components/modules/ModuleGuard';
 import { MotionConfig } from 'framer-motion';
 import UpdatePrompt from '@/components/pwa/UpdatePrompt';
@@ -12,7 +11,6 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import AppLayout from "@/components/layout/AppLayout";
 import InstallPrompt from "@/components/pwa/InstallPrompt";
-const Notes = lazy(() => import("./pages/Notes"));
 const Auth = lazy(() => import("./pages/Auth"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Contacts = lazy(() => import("./pages/Contacts"));
@@ -32,7 +30,7 @@ const AuthenticatedApp = () => {
   const { user, session, isOffline } = useAuth();
   return (
     <SessionQueryProvider key={user?.id ?? "signed-out"} liveUpdates={!!user && !!session && !isOffline}>
-      <NoteDraftProvider><TooltipProvider>
+      <TooltipProvider>
         <Toaster />
         <BrowserRouter>
           <Suspense fallback={<div role="status" className="flex min-h-[40vh] items-center justify-center text-muted-foreground">Loading…</div>}>
@@ -47,7 +45,6 @@ const AuthenticatedApp = () => {
               <Route path="/mail" element={<ModuleGuard id="mail"><MailPage /></ModuleGuard>} />
               <Route path="/recordings" element={<ModuleGuard id="recordings"><Recordings /></ModuleGuard>} />
               <Route path="/music" element={<ModuleGuard id="recordings"><Music /></ModuleGuard>} />
-              <Route path="/notes" element={<ModuleGuard id="notes"><Notes /></ModuleGuard>} />
               <Route path="/more" element={<More />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/admin/users" element={<AdminUsers />} />
@@ -59,7 +56,7 @@ const AuthenticatedApp = () => {
           <InstallPrompt />
           <UpdatePrompt />
         </BrowserRouter>
-      </TooltipProvider></NoteDraftProvider>
+      </TooltipProvider>
     </SessionQueryProvider>
   );
 };

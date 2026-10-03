@@ -1,8 +1,8 @@
-const { getUserModules, setUserModules } = require('../services/module-settings');
+const { getOrderedUserModules, setUserModules } = require('../services/module-settings');
 module.exports = {
   'GET /api/modules': async (_req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    return { modules: await getUserModules(userId) };
+    return { modules: await getOrderedUserModules(userId) };
   },
   'PUT /api/modules': async (_req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };

@@ -1,29 +1,26 @@
 import { useModules } from '@/hooks/use-modules';
 import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
-import { Calendar, Mail, CheckSquare, Mic, MoreHorizontal } from 'lucide-react';
-
-const navItems = [
-  { name: 'Mail', href: '/mail', icon: Mail },
-  { name: 'Calendar', href: '/calendar', icon: Calendar },
-  { name: 'ToDo', href: '/todo', icon: CheckSquare },
-  { name: 'Recordings', href: '/recordings', icon: Mic },
-  { name: 'More', href: '/more', icon: MoreHorizontal },
-];
+import { MoreHorizontal } from 'lucide-react';
+import { BOTTOM_NAV_PAGES, MODULE_PAGES, orderedModulePages } from '@/lib/navigation';
 
 const BottomNav = () => {
-  const { canNavigate } = useModules();
+  const { modules, canNavigate } = useModules();
   const location = useLocation();
+  // The first module pages in the user's order; the rest are listed on More.
+  const shown = orderedModulePages(modules, canNavigate).slice(0, BOTTOM_NAV_PAGES);
+  const navItems = [...shown, { name: 'More', href: '/more', icon: MoreHorizontal }];
+  const moreHrefs = ['/more', '/music', '/dashboard', ...MODULE_PAGES.filter((page) => !shown.includes(page)).map((page) => page.href)];
 
   return (
     <nav
       className="md:hidden fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around bg-card border-t border-border shadow-lg"
       style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}
     >
-      {navItems.filter(item => canNavigate(item.href)).map((item) => {
+      {navItems.map((item) => {
         const isActive =
           item.href === '/more'
-            ? ['/more', '/music', '/dashboard', '/contacts', '/notes'].some((path) => location.pathname.startsWith(path))
+            ? moreHrefs.some((path) => location.pathname.startsWith(path))
             : location.pathname.startsWith(item.href);
         return (
           <NavLink

@@ -14,7 +14,7 @@ function handlerHarness(t, { userId = 'u1', route, moduleEnabled = true } = {}) 
   stub(paths[4], { getActiveRestoreSections: async () => new Set() });
   stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
     'POST /api/mail/writebacks/:id/accept-server-state': route,
-    'GET /api/modules': route, 'GET /api/notes/:id/export': route, 'GET /api/offline/snapshot': route || (async (_req, user) => ({ snapshot: { userId: user } })),
+    'GET /api/modules': route, 'GET /api/contacts/export': route, 'GET /api/offline/snapshot': route || (async (_req, user) => ({ snapshot: { userId: user } })),
     'POST /api/parse-test': route || (async () => ({ success: true })) });
   const { handleRequest } = require(paths[0]);
   return async function run(method, url, body = '', overrides = {}) {
@@ -81,7 +81,7 @@ test('mail provider change retry reaches its parameterized route', async (t) => 
 test('disabled module reads, attachments and writes are rejected before reaching a handler', async (t) => {
   let calls = 0;
   const run = handlerHarness(t, { moduleEnabled: false, route: async () => { calls++; return { ok: true }; } });
-  for (const [method, path] of [['GET', '/api/mail/attachments/file'], ['PUT', '/api/mail/emails/email'], ['GET', '/api/notes/note/export']]) {
+  for (const [method, path] of [['GET', '/api/mail/attachments/file'], ['PUT', '/api/mail/emails/email'], ['GET', '/api/contacts/export']]) {
     const result = await run(method, path, method === 'PUT' ? '{}' : '');
     assert.equal(result.status, 403);
     assert.equal(result.body.code, 'MODULE_DISABLED');

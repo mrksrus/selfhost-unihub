@@ -4,33 +4,19 @@ import { useAuth } from '@/contexts/useAuth';
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
-  Users,
-  Calendar,
-  Mail,
-  CheckSquare,
   Settings,
   Shield,
   LogOut,
   ChevronLeft,
   ChevronRight,
-  Mic,
   MoreHorizontal,
-  NotebookPen,
 } from 'lucide-react';
+import { orderedModulePages } from '@/lib/navigation';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Separator } from '@/components/ui/separator';
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-
-const navigation = [
-  { name: 'Notes', href: '/notes', icon: NotebookPen },
-  { name: 'Mail', href: '/mail', icon: Mail },
-  { name: 'Calendar', href: '/calendar', icon: Calendar },
-  { name: 'ToDo', href: '/todo', icon: CheckSquare },
-  { name: 'Contacts', href: '/contacts', icon: Users },
-  { name: 'Recordings', href: '/recordings', icon: Mic },
-];
 
 const moreNavigation = [
   { name: 'More', href: '/more', icon: MoreHorizontal },
@@ -38,7 +24,7 @@ const moreNavigation = [
 ];
 
 const AppSidebar = () => {
-  const { canNavigate } = useModules();
+  const { modules, canNavigate } = useModules();
   const { user, signOut } = useAuth();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -90,7 +76,7 @@ const AppSidebar = () => {
 
       {/* Navigation */}
       <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
-        {navigation.filter(item => canNavigate(item.href)).map((item) => {
+        {orderedModulePages(modules, canNavigate).map((item) => {
           const isActive = location.pathname.startsWith(item.href);
           return (
             <NavLink

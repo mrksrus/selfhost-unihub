@@ -21,25 +21,37 @@ function sourceColumns(source) {
   }
   return [...rows.values()];
 }
-function productionColumns() {
-  return sourceColumns(['database.js', 'database-migrations.js', 'notifications.js', 'mail-engine/schema.js'].map(file => fs.readFileSync(path.join(__dirname, '../src/services', file), 'utf8')).join('\n'));
+// Migration 11 drops the Notes tables that migration 4 created.
+const NOTES_TABLES = new Set(['notes', 'note_revisions', 'note_attachments', 'note_links']);
+function productionColumns({ everCreated = false } = {}) {
+  const columns = sourceColumns(['database.js', 'database-migrations.js', 'notifications.js', 'mail-engine/schema.js'].map(file => fs.readFileSync(path.join(__dirname, '../src/services', file), 'utf8')).join('\n'));
+  return everCreated ? columns : columns.filter(row => !NOTES_TABLES.has(row.table_name));
 }
 
 test('every runtime schema table and field has an explicit recovery policy', () => {
   const columns = productionColumns();
   assert.ok(columns.length > 400, 'The DDL reader must inspect the full production schema');
   assertInventoryCoverage(columns);
+  assertInventoryCoverage(productionColumns({ everCreated: true }), { throughMigration: 10 });
+});
+
+test('removed Notes tables are required through migration 10 and must be gone after migration 11', () => {
+  const ever = productionColumns({ everCreated: true });
+  assert.ok(ever.some(row => row.table_name === 'notes'));
+  assert.throws(() => assertInventoryCoverage(ever), /Removed field still present notes.title/);
+  assert.throws(() => assertInventoryCoverage(productionColumns(), { throughMigration: 10 }), /Missing declared field notes.title/);
+  assert.doesNotThrow(() => assertInventoryCoverage(productionColumns(), { throughMigration: 11 }));
 });
 
 test('new tables and columns fail coverage until classified', () => {
   const columns = productionColumns();
-  assert.throws(() => assertInventoryCoverage([...columns, ...sourceColumns('CREATE TABLE IF NOT EXISTS notes (id CHAR(36), content TEXT) ENGINE=InnoDB')]), /Unclassified field notes.content/);
+  assert.throws(() => assertInventoryCoverage([...columns, ...sourceColumns('CREATE TABLE IF NOT EXISTS journal (id CHAR(36), content TEXT) ENGINE=InnoDB')]), /Unclassified field journal.content/);
   assert.throws(() => assertInventoryCoverage([...columns, ...sourceColumns('ALTER TABLE emails ADD COLUMN local_annotation TEXT')]), /Unclassified field emails.local_annotation/);
   assert.throws(() => assertInventoryCoverage(columns.filter(row => row.table_name !== 'tetris_scores')), /Missing declared field tetris_scores.score/);
 });
 
 test('manual refresh column is required only after its additive migration', () => {
-  const before = productionColumns().filter(row => !(row.table_name === 'mail_engine_jobs' && row.column_name === 'manual_refresh'));
+  const before = productionColumns({ everCreated: true }).filter(row => !(row.table_name === 'mail_engine_jobs' && row.column_name === 'manual_refresh'));
   assert.doesNotThrow(() => assertInventoryCoverage(before, { throughMigration: 7 }));
   assert.throws(() => assertInventoryCoverage(before, { throughMigration: 8 }), /Missing declared field mail_engine_jobs.manual_refresh/);
 });
@@ -60,7 +72,7 @@ test('database verifier reads information_schema rather than assuming the catalo
 test('mail sync policy fields are required only after migration 10', () => {
   const added = new Set(['mail_accounts.sync_window_days', 'mail_accounts.trash_window_days', 'mail_accounts.sync_policy_confirmed_at',
     'mail_remote_occurrences.internal_date', 'data_export_jobs.mail_account_id']);
-  const all = productionColumns();
+  const all = productionColumns({ everCreated: true });
   assert.equal(all.filter(row => added.has(row.table_name + '.' + row.column_name)).length, added.size);
   const before = all.filter(row => !added.has(row.table_name + '.' + row.column_name));
   assert.doesNotThrow(() => assertInventoryCoverage(before, { throughMigration: 9 }));

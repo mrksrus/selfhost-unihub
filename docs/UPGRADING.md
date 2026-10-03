@@ -5,6 +5,23 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.14.0 Notes removed
+
+**Database upgrade 11 permanently deletes all Notes**: the `notes`,
+`note_revisions`, `note_attachments` and `note_links` tables and the attachment
+files under `/app/uploads/notes`. Before updating, download every note you want
+to keep (**Download Markdown** in 0.13.x) or keep a 0.13.x backup. That backup
+still imports in 0.14.0, but its Notes are skipped. Downgrading to 0.13.x does
+not bring them back.
+
+If the Notes folder cannot be deleted, for example because it is a separate
+mount, the log shows `[DB] Could not remove old note attachments in ...` and
+startup continues. Delete that folder by hand.
+
+A Notes start page falls back to the default start page. The mobile bar now
+shows Mail, Calendar, ToDo and Contacts by default; reorder modules in
+Settings → Modules.
+
 ## 0.13.0 Sync follows the server
 
 Download and Sync are now two clearly different modes (see

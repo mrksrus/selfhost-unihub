@@ -30,3 +30,17 @@ export function useUpdateModule() {
     return response.data.modules;
   }, onSuccess: async (modules, variables) => { client.setQueryData(['modules'], modules); await client.invalidateQueries(); if (variables.patch.enabled === false) await clearOfflineData(); } });
 }
+export function useReorderModules() {
+  const client = useQueryClient();
+  return useMutation({ mutationFn: async (order: ModuleId[]) => {
+    const response = await api.put<{ modules: ModulePreference[] }>('/modules', { order });
+    if (response.error || !response.data?.modules) throw new Error(response.error || 'Module order was not saved.');
+    return response.data.modules;
+  }, onMutate: order => {
+    // Move rows at once; the server's answer replaces this.
+    const previous = client.getQueryData<ModulePreference[]>(['modules']);
+    if (previous) client.setQueryData(['modules'], order.map(id => previous.find(module => module.id === id)).filter(Boolean));
+    return { previous };
+  }, onError: (_error, _order, context) => { if (context?.previous) client.setQueryData(['modules'], context.previous); },
+  onSuccess: modules => { client.setQueryData(['modules'], modules); } });
+}

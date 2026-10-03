@@ -154,7 +154,6 @@ function assertBackupFilesComplete(backup) {
   const required = [
     ...(backup.data.email_attachments || []).map(row => `email_attachment:${row.id}`),
     ...(backup.data.recordings || []).map(row => `recording:${row.id}`),
-    ...(backup.data.note_attachments || []).map(row => `note_attachment:${row.id}`),
     ...(backup.data.emails || []).filter(row => row.raw_storage_path || row.import_complete === true || row.import_complete === 1)
       .map(row => `raw_email:${row.id}`),
   ];

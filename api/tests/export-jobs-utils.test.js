@@ -18,7 +18,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 test('normalizeSections returns all sections for full export', () => {
-  assert.deepEqual(normalizeSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings', 'notes']);
+  assert.deepEqual(normalizeSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings']);
 });
 
 test('normalizeSections rejects unknown sections and removes duplicates', () => {
