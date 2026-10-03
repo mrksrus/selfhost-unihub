@@ -135,13 +135,14 @@ export function MailAccountList({ accounts, loading, selectedAccount, legacyCoun
                 )}
               </button>
             </div>
-            <button type="button"
+            {/* Mail the old shared-folder migration could not file. Shown only while there is some. */}
+            {legacyCount > 0 && <button type="button"
               onClick={() => onSelect(LEGACY_ACCOUNT)}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${selectedAccount === LEGACY_ACCOUNT ? 'bg-mail/10 text-mail' : 'text-muted-foreground hover:bg-muted'}`}
               title="Legacy: unresolved mail and mail awaiting a successful server folder check">
               <FolderOpen className="h-5 w-5 shrink-0" />
               {!compact && <span>Legacy ({legacyCount})</span>}
-            </button>
+            </button>}
             {accounts.map((account) => (
               <div key={account.id} className={`relative group ${compact ? 'flex justify-center' : ''}`}>
                 <button

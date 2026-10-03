@@ -10,7 +10,7 @@ import { ALL_ACCOUNTS, ALL_MAIL, LEGACY_ACCOUNT, systemFolders, type FolderMode,
  */
 export function useMailFolderView(selectedAccount: string | null, accounts: MailAccount[]) {
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
-  const { data: mailFolders = [] } = useMailFolders();
+  const { data: mailFolders = [], isSuccess: foldersLoaded } = useMailFolders();
 
   const legacyCount = mailFolders.reduce((total, folder) => total + (folder.legacy_count || 0), 0);
   const visibleMailFolders = useMemo(() => mailFolders.filter(folder => {
@@ -65,6 +65,6 @@ export function useMailFolderView(selectedAccount: string | null, accounts: Mail
   const unreadByFolder = unreadCountsData?.unreadByFolder || {};
 
   return {
-    selectedFolder, setSelectedFolder, mailFolders, legacyCount, visibleMailFolders, folders, folderFilters, movableFolderIds, unreadByFolder,
+    selectedFolder, setSelectedFolder, mailFolders, foldersLoaded, legacyCount, visibleMailFolders, folders, folderFilters, movableFolderIds, unreadByFolder,
   };
 }

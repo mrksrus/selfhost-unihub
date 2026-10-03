@@ -8,8 +8,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.17.3
 
-Makes two-factor authentication easier to set up and to recover from. No
-database upgrade. See [Two-factor authentication](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/AUTH_ADMIN_SETTINGS.md#two-factor-authentication).
+Makes two-factor authentication easier to set up and to recover from, and
+hides the empty Legacy mail view. No database upgrade. See [Two-factor authentication](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/AUTH_ADMIN_SETTINGS.md#two-factor-authentication).
 
 ### Added
 
@@ -30,6 +30,11 @@ database upgrade. See [Two-factor authentication](https://github.com/mrksrus/sel
 - **Turning on 2FA signs out your other devices.** Sessions opened with the
   password alone end when 2FA is enabled, as they already did when it is
   disabled. The device you set it up on stays signed in.
+- **Legacy mail view is hidden when empty.** The **Legacy** entry in the mail
+  account list holds mail that the 0.10.5 folder migration could not file. It
+  is now listed only while it holds mail, so installations without such mail no
+  longer show **Legacy (0)**. A view left on Legacy switches to All accounts
+  once it is empty.
 
 ### Fixed
 

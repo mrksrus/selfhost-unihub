@@ -168,6 +168,8 @@ the user: sessions opened with the password alone end when 2FA is turned on.
 Turning 2FA on and deleting those sessions commit together, under a lock on the
 user row that the admin reset also takes. A confirmation from a session that a
 reset deleted meanwhile fails with `401` instead of turning 2FA back on.
+Confirming setup counts against the second-factor limit (10 per 10 minutes per
+user), because each accepted request hashes ten recovery codes.
 
 Regenerating recovery codes accepts an authenticator code or a recovery code.
 It returns `409` if 2FA was turned off while the request ran.
@@ -196,6 +198,9 @@ Users**, accounts with 2FA show a **2FA** badge and a **Reset 2FA** button.
 - the admin confirms with their own password; a wrong one returns `403` (not
   `401`, which the browser treats as an expired session); each admin gets 10
   attempts per 10 minutes (`429` with `Retry-After` after that)
+- the admin's own row and session are locked and rechecked with the target, so
+  a request from an admin session that was signed out meanwhile returns `401`
+  and changes nothing
 - admins cannot reset their own 2FA here (`400`); they turn it off in Settings,
   which needs a code, so a stolen admin session cannot remove it
 - the reset clears the secret and recovery codes, deletes the user's pending

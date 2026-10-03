@@ -314,8 +314,11 @@ module.exports = {
     }
   },
 
-  'POST /api/auth/2fa/setup/confirm': async (req, userId, body) => {
+  'POST /api/auth/2fa/setup/confirm': async (req, userId, body, res) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
+    // Each accepted request hashes ten recovery codes, which takes seconds of CPU.
+    const limited = checkLoginBudget(res, 'secondFactor', userId);
+    if (limited) return limited;
     const secret = String(body?.secret || '').trim().toUpperCase();
     const code = String(body?.code || '').trim();
     if (!secret || !code) return { error: 'Secret and authentication code are required', status: 400 };
@@ -324,6 +327,10 @@ module.exports = {
     const currentToken = getAuthTokenFromRequest(req) || '';
     let connection;
     try {
+      // Cheap check before hashing; repeated below under the lock.
+      const [status] = await db.execute('SELECT two_factor_enabled FROM users WHERE id = ?', [userId]);
+      if (status.length === 0) return { error: 'User not found', status: 404 };
+      if (status[0].two_factor_enabled) return { error: 'Two-factor authentication is already enabled', status: 400 };
       const recovery = await createRecoveryCodes();
       connection = await db.getConnection();
       await connection.beginTransaction();
@@ -335,7 +342,8 @@ module.exports = {
         await connection.rollback();
         return { error: 'Two-factor authentication is already enabled', status: 400 };
       }
-      const [current] = await connection.execute('SELECT 1 FROM sessions WHERE user_id = ? AND token = ?', [userId, currentToken]);
+      // Locking the session row also holds back a sign-out of it until this commits.
+      const [current] = await connection.execute('SELECT 1 FROM sessions WHERE user_id = ? AND token = ? FOR UPDATE', [userId, currentToken]);
       if (current.length === 0) { await connection.rollback(); return { error: 'Unauthorized', status: 401 }; }
       await enableTwoFactor(userId, secret, recovery.hashes, connection);
       // Sessions on other devices were opened with the password alone.

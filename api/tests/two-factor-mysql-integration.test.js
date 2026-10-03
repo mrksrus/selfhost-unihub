@@ -106,8 +106,8 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
 
     // Admin reset: admins only, not for themselves, with the admin's own password.
     const resetUrl = `/api/admin/users/${person}/2fa/reset`;
-    const reset = (userId, target, password) => adminRoutes['POST /api/admin/users/:id/2fa/reset'](
-      request(null, `/api/admin/users/${target}/2fa/reset`), userId, { current_password: password }, response());
+    const reset = (userId, target, password, token = 'admin-session') => adminRoutes['POST /api/admin/users/:id/2fa/reset'](
+      request(token, `/api/admin/users/${target}/2fa/reset`), userId, { current_password: password }, response());
     assert.equal((await adminRoutes['POST /api/admin/users/:id/2fa/reset'](request(null, resetUrl), person, { current_password: 'synthetic-person-password' }, response())).status, 403);
     assert.equal((await reset(admin, admin, 'synthetic-admin-password')).status, 400);
     // 403, not 401: the client signs out on a 401 from a non-auth endpoint.
@@ -116,6 +116,10 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     const listed = (await adminRoutes['GET /api/admin/users'](request(null, '/api/admin/users'), admin)).users;
     assert.equal(listed.find(user => user.id === person).two_factor_enabled, true);
     assert.equal(listed.find(user => user.id === admin).two_factor_enabled, false);
+
+    // A request from an admin session that was signed out meanwhile changes nothing.
+    assert.equal((await reset(admin, person, 'synthetic-admin-password', 'admin-signed-out')).status, 401);
+    assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, true);
 
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).message, 'Two-factor authentication reset');
     const [[after]] = await pool.execute('SELECT two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE id = ?', [person]);

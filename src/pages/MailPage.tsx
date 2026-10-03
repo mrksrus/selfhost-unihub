@@ -47,6 +47,13 @@ const MailPage = () => {
   const folderView = useMailFolderView(selectedAccount, accounts);
   const { selectedFolder, setSelectedFolder, folders, movableFolderIds } = folderView;
   useRememberedMailAccount(accounts, selectedAccount, setSelectedAccount, setSelectedFolder);
+  // Legacy is hidden once empty, so do not stay in it (remembered, or after recovering the last message).
+  useEffect(() => {
+    if (selectedAccount === LEGACY_ACCOUNT && folderView.foldersLoaded && folderView.legacyCount === 0) {
+      setSelectedAccount(ALL_ACCOUNTS);
+      setSelectedFolder('inbox');
+    }
+  }, [selectedAccount, folderView.foldersLoaded, folderView.legacyCount, setSelectedAccount, setSelectedFolder]);
 
   const { selectedEmail, setSelectedEmail, isReaderLoading, closeReader, loadEmail } = useMailReader(selectedAccount);
   const { flagRequests, requestFlag } = useMailFlags(setSelectedEmail, (kind, message, unknown) => {

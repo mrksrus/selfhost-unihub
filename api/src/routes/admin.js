@@ -12,6 +12,7 @@ const {
   verifyPassword,
   consumeAuthAttempt,
   getSignupMode,
+  getAuthTokenFromRequest,
 } = require('../auth');
 const { disableTwoFactor } = require('../services/two-factor');
 
@@ -318,7 +319,17 @@ module.exports = {
       }
       connection = await db.getConnection();
       await connection.beginTransaction();
-      const [targets] = await connection.execute('SELECT two_factor_enabled FROM users WHERE id = ? FOR UPDATE', [targetId]);
+      // Both rows in one statement, in id order, so two admins resetting each other cannot deadlock.
+      // 2FA setup locks the user row too; together with the session check below, a request from an
+      // admin session that was signed out meanwhile (e.g. by enabling 2FA elsewhere) changes nothing.
+      const [rows] = await connection.execute(
+        'SELECT id, role, two_factor_enabled FROM users WHERE id IN (?, ?) ORDER BY id FOR UPDATE', [userId, targetId]);
+      const requester = rows.find(row => row.id === userId);
+      const [current] = await connection.execute('SELECT 1 FROM sessions WHERE user_id = ? AND token = ? FOR UPDATE',
+        [userId, getAuthTokenFromRequest(req) || '']);
+      if (!current.length) { await connection.rollback(); return { error: 'Unauthorized', status: 401 }; }
+      if (requester?.role !== 'admin') { await connection.rollback(); return { error: 'Forbidden', status: 403 }; }
+      const targets = rows.filter(row => row.id === targetId);
       if (!targets.length) { await connection.rollback(); return { error: 'User not found', status: 404 }; }
       if (!targets[0].two_factor_enabled) {
         await connection.rollback();
