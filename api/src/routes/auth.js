@@ -340,8 +340,14 @@ module.exports = {
       await connection.beginTransaction();
       // Locked like the admin 2FA reset, so a request whose session that reset deleted
       // cannot turn 2FA back on once the reset has committed.
-      const [users] = await connection.execute('SELECT id, two_factor_enabled FROM users WHERE id = ? FOR UPDATE', [userId]);
+      const [users] = await connection.execute('SELECT id, two_factor_enabled, password_hash, is_active FROM users WHERE id = ? FOR UPDATE', [userId]);
       if (users.length === 0) { await connection.rollback(); return { error: 'User not found', status: 404 }; }
+      // A password change or deactivation commits before deleting the sessions, so the
+      // session row alone does not show that the password checked above still holds.
+      if (!users[0].is_active || users[0].password_hash !== status[0].password_hash) {
+        await connection.rollback();
+        return { error: 'Unauthorized', status: 401 };
+      }
       if (users[0].two_factor_enabled) {
         await connection.rollback();
         return { error: 'Two-factor authentication is already enabled', status: 400 };

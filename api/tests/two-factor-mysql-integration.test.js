@@ -90,6 +90,26 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     assert.equal((await confirm({ code: otp(setup.secret), current_password: 'wrong-person-password' })).status, 401);
     assert.deepEqual(await sessions(person), ['person-current', 'person-laptop']);
     assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, false);
+    // A password change or deactivation commits before its session deletion. One landing
+    // between the password check and the locked recheck changes nothing either.
+    for (const change of ['UPDATE users SET password_hash = ? WHERE id = ?', 'UPDATE users SET is_active = FALSE WHERE id = ?']) {
+      const [[saved]] = await pool.execute('SELECT password_hash FROM users WHERE id = ?', [person]);
+      const getConnection = async () => {
+        const cx = await pool.getConnection();
+        return { beginTransaction: () => cx.beginTransaction(), commit: () => cx.commit(), rollback: () => cx.rollback(), release: () => cx.release(),
+          execute: async (sql, params) => {
+            if (/FROM users WHERE id = \? FOR UPDATE/.test(sql)) await pool.execute(change, change.includes('password_hash') ? ['changed-meanwhile', person] : [person]);
+            return cx.execute(sql, params);
+          } };
+      };
+      setDb({ execute: (...args) => pool.execute(...args), getConnection });
+      try {
+        assert.equal((await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' })).status, 401);
+      } finally { setDb(pool); }
+      await pool.execute('UPDATE users SET password_hash = ?, is_active = TRUE WHERE id = ?', [saved.password_hash, person]);
+      assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, false);
+      assert.deepEqual(await sessions(person), ['person-current', 'person-laptop']);
+    }
     const enabled = await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' });
     assert.equal(enabled.enabled, true);
     assert.equal(enabled.recoveryCodes.length, 10);

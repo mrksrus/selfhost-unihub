@@ -170,7 +170,9 @@ someone holding only a signed-in session cannot turn 2FA on with their own
 authenticator and sign the owner out. Turning 2FA on and deleting those
 sessions commit together, under a lock on the user row that the admin reset
 also takes. A confirmation from a session that a reset deleted meanwhile fails
-with `401` instead of turning 2FA back on. Confirming setup counts against the
+with `401` instead of turning 2FA back on, as does one whose password changed
+or whose account was deactivated after the password was checked. Confirming
+setup counts against the
 second-factor limit (10 per 10 minutes per user), which also limits password
 guesses there, and each accepted request hashes ten recovery codes.
 
