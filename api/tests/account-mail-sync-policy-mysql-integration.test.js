@@ -245,6 +245,37 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     for (const name of ['INBOX', 'Work', '[Gmail]/All Mail']) provider.delete(name);
   });
 
+  await t.test('Copies without a server link: removed only as a strict duplicate of a linked item, after confirmation', async () => {
+    const accountId = await createAccount('unlinked', { confirmed: false });
+    const mailbox = await repo.withTransaction(cx => repo.ensureMailbox({ userId, accountId, folderName: 'INBOX', epoch: 9 }, cx), pool);
+    const add = async ({ messageId, from = 'a@example.test', subject = 'Hello', hoursAgo = 2, folder = 'inbox', complete = true, uid = null }) => {
+      const id = uuid();
+      await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,message_id,from_address,to_addresses,subject,folder,import_complete,received_at)
+        VALUES (?,?,?,?,?,'[]',?,?,?,UTC_TIMESTAMP() - INTERVAL ? HOUR)`, [id, userId, accountId, messageId, from, subject, folder, complete, hoursAgo]);
+      if (uid) await repo.withTransaction(cx => repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 9, uid, emailId: id }, cx), pool);
+      return id;
+    };
+    const linked = await add({ messageId: '<one@example.test>', uid: 1 });
+    const duplicate = await add({ messageId: '<one@example.test>', from: 'A@Example.test', hoursAgo: 1, folder: 'sent' });
+    const otherSubject = await add({ messageId: '<one@example.test>', subject: 'Hello again', hoursAgo: 1 });
+    const lone = await add({ messageId: '<two@example.test>' });
+    await add({ messageId: '<three@example.test>', uid: 2, complete: false });
+    const incompleteTwin = await add({ messageId: '<three@example.test>' });
+    const files = await storeFiles(duplicate);
+    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).local_duplicates, 1);
+    assert.equal((await prune(accountId)).unconfirmed, true);
+    assert.equal(await emailCount(accountId), 6, 'Removal waits for confirmation');
+
+    await pool.execute('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
+    assert.equal((await prune(accountId)).removed, 1);
+    assert.equal(await one('SELECT id FROM emails WHERE id = ?', [duplicate]), undefined);
+    for (const id of [linked, otherSubject, lone, incompleteTwin]) assert.ok(await one('SELECT id FROM emails WHERE id = ?', [id]), 'Kept');
+    assert.equal(await exists(files.raw), false);
+    assert.equal(await exists(files.attachment), false);
+    assert.equal((await prune(accountId)).removed, 0, 'Nothing more to remove on a second run');
+    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).local_duplicates, 0);
+  });
+
   await t.test('Gmail without a visible All Mail keeps missing mail as archived and warns', async () => {
     const accountId = await createAccount('hidden', { host: 'imap.gmail.com' });
     deliver('INBOX', 1, { gmailMsgId: '7001' }, { gmail: true });
@@ -370,7 +401,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal((await call('GET', `/mail/accounts/${upgraded}`)).account.sync_policy_pending_removals, 1);
 
     const impact = await call('GET', `/mail/accounts/${switching}/mode-impact?mode=sync&sync_window_days=&trash_window_days=30`);
-    assert.deepEqual(Object.keys(impact).sort(), ['gmail_duplicates', 'local_only', 'mode', 'notes', 'outside_trash_window', 'outside_window', 'total_removals']);
+    assert.deepEqual(Object.keys(impact).sort(), ['gmail_duplicates', 'local_duplicates', 'local_only', 'mode', 'notes', 'outside_trash_window', 'outside_window', 'total_removals']);
     assert.equal(impact.total_removals, 0);
     assert.equal((await call('GET', `/mail/accounts/${switching}/mode-impact?mode=download`)).total_removals, 0);
     await call('GET', `/mail/accounts/${switching}/mode-impact?mode=sync&sync_window_days=7`, undefined, 400);

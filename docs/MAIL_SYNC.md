@@ -23,7 +23,8 @@ module:
   fenced by the account lease and handles at most 200 rows: it files missing
   Gmail mail as archived when All Mail is not visible (always), then, only when
   the account is confirmed, merges up to 50 Gmail duplicate groups, removes
-  items with no present or quarantined occurrence left (never on Gmail without
+  unlinked duplicates (below), removes items with no present or quarantined
+  occurrence left (never on Gmail without
   a visible All Mail), and removes items whose every present occurrence is
   outside its window. Candidates are re-checked on locked rows; items with an
   unsettled operation, filed in another account, Legacy or drafts are never
@@ -31,6 +32,19 @@ module:
   owner's directory and only when no row references them any more. A slice
   that removed, merged or refiled rows publishes `mail.changed` with reason
   `content`.
+- An item with no provider identity (`remote_folder`, `remote_uid` and
+  `remote_uidvalidity` all NULL) and no occurrence is local-only mail: UniHub's
+  own Sent copy, or mail kept from before the account used Sync. Since 0.13.3
+  `queueChanges` (`mail-writebacks.js`) applies read/star/move to it locally
+  without a provider operation, also inside a bulk request with linked items.
+  An item with a partial identity, or an empty one while an occurrence still
+  links it, refuses the whole request ("damaged link", with a count). `prune`
+  removes an unlinked item only when a linked twin exists in the same account:
+  same non-empty `message_id`, sender (case-insensitive) and subject,
+  `received_at` within one day, `import_complete`, and a present occurrence in
+  an active mailbox. The twin carries the server state; nothing is linked or
+  merged. Unlinked items without a twin are kept. The mode impact counts them
+  as `local_duplicates`.
 - Folder discovery records a mailbox flagged `\All` as `special_use = 'all'`
   on `mail_remote_mailboxes` (the local folder mapping still uses `archive`).
 

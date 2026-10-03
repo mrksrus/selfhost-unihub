@@ -153,6 +153,19 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
   assert.equal(ownedResult.error,undefined, JSON.stringify(ownedResult));
   const shown=ownedResult.operations;
   assert(shown.length>0); assert(shown.every(row=>!('remote_uid' in row) && !('mail_account_id' in row)));
+  await t.test('bulk change with an item that never had a server link: changed locally, the rest goes to the server', async () => {
+    const linked = crypto.randomUUID(), unlinked = crypto.randomUUID();
+    await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,remote_folder,remote_uid,remote_uidvalidity,is_read)
+      VALUES (?,?,?,'test@example.test','[]','inbox','INBOX',41,9,FALSE), (?,?,?,'test@example.test','[]','inbox',NULL,NULL,NULL,FALSE)`,
+    [linked, user, accountId, unlinked, user, accountId]);
+    const result = await service.mutateMessages(user, [linked, unlinked], { read: 1 });
+    assert.equal(result.operation_ids.length, 1);
+    const [ops] = await pool.execute('SELECT email_id FROM mail_writebacks WHERE email_id IN (?,?)', [linked, unlinked]);
+    assert.deepEqual(ops.map(row => row.email_id), [linked]);
+    assert.equal(Number((await pool.execute('SELECT is_read FROM emails WHERE id=?', [unlinked]))[0][0].is_read), 1);
+    await pool.execute('UPDATE emails SET remote_folder=? WHERE id=?', ['INBOX', unlinked]);
+    await assert.rejects(service.mutateMessages(user, [unlinked], { star: 1 }), { status: 409, message: /link to the mail server is damaged/ });
+  });
   await t.test('concurrent identical requests with one Idempotency-Key admit one operation and one response', async () => {
     // Before 0.11.1 each request took a gap lock (SELECT ... FOR UPDATE on a
     // missing key) and then INSERTed, so same-key requests could deadlock.

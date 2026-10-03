@@ -16,6 +16,28 @@ function verifiedIdentity(email) {
   return typeof email.remote_folder === 'string' && email.remote_folder.length > 0
     && [email.remote_uid, email.remote_uidvalidity].every(v => /^\d+$/.test(String(v)) && Number(v) >= 1 && Number(v) <= 4294967295);
 }
+// No provider identity was ever recorded: UniHub's own Sent copy, or mail kept
+// from before the account switched to Sync. The 0.13 backfill treats these as
+// local-only archives; Sync never links them, so there is nothing to change on
+// the provider.
+function unlinkedIdentity(email) {
+  return email.remote_folder == null && email.remote_uid == null && email.remote_uidvalidity == null;
+}
+// Remote-eligible items whose change cannot go to the provider: a partial or
+// invalid identity, or an empty one although an occurrence still links the item.
+async function unverifiable(cx, userId, emails) {
+  const local = new Set(), damaged = [];
+  for (const email of emails) {
+    if (!remoteEligible(email) || Number(email.is_active) === 0 || verifiedIdentity(email)) continue;
+    if (unlinkedIdentity(email)) {
+      const [linked] = await cx.execute(`SELECT id FROM mail_remote_occurrences WHERE user_id=? AND mail_account_id=? AND email_id=?
+        AND presence IN ('present','quarantined') LIMIT 1`, [userId, email.mail_account_id, email.id]);
+      if (!linked.length) { local.add(email.id); continue; }
+    }
+    damaged.push(email.id);
+  }
+  return { local, damaged };
+}
 function keyCheck(key) {
   if (key === undefined || key === null) return null;
   if (typeof key !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(key)) throw fail('Invalid Idempotency-Key', 400);
@@ -47,14 +69,18 @@ async function claimReceipt(input, cx) {
 // Caller holds email row locks and a transaction. Never delete an accepted intent.
 async function queueChanges(cx, userId, emails, changes, options = {}) {
   const accounts = new Set(), operationIds = options.operationIds || [], revisions = options.revisions || [];
+  const { local, damaged } = await unverifiable(cx, userId, emails);
+  // One request is one transaction: refuse it whole and say how many items block it.
+  if (damaged.length) throw fail(damaged.length === 1
+    ? 'This message\'s link to the mail server is damaged, so it cannot be changed on the server.'
+    : `${damaged.length} selected messages have a damaged link to the mail server, so they cannot be changed on the server.`);
   for (const email of emails) {
     for (const [action, value] of Object.entries(changes)) {
       if (!fields[action]) throw fail('Unsupported mail change', 400);
-      if (!remoteEligible(email) || Number(email.is_active) === 0) {
+      if (!remoteEligible(email) || Number(email.is_active) === 0 || local.has(email.id)) {
         await cx.execute(`UPDATE emails SET ${fields[action]}=? WHERE id=? AND user_id=?`, [value, email.id, userId]);
         continue;
       }
-      if (!verifiedIdentity(email)) throw fail('Sync this account before changing this message on the provider.');
       let target = action === 'move' ? String(value) : Number(Boolean(value)).toString(), targetFolder = null;
       if (action === 'move') {
         const [mappings] = await cx.execute(`SELECT b.remote_name FROM mail_folder_remote_boxes b JOIN mail_folders f ON f.id=b.folder_id
@@ -331,4 +357,4 @@ async function requeue(userId, op) {
 }
 module.exports = { mutateMessages, queueChanges, runDueWritebacks,
   retryWriteback, acceptServerState, cancelForAccount, cancelWriteback, getOperationReceipt, listWritebacks,
-  remoteEligible, verifiedIdentity, keyCheck, canonicalRequest };
+  remoteEligible, verifiedIdentity, unlinkedIdentity, keyCheck, canonicalRequest };

@@ -20,7 +20,7 @@ const syncAccount: MailAccount = {
 };
 const downloadAccount: MailAccount = { ...syncAccount, id: 'a2', email_address: 'archive@example.test', sync_mode: 'download' };
 const impact = (extra: Partial<MailModeImpact> = {}): MailModeImpact => ({
-  mode: 'sync', local_only: 0, outside_window: 0, outside_trash_window: 0, gmail_duplicates: 0, total_removals: 0, notes: [], ...extra,
+  mode: 'sync', local_only: 0, outside_window: 0, outside_trash_window: 0, gmail_duplicates: 0, local_duplicates: 0, total_removals: 0, notes: [], ...extra,
 });
 
 let client: QueryClient;

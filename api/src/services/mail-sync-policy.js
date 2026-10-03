@@ -6,7 +6,8 @@
 // - retention windows (per account, Sync only) decide which provider messages
 //   are imported at all and which local copies are removed again;
 // - local copies whose provider absence was proven are removed;
-// - Gmail copies of one X-GM-MSGID are merged into one item.
+// - Gmail copies of one X-GM-MSGID are merged into one item;
+// - a copy without any provider identity that duplicates a linked item is removed.
 //
 // Every destructive step requires mail_accounts.sync_policy_confirmed_at. It
 // stays NULL for accounts upgraded from 0.12, so nothing is removed until the
@@ -92,6 +93,20 @@ const ABSENT_SQL = `NOT EXISTS (SELECT 1 FROM mail_remote_occurrences k WHERE k.
 // absence is UniHub's own server deletion.
 const SERVER_DELETED_SQL = `EXISTS (SELECT 1 FROM mail_server_messages s WHERE s.email_id = e.id AND s.user_id = e.user_id
     AND s.delete_status IN ('deleted','missing'))`;
+// A copy that never had a provider identity (UniHub's own Sent copy, or mail
+// kept from before the account used Sync) is a duplicate once a linked, fully
+// downloaded item of the same message exists: same Message-ID, sender and
+// subject, dated within a day of it. The linked item carries the server state.
+// A copy without such a twin stays as local-only mail.
+const UNLINKED_DUPLICATE_SQL = `e.remote_folder IS NULL AND e.remote_uid IS NULL AND e.remote_uidvalidity IS NULL
+  AND e.message_id IS NOT NULL AND e.message_id <> ''
+  AND NOT EXISTS (SELECT 1 FROM mail_remote_occurrences k WHERE k.email_id = e.id AND k.user_id = e.user_id)
+  AND EXISTS (SELECT 1 FROM emails t WHERE t.user_id = e.user_id AND t.mail_account_id = e.mail_account_id AND t.id <> e.id
+    AND t.received_at BETWEEN e.received_at - INTERVAL 1 DAY AND e.received_at + INTERVAL 1 DAY
+    AND t.message_id = e.message_id AND LOWER(t.from_address) = LOWER(e.from_address) AND t.subject <=> e.subject
+    AND t.import_complete = TRUE
+    AND EXISTS (SELECT 1 FROM ${LIVE_FROM} WHERE o.email_id = t.id AND o.user_id = t.user_id
+      AND o.mail_account_id = t.mail_account_id AND o.presence = 'present'))`;
 const OUTSIDE_SQL = `EXISTS (SELECT 1 FROM ${LIVE_FROM} WHERE ${LIVE_WHERE})
   AND NOT EXISTS (SELECT 1 FROM ${LIVE_FROM} WHERE ${LIVE_WHERE} AND ${IN_WINDOW_SQL})`;
 const ONLY_TRASH_SQL = `NOT EXISTS (SELECT 1 FROM ${LIVE_FROM} WHERE ${LIVE_WHERE} AND NOT ${TRASH_SQL('m')})`;
@@ -150,13 +165,18 @@ async function computeModeImpact(account, { mode, syncWindowDays, trashWindowDay
       SELECT o.gmail_msgid, COUNT(DISTINCT o.email_id) AS n FROM mail_remote_occurrences o
       WHERE o.user_id = ? AND o.mail_account_id = ? AND o.gmail_msgid IS NOT NULL AND o.presence IN ('present','absent')
       GROUP BY o.gmail_msgid HAVING COUNT(DISTINCT o.email_id) > 1) duplicate_groups`, owner);
+  const [[unlinked]] = await executor.execute(`SELECT COUNT(*) AS n FROM emails e WHERE ${ELIGIBLE_SQL}
+    AND ${UNLINKED_DUPLICATE_SQL}`, owner);
   const result = { mode, local_only: localOnly, outside_window: Number(outside.regular) || 0,
-    outside_trash_window: Number(outside.trash) || 0, gmail_duplicates: Number(duplicates.n) || 0 };
-  result.total_removals = result.local_only + result.outside_window + result.outside_trash_window + result.gmail_duplicates;
+    outside_trash_window: Number(outside.trash) || 0, gmail_duplicates: Number(duplicates.n) || 0,
+    local_duplicates: Number(unlinked.n) || 0 };
+  result.total_removals = result.local_only + result.outside_window + result.outside_trash_window + result.gmail_duplicates
+    + result.local_duplicates;
   const notes = ['Only local copies are removed. Mail on the server is not changed by this.'];
   if (downloadNow) notes.push('Messages deleted on the server since the last sync are not counted yet; Sync removes them too once it sees they are gone.');
   if (result.outside_window || result.outside_trash_window) notes.push('Messages older than the chosen windows stay on the server and are no longer kept locally.');
   if (result.gmail_duplicates) notes.push('Gmail copies of the same message (one per label) are merged into one message.');
+  if (result.local_duplicates) notes.push('Local copies that are not linked to the server, such as UniHub\'s own copy of sent mail, are removed once the same message has been downloaded from the server.');
   if (hidden) notes.push('Gmail "All Mail" is not visible over IMAP. Mail missing from every synced label is kept as archived, because it may only be archived. Turn on "Show in IMAP" for All Mail in Gmail settings.');
   const [[pending]] = await executor.execute(`SELECT COUNT(*) AS n FROM mail_writebacks WHERE user_id = ? AND mail_account_id = ?
     AND (state IS NULL OR state NOT IN (${list(SETTLED_OPERATION_STATES)}))`, owner);
@@ -346,6 +366,9 @@ async function runPruneSlice({ account, job = null, signal = null, report = asyn
   if (gmail.removed) await report({ phase: 'prune', processed: gmail.removed, total: null });
   if (gmail.more) return { processed: filed + gmail.removed, filed, merged: gmail.merged, removed: gmail.removed, more: true };
   let removed = gmail.removed;
+  const unlinked = await removeMatching({ account, fence, conditionSql: `(${UNLINKED_DUPLICATE_SQL})`, params: [] });
+  removed += unlinked.removed;
+  if (unlinked.candidates >= PRUNE_BATCH) return { processed: filed + removed, filed, merged: gmail.merged, removed, more: true };
   if (!hidden) {
     const absent = await removeMatching({ account, fence, conditionSql: `(${ABSENT_SQL})`, params: [] });
     removed += absent.removed;

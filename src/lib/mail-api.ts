@@ -74,6 +74,7 @@ export interface MailModeImpact {
   outside_window: number;
   outside_trash_window: number;
   gmail_duplicates: number;
+  local_duplicates: number;
   total_removals: number;
   notes: string[];
 }

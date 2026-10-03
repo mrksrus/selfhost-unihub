@@ -42,6 +42,7 @@ export function MailModeImpactPanel({ account, review, typedAddress, onTypedAddr
     [impact.outside_window, 'older than the mail window'],
     [impact.outside_trash_window, 'in trash or spam, older than its window'],
     [impact.gmail_duplicates, 'extra Gmail copies of the same message'],
+    [impact.local_duplicates, 'local copies of messages also downloaded from the server'],
   ].filter(([count]) => Number(count) > 0) as [number, string][] : [];
 
   return <section aria-labelledby="mail-mode-impact-title" aria-live="polite"
