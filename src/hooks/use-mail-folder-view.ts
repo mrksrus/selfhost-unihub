@@ -10,9 +10,13 @@ import { ALL_ACCOUNTS, ALL_MAIL, LEGACY_ACCOUNT, systemFolders, type FolderMode,
  */
 export function useMailFolderView(selectedAccount: string | null, accounts: MailAccount[]) {
   const [selectedFolder, setSelectedFolder] = useState<FolderMode>('inbox');
-  const { data: mailFolders = [] } = useMailFolders();
+  const { data: loadedFolders, isError: foldersFailed } = useMailFolders();
+  const mailFolders = useMemo(() => loadedFolders ?? [], [loadedFolders]);
+  const foldersLoaded = loadedFolders !== undefined;
 
-  const legacyCount = mailFolders.reduce((total, folder) => total + (folder.legacy_count || 0), 0);
+  // null: unknown because the folders could not be loaded, so Legacy stays reachable.
+  const legacyCount = !foldersLoaded && foldersFailed ? null
+    : mailFolders.reduce((total, folder) => total + (folder.legacy_count || 0), 0);
   const visibleMailFolders = useMemo(() => mailFolders.filter(folder => {
     if (selectedAccount === LEGACY_ACCOUNT) return (folder.legacy_count || 0) > 0;
     if (folder.is_system) return true;
@@ -65,6 +69,6 @@ export function useMailFolderView(selectedAccount: string | null, accounts: Mail
   const unreadByFolder = unreadCountsData?.unreadByFolder || {};
 
   return {
-    selectedFolder, setSelectedFolder, mailFolders, legacyCount, visibleMailFolders, folders, folderFilters, movableFolderIds, unreadByFolder,
+    selectedFolder, setSelectedFolder, mailFolders, foldersLoaded, legacyCount, visibleMailFolders, folders, folderFilters, movableFolderIds, unreadByFolder,
   };
 }

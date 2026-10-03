@@ -9,8 +9,12 @@ const { serverEvents } = require('../services/server-events');
 const {
   isAdmin,
   hashPassword,
+  verifyPassword,
+  consumeAuthAttempt,
   getSignupMode,
+  getAuthTokenFromRequest,
 } = require('../auth');
+const { disableTwoFactor } = require('../services/two-factor');
 
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
 
@@ -252,9 +256,9 @@ module.exports = {
 
     try {
       const [users] = await db.execute(
-        'SELECT id, email, full_name, role, is_active, created_at FROM users ORDER BY created_at DESC'
+        'SELECT id, email, full_name, role, is_active, two_factor_enabled, created_at FROM users ORDER BY created_at DESC'
       );
-      return { users };
+      return { users: users.map(user => ({ ...user, two_factor_enabled: !!user.two_factor_enabled })) };
     } catch (error) {
       return { error: 'Failed to get users', status: 500 };
     }
@@ -281,6 +285,74 @@ module.exports = {
       return { message: 'Password updated successfully' };
     } catch (error) {
       return { error: 'Failed to update password', status: 500 };
+    }
+  },
+
+  // For a user who lost both the authenticator and the recovery codes. The admin
+  // confirms with their own password; their own 2FA is turned off in Settings,
+  // which needs a code, so a stolen admin session cannot remove it.
+  'POST /api/admin/users/:id/2fa/reset': async (req, userId, body, res) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+
+    const parts = req.url.split('?')[0].split('/');
+    const targetId = parts[parts.length - 3];
+    if (targetId === userId) {
+      return { error: 'Turn off your own two-factor authentication in Settings', status: 400 };
+    }
+    const retryAfter = consumeAuthAttempt('password', userId);
+    if (retryAfter) {
+      res?.setHeader('Retry-After', String(retryAfter));
+      return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
+    }
+    const currentPassword = body?.current_password;
+    if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 1024) {
+      return { error: 'Your current password is required', status: 400 };
+    }
+
+    let connection;
+    try {
+      const [admins] = await db.execute('SELECT password_hash FROM users WHERE id = ?', [userId]);
+      if (!admins.length || !(await verifyPassword(currentPassword, admins[0].password_hash))) {
+        // Not 401: the client treats a 401 outside /api/auth/ as an expired session and signs out.
+        return { error: 'Current password is incorrect', status: 403 };
+      }
+      connection = await db.getConnection();
+      await connection.beginTransaction();
+      // Both rows in one statement, in id order, so two admins resetting each other cannot deadlock.
+      // 2FA setup locks the user row too; together with the session check below, a request from an
+      // admin session that was signed out meanwhile (e.g. by enabling 2FA elsewhere) changes nothing.
+      const [rows] = await connection.execute(
+        'SELECT id, role, is_active, two_factor_enabled, password_hash FROM users WHERE id IN (?, ?) ORDER BY id FOR UPDATE', [userId, targetId]);
+      const requester = rows.find(row => row.id === userId);
+      const [current] = await connection.execute('SELECT 1 FROM sessions WHERE user_id = ? AND token = ? FOR UPDATE',
+        [userId, getAuthTokenFromRequest(req) || '']);
+      // Deactivation and password changes commit before they delete sessions, so check the
+      // flag and that the password verified above is still the admin's.
+      if (!current.length || !requester?.is_active || requester.password_hash !== admins[0].password_hash) {
+        await connection.rollback();
+        return { error: 'Unauthorized', status: 401 };
+      }
+      if (requester?.role !== 'admin') { await connection.rollback(); return { error: 'Forbidden', status: 403 }; }
+      const targets = rows.filter(row => row.id === targetId);
+      if (!targets.length) { await connection.rollback(); return { error: 'User not found', status: 404 }; }
+      if (!targets[0].two_factor_enabled) {
+        await connection.rollback();
+        return { error: 'Two-factor authentication is not enabled for this user', status: 400 };
+      }
+      await disableTwoFactor(targetId, connection);
+      await connection.execute('DELETE FROM two_factor_challenges WHERE user_id = ?', [targetId]);
+      // Sessions may be on the lost device.
+      await connection.execute('DELETE FROM sessions WHERE user_id = ?', [targetId]);
+      await connection.commit();
+      serverEvents.closeUser(targetId);
+      return { message: 'Two-factor authentication reset' };
+    } catch (error) {
+      if (connection) await connection.rollback().catch(() => {});
+      console.error('Admin 2FA reset error:', error);
+      return { error: 'Failed to reset two-factor authentication', status: 500 };
+    } finally {
+      connection?.release();
     }
   },
 

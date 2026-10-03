@@ -80,7 +80,8 @@ interface AccountListProps {
   loading: boolean;
   /** The selected view: an account id, `all` or `legacy`. */
   selectedAccount: string | null;
-  legacyCount: number;
+  /** Messages in Legacy; null when unknown. */
+  legacyCount: number | null;
   /** Collapsed desktop sidebar: icons only. */
   compact: boolean;
   /** The add account button (the account dialog trigger). */
@@ -135,13 +136,14 @@ export function MailAccountList({ accounts, loading, selectedAccount, legacyCoun
                 )}
               </button>
             </div>
-            <button type="button"
+            {/* Mail the old shared-folder migration could not file. Shown unless it is known to be empty. */}
+            {legacyCount !== 0 && <button type="button"
               onClick={() => onSelect(LEGACY_ACCOUNT)}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${selectedAccount === LEGACY_ACCOUNT ? 'bg-mail/10 text-mail' : 'text-muted-foreground hover:bg-muted'}`}
               title="Legacy: unresolved mail and mail awaiting a successful server folder check">
               <FolderOpen className="h-5 w-5 shrink-0" />
-              {!compact && <span>Legacy ({legacyCount})</span>}
-            </button>
+              {!compact && <span>{legacyCount === null ? 'Legacy' : `Legacy (${legacyCount})`}</span>}
+            </button>}
             {accounts.map((account) => (
               <div key={account.id} className={`relative group ${compact ? 'flex justify-center' : ''}`}>
                 <button

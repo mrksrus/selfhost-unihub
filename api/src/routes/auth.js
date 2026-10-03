@@ -21,9 +21,12 @@ const {
   verifyTotp,
   getOtpAuthUri,
   getTwoFactorStatus,
+  createRecoveryCodes,
   enableTwoFactor,
+  replaceRecoveryCodes,
   disableTwoFactor,
   verifyUserSecondFactor,
+  readTwoFactorSecret,
   createTwoFactorLoginChallenge,
   consumeTwoFactorLoginChallenge,
   deleteTwoFactorLoginChallenge,
@@ -63,6 +66,9 @@ function checkLoginBudget(res, scope, identity) {
   res?.setHeader('Retry-After', String(retryAfter));
   return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
 }
+
+const UNREADABLE_SECRET_MESSAGE = 'The authenticator key can no longer be read because the server encryption key changed. '
+  + 'Turn two-factor authentication off with a recovery code and set it up again.';
 
 function validCredentials(email, password) {
   return typeof email === 'string' && email.trim().length > 0 && email.length <= 254
@@ -308,28 +314,63 @@ module.exports = {
     }
   },
 
-  'POST /api/auth/2fa/setup/confirm': async (req, userId, body) => {
+  'POST /api/auth/2fa/setup/confirm': async (req, userId, body, res) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
+    // Each accepted request hashes ten recovery codes, which takes seconds of CPU.
+    const limited = checkLoginBudget(res, 'secondFactor', userId);
+    if (limited) return limited;
     const secret = String(body?.secret || '').trim().toUpperCase();
     const code = String(body?.code || '').trim();
+    const currentPassword = typeof body?.current_password === 'string' ? body.current_password : '';
     if (!secret || !code) return { error: 'Secret and authentication code are required', status: 400 };
+    // Enabling signs out every other device, so a stolen session alone must not be enough.
+    if (!currentPassword) return { error: 'Current password is required', status: 400 };
     if (!verifyTotp(secret, code)) return { error: 'Invalid authentication code', status: 400 };
 
+    const currentToken = getAuthTokenFromRequest(req) || '';
+    let connection;
     try {
-      const [users] = await db.execute('SELECT id, two_factor_enabled FROM users WHERE id = ?', [userId]);
-      if (users.length === 0) return { error: 'User not found', status: 404 };
+      // Cheap checks before hashing; the 2FA state is checked again below under the lock.
+      const [status] = await db.execute('SELECT two_factor_enabled, password_hash FROM users WHERE id = ?', [userId]);
+      if (status.length === 0) return { error: 'User not found', status: 404 };
+      if (status[0].two_factor_enabled) return { error: 'Two-factor authentication is already enabled', status: 400 };
+      if (!await verifyPassword(currentPassword, status[0].password_hash)) return { error: 'Current password is incorrect', status: 401 };
+      const recovery = await createRecoveryCodes();
+      connection = await db.getConnection();
+      await connection.beginTransaction();
+      // Locked like the admin 2FA reset, so a request whose session that reset deleted
+      // cannot turn 2FA back on once the reset has committed.
+      const [users] = await connection.execute('SELECT id, two_factor_enabled, password_hash, is_active FROM users WHERE id = ? FOR UPDATE', [userId]);
+      if (users.length === 0) { await connection.rollback(); return { error: 'User not found', status: 404 }; }
+      // A password change or deactivation commits before deleting the sessions, so the
+      // session row alone does not show that the password checked above still holds.
+      if (!users[0].is_active || users[0].password_hash !== status[0].password_hash) {
+        await connection.rollback();
+        return { error: 'Unauthorized', status: 401 };
+      }
       if (users[0].two_factor_enabled) {
+        await connection.rollback();
         return { error: 'Two-factor authentication is already enabled', status: 400 };
       }
-      const recoveryCodes = await enableTwoFactor(userId, secret);
+      // Locking the session row also holds back a sign-out of it until this commits.
+      const [current] = await connection.execute('SELECT 1 FROM sessions WHERE user_id = ? AND token = ? FOR UPDATE', [userId, currentToken]);
+      if (current.length === 0) { await connection.rollback(); return { error: 'Unauthorized', status: 401 }; }
+      await enableTwoFactor(userId, secret, recovery.hashes, connection);
+      // Sessions on other devices were opened with the password alone.
+      await connection.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, currentToken]);
+      await connection.commit();
+      serverEvents.closeUser(userId, { exceptToken: currentToken });
       return {
         enabled: true,
-        recoveryCodes,
-        recoveryCodesRemaining: recoveryCodes.length,
+        recoveryCodes: recovery.codes,
+        recoveryCodesRemaining: recovery.codes.length,
       };
     } catch (error) {
+      if (connection) await connection.rollback().catch(() => {});
       console.error('2FA setup confirm error:', error);
       return { error: 'Failed to enable two-factor authentication', status: 500 };
+    } finally {
+      connection?.release();
     }
   },
 
@@ -376,14 +417,17 @@ module.exports = {
       );
       if (users.length === 0) return { error: 'User not found', status: 404 };
       if (!users[0].two_factor_enabled) return { error: 'Two-factor authentication is not enabled', status: 400 };
+      // Checked first, so a recovery code is not used up by a request that cannot succeed.
+      if (!readTwoFactorSecret(users[0])) return { error: UNREADABLE_SECRET_MESSAGE, status: 409 };
       const verification = await verifyUserSecondFactor(users[0], code);
       if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
-      const secret = users[0].encrypted_two_factor_secret ? require('../security/encryption').decrypt(users[0].encrypted_two_factor_secret) : null;
-      if (!secret) return { error: 'Two-factor secret is unavailable', status: 500 };
-      const recoveryCodes = await enableTwoFactor(userId, secret);
+      const recovery = await createRecoveryCodes();
+      if (!(await replaceRecoveryCodes(userId, recovery.hashes))) {
+        return { error: 'Two-factor authentication was turned off', status: 409 };
+      }
       return {
-        recoveryCodes,
-        recoveryCodesRemaining: recoveryCodes.length,
+        recoveryCodes: recovery.codes,
+        recoveryCodesRemaining: recovery.codes.length,
       };
     } catch (error) {
       console.error('2FA recovery regenerate error:', error);

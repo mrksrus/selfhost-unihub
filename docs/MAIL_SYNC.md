@@ -54,7 +54,9 @@ The [0.10.5 migration](../CHANGELOG.md#0105) supersedes the Legacy shared behavi
 below. Existing server-folder mappings and exact display-name matches connect
 without creating provider folders. Local-only messages are filed in a uniquely
 matched To account's Inbox; unresolved mail appears under the Legacy account
-view with its previous folder names. A successful complete LIST is required.
+view with its previous folder names. Since 0.17.3 the Legacy view is listed only
+while it holds mail, so installations without such mail do not show it. A
+successful complete LIST is required.
 Each account commits once, with an assignment journal and per-account overrides
 for old sender rules targeting disconnected folders. Later syncs refresh the
 server inventory without repeating message moves.

@@ -189,6 +189,8 @@ async function dispatchRequest(req, res) {
       routeKey = `${req.method} /api/admin/users/:id/role`;
     } else if (url.pathname.includes('/activate')) {
       routeKey = `${req.method} /api/admin/users/:id/activate`;
+    } else if (url.pathname.endsWith('/2fa/reset')) {
+      routeKey = `${req.method} /api/admin/users/:id/2fa/reset`;
     } else {
       routeKey = `${req.method} /api/admin/users/:id`;
     }

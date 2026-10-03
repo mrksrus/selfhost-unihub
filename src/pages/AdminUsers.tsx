@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -7,7 +7,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,7 +22,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/hooks/use-toast';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
-import { Shield, Key, Trash2, Loader2, UserCheck, UserX, UserCog } from 'lucide-react';
+import { Shield, Key, Trash2, Loader2, UserCheck, UserX, UserCog, ShieldOff } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 interface UserRow {
@@ -31,6 +31,7 @@ interface UserRow {
   full_name: string | null;
   role: 'user' | 'admin';
   is_active: boolean;
+  two_factor_enabled?: boolean;
   created_at: string;
 }
 
@@ -41,6 +42,11 @@ const AdminUsers = () => {
   const [passwordDialogUser, setPasswordDialogUser] = useState<UserRow | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
+  const [resetTwoFactorUser, setResetTwoFactorUser] = useState<UserRow | null>(null);
+  const [adminPassword, setAdminPassword] = useState('');
+  // The user the reset dialog shows now, read when a request completes.
+  const openResetUserId = useRef<string | null>(null);
+  useEffect(() => { openResetUserId.current = resetTwoFactorUser?.id ?? null; }, [resetTwoFactorUser]);
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['admin', 'users'],
@@ -94,6 +100,25 @@ const AdminUsers = () => {
     },
   });
   
+  const resetTwoFactor = useMutation({
+    mutationFn: async ({ user, currentPassword }: { user: UserRow; currentPassword: string }) => {
+      const response = await api.post(`/admin/users/${user.id}/2fa/reset`, { current_password: currentPassword });
+      if (response.error) throw new Error(response.error);
+    },
+    // Report on the submitted user; the dialog may have been reopened for someone else meanwhile.
+    onSuccess: (_data, { user }) => {
+      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+      toast({ title: `Two-factor authentication reset for ${user.email}`, description: 'They were signed out and can sign in with their password.' });
+      if (openResetUserId.current === user.id) {
+        setResetTwoFactorUser(null);
+        setAdminPassword('');
+      }
+    },
+    onError: (err: Error, { user }) => {
+      toast({ title: `Failed to reset two-factor authentication for ${user.email}`, description: err.message, variant: 'destructive' });
+    },
+  });
+
   const handleChangePassword = async () => {
     if (!passwordDialogUser || !newPassword || newPassword.length < 12) {
       toast({ title: 'New password must be at least 12 characters', variant: 'destructive' });
@@ -191,6 +216,7 @@ const AdminUsers = () => {
                         <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>
                           {u.role}
                         </Badge>
+                        {u.two_factor_enabled && <Badge variant="outline" className="ml-1">2FA</Badge>}
                       </TableCell>
                       <TableCell>
                         <Badge variant={u.is_active ? 'default' : 'secondary'} className={u.is_active ? 'bg-success' : 'bg-muted'}>
@@ -242,6 +268,16 @@ const AdminUsers = () => {
                           <Key className="h-3.5 w-3.5 mr-1" />
                           Password
                         </Button>
+                        {u.two_factor_enabled && u.id !== user?.id && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => { setResetTwoFactorUser(u); setAdminPassword(''); }}
+                          >
+                            <ShieldOff className="h-3.5 w-3.5 mr-1" />
+                            Reset 2FA
+                          </Button>
+                        )}
                         {u.id !== user?.id && (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
@@ -308,6 +344,48 @@ const AdminUsers = () => {
               </Button>
             </div>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!resetTwoFactorUser} onOpenChange={(open) => {
+        if (!open) { setResetTwoFactorUser(null); setAdminPassword(''); }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset 2FA for {resetTwoFactorUser?.email}</DialogTitle>
+            <DialogDescription>
+              For a user who lost their authenticator and recovery codes. Two-factor authentication is turned off and
+              they are signed out everywhere; they sign in with their password and can set it up again. Check that the
+              request really comes from them first.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4 pt-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (resetTwoFactorUser && adminPassword) resetTwoFactor.mutate({ user: resetTwoFactorUser, currentPassword: adminPassword });
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="adminResetPassword">Your password</Label>
+              <Input
+                id="adminResetPassword"
+                type="password"
+                autoComplete="current-password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => { setResetTwoFactorUser(null); setAdminPassword(''); }}>
+                Cancel
+              </Button>
+              <Button type="submit" variant="destructive" disabled={resetTwoFactor.isPending || !adminPassword}>
+                {resetTwoFactor.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                Reset 2FA
+              </Button>
+            </div>
+          </form>
         </DialogContent>
       </Dialog>
     </div>

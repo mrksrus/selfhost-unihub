@@ -14,6 +14,7 @@ function handlerHarness(t, { userId = 'u1', route, moduleEnabled = true } = {}) 
   stub(paths[4], { getActiveRestoreSections: async () => new Set() });
   stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
     'POST /api/mail/writebacks/:id/accept-server-state': route,
+    'POST /api/admin/users/:id/2fa/reset': route,
     'GET /api/modules': route, 'GET /api/contacts/export': route, 'GET /api/offline/snapshot': route || (async (_req, user) => ({ snapshot: { userId: user } })),
     'POST /api/parse-test': route || (async () => ({ success: true })) });
   const { handleRequest } = require(paths[0]);
@@ -77,6 +78,13 @@ test('mail provider change retry reaches its parameterized route', async (t) => 
   assert.deepEqual(accepted.body, { id: 'change-2', userId: 'u1' });
 });
 
+
+test('admin 2FA reset reaches its parameterized route with the body', async (t) => {
+  const run = handlerHarness(t, { route: async (req, userId, body) => ({ url: req.url, userId, body }) });
+  const result = await run('POST', '/api/admin/users/user-2/2fa/reset', '{"current_password":"synthetic"}');
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, { url: '/api/admin/users/user-2/2fa/reset', userId: 'u1', body: { current_password: 'synthetic' } });
+});
 
 test('disabled module reads, attachments and writes are rejected before reaching a handler', async (t) => {
   let calls = 0;

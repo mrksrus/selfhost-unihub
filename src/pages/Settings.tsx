@@ -4,6 +4,7 @@ import AppearanceSettings from '@/components/theme/AppearanceSettings';
 import { lazy, Suspense, useState, useEffect } from 'react';
 import type { User as AuthUser } from '@/contexts/auth-context';
 import NotificationSettings from '@/components/pwa/NotificationSettings';
+import { TotpQrCode } from '@/components/settings/TotpQrCode';
 const BackupSettings = lazy(() => import('@/components/settings/BackupSettings'));
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
@@ -96,6 +97,7 @@ type UserPreferences = {
 type TwoFactorStatus = {
   enabled: boolean;
   recoveryCodesRemaining: number;
+  secretReadable?: boolean;
 };
 
 type TwoFactorSetup = {
@@ -226,6 +228,7 @@ const Settings = () => {
   const [twoFactorRecoveryOpen, setTwoFactorRecoveryOpen] = useState(false);
   const [twoFactorSetup, setTwoFactorSetup] = useState<TwoFactorSetup | null>(null);
   const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorSetupPassword, setTwoFactorSetupPassword] = useState('');
   const [twoFactorDisableForm, setTwoFactorDisableForm] = useState({ current_password: '', code: '' });
   const [newRecoveryCodes, setNewRecoveryCodes] = useState<string[] | null>(null);
   const [twoFactorLoading, setTwoFactorLoading] = useState(false);
@@ -278,6 +281,7 @@ const Settings = () => {
     setTwoFactorLoading(true);
     setNewRecoveryCodes(null);
     setTwoFactorCode('');
+    setTwoFactorSetupPassword('');
     try {
       const response = await api.post<TwoFactorSetup>('/auth/2fa/setup/start');
       if (response.error) {
@@ -301,11 +305,13 @@ const Settings = () => {
       const response = await api.post<{ enabled: boolean; recoveryCodes: string[]; recoveryCodesRemaining: number }>('/auth/2fa/setup/confirm', {
         secret: twoFactorSetup.secret,
         code: twoFactorCode,
+        current_password: twoFactorSetupPassword,
       });
       if (response.error) {
         toast({ title: 'Failed to enable 2FA', description: response.error, variant: 'destructive' });
         return;
       }
+      setTwoFactorSetupPassword('');
       setNewRecoveryCodes(response.data?.recoveryCodes || []);
       setUser(user ? { ...user, two_factor_enabled: true } : user);
       await refetchTwoFactorStatus();
@@ -850,11 +856,18 @@ const Settings = () => {
                       ? `Enabled. ${twoFactorStatus.recoveryCodesRemaining} recovery code${twoFactorStatus.recoveryCodesRemaining === 1 ? '' : 's'} remaining.`
                       : 'Require an authenticator code when signing in.'}
                   </p>
+                  {twoFactorStatus?.enabled && twoFactorStatus.secretReadable === false && (
+                    <p className="text-sm text-destructive mt-1" role="alert">
+                      Authenticator codes cannot be checked because the server encryption key changed. Turn two-factor
+                      authentication off with a recovery code and set it up again.
+                    </p>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {twoFactorStatus?.enabled ? (
                     <>
-                      <Dialog open={twoFactorRecoveryOpen} onOpenChange={(open) => {
+                      {/* New codes need a readable authenticator key; without one the server refuses. */}
+                      {twoFactorStatus.secretReadable !== false && <Dialog open={twoFactorRecoveryOpen} onOpenChange={(open) => {
                         setTwoFactorRecoveryOpen(open);
                         if (!open) setTwoFactorCode('');
                       }}>
@@ -887,7 +900,7 @@ const Settings = () => {
                             </div>
                           </div>
                         </DialogContent>
-                      </Dialog>
+                      </Dialog>}
                       <Dialog open={twoFactorDisableOpen} onOpenChange={(open) => {
                         setTwoFactorDisableOpen(open);
                         if (!open) setTwoFactorDisableForm({ current_password: '', code: '' });
@@ -964,6 +977,7 @@ const Settings = () => {
           if (!open) {
             setTwoFactorSetup(null);
             setTwoFactorCode('');
+            setTwoFactorSetupPassword('');
           }
         }}>
           <DialogContent className="sm:max-w-xl">
@@ -974,19 +988,34 @@ const Settings = () => {
               {!newRecoveryCodes ? (
                 <>
                   <p className="text-sm text-muted-foreground">
-                    Add this account to your authenticator app using the manual key below, then enter the 6-digit code it shows.
+                    Scan the code with your authenticator app, or on this device open it in the app or type the key.
+                    Then enter your password and the 6-digit code the app shows.
                   </p>
-                  <div className="space-y-2">
-                    <Label>Manual setup key</Label>
-                    <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-sm break-all">
-                      {twoFactorSetup?.secret}
+                  {twoFactorSetup?.otpauth_uri && (
+                    <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
+                      <TotpQrCode uri={twoFactorSetup.otpauth_uri} />
+                      <div className="w-full min-w-0 space-y-3">
+                        <div className="space-y-2">
+                          <Label>Setup key</Label>
+                          <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-sm break-all">
+                            {twoFactorSetup.secret}
+                          </div>
+                        </div>
+                        <Button variant="outline" asChild className="w-full sm:w-auto">
+                          <a href={twoFactorSetup.otpauth_uri}>Open in authenticator app</a>
+                        </Button>
+                      </div>
                     </div>
-                  </div>
+                  )}
                   <div className="space-y-2">
-                    <Label>Authenticator URI</Label>
-                    <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs break-all">
-                      {twoFactorSetup?.otpauth_uri}
-                    </div>
+                    <Label htmlFor="confirm2faPassword">Current password</Label>
+                    <Input
+                      id="confirm2faPassword"
+                      type="password"
+                      autoComplete="current-password"
+                      value={twoFactorSetupPassword}
+                      onChange={(event) => setTwoFactorSetupPassword(event.target.value)}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="confirm2faCode">Authentication code</Label>
@@ -1000,7 +1029,7 @@ const Settings = () => {
                   </div>
                   <div className="flex justify-end gap-2">
                     <Button variant="outline" onClick={() => setTwoFactorSetupOpen(false)}>Cancel</Button>
-                    <Button onClick={confirmTwoFactorSetup} disabled={twoFactorLoading || !twoFactorCode.trim()}>
+                    <Button onClick={confirmTwoFactorSetup} disabled={twoFactorLoading || !twoFactorCode.trim() || !twoFactorSetupPassword}>
                       {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                       Enable 2FA
                     </Button>
@@ -1009,7 +1038,8 @@ const Settings = () => {
               ) : (
                 <>
                   <p className="text-sm text-muted-foreground">
-                    Two-factor authentication is enabled. Store these recovery codes now; they will not be shown again.
+                    Two-factor authentication is enabled and your other devices were signed out. Store these recovery
+                    codes now; they will not be shown again.
                   </p>
                   <div className="grid grid-cols-2 gap-2 rounded-md border border-border p-3 font-mono text-sm">
                     {newRecoveryCodes.map((code) => <span key={code}>{code}</span>)}
