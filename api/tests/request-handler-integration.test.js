@@ -9,7 +9,7 @@ function handlerHarness(t, { userId = 'u1', route, moduleEnabled = true } = {}) 
   t.after(() => paths.forEach((name, i) => { if (previous[i]) require.cache[name] = previous[i]; else delete require.cache[name]; }));
   const stub = (name, exports) => { require.cache[name] = { id: name, filename: name, loaded: true, exports }; };
   delete require.cache[paths[0]];
-  stub(paths[1], { verifyToken: async () => userId, validateCsrfToken: () => true });
+  stub(paths[1], { verifyToken: async () => userId, validateCsrfToken: () => true, refreshSessionCookies: () => {} });
   stub(paths[3], { isModuleEnabled: async () => moduleEnabled });
   stub(paths[4], { getActiveRestoreSections: async () => new Set() });
   stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,

@@ -118,9 +118,28 @@ async function deliverNotification(payload) {
 self.addEventListener('activate', event => {
   event.waitUntil(Promise.all(['local-api-cache', 'api-cache', 'unihub-notification-state-v1'].map(name => caches.delete(name))));
 });
+// A push that shows nothing can make the browser show its own message or
+// revoke the subscription. When the payload cannot be shown (malformed, or
+// for an account not signed in here) show a generic notice without content.
+async function deliverGenericNotification() {
+  await self.registration.showNotification('UniHub', {
+    body: 'You have a new notification. Open UniHub to see it.',
+    icon: '/icons/icon-192x192.png', badge: '/icons/icon-72x72.png',
+    tag: 'unihub-generic', renotify: false, data: { url: '/', generic: true },
+  });
+  return true;
+}
+async function deliverPush(payload) {
+  if (await deliverNotification(payload)) return true;
+  // A repeated push for a notification already shown is not shown again.
+  if (typeof payload?.userId === 'string' && typeof payload?.dedupeKey === 'string' && await readStore('delivered', `${payload.userId}:${payload.dedupeKey}`)) return false;
+  return deliverGenericNotification();
+}
 self.addEventListener('push', event => {
   event.waitUntil(enqueueDelivery(async () => {
-    try { return await deliverNotification(event.data?.json()); }
+    let payload = null;
+    try { payload = event.data?.json(); } catch { /* Shown as a generic notice. */ }
+    try { return await deliverPush(payload); }
     catch (error) { console.error('[SW] Push delivery failed:', error.name); throw error; }
   }));
 });
@@ -145,8 +164,9 @@ self.addEventListener('periodicsync', event => event.waitUntil(Promise.resolve()
 self.addEventListener('notificationclick', event => {
   event.notification.close();
   event.waitUntil((async () => {
-    if (await readStore('meta', 'userId') !== event.notification.data?.userId) return;
-    const targetUrl = notificationTargetUrl(event.notification.data);
+    const generic = event.notification.data?.generic === true;
+    if (!generic && await readStore('meta', 'userId') !== event.notification.data?.userId) return;
+    const targetUrl = generic ? new URL('/', self.location.origin).toString() : notificationTargetUrl(event.notification.data);
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of clients) {
       if (new URL(client.url).origin !== self.location.origin) continue;

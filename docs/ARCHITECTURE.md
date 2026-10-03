@@ -186,7 +186,7 @@ Sessions use:
 - `auth-token` HttpOnly cookie containing a JWT
 - database-backed `sessions` row for every active token
 - `csrf-token` HttpOnly cookie and `X-CSRF-Token` header comparison for writes
-- 21-day session expiration
+- Sliding 21-day sessions (renewed on use, at most daily)
 
 `/api/auth/me` refreshes the CSRF token for regular frontend auth checks.
 

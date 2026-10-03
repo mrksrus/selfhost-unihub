@@ -8,11 +8,27 @@ UniHub uses Web Push for new unread mail, new calendar/to-do items, and calendar
 2. Sign in, open Settings, and select **Enable notifications**. Grant the browser permission.
 3. Select **Test notification**, minimize UniHub, and check that the notification arrives. Test on the actual devices you intend to use.
 
-Enabling notifications applies to this browser/device and account. Signing out revokes that device subscription. Session expiry, revoked browser permission, browser data removal, or an expired push subscription may require signing in and enabling notifications again. Device Focus settings, force-stopping the browser, lack of connectivity, and platform restrictions can delay or prevent delivery.
+Enabling notifications applies to this browser/device and account. Device Focus settings, force-stopping the browser, lack of connectivity, and platform restrictions can delay or prevent delivery.
 
-Mail notifications follow successful IMAP ingestion. The server checks mail approximately every ten minutes; Web Push does not make that discovery instantaneous. First account/folder imports and UIDVALIDITY resets establish a baseline without notifying every historical message. Already-read messages, drafts, sent mail, trash, and archive do not generate alerts.
+Notifications stay on as long as the device stays signed in:
+
+- **Sessions slide.** Each sign-in lasts 21 days from the last time UniHub was used on that device (renewed at most once a day). Opening the app now and then is enough.
+- **Warning before it ends.** When an unused session has 2 days left, the device gets a "Notifications will stop soon" notification. Opening UniHub renews the session and cancels the warning if it has not been sent yet.
+- **Automatic re-registration.** Every app start re-sends this device's subscription. After signing in again, or after the push service replaced the subscription, notifications resume without pressing Enable again. This is skipped when notifications were disabled on this device or the browser permission was revoked.
+- **Signing out** removes the device subscription. Signing in again as the same account turns it back on; disabling notifications in Settings keeps it off.
+- **Status in Settings.** The Notifications card shows the last delivery to this device, an unresolved push-service error, and when the device's session ends.
+
+Every push shows something. A push the worker cannot display (malformed, or for an account that is not signed in on this device) becomes a generic "You have a new notification" notice without content. Browsers may otherwise show their own message or, on some platforms, revoke subscriptions that receive pushes without a notification.
+
+Subscriptions stay tied to sessions on purpose: if a device is lost, its notifications (which include mail senders and event titles) stop when its session is signed out or ends.
+
+Mail notifications follow successful IMAP ingestion. New INBOX mail is usually noticed within seconds (IDLE) or at most about 30 seconds; other folders within about 5 minutes. Web Push does not make that discovery instantaneous. First account/folder imports and UIDVALIDITY resets establish a baseline without notifying every historical message. Already-read messages, drafts, sent mail, trash, and archive do not generate alerts.
 
 The server checks due calendar reminders every 30 seconds. It persists delivery state, retries transient push failures, and catches up within a two-hour reminder window after restart. Edited, deleted, hidden, done, or cancelled events are rechecked before delivery. Recurrence retains the calendar's existing behavior: notifications concern stored event occurrences; this change does not introduce recurrence expansion.
+
+## Install prompt
+
+Browsers that support it show an **Install UniHub** card: **Install** opens the browser's install dialog, **Later** asks again after a day (also when the browser dialog is cancelled), and **No** stops asking in that browser. An unanswered card appears at most once a day. The choice is stored in the browser's local storage, so clearing site data resets it. The app can still be installed from the browser menu.
 
 ## Server configuration and persistence
 

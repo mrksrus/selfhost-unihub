@@ -34,10 +34,20 @@ function generateToken(userId) {
   );
 }
 
-function getSessionExpiry() {
-  const expiresAt = new Date();
-  expiresAt.setDate(expiresAt.getDate() + 21);
+const SESSION_DAYS = 21;
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Sessions slide: use extends them, at most once a day, so an installed app
+// that is opened now and then (and its push subscription) stays signed in.
+const SESSION_RENEW_AFTER_MS = DAY_MS;
+
+function getSessionExpiry(now = new Date()) {
+  const expiresAt = new Date(now);
+  expiresAt.setDate(expiresAt.getDate() + SESSION_DAYS);
   return expiresAt;
+}
+
+function sessionNeedsRenewal(expiresAt, now = new Date()) {
+  return getSessionExpiry(now).getTime() - new Date(expiresAt).getTime() >= SESSION_RENEW_AFTER_MS;
 }
 
 const getClientIP = createClientIpResolver({
@@ -118,7 +128,7 @@ function getAuthTokenFromRequest(req) {
 // Set CSRF token cookie
 function setCsrfCookie(res, token) {
   const expires = new Date();
-  expires.setDate(expires.getDate() + 21); // Match JWT expiry
+  expires.setDate(expires.getDate() + SESSION_DAYS); // Match session expiry
   // Note: Secure flag requires HTTPS. For HTTP (development), remove Secure flag
   const isSecure = process.env.NODE_ENV === 'production';
   const secureFlag = isSecure ? 'Secure;' : '';
@@ -133,7 +143,7 @@ function clearCsrfCookie(res) {
 
 function setAuthCookie(res, token) {
   const expires = new Date();
-  expires.setDate(expires.getDate() + 21); // Match session expiry
+  expires.setDate(expires.getDate() + SESSION_DAYS); // Match session expiry
   const isSecure = process.env.NODE_ENV === 'production';
   const secureFlag = isSecure ? 'Secure;' : '';
   appendSetCookie(res, `${AUTH_COOKIE_NAME}=${token}; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=${expires.toUTCString()}`);
@@ -145,13 +155,24 @@ function clearAuthCookie(res) {
   appendSetCookie(res, `${AUTH_COOKIE_NAME}=; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
 }
 
-// JWT verification + session check
-async function verifyToken(req) {
+// Re-send both cookies with a fresh expiry after verifyToken renewed the session.
+function refreshSessionCookies(req, res) {
+  if (!req.sessionRenewed) return;
+  const cookies = parseCookies(req);
+  if (cookies[AUTH_COOKIE_NAME] !== req.sessionRenewed) return;
+  setAuthCookie(res, req.sessionRenewed);
+  if (/^[a-f0-9]{64}$/.test(cookies['csrf-token'] || '')) setCsrfCookie(res, cookies['csrf-token']);
+}
+
+// JWT verification + session check. The session row is the authority on
+// expiry; the JWT signature still has to match. With `renew`, a session last
+// renewed more than a day ago is extended and req.sessionRenewed is set.
+async function verifyToken(req, { renew = false } = {}) {
   const token = getAuthTokenFromRequest(req);
   if (!token) return null;
   let decoded;
   try {
-    decoded = jwt.verify(token, JWT_SECRET);
+    decoded = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true });
   } catch {
     return null;
   }
@@ -174,6 +195,14 @@ async function verifyToken(req) {
         const session = sessions[0];
         if (new Date(session.expires_at) < new Date()) return null;
         if (!session.is_active) return null;
+        if (renew && sessionNeedsRenewal(session.expires_at)) {
+          try {
+            await db.execute('UPDATE sessions SET expires_at = ? WHERE token = ? AND expires_at > UTC_TIMESTAMP()', [getSessionExpiry(), token]);
+            req.sessionRenewed = token;
+          } catch (renewError) {
+            console.error('[AUTH] Session renewal failed:', renewError.code || renewError.name);
+          }
+        }
 
         return session.user_id || decoded.userId || decoded.sub;
       } catch (dbError) {
@@ -223,6 +252,8 @@ module.exports = {
   generateCsrfToken,
   generateToken,
   getSessionExpiry,
+  sessionNeedsRenewal,
+  refreshSessionCookies,
   getClientIP,
   consumeAuthAttempt,
   validateCsrfToken,

@@ -40,7 +40,7 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   await connection.execute(`CREATE TEMPORARY TABLE backup_restore_jobs (id CHAR(36) PRIMARY KEY, user_id CHAR(36), requested_sections JSON, status VARCHAR(24)) ${options}`);
   const userId = crypto.randomUUID(); const sessionId = crypto.randomUUID();
   await connection.execute("INSERT INTO users (id, email, role) VALUES (?, 'admin@example.com', 'admin')", [userId]);
-  await connection.execute('INSERT INTO sessions VALUES (?, ?, ?, ?)', [sessionId, userId, 'test-session', new Date(Date.now() + 86400000)]);
+  await connection.execute('INSERT INTO sessions VALUES (?, ?, ?, ?)', [sessionId, userId, 'test-session', new Date(Date.now() + 10 * 86400000)]);
   const service = require('../src/services/notifications');
   await service.ensureNotificationSchema();
   const keys = await service.getVapidKeys();
@@ -98,6 +98,17 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   assert.equal(cancelled.status, 'cancelled');
   assert.equal(sent.length, 2);
   assert.equal((await service.getVapidKeys()).publicKey, keys.publicKey);
+
+  // An unused session nearing its end warns the device once.
+  await connection.execute('UPDATE sessions SET expires_at = ? WHERE id = ?', [new Date(Date.now() + 30 * 3600000), sessionId]);
+  await service.processNotificationJobs();
+  await service.processNotificationJobs();
+  assert.deepEqual(sent.filter(item => item.kind === 'session').map(item => item.title), ['Notifications will stop soon']);
+  const status = await service.deviceStatus(userId, subscription.endpoint);
+  assert.equal(status.subscribed, true);
+  assert.ok(Date.parse(status.lastSentAt) > Date.now() - 600000);
+  assert.ok(Date.parse(status.sessionExpiresAt) > Date.now());
+  assert.equal(status.lastError, null);
   await connection.execute('UPDATE sessions SET expires_at = ? WHERE id = ?', [new Date(Date.now() - 60000), sessionId]);
   await service.processNotificationJobs();
   const [[expired]] = await connection.execute('SELECT COUNT(*) AS total FROM push_subscriptions');

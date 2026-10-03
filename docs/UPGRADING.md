@@ -5,6 +5,24 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.15.1 Sliding sessions
+
+No database upgrade.
+
+- **Sessions now slide.** A sign-in lasts 21 days from its last use instead of
+  from sign-in. Existing sessions start sliding on their first use after the
+  update, including ones whose JWT is older than 21 days. The session row in
+  the database decides expiry; the JWT signature is still checked. To sign out
+  devices you no longer have, change your password (this signs out every
+  device, this one included) or ask an admin to deactivate and reactivate the
+  account.
+- **Your own reverse proxy** must pass `Set-Cookie` on normal API responses,
+  not only on sign-in (most do by default). The renewed cookies are sent there.
+- **Service worker.** Reload UniHub or accept the update prompt to get the
+  generic fallback for pushes that cannot be shown.
+- **Install card.** Earlier "Not now" choices are not carried over, so the card
+  may appear once more. Answer No to stop it for good.
+
 ## 0.15.0 Downloads and Sort now
 
 No database upgrade.

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Download, X } from 'lucide-react';
+import { Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { DECLINED_KEY, INSTALLED_AT_KEY, installPromptAllowed, remindLater, write } from '@/lib/install-prompt';
 
 type InstallOutcome = 'accepted' | 'dismissed';
 
@@ -12,19 +13,10 @@ interface BeforeInstallPromptEvent extends Event {
   }>;
 }
 
-const DISMISSED_AT_KEY = 'unihub:pwa-install-dismissed-at';
-const INSTALLED_AT_KEY = 'unihub:pwa-installed-at';
-const DISMISS_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
-
 function isStandaloneDisplay() {
   return window.matchMedia('(display-mode: standalone)').matches ||
     window.matchMedia('(display-mode: fullscreen)').matches ||
     (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
-}
-
-function isRecentlyDismissed() {
-  const dismissedAt = Number(window.localStorage.getItem(DISMISSED_AT_KEY) || '0');
-  return Number.isFinite(dismissedAt) && Date.now() - dismissedAt < DISMISS_DURATION_MS;
 }
 
 const InstallPrompt = () => {
@@ -40,12 +32,14 @@ const InstallPrompt = () => {
       event.preventDefault();
       const promptEvent = event as BeforeInstallPromptEvent;
       setInstallPrompt(promptEvent);
-      setVisible(!isRecentlyDismissed());
+      if (!installPromptAllowed()) return;
+      // Ignoring the prompt also waits a day before showing it again.
+      remindLater();
+      setVisible(true);
     };
 
     const handleAppInstalled = () => {
-      window.localStorage.setItem(INSTALLED_AT_KEY, String(Date.now()));
-      window.localStorage.removeItem(DISMISSED_AT_KEY);
+      write(INSTALLED_AT_KEY, String(Date.now()));
       setInstallPrompt(null);
       setVisible(false);
     };
@@ -65,17 +59,20 @@ const InstallPrompt = () => {
     try {
       await installPrompt.prompt();
       const choice = await installPrompt.userChoice;
-      if (choice.outcome === 'dismissed') {
-        window.localStorage.setItem(DISMISSED_AT_KEY, String(Date.now()));
-      }
+      if (choice.outcome === 'dismissed') remindLater();
     } finally {
       setInstallPrompt(null);
       setVisible(false);
     }
   };
 
-  const handleDismiss = () => {
-    window.localStorage.setItem(DISMISSED_AT_KEY, String(Date.now()));
+  const handleLater = () => {
+    remindLater();
+    setVisible(false);
+  };
+
+  const handleNo = () => {
+    write(DECLINED_KEY, 'true');
     setVisible(false);
   };
 
@@ -96,21 +93,14 @@ const InstallPrompt = () => {
                 <Download className="h-4 w-4" />
                 Install
               </Button>
-              <Button size="sm" variant="ghost" onClick={handleDismiss}>
-                Not now
+              <Button size="sm" variant="outline" onClick={handleLater}>
+                Later
+              </Button>
+              <Button size="sm" variant="ghost" onClick={handleNo}>
+                No
               </Button>
             </div>
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="h-8 w-8 shrink-0"
-            onClick={handleDismiss}
-            aria-label="Dismiss install prompt"
-          >
-            <X className="h-4 w-4" />
-          </Button>
         </div>
       </div>
     </div>

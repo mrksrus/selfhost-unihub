@@ -101,3 +101,27 @@ test('clicks navigate or open the exact item and never open a previous account n
   await click({ userId: 'user-2', url: '/calendar', eventId: 'private-event' });
   assert.equal(visited.length, 0);
 });
+
+test('pushes that cannot be shown get a generic notice without content, never nothing', async () => {
+  const fixture = worker();
+  const push = data => new Promise((resolve, reject) => fixture.listeners.push({ data, waitUntil: promise => promise.then(resolve, reject) }));
+  fixture.setUser('user-2');
+  await push({ json: () => payload });
+  await push({ json: () => { throw new SyntaxError('Not JSON'); } });
+  await push(null);
+  assert.equal(fixture.shown.length, 3);
+  for (const notification of fixture.shown) {
+    assert.equal(notification.title, 'UniHub');
+    assert.equal(notification.options.tag, 'unihub-generic');
+    assert.doesNotMatch(JSON.stringify(notification), /At-start reminder|calendar/);
+  }
+  assert.equal(fixture.delivered.size, 0);
+
+  const visited = [];
+  fixture.context.self.clients.matchAll = async () => [];
+  fixture.context.self.clients.openWindow = async url => visited.push(url);
+  await new Promise((resolve, reject) => fixture.listeners.notificationclick({
+    notification: { close() {}, data: fixture.shown[0].options.data }, waitUntil: task => task.then(resolve, reject),
+  }));
+  assert.deepEqual(visited, ['https://unihub.test/']);
+});

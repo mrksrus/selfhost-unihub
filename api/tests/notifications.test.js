@@ -12,7 +12,7 @@ function loadService(db, sender = {}) {
   const filename = require.resolve('../src/services/notifications');
   const nativeRequire = createRequire(filename);
   const module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\nmodule.exports.testInternals = { enqueueDueReminders, deliverPending, reconcileReminders };', {
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\nmodule.exports.testInternals = { enqueueDueReminders, deliverPending, reconcileReminders, enqueueSessionExpiryWarnings };', {
     module, exports: module.exports, Date, Buffer, console, process: { env: {} },
     require(name) {
       if (name === '../state') return { db };
@@ -273,4 +273,53 @@ test('a pause during source revalidation preserves the delivery before reserving
   assert.equal(await service.testInternals.deliverPending(connection, new Date()), 0);
   assert.equal(sends, 0);
   assert.deepEqual(writes, []);
+});
+
+test('devices whose session is about to end get one warning, cancelled once the session is renewed', async () => {
+  const expiresAt = new Date(Date.now() + 30 * 3600000);
+  const inserts = [];
+  const connection = { async execute(sql, values) {
+    if (sql.startsWith('SELECT p.user_id, p.session_id')) return [[{ user_id: 'u1', session_id: 'sess1', endpoint_hash: 'a'.repeat(64), expires_at: expiresAt }]];
+    if (sql.startsWith('SELECT p.id FROM push_subscriptions')) { assert.equal(values[1], 'a'.repeat(64)); return [[{ id: 's1' }]]; }
+    if (sql.startsWith('INSERT IGNORE INTO notification_events')) { inserts.push(values); return [{ affectedRows: inserts.length === 1 ? 1 : 0 }]; }
+    return [{}];
+  } };
+  const service = loadService({});
+  assert.equal(await service.testInternals.enqueueSessionExpiryWarnings(connection), 1);
+  assert.equal(await service.testInternals.enqueueSessionExpiryWarnings(connection), 0, 'dedupe key is stable for one expiry');
+  const payload = JSON.parse(inserts[0][5]);
+  assert.equal(inserts[0][3], 'session');
+  assert.equal(inserts[0][4], 'sess1');
+  assert.equal(payload.title, 'Notifications will stop soon');
+  assert.match(payload.body, /within 30 hours/);
+  assert.equal(inserts[0][6], expiresAt);
+
+  // The device opened UniHub in the meantime: the session no longer ends soon.
+  const writes = []; let sends = 0;
+  const row = { event_id: 'n1', subscription_id: 's1', attempts: 0, user_id: 'u1', kind: 'session', source_id: 'sess1', payload, expires_at: expiresAt };
+  const delivery = { async execute(sql, values) {
+    if (sql.includes('FROM notification_deliveries d')) return [[row]];
+    if (sql.startsWith('SELECT id FROM sessions')) return [[]];
+    writes.push({ sql, values }); return [{}];
+  } };
+  const sender = loadService({ async execute() { return [[{ public_key: 'public', encrypted_private_key: 'encrypted:private', subject: 'mailto:admin@example.com' }]]; } }, { async sendNotification() { sends++; } });
+  await sender.testInternals.deliverPending(delivery, new Date());
+  assert.equal(sends, 0);
+  assert.ok(writes.some(call => call.sql.includes("status = 'cancelled'")));
+});
+
+test('device status reports the latest delivery and only unresolved problems', async () => {
+  let failure = { last_error: 'Push service 503', created_at: '2026-10-01 08:00:00' };
+  const service = loadService({ async execute(sql) {
+    if (sql.startsWith('SELECT p.id, s.expires_at')) return [[{ id: 's1', expires_at: '2026-10-20 08:00:00' }]];
+    if (sql.startsWith('SELECT MAX')) return [[{ last_sent_at: '2026-10-02 08:00:00', pending: '1' }]];
+    if (sql.startsWith('SELECT d.last_error')) return [failure ? [failure] : []];
+    throw new Error(sql);
+  } });
+  const endpoint = validSubscription().endpoint;
+  const status = async value => JSON.parse(JSON.stringify(await service.deviceStatus('u1', value)));
+  assert.deepEqual(await status(endpoint), { subscribed: true, sessionExpiresAt: '2026-10-20T08:00:00.000Z', lastSentAt: '2026-10-02T08:00:00.000Z', pending: 1, lastError: null });
+  failure = { last_error: 'Push service 503', created_at: '2026-10-03 08:00:00' };
+  assert.deepEqual((await status(endpoint)).lastError, { message: 'Push service 503', at: '2026-10-03T08:00:00.000Z' });
+  assert.deepEqual(await status(''), { subscribed: false });
 });

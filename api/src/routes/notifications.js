@@ -13,7 +13,7 @@ const authenticated = handler => async (req, userId, body) => {
 };
 module.exports = {
   'GET /api/notifications/config': authenticated(async () => ({ publicKey: (await notifications.getVapidKeys()).publicKey })),
-  'GET /api/notifications/status': authenticated(async (req, userId) => ({ subscribed: await notifications.subscriptionStatus(userId, new URL(req.url, 'http://localhost').searchParams.get('endpoint')) })),
+  'GET /api/notifications/status': authenticated((req, userId) => notifications.deviceStatus(userId, new URL(req.url, 'http://localhost').searchParams.get('endpoint'))),
   'POST /api/notifications/subscription': authenticated((req, userId, body) => notifications.subscribe(userId, getAuthTokenFromRequest(req), body.subscription)),
   'POST /api/notifications/unsubscribe': authenticated((req, userId, body) => notifications.unsubscribe(userId, body.endpoint)),
   'DELETE /api/notifications/subscription': authenticated((req, userId, body) => notifications.unsubscribe(userId, body.endpoint)),

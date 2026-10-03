@@ -18,6 +18,7 @@ async function eventsServer(t, { sessions = new Map(), modules = () => ['mail'] 
     getAuthTokenFromRequest: tokenOf,
     verifyToken: async req => sessions.get(tokenOf(req)) || null,
     validateCsrfToken: () => true,
+    refreshSessionCookies: () => {},
   });
   stub(modulesPath, {
     getUserModules: async userId => ['mail', 'calendar'].map(id => ({ id, enabled: modules(userId).includes(id) })),

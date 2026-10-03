@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const routes = require('./routes');
-const { verifyToken, validateCsrfToken } = require('./auth');
+const { verifyToken, validateCsrfToken, refreshSessionCookies } = require('./auth');
 const {
   parseBody,
   parseRawBodyToFile,
@@ -228,7 +228,8 @@ async function dispatchRequest(req, res) {
   
   let temporaryUploadPath = null;
   try {
-    const userId = await verifyToken(req);
+    const userId = await verifyToken(req, { renew: true });
+    if (userId) refreshSessionCookies(req, res);
     if (!userId && !PUBLIC_ROUTE_KEYS.has(routeKey)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized', status: 401 }));

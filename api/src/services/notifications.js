@@ -9,6 +9,7 @@ const {
   reminderKey, reminderIsCurrent, hash, normalizeSubscription, retryDisposition,
 } = require('./notification-rules');
 
+const SESSION_WARNING_MS = 2 * 24 * 60 * 60 * 1000;
 let running = false;
 let keyPromise = null;
 const jsonValue = value => typeof value === 'string' ? JSON.parse(value) : value;
@@ -112,6 +113,30 @@ async function subscriptionStatus(userId, endpoint) {
   const [rows] = await db.execute(`SELECT p.id FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id
     WHERE p.user_id = ? AND p.endpoint_hash = ? AND s.expires_at > UTC_TIMESTAMP()`, [userId, hash(endpoint)]);
   return rows.length > 0;
+}
+
+// What Settings shows for this device: whether the server still has its
+// subscription, when its session ends, and the latest delivery outcome.
+async function deviceStatus(userId, endpoint) {
+  if (!endpoint || typeof endpoint !== 'string' || endpoint.length > 4096) return { subscribed: false };
+  const [devices] = await db.execute(`SELECT p.id, s.expires_at FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id
+    WHERE p.user_id = ? AND p.endpoint_hash = ? AND s.expires_at > UTC_TIMESTAMP()`, [userId, hash(endpoint)]);
+  if (!devices.length) return { subscribed: false };
+  const [[summary]] = await db.execute(`SELECT MAX(CASE WHEN status = 'sent' THEN delivered_at END) AS last_sent_at,
+    SUM(status = 'pending') AS pending FROM notification_deliveries WHERE subscription_id = ?`, [devices[0].id]);
+  const [failures] = await db.execute(`SELECT d.last_error, e.created_at FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
+    WHERE d.subscription_id = ? AND d.last_error IS NOT NULL ORDER BY e.created_at DESC LIMIT 1`, [devices[0].id]);
+  const iso = value => value ? asUtcDate(value).toISOString() : null;
+  const lastSentAt = iso(summary?.last_sent_at);
+  // A problem with a notification older than the latest delivery is resolved.
+  const failure = failures[0] && (!lastSentAt || asUtcDate(failures[0].created_at).toISOString() > lastSentAt) ? failures[0] : null;
+  return {
+    subscribed: true,
+    sessionExpiresAt: iso(devices[0].expires_at),
+    lastSentAt,
+    pending: Number(summary?.pending || 0),
+    lastError: failure ? { message: failure.last_error, at: iso(failure.created_at) } : null,
+  };
 }
 
 function notificationModule(kind) {
@@ -245,6 +270,12 @@ async function enqueueDueReminders(connection, now, activeRestores = new Map()) 
   }
 }
 async function eventStillCurrent(row, payload, connection) {
+  if (row.kind === 'session') {
+    // Skip the warning once the session was renewed by opening the app.
+    const [sessions] = await connection.execute('SELECT id FROM sessions WHERE id = ? AND user_id = ? AND expires_at <= UTC_TIMESTAMP() + INTERVAL ? SECOND',
+      [row.source_id, row.user_id, Math.ceil(SESSION_WARNING_MS / 1000)]);
+    return sessions.length > 0;
+  }
   if (row.kind === 'reminder') {
     const [events] = await connection.execute('SELECT e.*, c.is_visible FROM calendar_events e LEFT JOIN calendar_calendars c ON c.id = e.calendar_id WHERE e.id = ? AND e.user_id = ?', [row.source_id, row.user_id]);
     return reminderIsCurrent(events[0], payload);
@@ -306,6 +337,25 @@ async function deliverPending(connection, now, activeRestores = new Map()) {
   }
   return delivered;
 }
+// A push subscription belongs to a signed-in session (a lost device stops
+// receiving content when its session ends). Sessions slide with use; warn each
+// device before an unused one ends so notifications do not stop silently.
+async function enqueueSessionExpiryWarnings(connection) {
+  const [rows] = await connection.execute(`SELECT p.user_id, p.session_id, p.endpoint_hash, s.expires_at FROM push_subscriptions p
+    JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id JOIN users u ON u.id = p.user_id
+    WHERE u.is_active = TRUE AND s.expires_at > UTC_TIMESTAMP() AND s.expires_at <= UTC_TIMESTAMP() + INTERVAL ? SECOND
+    ORDER BY s.expires_at LIMIT 100`, [Math.ceil(SESSION_WARNING_MS / 1000)]);
+  let queued = 0;
+  for (const row of rows) {
+    const expiresAt = asUtcDate(row.expires_at);
+    const hoursLeft = Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 3600000));
+    const eventId = await enqueueEvent({ userId: row.user_id, dedupeKey: `session-expiry:${row.endpoint_hash}:${expiresAt.toISOString()}`, kind: 'session', sourceId: row.session_id,
+      title: 'Notifications will stop soon', body: `Open UniHub on this device within ${hoursLeft >= 36 ? `${Math.round(hoursLeft / 24)} days` : `${hoursLeft} hours`} to keep notifications on.`,
+      url: '/settings', expiresAt, endpointHash: row.endpoint_hash }, connection);
+    if (eventId) queued++;
+  }
+  return queued;
+}
 async function processNotificationJobs() {
   if (running) return { skipped: true };
   running = true;
@@ -322,6 +372,7 @@ async function processNotificationJobs() {
     const calendarUsers = [...paused].filter(([, modules]) => modules.has('calendar')).map(([userId]) => userId);
     await connection.execute(`DELETE FROM notification_reminders WHERE due_at < ? ${calendarUsers.length ? `AND user_id NOT IN (${calendarUsers.map(() => '?').join(', ')})` : ''}`, [new Date(now.getTime() - REMINDER_GRACE_MS), ...calendarUsers]);
     await enqueueDueReminders(connection, now, await blockedNotificationModules(connection));
+    await enqueueSessionExpiryWarnings(connection);
     const delivered = await deliverPending(connection, now, await blockedNotificationModules(connection));
     const pausedUsers = [...paused].filter(([, modules]) => modules.has('calendar') || modules.has('mail')).map(([userId]) => userId);
     await connection.execute(`DELETE FROM notification_events WHERE expires_at < UTC_TIMESTAMP() - INTERVAL 30 DAY ${pausedUsers.length ? `AND user_id NOT IN (${pausedUsers.map(() => '?').join(', ')})` : ''}`, pausedUsers);
@@ -335,4 +386,4 @@ async function processNotificationJobs() {
     running = false;
   }
 }
-module.exports = { ensureNotificationSchema, getVapidKeys, subscribe, unsubscribe, subscriptionStatus, enqueueMailNotification, enqueueCalendarNotification, enqueueTestNotification, enqueueEvent, processNotificationJobs };
+module.exports = { ensureNotificationSchema, getVapidKeys, subscribe, unsubscribe, subscriptionStatus, deviceStatus, enqueueMailNotification, enqueueCalendarNotification, enqueueTestNotification, enqueueEvent, processNotificationJobs };

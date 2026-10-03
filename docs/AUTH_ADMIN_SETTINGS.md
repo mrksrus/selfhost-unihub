@@ -12,7 +12,7 @@ Session components:
 - `auth-token`: HttpOnly JWT cookie
 - `csrf-token`: HttpOnly CSRF cookie
 - `sessions.token`: database copy of the JWT
-- `sessions.expires_at`: 21-day expiry
+- `sessions.expires_at`: 21 days from last use (renewed at most once a day; the session row, not the JWT `exp`, decides expiry)
 
 Every authenticated request verifies:
 

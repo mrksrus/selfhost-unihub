@@ -71,18 +71,23 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 function decodeKey(value: string) {
   return Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=')), char => char.charCodeAt(0));
 }
-export async function enablePushSubscription(userId: string, permission: NotificationPermission | 'unsupported') {
-  const generation = identityGeneration;
-  if (permission !== 'granted') throw new Error('Allow notifications in your browser settings to enable them.');
-  const registration = await initServiceWorker();
-  if (!registration || !('pushManager' in registration)) throw new Error('Notifications require an installed app or supported browser over HTTPS.');
+// Reuses this browser's subscription, or creates one when the push service
+// dropped it or the server key changed. Needs permission already granted.
+async function ensureBrowserSubscription(registration: ServiceWorkerRegistration) {
   const config = await api.get<{ publicKey: string }>('/notifications/config');
   if (config.error || !config.data?.publicKey) throw new Error(config.error || 'Notification service is unavailable.');
   const publicKey = decodeKey(config.data.publicKey);
   let subscription = await registration.pushManager.getSubscription();
   const existingKey = subscription?.options.applicationServerKey;
   if (subscription && existingKey && String(new Uint8Array(existingKey)) !== String(publicKey)) { await subscription.unsubscribe(); subscription = null; }
-  subscription ||= await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
+  return subscription || registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: publicKey });
+}
+export async function enablePushSubscription(userId: string, permission: NotificationPermission | 'unsupported') {
+  const generation = identityGeneration;
+  if (permission !== 'granted') throw new Error('Allow notifications in your browser settings to enable them.');
+  const registration = await initServiceWorker();
+  if (!registration || !('pushManager' in registration)) throw new Error('Notifications require an installed app or supported browser over HTTPS.');
+  const subscription = await ensureBrowserSubscription(registration);
   if (generation !== identityGeneration) throw new Error('Your session changed. Enable notifications again after signing in.');
   if (!await setNotificationUser(userId)) throw new Error('The app is updating. Refresh and enable notifications again.');
   const response = await api.post('/notifications/subscription', { subscription: subscription.toJSON() });
@@ -99,8 +104,10 @@ export async function syncPushSubscription(userId: string, signal?: AbortSignal)
   if (cancelled() || !registration) return;
   if (!await setNotificationUser(userId) || cancelled()) return;
   if (!pushEnabledForUser(userId) || !notificationSupport() || Notification.permission !== 'granted') return;
-  const subscription = await registration.pushManager.getSubscription();
-  if (!subscription || cancelled()) return;
+  // Re-registers on every app start, so a device that signed in again (or whose
+  // push service rotated the subscription) keeps notifications without a click.
+  const subscription = await ensureBrowserSubscription(registration);
+  if (cancelled()) return;
   const response = await api.post('/notifications/subscription', { subscription: subscription.toJSON() });
   if (response.error) throw new Error(response.error);
 }
