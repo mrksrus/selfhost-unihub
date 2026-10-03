@@ -187,11 +187,7 @@ async function markMailLinked(account) {
 
 async function linkedCalendarAccount(userId, mail) {
   const [linked] = await db.execute('SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC LIMIT 1', [userId, mail.id]);
-  if (linked[0]) {
-    // Accounts linked by 0.17.0 have no mark yet.
-    await markMailLinked(linked[0]);
-    return linked[0];
-  }
+  if (linked[0]) return linked[0];
   const [unlinked] = await db.execute(
     `SELECT * FROM calendar_accounts WHERE user_id = ? AND provider IN ('caldav', 'ics') AND mail_account_id IS NULL AND LOWER(account_email) = LOWER(?)
      ORDER BY created_at ASC`,

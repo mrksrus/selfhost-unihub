@@ -68,6 +68,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     [5, 'explicit-mail-writebacks'], [6, 'mail-engine-additive-storage'],
     [7, 'mail-engine-resumable-backfill'], [8, 'mail-engine-manual-refresh-intent'],
     [9, 'calendar-color-default'], [10, 'mail-sync-policy'], [11, 'remove-notes-module'], [12, 'calendar-sync'],
+    [13, 'calendar-mail-link-marker'],
   ]);
   const [policyColumns] = await db.execute(`SELECT COLUMN_NAME AS name, COLUMN_DEFAULT AS dflt, IS_NULLABLE AS nullable
     FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mail_accounts'

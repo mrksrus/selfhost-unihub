@@ -210,10 +210,13 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       link = await calendarAccounts.getMailCalendarLink(userId, otherMail);
       assert.equal(link.account.id, restored);
 
-      // Linked by 0.17.0 without the mark: it is added on the next look.
+      // Linked by 0.17.0 without the mark: the 0.17.1 upgrade adds it, so a
+      // backup taken right after upgrading can link it again.
       const thirdMail = await insertMail(userId, 'unmarked@example.test');
       const unmarked = await insertCalDav(userId, 'unmarked@example.test', current, thirdMail);
-      await calendarAccounts.getMailCalendarLink(userId, thirdMail);
-      assert.equal(config((await mailLink(unmarked)).provider_config).mailLinked, true);
+      await connection.execute('DELETE FROM schema_migrations WHERE id = 13');
+      await require('../src/services/database').ensureSchema();
+      assert.deepEqual(config((await mailLink(unmarked)).provider_config), { ...current, mailLinked: true });
+      assert.equal(config((await mailLink(standalone)).provider_config).mailLinked, undefined);
     });
   });

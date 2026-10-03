@@ -8,8 +8,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.17.1
 
-Fixes four calendar sync problems found in review after 0.17.0. No database
-upgrade. See [Calendar](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/CALENDAR.md)
+Fixes four calendar sync problems found in review after 0.17.0. A small
+database upgrade runs at startup. See [Calendar](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/CALENDAR.md)
 and [Upgrading](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/UPGRADING.md#0171-calendar-sync-fixes).
 
 ### Fixed
@@ -31,6 +31,8 @@ and [Upgrading](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/UPGRAD
   linked before a backup) are linked by address when the mail account's
   settings are opened. Before, any calendar account with the same address was
   linked, so turning off or disconnecting the mail account also affected it.
+  The startup upgrade marks the calendar accounts 0.17.0 linked, so a backup
+  taken right after upgrading still links them again when restored.
 
 ## 0.17.0
 

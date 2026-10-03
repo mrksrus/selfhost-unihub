@@ -7,8 +7,12 @@ version-specific upgrade guidance. Preserve existing data and keys when upgradin
 
 ## 0.17.1 Calendar sync fixes
 
-No database upgrade. A calendar account that 0.17.0 linked to a mail account
-by address alone, although it was added on the Calendar page, stays linked;
+The database upgrade runs at startup (migration 13,
+`calendar-mail-link-marker`): calendar accounts linked to a mail account are
+marked `mailLinked` in their configuration, so a restore from a backup links
+them again. No data is removed.
+
+A calendar account that 0.17.0 linked to a mail account by address alone, although it was added on the Calendar page, stays linked;
 turn the calendar off in the mail account and add the account again on the
 Calendar page if it should be separate.
 

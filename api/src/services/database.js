@@ -9,7 +9,7 @@ const {
   BOOTSTRAP_ADMIN_PASSWORD,
 } = require('../config');
 const { hashPassword } = require('../auth');
-const { backfillCalendarOwnership } = require('./calendar');
+const { backfillCalendarOwnership, safeJsonParse } = require('./calendar');
 const { getDatabaseConfig } = require('./database-config');
 const { supportedServer, unsupportedServerMessage } = require('./database-version');
 const { runMigrations } = require('./database-migrations');
@@ -446,7 +446,27 @@ async function ensureSchema() {
         await verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 12 });
       },
     },
+    {
+      // 0.17.1: backups keep provider_config but not mail_account_id. Accounts
+      // linked by 0.17.0 are marked mailLinked, so a restore links them again.
+      id: 13,
+      name: 'calendar-mail-link-marker',
+      up: async connection => {
+        for (const row of await unmarkedMailCalendars(connection)) {
+          const config = safeJsonParse(row.provider_config, {}) || {};
+          await connection.execute('UPDATE calendar_accounts SET provider_config = ? WHERE id = ?', [JSON.stringify({ ...config, mailLinked: true }), row.id]);
+        }
+      },
+      verify: async connection => {
+        if ((await unmarkedMailCalendars(connection)).length) throw new Error('Linked calendar accounts without the mailLinked mark remain');
+      },
+    },
   ]);
+}
+
+async function unmarkedMailCalendars(connection) {
+  const [rows] = await connection.execute('SELECT id, provider_config FROM calendar_accounts WHERE mail_account_id IS NOT NULL');
+  return rows.filter(row => (safeJsonParse(row.provider_config, {}) || {}).mailLinked !== true);
 }
 
 // ── FROZEN BASELINE (as of 0.11.1) ── never edit ─────────────────────
