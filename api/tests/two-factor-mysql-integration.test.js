@@ -64,7 +64,7 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     const { hashPassword } = require('../src/auth');
     const authRoutes = require('../src/routes/auth');
     const adminRoutes = require('../src/routes/admin');
-    const { createTwoFactorLoginChallenge } = require('../src/services/two-factor');
+    const { createTwoFactorLoginChallenge, replaceRecoveryCodes } = require('../src/services/two-factor');
 
     const admin = crypto.randomUUID();
     const person = crypto.randomUUID();
@@ -110,7 +110,8 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
       request(null, `/api/admin/users/${target}/2fa/reset`), userId, { current_password: password }, response());
     assert.equal((await adminRoutes['POST /api/admin/users/:id/2fa/reset'](request(null, resetUrl), person, { current_password: 'synthetic-person-password' }, response())).status, 403);
     assert.equal((await reset(admin, admin, 'synthetic-admin-password')).status, 400);
-    assert.equal((await reset(admin, person, 'wrong-admin-password')).status, 401);
+    // 403, not 401: the client signs out on a 401 from a non-auth endpoint.
+    assert.equal((await reset(admin, person, 'wrong-admin-password')).status, 403);
     assert.equal((await reset(admin, crypto.randomUUID(), 'synthetic-admin-password')).status, 404);
     const listed = (await adminRoutes['GET /api/admin/users'](request(null, '/api/admin/users'), admin)).users;
     assert.equal(listed.find(user => user.id === person).two_factor_enabled, true);
@@ -123,4 +124,12 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     assert.equal((await pool.execute('SELECT COUNT(*) AS count FROM two_factor_challenges WHERE user_id = ?', [person]))[0][0].count, 0);
     assert.deepEqual(await sessions(admin), ['admin-session']);
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 400);
+
+    // A request from a session the reset deleted, already past authentication, cannot turn 2FA back on.
+    const late = await authRoutes['POST /api/auth/2fa/setup/confirm'](request('person-current'), person, { secret: setup.secret, code: otp(setup.secret) });
+    assert.equal(late.status, 401);
+    assert.equal(late.recoveryCodes, undefined);
+    assert.equal(await replaceRecoveryCodes(person, []), false);
+    const [[still]] = await pool.execute('SELECT two_factor_enabled, two_factor_recovery_codes FROM users WHERE id = ?', [person]);
+    assert.deepEqual({ ...still, two_factor_enabled: !!still.two_factor_enabled }, { two_factor_enabled: false, two_factor_recovery_codes: null });
   });

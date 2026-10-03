@@ -45,7 +45,7 @@ describe('admin 2FA reset', () => {
   });
 
   it('keeps the dialog open and shows the error when the password is wrong', async () => {
-    vi.mocked(api.post).mockResolvedValue({ error: 'Current password is incorrect', status: 401 });
+    vi.mocked(api.post).mockResolvedValue({ error: 'Current password is incorrect', status: 403 });
     mount();
     fireEvent.click(await screen.findByRole('button', { name: 'Reset 2FA' }));
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'wrong' } });

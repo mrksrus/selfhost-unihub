@@ -167,10 +167,14 @@ async function getTwoFactorStatus(userId) {
   };
 }
 
-async function enableTwoFactor(userId, secret) {
-  const recoveryCodes = generateRecoveryCodes();
-  const recoveryHashes = await hashRecoveryCodes(recoveryCodes);
-  await db.execute(
+/** New recovery codes with their hashes. Hashing takes seconds, so callers do it before locking rows. */
+async function createRecoveryCodes() {
+  const codes = generateRecoveryCodes();
+  return { codes, hashes: await hashRecoveryCodes(codes) };
+}
+
+async function enableTwoFactor(userId, secret, recoveryHashes, connection = db) {
+  await connection.execute(
     `UPDATE users
      SET two_factor_enabled = TRUE,
          encrypted_two_factor_secret = ?,
@@ -178,7 +182,15 @@ async function enableTwoFactor(userId, secret) {
      WHERE id = ?`,
     [encrypt(secret), JSON.stringify(recoveryHashes), userId]
   );
-  return recoveryCodes;
+}
+
+/** Replaces the recovery codes. False when 2FA was turned off meanwhile, for example by an admin reset. */
+async function replaceRecoveryCodes(userId, recoveryHashes) {
+  const [result] = await db.execute(
+    'UPDATE users SET two_factor_recovery_codes = ? WHERE id = ? AND two_factor_enabled = TRUE',
+    [JSON.stringify(recoveryHashes), userId]
+  );
+  return result.affectedRows === 1;
 }
 
 async function disableTwoFactor(userId, connection = db) {
@@ -261,7 +273,9 @@ module.exports = {
   parseRecoveryHashes,
   readTwoFactorSecret,
   getTwoFactorStatus,
+  createRecoveryCodes,
   enableTwoFactor,
+  replaceRecoveryCodes,
   disableTwoFactor,
   verifyUserSecondFactor,
   createTwoFactorLoginChallenge,

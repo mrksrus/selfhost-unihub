@@ -313,7 +313,8 @@ module.exports = {
     try {
       const [admins] = await db.execute('SELECT password_hash FROM users WHERE id = ?', [userId]);
       if (!admins.length || !(await verifyPassword(currentPassword, admins[0].password_hash))) {
-        return { error: 'Current password is incorrect', status: 401 };
+        // Not 401: the client treats a 401 outside /api/auth/ as an expired session and signs out.
+        return { error: 'Current password is incorrect', status: 403 };
       }
       connection = await db.getConnection();
       await connection.beginTransaction();

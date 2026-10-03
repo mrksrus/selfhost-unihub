@@ -165,8 +165,12 @@ in authenticator app** link (the `otpauth://` URI, for an authenticator on the
 same device). The QR code is drawn in the browser, so the secret is not sent to
 any other service. Enabling and disabling 2FA both delete all other sessions of
 the user: sessions opened with the password alone end when 2FA is turned on.
+Turning 2FA on and deleting those sessions commit together, under a lock on the
+user row that the admin reset also takes. A confirmation from a session that a
+reset deleted meanwhile fails with `401` instead of turning 2FA back on.
 
 Regenerating recovery codes accepts an authenticator code or a recovery code.
+It returns `409` if 2FA was turned off while the request ran.
 
 ### When ENCRYPTION_KEY changed
 
@@ -189,8 +193,9 @@ Without recovery codes, an admin resets 2FA for the user (below).
 for a user who lost both the authenticator and the recovery codes. In **Admin >
 Users**, accounts with 2FA show a **2FA** badge and a **Reset 2FA** button.
 
-- the admin confirms with their own password; each admin gets 10 attempts per
-  10 minutes (`429` with `Retry-After` after that)
+- the admin confirms with their own password; a wrong one returns `403` (not
+  `401`, which the browser treats as an expired session); each admin gets 10
+  attempts per 10 minutes (`429` with `Retry-After` after that)
 - admins cannot reset their own 2FA here (`400`); they turn it off in Settings,
   which needs a code, so a stolen admin session cannot remove it
 - the reset clears the secret and recovery codes, deletes the user's pending

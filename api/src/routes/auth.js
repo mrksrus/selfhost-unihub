@@ -21,7 +21,9 @@ const {
   verifyTotp,
   getOtpAuthUri,
   getTwoFactorStatus,
+  createRecoveryCodes,
   enableTwoFactor,
+  replaceRecoveryCodes,
   disableTwoFactor,
   verifyUserSecondFactor,
   readTwoFactorSecret,
@@ -319,25 +321,38 @@ module.exports = {
     if (!secret || !code) return { error: 'Secret and authentication code are required', status: 400 };
     if (!verifyTotp(secret, code)) return { error: 'Invalid authentication code', status: 400 };
 
+    const currentToken = getAuthTokenFromRequest(req) || '';
+    let connection;
     try {
-      const [users] = await db.execute('SELECT id, two_factor_enabled FROM users WHERE id = ?', [userId]);
-      if (users.length === 0) return { error: 'User not found', status: 404 };
+      const recovery = await createRecoveryCodes();
+      connection = await db.getConnection();
+      await connection.beginTransaction();
+      // Locked like the admin 2FA reset, so a request whose session that reset deleted
+      // cannot turn 2FA back on once the reset has committed.
+      const [users] = await connection.execute('SELECT id, two_factor_enabled FROM users WHERE id = ? FOR UPDATE', [userId]);
+      if (users.length === 0) { await connection.rollback(); return { error: 'User not found', status: 404 }; }
       if (users[0].two_factor_enabled) {
+        await connection.rollback();
         return { error: 'Two-factor authentication is already enabled', status: 400 };
       }
-      const recoveryCodes = await enableTwoFactor(userId, secret);
+      const [current] = await connection.execute('SELECT 1 FROM sessions WHERE user_id = ? AND token = ?', [userId, currentToken]);
+      if (current.length === 0) { await connection.rollback(); return { error: 'Unauthorized', status: 401 }; }
+      await enableTwoFactor(userId, secret, recovery.hashes, connection);
       // Sessions on other devices were opened with the password alone.
-      const currentToken = getAuthTokenFromRequest(req) || '';
-      await db.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, currentToken]);
+      await connection.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, currentToken]);
+      await connection.commit();
       serverEvents.closeUser(userId, { exceptToken: currentToken });
       return {
         enabled: true,
-        recoveryCodes,
-        recoveryCodesRemaining: recoveryCodes.length,
+        recoveryCodes: recovery.codes,
+        recoveryCodesRemaining: recovery.codes.length,
       };
     } catch (error) {
+      if (connection) await connection.rollback().catch(() => {});
       console.error('2FA setup confirm error:', error);
       return { error: 'Failed to enable two-factor authentication', status: 500 };
+    } finally {
+      connection?.release();
     }
   },
 
@@ -385,14 +400,16 @@ module.exports = {
       if (users.length === 0) return { error: 'User not found', status: 404 };
       if (!users[0].two_factor_enabled) return { error: 'Two-factor authentication is not enabled', status: 400 };
       // Checked first, so a recovery code is not used up by a request that cannot succeed.
-      const secret = readTwoFactorSecret(users[0]);
-      if (!secret) return { error: UNREADABLE_SECRET_MESSAGE, status: 409 };
+      if (!readTwoFactorSecret(users[0])) return { error: UNREADABLE_SECRET_MESSAGE, status: 409 };
       const verification = await verifyUserSecondFactor(users[0], code);
       if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
-      const recoveryCodes = await enableTwoFactor(userId, secret);
+      const recovery = await createRecoveryCodes();
+      if (!(await replaceRecoveryCodes(userId, recovery.hashes))) {
+        return { error: 'Two-factor authentication was turned off', status: 409 };
+      }
       return {
-        recoveryCodes,
-        recoveryCodesRemaining: recoveryCodes.length,
+        recoveryCodes: recovery.codes,
+        recoveryCodesRemaining: recovery.codes.length,
       };
     } catch (error) {
       console.error('2FA recovery regenerate error:', error);
