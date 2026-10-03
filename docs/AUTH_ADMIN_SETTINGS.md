@@ -172,9 +172,9 @@ sessions commit together, under a lock on the user row that the admin reset
 also takes. A confirmation from a session that a reset deleted meanwhile fails
 with `401` instead of turning 2FA back on, as does one whose password changed
 or whose account was deactivated after the password was checked. Confirming
-setup counts against the
-second-factor limit (10 per 10 minutes per user), which also limits password
-guesses there, and each accepted request hashes ten recovery codes.
+setup counts against the second-factor limit (10 per 10 minutes per user),
+which also limits password guesses there, and each accepted request hashes ten
+recovery codes.
 
 Regenerating recovery codes accepts an authenticator code or a recovery code.
 It returns `409` if 2FA was turned off while the request ran.
