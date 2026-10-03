@@ -170,13 +170,26 @@ async function loadMailAccount(userId, mailAccountId) {
 
 // The link to a mail account is not in backups, so it is recovered by
 // address, but only for accounts that belonged to a mail account: those
-// marked mailLinked, and CalDAV accounts from before 0.17 (their config has no
-// server entry), which could only be created when adding a mail account. A
-// calendar account added on its own is never taken over.
-function wasMailCalendar(account) {
+// marked mailLinked; CalDAV accounts from before 0.17 (their config has no
+// server entry), which could only be created when adding a mail account; and
+// CalDAV accounts that sign in with the mail account's own login, as those
+// restored from a 0.17.0 backup, which kept neither the link nor the mark. A
+// calendar account added on its own with another login is never taken over.
+function wasMailCalendar(account, mail) {
   const config = safeJsonParse(account.provider_config, {}) || {};
   if (config.mailLinked === true) return true;
-  return account.provider === 'caldav' && !config.server;
+  if (account.provider !== 'caldav') return false;
+  return !config.server || usesMailLogin(account, mail);
+}
+
+function usesMailLogin(account, mail) {
+  if (!account.encrypted_password || !mail.encrypted_password) return false;
+  if (account.username !== (mail.username || mail.email_address)) return false;
+  try {
+    return decrypt(account.encrypted_password) === decrypt(mail.encrypted_password);
+  } catch {
+    return false;
+  }
 }
 
 async function markMailLinked(account) {
@@ -193,7 +206,7 @@ async function linkedCalendarAccount(userId, mail) {
      ORDER BY created_at ASC`,
     [userId, mail.email_address]
   );
-  const candidate = unlinked.find(wasMailCalendar);
+  const candidate = unlinked.find(account => wasMailCalendar(account, mail));
   if (!candidate) return null;
   const [result] = await db.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ? AND mail_account_id IS NULL', [mail.id, candidate.id]);
   if (!result.affectedRows) {

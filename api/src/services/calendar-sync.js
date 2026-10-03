@@ -354,7 +354,13 @@ async function syncCalendarObjects(ctx, calendar, listing, fetchObjects, { expan
     for (let index = 0; index < remaining.length; index += 100) {
       const chunk = remaining.slice(index, index + 100);
       const [objects] = await db.execute(`SELECT id, href, etag, ics FROM calendar_remote_objects WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk);
-      for (const object of objects) await applyObject(ctx, calendar, object);
+      for (const object of objects) {
+        const expanded = expandObject(ctx, object.ics);
+        // 0.17.0 stored copies before reading them. Without its ETag an
+        // unreadable one is downloaded again on the next sync.
+        if (!expanded) await db.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ?', [object.id]);
+        await applyObject(ctx, calendar, object, expanded);
+      }
     }
   }
   const unreadable = ctx.stats.unreadable - unreadableBefore;

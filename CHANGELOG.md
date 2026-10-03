@@ -17,8 +17,9 @@ and [Upgrading](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/UPGRAD
 - **An unreadable event no longer deletes its local copy.** When a calendar
   server sends an event UniHub cannot parse, the last readable version stays,
   with its ToDo state and subtasks. The sync status says how many entries could
-  not be read, and the next sync tries them again. Before, the event and its
-  ToDo state were removed and the sync reported success.
+  not be read, and the next sync tries them again, also for unreadable copies
+  0.17.0 had already stored. Before, the event and its ToDo state were removed
+  and the sync reported success.
 - **Turning off a mail account's calendar respects the Calendar module.** The
   Calendar section's requests are refused while the Calendar module is off or a
   calendar restore runs, so they can no longer delete calendar data then.
@@ -32,7 +33,9 @@ and [Upgrading](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/UPGRAD
   settings are opened. Before, any calendar account with the same address was
   linked, so turning off or disconnecting the mail account also affected it.
   The startup upgrade marks the calendar accounts 0.17.0 linked, so a backup
-  taken right after upgrading still links them again when restored.
+  taken right after upgrading still links them again when restored. A CalDAV
+  account restored from a 0.17.0 backup is linked when it signs in with the
+  mail account's own login.
 
 ## 0.17.0
 

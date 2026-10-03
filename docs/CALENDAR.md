@@ -43,9 +43,12 @@ while a calendar restore runs.
 A calendar account belongs to a mail account through `mail_account_id`. Backups
 do not keep that link, so opening the settings links an unlinked calendar
 account with the same address, but only one that belonged to a mail account:
-one marked `mailLinked` in its configuration, or a CalDAV account from 0.16 or
-earlier (those could only be created together with a mail account). A calendar
-account added on the Calendar page is never taken over.
+one marked `mailLinked` in its configuration, a CalDAV account from 0.16 or
+earlier (those could only be created together with a mail account), or a
+CalDAV account that signs in with the mail account's own login (as one
+restored from a 0.17.0 backup, which kept neither the link nor the mark). A
+calendar account added on the Calendar page with another login is never taken
+over.
 
 New mail accounts try the calendar by default (**Sync the calendar too**). The
 mail account is created even when no calendar is found; the result says why.
@@ -244,7 +247,9 @@ rows from it: one row per occurrence within 365 days back and 730 days ahead.
 - **Unreadable objects.** An object that cannot be parsed keeps its last
   readable copy, its ETag and its event rows with their ToDo state. The sync
   status shows how many entries could not be read, and the next sync downloads
-  them again. Rows imported before 0.17 are only replaced once every object of
+  them again. A stored copy that cannot be read (0.17.0 stored copies before
+  reading them) loses its ETag at the daily expansion, so it is downloaded
+  again too. Rows imported before 0.17 are only replaced once every object of
   their calendar was read.
 - **Recurrence and time zones.** `ical.js` expands `RRULE`, `RDATE`, `EXDATE`
   and overridden occurrences (`RECURRENCE-ID`), at most 1000 per series. Times

@@ -86,12 +86,12 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       );
       return id;
     }
-    async function insertCalDav(userId, email, config, mailAccountId = null) {
+    async function insertCalDav(userId, email, config, mailAccountId = null, password = 'synthetic-dav-password') {
       const id = crypto.randomUUID();
       await connection.execute(
         `INSERT INTO calendar_accounts (id, user_id, provider, account_email, display_name, username, encrypted_password, base_url, provider_config, is_active, mail_account_id)
          VALUES (?, ?, 'caldav', ?, 'Calendar', ?, ?, ?, ?, TRUE, ?)`,
-        [id, userId, email, email, encrypt('synthetic-dav-password'), `${BASE}/dav/calendars/person/`, JSON.stringify(config), mailAccountId]
+        [id, userId, email, email, encrypt(password), `${BASE}/dav/calendars/person/`, JSON.stringify(config), mailAccountId]
       );
       // Accounts are linked oldest first; keep creation order distinct.
       await new Promise(resolve => setTimeout(resolve, 1100));
@@ -136,8 +136,22 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const [[recovered]] = await connection.execute('SELECT sync_status, sync_error FROM calendar_accounts WHERE id = ?', [accountId]);
       assert.deepEqual({ ...recovered }, { sync_status: 'ok', sync_error: null });
 
-      // An event from before 0.17 has a reference but no server copy yet.
+      // 0.17.0 stored an unreadable copy with the server's current ETag. The
+      // daily expansion finds it, and the next sync downloads it again.
       const [[workCalendar]] = await connection.execute('SELECT id FROM calendar_calendars WHERE account_id = ?', [accountId]);
+      const storedHref = `${CALENDAR_HREF}review.ics`;
+      remote.objects.set(storedHref, { etag: '"b1"', ics: eventIcs('review@example.test', 'Review', start) });
+      await connection.execute(
+        'INSERT INTO calendar_remote_objects (id, user_id, account_id, calendar_id, href, href_hash, etag, ics) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [crypto.randomUUID(), userId, accountId, workCalendar.id, storedHref, crypto.createHash('sha256').update(storedHref).digest('hex'), '"b1"', 'This is not a calendar object']
+      );
+      await connection.execute('UPDATE calendar_calendars SET remote_expanded_on = NULL WHERE id = ?', [workCalendar.id]);
+      assert.equal((await calendarSync.syncCalendarAccount(accountId, { userId })).unreadable, 1);
+      assert.equal((await calendarSync.syncCalendarAccount(accountId, { userId })).unreadable, 0);
+      const [titles] = await connection.execute('SELECT title FROM calendar_events WHERE user_id = ? ORDER BY title', [userId]);
+      assert.deepEqual(titles.map(row => row.title), ['Planning (moved room)', 'Review']);
+
+      // An event from before 0.17 has a reference but no server copy yet.
       const legacyEventId = crypto.randomUUID();
       await connection.execute(
         "INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time) VALUES (?, ?, ?, 'Old import', UTC_TIMESTAMP(), UTC_TIMESTAMP() + INTERVAL 1 HOUR)",
@@ -209,6 +223,15 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const restored = await insertCalDav(userId, 'restored@example.test', { ...current, mailLinked: true });
       link = await calendarAccounts.getMailCalendarLink(userId, otherMail);
       assert.equal(link.account.id, restored);
+
+      // Restored from a 0.17.0 backup: neither link nor mark, but it signs in
+      // with the mail account's login. Another login with the address is not taken.
+      const archiveMail = await insertMail(userId, 'archive@example.test');
+      const otherLogin = await insertCalDav(userId, 'archive@example.test', current);
+      const mailLogin = await insertCalDav(userId, 'archive@example.test', current, null, 'synthetic-mail-password');
+      link = await calendarAccounts.getMailCalendarLink(userId, archiveMail);
+      assert.equal(link.account.id, mailLogin);
+      assert.equal((await mailLink(otherLogin)).mail_account_id, null);
 
       // Linked by 0.17.0 without the mark: the 0.17.1 upgrade adds it, so a
       // backup taken right after upgrading can link it again.
