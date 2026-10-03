@@ -204,8 +204,9 @@ Users**, accounts with 2FA show a **2FA** badge and a **Reset 2FA** button.
   `401`, which the browser treats as an expired session); each admin gets 10
   attempts per 10 minutes (`429` with `Retry-After` after that)
 - the admin's own row and session are locked and rechecked with the target, so
-  a request from an admin session that was signed out or deactivated meanwhile
-  returns `401` and changes nothing
+  a request from an admin session that was signed out or deactivated meanwhile,
+  or whose password changed after it was checked, returns `401` and changes
+  nothing
 - admins cannot reset their own 2FA here (`400`); they turn it off in Settings,
   which needs a code, so a stolen admin session cannot remove it
 - the reset clears the secret and recovery codes, deletes the user's pending

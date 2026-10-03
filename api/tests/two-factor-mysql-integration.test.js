@@ -150,6 +150,21 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 401);
     assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, true);
     await pool.execute('UPDATE users SET is_active = TRUE WHERE id = ?', [admin]);
+    // So is an admin whose password changed after it was checked, before the session deletion.
+    setDb({ execute: (...args) => pool.execute(...args), getConnection: async () => {
+      const cx = await pool.getConnection();
+      return { beginTransaction: () => cx.beginTransaction(), commit: () => cx.commit(), rollback: () => cx.rollback(), release: () => cx.release(),
+        execute: async (sql, params) => {
+          if (/FROM users WHERE id IN \(\?, \?\) ORDER BY id FOR UPDATE/.test(sql))
+            await pool.execute("UPDATE users SET password_hash = 'changed-meanwhile' WHERE id = ?", [admin]);
+          return cx.execute(sql, params);
+        } };
+    } });
+    try {
+      assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 401);
+    } finally { setDb(pool); }
+    await pool.execute('UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword('synthetic-admin-password'), admin]);
+    assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, true);
 
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).message, 'Two-factor authentication reset');
     const [[after]] = await pool.execute('SELECT two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE id = ?', [person]);

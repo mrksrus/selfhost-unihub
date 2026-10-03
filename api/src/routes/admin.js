@@ -323,12 +323,16 @@ module.exports = {
       // 2FA setup locks the user row too; together with the session check below, a request from an
       // admin session that was signed out meanwhile (e.g. by enabling 2FA elsewhere) changes nothing.
       const [rows] = await connection.execute(
-        'SELECT id, role, is_active, two_factor_enabled FROM users WHERE id IN (?, ?) ORDER BY id FOR UPDATE', [userId, targetId]);
+        'SELECT id, role, is_active, two_factor_enabled, password_hash FROM users WHERE id IN (?, ?) ORDER BY id FOR UPDATE', [userId, targetId]);
       const requester = rows.find(row => row.id === userId);
       const [current] = await connection.execute('SELECT 1 FROM sessions WHERE user_id = ? AND token = ? FOR UPDATE',
         [userId, getAuthTokenFromRequest(req) || '']);
-      // Deactivation commits before it deletes sessions, so check the flag too.
-      if (!current.length || !requester?.is_active) { await connection.rollback(); return { error: 'Unauthorized', status: 401 }; }
+      // Deactivation and password changes commit before they delete sessions, so check the
+      // flag and that the password verified above is still the admin's.
+      if (!current.length || !requester?.is_active || requester.password_hash !== admins[0].password_hash) {
+        await connection.rollback();
+        return { error: 'Unauthorized', status: 401 };
+      }
       if (requester?.role !== 'admin') { await connection.rollback(); return { error: 'Forbidden', status: 403 }; }
       const targets = rows.filter(row => row.id === targetId);
       if (!targets.length) { await connection.rollback(); return { error: 'User not found', status: 404 }; }
