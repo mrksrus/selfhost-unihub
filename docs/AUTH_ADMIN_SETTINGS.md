@@ -155,7 +155,7 @@ Endpoints:
 | --- | --- | --- |
 | GET | `/api/auth/2fa/status` | Current 2FA status, recovery-code count and `secretReadable` |
 | POST | `/api/auth/2fa/setup/start` | Generate secret and `otpauth_uri` |
-| POST | `/api/auth/2fa/setup/confirm` | Verify code, enable 2FA, return recovery codes |
+| POST | `/api/auth/2fa/setup/confirm` | Require current password and authenticator code, enable 2FA, return recovery codes |
 | POST | `/api/auth/2fa/disable` | Require current password and second factor |
 | POST | `/api/auth/2fa/recovery-codes/regenerate` | Require second factor and return new recovery codes |
 | POST | `/api/auth/2fa/login` | Complete sign-in challenge |
@@ -165,11 +165,14 @@ in authenticator app** link (the `otpauth://` URI, for an authenticator on the
 same device). The QR code is drawn in the browser, so the secret is not sent to
 any other service. Enabling and disabling 2FA both delete all other sessions of
 the user: sessions opened with the password alone end when 2FA is turned on.
-Turning 2FA on and deleting those sessions commit together, under a lock on the
-user row that the admin reset also takes. A confirmation from a session that a
-reset deleted meanwhile fails with `401` instead of turning 2FA back on.
-Confirming setup counts against the second-factor limit (10 per 10 minutes per
-user), because each accepted request hashes ten recovery codes.
+Confirming setup therefore needs the current password (`401` when wrong), so
+someone holding only a signed-in session cannot turn 2FA on with their own
+authenticator and sign the owner out. Turning 2FA on and deleting those
+sessions commit together, under a lock on the user row that the admin reset
+also takes. A confirmation from a session that a reset deleted meanwhile fails
+with `401` instead of turning 2FA back on. Confirming setup counts against the
+second-factor limit (10 per 10 minutes per user), which also limits password
+guesses there, and each accepted request hashes ten recovery codes.
 
 Regenerating recovery codes accepts an authenticator code or a recovery code.
 It returns `409` if 2FA was turned off while the request ran.

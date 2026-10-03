@@ -321,16 +321,20 @@ module.exports = {
     if (limited) return limited;
     const secret = String(body?.secret || '').trim().toUpperCase();
     const code = String(body?.code || '').trim();
+    const currentPassword = typeof body?.current_password === 'string' ? body.current_password : '';
     if (!secret || !code) return { error: 'Secret and authentication code are required', status: 400 };
+    // Enabling signs out every other device, so a stolen session alone must not be enough.
+    if (!currentPassword) return { error: 'Current password is required', status: 400 };
     if (!verifyTotp(secret, code)) return { error: 'Invalid authentication code', status: 400 };
 
     const currentToken = getAuthTokenFromRequest(req) || '';
     let connection;
     try {
-      // Cheap check before hashing; repeated below under the lock.
-      const [status] = await db.execute('SELECT two_factor_enabled FROM users WHERE id = ?', [userId]);
+      // Cheap checks before hashing; the 2FA state is checked again below under the lock.
+      const [status] = await db.execute('SELECT two_factor_enabled, password_hash FROM users WHERE id = ?', [userId]);
       if (status.length === 0) return { error: 'User not found', status: 404 };
       if (status[0].two_factor_enabled) return { error: 'Two-factor authentication is already enabled', status: 400 };
+      if (!await verifyPassword(currentPassword, status[0].password_hash)) return { error: 'Current password is incorrect', status: 401 };
       const recovery = await createRecoveryCodes();
       connection = await db.getConnection();
       await connection.beginTransaction();

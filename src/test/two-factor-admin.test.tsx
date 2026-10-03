@@ -53,6 +53,28 @@ describe('admin 2FA reset', () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: 'Current password is incorrect', variant: 'destructive' })));
     expect(screen.getByText('Reset 2FA for person@example.test')).toBeInTheDocument();
   });
+
+  it('reports a completed reset for the user it was submitted for', async () => {
+    const other = { ...users[1], id: 'user-4', email: 'other@example.test', full_name: 'Other' };
+    vi.mocked(api.get).mockResolvedValue({ data: { users: [...users, other] } });
+    let finish!: (value: { data: { message: string } }) => void;
+    vi.mocked(api.post).mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    mount();
+    await screen.findByText('other@example.test');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reset 2FA' })[0]);
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reset 2FA' }).at(-1)!);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/user-2/2fa/reset', expect.anything()));
+    // The admin closes the dialog and opens it for someone else before the first reset finishes.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByText('Reset 2FA for person@example.test')).not.toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: 'Reset 2FA' })[1]);
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'typed-for-other' } });
+    finish({ data: { message: 'Two-factor authentication reset' } });
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Two-factor authentication reset for person@example.test' })));
+    expect(screen.getByText('Reset 2FA for other@example.test')).toBeInTheDocument();
+    expect(screen.getByLabelText('Your password')).toHaveValue('typed-for-other');
+  });
 });
 
 describe('authenticator QR code', () => {

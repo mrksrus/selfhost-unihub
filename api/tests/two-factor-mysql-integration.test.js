@@ -82,10 +82,15 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     const setup = await authRoutes['POST /api/auth/2fa/setup/start'](request('person-current'), person);
     assert.match(setup.secret, /^[A-Z2-7]{32}$/);
     assert.match(setup.otpauth_uri, /^otpauth:\/\/totp\/UniHub%3Aperson%40example\.test\?secret=/);
+    const confirm = (body) => authRoutes['POST /api/auth/2fa/setup/confirm'](request('person-current'), person, { secret: setup.secret, ...body }, response());
     const wrong = String((Number(otp(setup.secret)) + 500000) % 1000000).padStart(6, '0');
-    assert.equal((await authRoutes['POST /api/auth/2fa/setup/confirm'](request('person-current'), person, { secret: setup.secret, code: wrong })).status, 400);
+    assert.equal((await confirm({ code: wrong, current_password: 'synthetic-person-password' })).status, 400);
+    // A signed-in session alone cannot enable 2FA and sign out the other devices.
+    assert.equal((await confirm({ code: otp(setup.secret) })).status, 400);
+    assert.equal((await confirm({ code: otp(setup.secret), current_password: 'wrong-person-password' })).status, 401);
     assert.deepEqual(await sessions(person), ['person-current', 'person-laptop']);
-    const enabled = await authRoutes['POST /api/auth/2fa/setup/confirm'](request('person-current'), person, { secret: setup.secret, code: otp(setup.secret) });
+    assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, false);
+    const enabled = await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' });
     assert.equal(enabled.enabled, true);
     assert.equal(enabled.recoveryCodes.length, 10);
     assert.deepEqual(await sessions(person), ['person-current']);
@@ -135,7 +140,7 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 400);
 
     // A request from a session the reset deleted, already past authentication, cannot turn 2FA back on.
-    const late = await authRoutes['POST /api/auth/2fa/setup/confirm'](request('person-current'), person, { secret: setup.secret, code: otp(setup.secret) });
+    const late = await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' });
     assert.equal(late.status, 401);
     assert.equal(late.recoveryCodes, undefined);
     assert.equal(await replaceRecoveryCodes(person, []), false);

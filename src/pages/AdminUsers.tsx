@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -44,6 +44,9 @@ const AdminUsers = () => {
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [resetTwoFactorUser, setResetTwoFactorUser] = useState<UserRow | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
+  // The user the reset dialog shows now, read when a request completes.
+  const openResetUserId = useRef<string | null>(null);
+  useEffect(() => { openResetUserId.current = resetTwoFactorUser?.id ?? null; }, [resetTwoFactorUser]);
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['admin', 'users'],
@@ -98,18 +101,21 @@ const AdminUsers = () => {
   });
   
   const resetTwoFactor = useMutation({
-    mutationFn: async ({ userId, currentPassword }: { userId: string; currentPassword: string }) => {
-      const response = await api.post(`/admin/users/${userId}/2fa/reset`, { current_password: currentPassword });
+    mutationFn: async ({ user, currentPassword }: { user: UserRow; currentPassword: string }) => {
+      const response = await api.post(`/admin/users/${user.id}/2fa/reset`, { current_password: currentPassword });
       if (response.error) throw new Error(response.error);
     },
-    onSuccess: () => {
+    // Report on the submitted user; the dialog may have been reopened for someone else meanwhile.
+    onSuccess: (_data, { user }) => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
-      toast({ title: `Two-factor authentication reset for ${resetTwoFactorUser?.email}`, description: 'They were signed out and can sign in with their password.' });
-      setResetTwoFactorUser(null);
-      setAdminPassword('');
+      toast({ title: `Two-factor authentication reset for ${user.email}`, description: 'They were signed out and can sign in with their password.' });
+      if (openResetUserId.current === user.id) {
+        setResetTwoFactorUser(null);
+        setAdminPassword('');
+      }
     },
-    onError: (err: Error) => {
-      toast({ title: 'Failed to reset two-factor authentication', description: err.message, variant: 'destructive' });
+    onError: (err: Error, { user }) => {
+      toast({ title: `Failed to reset two-factor authentication for ${user.email}`, description: err.message, variant: 'destructive' });
     },
   });
 
@@ -357,7 +363,7 @@ const AdminUsers = () => {
             className="space-y-4 pt-2"
             onSubmit={(event) => {
               event.preventDefault();
-              if (resetTwoFactorUser && adminPassword) resetTwoFactor.mutate({ userId: resetTwoFactorUser.id, currentPassword: adminPassword });
+              if (resetTwoFactorUser && adminPassword) resetTwoFactor.mutate({ user: resetTwoFactorUser, currentPassword: adminPassword });
             }}
           >
             <div className="space-y-2">
@@ -371,7 +377,7 @@ const AdminUsers = () => {
               />
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setResetTwoFactorUser(null)}>
+              <Button type="button" variant="outline" onClick={() => { setResetTwoFactorUser(null); setAdminPassword(''); }}>
                 Cancel
               </Button>
               <Button type="submit" variant="destructive" disabled={resetTwoFactor.isPending || !adminPassword}>

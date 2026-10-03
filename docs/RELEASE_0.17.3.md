@@ -21,7 +21,9 @@ hides the empty Legacy mail view. No database upgrade. See [Two-factor authentic
 
 - **Turning on 2FA signs out your other devices.** Sessions opened with the
   password alone end when 2FA is enabled, as they already did when it is
-  disabled. The device you set it up on stays signed in.
+  disabled. The device you set it up on stays signed in. Setup now asks for
+  your password, so a browser left signed in is not enough to turn on 2FA with
+  someone else's authenticator and lock you out.
 - **Legacy mail view is hidden when empty.** The **Legacy** entry in the mail
   account list holds mail that the 0.10.5 folder migration could not file. It
   is now listed only while it holds mail, so installations without such mail no

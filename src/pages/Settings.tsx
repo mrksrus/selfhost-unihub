@@ -228,6 +228,7 @@ const Settings = () => {
   const [twoFactorRecoveryOpen, setTwoFactorRecoveryOpen] = useState(false);
   const [twoFactorSetup, setTwoFactorSetup] = useState<TwoFactorSetup | null>(null);
   const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorSetupPassword, setTwoFactorSetupPassword] = useState('');
   const [twoFactorDisableForm, setTwoFactorDisableForm] = useState({ current_password: '', code: '' });
   const [newRecoveryCodes, setNewRecoveryCodes] = useState<string[] | null>(null);
   const [twoFactorLoading, setTwoFactorLoading] = useState(false);
@@ -280,6 +281,7 @@ const Settings = () => {
     setTwoFactorLoading(true);
     setNewRecoveryCodes(null);
     setTwoFactorCode('');
+    setTwoFactorSetupPassword('');
     try {
       const response = await api.post<TwoFactorSetup>('/auth/2fa/setup/start');
       if (response.error) {
@@ -303,11 +305,13 @@ const Settings = () => {
       const response = await api.post<{ enabled: boolean; recoveryCodes: string[]; recoveryCodesRemaining: number }>('/auth/2fa/setup/confirm', {
         secret: twoFactorSetup.secret,
         code: twoFactorCode,
+        current_password: twoFactorSetupPassword,
       });
       if (response.error) {
         toast({ title: 'Failed to enable 2FA', description: response.error, variant: 'destructive' });
         return;
       }
+      setTwoFactorSetupPassword('');
       setNewRecoveryCodes(response.data?.recoveryCodes || []);
       setUser(user ? { ...user, two_factor_enabled: true } : user);
       await refetchTwoFactorStatus();
@@ -973,6 +977,7 @@ const Settings = () => {
           if (!open) {
             setTwoFactorSetup(null);
             setTwoFactorCode('');
+            setTwoFactorSetupPassword('');
           }
         }}>
           <DialogContent className="sm:max-w-xl">
@@ -984,7 +989,7 @@ const Settings = () => {
                 <>
                   <p className="text-sm text-muted-foreground">
                     Scan the code with your authenticator app, or on this device open it in the app or type the key.
-                    Then enter the 6-digit code the app shows.
+                    Then enter your password and the 6-digit code the app shows.
                   </p>
                   {twoFactorSetup?.otpauth_uri && (
                     <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
@@ -1003,6 +1008,16 @@ const Settings = () => {
                     </div>
                   )}
                   <div className="space-y-2">
+                    <Label htmlFor="confirm2faPassword">Current password</Label>
+                    <Input
+                      id="confirm2faPassword"
+                      type="password"
+                      autoComplete="current-password"
+                      value={twoFactorSetupPassword}
+                      onChange={(event) => setTwoFactorSetupPassword(event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
                     <Label htmlFor="confirm2faCode">Authentication code</Label>
                     <Input
                       id="confirm2faCode"
@@ -1014,7 +1029,7 @@ const Settings = () => {
                   </div>
                   <div className="flex justify-end gap-2">
                     <Button variant="outline" onClick={() => setTwoFactorSetupOpen(false)}>Cancel</Button>
-                    <Button onClick={confirmTwoFactorSetup} disabled={twoFactorLoading || !twoFactorCode.trim()}>
+                    <Button onClick={confirmTwoFactorSetup} disabled={twoFactorLoading || !twoFactorCode.trim() || !twoFactorSetupPassword}>
                       {twoFactorLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                       Enable 2FA
                     </Button>
