@@ -1,6 +1,6 @@
 # TrueNAS installation preparation
 
-**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 [Installation guide](INSTALLATION.md) · [Main page](../README.md)
 
@@ -18,13 +18,12 @@ no application-data or database changes were needed.
 
 ## What exists today
 
-The image is `ghcr.io/mrksrus/selfhost-unihub:0.10.8`. The reference deployment is
-[our Compose file](../docker-compose.yml), with a separate MySQL 8.0 container.
-Its `.env` substitutions and relative mount of
-`docker/mysql/conf/custom.cnf` assume the repository layout. Do not paste it into
-a TrueNAS custom-app editor and expect the NAS to find your laptop's `.env` or
-that relative file. An adapted deployment must supply runtime values, persistent
-storage and the MySQL configuration explicitly.
+The image is `ghcr.io/mrksrus/selfhost-unihub:0.16.0`. The reference deployment is
+[our Compose file](../docker-compose.yml), with a separate MariaDB 11.8 container.
+Since 0.16.0 the file mounts nothing from the repository: database settings are
+command-line options and the schema is created by the app. Its `${…}` values
+still come from a `.env` file or the environment, so a TrueNAS custom-app editor
+must be given the passwords explicitly.
 
 Existing custom-app users should preserve their working deployment and data. A
 future catalog installation must not claim to adopt existing datasets automatically.
@@ -40,8 +39,8 @@ from administrator-accessible configuration. Never provide shared default secret
 | --- | --- | --- |
 | Administrator email | Required; valid email shape | `BOOTSTRAP_ADMIN_EMAIL`. “Your first UniHub login. Creates the initial administrator; does not connect a mailbox or change an existing login.” |
 | Administrator password | Required; private; at least 12 characters | `BOOTSTRAP_ADMIN_PASSWORD`. “Initial web-login password. Changing this field later does not reset an existing account.” |
-| Database user password | Required; private; recommend a generated 32-byte random value | `MYSQL_PASSWORD` in both app and MySQL. “Keep this value. Editing it does not change the password inside an existing database.” |
-| Database root password | Required; private; independent generated value | `MYSQL_ROOT_PASSWORD` in MySQL only. “For database administration, not UniHub sign-in.” |
+| Database user password | Required; private; recommend a generated 32-byte random value | `MYSQL_PASSWORD` in the app and `MARIADB_PASSWORD` in MariaDB. “Keep this value. Editing it does not change the password inside an existing database.” |
+| Database root password | Required; private; independent generated value | `MARIADB_ROOT_PASSWORD` in MariaDB only. “For database administration, not UniHub sign-in.” |
 | Session signing secret | Required; private; recommend a generated 32-byte random value; reject known placeholders | `JWT_SECRET`. “Generate once and preserve. Changing it invalidates existing login tokens.” |
 | Stored-data encryption key | Required; private; recommend a generated 32-byte random value; reject known placeholders | `ENCRYPTION_KEY`. “Generate once. Losing/changing it makes saved credentials and 2FA secrets unreadable.” |
 | Separate backup master key | Optional; private; no generated-on-render default | `BACKUP_MASTER_KEY`, empty means use `ENCRYPTION_KEY`. “Optional separate server backup-unlock key. Preserve it once used.” |
@@ -50,7 +49,7 @@ from administrator-accessible configuration. Never provide shared default secret
 | Outer HTTPS proxy addresses | Required for the proposed external-proxy installation path; valid IP/CIDR entries | Append to bundled `127.0.0.1/32,::1/128` in `TRUSTED_PROXY_CIDRS`. “The proxy's connecting address seen by UniHub, not your visitors' IPs.” Reject all-address ranges; explain narrow network scope. |
 | Private mail/CalDAV hosts | Optional; hostname or literal IP list; no schemes/ports/CIDRs | `TRUSTED_MAIL_HOSTS`, default empty. “Only servers intentionally hosted at private addresses. A hostname also covers its subdomains; use a narrow hostname.” |
 | Web port / bind address | Required port with catalog-compliant default; valid available host port | Map selected host port to app port 80. “Your HTTPS proxy forwards here. This port itself serves HTTP.” |
-| Database storage | Required persistent storage selection | MySQL `/var/lib/mysql`. “Contains your accounts and database. Do not replace with an empty location when updating.” |
+| Database storage | Required persistent storage selection | MariaDB `/var/lib/mysql`. “Contains your accounts and database. Do not replace with an empty location when updating.” |
 | Uploaded-file storage | Required persistent storage selection | UniHub `/app/uploads`. “Mail originals/attachments, recordings and account backups.” |
 
 Provide a visible setup note: “HTTPS must already be configured outside this app.
@@ -73,12 +72,12 @@ Do not make users reconstruct these internal connections:
 | Setting | Proposed fixed/default behavior |
 | --- | --- |
 | App image | Pin the reviewed release tag, initially `0.10.8`; never `latest` for a catalog release. |
-| MySQL image | Keep MySQL 8.0 compatibility; choose a reviewed image version/digest during packaging. Do not silently replace with MariaDB because a template helper exists. |
+| MariaDB image | MariaDB 10.11 or later; the reference uses `mariadb:11.8`. The catalog's MariaDB template helper is suitable. UniHub refuses MySQL servers at startup. |
 | App mode / proxy | `NODE_ENV=production`, `TRUST_PROXY_HEADERS=true`; keep bundled loopback trust. |
 | Database connection | `MYSQL_HOST` is the installer-defined DB service name; `MYSQL_PORT=3306`, database/user `unihub` in both containers; never expose database port publicly. |
 | Startup | `MYSQL_STARTUP_MAX_WAIT_SECONDS=300`, check interval `5`; preserve `UNIHUB_API_START_DELAY_SECONDS=2` and health start period `360s`. The current supervisor starts the API first and delays Nginx by this setting. |
 | Health | App check through `/health` on internal port 80. Database readiness must allow slow initialization and verify actual app DB access. |
-| MySQL configuration | Account for the reference `custom.cnf` and command options through supported catalog packaging. No unresolved relative host-file path. |
+| MariaDB configuration | Pass the reference command options (utf8mb4, buffer and log sizes, `--skip-name-resolve`, `--local-infile=0`). There is no configuration file to mount. |
 | Persistence | Stable database/uploads mappings; never temporary storage for either. |
 | Permissions | Inspect actual image execution users and mount access; no unverified UID override. |
 | Resources | Use catalog-standard resource controls; establish reasonable defaults during deployment testing, not an invented minimum requirement. |
@@ -111,7 +110,7 @@ private attributes live in its schema. Documentation cannot enforce them.
 
 The draft PR now supplies these catalog YAML/template files, including validation,
 environment mapping, storage, health checks and MySQL configuration through Compose
-configs. These live in the separate catalog contribution, not the UniHub runtime.
+configs. It predates 0.16.0 and must move to MariaDB before acceptance. These live in the separate catalog contribution, not the UniHub runtime.
 Catalog acceptance, runtime storage permissions and real deployment tests remain
 open checks. The proposed image retains its existing root startup behavior.
 
@@ -130,7 +129,7 @@ including the maintainer's lack of professional development qualifications.
   uploads work through the declared HTTPS proxy, not just through an HTTP health probe.
 - A real client is identified across the proxy chain; spoofed forwarded addresses
   are not trusted. Private mail-host exceptions remain optional and narrow.
-- Slow MySQL readiness can use five minutes and continues as soon as ready.
+- Slow MariaDB readiness can use five minutes and continues as soon as ready.
 - Restart and catalog update preserve secrets, the same storage and existing data;
   bootstrap fields do not reset users. Invalid credentials fail visibly.
 - Mail files and recordings survive an app upgrade using disposable data.

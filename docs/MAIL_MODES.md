@@ -1,6 +1,6 @@
 # Download and Sync
 
-**ALPHA: account backup, import and restore are experimental. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets. An application backup is not your only copy of important mail.**
+**ALPHA: account backup, import and restore are experimental. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets. An application backup is not your only copy of important mail.**
 
 Each mail account runs in one of two modes. They are deliberately different; choose per account in its settings. Upgrading keeps the selected mode.
 
@@ -63,7 +63,7 @@ Removing local mail needs a per-account confirmation (`sync_policy_confirmed_at`
 
 ## Durable provider changes
 
-The browser first receives confirmation that UniHub **accepted** a request, not that the provider completed it. Accepted intents and request receipts are stored in MySQL. A retry with the same idempotency key returns the same accepted result; using that key for a different request is rejected. The browser must reach UniHub to submit an action. This is not offline browser editing.
+The browser first receives confirmation that UniHub **accepted** a request, not that the provider completed it. Accepted intents and request receipts are stored in MariaDB. A retry with the same idempotency key returns the same accepted result; using that key for a different request is rejected. The browser must reach UniHub to submit an action. This is not offline browser editing.
 
 Read/star/folder overlays show the latest accepted intention while the provider is pending. Confirmation requires provider evidence and local settlement; a failed or attention-required request is not silently labelled successful. Later provider changes continue to arrive normally. The operation list distinguishes queued, executing, verifying, reconciling, retrying, confirmed and attention-required changes. A change can be discarded before dispatch, or when a read/star change has stopped in attention (flags are idempotent; retry first re-reads the provider). A sent MOVE is never discarded or retried; checking its outcome never issues another MOVE. When that check cannot prove where the message went, **Accept server state** stops tracking the move without any provider write: the operation is closed as superseded (its attempts and evidence are kept, with reason `user_accepted_server_state`), it no longer blocks purge or a newer move of that message, and a manual sync then files the message wherever the provider has it. A newer move queued behind an unresolved sent MOVE, and an unsent change whose mailbox was reset (UIDVALIDITY changed), wait in attention for a retry after sync or a discard. Changes that cannot progress back off exponentially (up to an hour) rather than reconnecting every second.
 

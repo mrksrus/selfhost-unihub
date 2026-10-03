@@ -6,7 +6,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { getDatabaseConfig } = require('../src/services/database-config');
-const { probeDatabase, waitForDatabase, seconds } = require('../src/mysql-readiness');
+const { probeDatabase, waitForDatabase, seconds } = require('../src/database-readiness');
 
 const config = { host: 'database', port: 3306, user: 'unihub', password: 'test-password', database: 'unihub' };
 
@@ -39,7 +39,7 @@ test('a slow database retains the full default five-minute budget and exits only
   assert.equal(elapsed, 290000);
   assert.equal(attempts, 59);
   assert.match(logs[0], /up to 300s/);
-  assert.equal(logs.filter(line => line.includes('MySQL is ready!')).length, 1);
+  assert.equal(logs.filter(line => line.includes('MariaDB is ready!')).length, 1);
   assert.equal(logs.some(line => line.includes('continuing anyway')), false);
 });
 
@@ -59,8 +59,8 @@ test('failed authentication never becomes readiness and retries stop at the actu
   assert.equal(ready, false);
   assert.equal(elapsed, 1000, 'probe time counts toward the cap');
   assert.deepEqual(timeouts, [1000]);
-  assert.equal(logs.some(line => line.includes('MySQL is ready!') || line.includes(config.password)), false);
-  assert.match(logs.at(-1), /MySQL took longer than expected/);
+  assert.equal(logs.some(line => line.includes('MariaDB is ready!') || line.includes(config.password)), false);
+  assert.match(logs.at(-1), /MariaDB took longer than expected/);
   assert.equal(seconds(undefined, 300, true), 300);
   assert.equal(seconds('60', 300, true), 60, 'explicit wait overrides remain honored');
   assert.equal(seconds('0', 300, true), 0);
@@ -88,7 +88,7 @@ test('container entrypoint waits for readiness before launching the service supe
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-readiness-'));
   await fs.writeFile(path.join(directory, 'node'), `#!/bin/sh
 case "$1" in
-  /app/api/src/mysql-readiness.js) echo PROBE_WAITING; IFS= read -r gate; [ "$gate" = ready ] || exit 1; echo PROBE_READY ;;
+  /app/api/src/database-readiness.js) echo PROBE_WAITING; IFS= read -r gate; [ "$gate" = ready ] || exit 1; echo PROBE_READY ;;
   /app/api/src/service-supervisor.js) echo SUPERVISOR_LAUNCHED; exec sleep 60 ;;
 esac
 `, { mode: 0o755 });
@@ -117,7 +117,7 @@ esac
   assert.ok(output.indexOf('PROBE_READY') < output.indexOf('SUPERVISOR_LAUNCHED'));
 });
 
-test('readiness authenticates against the configured MySQL CI service', { skip: !process.env.MYSQL_TEST_HOST }, async () => {
+test('readiness authenticates against the configured MariaDB CI service', { skip: !process.env.MYSQL_TEST_HOST }, async () => {
   await probeDatabase({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER || 'unihub_test', password: process.env.MYSQL_TEST_PASSWORD || 'test-db-password',
     database: process.env.MYSQL_TEST_DATABASE || 'unihub_test' }, { timeoutMs: 5000 });

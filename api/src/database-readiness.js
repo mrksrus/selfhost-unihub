@@ -20,7 +20,7 @@ async function probeDatabase(config, {
   try {
     const deadline = new Promise((_, reject) => {
       timer = setTimer(() => {
-        const error = new Error('MySQL readiness timed out');
+        const error = new Error('MariaDB readiness timed out');
         error.code = 'ETIMEDOUT';
         reject(error);
       }, timeoutMs);
@@ -44,12 +44,12 @@ async function waitForDatabase(config, {
 } = {}) {
   if (!config) throw new Error('Missing database configuration');
   const startedAt = now();
-  log(`⏳ Waiting for MySQL at ${config.host}:${config.port} (checking every ${intervalMs / 1000}s for up to ${maxWaitMs / 1000}s)...`);
+  log(`⏳ Waiting for MariaDB at ${config.host}:${config.port} (checking every ${intervalMs / 1000}s for up to ${maxWaitMs / 1000}s)...`);
   while (now() - startedAt < maxWaitMs) {
     const remaining = maxWaitMs - (now() - startedAt);
     try {
       await probe(config, { timeoutMs: Math.max(1, Math.min(5000, Math.ceil(remaining))) });
-      log('✓ MySQL is ready! (authenticated with API driver)');
+      log('✓ MariaDB is ready! (authenticated with API driver)');
       return true;
     } catch {
       // Do not print driver errors, which may contain credentials or connection URLs.
@@ -59,7 +59,7 @@ async function waitForDatabase(config, {
       await sleep(Math.min(intervalMs, maxWaitMs - elapsed));
     }
   }
-  log(`⚠ MySQL took longer than expected (waited ${Math.ceil((now() - startedAt) / 1000)}s), but continuing anyway...`);
+  log(`⚠ MariaDB took longer than expected (waited ${Math.ceil((now() - startedAt) / 1000)}s), but continuing anyway...`);
   return false;
 }
 
@@ -68,7 +68,7 @@ if (require.main === module) {
     maxWaitMs: seconds(process.env.MYSQL_STARTUP_MAX_WAIT_SECONDS, 300, true) * 1000,
     intervalMs: seconds(process.env.MYSQL_STARTUP_CHECK_INTERVAL_SECONDS, 5) * 1000,
   })).then(ready => { process.exitCode = ready ? 0 : 1; }).catch(() => {
-    console.error('⚠ MySQL readiness could not load the API database configuration; continuing to API startup...');
+    console.error('⚠ MariaDB readiness could not load the API database configuration; continuing to API startup...');
     process.exitCode = 1;
   });
 }

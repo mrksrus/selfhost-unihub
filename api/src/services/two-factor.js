@@ -197,7 +197,7 @@ async function verifyUserSecondFactor(userRow, code, connection = db) {
   if (!recoveryResult.ok) return { ok: false, usedRecoveryCode: false };
 
   const [result] = await connection.execute(
-    'UPDATE users SET two_factor_recovery_codes = ? WHERE id = ? AND two_factor_enabled = TRUE AND two_factor_recovery_codes = CAST(? AS JSON)',
+    'UPDATE users SET two_factor_recovery_codes = ? WHERE id = ? AND two_factor_enabled = TRUE AND JSON_EQUALS(two_factor_recovery_codes, ?)',
     [JSON.stringify(recoveryResult.nextHashes), userRow.id, JSON.stringify(recoveryHashes)]
   );
   if (result.affectedRows !== 1) return { ok: false, usedRecoveryCode: false };

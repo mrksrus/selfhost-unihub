@@ -1,6 +1,6 @@
 # Data recovery contracts
 
-**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 ## Adding or changing saved data
 
@@ -11,7 +11,7 @@ Every database column must be accounted for. Do not rely on `SELECT *` or add a
 new field without deciding its import, ownership and file behavior.
 
 `api/tests/data-inventory.test.js` compares these declarations with production
-DDL. Startup checks the actual MySQL inventory after notification schema setup.
+DDL. Startup checks the actual MariaDB inventory after notification schema setup.
 An undeclared column fails instead of being silently omitted. Catalog coverage
 proves accounting, not correct behavior: extend representative restore assertions
 when changing relationships, files or field meaning.
@@ -24,7 +24,7 @@ This is an internal catalog, not a dynamically installable plugin system.
 
 The catalog also declares parent references, file kinds, HTTP write paths and
 background writers. Startup and tests reject a table missing from its section,
-unhandled file fields or remapped IDs without parent declarations. Actual MySQL
+unhandled file fields or remapped IDs without parent declarations. Actual MariaDB
 foreign keys are compared with the restore parent mapping. HTTP write protection
 uses the catalog's paths, including section-specific destructive settings actions.
 Background-writer declarations are an audit inventory; developers must still
@@ -36,13 +36,13 @@ verify that each worker observes restore locks and respects in-flight operations
 records completed IDs/names in `schema_migrations`. `database.js` defines step 1,
 the verified historical baseline, and step 2, the one-time Sent/Draft read repair.
 Completed steps are skipped. Unknown/out-of-order history and required failures
-stop startup. MySQL DDL can commit independently; each new step must tolerate
+stop startup. MariaDB DDL can commit independently; each new step must tolerate
 partial completion and verify its result before recording success.
 
 Append a new ID; never change a completed step's meaning. Declare future fields'
 `introducedIn` migration IDs so baseline verification does not require a later
 step's columns. Keep bootstrap/runtime work distinct from historical repairs.
-The authenticated MySQL readiness wait remains 300 seconds maximum and ends as
+The authenticated MariaDB readiness wait remains 300 seconds maximum and ends as
 soon as a connection succeeds.
 
 ## Backup versions and restore behavior
@@ -81,28 +81,28 @@ Ambiguous commit outcomes retain staged files until the durable result is known.
 
 Uploaded restore archives have automatic expiry paused. Completed restores and
 explicit deletions still clean uploads. Keep important backups and passwords off
-this server. User-data recovery does not replace a consistent MySQL/uploads/config
+this server. User-data recovery does not replace a consistent MariaDB/uploads/config
 snapshot for whole-server recovery or rollback.
 
 ## Focused verification
 
 Run `npm --prefix api run test:recovery` before releasing a data/recovery change.
-This gate checks connectivity, MySQL 8 and an empty disposable `_test` database,
+This gate checks connectivity, MariaDB and an empty disposable `_test` database,
 forces historical upgrade checks on, runs backup/inventory/migration tests
 sequentially, and fails if any check is skipped. It refuses non-empty schemas.
-The command does not provision MySQL or start the app. Keep test credentials
+The command does not provision MariaDB or start the app. Keep test credentials
 restricted to disposable data and stop the temporary server afterward.
 GitHub's API-test step uses `test:ci`, which applies the same preflight and
 no-skipped-checks gate to the existing full API suite in one pass.
 
-Use an empty disposable MySQL database whose name ends in `_test`. Set
+Use an empty disposable MariaDB database whose name ends in `_test`. Set
 `MYSQL_TEST_HOST`, `MYSQL_TEST_PORT`, `MYSQL_TEST_DATABASE`, `MYSQL_TEST_USER` and
 `MYSQL_TEST_PASSWORD`. Use separate databases for parallel test processes.
 
 - `data-inventory.test.js`, `database-migrations.test.js`: missing policies,
   ordered completion, interrupted DDL and invalid history.
 - `database-startup-mysql-integration.test.js`, with `MYSQL_TEST_SCHEMA_SMOKE=1`:
-  historical populated upgrades, actual inventory and repeated startup.
+  fresh-install inventory and repeated startup.
 - `backup-roundtrip-mysql-integration.test.js`: real export/encryption/restore,
   module relationships/files, conflicts and migration replay protection.
 - `backup-v2-mysql-integration.test.js`: frozen actual 0.10.3 exporter archive.
@@ -138,6 +138,6 @@ the reference:
 - Saved preferences, saved module order and the start page ignore the removed ID.
 
 `module-settings.test.js`, `module-search.test.js`, `backup-schema3.test.js`
-(older archives that contain Notes) and the HTTP/full roundtrip and startup MySQL
+(older archives that contain Notes) and the HTTP/full roundtrip and startup MariaDB
 tests cover these contracts. Updating module preference validation also requires
 checking archived settings and legacy offline defaults.

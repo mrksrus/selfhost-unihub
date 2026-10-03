@@ -1,10 +1,10 @@
 # Install and configure UniHub
 
-**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 [Back to the main page](../README.md) · [Existing installation? Read the upgrade guide](UPGRADING.md)
 
-This guide describes the supplied Compose deployment for **0.10.11**. It separates
+This guide describes the supplied Compose deployment for **0.16.0**. It separates
 settings that stop startup from settings needed for browser access. Examples are
 illustrations, not working passwords or addresses. Never replace existing keys or
 volumes by following the fresh-install steps on an existing installation.
@@ -12,15 +12,17 @@ volumes by following the fresh-install steps on an existing installation.
 ## 1. Prepare your server and browser address
 
 You need Docker with the Compose plugin, Git, and persistent disk space for mail,
-recordings, backups and the database. The supplied images use
-MySQL 8.0; do not substitute MariaDB without separate compatibility testing.
+recordings, backups and the database. UniHub 0.16.0 and later use
+**MariaDB 11.8 LTS** (MariaDB 10.11 or later is required). MySQL is no longer
+supported; an existing MySQL installation needs the steps in the
+[upgrade guide](UPGRADING.md#0160-mariadb).
 
 Choose a browser address such as `https://hub.example.com`, with DNS pointing to
 your HTTPS reverse proxy and a certificate your devices trust. A LAN-only service
 can use private DNS and HTTPS; public Internet exposure is not required.
 
 The proxy forwards to the server's published port **3000**, which reaches port 80
-inside UniHub. The API's port 4000 and MySQL's port 3306 stay internal. If the proxy
+inside UniHub. The API's port 4000 and MariaDB's port 3306 stay internal. If the proxy
 is itself a container, `localhost` refers to that container, not your NAS.
 
 Production login cookies require HTTPS. Opening `http://NAS-IP:3000` may show the
@@ -30,19 +32,24 @@ into development mode to work around HTTPS.
 
 ## 2. Get the deployment files
 
-On a server where you manage Docker Compose directly:
+`docker-compose.yml` is the only file you need. It pulls the published UniHub
+and MariaDB images and carries all database settings itself; there are no
+configuration files to download or mount. Create a folder with that file and a
+private `.env` next to it:
 
 ```bash
-git clone https://github.com/mrksrus/selfhost-unihub.git
-cd selfhost-unihub
-cp .env.example .env
+mkdir unihub && cd unihub
+curl -fsSLO https://raw.githubusercontent.com/mrksrus/selfhost-unihub/main/docker-compose.yml
+curl -fsSL -o .env https://raw.githubusercontent.com/mrksrus/selfhost-unihub/main/.env.example
 chmod 600 .env
 ```
 
-Keep `docker-compose.yml`, `.env` and `docker/mysql/conf/custom.cnf` in this layout.
-The Compose file mounts the MySQL configuration by relative path. The app image
-already contains the application: no build, Node.js installation or Dockerfile
-editing is required.
+Cloning the repository works too (`git clone https://github.com/mrksrus/selfhost-unihub.git`,
+then `cp .env.example .env`). Tools that take a Compose file in a web form, such
+as Portainer stacks or Dockge, can use the contents of `docker-compose.yml` with
+the values below entered as environment variables instead of a `.env` file. The
+app image already contains the application: no build, Node.js installation or
+Dockerfile editing is required.
 
 For TrueNAS Apps UI deployment, read [TrueNAS preparation](TRUENAS_INSTALLER.md)
 instead of assuming these shell steps create a catalog app.
@@ -55,8 +62,8 @@ the runtime names shown below. Do not paste actual secrets into public issues.
 
 | .env field | Container runtime field | Required? | What to enter |
 | --- | --- | --- | --- |
-| `UNIHUB_MYSQL_PASSWORD` | `MYSQL_PASSWORD` in both containers | Yes | A generated database-user password. Both containers must use the same value. This is not the web login. |
-| `UNIHUB_MYSQL_ROOT_PASSWORD` | `MYSQL_ROOT_PASSWORD` in MySQL only | Yes | A different generated password for database administration. UniHub does not log into MySQL as root. |
+| `UNIHUB_DB_PASSWORD` | `MYSQL_PASSWORD` in UniHub, `MARIADB_PASSWORD` in MariaDB | Yes | A generated database-user password. Compose passes the same value to both containers. This is not the web login. |
+| `UNIHUB_DB_ROOT_PASSWORD` | `MARIADB_ROOT_PASSWORD` in MariaDB only | Yes | A different generated password for database administration. UniHub does not log into MariaDB as root. |
 | `UNIHUB_JWT_SECRET` | `JWT_SECRET` | Yes | An independent random secret used to sign login sessions. |
 | `UNIHUB_ENCRYPTION_KEY` | `ENCRYPTION_KEY` | Yes | Another independent random secret protecting saved account credentials, 2FA secrets and the push private key. Preserve it across upgrades. |
 | `UNIHUB_BOOTSTRAP_ADMIN_EMAIL` | `BOOTSTRAP_ADMIN_EMAIL` | Yes in supplied Compose | The email address you will use as the first UniHub administrator login. You do not need to connect its mailbox to create the account. |
@@ -88,7 +95,7 @@ on every invocation, even after setup. Keep them populated; change an existing
 user's password through the app, not by editing these fields.
 
 Database image initialization variables also do not reset passwords in an existing
-MySQL data volume. Changing only `.env` can break the app's database connection.
+MariaDB data volume. Changing only `.env` can break the app's database connection.
 
 ## 4. Configure browser access and proxy trust
 
@@ -149,9 +156,12 @@ certificate verification. It is not required to start UniHub.
 
 | Container/mount | Contents | Must persist? |
 | --- | --- | --- |
-| MySQL `/var/lib/mysql`, Compose volume `mysql_data` | Users, mail metadata/bodies, contacts, events/tasks, settings and jobs | Yes |
+| MariaDB `/var/lib/mysql`, Compose volume `mariadb_data` | Users, mail metadata/bodies, contacts, events/tasks, settings and jobs | Yes |
 | UniHub `/app/uploads`, Compose volume `uploads_data` | Mail originals/attachments, recordings, generated backups and restore uploads | Yes |
-| MySQL `/etc/mysql/conf.d/custom.cnf` | Read-only configuration from the repository | Keep the source file available |
+
+The MariaDB settings (character set, memory and log sizes, connection limit) are
+command-line options of the `unihub-db` service in `docker-compose.yml`. There is
+no separate configuration file to keep.
 
 Use writable storage suitable for each container's actual user/permissions. Do
 not mount a new empty dataset over existing data during an upgrade. Keep the same
@@ -159,20 +169,21 @@ Compose project/directory or explicit project name, since changing it can select
 new named volumes and make the installation appear empty. Do not use
 `docker compose down -v` to troubleshoot startup: it deletes named volumes.
 
-The provided deployment sets database host `unihub-mysql`, port `3306`, database
+The provided deployment sets database host `unihub-db`, port `3306`, database
 `unihub` and user `unihub`. Leave these internal defaults unchanged for this guide.
 The administrator does not need to create database tables manually.
 
-Keep the 300-second authenticated MySQL readiness budget, five-second polling,
+Keep the 300-second authenticated MariaDB readiness budget, five-second polling,
 two-second Nginx launch delay after starting the API and 360-second health-check grace period. The readiness
 wait ends on the first successful connection. If its budget expires, the API still
 makes bounded connection retries; five minutes is not a guaranteed total startup
 time or a mandatory pause. Do not repeatedly restart a database that is initializing.
 
 For controlled updates, change the app image in your deployment copy from `latest`
-to `ghcr.io/mrksrus/selfhost-unihub:0.10.11`. Use release tags, not a mutable `latest`
-image, when you need a reproducible version. Do not change the MySQL major version
-as part of an ordinary app update.
+to `ghcr.io/mrksrus/selfhost-unihub:0.16.0`. Use release tags, not a mutable `latest`
+image, when you need a reproducible version. Do not change the MariaDB version
+(`mariadb:11.8`) as part of an ordinary app update; MariaDB cannot move a data
+directory back to an older version.
 
 ## 6. Start and check the installation
 
@@ -182,7 +193,7 @@ From the same deployment directory:
 docker compose config --quiet
 docker compose up -d
 docker compose ps
-docker compose logs --tail=100 unihub unihub-mysql
+docker compose logs --tail=100 unihub unihub-db
 ```
 
 The quiet configuration check catches missing substitutions/YAML errors; it does
@@ -208,7 +219,8 @@ the published image. That image already uses its bundled `/api` proxy.
 | Symptom | Check |
 | --- | --- |
 | Compose says a variable is required | All six required `.env` fields are populated and `.env` is beside the Compose file. |
-| Repeated database connection failures | Matching DB password, correct existing volume, MySQL logs and startup time. Editing initialization variables does not change an existing database password. |
+| `UniHub needs MariaDB … but the database server reports …` | The app was pointed at a MySQL database. Since 0.16.0 UniHub needs MariaDB; see the [upgrade guide](UPGRADING.md#0160-mariadb). |
+| Repeated database connection failures | Matching DB password, correct existing volume, MariaDB logs and startup time. Editing initialization variables does not change an existing database password. |
 | Missing/placeholder secret or short bootstrap password | Supply real generated keys and a bootstrap password of at least 12 characters. |
 | Invalid `TRUSTED_PROXY_CIDRS` | Use IPs/CIDRs only, not hostnames or URLs. Keep the loopback entries. |
 | Page loads but API returns `Origin not allowed` | Exact HTTPS scheme, hostname and port in Compose's `ALLOWED_ORIGINS`; restart/recreate the app after changing its environment. |

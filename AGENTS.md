@@ -4,11 +4,11 @@ UniHub is a self-hosted app for mail, contacts, calendars, tasks and recordings.
 The goal of the App is to have a centralized Service as a PWA that connects to Mailing and has contacts and events, so you can access them with only one log in. So if you move to a newer device you sign in once and get the PWA and you have access to everything again. 
 ## How the app fits together
 
-    React/TypeScript PWA -> Nginx -> Node HTTP API -> MySQL
+    React/TypeScript PWA -> Nginx -> Node HTTP API -> MariaDB
                                           |-> /app/uploads (files and backups)
                                           |-> IMAP, SMTP, CalDAV, Web Push
 
-The standard deployment is one app container and one MySQL container. Nginx serves the built frontend and proxies /api/* to the Node API. Mail and backup workers use in-process coordination, so do not assume that multiple API replicas are safe. Read [architecture](docs/ARCHITECTURE.md) for detailed contracts and [development](docs/DEVELOPMENT.md) for local setup.
+The standard deployment is one app container and one MariaDB container. Nginx serves the built frontend and proxies /api/* to the Node API. Mail and backup workers use in-process coordination, so do not assume that multiple API replicas are safe. Read [architecture](docs/ARCHITECTURE.md) for detailed contracts and [development](docs/DEVELOPMENT.md) for local setup.
 
 | Area | Start here |
 | --- | --- |
@@ -47,13 +47,13 @@ For feature details, follow the corresponding file in docs/ rather than treating
 - Keep route handlers focused on HTTP concerns and put reusable domain behavior in api/src/services/. Validate external input at the boundary. Use parameterized SQL and explicit ownership checks. Preserve the existing mail/CalDAV outbound-network and TLS checks.
 - Account for pending, failure, retry, cancellation, and stale responses in asynchronous UI work. In particular, do not let a late response show data from the previous account or an earlier mail selection.
 - Change only the needed layers, but follow a behavior through all affected layers: UI, API, database, workers, offline snapshot, backup/restore, and documentation. Avoid dependencies and abstractions that solve no current requirement. Comments should explain a constraint or reason that the code alone does not show.
-- Database schema: `ensureLegacySchema` in database.js is a frozen 0.11.1 baseline, never edit it; every schema change is a new numbered migration, then regenerate `docker/mysql/init/01-schema.sql` with `scripts/local-mysql.sh schema-dump`.
+- Database schema: `ensureLegacySchema` in database.js is a frozen 0.11.1 baseline, never edit it; every schema change is a new numbered migration, then regenerate `docker/mariadb/schema.sql` with `scripts/local-db.sh schema-dump`.
 - Tests should prove observable behavior and important failure paths with synthetic data. Do not copy a real mailbox, database, contact list, or server volume into a test fixture.
 
 ## Working and verification
 
 - Use Node.js 24 or newer. Install frontend and API dependencies separately with npm ci and npm --prefix api ci when needed.
-- Run focused tests for the code changed. Frontend checks are npm run typecheck, npm run lint, and npm test -- <test-file>; backend tests use node --test api/tests/<file>.test.js or npm --prefix api test. MySQL integration tests need a disposable configured database.
+- Run focused tests for the code changed. Frontend checks are npm run typecheck, npm run lint, and npm test -- <test-file>; backend tests use node --test api/tests/<file>.test.js or npm --prefix api test. MariaDB integration tests need a disposable configured database.
 - For UI changes, inspect the actual result at desktop and mobile widths in dark and light themes. For PWA, offline, push, or updates, verify the relevant browser state and consult docs/PWA.md and docs/OFFLINE.md. Report what was and was not verified.
 - Update the relevant feature documentation when a user-visible behavior or cross-component contract changes. Keep this file short and revise a stale rule instead of appending a conflicting one.
 - Add a CHANGELOG.md entry under the upcoming version for every user-visible change.

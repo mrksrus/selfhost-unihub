@@ -98,10 +98,12 @@ test('MySQL login isolation, valid 2FA sessions, recovery reuse, replay and tran
       { challenge_token: rollbackChallenge, code: recoveryCode }, failedResponse);
     assert.equal(failed.status, 500);
     assert.equal(loggedErrors.length, 1);
-    assert.equal(loggedErrors[0][1]?.code, 'ER_CHECK_CONSTRAINT_VIOLATED', 'Failure comes from the real database constraint');
+    // MariaDB reports a CHECK violation as errno 4025 (ER_CONSTRAINT_FAILED).
+    assert.equal(loggedErrors[0][1]?.errno, 4025, 'Failure comes from the real database constraint');
+    assert.match(loggedErrors[0][1]?.message, /test_session_insert_rejected/);
   } finally {
     logMock.mock.restore();
-    await pool.execute('ALTER TABLE sessions DROP CHECK test_session_insert_rejected');
+    await pool.execute('ALTER TABLE sessions DROP CONSTRAINT test_session_insert_rejected');
   }
   assert.equal(failedResponse.headers.has('Set-Cookie'), false, 'Uncommitted sessions must not issue cookies');
   const [[afterFailure]] = await pool.execute('SELECT two_factor_recovery_codes FROM users WHERE id=?', [four]);

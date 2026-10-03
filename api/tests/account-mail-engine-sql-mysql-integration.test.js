@@ -37,7 +37,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
       }
     } finally { state.setDb(previous); await pool.end(); }
   });
-  assert.match((await one('SELECT VERSION() AS version')).version, /^8\./);
+  assert.match((await one('SELECT VERSION() AS version')).version, /MariaDB/);
   assert.equal((await rows('SHOW TABLES')).length, 0, 'Refuse a populated schema');
   ownsSchema = true; state.setDb(pool);
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'engine-sql-bootstrap@example.test';

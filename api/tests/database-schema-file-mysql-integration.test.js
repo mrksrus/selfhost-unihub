@@ -2,8 +2,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
-// docker/mysql/init/01-schema.sql is generated from the startup migrations. If
-// this fails after a schema change, run scripts/local-mysql.sh schema-dump and
+// docker/mariadb/schema.sql is generated from the startup migrations. If
+// this fails after a schema change, run scripts/local-db.sh schema-dump and
 // commit the regenerated file together with the migration.
 test('committed 01-schema.sql equals a freshly migrated database', {
   skip: !process.env.MYSQL_TEST_HOST,
@@ -47,7 +47,7 @@ test('committed 01-schema.sql equals a freshly migrated database', {
   const actual = await dumpSchema(db);
   const expected = fs.readFileSync(SCHEMA_FILE, 'utf8');
   assert.ok(expected === actual,
-    'docker/mysql/init/01-schema.sql is stale; run scripts/local-mysql.sh schema-dump (- file, + database):\n' +
+    'docker/mariadb/schema.sql is stale; run scripts/local-db.sh schema-dump (- file, + database):\n' +
     describeDifference(expected, actual));
   // Startup code is idempotent: a restart leaves the same schema.
   await db.end();

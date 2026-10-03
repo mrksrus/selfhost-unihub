@@ -25,7 +25,12 @@ the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENS
 
 ## Install: start here
 
-The published deployment uses **two containers: UniHub and MySQL 8.4 LTS**. You need
+**Running 0.15.x or older?** Those installations use MySQL. From 0.16.0 UniHub
+needs MariaDB and refuses to start on MySQL, so a restart that pulls `latest` stops
+the app. Read [the 0.16.0 upgrade notes](docs/UPGRADING.md#0160-mariadb) first, or
+pin `ghcr.io/mrksrus/selfhost-unihub:0.15.1` to stay on MySQL for now.
+
+The published deployment uses **two containers: UniHub and MariaDB 11.8 LTS**. You need
 Docker with Compose, persistent storage for both containers, and an HTTPS reverse
 proxy for normal browser access. A reverse proxy is the service that accepts your
 HTTPS address and forwards requests to UniHub's internal HTTP port.
@@ -35,30 +40,32 @@ For a **new installation**, first collect:
 | You supply | Why it is needed |
 | --- | --- |
 | First administrator email and password | Creates your first UniHub login. The password must have at least 12 characters. This is not your email-provider password. |
-| Two database passwords | One for UniHub's database user and a different one for MySQL administration. |
+| Two database passwords | One for UniHub's database user and a different one for MariaDB administration. |
 | Two independently generated secrets | One signs login sessions; the other encrypts stored credentials. Keep both with your deployment records. |
 | Your browser address | For example, `https://hub.example.com`. It must be entered as an allowed origin. |
 | Your HTTPS proxy's address | Identifies the proxy allowed to report visitor IPs. It is not a list of permitted visitors. |
 | Persistent storage | Keep the database and `/app/uploads` across updates and restarts. |
 
+The [Compose file](docker-compose.yml) is the only file you need to download: it
+pulls both images and contains every database setting.
+
 **Follow the [installation guide](docs/INSTALLATION.md) before starting the containers.**
 It gives the exact field names, where to enter them, examples, first-login checks
 and fixes for common startup errors. Do not put passwords into the Dockerfile.
 
-Published image: `ghcr.io/mrksrus/selfhost-unihub:0.10.12`.
+Published image: `ghcr.io/mrksrus/selfhost-unihub:0.16.0`.
 The `latest` tag follows successful main-branch and release builds; use a version
 tag when you want explicit control of upgrades. The supplied
 [Compose file](docker-compose.yml) currently uses `latest`.
 
 **TrueNAS:** a [draft Community catalog installer](https://github.com/truenas/apps/pull/5847)
-is under review; it is not yet an approved catalog app. Pasting the
-supplied Compose file into a custom-app screen is not a complete installation:
-its environment substitutions and relative MySQL configuration mount also need
-resolving. See [TrueNAS installation preparation](docs/TRUENAS_INSTALLER.md).
+is under review; it is not yet an approved catalog app. The supplied
+Compose file needs no extra files, but its `${...}` environment substitutions must
+still be filled in by the tool that runs it. See [TrueNAS installation preparation](docs/TRUENAS_INSTALLER.md).
 
 ## Keep your data recoverable
 
-**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 Keep **both persistent volumes plus your deployment configuration and secrets**.
 A consistent server backup is needed to recover the whole installation. A UniHub
@@ -105,7 +112,7 @@ reviews and improvements; they are not part of the current process. Automated te
 and AI reviews do not constitute an independent professional security audit.
 UniHub is not affiliated with or endorsed by these providers.
 
-Release CI checks the API, frontend, MySQL recovery and built-container startup,
+Release CI checks the API, frontend, MariaDB recovery and built-container startup,
 authentication and recordings. These checks do not guarantee every provider,
 device or existing installation behaves identically.
 

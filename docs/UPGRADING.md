@@ -1,9 +1,49 @@
 # Upgrading UniHub
 
-**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
+
+## 0.16.0 MariaDB
+
+**UniHub now runs on MariaDB instead of MySQL. There is no in-place upgrade.**
+0.16.0 is meant for new installations. MariaDB cannot open a MySQL data
+directory, and UniHub 0.16.0 refuses to start when it finds a MySQL server:
+
+```
+✗ UniHub needs MariaDB 10.11 or later, but the database server reports "8.4.x". ...
+```
+
+The supplied Compose file uses `latest` with `pull_policy: always`, so **a restart
+of an existing 0.15.x installation pulls 0.16.0 and the app stops there**. Your
+data is not touched: the check runs before any database change. Choose one:
+
+1. **Stay on MySQL for now.** Set the image to
+   `ghcr.io/mrksrus/selfhost-unihub:0.15.1` in your current `docker-compose.yml`
+   and run `docker compose up -d`. 0.15.1 keeps working with your current files.
+2. **Move to a new 0.16.0 installation.** In 0.15.1, sign in as each user and
+   download a full account backup (Settings → Data Management) and keep its
+   recovery password. Then set up 0.16.0 in a **new folder** following
+   [Installation](INSTALLATION.md), sign in and restore each backup there (see
+   [Backup and restore](BACKUP_RESTORE.md)). Account backup and restore are
+   **alpha**: check the restored data before you remove the old installation,
+   and keep the old folder and volumes until then. Mail accounts can always be
+   added again and download mail from the provider.
+
+Copying a MySQL dump into MariaDB is not supported and not tested.
+
+What changed for new installations:
+
+- The database service is `unihub-db` (`mariadb:11.8`, MariaDB 11.8 LTS) with the
+  volume `mariadb_data`. The `.env` fields are now `UNIHUB_DB_PASSWORD` and
+  `UNIHUB_DB_ROOT_PASSWORD`; `UNIHUB_MYSQL_*` is no longer read.
+- `docker-compose.yml` is the only file needed. The MySQL configuration file
+  `docker/mysql/conf/custom.cnf` is gone; its settings are command-line options
+  of the database service.
+- The app container still uses `MYSQL_HOST`, `MYSQL_USER` and the other
+  `MYSQL_*` names; MariaDB speaks the same protocol. Any MariaDB 10.11 or later
+  works if you run your own database server.
 
 ## 0.15.1 Sliding sessions
 

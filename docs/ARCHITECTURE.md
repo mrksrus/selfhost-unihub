@@ -8,7 +8,7 @@ The standard deployment uses two Docker containers:
 | Container | Role |
 | --- | --- |
 | `unihub` | Nginx static frontend plus Node.js API |
-| `unihub-mysql` | MySQL 8.0 database |
+| `unihub-db` | MariaDB 11.8 LTS database (`mariadb:11.8`) |
 
 Inside the app container:
 
@@ -22,7 +22,7 @@ Node.js API
   api/server.js -> api/src/app.js -> api/src/request-handler.js -> api/src/routes/*
 ```
 
-The entrypoint waits up to 300 seconds for an authenticated MySQL connection,
+The entrypoint waits up to 300 seconds for an authenticated MariaDB connection,
 continuing immediately when it succeeds. It then starts a small Node.js service
 supervisor as the container's main process. The supervisor starts the API and
 nginx, forwards shutdown signals, and exits with failure if either service stops.
@@ -210,8 +210,10 @@ checks allow 360 seconds for startup, including slow database recovery.
 Startup behavior:
 
 1. Refuse missing or placeholder `JWT_SECRET`, `ENCRYPTION_KEY`, and DB password.
-2. Create a MySQL pool with UTC datetime behavior.
-3. Retry DB connection while MySQL starts.
+2. Create a MariaDB pool with UTC datetime behavior.
+3. Retry DB connection while MariaDB starts.
+3a. Refuse any server that is not MariaDB 10.11 or later (`database-version.js`),
+    before any schema change. UniHub 0.16.0 and later do not run on MySQL.
 4. Apply missing ordered upgrades through `schema_migrations`, verifying each before recording completion.
 5. Create the first admin from bootstrap env vars when no users exist.
 6. Backfill local calendar account/calendar ownership.
@@ -227,7 +229,7 @@ The historical create/additive steps form a verified baseline. Later upgrades ha
 
 | Path/table | Contents |
 | --- | --- |
-| MySQL | Application metadata and most user data |
+| MariaDB | Application metadata and most user data |
 | `/app/uploads/attachments` | Email attachments |
 | `/app/uploads/mail-raw` | Raw imported email source |
 | `/app/uploads/recordings` | Recording audio files and upload temp files |
@@ -262,7 +264,7 @@ At startup:
   after the database commit
 
 Backup creation and restore processing are serialized by in-process workers.
-Restore status and options are durable in MySQL, so browser closure and proxy
+Restore status and options are durable in MariaDB, so browser closure and proxy
 timeouts do not terminate work.
 
 ## Mail Persistence
@@ -299,7 +301,7 @@ that page limit so users with more than 2,000 contacts receive their entire list
 
 ## Backup Architecture (ALPHA)
 
-**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 The canonical backup data remains an uncompressed, stored-entry ZIP built by
 `api/src/services/export-jobs.js` from data assembled in
@@ -350,7 +352,7 @@ display, persistent per-user deduplication and same-origin click navigation.
 Mail, calendar and to-do notification links open the referenced item after
 owner-scoped loading. The API persists encrypted VAPID identity, session-bound
 subscriptions, a transactional notification outbox and indexed reminder
-schedules in MySQL. One job loop processes notifications every 30 seconds.
+schedules in MariaDB. One job loop processes notifications every 30 seconds.
 
 Opt-in offline reading uses a separate versioned IndexedDB snapshot with explicit account/epoch ownership. It contains the latest 100 full emails, all contacts and events, bounded to 32 MiB; it is not an authentication-response cache. Account changes and explicit clearing invalidate pending saves across tabs. See [PWA](PWA.md) and [Offline reading](OFFLINE.md).
 
@@ -383,7 +385,7 @@ Important boundaries in the current code:
 - Live status events (`/api/events`) use an in-process bus: one API process
   serves every stream. Behind several API processes, browsers would miss events
   and fall back to slow polling.
-- Use external backups for MySQL and the uploads volume.
+- Use external backups for MariaDB and the uploads volume.
 - Download important application backups off-server. A generated backup retained
   in the uploads volume is not protection against loss of that volume.
 - Place a TLS-terminating reverse proxy in front of the app for real use.

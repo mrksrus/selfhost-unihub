@@ -7,7 +7,7 @@ dist
 .idea
 supabase
 data
-docker/mysql
+docker/mariadb
 *.md
 *.local
 !LICENSING.md

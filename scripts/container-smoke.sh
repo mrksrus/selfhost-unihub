@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run only against the disposable MySQL CI service, after loading the local image.
+# Run only against the disposable MariaDB CI service, after loading the local image.
 set -euo pipefail
 
 if [[ "${CI:-}" != "true" && "${UNIHUB_ALLOW_LOCAL_SMOKE:-}" != "1" ]]; then
@@ -12,7 +12,7 @@ export MYSQL_TEST_DATABASE="${MYSQL_TEST_DATABASE:-unihub_test}"
 export MYSQL_TEST_USER="${MYSQL_TEST_USER:-unihub_test}"
 export MYSQL_TEST_PASSWORD="${MYSQL_TEST_PASSWORD:-test-db-password}"
 if [[ "$MYSQL_TEST_HOST" != '127.0.0.1' && "$MYSQL_TEST_HOST" != 'localhost' ]]; then
-  echo 'Container smoke only accepts a loopback MySQL service.' >&2
+  echo 'Container smoke only accepts a loopback MariaDB service.' >&2
   exit 1
 fi
 if [[ ! "$MYSQL_TEST_DATABASE" =~ ^[A-Za-z0-9_]+_test$ ]]; then
@@ -41,7 +41,7 @@ cleanup() {
 trap cleanup EXIT
 
 docker image inspect "$image" >/dev/null
-# Host networking is intentional for the loopback CI MySQL service. Fail before
+# Host networking is intentional for the loopback CI MariaDB service. Fail before
 # starting anything if an unrelated local service owns the image's fixed ports.
 node --input-type=module <<'NODE'
 import net from 'node:net';
@@ -98,7 +98,7 @@ for ((attempt=0; attempt<90; attempt++)); do
 done
 [[ "$ready" == 1 ]] || { echo 'Container did not become healthy within 180 seconds.' >&2; exit 1; }
 startup_log="$(docker logs "$container_name" 2>&1)"
-if [[ "$startup_log" == *'MySQL took longer than expected'* || "$startup_log" != *'MySQL is ready!'* ]]; then
+if [[ "$startup_log" == *'MariaDB took longer than expected'* || "$startup_log" != *'MariaDB is ready!'* ]]; then
   echo 'Database readiness must succeed without exhausting its startup wait.' >&2
   exit 1
 fi

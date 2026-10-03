@@ -43,7 +43,7 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
       }
     } finally { state.setDb(originalDb); await pool.end(); }
   });
-  assert.match((await one(pool, 'SELECT VERSION() AS version')).version, /^8\./);
+  assert.match((await one(pool, 'SELECT VERSION() AS version')).version, /MariaDB/);
   assert.equal((await rows(pool, 'SHOW TABLES')).length, 0, 'Refuse to touch a populated schema');
   ownsSchema = true;
   state.setDb(pool);
@@ -102,7 +102,7 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
       await assert.rejects(schema.backfillMailEngine(pool,{batchSize:1}), /recovery_interrupt/);
       assert.deepEqual(await one(pool,"SELECT last_id,processed FROM mail_engine_migration_progress WHERE source_table='emails'"),{last_id:uuid(1),processed:1});
       assert.equal((await rows(pool,'SELECT id FROM mail_remote_occurrences')).length,1,'Failed batch rolled back its occurrence and checkpoint');
-    } finally { await pool.query('ALTER TABLE mail_remote_occurrences DROP CHECK recovery_interrupt'); }
+    } finally { await pool.query('ALTER TABLE mail_remote_occurrences DROP CONSTRAINT recovery_interrupt'); }
     await schema.backfillMailEngine(pool,{batchSize:1});
     const before = await rows(pool,'SELECT id,email_id,mailbox_id,uidvalidity,uid,presence,observed_flags FROM mail_remote_occurrences ORDER BY email_id');
     assert.equal(before.length,3,'Only valid, nonmissing and nonlegacy distinct tuples survived; duplicate was quarantined');
@@ -144,7 +144,7 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
     assert.notEqual(boxes[0].id,boxes[1].id);
     assert.notEqual(boxes[0].id,boxes[2].id);
     const [[column]] = await pool.execute("SHOW FULL COLUMNS FROM mail_folder_remote_boxes WHERE Field='remote_name'");
-    assert.equal(column.Collation,'utf8mb4_0900_bin','Old mapping unique index must also be NO PAD');
+    assert.equal(column.Collation,'utf8mb4_nopad_bin','Old mapping unique index must also be NO PAD');
     const folderIds = [randomUUID(),randomUUID()];
     for (const [index,name] of ['Projects','Projects '].entries()) {
       await pool.execute('INSERT INTO mail_folders (id,user_id,slug,display_name,mail_account_id) VALUES (?,?,?,?,?)',

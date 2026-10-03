@@ -1,5 +1,5 @@
 'use strict';
-// Additive MySQL 8 mail engine schema. DDL autocommits; every step is repeatable.
+// Additive MariaDB mail engine schema. DDL autocommits; every step is repeatable.
 const { randomUUID } = require('node:crypto');
 const { assertUid32 } = require('./repository-identity');
 
@@ -39,11 +39,12 @@ async function migrateMailEngineSchema(db) {
     ['evidence_json', 'evidence_json JSON NULL'],
   ]);
   // The legacy folder mapping also has a unique provider-name index. Its old
-  // utf8mb4_bin collation is PAD SPACE, conflating trailing-space IMAP paths.
+  // utf8mb4_bin collation is PAD SPACE, conflating trailing-space IMAP paths;
+  // the NO PAD binary collation keeps them apart.
   const [folderNames] = await db.execute("SHOW FULL COLUMNS FROM `mail_folder_remote_boxes` WHERE Field = 'remote_name'");
   if (folderNames.length !== 1) throw new Error('Missing mail_folder_remote_boxes.remote_name');
-  if (folderNames[0].Collation !== 'utf8mb4_0900_bin') await db.execute(`ALTER TABLE mail_folder_remote_boxes
-    MODIFY COLUMN remote_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL`);
+  if (folderNames[0].Collation !== 'utf8mb4_nopad_bin') await db.execute(`ALTER TABLE mail_folder_remote_boxes
+    MODIFY COLUMN remote_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL`);
   // One index ALTER: lookup before dropping old uniqueness, plus canonical queue scan.
   const indexChanges = [];
   if (!await indexExists(db, 'mail_writebacks', 'idx_mail_writeback_email_action'))
@@ -55,7 +56,7 @@ async function migrateMailEngineSchema(db) {
   const definitions = [
     `CREATE TABLE IF NOT EXISTS mail_remote_mailboxes (
       id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, mail_account_id CHAR(36) NOT NULL,
-      remote_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
+      remote_name VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_nopad_bin NOT NULL,
       delimiter VARCHAR(16) NULL, special_use VARCHAR(64) NULL, provider_mailbox_id VARCHAR(255) NULL,
       uidvalidity BIGINT UNSIGNED NULL, state VARCHAR(24) NOT NULL DEFAULT 'active',
       epoch_revision BIGINT NOT NULL DEFAULT 0,
@@ -295,7 +296,7 @@ async function backfillWriteback(db, row) {
 }
 async function verifyMailEngineSchema(db) {
   const [mappingNames] = await db.execute("SHOW FULL COLUMNS FROM `mail_folder_remote_boxes` WHERE Field = 'remote_name'");
-  if (mappingNames[0]?.Collation !== 'utf8mb4_0900_bin') throw new Error('Legacy mailbox mapping still has PAD SPACE collation');
+  if (mappingNames[0]?.Collation !== 'utf8mb4_nopad_bin') throw new Error('Legacy mailbox mapping still has PAD SPACE collation');
   for (const [table, fields] of [
     ['mail_accounts', ['disconnected_at', 'engine_version']],
     ['emails', ['observation_revision', 'observed_modseq', 'raw_format', 'raw_bytes', 'raw_verified', 'content_state']],

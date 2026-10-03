@@ -221,7 +221,7 @@ async function recordReceipt({ userId, clientKey, requestHash, response }, execu
   } catch (error) {
     if (error?.code !== 'ER_DUP_ENTRY' && error?.errno !== 1062) throw error;
   }
-  const [known] = await executor.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ? FOR SHARE', [userId, clientKey]);
+  const [known] = await executor.execute('SELECT request_hash,response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = ? LOCK IN SHARE MODE', [userId, clientKey]);
   if (!known.length) throw fail('IDEMPOTENCY_KEY_BUSY', 'Idempotency key changed during the request');
   if (known[0].request_hash !== requestHash) throw fail('IDEMPOTENCY_KEY_REUSED', 'Idempotency key belongs to a different request');
   return { response: parseReceipt(known[0].response_json), replayed: true };

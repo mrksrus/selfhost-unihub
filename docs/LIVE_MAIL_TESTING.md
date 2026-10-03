@@ -73,7 +73,7 @@ is never sufficient to count a provider change as successful.
 
 ## Additional release checks
 
-Run the full frontend/backend tests, the real-MySQL recovery gate, production
+Run the full frontend/backend tests, the real-MariaDB recovery gate, production
 image build and container smoke tests before publication. After deployment,
 repeat the live acceptance check and exercise the actual browser UI: open a
 message, change read/star state, change views while syncing, watch progress and

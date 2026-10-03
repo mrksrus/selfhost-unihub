@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Writes docker/mysql/init/01-schema.sql from the app's own startup schema code,
+// Writes docker/mariadb/schema.sql from the app's own startup schema code,
 // so the reference file can never drift from what installations actually run.
 //
 //   node scripts/dump-schema.cjs            migrate an EMPTY database, write the file
@@ -9,16 +9,16 @@
 //                                          database (e.g. an old dump) and compare
 //
 // Uses the API database configuration (MYSQL_* or DATABASE_URL) plus the usual
-// startup secrets. scripts/local-mysql.sh schema-dump sets all of these up.
+// startup secrets. scripts/local-db.sh schema-dump sets all of these up.
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SCHEMA_FILE = path.resolve(__dirname, '../../docker/mysql/init/01-schema.sql');
-const HEADER = `-- UniHub MySQL schema after all startup upgrades. GENERATED, do not edit.
--- Regenerate with: scripts/local-mysql.sh schema-dump (api/scripts/dump-schema.cjs).
+const SCHEMA_FILE = path.resolve(__dirname, '../../docker/mariadb/schema.sql');
+const HEADER = `-- UniHub MariaDB schema after all startup upgrades. GENERATED, do not edit.
+-- Regenerate with: scripts/local-db.sh schema-dump (api/scripts/dump-schema.cjs).
 -- Schema changes are numbered migrations in api/src/services/database.js; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
--- reference, and a MySQL test fails when it differs from a freshly migrated database.
+-- reference, and a database test fails when it differs from a freshly migrated database.
 `;
 
 // Deterministic across runs: sorted tables, no AUTO_INCREMENT counters.
@@ -106,10 +106,10 @@ async function main(args) {
     }
     const expected = fs.readFileSync(SCHEMA_FILE, 'utf8');
     if (expected === actual) {
-      console.log('dump-schema: database matches docker/mysql/init/01-schema.sql');
+      console.log('dump-schema: database matches docker/mariadb/schema.sql');
       return;
     }
-    console.error('dump-schema: database differs from docker/mysql/init/01-schema.sql (- file, + database):');
+    console.error('dump-schema: database differs from docker/mariadb/schema.sql (- file, + database):');
     console.error(describeDifference(expected, actual));
     process.exitCode = 2;
   } finally {

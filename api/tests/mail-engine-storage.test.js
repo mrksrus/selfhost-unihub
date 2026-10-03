@@ -23,7 +23,7 @@ test('DDL groups expensive email/account ALTERs and drops unique writeback index
   const db = { async execute(sql, params) {
     calls.push(sql);
     if (sql.startsWith('SHOW FULL COLUMNS')) return [[{ Field: 'remote_name', Collation: legacyCollation }]];
-    if (sql.startsWith('ALTER TABLE mail_folder_remote_boxes')) legacyCollation = 'utf8mb4_0900_bin';
+    if (sql.startsWith('ALTER TABLE mail_folder_remote_boxes')) legacyCollation = 'utf8mb4_nopad_bin';
     if (sql.startsWith('SHOW COLUMNS')) return [[]];
     if (sql.startsWith('SHOW INDEX')) return [params[0] === 'uq_mail_writeback' ? [{ Key_name: 'uq_mail_writeback' }] : []];
     return [{ affectedRows: 0 }];
@@ -33,7 +33,7 @@ test('DDL groups expensive email/account ALTERs and drops unique writeback index
   assert.equal(alters.length, 1);
   for (const field of ['observation_revision','observed_modseq','raw_format','raw_bytes','raw_verified','content_state']) assert.match(alters[0], new RegExp(field));
   assert(calls.some(sql => sql.includes('DROP INDEX uq_mail_writeback')));
-  assert(calls.some(sql => sql.includes('utf8mb4_0900_bin')));
+  assert(calls.some(sql => sql.includes('utf8mb4_nopad_bin')));
   assert.equal(calls.filter(sql => sql.startsWith('ALTER TABLE mail_folder_remote_boxes')).length, 1);
   await schema.migrateMailEngineSchema(db);
   assert.equal(calls.filter(sql => sql.startsWith('ALTER TABLE mail_folder_remote_boxes')).length, 1,
@@ -146,7 +146,7 @@ test('idempotency receipt replays exact response and rejects payload reuse', asy
   await assert.rejects(repo.recordReceipt({ ...input, clientKey: 'bad key\n' }, cx), TypeError);
   // Claim by INSERT first; a duplicate is only read with a shared lock (no FOR UPDATE gap lock before INSERT).
   assert(!calls.some(sql => sql.includes('FOR UPDATE')));
-  assert(calls.some(sql => sql.startsWith('SELECT request_hash') && sql.includes('FOR SHARE')));
+  assert(calls.some(sql => sql.startsWith('SELECT request_hash') && sql.includes('LOCK IN SHARE MODE')));
   await repo.finishReceipt({ ...input, response: { operation_ids: ['final'] } }, cx);
   assert.deepEqual((await repo.recordReceipt(input, cx)).response, { operation_ids: ['final'] });
   await assert.rejects(repo.finishReceipt({ ...input, requestHash: 'b'.repeat(64), response: {} }, cx), { code: 'IDEMPOTENCY_KEY_BUSY' });

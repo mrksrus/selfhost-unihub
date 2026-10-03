@@ -1,4 +1,4 @@
-# v0.9.23.0 upgrade fixture
+# v0.9.23.0 schema fixture
 
 `schema.sql` freezes the fresh-install schema from release **v0.9.23.0**:
 
@@ -44,24 +44,6 @@ tag above with that test key. Login hashes use bcrypt with the release's cost of
 12. Ciphertexts and hashes are stored once so decryption and login checks cannot
 silently switch to the current writer's format.
 
-The first test in `database-startup-mysql-integration.test.js` loads this fixture
-before invoking current production initialization twice. It compares every
-original column and row of the populated tables, verifies that old credentials
-still decrypt and the old password still verifies, checks conservative
-`import_complete` defaults and new notification tables, and checks that new sync
-progress and VAPID keys survive restart. It also opens the mail folder list to
-check that default-folder initialization preserves the user's folder edits.
-
-The test runs in the existing MySQL 8 CI service when `MYSQL_TEST_HOST` is set and
-`MYSQL_TEST_SCHEMA_SMOKE=1`. It requires an **empty, dedicated database whose name
-ends in `_test`**. After establishing exclusive ownership of that empty schema,
-it removes its tables in cleanup before the existing fresh-install startup smoke
-runs. API tests must remain serial. The earlier backup integration test removes
-its three persistent tables in cleanup; other integration tests use temporary
-tables.
-
-This covers a populated v0.9.23.0 database upgrade, not every earlier 0.9 release,
-a full backup restore, external IMAP/CalDAV servers, or filesystem payloads.
-Attachment, raw-message, and recording paths and metadata are preserved in the
-database, but this fixture does not create their referenced files. Deployments
-must retain their existing data volumes and encryption/backup keys.
+Since 0.16.0 (MariaDB, fresh installations only) there is no upgrade test.
+`backup-ownership-mysql-integration.test.js` uses `schema.sql` to create its
+connection-local tables.

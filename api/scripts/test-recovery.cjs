@@ -2,6 +2,7 @@
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
+const { MINIMUM_MARIADB, supportedServer } = require('../src/services/database-version');
 
 async function main() {
   if (!process.env.MYSQL_TEST_HOST || !process.env.MYSQL_TEST_USER || !/^[a-zA-Z0-9_]+_test$/.test(process.env.MYSQL_TEST_DATABASE || '')) {
@@ -11,13 +12,13 @@ async function main() {
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE });
   try {
     const [[server]] = await connection.query('SELECT VERSION() AS version');
-    if (!/^8\./.test(server.version)) throw new Error('Recovery gate requires MySQL 8.');
+    if (!supportedServer(server.version)) throw new Error(`Recovery gate requires MariaDB ${MINIMUM_MARIADB.join('.')} or later (found ${server.version}).`);
     const [tables] = await connection.query('SHOW TABLES');
     if (tables.length) throw new Error('Recovery gate refuses a non-empty database. Use a disposable empty *_test schema.');
   } finally { await connection.end(); }
   const api = path.resolve(__dirname, '..');
   const tests = fs.readdirSync(path.join(api, 'tests')).filter(name => name.endsWith('.test.js') &&
-    (process.argv.includes('--all') || name.startsWith('backup-') || ['data-inventory.test.js', 'database-migrations.test.js', 'database-startup-mysql-integration.test.js', 'account-folder-reconciliation-mysql-integration.test.js'].includes(name))).sort();
+    (process.argv.includes('--all') || name.startsWith('backup-') || ['data-inventory.test.js', 'database-migrations.test.js', 'database-startup-mysql-integration.test.js'].includes(name))).sort();
   const child = spawn(process.execPath, ['--test', '--test-concurrency=1', '--test-reporter=tap', ...tests.map(name => 'tests/' + name)], {
     cwd: api, env: { ...process.env, MYSQL_TEST_SCHEMA_SMOKE: '1' }, stdio: ['ignore', 'pipe', 'inherit'],
   });

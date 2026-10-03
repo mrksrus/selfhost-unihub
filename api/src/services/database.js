@@ -11,6 +11,7 @@ const {
 const { hashPassword } = require('../auth');
 const { backfillCalendarOwnership } = require('./calendar');
 const { getDatabaseConfig } = require('./database-config');
+const { supportedServer, unsupportedServerMessage } = require('./database-version');
 const { runMigrations } = require('./database-migrations');
 const { verifyDatabaseInventory } = require('./data-inventory');
 const { migrateMailEngineSchema, backfillMailEngine, verifyMailEngineSchema,
@@ -83,11 +84,23 @@ async function ensureIndex(tableName, indexName, alterSql) {
 // times by hours. The 'connection' event fires before the new connection is
 // handed out, and the connection runs commands in order, so this SET precedes
 // every app query on it.
+//
+// MariaDB 11.6+ also turns innodb_snapshot_isolation on by default: a locking
+// read or update then fails with "Record has changed since last read" when
+// another transaction committed that row after this one's first read. UniHub's
+// transactions expect such reads to see the latest committed row (MySQL and
+// older MariaDB behavior). Releases without the setting reject it with 1193.
+const UNKNOWN_SYSTEM_VARIABLE = 1193;
 function useUtcSessions(pool) {
   pool.pool.on('connection', connection => {
     connection.query("SET time_zone = '+00:00'", error => {
       if (!error) return;
       console.error('[DB] Could not set the session time zone to UTC:', error.message);
+      connection.destroy();
+    });
+    connection.query('SET innodb_snapshot_isolation = OFF', error => {
+      if (!error || error.errno === UNKNOWN_SYSTEM_VARIABLE) return;
+      console.error('[DB] Could not turn off snapshot isolation for the session:', error.message);
       connection.destroy();
     });
   });
@@ -110,7 +123,7 @@ async function initDatabase() {
   }
 
   if (isPlaceholderSecret(databaseConfig.password)) {
-    console.error('✗ Missing or placeholder database password. Set a real MySQL password before starting.');
+    console.error('✗ Missing or placeholder database password. Set a real database password before starting.');
     process.exit(1);
   }
   const poolConfig = {
@@ -130,8 +143,7 @@ async function initDatabase() {
     maxIdle: 5, // Keep max 5 idle connections
   };
 
-  // Retry connection — MySQL may still be starting
-  // Reduced retry time since MySQL startup is optimized
+  // Retry connection — the database may still be starting
   for (let attempt = 1; attempt <= 20; attempt++) {
     try {
       setDb(useUtcSessions(mysql.createPool(poolConfig)));
@@ -150,6 +162,13 @@ async function initDatabase() {
       console.log(`⏳ Waiting for database (attempt ${attempt}/20)…`);
       await new Promise(r => setTimeout(r, waitTime));
     }
+  }
+
+  // Refuse before any schema work, so a MySQL database is never half-converted.
+  const [[server]] = await db.query('SELECT VERSION() AS version');
+  if (!supportedServer(server.version)) {
+    console.error('✗ ' + unsupportedServerMessage(server.version));
+    process.exit(1);
   }
 
   await ensureSchema();
@@ -343,7 +362,8 @@ async function ensureSchema() {
       verify: async connection => {
         const [rows] = await connection.execute(`SELECT TABLE_NAME, COLUMN_DEFAULT FROM information_schema.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE() AND COLUMN_NAME = 'color' AND TABLE_NAME IN ('calendar_calendars','calendar_events')`);
-        if (rows.length !== 2 || rows.some(row => row.COLUMN_DEFAULT !== '#2563eb')) throw new Error('Calendar color default not updated');
+        // MariaDB reports string defaults as quoted SQL literals.
+        if (rows.length !== 2 || rows.some(row => row.COLUMN_DEFAULT !== "'#2563eb'")) throw new Error('Calendar color default not updated');
       },
     },
     {
@@ -385,7 +405,7 @@ async function ensureSchema() {
 // verified baseline, detecting each step's prior state. Changing it would make
 // old and new installs diverge. Every schema change, however small, is a new
 // numbered migration in ensureSchema() above; afterwards regenerate
-// docker/mysql/init/01-schema.sql with scripts/local-mysql.sh schema-dump.
+// docker/mariadb/schema.sql with scripts/local-db.sh schema-dump.
 async function ensureLegacySchema() {
   console.log('Checking database schema…');
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Synthetic sample data for local development (scripts/local-mysql.sh dev).
+// Synthetic sample data for local development (scripts/local-db.sh dev).
 //   node scripts/seed-dev.cjs [--reset]
 // Only runs against a database whose name ends in _dev. The schema is built by
 // the app's own startup code; rows are written through service functions where
@@ -24,7 +24,7 @@ function die(message) { console.error(`seed-dev: ${message}`); process.exit(1); 
 const database = process.env.MYSQL_DATABASE || '';
 if (!/_dev$/.test(database)) die(`refusing to run: MYSQL_DATABASE must end with _dev (got "${database}")`);
 if (process.env.BOOTSTRAP_ADMIN_EMAIL !== 'admin@example.com' || PASSWORD.length < 12) {
-  die('run through scripts/local-mysql.sh dev (BOOTSTRAP_ADMIN_* not set as expected)');
+  die('run through scripts/local-db.sh dev (BOOTSTRAP_ADMIN_* not set as expected)');
 }
 
 // ── Deterministic helpers ─────────────────────────────────────────

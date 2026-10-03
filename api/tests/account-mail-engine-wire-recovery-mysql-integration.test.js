@@ -126,7 +126,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
       }
     } finally { state.setDb(originalDb); await pool.end(); }
   });
-  assert.match((await one(pool, 'SELECT VERSION() AS version')).version, /^8\./);
+  assert.match((await one(pool, 'SELECT VERSION() AS version')).version, /MariaDB/);
   assert.equal((await rows(pool, 'SHOW TABLES')).length, 0, 'Refuse populated database');
   ownsSchema = true; state.setDb(pool);
   await require('../src/services/database').ensureSchema();

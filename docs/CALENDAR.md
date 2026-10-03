@@ -62,8 +62,8 @@ On startup, `backfillCalendarOwnership` ensures every user has:
 
 ## Date and Time Handling
 
-- MySQL `DATETIME` values are treated as UTC.
-- The MySQL pool uses `timezone: '+00:00'`.
+- MariaDB `DATETIME` values are treated as UTC.
+- The MariaDB pool uses `timezone: '+00:00'`.
 - Incoming values are normalized with `toMysqlDatetime`.
 - Datetime strings without an explicit timezone are interpreted as UTC.
 - Serialized API responses convert `Date` instances to ISO strings.
@@ -204,7 +204,7 @@ remain inactive with warnings.
 
 ## Backup and Restore (ALPHA)
 
-**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 Calendar/ToDo backups include calendar accounts, calendars, events, ToDos,
 subtasks, attendees, external references, provider metadata, and supported

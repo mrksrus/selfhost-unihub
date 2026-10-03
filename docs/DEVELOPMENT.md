@@ -10,12 +10,12 @@ UniHub runs as two containers in the included Docker Compose setup:
 | Container | Image | Purpose |
 | --- | --- | --- |
 | `unihub` | `ghcr.io/mrksrus/selfhost-unihub:latest` | React frontend served by Nginx plus Node.js API on port 4000 inside the container |
-| `unihub-mysql` | `mysql:8.4` | MySQL database |
+| `unihub-db` | `mariadb:11.8` | MariaDB database (10.11 or later required) |
 
 Request flow:
 
 ```text
-Browser -> Nginx :80 -> Node.js API :4000 -> MySQL
+Browser -> Nginx :80 -> Node.js API :4000 -> MariaDB
                                   -> IMAP/SMTP providers
                                   -> CalDAV providers during optional import
                                   -> Browser push services
@@ -49,7 +49,7 @@ npm --prefix api ci
 npm --prefix api start
 ```
 
-The backend requires MySQL configuration through either `DATABASE_URL` or
+The backend requires MariaDB configuration through either `DATABASE_URL` or
 `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and
 `MYSQL_PASSWORD`. Supply `JWT_SECRET`, `ENCRYPTION_KEY`, and the bootstrap admin
 credentials in the backend process environment as well. The Compose `.env`
@@ -67,43 +67,42 @@ npm --prefix api test
 ```
 
 
-## Local MySQL and sample data
+## Local MariaDB and sample data
 
-`scripts/local-mysql.sh` runs an on-demand MySQL 8.4 as your own user from the
-official tarball: no system service, no sudo, nothing starts at boot. Install the
-minimal glibc tarball once and verify its signature (Oracle's MySQL release key
-`B7B3B788A8D3785C`):
+`scripts/local-db.sh` runs an on-demand MariaDB 11.8 as your own user from the
+official tarball: no system service, no sudo, nothing starts at boot. Install
+the tarball once, checking the SHA-256 sum published on
+[mariadb.org/download](https://mariadb.org/download/):
 
 ```bash
-V=8.4.11; T=mysql-$V-linux-glibc2.28-x86_64-minimal.tar.xz
+V=11.8.9; T=mariadb-$V-linux-systemd-x86_64.tar.gz
 cd ~/Downloads
-curl -LO https://cdn.mysql.com/Downloads/MySQL-8.4/$T
-curl -LO https://cdn.mysql.com/Downloads/MySQL-8.4/$T.asc
-gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys B7B3B788A8D3785C
-gpg --verify $T.asc $T   # must report a good signature from MySQL Release Engineering
-mkdir -p ~/.local/opt && tar -xJf $T -C ~/.local/opt
-ln -sfn ~/.local/opt/${T%.tar.xz} ~/.local/opt/mysql-8.4
+curl -LO https://downloads.mariadb.org/rest-api/mariadb/$V/$T
+curl -s https://downloads.mariadb.org/rest-api/mariadb/$V/$T/checksum/   # shows sha256sum
+sha256sum $T                                                            # must match it
+mkdir -p ~/.local/opt && tar -xzf $T -C ~/.local/opt
+ln -sfn ~/.local/opt/${T%.tar.gz} ~/.local/opt/mariadb-11.8
 ```
 
-The script only talks to the server through the API's `mysql2` driver, because
-the minimal tarball's `mysql` CLI needs `libncurses.so.6`, which some
-distributions (e.g. Arch) do not ship. Data lives in `~/.local/share/unihub-mysql`
-and generated local passwords in `.private/local-mysql.env` (ignored by Git).
+The script sends SQL through the API's `mysql2` driver, the same driver the app
+uses, because the tarball's `mariadb` command-line client needs system libraries
+some distributions do not ship. Data lives in `~/.local/share/unihub-mariadb` and
+generated local passwords in `.private/local-db.env` (ignored by Git).
 
 ```bash
-npm run db:start     # scripts/local-mysql.sh start (first run initializes the data dir)
+npm run db:start     # scripts/local-db.sh start (first run initializes the data dir)
 npm run db:dev       # start, build and seed the unihub_dev database, print the API command
-npm run test:mysql   # MySQL integration suite like CI (stops the server again if it started it)
-npm run db:stop      # scripts/local-mysql.sh stop
-scripts/local-mysql.sh sql -e 'SHOW DATABASES'
-scripts/local-mysql.sh dev --reset   # drop all unihub_dev tables and seed again
-scripts/local-mysql.sh migrate-check # upgrade the 0.9.23.0 fixture (or a given dump), compare with a fresh install
-scripts/local-mysql.sh schema-dump   # regenerate docker/mysql/init/01-schema.sql
+npm run test:db      # database integration suite like CI (stops the server again if it started it)
+npm run db:stop      # scripts/local-db.sh stop
+scripts/local-db.sh sql -e 'SHOW DATABASES'
+scripts/local-db.sh dev --reset          # drop all unihub_dev tables and seed again
+scripts/local-db.sh migrate-check d.sql  # run the startup upgrades on a dump, compare with a fresh install
+scripts/local-db.sh schema-dump          # regenerate docker/mariadb/schema.sql
 ```
 
 The app creates and upgrades its own schema at startup. `ensureLegacySchema` in
 `api/src/services/database.js` is a frozen baseline; every schema change is a new
-numbered migration in `ensureSchema`. `docker/mysql/init/01-schema.sql` is
+numbered migration in `ensureSchema`. `docker/mariadb/schema.sql` is
 generated, never edited: `schema-dump` runs the startup schema code
 (`api/scripts/dump-schema.cjs`) on an empty database and writes a sorted
 `SHOW CREATE TABLE` dump. Commit the regenerated file with the migration;

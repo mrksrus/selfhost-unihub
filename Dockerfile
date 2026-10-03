@@ -59,7 +59,7 @@ RUN chmod +x /app/start.sh
 
 EXPOSE 80
 
-# Allow the 300s MySQL readiness window plus API startup before reporting failures.
+# Allow the 300s MariaDB readiness window plus API startup before reporting failures.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=360s --retries=3 \
   CMD wget -q -O /dev/null http://localhost/health || exit 1
 

@@ -57,7 +57,7 @@ test('manual refresh column is required only after its additive migration', () =
 });
 
 test('generated fresh-install schema is fully classified', () => {
-  const schema = fs.readFileSync(path.join(__dirname, '../../docker/mysql/init/01-schema.sql'), 'utf8');
+  const schema = fs.readFileSync(path.join(__dirname, '../../docker/mariadb/schema.sql'), 'utf8');
   const columns = sourceColumns(schema);
   assert.equal(columns.length, schema.match(/^ {2}`[a-z]/gm).length, 'The DDL reader must parse every generated column');
   assertInventoryCoverage(columns);

@@ -32,7 +32,7 @@ Browsers that support it show an **Install UniHub** card: **Install** opens the 
 
 ## Server configuration and persistence
 
-No new container, exposed port, volume, or required environment variable is needed. The API stores subscriptions, its outbox, and reminder schedules in the existing MySQL database. It generates one VAPID key pair and stores the private key encrypted using the existing `ENCRYPTION_KEY` in a dedicated `notification_config` table. Container rebuilds and restarts retain the keys; do not rotate `ENCRYPTION_KEY` or delete the notification tables casually.
+No new container, exposed port, volume, or required environment variable is needed. The API stores subscriptions, its outbox, and reminder schedules in the existing MariaDB database. It generates one VAPID key pair and stores the private key encrypted using the existing `ENCRYPTION_KEY` in a dedicated `notification_config` table. Container rebuilds and restarts retain the keys; do not rotate `ENCRYPTION_KEY` or delete the notification tables casually.
 
 The VAPID contact defaults to the first administrator's email when the keys are generated. `WEB_PUSH_SUBJECT` can optionally supply a contact URI before first initialization. The private key is never exposed by the frontend configuration endpoint.
 
@@ -54,6 +54,6 @@ Optional offline snapshots make selected content readable when the API is unavai
 
 ## Verification
 
-Run `node --test api/tests/notifications.test.js api/tests/notification-worker.test.js`. The optional `notifications-mysql-integration.test.js` runs when `MYSQL_TEST_HOST` and the usual `MYSQL_TEST_*` settings are provided. It uses connection-local temporary tables to test real queries and transactions without altering the configured database. CI additionally runs `database-startup-mysql-integration.test.js` in an explicitly opted-in disposable MySQL 8 database: it exercises a populated 0.9.23.0 upgrade and fresh production schema startup, stable encrypted VAPID identity, and real session-revocation foreign-key cascades. These schema tests must not target a live database.
+Run `node --test api/tests/notifications.test.js api/tests/notification-worker.test.js`. The optional `notifications-mysql-integration.test.js` runs when `MYSQL_TEST_HOST` and the usual `MYSQL_TEST_*` settings are provided. It uses connection-local temporary tables to test real queries and transactions without altering the configured database. CI additionally runs `database-startup-mysql-integration.test.js` in an explicitly opted-in disposable MariaDB database: it exercises a populated 0.9.23.0 upgrade and fresh production schema startup, stable encrypted VAPID identity, and real session-revocation foreign-key cascades. These schema tests must not target a live database.
 
 For release testing, cover permission grant/denial, foreground/minimized/closed/locked-screen delivery, zero-minute reminders, edits and cancellations, restarts, multi-tab duplication, account switch/logout isolation, old sender timestamps on newly imported mail, and stable subscriptions after replacing the API container. Test offline cold-start and updates while editing separately from push delivery.

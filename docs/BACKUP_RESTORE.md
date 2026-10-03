@@ -1,6 +1,6 @@
 # Backup and Restore Guide
 
-**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 In 0.10.6, backup creation/import/restore are enabled again. Schema 3 includes
 account-specific folders, local filing/Legacy identities, routing overrides,
@@ -36,7 +36,7 @@ They are not a replacement for infrastructure backups. A complete recovery
 strategy should include:
 
 1. Downloaded UniHub backups stored away from the UniHub server.
-2. A backup of the MySQL volume.
+2. A backup of the MariaDB volume.
 3. A backup of the uploads volume.
 4. Copies of the deployment configuration and required secrets.
 
@@ -215,7 +215,7 @@ created inactive and require credentials to be entered again.
 Backup creation runs as a background job. The browser may navigate away after
 the job starts.
 
-Database rows are collected through one read-only, consistent MySQL snapshot,
+Database rows are collected through one read-only, consistent MariaDB snapshot,
 so related records reflect the same database state. Stored files are checked
 against their collected byte lengths and SHA-256 hashes during ZIP creation. A
 changed file causes the export to fail and its partial output to be removed;
@@ -551,7 +551,7 @@ permissions where the host filesystem honors POSIX modes.
 - Keep recovery passwords outside UniHub.
 - Periodically test validation and restore on a separate installation.
 - Download important backups off-server.
-- Back up MySQL and `/app/uploads` independently.
+- Back up MariaDB and `/app/uploads` independently.
 
 The upload request cap is **3900 MiB** (about 3.81 GiB), including encryption
 overhead. Export does not mark a larger archive ready. The current inner archive
@@ -569,12 +569,12 @@ Metadata limits are the same for export and import:
 
 Use section backups if a full backup exceeds a limit. A single section can also
 exceed these limits; automatic splitting within a section is not implemented.
-For such datasets, retain consistent MySQL/uploads backups instead of relying
+For such datasets, retain consistent MariaDB/uploads backups instead of relying
 on an account archive that cannot be created or uploaded.
 
 ## Compatibility Test Coverage
 
-The regression suite exercises production export and restore jobs against MySQL
+The regression suite exercises production export and restore jobs against MariaDB
 with synthetic data and isolated uploads directories. It covers all sections,
 file-byte preservation, repeated conflict modes, encrypted recovery under a
 different server key, legacy server-bound credentials, integrity failures and

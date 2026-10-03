@@ -34,7 +34,7 @@ test('mail compose upload limits allow base64 attachment overhead through nginx'
 
 test('generated MySQL schema contains current backup job tables and indexes', () => {
   const schema = fs.readFileSync(
-    path.join(repoRoot, 'docker/mysql/init/01-schema.sql'),
+    path.join(repoRoot, 'docker/mariadb/schema.sql'),
     'utf8'
   );
 

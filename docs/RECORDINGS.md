@@ -239,6 +239,6 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 - There is no per-user storage quota beyond per-recording size limits.
 - Browser recording support depends on the user's browser and device permissions.
 - Browser recording requires `AudioWorklet`, available in modern secure-context browsers.
-- Chunk upload state is stored in MySQL, but partial uploads expire after 24 hours.
+- Chunk upload state is stored in MariaDB, but partial uploads expire after 24 hours.
 - The production image includes `ffmpeg`; local API development also requires it
   for MP3 export.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Minimal SQL runner for scripts/local-mysql.sh. The official minimal MySQL
+// Minimal SQL runner for scripts/local-db.sh. The official minimal MySQL
 // client needs libncurses.so.6, which some distributions (e.g. Arch) do not
 // ship; the API's own mysql2 driver avoids that dependency.
 //   node local-sql.cjs [--database name] [-e "SQL"]   (else SQL from stdin)

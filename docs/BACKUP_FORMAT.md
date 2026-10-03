@@ -1,6 +1,6 @@
 # Backup format and compatibility
 
-**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of MySQL, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
+**ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 0.10.13 and later write account backups with data schema 4 and retains readers for schemas 1–3.
 `manifest.json` is the version file. Users do not select conversion scripts.
@@ -111,7 +111,7 @@ Frozen plain/encrypted archives from the actual `v0.9.23.0` exporter live under
 They contain invented data, not the owner's mailbox. Do not regenerate them just
 to accommodate a changed reader.
 
-Focused MySQL recovery tests verify current exports, automatic old readers,
+Focused MariaDB recovery tests verify current exports, automatic old readers,
 relationships and file bytes, restored account/folder meaning, conflicts,
 interruption and ownership. They establish the covered cases at the tested
 revision, not every old release or every live installation.

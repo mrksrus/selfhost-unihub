@@ -38,10 +38,12 @@ services:
       - "3000:80"
     environment:
       NODE_ENV: production
+      # Connection to the MariaDB service below. The MYSQL_ names are kept
+      # because MariaDB speaks the MySQL protocol; UniHub 0.16+ needs MariaDB.
       MYSQL_DATABASE: unihub
       MYSQL_USER: unihub
-      MYSQL_PASSWORD: ${UNIHUB_MYSQL_PASSWORD:?Set UNIHUB_MYSQL_PASSWORD to a strong database password before starting}
-      MYSQL_HOST: unihub-mysql
+      MYSQL_PASSWORD: ${UNIHUB_DB_PASSWORD:?Set UNIHUB_DB_PASSWORD to a strong database password before starting}
+      MYSQL_HOST: unihub-db
       MYSQL_PORT: "3306"
       # ── Startup timing controls used by docker/start.sh ───────────────
       MYSQL_STARTUP_MAX_WAIT_SECONDS: "300"
@@ -66,46 +68,57 @@ services:
       # ── Optional allowlist for self-hosted mail domains/IP hostnames ──
       TRUSTED_MAIL_HOSTS: mail.example.com
     depends_on:
-      - unihub-mysql
+      # Start once MariaDB reports ready; the app also waits for it itself.
+      unihub-db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 360s  # Covers the five-minute MySQL wait plus API startup
+      start_period: 360s  # Covers the five-minute database wait plus API startup
     networks:
       - unihub-network
     volumes:
       - uploads_data:/app/uploads
 
-  # ── MySQL Database ──────────────────────────────────────────────
-  unihub-mysql:
-    # MySQL 8.4 LTS. An existing 8.0 data volume upgrades in place on first
-    # start; MySQL cannot downgrade it afterwards, so back up before switching.
-    image: mysql:8.4
-    container_name: unihub-mysql
+  # ── MariaDB Database ────────────────────────────────────────────
+  # Everything the database needs is in this file: no config files to download.
+  unihub-db:
+    # MariaDB 11.8 LTS (supported until 2030). Patch releases install with a
+    # restart; MARIADB_AUTO_UPGRADE updates the system tables when needed.
+    image: mariadb:11.8
+    container_name: unihub-db
     init: true
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
     environment:
-      MYSQL_DATABASE: unihub
-      MYSQL_USER: unihub
-      MYSQL_PASSWORD: ${UNIHUB_MYSQL_PASSWORD:?Set UNIHUB_MYSQL_PASSWORD to a strong database password before starting}
-      MYSQL_ROOT_PASSWORD: ${UNIHUB_MYSQL_ROOT_PASSWORD:?Set UNIHUB_MYSQL_ROOT_PASSWORD to a strong root database password before starting}
+      MARIADB_DATABASE: unihub
+      MARIADB_USER: unihub
+      MARIADB_PASSWORD: ${UNIHUB_DB_PASSWORD:?Set UNIHUB_DB_PASSWORD to a strong database password before starting}
+      MARIADB_ROOT_PASSWORD: ${UNIHUB_DB_ROOT_PASSWORD:?Set UNIHUB_DB_ROOT_PASSWORD to a strong root database password before starting}
+      MARIADB_AUTO_UPGRADE: "1"
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
       - --max-connections=100
       - --innodb-buffer-pool-size=192M
-      - --innodb-redo-log-capacity=96M
+      - --innodb-log-file-size=96M
+      - --innodb-log-buffer-size=16M
+      # Flush the log once per second instead of on every commit: much faster
+      # mail syncs; a power loss can lose the last second of changes.
+      - --innodb-flush-log-at-trx-commit=2
+      # MySQL-style locking reads, which UniHub's transactions expect. The app
+      # also sets this for its own connections.
+      - --innodb-snapshot-isolation=OFF
       - --skip-name-resolve
+      - --local-infile=0
     volumes:
-      - mysql_data:/var/lib/mysql
-      - ./docker/mysql/conf/custom.cnf:/etc/mysql/conf.d/custom.cnf:ro
-    # Health check uses MYSQL_PWD to avoid YAML escaping issues
+      - mariadb_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h localhost -u root"]
+      # The image's own check, using the health-check account it creates.
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -118,7 +131,7 @@ networks:
     driver: bridge
 
 volumes:
-  mysql_data:
+  mariadb_data:
     driver: local
   uploads_data:
     driver: local

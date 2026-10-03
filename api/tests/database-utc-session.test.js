@@ -9,7 +9,7 @@ function fakeConnection({ fail = false } = {}) {
   return {
     queries: [],
     destroyed: false,
-    query(sql, callback) { this.queries.push(sql); process.nextTick(() => callback(fail ? new Error('denied') : null)); },
+    query(sql, callback) { this.queries.push(sql); process.nextTick(() => callback(typeof fail === 'function' ? fail(sql) : fail ? new Error('denied') : null)); },
     destroy() { this.destroyed = true; },
   };
 }
@@ -23,8 +23,8 @@ test('every new pooled connection is switched to a UTC session', async () => {
   promisePool.pool.emit('connection', first);
   promisePool.pool.emit('connection', second);
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(first.queries, ["SET time_zone = '+00:00'"]);
-  assert.deepEqual(second.queries, ["SET time_zone = '+00:00'"]);
+  assert.deepEqual(first.queries, ["SET time_zone = '+00:00'", 'SET innodb_snapshot_isolation = OFF']);
+  assert.deepEqual(second.queries, ["SET time_zone = '+00:00'", 'SET innodb_snapshot_isolation = OFF']);
   assert.equal(first.destroyed, false);
 });
 
@@ -38,6 +38,16 @@ test('a connection whose session time zone cannot be set is discarded', async (t
   assert.equal(connection.destroyed, true);
 });
 
+test('a server without snapshot isolation keeps the connection', async () => {
+  const { useUtcSessions } = require('../src/services/database');
+  const promisePool = useUtcSessions({ pool: new EventEmitter() });
+  const unknown = Object.assign(new Error('Unknown system variable'), { errno: 1193 });
+  const connection = fakeConnection({ fail: sql => (sql.includes('snapshot') ? unknown : null) });
+  promisePool.pool.emit('connection', connection);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(connection.destroyed, false);
+});
+
 test('initDatabase installs the UTC session hook on the app pool', async (t) => {
   delete process.env.DATABASE_URL;
   Object.assign(process.env, { MYSQL_HOST: 'db.example.test', MYSQL_DATABASE: 'unihub_unit', MYSQL_USER: 'unihub', MYSQL_PASSWORD: 'unit-test-password' });
@@ -47,6 +57,7 @@ test('initDatabase installs the UTC session hook on the app pool', async (t) => 
   const promisePool = {
     pool: corePool,
     async execute() { return [[{ 1: 1 }]]; },
+    async query() { return [[{ version: '11.8.9-MariaDB' }]]; },
     async getConnection() { throw stopped; },
     async end() {},
   };
@@ -63,5 +74,5 @@ test('initDatabase installs the UTC session hook on the app pool', async (t) => 
   const connection = fakeConnection();
   corePool.emit('connection', connection);
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(connection.queries, ["SET time_zone = '+00:00'"]);
+  assert.deepEqual(connection.queries, ["SET time_zone = '+00:00'", 'SET innodb_snapshot_isolation = OFF']);
 });

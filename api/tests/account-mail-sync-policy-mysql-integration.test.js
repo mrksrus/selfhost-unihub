@@ -54,7 +54,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
       await fs.rm(directory, { recursive: true, force: true });
     }
   });
-  assert.match((await one('SELECT VERSION() AS version')).version, /^8\./);
+  assert.match((await one('SELECT VERSION() AS version')).version, /MariaDB/);
   assert.equal((await rows('SHOW TABLES')).length, 0, 'Refuse a populated schema');
   ownsSchema = true; state.setDb(pool);
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'sync-policy-bootstrap@example.test';

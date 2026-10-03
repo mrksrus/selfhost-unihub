@@ -156,7 +156,7 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
         } finally { state.setDb(priorDb); await pool.end(); }
       }
     });
-    assert.match((await queryOne(pool, 'SELECT VERSION() AS version')).version, /^8\./);
+    assert.match((await queryOne(pool, 'SELECT VERSION() AS version')).version, /MariaDB/);
     assert.equal((await pool.query('SHOW TABLES'))[0].length, 0);
     ownsSchema = true; state.setDb(pool);
     await require('../src/services/database').ensureSchema();
