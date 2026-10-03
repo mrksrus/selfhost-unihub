@@ -60,6 +60,8 @@ For feature details, follow the corresponding file in docs/ rather than treating
 
 Review the changed behavior through its callers, workers, database writes and recovery paths. Apply these rules to relevant changes; do not turn a small PR into an unrelated refactor. Prioritize exploitable security failures and irreversible data loss, then correctness and concrete maintenance costs. For each finding, cite the narrowest affected lines and explain the trigger, impact and missing guard. Check existing safeguards before reporting; distinguish demonstrated behavior from an unverified risk. Follow SECURITY.md for private vulnerability reporting and use synthetic examples.
 
+Every review must end with an explicit verdict for the reviewed commit. When nothing needs fixing, say so in a review comment, for example "No issues found in <commit>.", rather than staying silent, so whoever waits on the review knows it is finished.
+
 ### Access and secrets
 
 - Trace user ownership through IDs, parent/child relationships, joins, bulk operations, files, job polling, downloads and SSE. Check with two users; an owned parent does not make an arbitrary child ID safe. Admin routes also need a server-side role check.
