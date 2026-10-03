@@ -32,7 +32,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
     const pool = mysql.createPool({ ...options, connectionLimit: 4 });
     const previous = getDb();
     const caldav = require('../src/services/caldav');
-    const stubbed = ['listCalendars', 'listCalendarObjects', 'fetchCalendarObjects', 'putCalendarObject', 'deleteCalendarObject'];
+    const stubbed = ['listCalendars', 'listCalendarObjects', 'fetchCalendarObjects', 'putCalendarObject', 'deleteCalendarObject', 'findCalDavServer'];
     const originals = Object.fromEntries(stubbed.map(name => [name, caldav[name]]));
     let ownsDatabase = false;
     t.after(async () => {
@@ -224,14 +224,32 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       link = await calendarAccounts.getMailCalendarLink(userId, otherMail);
       assert.equal(link.account.id, restored);
 
-      // Restored from a 0.17.0 backup: neither link nor mark, but it signs in
-      // with the mail account's login. Another login with the address is not taken.
+      // Restored from a 0.17.0 backup: neither link nor mark, so looking does
+      // not link it, even with the mail account's login. Turning the calendar
+      // on takes it over in place with its events and ToDo state.
       const archiveMail = await insertMail(userId, 'archive@example.test');
-      const otherLogin = await insertCalDav(userId, 'archive@example.test', current);
-      const mailLogin = await insertCalDav(userId, 'archive@example.test', current, null, 'synthetic-mail-password');
+      const restoredLogin = await insertCalDav(userId, 'archive@example.test', current, null, 'synthetic-mail-password');
       link = await calendarAccounts.getMailCalendarLink(userId, archiveMail);
-      assert.equal(link.account.id, mailLogin);
-      assert.equal((await mailLink(otherLogin)).mail_account_id, null);
+      assert.equal(link.enabled, false);
+      assert.equal((await mailLink(restoredLogin)).mail_account_id, null);
+      await calendarSync.syncCalendarAccount(restoredLogin, { userId });
+      const [[restoredEvent]] = await connection.execute("SELECT id FROM calendar_events WHERE user_id = ? AND title = 'Review'", [userId]);
+      await connection.execute("UPDATE calendar_events SET todo_status = 'done' WHERE id = ?", [restoredEvent.id]);
+      caldav.findCalDavServer = async () => ({
+        server: current.server, credentialScope: BASE, hint: null,
+        discovery: { baseUrl: `${BASE}/dav/calendars/person/`, principalHref: current.principalHref, calendars: await caldav.listCalendars() },
+      });
+      const backgroundSync = calendarSync.syncCalendarAccountInBackground;
+      calendarSync.syncCalendarAccountInBackground = () => {};
+      try {
+        link = await calendarAccounts.setMailCalendar(userId, archiveMail, { enabled: true });
+      } finally { calendarSync.syncCalendarAccountInBackground = backgroundSync; }
+      assert.equal(link.account.id, restoredLogin);
+      const adopted = await mailLink(restoredLogin);
+      assert.equal(adopted.mail_account_id, archiveMail);
+      assert.equal(config(adopted.provider_config).mailLinked, true);
+      const [[keptTodo]] = await connection.execute('SELECT todo_status FROM calendar_events WHERE id = ?', [restoredEvent.id]);
+      assert.equal(keptTodo.todo_status, 'done');
 
       // Linked by 0.17.0 without the mark: the 0.17.1 upgrade adds it, so a
       // backup taken right after upgrading can link it again.

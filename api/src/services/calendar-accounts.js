@@ -42,25 +42,38 @@ async function loadSerializedAccount(userId, accountId) {
   return rows[0] ? serializeCalendarAccount(rows[0]) : null;
 }
 
-async function insertCalDavAccount({ userId, emailAddress, displayName, username, password, mailAccountId, timeZone, found }) {
-  const accountId = crypto.randomUUID();
+// existing: an account with the same login that is taken over in place, so
+// its calendars, events and their ToDo state are kept.
+async function saveCalDavAccount({ userId, emailAddress, displayName, username, password, mailAccountId, timeZone, found, existing = null }) {
+  const accountId = existing?.id || crypto.randomUUID();
+  const previous = safeJsonParse(existing?.provider_config, {}) || {};
   const providerConfig = {
     principalHref: found.discovery.principalHref || null,
     credentialScope: found.credentialScope,
     server: found.server,
     hint: found.hint || null,
-    timeZone: cleanTimeZone(timeZone),
+    timeZone: cleanTimeZone(timeZone) || cleanTimeZone(previous.timeZone),
     ...(mailAccountId ? { mailLinked: true } : {}),
   };
-  await db.execute(
-    `INSERT INTO calendar_accounts
-      (id, user_id, provider, account_email, display_name, username, encrypted_password, discovery_url, base_url,
-       provider_config, capabilities, is_active, sync_status, sync_error, mail_account_id, next_sync_at)
-     VALUES (?, ?, 'caldav', ?, ?, ?, ?, ?, ?, ?, ?, TRUE, 'pending', NULL, ?, NULL)`,
-    [accountId, userId, emailAddress || null, (displayName || emailAddress || found.server.label || 'Calendar').slice(0, 255),
-      (username || emailAddress || '').slice(0, 255) || null, encrypt(password), found.server.url, found.discovery.baseUrl,
-      JSON.stringify(providerConfig), JSON.stringify(CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.caldav), mailAccountId || null]
-  );
+  if (existing) {
+    await db.execute(
+      `UPDATE calendar_accounts SET account_email = ?, username = ?, encrypted_password = ?, discovery_url = ?, base_url = ?, provider_config = ?,
+         is_active = TRUE, sync_status = 'pending', sync_error = NULL, mail_account_id = ?, next_sync_at = NULL
+       WHERE id = ? AND user_id = ?`,
+      [emailAddress || null, (username || emailAddress || '').slice(0, 255) || null, encrypt(password), found.server.url, found.discovery.baseUrl,
+        JSON.stringify(providerConfig), mailAccountId || null, accountId, userId]
+    );
+  } else {
+    await db.execute(
+      `INSERT INTO calendar_accounts
+        (id, user_id, provider, account_email, display_name, username, encrypted_password, discovery_url, base_url,
+         provider_config, capabilities, is_active, sync_status, sync_error, mail_account_id, next_sync_at)
+       VALUES (?, ?, 'caldav', ?, ?, ?, ?, ?, ?, ?, ?, TRUE, 'pending', NULL, ?, NULL)`,
+      [accountId, userId, emailAddress || null, (displayName || emailAddress || found.server.label || 'Calendar').slice(0, 255),
+        (username || emailAddress || '').slice(0, 255) || null, encrypt(password), found.server.url, found.discovery.baseUrl,
+        JSON.stringify(providerConfig), JSON.stringify(CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.caldav), mailAccountId || null]
+    );
+  }
   const [rows] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ?', [accountId]);
   const calendars = await calendarSync.reconcileCalendarList(rows[0], found.discovery.calendars);
   return { account: rows[0], calendars: calendars.map(item => item.calendar) };
@@ -89,7 +102,7 @@ async function insertIcsAccount({ userId, url, displayName, feedName, mailAccoun
 
 async function findDuplicate(userId, provider, baseUrl, username) {
   const [rows] = await db.execute(
-    `SELECT id, display_name FROM calendar_accounts WHERE user_id = ? AND provider = ? AND base_url = ? AND COALESCE(username, '') = ? LIMIT 1`,
+    `SELECT id, display_name, mail_account_id, provider_config FROM calendar_accounts WHERE user_id = ? AND provider = ? AND base_url = ? AND COALESCE(username, '') = ? LIMIT 1`,
     [userId, provider, baseUrl, username || '']
   );
   return rows[0] || null;
@@ -147,8 +160,12 @@ async function connectCalDavAccount({ userId, emailAddress, displayName, usernam
   if (duplicate && !mailAccountId) {
     throw fail(`These calendars are already connected as "${duplicate.display_name || 'Calendar'}".`, 409, 'CALENDAR_ALREADY_CONNECTED');
   }
-  if (duplicate) await calendarSync.deleteCalendarAccount(userId, duplicate.id);
-  const { account, calendars } = await insertCalDavAccount({ userId, emailAddress, displayName, username: login, password, mailAccountId, timeZone, found });
+  // Turning on a mail account's calendar takes over an unlinked account with
+  // the same login (one restored from a 0.17.0 backup has no link). One that
+  // belongs to another mail account is replaced.
+  const existing = duplicate && [null, mailAccountId].includes(duplicate.mail_account_id) ? duplicate : null;
+  if (duplicate && !existing) await calendarSync.deleteCalendarAccount(userId, duplicate.id);
+  const { account, calendars } = await saveCalDavAccount({ userId, emailAddress, displayName, username: login, password, mailAccountId, timeZone, found, existing });
   startFirstSync(account);
   return { account: serializeCalendarAccount(account), calendars, server: found.server, hint: found.hint || null };
 }
@@ -170,32 +187,13 @@ async function loadMailAccount(userId, mailAccountId) {
 
 // The link to a mail account is not in backups, so it is recovered by
 // address, but only for accounts that belonged to a mail account: those
-// marked mailLinked; CalDAV accounts from before 0.17 (their config has no
-// server entry), which could only be created when adding a mail account; and
-// CalDAV accounts that sign in with the mail account's own login, as those
-// restored from a 0.17.0 backup, which kept neither the link nor the mark. A
-// calendar account added on its own with another login is never taken over.
-function wasMailCalendar(account, mail) {
+// marked mailLinked, and CalDAV accounts from before 0.17 (their config has no
+// server entry), which could only be created when adding a mail account. A
+// calendar account added on its own is never taken over.
+function wasMailCalendar(account) {
   const config = safeJsonParse(account.provider_config, {}) || {};
   if (config.mailLinked === true) return true;
-  if (account.provider !== 'caldav') return false;
-  return !config.server || usesMailLogin(account, mail);
-}
-
-function usesMailLogin(account, mail) {
-  if (!account.encrypted_password || !mail.encrypted_password) return false;
-  if (account.username !== (mail.username || mail.email_address)) return false;
-  try {
-    return decrypt(account.encrypted_password) === decrypt(mail.encrypted_password);
-  } catch {
-    return false;
-  }
-}
-
-async function markMailLinked(account) {
-  const config = safeJsonParse(account.provider_config, {}) || {};
-  if (config.mailLinked === true) return;
-  await db.execute('UPDATE calendar_accounts SET provider_config = ? WHERE id = ?', [JSON.stringify({ ...config, mailLinked: true }), account.id]);
+  return account.provider === 'caldav' && !config.server;
 }
 
 async function linkedCalendarAccount(userId, mail) {
@@ -206,16 +204,18 @@ async function linkedCalendarAccount(userId, mail) {
      ORDER BY created_at ASC`,
     [userId, mail.email_address]
   );
-  const candidate = unlinked.find(account => wasMailCalendar(account, mail));
+  const candidate = unlinked.find(wasMailCalendar);
   if (!candidate) return null;
-  const [result] = await db.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ? AND mail_account_id IS NULL', [mail.id, candidate.id]);
+  // The link and its mark are written together: backups keep only the mark.
+  const config = { ...(safeJsonParse(candidate.provider_config, {}) || {}), mailLinked: true };
+  const [result] = await db.execute('UPDATE calendar_accounts SET mail_account_id = ?, provider_config = ? WHERE id = ? AND mail_account_id IS NULL',
+    [mail.id, JSON.stringify(config), candidate.id]);
   if (!result.affectedRows) {
     // A concurrent request linked it first.
     const [again] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND mail_account_id = ?', [candidate.id, mail.id]);
     return again[0] || null;
   }
-  await markMailLinked(candidate);
-  return { ...candidate, mail_account_id: mail.id };
+  return { ...candidate, mail_account_id: mail.id, provider_config: JSON.stringify(config) };
 }
 
 async function describeLink(userId, mail, account) {

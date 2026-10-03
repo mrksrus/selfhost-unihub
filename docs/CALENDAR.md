@@ -43,12 +43,13 @@ while a calendar restore runs.
 A calendar account belongs to a mail account through `mail_account_id`. Backups
 do not keep that link, so opening the settings links an unlinked calendar
 account with the same address, but only one that belonged to a mail account:
-one marked `mailLinked` in its configuration, a CalDAV account from 0.16 or
-earlier (those could only be created together with a mail account), or a
-CalDAV account that signs in with the mail account's own login (as one
-restored from a 0.17.0 backup, which kept neither the link nor the mark). A
-calendar account added on the Calendar page with another login is never taken
-over.
+one marked `mailLinked` in its configuration, or a CalDAV account from 0.16 or
+earlier (those could only be created together with a mail account). A calendar
+account added on the Calendar page is never taken over by looking alone.
+Turning the calendar on in the mail account's settings takes over an unlinked
+account with the same server and login in place, keeping its events and their
+ToDo state; this also relinks one restored from a 0.17.0 backup, which kept
+neither the link nor the mark.
 
 New mail accounts try the calendar by default (**Sync the calendar too**). The
 mail account is created even when no calendar is found; the result says why.

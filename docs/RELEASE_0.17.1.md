@@ -25,6 +25,7 @@ and [Upgrading](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/UPGRAD
   settings are opened. Before, any calendar account with the same address was
   linked, so turning off or disconnecting the mail account also affected it.
   The startup upgrade marks the calendar accounts 0.17.0 linked, so a backup
-  taken right after upgrading still links them again when restored. A CalDAV
-  account restored from a 0.17.0 backup is linked when it signs in with the
-  mail account's own login.
+  taken right after upgrading still links them again when restored. For one
+  restored from a 0.17.0 backup, turn the calendar on in the mail account's
+  settings: an account with the same server and login is now taken over with
+  its events and ToDo state instead of being replaced.
