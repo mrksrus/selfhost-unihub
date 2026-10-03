@@ -88,7 +88,9 @@ async function dispatchRequest(req, res) {
       routeKey = `${req.method} /api/contacts/:id/favorite`;
     }
   } else if (routeKey.includes('/api/calendar/accounts/')) {
-    routeKey = `${req.method} /api/calendar/accounts/:id`;
+    routeKey = /^\/api\/calendar\/accounts\/[^/]+\/sync$/.test(url.pathname)
+      ? `${req.method} /api/calendar/accounts/:id/sync`
+      : `${req.method} /api/calendar/accounts/:id`;
   } else if (routeKey.includes('/api/calendar/calendars/')) {
     routeKey = `${req.method} /api/calendar/calendars/:id`;
   } else if (routeKey.includes('/api/calendar/events/')) {
@@ -120,7 +122,7 @@ async function dispatchRequest(req, res) {
       routeKey = `${req.method} /api/mail/drafts/:id`;
     }
   } else if (routeKey.includes('/api/mail/accounts/')) {
-    const match = /^\/api\/mail\/accounts\/([^/]+)(\/purge-preview|\/mode-impact|\/confirm-sync-policy|\/backup-export)?$/.exec(url.pathname);
+    const match = /^\/api\/mail\/accounts\/([^/]+)(\/purge-preview|\/mode-impact|\/confirm-sync-policy|\/backup-export|\/calendar)?$/.exec(url.pathname);
     if (match) {
       req.params.id = match[1];
       routeKey = `${req.method} /api/mail/accounts/:id${match[2] || ''}`;
@@ -294,9 +296,15 @@ async function dispatchRequest(req, res) {
       maxBodySize = MAIL_COMPOSE_REQUEST_MAX_SIZE;
     } else if (
       routeKey === 'POST /api/calendar/accounts' ||
-      routeKey === 'PUT /api/calendar/accounts/:id'
+      routeKey === 'PUT /api/calendar/accounts/:id' ||
+      routeKey === 'PUT /api/mail/accounts/:id/calendar'
     ) {
       maxBodySize = 50000; // Calendar account metadata payloads
+    } else if (
+      routeKey === 'POST /api/calendar/events' ||
+      routeKey === 'PUT /api/calendar/events/:id'
+    ) {
+      maxBodySize = 100000; // Synced events can carry long descriptions
     } else if (
       routeKey === 'POST /api/mail/accounts' ||
       routeKey === 'PUT /api/mail/accounts/:id'

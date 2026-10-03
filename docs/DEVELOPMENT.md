@@ -17,7 +17,7 @@ Request flow:
 ```text
 Browser -> Nginx :80 -> Node.js API :4000 -> MariaDB
                                   -> IMAP/SMTP providers
-                                  -> CalDAV providers during optional import
+                                  -> CalDAV servers and ICS feeds (calendar sync)
                                   -> Browser push services
                                   -> /app/uploads volume
 ```

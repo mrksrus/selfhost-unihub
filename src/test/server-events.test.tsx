@@ -109,6 +109,17 @@ describe('live status stream', () => {
     expect(stale).toEqual(['emails:a', 'emails:all', 'mail-unread-counts:a']);
   });
 
+  it('refreshes calendar queries and the mail account calendar section after a calendar change', async () => {
+    const queries = [['calendar-events', 'x'], ['calendar-accounts'], ['calendar-calendars'], ['upcoming-events'], ['mail-calendar', 'm1'],
+      ['emails', 'a', 'inbox', 1, '', false]];
+    for (const key of queries) client.setQueryData(key, []);
+    renderHook(() => useQueryClient(), { wrapper });
+    await emit('ready');
+    await emit('calendar.changed', { accountId: 'c1', reason: 'sync' });
+    const stale = queries.filter(key => client.getQueryState(key)?.isInvalidated).map(key => String(key[0]));
+    expect(stale).toEqual(['calendar-events', 'calendar-accounts', 'calendar-calendars', 'upcoming-events', 'mail-calendar']);
+  });
+
   it('does not refetch while the tab is hidden and catches up when it is shown', async () => {
     renderHook(() => useQueryClient(), { wrapper });
     await emit('ready');

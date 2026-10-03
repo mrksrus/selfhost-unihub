@@ -18,6 +18,15 @@ const NON_ARCHIVE_POLICIES = Object.freeze({
       [column, name === 'mail_engine_jobs' && column === 'manual_refresh' ? 8 : 6])),
   })])),
   users: excluded('security_only', 'Login credentials and 2FA stay with the destination identity.', 'password_hash two_factor_enabled encrypted_two_factor_secret two_factor_recovery_codes'),
+  // Calendar sync state is rediscovered from the server by the next sync. A
+  // restored CalDAV account is linked to its mail account again by address.
+  ...Object.fromEntries([
+    ['calendar_accounts', 'Mail account links and sync schedules belong to this installation; the link is restored by address.', 'mail_account_id next_sync_at'],
+    ['calendar_calendars', 'Server change markers are read again by the next calendar sync.', 'remote_ctag remote_expanded_on'],
+    ['calendar_event_external_refs', 'Links to server copies are rebuilt by the next calendar sync.', 'remote_object_id recurrence_id'],
+    ['calendar_remote_objects', 'Server copies of calendar entries are downloaded again by the next calendar sync.', 'id user_id account_id calendar_id href href_hash etag uid ics created_at updated_at'],
+  ].map(([name, reason, columns]) => [name, Object.freeze({ ...excluded('rebuilt', reason, columns),
+    introducedIn: Object.fromEntries(columns.split(' ').map(column => [column, 12])) })])),
   sessions: excluded('security_only', 'A restore must not resurrect authenticated sessions.', 'id user_id token expires_at ip_address user_agent created_at'),
   two_factor_challenges: excluded('security_only', 'Login challenges expire and must not be restored.', 'id user_id token_hash expires_at ip_address user_agent created_at'),
   system_settings: excluded('deliberately_excluded', 'Server administration and installation migration markers are outside user recovery.', 'setting_key setting_value updated_at'),

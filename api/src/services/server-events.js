@@ -311,6 +311,17 @@ function publishMailChanged(userId, accountId, reason, bus = serverEvents) {
     { module: 'mail', throttleKey: `mail.changed:${account || '*'}` });
 }
 
+// --- Calendar event producers ---------------------------------------------
+
+const CALENDAR_CHANGE_REASONS = new Set(['sync', 'status', 'local']);
+
+function publishCalendarChanged(userId, accountId, reason, bus = serverEvents) {
+  if (!userId || !bus.hasListeners(userId)) return;
+  const account = id(accountId);
+  bus.publish(userId, 'calendar.changed', { accountId: account, reason: CALENDAR_CHANGE_REASONS.has(reason) ? reason : null },
+    { module: 'calendar', throttleKey: `calendar.changed:${account || '*'}` });
+}
+
 // The supervisor stops the API with SIGTERM (or by closing the IPC channel,
 // which drop-privileges.js turns into SIGTERM). End every stream with a final
 // 'end' event first so browsers back off instead of seeing a broken
@@ -342,6 +353,7 @@ module.exports = {
   publishMailJob,
   publishMailOperation,
   publishMailChanged,
+  publishCalendarChanged,
   hashToken,
   DEFAULTS,
 };

@@ -25,6 +25,50 @@ const {
   getCalendarSubtaskIdFromReq,
   serializeCalendarSubtask,
 } = require('../services/calendar');
+const calendarSync = require('../services/calendar-sync');
+const calendarAccounts = require('../services/calendar-accounts');
+
+const has = (body, key) => Object.prototype.hasOwnProperty.call(body, key);
+
+async function loadCalendarAccountRow(userId, calendarId) {
+  const [rows] = await db.execute(
+    `SELECT c.id, c.read_only, a.provider, a.is_active FROM calendar_calendars c
+     JOIN calendar_accounts a ON a.id = c.account_id WHERE c.id = ? AND c.user_id = ? LIMIT 1`,
+    [calendarId, userId]
+  );
+  return rows[0] || null;
+}
+
+function isRemoteProvider(provider) {
+  return calendarSync.REMOTE_PROVIDERS.has(provider);
+}
+
+// Write an event change to its calendar server before it is saved locally.
+// body says which fields changed; values holds them normalized.
+async function pushEventChanges(userId, event, body, values) {
+  const changes = {};
+  for (const key of ['title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'reminders', 'reminder_minutes']) {
+    if (has(body, key)) changes[key] = values[key];
+  }
+  try {
+    const moving = has(body, 'calendar_id') && body.calendar_id && body.calendar_id !== event.calendar_id;
+    if (moving) {
+      const target = await loadCalendarAccountRow(userId, body.calendar_id);
+      if (target && isRemoteProvider(target.provider) && (body.is_todo_only ?? event.is_todo_only)) {
+        return { error: 'ToDos without a date cannot be saved to a server calendar.', status: 400 };
+      }
+      return (await calendarSync.pushEventMove({ userId, event, targetCalendarId: body.calendar_id, changes })) || {};
+    }
+    if (body.is_todo_only === true && event.calendar_id_remote) {
+      return { error: 'ToDos without a date cannot be saved to a server calendar.', status: 400 };
+    }
+    if (!Object.keys(changes).length) return {};
+    const scope = body.scope === 'series' ? 'series' : 'occurrence';
+    return (await calendarSync.pushEventUpdate({ userId, event, changes, scope })) || {};
+  } catch (error) {
+    return calendarSync.calendarErrorResponse(error, 'Could not save the change to the calendar server');
+  }
+}
 
 
 module.exports = {
@@ -50,7 +94,22 @@ module.exports = {
     if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
     try {
       const provider = normalizeCalendarAccountProvider(body.provider || 'local');
-      if (!provider) return { error: 'Only local calendar accounts are supported', status: 400 };
+      if (!provider) return { error: 'Unsupported calendar account type', status: 400 };
+      if (provider === 'caldav') {
+        if (!body.password) return { error: 'A password is needed to connect the calendar.', status: 400 };
+        const login = String(body.username || body.account_email || '').trim();
+        if (!login) return { error: 'Enter the user name or email address of the calendar account.', status: 400 };
+        const email = String(body.account_email || (login.includes('@') ? login : '')).trim() || null;
+        return await calendarAccounts.connectCalDavAccount({
+          userId, emailAddress: email, displayName: body.display_name?.trim() || null, username: login,
+          password: String(body.password), caldavUrl: body.url ? String(body.url).trim() : null, timeZone: body.time_zone,
+        });
+      }
+      if (provider === 'ics') {
+        return await calendarAccounts.connectIcsSubscription({
+          userId, url: body.url ? String(body.url).trim() : '', displayName: body.display_name?.trim() || null, timeZone: body.time_zone,
+        });
+      }
 
       const accountId = crypto.randomUUID();
       const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
@@ -88,8 +147,7 @@ module.exports = {
       const account = serializeCalendarAccount(created);
       return { account };
     } catch (error) {
-      console.error('Create calendar account error:', error);
-      return { error: error.message || 'Failed to create calendar account', status: 500 };
+      return calendarSync.calendarErrorResponse(error, 'Failed to connect the calendar');
     }
   },
 
@@ -112,14 +170,37 @@ module.exports = {
         updates.push('display_name = ?');
         params.push(body.display_name?.trim() || null);
       }
-      if (Object.prototype.hasOwnProperty.call(body, 'is_active')) {
+      const account = existing[0];
+      const remote = isRemoteProvider(account.provider);
+      let resume = false;
+      if (has(body, 'password') && body.password) {
+        if (account.provider !== 'caldav') return { error: 'Only CalDAV accounts have a password', status: 400 };
+        // A calendar connected from a mail account uses the mail password.
+        if (account.mail_account_id) return { error: 'Change the password in the settings of the mail account.', status: 400 };
+        updates.push('encrypted_password = ?');
+        params.push(require('../security/encryption').encrypt(String(body.password)));
+        if (has(body, 'username') && String(body.username || '').trim()) {
+          updates.push('username = ?');
+          params.push(String(body.username).trim().slice(0, 255));
+        }
+        resume = true;
+      }
+      if (has(body, 'is_active')) {
+        if (body.is_active !== false && account.provider === 'caldav' && !account.encrypted_password && !resume) {
+          return { error: 'Enter the password again to resume sync.', status: 409, code: 'CALDAV_NO_PASSWORD' };
+        }
         updates.push('is_active = ?');
         params.push(body.is_active === false ? 0 : 1);
+        if (body.is_active === false && remote) updates.push("sync_status = 'paused'");
+        if (body.is_active !== false) resume = true;
       }
+      resume = resume && remote && body.is_active !== false;
+      if (resume) updates.push("sync_status = 'pending'", 'sync_error = NULL', 'next_sync_at = NULL', 'is_active = TRUE');
       if (updates.length === 0) return { error: 'No fields to update', status: 400 };
 
       params.push(id, userId);
       await db.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      if (resume) calendarSync.syncCalendarAccountInBackground(id, { userId, reason: 'manual' });
       const [rows] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
       return { account: serializeCalendarAccount(rows[0]) };
     } catch (error) {
@@ -148,20 +229,36 @@ module.exports = {
         }
       }
 
-      const [calendarRows] = await db.execute('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [id, userId]);
-      const calendarIds = calendarRows.map((row) => row.id);
-      if (calendarIds.length > 0) {
-        const placeholders = calendarIds.map(() => '?').join(', ');
-        await db.execute(
-          `DELETE FROM calendar_events WHERE user_id = ? AND calendar_id IN (${placeholders})`,
-          [userId, ...calendarIds]
-        );
-      }
-      await db.execute('DELETE FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      // Only the copies in UniHub are removed; the server keeps its calendars.
+      await calendarAccounts.removeCalendarAccount(userId, id);
       return { message: 'Calendar account deleted' };
     } catch (error) {
       console.error('Delete calendar account error:', error);
       return { error: error.message || 'Failed to delete calendar account', status: 500 };
+    }
+  },
+
+  'POST /api/calendar/accounts/:id/sync': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const id = getCalendarAccountIdFromReq(req);
+      if (!id) return { error: 'Invalid account id', status: 400 };
+      const [rows] = await db.execute('SELECT provider, is_active FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      if (!rows.length) return { error: 'Calendar account not found', status: 404 };
+      if (!isRemoteProvider(rows[0].provider)) return { error: 'Local calendars do not sync', status: 400 };
+      if (!rows[0].is_active) return { error: 'Sync is paused for this account.', status: 409, code: 'CALENDAR_SYNC_PAUSED' };
+      let result;
+      try {
+        result = await calendarSync.syncCalendarAccount(id, { userId, reason: 'manual', full: body?.full === true });
+      } catch (error) {
+        // The failure is stored on the account and shown with it.
+        result = { ok: false, ...calendarSync.calendarErrorResponse(error, 'Calendar sync failed') };
+        delete result.status;
+      }
+      const [account] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      return { result, account: account[0] ? serializeCalendarAccount(account[0]) : null };
+    } catch (error) {
+      return calendarSync.calendarErrorResponse(error, 'Calendar sync failed');
     }
   },
 
@@ -201,6 +298,9 @@ module.exports = {
       const [accounts] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
       if (accounts.length === 0) return { error: 'Calendar account not found', status: 404 };
       const account = accounts[0];
+      if (isRemoteProvider(account.provider)) {
+        return { error: 'Calendars of this account come from its server. Create the calendar there; it appears after the next sync.', status: 400 };
+      }
 
       const calendarId = crypto.randomUUID();
       await db.execute(
@@ -237,10 +337,15 @@ module.exports = {
       const [existingRows] = await db.execute('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
       if (existingRows.length === 0) return { error: 'Calendar not found', status: 404 };
       const existing = existingRows[0];
+      const [[owner]] = await db.execute('SELECT provider FROM calendar_accounts WHERE id = ?', [existing.account_id]);
+      const remote = isRemoteProvider(owner?.provider);
+      if (remote && has(body, 'name') && body.name?.trim() !== existing.name) {
+        return { error: 'Rename this calendar on its server; the new name appears after the next sync.', status: 400 };
+      }
 
       const updates = [];
       const params = [];
-      if (Object.prototype.hasOwnProperty.call(body, 'name')) {
+      if (!remote && Object.prototype.hasOwnProperty.call(body, 'name')) {
         if (!body.name?.trim()) return { error: 'name cannot be empty', status: 400 };
         updates.push('name = ?');
         params.push(body.name.trim());
@@ -273,6 +378,10 @@ module.exports = {
       if (Object.prototype.hasOwnProperty.call(body, 'is_visible')) {
         await db.execute('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
       }
+      // Synced events take their calendar's color.
+      if (remote && has(body, 'color')) {
+        await db.execute('UPDATE calendar_events SET color = ? WHERE calendar_id = ? AND user_id = ?', [body.color || '#2563eb', id, userId]);
+      }
       const [rows] = await db.execute('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
       return { calendar: serializeCalendarCalendar(rows[0]) };
     } catch (error) {
@@ -294,6 +403,10 @@ module.exports = {
       );
       if (rows.length === 0) return { error: 'Calendar not found', status: 404 };
       const calendar = rows[0];
+      const [[owner]] = await db.execute('SELECT provider FROM calendar_accounts WHERE id = ?', [calendar.account_id]);
+      if (isRemoteProvider(owner?.provider)) {
+        return { error: 'Calendars of this account come from its server. Delete the calendar there, or remove the whole account here.', status: 400 };
+      }
 
       const [accountCalendarCountRows] = await db.execute(
         'SELECT COUNT(*) AS count FROM calendar_calendars WHERE account_id = ? AND user_id = ?',
@@ -309,6 +422,8 @@ module.exports = {
         [userId, id]
       );
       const eventsCount = Number(eventsCountRows[0]?.count || 0);
+      // Events reference their calendar with ON DELETE SET NULL; remove them first.
+      await db.execute('DELETE FROM calendar_events WHERE calendar_id = ? AND user_id = ?', [id, userId]);
       await db.execute('DELETE FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
 
       return {
@@ -408,9 +523,14 @@ module.exports = {
       }
 
       let calendarId = body.calendar_id || null;
+      let remoteTarget = null;
       if (calendarId) {
-        const [calRows] = await db.execute('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ?', [calendarId, userId]);
-        if (calRows.length === 0) return { error: 'Invalid calendar_id', status: 400 };
+        remoteTarget = await loadCalendarAccountRow(userId, calendarId);
+        if (!remoteTarget) return { error: 'Invalid calendar_id', status: 400 };
+        if (!isRemoteProvider(remoteTarget.provider)) remoteTarget = null;
+        else if (is_todo_only) return { error: 'ToDos without a date cannot be saved to a server calendar.', status: 400 };
+        else if (remoteTarget.provider === 'ics' || remoteTarget.read_only) return { error: 'This calendar is read-only.', status: 403, code: 'CALENDAR_READ_ONLY' };
+        else if (!remoteTarget.is_active) return { error: 'Sync is paused for this calendar account, so events cannot be added to it.', status: 409, code: 'CALENDAR_SYNC_PAUSED' };
       } else {
         const ensured = await ensureDefaultLocalCalendarForUser(userId);
         calendarId = ensured.calendarId;
@@ -453,6 +573,16 @@ module.exports = {
       } finally {
         connection.release();
       }
+      if (remoteTarget) {
+        const [created] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+        try {
+          await calendarSync.pushCreatedEvent({ userId, event: created[0] });
+        } catch (error) {
+          // Nothing is kept that the server did not accept.
+          await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+          return calendarSync.calendarErrorResponse(error, 'Could not save the event to the calendar server');
+        }
+      }
       const event = await getCalendarEventWithSubtasks(userId, eventId);
       return { event };
     } catch (error) {
@@ -484,6 +614,8 @@ module.exports = {
       const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       if (events.length === 0) return { error: 'Event not found', status: 404 };
       const currentEvent = events[0];
+      const currentCalendar = currentEvent.calendar_id ? await loadCalendarAccountRow(userId, currentEvent.calendar_id) : null;
+      currentEvent.calendar_id_remote = isRemoteProvider(currentCalendar?.provider);
       const updates = [];
       const params = [];
 
@@ -528,7 +660,7 @@ module.exports = {
         updates.push('color = ?');
         params.push(body.color || '#2563eb');
       }
-      if (Object.prototype.hasOwnProperty.call(body, 'recurrence')) {
+      if (Object.prototype.hasOwnProperty.call(body, 'recurrence') && !currentEvent.calendar_id_remote) {
         updates.push('recurrence = ?');
         params.push(body.recurrence || null);
       }
@@ -558,6 +690,18 @@ module.exports = {
         }
       }
 
+      const writeback = await pushEventChanges(userId, currentEvent, body, {
+        title: body.title?.trim(),
+        description: body.description || null,
+        start_time: resolvedStart,
+        end_time: resolvedEnd,
+        all_day: !!body.all_day,
+        location: body.location?.trim() || null,
+        reminders: Array.isArray(body.reminders) ? body.reminders : null,
+        reminder_minutes: body.reminder_minutes ?? null,
+      });
+      if (writeback.error) return writeback;
+
       if (updates.length > 0) {
         params.push(id, userId);
         await db.execute(`UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
@@ -567,7 +711,8 @@ module.exports = {
       }
 
       const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
-      return { event: updatedEvent };
+      // Changing the time of a whole series replaces its occurrences.
+      return { event: updatedEvent, ...(updatedEvent ? {} : { replaced: true }), ...(writeback.scope ? { scope: writeback.scope } : {}) };
     } catch (error) {
       console.error('Update event error:', error);
       return { error: error.message || 'Failed to update event', status: 500 };
@@ -631,6 +776,10 @@ module.exports = {
         }
 
         if (movedStart && movedEnd) {
+          const [[current]] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+          const writeback = await pushEventChanges(userId, current, { start_time: movedStart, end_time: movedEnd },
+            { start_time: movedStart, end_time: movedEnd });
+          if (writeback.error) return writeback;
           updates.push('start_time = ?', 'end_time = ?');
           params.push(movedStart, movedEnd);
         }
@@ -875,9 +1024,18 @@ module.exports = {
     try {
       const id = getCalendarEventIdFromReq(req);
       if (!id) return { error: 'Invalid event id', status: 400 };
+      const [events] = await db.execute('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+      if (!events.length) return { message: 'Event deleted' };
+      const scope = new URL(req.url, 'http://localhost').searchParams.get('scope');
+      try {
+        await calendarSync.pushEventDelete({ userId, event: events[0], scope: scope === 'series' ? 'series' : 'occurrence' });
+      } catch (error) {
+        return calendarSync.calendarErrorResponse(error, 'Could not delete the event on the calendar server');
+      }
       await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       return { message: 'Event deleted' };
     } catch (error) {
+      console.error('Delete event error:', error);
       return { error: 'Failed to delete event', status: 500 };
     }
   },

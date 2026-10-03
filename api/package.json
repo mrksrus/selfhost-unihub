@@ -1,7 +1,7 @@
 {
   "name": "unihub-api",
   "private": true,
-  "version": "0.16.0",
+  "version": "0.17.0",
   "description": "UniHub API Server",
   "main": "server.js",
   "scripts": {
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
+    "ical.js": "2.2.1",
     "imapflow": "2.1.2",
     "jsonwebtoken": "^9.0.2",
     "mailparser": "3.9.16",

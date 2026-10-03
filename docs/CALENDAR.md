@@ -10,7 +10,10 @@ Current capabilities:
 - multiple calendar accounts per user
 - multiple calendars per account
 - local calendar creation through the Calendar API
-- optional CalDAV discovery/import when adding a mail account
+- two-way CalDAV sync, connected from a mail account's login or added directly
+- read-only iCalendar (ICS) subscriptions
+- automatic calendar server discovery from an email address
+- recurring events, time zones, and notifications for new server events
 - day/week/month calendar views in the frontend
 - standalone to-dos, subtasks, reminders, attendees, RSVP state
 - per-calendar visibility, color, primary flag, and auto-ToDo settings
@@ -20,11 +23,49 @@ Current capabilities:
 | Provider | How it is created | Behavior |
 | --- | --- | --- |
 | `local` | Calendar account API or startup backfill | Fully local to UniHub |
-| `caldav` | Optional `try_calendar_sync` flow while creating a mail account | Discovers calendars and imports supported events |
+| `caldav` | Mail account setup or edit page, or **Add account → CalDAV server** on the Calendar page | Two-way sync with the calendar server |
+| `ics` | Subscription address in the mail account settings, or **Add account → Subscription** | Read-only; the feed is downloaded again on every sync |
 
-The normal calendar account API only creates local accounts. CalDAV support is
-currently import-oriented. It does not provide ongoing periodic CalDAV sync,
-provider delete propagation, invite sending, or writeback of UniHub edits.
+Everything works with the login the user already has. UniHub needs no OAuth
+app, API key or other registration on the UniHub server.
+
+### Connecting a calendar
+
+The **Calendar** section of a mail account's edit dialog turns the calendar of
+that account on or off, shows the sync status, the last sync, the server that
+was found and the synced calendars, and has **Sync now**. An address typed
+there replaces the found server; an empty address with **Find automatically**
+runs discovery again. Turning the calendar off removes the imported calendars,
+their events and their local ToDo state from UniHub. Nothing is changed on the
+server.
+
+New mail accounts try the calendar by default (**Sync the calendar too**). The
+mail account is created even when no calendar is found; the result says why.
+
+Discovery, in order, stops at the first server that accepts the login:
+
+1. an address typed by the user (a server root also tries
+   `/.well-known/caldav` on it)
+2. a known provider, matched by IMAP host or email domain
+3. DNS `_caldavs._tcp` SRV and TXT records of the email domain (RFC 6764)
+4. `https://<domain>/.well-known/caldav`, also for the IMAP host and the IMAP
+   host without its first label
+
+Then UniHub follows the principal to the calendar home and lists the
+calendars. Basic and Digest authentication are supported.
+
+| Server or provider | Result |
+| --- | --- |
+| Stalwart, Nextcloud, Radicale, Baïkal, SOGo, mailcow, Synology, other CalDAV servers | Found through SRV or `.well-known` when the domain publishes it; otherwise type the address once |
+| iCloud | Built in; needs an app-specific password |
+| Fastmail, Yahoo | Built in; need an app password |
+| mailbox.org, Posteo | Built in |
+| Gmail / Google Workspace | No CalDAV with a password. Paste the calendar's secret iCal address (Google Calendar → Settings → your calendar → Integrate calendar); read-only |
+| Outlook.com, Microsoft 365, Exchange | No CalDAV. Publish the calendar in Outlook on the web (Settings → Calendar → Shared calendars) and paste the ICS link; read-only |
+
+The account shows how its server was found: typed, built-in provider, DNS, or
+`.well-known`. Error messages never pass a raw server 401/403 to the browser;
+a rejected login says to update the password.
 
 ## Data Model
 
@@ -36,21 +77,27 @@ Core tables:
 - `calendar_event_subtasks`
 - `calendar_event_attendees`
 - `calendar_event_external_refs`
+- `calendar_remote_objects`
 
 Important fields:
 
 | Table | Field | Notes |
 | --- | --- | --- |
-| `calendar_accounts` | `provider` | `local` or `caldav` |
-| `calendar_accounts` | `encrypted_password` | Used by CalDAV imports created from mail-account setup |
-| `calendar_accounts` | `sync_status`, `sync_error`, `last_synced_at` | CalDAV import status metadata |
+| `calendar_accounts` | `provider` | `local`, `caldav` or `ics` |
+| `calendar_accounts` | `encrypted_password` | CalDAV password, or the full ICS subscription address (it grants read access) |
+| `calendar_accounts` | `mail_account_id` | Mail account whose settings own this calendar, if any |
+| `calendar_accounts` | `provider_config` | Found server (`server.url`, `server.source`, `server.label`), credential scope, time zone |
+| `calendar_accounts` | `sync_status`, `sync_error`, `last_synced_at`, `next_sync_at` | `pending`, `syncing`, `ok`, `error` or `paused`; schedule of the next sync |
+| `calendar_calendars` | `read_only` | Set for subscriptions and server calendars without write access |
+| `calendar_calendars` | `remote_ctag`, `remote_expanded_on` | Change marker of the server calendar; day the recurrences were last expanded |
+| `calendar_remote_objects` | `href`, `etag`, `ics` | Server copy of each calendar object (one UID with its exceptions) |
 | `calendar_calendars` | `is_visible` | Used by visible-only event queries |
 | `calendar_calendars` | `auto_todo_enabled` | Controls projection into ToDo queries |
 | `calendar_events` | `calendar_id` | Calendar ownership boundary |
 | `calendar_events` | `is_todo_only` | Standalone ToDo item |
 | `calendar_events` | `todo_status` | `done`, `changed`, `time_moved`, `cancelled`, or null |
 | `calendar_events` | `reminders` | JSON array of reminder offsets in minutes |
-| `calendar_event_external_refs` | `provider`, `external_event_id`, `external_etag` | CalDAV/import reference tracking |
+| `calendar_event_external_refs` | `remote_object_id`, `recurrence_id` | Links each local occurrence to its server object; `recurrence_id` is UTC `YYYYMMDDTHHMMSSZ` |
 
 ## Startup Backfill
 
@@ -94,10 +141,15 @@ All endpoints require an authenticated session. Write endpoints require
 | --- | --- | --- |
 | GET | `/api/calendar/accounts` | List accounts |
 | POST | `/api/calendar/accounts` | Create a local account and default calendar |
-| PUT | `/api/calendar/accounts/:id` | Update account email/display name/active state |
-| DELETE | `/api/calendar/accounts/:id` | Delete account, its calendars, and linked events |
+| POST | `/api/calendar/accounts` | Create a `local` account with a default calendar, connect a `caldav` account (`username`, `password`, optional `url`), or add an `ics` subscription (`url`) |
+| PUT | `/api/calendar/accounts/:id` | Update account email/display name; `is_active` pauses or resumes sync |
+| POST | `/api/calendar/accounts/:id/sync` | Sync now |
+| DELETE | `/api/calendar/accounts/:id` | Delete account, its calendars, and linked events (nothing is deleted on a server) |
+| GET | `/api/mail/accounts/:id/calendar` | Calendar of a mail account: status, server, calendars, event count |
+| PUT | `/api/mail/accounts/:id/calendar` | `enabled` turns it on or off; `caldav_url` sets the address (`''` finds it again, omitted keeps it) |
 
 The backend refuses to delete the last local calendar account for a user.
+Calendars of server accounts cannot be created, renamed or deleted in UniHub.
 
 ### Calendars
 
@@ -117,10 +169,10 @@ The backend refuses to delete the last calendar in an account.
 | GET | `/api/calendar/events` | List events |
 | GET | `/api/calendar/events/:id` | Load one owned event/to-do, including subtasks and attendees |
 | POST | `/api/calendar/events` | Create event or to-do |
-| PUT | `/api/calendar/events/:id` | Update event fields and attendees |
+| PUT | `/api/calendar/events/:id` | Update event fields and attendees; `scope` (`occurrence` or `series`) for recurring server events |
 | PUT | `/api/calendar/events/:id/todo-status` | Update `todo_status`, optionally moving time |
 | PUT | `/api/calendar/events/:id/rsvp` | Update RSVP state for an attendee |
-| DELETE | `/api/calendar/events/:id` | Delete event |
+| DELETE | `/api/calendar/events/:id` | Delete event; `?scope=occurrence\|series` for recurring server events |
 
 Event query parameters:
 
@@ -165,32 +217,66 @@ existing calendar colors; defaults for newly created calendars use blue.
 The reorder endpoint requires `subtask_ids` to include every subtask for that
 event.
 
-## CalDAV Import Details
+## Sync
 
-When `POST /api/mail/accounts` includes `try_calendar_sync: true`, the mail route
-calls the CalDAV service after successful IMAP credential validation.
+`api/src/services/calendar-sync.js` keeps the server copy of each calendar
+object in `calendar_remote_objects` and derives the local `calendar_events`
+rows from it: one row per occurrence within 365 days back and 730 days ahead.
 
-Flow:
+- **Schedule.** Every account stores `next_sync_at`. A timer checks every
+  minute and syncs up to 20 due accounts. Each account syncs every 15 minutes,
+  after an error after 30 minutes, and after a rejected login after 6 hours.
+  Sync now, saving the settings and connecting run at once. One sync per
+  account runs at a time, also across processes (database lock).
+- **What is fetched.** The calendar list is read every time. A calendar whose
+  change marker (ctag) did not change is skipped. Otherwise UniHub lists the
+  objects in the window and downloads only new or changed ones (by ETag) with
+  `calendar-multiget`, in batches of 50. Objects missing from the listing are
+  removed. ICS feeds use `If-None-Match`.
+- **Recurrence and time zones.** `ical.js` expands `RRULE`, `RDATE`, `EXDATE`
+  and overridden occurrences (`RECURRENCE-ID`), at most 1000 per series. Times
+  are converted with the event's `VTIMEZONE` or IANA zone name. Floating times
+  and all-day events use the account's time zone, which is the browser's time
+  zone when the calendar was connected. Once a day every series is expanded
+  again so the window moves forward.
+- **Local state.** Occurrence rows are updated in place, so ToDo status and
+  subtasks stay as long as the occurrence exists. Event colors follow the
+  calendar color. New server calendars start with auto-ToDo off.
+- **Notifications.** Up to 3 new future events per sync send a push
+  notification, but not on the first sync of a calendar. `VALARM` reminders
+  (up to 5) become UniHub reminders. A `calendar.changed` live event refreshes
+  open pages.
 
-1. Build a discovery URL from `caldav_url`, or from the mail/email domain.
-2. Require HTTPS.
-3. Reuse host assessment logic to block private/local addresses unless the host
-   is allowlisted through `TRUSTED_MAIL_HOSTS`.
-4. Use Basic auth with the mail username/password.
-5. Discover calendar home and calendars with DAV `PROPFIND`.
-6. Fetch events using a CalDAV `REPORT` over a window of 365 days past and 730
-   days future.
-7. Parse simple non-recurring `VEVENT` items.
-8. Upsert events and external refs into UniHub.
+## Writeback
 
-Recurring events and recurrence exceptions are skipped by the simple parser.
+Creating, editing, deleting and moving events in a writable CalDAV calendar
+writes to the server first, with `If-Match` on the stored ETag. The local rows
+are then rebuilt from the server's answer, so the server stays the authority.
 
-Every CalDAV connection uses a DNS-checked address with the original TLS
-hostname. Redirects and discovered URLs must stay on the explicitly configured
-HTTPS origin (same hostname and port). A provider that redirects to another
-server requires the final server URL to be configured explicitly; credentials
-are never forwarded there automatically. Requests allow at most five redirects,
-20 seconds total and 16 MiB of response data. Blocked restored account settings
+- **Recurring events.** Edit and delete ask **This event** or **All events**.
+  This event writes an overridden occurrence or an `EXDATE`; all events edits
+  the series. Changing a series' time creates new occurrences.
+- **Conflicts.** If the event changed on the server meanwhile (HTTP 412), the
+  edit is refused with a message, nothing is overwritten, and the account syncs
+  at once.
+- **Moving.** A single event moves between calendars and accounts by creating
+  it in the target before deleting it from the source. Recurring events cannot
+  be moved.
+- **Read-only.** ICS subscriptions and calendars marked read-only reject
+  changes with `403 CALENDAR_READ_ONLY`; the event dialog shows them read-only.
+- **Not written.** Attendees and RSVP stay local. Standalone ToDos without a
+  date cannot be saved to a server calendar.
+
+## Network Policy
+
+Every CalDAV and ICS connection uses a DNS-checked address with the original
+TLS hostname and requires HTTPS (`webcal://` is read as `https://`). Private
+and local addresses are blocked unless the host is listed in
+`TRUSTED_MAIL_HOSTS`. The password is sent only to the origin where the login
+was confirmed, or to a built-in provider's own hosts (for example iCloud's
+`pNN-caldav.icloud.com`). Redirects to another origin are followed without
+credentials only during discovery. Requests allow at most five redirects, 20
+seconds total and 16 MiB of response data. Blocked restored account settings
 remain inactive with warnings.
 
 ## Security Notes
@@ -200,7 +286,8 @@ remain inactive with warnings.
 - State-changing routes are CSRF-protected.
 - CalDAV URLs must use HTTPS.
 - CalDAV host policy blocks private/local addresses unless explicitly trusted.
-- CalDAV credentials are encrypted with the shared `ENCRYPTION_KEY`.
+- CalDAV credentials and ICS subscription addresses are encrypted with the
+  shared `ENCRYPTION_KEY`; the API returns only the subscription's host.
 
 ## Backup and Restore (ALPHA)
 
@@ -226,8 +313,14 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 
 ## Limitations
 
-- Calendar API account creation is local-only.
-- CalDAV is not a continuous sync engine.
-- CalDAV import skips recurring events and recurrence exceptions.
-- UniHub calendar edits are not pushed back to CalDAV providers.
-- RSVP state is stored locally; no invite email or provider update is sent.
+- Google and Microsoft calendars (including Exchange and Microsoft 365) are
+  read-only subscriptions; their two-way APIs need OAuth app registration,
+  which UniHub does not use.
+- Exchange Web Services (EWS) is not supported.
+- Attendees, invitations and RSVP state are not synced; no invite email is sent.
+- A local color change on a synced event is replaced by the calendar color at
+  the next sync.
+- Changing the time of a whole series creates new occurrences; their ToDo
+  status and subtasks start empty.
+- Events outside the window (365 days back, 730 days ahead) are not shown.
+- Server calendars cannot be created, renamed or deleted from UniHub.

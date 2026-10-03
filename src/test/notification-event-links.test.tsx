@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
@@ -33,7 +33,7 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('notification event navigation', () => {
-  for (const [path, Page, title] of [['calendar', CalendarPage, 'Edit Event'], ['todo', TodoPage, 'Edit Task Details']] as const) {
+  for (const [path, Page, title] of [['calendar', CalendarPage, 'Edit event'], ['todo', TodoPage, 'Edit Task Details']] as const) {
     it(`opens the exact ${path} item even when absent from the current list`, async () => {
       const get = vi.spyOn(api, 'get').mockImplementation(async endpoint => {
         if (endpoint === '/calendar/events/target') return { data: { event: event() } };
@@ -77,5 +77,53 @@ describe('notification event navigation', () => {
     await act(async () => resolveOld({ data: { event: event() } }));
     expect(open).toHaveBeenCalledTimes(1);
     expect(open.mock.calls[0][0].user_id).toBe('next-owner');
+  });
+});
+
+describe('server calendar events', () => {
+  const account = (provider: string) => ({ id: 'acc-1', user_id: 'owner', provider, display_name: 'Team', account_email: null, provider_config: {}, capabilities: {},
+    is_active: true, sync_status: 'ok', last_synced_at: null, token_expires_at: null, created_at: '', updated_at: '' });
+  const calendar = { id: 'calendar-1', user_id: 'owner', account_id: 'acc-1', name: 'Team', external_id: null, color: '#2563eb', is_visible: true,
+    auto_todo_enabled: false, read_only: false, is_primary: false, sync_token: null, created_at: '', updated_at: '' };
+  const mockServer = (provider: string, recurrence: string | null) => vi.spyOn(api, 'get').mockImplementation(async endpoint => {
+    if (endpoint === '/calendar/events/target') return { data: { event: { ...event(), recurrence } } };
+    if (endpoint === '/calendar/accounts') return { data: { accounts: [account(provider)] } };
+    if (endpoint === '/calendar/calendars') return { data: { calendars: [calendar] } };
+    return { data: { events: [] } };
+  });
+
+  it('asks whether a change to a repeating server event applies to one occurrence or the series', async () => {
+    mockServer('caldav', 'FREQ=WEEKLY');
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { event: null, replaced: true } });
+    renderPage(<CalendarPage />, '/calendar?event=target');
+    const dialog = await screen.findByRole('dialog', { name: 'Edit event' });
+    expect(within(dialog).getByText(/Repeating event/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+    const prompt = await screen.findByRole('alertdialog', { name: 'Change repeating event' });
+    expect(put).not.toHaveBeenCalled();
+    fireEvent.click(within(prompt).getByRole('button', { name: 'All events' }));
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/calendar/events/target', expect.objectContaining({ scope: 'series' })));
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith({ title: 'Series updated' }));
+  });
+
+  it('confirms deleting one occurrence of a repeating server event', async () => {
+    mockServer('caldav', 'FREQ=DAILY');
+    const del = vi.spyOn(api, 'delete').mockResolvedValue({ data: {} });
+    renderPage(<CalendarPage />, '/calendar?event=target');
+    const dialog = await screen.findByRole('dialog', { name: 'Edit event' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    const prompt = await screen.findByRole('alertdialog', { name: 'Delete repeating event' });
+    fireEvent.click(within(prompt).getByRole('button', { name: 'This event' }));
+    await waitFor(() => expect(del).toHaveBeenCalledWith('/calendar/events/target?scope=occurrence'));
+  });
+
+  it('shows subscription events read-only', async () => {
+    mockServer('ics', null);
+    renderPage(<CalendarPage />, '/calendar?event=target');
+    const dialog = await screen.findByRole('dialog', { name: 'Event' });
+    expect(within(dialog).getByText(/This calendar is read-only/)).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Save' })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument();
+    expect(within(dialog).getByDisplayValue('Selected notification event')).toBeDisabled();
   });
 });

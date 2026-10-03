@@ -5,7 +5,7 @@ const { finished } = require('stream/promises');
 const { encrypt, decrypt } = require('../security/encryption');
 const { decryptPortableCredentialBundle } = require('./backup-container');
 const { MAIL_RAW_STORAGE_ROOT, validateMailHostPolicy } = require('./mail');
-const { validateDavUrlPolicy } = require('./caldav');
+const { validateDavUrlPolicy, accountCredentialScope } = require('./caldav');
 const { resolveCalDavUrl } = require('../security/caldav-transport');
 const { RECORDINGS_ROOT } = require('./recordings');
 const { resolveOwnedReference } = require('./backup-ownership');
@@ -113,12 +113,14 @@ async function checkRestoredAccountPolicy(row, kind, warnings) {
     const result = await validateMailHostPolicy(row);
     if (!result.accepted) error = result.error || 'Mail host policy rejected this account';
   } else if (calendarProvider !== 'local') {
-    if (calendarProvider !== 'caldav') error = 'Unsupported calendar provider';
+    // ICS subscriptions keep only the feed origin here; the address is a credential.
+    if (calendarProvider !== 'caldav' && calendarProvider !== 'ics') error = 'Unsupported calendar provider';
     else {
       const urls = [row.discovery_url, row.base_url].filter(Boolean);
       if (!urls.length) error = 'Calendar account has no valid connection URL';
       for (const url of urls) {
-        try { resolveCalDavUrl(url, urls[0], urls[0]); }
+        // The discovery address may live on the provider's main host (iCloud).
+        try { resolveCalDavUrl(url, urls[0], url === row.discovery_url ? url : accountCredentialScope(row)); }
         catch (policyError) { error = policyError.message; break; }
         const result = await validateDavUrlPolicy(url);
         if (!result.accepted) { error = result.error || 'Calendar host policy rejected this account'; break; }

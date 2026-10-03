@@ -397,6 +397,55 @@ async function ensureSchema() {
         if (Number(left.n) !== 0) throw new Error('Notes settings remain');
       },
     },
+    {
+      // 0.17.0: CalDAV and ICS calendars sync continuously. Server copies of
+      // calendar objects are kept so changes can be detected and written back.
+      id: 12,
+      name: 'calendar-sync',
+      up: async connection => {
+        const changes = [
+          ['calendar_accounts', 'mail_account_id', 'ALTER TABLE calendar_accounts ADD COLUMN mail_account_id CHAR(36) NULL'],
+          ['calendar_accounts', 'next_sync_at', 'ALTER TABLE calendar_accounts ADD COLUMN next_sync_at DATETIME NULL'],
+          ['calendar_calendars', 'remote_ctag', 'ALTER TABLE calendar_calendars ADD COLUMN remote_ctag VARCHAR(255) NULL'],
+          ['calendar_calendars', 'remote_expanded_on', 'ALTER TABLE calendar_calendars ADD COLUMN remote_expanded_on DATE NULL'],
+          ['calendar_event_external_refs', 'remote_object_id', 'ALTER TABLE calendar_event_external_refs ADD COLUMN remote_object_id CHAR(36) NULL'],
+          ['calendar_event_external_refs', 'recurrence_id', 'ALTER TABLE calendar_event_external_refs ADD COLUMN recurrence_id VARCHAR(64) NULL'],
+        ];
+        for (const [table, column, sql] of changes) {
+          const [fields] = await connection.execute(`SHOW COLUMNS FROM ${quoteIdentifier(table)}`);
+          if (!fields.some(field => field.Field === column)) await connection.execute(sql);
+        }
+        await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_remote_objects (
+          id CHAR(36) PRIMARY KEY,
+          user_id CHAR(36) NOT NULL,
+          account_id CHAR(36) NOT NULL,
+          calendar_id CHAR(36) NOT NULL,
+          href TEXT NOT NULL,
+          href_hash CHAR(64) NOT NULL,
+          etag VARCHAR(255) NULL,
+          uid VARCHAR(500) NULL,
+          ics MEDIUMTEXT NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE,
+          FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
+          UNIQUE KEY uq_calendar_remote_object (calendar_id, href_hash),
+          INDEX idx_calendar_remote_objects_account (account_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+        const indexes = [
+          ['calendar_accounts', 'idx_calendar_accounts_mail', 'ALTER TABLE calendar_accounts ADD INDEX idx_calendar_accounts_mail (user_id, mail_account_id)'],
+          ['calendar_event_external_refs', 'idx_event_refs_remote_object', 'ALTER TABLE calendar_event_external_refs ADD INDEX idx_event_refs_remote_object (remote_object_id)'],
+        ];
+        for (const [table, name, sql] of indexes) {
+          const [present] = await connection.execute(`SHOW INDEX FROM ${quoteIdentifier(table)} WHERE Key_name = ?`, [name]);
+          if (!present.length) await connection.execute(sql);
+        }
+      },
+      verify: async connection => {
+        await verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 12 });
+      },
+    },
   ]);
 }
 

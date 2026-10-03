@@ -11,6 +11,16 @@ const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
   },
   caldav: {
     sync: true,
+    write: true,
+    invites: false,
+    rsvp: false,
+    deletePropagation: true,
+    push: false,
+  },
+  // Read-only iCalendar subscriptions (webcal/https feeds).
+  ics: {
+    sync: true,
+    write: false,
     invites: false,
     rsvp: false,
     deletePropagation: false,
@@ -51,13 +61,16 @@ function safeJsonParse(value, fallback = null) {
 
 function normalizeCalendarAccountProvider(provider) {
   const normalized = String(provider || '').trim().toLowerCase();
-  if (normalized === 'local' || normalized === 'caldav') return normalized;
+  if (normalized === 'local' || normalized === 'caldav' || normalized === 'ics') return normalized;
   return null;
 }
 
 function serializeCalendarAccount(row) {
   const provider = normalizeCalendarAccountProvider(row.provider) || 'local';
-  const capabilities = safeJsonParse(row.capabilities, null) || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] || CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
+  // Capabilities stored by older versions predate writeback; the provider
+  // defaults are authoritative.
+  const capabilities = { ...(safeJsonParse(row.capabilities, null) || {}), ...CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] };
+  const timestamp = value => (value instanceof Date ? value.toISOString() : (value || null));
   return {
     id: row.id,
     user_id: row.user_id,
@@ -73,7 +86,9 @@ function serializeCalendarAccount(row) {
     is_active: !!row.is_active,
     sync_status: row.sync_status || null,
     sync_error: row.sync_error || null,
-    last_synced_at: row.last_synced_at instanceof Date ? row.last_synced_at.toISOString() : (row.last_synced_at || null),
+    last_synced_at: timestamp(row.last_synced_at),
+    next_sync_at: timestamp(row.next_sync_at),
+    mail_account_id: row.mail_account_id || null,
     created_at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
     updated_at: row.updated_at instanceof Date ? row.updated_at.toISOString() : row.updated_at,
   };

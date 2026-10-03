@@ -3,9 +3,10 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import type { MailAccount } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
+import { browserTimeZone } from '@/lib/calendar-api';
 import { accountSyncWindow, accountTrashWindow, useMailModeImpact } from '@/hooks/use-mail-mode-impact';
 import {
-  initialAccountForm, mailProviders,
+  calendarSubscriptionHints, initialAccountForm, mailProviders,
   type AccountFormState, type AddMailAccountResponse, type MailHostTrustError, type MailHostTrustResult, type PendingHostTrust,
 } from '@/components/mail/mail-page-model';
 
@@ -43,8 +44,12 @@ export function useMailAccountEditor() {
   // The backend verifies host safety, certificate trust, then IMAP auth.
   const addAccount = useMutation({
     mutationFn: async (account: AccountFormState & { accept_host_trust?: boolean }) => {
+      // Providers without CalDAV only get a calendar when a subscription address was pasted.
+      const tryCalendar = account.try_calendar_sync && (!calendarSubscriptionHints[account.provider] || account.caldav_url.trim() !== '');
       const response = await api.post<AddMailAccountResponse>('/mail/accounts', {
         ...account,
+        try_calendar_sync: tryCalendar,
+        time_zone: browserTimeZone(),
         encrypted_password: account.password, // Will be encrypted on server
       });
       if (response.status === 409 && response.requiresHostTrustConfirmation) {
@@ -59,6 +64,8 @@ export function useMailAccountEditor() {
       queryClient.invalidateQueries({ queryKey: ['stats'] });
       queryClient.invalidateQueries({ queryKey: ['calendar-accounts'] });
       queryClient.invalidateQueries({ queryKey: ['calendar-calendars'] });
+      queryClient.invalidateQueries({ queryKey: ['calendar-events'] });
+      queryClient.invalidateQueries({ queryKey: ['mail-calendar'] });
       setPendingHostTrust(null);
 
       const syncMsg = data?.syncInProgress
@@ -72,14 +79,16 @@ export function useMailAccountEditor() {
       });
       if (data.calendarSync?.attempted) {
         if (data.calendarSync.success) {
+          const count = data.calendarSync.calendars ?? 0;
+          const server = data.calendarSync.server?.label;
           toast({
-            title: 'Calendar sync connected',
-            description: `${data.calendarSync.importedEvents || 0} events imported.`,
+            title: 'Calendar connected',
+            description: `${count} calendar${count === 1 ? '' : 's'}${server ? ` on ${server}` : ''}. Events appear as the first sync finishes.`,
           });
         } else {
           toast({
-            title: 'Mail connected, calendar sync failed',
-            description: data.calendarSync.warning || 'Check the CalDAV URL or credentials.',
+            title: 'Mail connected, calendar not connected',
+            description: `${data.calendarSync.warning || 'The calendar server was not found.'} You can change this later in the account settings.`,
             variant: 'destructive',
             duration: 10000,
           });
@@ -120,6 +129,9 @@ export function useMailAccountEditor() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
+      // A new password or a disconnect also resumes or pauses the linked calendar.
+      queryClient.invalidateQueries({ queryKey: ['mail-calendar'] });
+      queryClient.invalidateQueries({ queryKey: ['calendar-accounts'] });
       setPendingHostTrust(null);
       toast({ title: '✓ Account updated successfully' });
       resetForm();

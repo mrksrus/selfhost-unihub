@@ -99,9 +99,13 @@ export interface AddMailAccountResponse {
   message?: string;
   calendarSync?: {
     attempted: boolean;
-    success: boolean;
+    success?: boolean;
+    code?: string;
     warning?: string;
-    importedEvents?: number;
+    /** Number of calendars found on the server. */
+    calendars?: number;
+    server?: { url: string; source: string; label: string } | null;
+    hint?: string | null;
   };
 }
 
@@ -141,6 +145,16 @@ export const mailProviders = [
   { value: 'custom', label: 'Other (Custom IMAP/SMTP)', imapHost: '', smtpHost: '', imapPort: 993, smtpPort: 587 },
 ];
 
+/**
+ * Providers whose calendars need OAuth or a server-side setup for CalDAV. UniHub can still show them read-only
+ * through the calendar's published or secret iCal address.
+ */
+export const calendarSubscriptionHints: Record<string, string> = {
+  gmail: 'Google calendars need OAuth for CalDAV. To see them read-only, paste the secret iCal address from Google Calendar → Settings → your calendar → Integrate calendar.',
+  outlook: 'Outlook and Office 365 have no CalDAV. To see a calendar read-only, publish it in Outlook on the web (Settings → Calendar → Shared calendars) and paste the ICS link.',
+  exchange: 'Exchange has no CalDAV. To see a calendar read-only, publish it in Outlook on the web (Settings → Calendar → Shared calendars) and paste the ICS link.',
+};
+
 export const systemFolders = [
   { id: 'inbox', label: 'Inbox', icon: Inbox },
   { id: 'sent', label: 'Sent', icon: Send },
@@ -175,7 +189,7 @@ export const initialAccountForm: AccountFormState = {
   sync_window_days: DEFAULT_SYNC_WINDOW_DAYS,
   trash_window_days: DEFAULT_TRASH_WINDOW_DAYS,
   delete_emails_on_server: false,
-  try_calendar_sync: false,
+  try_calendar_sync: true,
   caldav_url: '',
 };
 

@@ -108,7 +108,7 @@ const WRITE_PATHS = Object.freeze({
 const BACKGROUND_WRITERS = Object.freeze({
   settings: [], contacts: [], recordings: [],
   mail: ['mail.runDurableMailJob', 'mail.syncMailAccount', 'mail.runMailServerDeletionPass', 'notifications.deliverPending'],
-  calendar: ['notifications.reconcileReminders', 'notifications.enqueueDueReminders', 'notifications.deliverPending'],
+  calendar: ['calendarSync.runCalendarSyncPass', 'notifications.reconcileReminders', 'notifications.enqueueDueReminders', 'notifications.deliverPending'],
 });
 const WRITE_ROUTES = Object.entries(WRITE_PATHS).flatMap(([section, paths]) => paths.map(path => ({ section, path })))
   .sort((a, b) => b.path.length - a.path.length);

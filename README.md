@@ -17,7 +17,7 @@ the nonprofit/public-institution uses it expressly lists. See [Licensing](LICENS
 | --- | --- |
 | Mail | Read and send mail, attachments, folders, search and bulk actions. Download mode can optionally delete downloaded mail from the provider. Sync mode follows server read/star/folder changes and retains missing messages locally. Sync also sends new read/star/move actions back, with visible pending/failure status and server-authoritative conflict handling. |
 | Contacts | Search, favourites, vCard import/export and duplicate merging. |
-| Calendar and tasks | Plan events and work through tasks using shared calendar data, reminders and subtasks. CalDAV imports supported non-recurring events; it does not send edits back. |
+| Calendar and tasks | Plan events and work through tasks using shared calendar data, reminders and subtasks. Mail accounts connect their calendar with the same login: CalDAV servers such as Stalwart, Nextcloud, iCloud and Fastmail sync both ways, including recurring events; Google and Microsoft calendars can be added as read-only subscriptions. |
 | Recordings | Record in the browser or import audio, then organise, play and download it. |
 | Optional modules | Reorder, hide or disable modules and their background work. Disabling a module keeps its data and full-backup coverage. |
 | Backups / imports (ALPHA) | Experimental encrypted account exports and imports. Do not use them as your only backup. |

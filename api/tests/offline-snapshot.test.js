@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const { collectOfflineSnapshot, createOfflineSnapshot, OFFLINE_MAX_BYTES } = require('../src/services/offline');
 const routes = require('../src/routes/offline');
 const { getDb, setDb } = require('../src/state');
+const { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES } = require('../src/services/calendar');
 
 function fixture({ oversizeTable, failTable, modules = {} } = {}) {
   const contact = index => ({ id: `contact-${String(index).padStart(5, '0')}`, user_id: 'user-1', first_name: 'Person', last_name: String(index), is_favorite: 0, notes: 'Full contact note' });
@@ -61,7 +62,7 @@ test('offline snapshot includes all 2,105 contacts, all events/todos and 100 ful
   assert.equal(snapshot.events[0].subtasks[0].is_done, true);
   assert.deepEqual(snapshot.events[0].reminders, [0, 15]);
   assert.equal(snapshot.events[0].attendees[0].email, 'attendee@example.test');
-  assert.deepEqual(snapshot.calendarAccounts[0].capabilities, { sync: true });
+  assert.deepEqual(snapshot.calendarAccounts[0].capabilities, CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.caldav);
   assert.equal(snapshot.emails[0].attachments[0].size_bytes, 1234);
   assert.equal(snapshot.emails[0].attachments[0].offline_available, false);
   assert.equal(snapshot.bytes, Buffer.byteLength(JSON.stringify(snapshot)));

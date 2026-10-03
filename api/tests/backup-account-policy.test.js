@@ -22,7 +22,7 @@ test('restore applies connection policy before activating account settings', asy
         const account = Object.fromEntries(columns.map((column, index) => [column, params[index]]));
         storedAccounts.set(account.id, account);
       }
-      if (sql.startsWith('SELECT provider, discovery_url, base_url FROM calendar_accounts')) {
+      if (sql.startsWith('SELECT provider, discovery_url, base_url, provider_config FROM calendar_accounts')) {
         const account = storedAccounts.get(params[0]);
         return [account?.user_id === params[1] ? [account] : []];
       }

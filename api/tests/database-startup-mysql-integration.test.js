@@ -67,7 +67,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     [3, 'mail-server-follow-mode'], [4, 'notes-with-revisions-and-attachments'],
     [5, 'explicit-mail-writebacks'], [6, 'mail-engine-additive-storage'],
     [7, 'mail-engine-resumable-backfill'], [8, 'mail-engine-manual-refresh-intent'],
-    [9, 'calendar-color-default'], [10, 'mail-sync-policy'], [11, 'remove-notes-module'],
+    [9, 'calendar-color-default'], [10, 'mail-sync-policy'], [11, 'remove-notes-module'], [12, 'calendar-sync'],
   ]);
   const [policyColumns] = await db.execute(`SELECT COLUMN_NAME AS name, COLUMN_DEFAULT AS dflt, IS_NULLABLE AS nullable
     FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mail_accounts'
@@ -124,8 +124,9 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   await db.execute('DELETE FROM notification_events WHERE user_id = ? AND kind = ?', [user.id, 'test']);
 
   // Replay migration 11 over leftovers from an older release: Notes tables,
-  // saved Notes choices and attachment files are all gone afterwards.
-  await db.execute('DELETE FROM schema_migrations WHERE id = 11');
+  // saved Notes choices and attachment files are all gone afterwards. Later
+  // steps replay with it and must detect their completed work.
+  await db.execute('DELETE FROM schema_migrations WHERE id >= 11');
   await db.execute('CREATE TABLE notes (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, title VARCHAR(255)) ENGINE=InnoDB');
   await db.execute('CREATE TABLE note_links (note_id CHAR(36) NOT NULL, FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE) ENGINE=InnoDB');
   await db.execute("INSERT INTO notes (id, user_id, title) VALUES (?, ?, 'Example note')", [crypto.randomUUID(), user.id]);
@@ -143,6 +144,8 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   await assert.rejects(fs.access(process.env.NOTES_UPLOAD_ROOT), { code: 'ENOENT' });
   const [[replayed]] = await db.execute('SELECT name FROM schema_migrations WHERE id = 11');
   assert.equal(replayed.name, 'remove-notes-module');
+  const [[calendarSync]] = await db.execute('SELECT name FROM schema_migrations WHERE id = 12');
+  assert.equal(calendarSync.name, 'calendar-sync');
 
   await t.test('backup suspension releases stale restore locks without deleting archives', async () => {
     const [[{ id: userId }]] = await db.execute('SELECT id FROM users LIMIT 1');

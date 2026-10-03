@@ -11,6 +11,7 @@ import type { MailAccount, MailModeImpact } from '@/lib/mail-api';
 import { setOfflineMode } from '@/lib/offline';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), post: vi.fn(), put: vi.fn(), getDownloadUrl: (path: string) => `/api${path}` } }));
+vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'owner' } }) }));
 
 const syncAccount: MailAccount = {
   id: 'a1', email_address: 'Owner@Example.test', display_name: 'Owner', provider: 'custom', username: 'owner',
@@ -262,5 +263,85 @@ describe('provider sync warnings', () => {
   it('shows the warning in the account settings', () => {
     const dialog = mountEditor(gmail);
     expect(within(dialog).getByText(/can’t tell archived mail from deleted mail and keeps it/)).toBeInTheDocument();
+  });
+});
+
+describe('calendar of a mail account', () => {
+  const link = {
+    enabled: true,
+    account: {
+      id: 'c1', user_id: 'owner', provider: 'caldav', account_email: 'owner@example.test', display_name: 'Owner', token_expires_at: null,
+      provider_config: { server: { url: 'https://dav.example.test/dav/', source: 'well-known', label: 'dav.example.test' } },
+      capabilities: {}, is_active: true, sync_status: 'error', sync_error: 'The calendar server rejected the login.', last_synced_at: null,
+      mail_account_id: 'a1', created_at: '', updated_at: '',
+    },
+    calendars: [{ id: 'k1', name: 'Personal', color: '#2563eb', read_only: false, is_visible: true }],
+    event_count: 12,
+    provider: null,
+  };
+  const routeGet = (calendar: unknown = link) => vi.mocked(api.get).mockImplementation(async (endpoint: string) => {
+    if (endpoint === '/modules') return { data: { modules: [{ id: 'calendar', enabled: true, visible: true }] } };
+    if (endpoint === '/mail/accounts/a1/calendar') return { data: { calendar } };
+    return { data: impact() };
+  });
+
+  it('shows the server, status and calendars and asks before turning the calendar off', async () => {
+    routeGet();
+    vi.mocked(api.put).mockResolvedValue({ data: { calendar: { ...link, enabled: false, account: null, calendars: [], event_count: 0 } } });
+    const dialog = mountEditor(syncAccount);
+    expect(await within(dialog).findByText('The calendar server rejected the login.')).toBeInTheDocument();
+    expect(within(dialog).getByText(/dav\.example\.test \(found automatically\)/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Personal · 12 events/)).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('switch', { name: 'Calendar' }));
+    const confirm = await screen.findByRole('alertdialog');
+    expect(within(confirm).getByText(/12 synced events/)).toBeInTheDocument();
+    expect(api.put).not.toHaveBeenCalledWith('/mail/accounts/a1/calendar', expect.anything());
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Turn off' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/accounts/a1/calendar', expect.objectContaining({ enabled: false })));
+  });
+
+  it('applies a typed server address and Enter does not save the mail account', async () => {
+    routeGet();
+    vi.mocked(api.put).mockResolvedValue({ data: { calendar: link } });
+    const dialog = mountEditor(syncAccount);
+    const input = await within(dialog).findByLabelText('Calendar server address (optional)');
+    fireEvent.change(input, { target: { value: 'https://cal.example.test/dav/' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/accounts/a1/calendar',
+      expect.objectContaining({ enabled: true, caldav_url: 'https://cal.example.test/dav/' })));
+    expect(api.put).not.toHaveBeenCalledWith('/mail/accounts/a1', expect.anything());
+  });
+
+  it('turns the calendar on for a new account by default', async () => {
+    routeGet();
+    vi.mocked(api.post).mockResolvedValue({ data: { syncInProgress: true, calendarSync: { attempted: true, success: true, calendars: 2, server: { url: 'https://dav.example.test/', source: 'dns', label: 'dav.example.test' } } } });
+    const fill = (dialog: HTMLElement) => {
+      fireEvent.change(within(dialog).getByLabelText('Email Address'), { target: { value: 'new@example.test' } });
+      fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'new@example.test' } });
+      fireEvent.change(within(dialog).getByLabelText('Password'), { target: { value: 'secret' } });
+      fireEvent.change(within(dialog).getByLabelText('IMAP Server'), { target: { value: 'imap.example.test' } });
+      fireEvent.change(within(dialog).getByLabelText('SMTP Server'), { target: { value: 'smtp.example.test' } });
+    };
+    const dialog = mountEditor();
+    expect(await within(dialog).findByRole('checkbox', { name: /Sync the calendar too/ })).toBeChecked();
+    fill(dialog);
+    fireEvent.submit(within(dialog).getByLabelText('Password').closest('form')!);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/accounts', expect.objectContaining({ try_calendar_sync: true, caldav_url: '' })));
+    expect(vi.mocked(api.post).mock.calls[0][1]).toHaveProperty('time_zone');
+  });
+
+  it('skips the calendar of a Gmail account unless a subscription address is pasted', async () => {
+    routeGet();
+    vi.mocked(api.post).mockResolvedValue({ data: { syncInProgress: true } });
+    const dialog = mountEditor();
+    fireEvent.keyDown(within(dialog).getByLabelText('Email Provider'), { key: 'Enter' });
+    fireEvent.keyDown(await screen.findByRole('option', { name: 'Gmail' }), { key: 'Enter' });
+    expect(await within(dialog).findByText(/secret iCal address/)).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText('Email Address'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Password'), { target: { value: 'secret' } });
+    fireEvent.submit(within(dialog).getByLabelText('Password').closest('form')!);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/accounts', expect.objectContaining({ provider: 'gmail', try_calendar_sync: false })));
   });
 });

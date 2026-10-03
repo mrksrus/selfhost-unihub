@@ -116,7 +116,7 @@ outbound mail through SMTP. The mail system includes:
 ## Account Creation Flow
 
 `POST /api/mail/accounts` accepts account details, validates the mail host, tests
-IMAP credentials, saves the account, optionally attempts CalDAV import, then
+IMAP credentials, saves the account, optionally connects its calendar, then
 starts mail sync in the background.
 
 Main payload fields:
@@ -132,7 +132,7 @@ Main payload fields:
 | `sync_fetch_limit` | Currently normalized to `all` |
 | `delete_emails_on_server` | Optional, defaults to false; enables delayed provider-side deletion after import |
 | `accept_host_trust` | Allows a user-confirmed TLS trust exception |
-| `try_calendar_sync`, `caldav_url` | Optional one-time CalDAV discovery/import after mail account creation |
+| `try_calendar_sync`, `caldav_url`, `time_zone` | Connect the account's calendar with the same login (see [Calendar](CALENDAR.md#connecting-a-calendar)); `caldav_url` may also be an ICS subscription address. The response's `calendarSync` says whether it worked |
 
 ### Host Policy
 
@@ -629,8 +629,8 @@ The encryption key is derived from `ENCRYPTION_KEY` with SHA-256. Stored format:
 iv_hex:auth_tag_hex:ciphertext_hex
 ```
 
-The password is decrypted only when opening IMAP/SMTP connections or optional
-CalDAV import connections.
+The password is decrypted only when opening IMAP/SMTP connections or the
+CalDAV connections of the account's calendar.
 
 ## Backup and Restore
 

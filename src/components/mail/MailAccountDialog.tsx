@@ -3,13 +3,13 @@ import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
 import { MailModeImpactPanel } from '@/components/mail/MailModeImpactPanel';
 import { MailAccountSyncWarnings, MailSyncPolicyNotice } from '@/components/mail/MailSyncPolicyGate';
 import { needsSyncPolicyDecision } from '@/lib/mail-api';
+import { MailCalendarAddOption, MailCalendarSettings } from '@/components/mail/MailCalendarSettings';
 import { mailProviders, type MailHostAssessment, type MailHostCertificate } from '@/components/mail/mail-page-model';
 import type { MailAccountEditor } from '@/hooks/use-mail-account-editor';
 
@@ -118,7 +118,7 @@ export function MailAccountDialog({ editor, trigger, touch = false }: { editor: 
                 value={editor.accountForm.provider}
                 onValueChange={editor.changeProvider}
               >
-                <SelectTrigger>
+                <SelectTrigger id="provider">
                   <SelectValue placeholder="Select provider" />
                 </SelectTrigger>
                 <SelectContent>
@@ -176,33 +176,9 @@ export function MailAccountDialog({ editor, trigger, touch = false }: { editor: 
                 required={!editor.editingAccount}
               />
             </div>
-            {!editor.editingAccount && (
-              <div className="rounded-md border border-border p-3 space-y-3">
-                <label className="flex items-start gap-3 text-sm">
-                  <Checkbox
-                    checked={editor.accountForm.try_calendar_sync}
-                    onCheckedChange={(checked) => editor.setAccountForm({ ...editor.accountForm, try_calendar_sync: checked === true })}
-                  />
-                  <span>
-                    <span className="font-medium text-foreground">Try calendar sync too</span>
-                    <span className="block text-muted-foreground">
-                      Uses CalDAV with the same username and password. Mail setup continues even if calendar discovery fails.
-                    </span>
-                  </span>
-                </label>
-                {editor.accountForm.try_calendar_sync && (
-                  <div className="space-y-2">
-                    <Label htmlFor="caldav_url">Advanced CalDAV URL</Label>
-                    <Input
-                      id="caldav_url"
-                      value={editor.accountForm.caldav_url}
-                      onChange={(e) => editor.setAccountForm({ ...editor.accountForm, caldav_url: e.target.value })}
-                      placeholder="https://mail.example.com/.well-known/caldav"
-                    />
-                  </div>
-                )}
-              </div>
-            )}
+            {editor.editingAccount
+              ? <MailCalendarSettings account={editor.editingAccount} />
+              : <MailCalendarAddOption form={editor.accountForm} onChange={editor.setAccountForm} />}
             <p className="text-xs text-muted-foreground">
               Server details are filled from the provider; you can change any value.
             </p>

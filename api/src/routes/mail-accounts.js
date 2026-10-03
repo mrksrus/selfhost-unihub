@@ -19,7 +19,7 @@ const {
   stopMailAccountWork,
   getRunningMailServerDeleteAccountIds,
 } = require('../services/mail');
-const { createCalDavAccountForMail } = require('../services/caldav');
+const calendarAccounts = require('../services/calendar-accounts');
 const { EFFECTIVE_READ_SQL, startMailSyncInBackground, extractMailRouteId } = require('./mail-route-helpers');
 
 async function buildHostTrustConfirmationResponse({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError }) {
@@ -273,28 +273,32 @@ module.exports = {
       let calendarSync = null;
       if (toBooleanFlag(try_calendar_sync)) {
         try {
-          const caldavResult = await createCalDavAccountForMail({
+          const connected = await calendarAccounts.connectCalDavAccount({
             userId,
             emailAddress: email_address,
             displayName: display_name || email_address,
             username: actualUsername,
             password: encrypted_password,
             imapHost: imap_host,
-            caldavUrl: caldav_url,
+            caldavUrl: caldav_url || null,
+            mailAccountId: accountId,
+            timeZone: body.time_zone,
           });
           calendarSync = {
             attempted: true,
             success: true,
-            account: caldavResult.account,
-            calendars: caldavResult.calendars,
-            importedEvents: caldavResult.importedEvents,
+            account: connected.account,
+            calendars: connected.calendars.length,
+            server: connected.server || null,
+            hint: connected.hint || null,
           };
         } catch (calendarError) {
-          console.warn(`[CALDAV] Calendar sync setup failed for ${email_address}:`, calendarError.message);
+          console.warn(`[CALDAV] Calendar setup failed for ${email_address}:`, calendarError.message);
           calendarSync = {
             attempted: true,
             success: false,
-            warning: calendarError.message || 'Calendar sync setup failed',
+            code: calendarError.code || null,
+            warning: calendarError.status ? calendarError.message : 'Calendar setup failed',
           };
         }
       }
@@ -522,6 +526,10 @@ module.exports = {
       }
 
       const updatedAccount = await loadAccountJson(userId, id);
+      if (encrypted_password || username !== undefined || email_address) {
+        await calendarAccounts.updateLinkedCalendarCredentials(userId, id)
+          .catch(error => console.warn('[CALENDAR] Could not update linked calendar login:', error.message));
+      }
       if (body.is_active === true) setImmediate(() => startMailSyncInBackground(id).catch(error => console.error('[SYNC] Reconnect scheduling failed:', error.message)));
       if (modeChange.changed && modeChange.mode === 'download') {
         return { account: updatedAccount, message: 'Download mode keeps every local copy. Nothing is deleted; UniHub stops sending read, star, move and delete changes to the server.' };
@@ -597,11 +605,40 @@ module.exports = {
     try {
       const id = extractMailRouteId(req);
       const query = new URL(req.url, 'http://localhost').searchParams;
-      return query.get('purge') === 'true'
-        ? await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'))
-        : await mailAccountLifecycle.disconnectAccount(userId, id);
+      if (query.get('purge') === 'true') {
+        const result = await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'));
+        await calendarAccounts.removeLinkedCalendars(userId, id)
+          .catch(error => console.warn('[CALENDAR] Could not remove linked calendar:', error.message));
+        return result;
+      }
+      const result = await mailAccountLifecycle.disconnectAccount(userId, id);
+      await calendarAccounts.pauseLinkedCalendar(userId, id)
+        .catch(error => console.warn('[CALENDAR] Could not pause linked calendar:', error.message));
+      return result;
     } catch (error) {
       return { error: error.status ? error.message : 'Could not change mail account connection', status: error.status || 500 };
+    }
+  },
+
+  // Calendar of a mail account: on/off, status and server address.
+  'GET /api/mail/accounts/:id/calendar': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      return { calendar: await calendarAccounts.getMailCalendarLink(userId, accountRouteId(req)) };
+    } catch (error) {
+      if (!error.status) console.error('[CALENDAR] Mail calendar status error:', error);
+      return routeError(error, 'Could not load the calendar settings');
+    }
+  },
+
+  'PUT /api/mail/accounts/:id/calendar': async (req, userId, body) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const calendar = await calendarAccounts.setMailCalendar(userId, accountRouteId(req), body || {});
+      return { calendar };
+    } catch (error) {
+      if (!error.status) console.error('[CALENDAR] Mail calendar update error:', error);
+      return { ...routeError(error, 'Could not change the calendar settings'), ...(error.code ? { code: error.code } : {}) };
     }
   },
 };

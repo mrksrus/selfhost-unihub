@@ -1,20 +1,28 @@
 import { useMemo, useState, useEffect, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { addDays, addMonths, eachDayOfInterval, endOfDay, endOfMonth, endOfWeek, format, isSameDay, isSameMonth, isToday, parseISO, startOfDay, startOfMonth, startOfWeek, subDays, subMonths } from 'date-fns';
-import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Edit, Loader2, MapPin, Plus, Trash2 } from 'lucide-react';
+import { addDays, addMonths, eachDayOfInterval, formatDistanceToNowStrict, endOfDay, endOfMonth, endOfWeek, format, isSameDay, isSameMonth, isToday, parseISO, startOfDay, startOfMonth, startOfWeek, subDays, subMonths } from 'date-fns';
+import { CheckCircle2, ChevronLeft, ChevronRight, Clock, Edit, Loader2, MapPin, Pause, Play, Plus, RefreshCw, Repeat, Trash2 } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { useNotificationEventLink } from '@/hooks/use-notification-event-link';
 import { Button } from '@/components/ui/button';
+import { buttonVariants } from '@/components/ui/button-variants';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
-import { calendarApi, calendarQueryKeys, formatEventTime, localDatetimeToIso, toDatetimeLocalValue, type CalendarAccount, type CalendarCalendar, type CalendarEvent, type CalendarProvider, type CalendarRsvpStatus } from '@/lib/calendar-api';
+import {
+  browserTimeZone, calendarApi, calendarQueryKeys, formatEventTime, isRemoteCalendarAccount, localDatetimeToIso, toDatetimeLocalValue,
+  type CalendarAccount, type CalendarCalendar, type CalendarEvent, type CalendarProvider, type CalendarRsvpStatus, type RecurrenceScope,
+} from '@/lib/calendar-api';
 
 type CalendarViewMode = 'day' | 'week' | 'month';
 const EMPTY_ACCOUNTS: CalendarAccount[] = [];
@@ -34,9 +42,33 @@ const reminderOptions = [
   { value: 1440, label: '1 day before' },
 ];
 
-const providerOptions: { value: CalendarProvider; label: string }[] = [
-  { value: 'local', label: 'Local' },
+const providerOptions: { value: CalendarProvider; label: string; description: string }[] = [
+  { value: 'local', label: 'Local', description: 'Stored only in UniHub.' },
+  { value: 'caldav', label: 'CalDAV server', description: 'Two-way sync. The server is found from the address; enter it only if it is not found.' },
+  { value: 'ics', label: 'Subscription (read-only)', description: 'An iCalendar address (.ics or webcal://), for example the secret address of a Google calendar.' },
 ];
+
+const providerLabels: Record<string, string> = { local: 'Local', caldav: 'CalDAV', ics: 'Subscription' };
+
+const initialAccountForm = {
+  provider: 'local' as CalendarProvider,
+  account_email: '',
+  display_name: '',
+  username: '',
+  password: '',
+  url: '',
+};
+
+function accountSyncText(account: CalendarAccount) {
+  const last = account.last_synced_at ? new Date(account.last_synced_at) : null;
+  const ago = last && !Number.isNaN(last.getTime()) ? formatDistanceToNowStrict(last, { addSuffix: true }) : null;
+  if (!account.is_active || account.sync_status === 'paused') return { text: account.sync_error || 'Sync paused', error: false };
+  if (account.sync_status === 'syncing') return { text: 'Syncing…', error: false };
+  if (account.sync_status === 'error') return { text: account.sync_error || 'Sync failed', error: true };
+  return { text: ago ? `Synced ${ago}` : 'Waiting for the first sync', error: false };
+}
+
+type PendingScopeAction = { kind: 'update' | 'delete'; event: CalendarEvent; recurring: boolean };
 
 function viewDateRange(viewMode: CalendarViewMode, baseDate: Date) {
   const weekOpts = { weekStartsOn: 1 as const };
@@ -98,11 +130,8 @@ const CalendarPage = () => {
     attendee_emails: '',
   });
 
-  const [accountForm, setAccountForm] = useState({
-    provider: 'local' as CalendarProvider,
-    account_email: '',
-    display_name: '',
-  });
+  const [accountForm, setAccountForm] = useState(initialAccountForm);
+  const [pendingScope, setPendingScope] = useState<PendingScopeAction | null>(null);
 
   const [calendarForm, setCalendarForm] = useState({
     account_id: '',
@@ -203,7 +232,7 @@ const CalendarPage = () => {
   });
 
   const updateEventMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (scope?: RecurrenceScope) => {
       if (!editingEvent) throw new Error('No event selected');
       const attendees = eventForm.attendee_emails
         .split(',')
@@ -221,11 +250,12 @@ const CalendarPage = () => {
         color: eventForm.color,
         reminders: eventForm.reminders,
         attendees,
-      });
+      }, scope);
     },
-    onSuccess: () => {
+    onSuccess: ({ replaced }) => {
       invalidateCalendarQueries();
-      toast({ title: 'Event updated' });
+      // A changed series is expanded again; its occurrences get new ids.
+      toast({ title: replaced ? 'Series updated' : 'Event updated' });
       resetEventForm();
     },
     onError: (error: Error) => {
@@ -234,10 +264,11 @@ const CalendarPage = () => {
   });
 
   const deleteEventMutation = useMutation({
-    mutationFn: (id: string) => calendarApi.deleteEvent(id),
-    onSuccess: () => {
+    mutationFn: ({ id, scope }: { id: string; scope?: RecurrenceScope }) => calendarApi.deleteEvent(id, scope),
+    onSuccess: (_data, { id, scope }) => {
       invalidateCalendarQueries();
-      toast({ title: 'Event deleted' });
+      if (editingEvent?.id === id) resetEventForm();
+      toast({ title: scope === 'series' ? 'Series deleted' : 'Event deleted' });
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to delete event', description: error.message, variant: 'destructive' });
@@ -273,22 +304,26 @@ const CalendarPage = () => {
   });
 
   const createAccountMutation = useMutation({
-    mutationFn: () => (
-      calendarApi.createAccount({
-        provider: accountForm.provider,
-        account_email: accountForm.account_email || null,
-        display_name: accountForm.display_name || null,
-      })
-    ),
-    onSuccess: () => {
+    mutationFn: () => {
+      const { provider } = accountForm;
+      return calendarApi.createAccount({
+        provider,
+        account_email: provider === 'ics' ? null : accountForm.account_email.trim() || null,
+        display_name: accountForm.display_name.trim() || null,
+        ...(provider === 'caldav' ? { username: accountForm.username.trim() || accountForm.account_email.trim(), password: accountForm.password } : {}),
+        ...(provider !== 'local' ? { url: accountForm.url.trim() || null, time_zone: browserTimeZone() } : {}),
+      });
+    },
+    onSuccess: (data) => {
       invalidateCalendarQueries();
       setIsAccountDialogOpen(false);
-      setAccountForm({
-        provider: 'local',
-        account_email: '',
-        display_name: '',
+      setAccountForm(initialAccountForm);
+      const count = data.calendars?.length;
+      toast({
+        title: data.account.provider === 'local' ? 'Calendar account created' : 'Calendar connected',
+        description: data.account.provider === 'local' ? undefined
+          : `${count !== undefined ? `${count} calendar${count === 1 ? '' : 's'}${data.server?.label ? ` on ${data.server.label}` : ''}. ` : ''}Events appear as the first sync finishes.`,
       });
-      toast({ title: 'Calendar account created' });
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to create calendar account', description: error.message, variant: 'destructive' });
@@ -303,6 +338,26 @@ const CalendarPage = () => {
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to delete account', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const syncAccountMutation = useMutation({
+    mutationFn: (id: string) => calendarApi.syncAccount(id),
+    onSettled: () => invalidateCalendarQueries(),
+    onError: (error: Error) => {
+      toast({ title: 'Calendar sync failed', description: error.message, variant: 'destructive' });
+    },
+  });
+
+  const setAccountActiveMutation = useMutation({
+    mutationFn: ({ id, active }: { id: string; active: boolean }) => calendarApi.updateAccount(id, { is_active: active }),
+    onSuccess: (account) => {
+      invalidateCalendarQueries();
+      queryClient.invalidateQueries({ queryKey: ['mail-calendar'] });
+      toast({ title: account.is_active ? 'Sync resumed' : 'Sync paused' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Failed to change sync', description: error.message, variant: 'destructive' });
     },
   });
 
@@ -342,6 +397,28 @@ const CalendarPage = () => {
     }
     return Array.from(grouped.entries()).map(([, value]) => value);
   }, [accounts, calendars]);
+
+  const calendarById = useMemo(() => new Map(calendars.map((calendar) => [calendar.id, calendar])), [calendars]);
+  const accountById = useMemo(() => new Map(accounts.map((account) => [account.id, account])), [accounts]);
+  const calendarAccountOf = (calendarId?: string | null) => {
+    const calendar = calendarId ? calendarById.get(calendarId) : undefined;
+    return calendar ? accountById.get(calendar.account_id) ?? null : null;
+  };
+  const isReadOnlyCalendar = (calendarId?: string | null) => {
+    const calendar = calendarId ? calendarById.get(calendarId) : undefined;
+    return Boolean(calendar && (calendar.read_only || calendarAccountOf(calendarId)?.provider === 'ics'));
+  };
+  const writableCalendars = useMemo(
+    () => calendars.filter((calendar) => !calendar.read_only && accountById.get(calendar.account_id)?.provider !== 'ics'),
+    [calendars, accountById]
+  );
+  const isRemoteEvent = (event: CalendarEvent) => isRemoteCalendarAccount(calendarAccountOf(event.calendar_id));
+  const localAccounts = accounts.filter((account) => !isRemoteCalendarAccount(account));
+  const editingReadOnly = Boolean(editingEvent && isReadOnlyCalendar(editingEvent.calendar_id));
+  // A read-only event still shows its own calendar in the picker.
+  const eventCalendarOptions = editingReadOnly && editingEvent?.calendar_id && calendarById.has(editingEvent.calendar_id)
+    ? [calendarById.get(editingEvent.calendar_id)!]
+    : writableCalendars;
 
   const eventsByDay = useMemo(() => {
     const map = new Map<string, CalendarEvent[]>();
@@ -392,7 +469,7 @@ const CalendarPage = () => {
       end.setHours(10, 0, 0, 0);
       setEditingEvent(null);
       setEventForm({
-        calendar_id: calendars[0]?.id || '',
+        calendar_id: writableCalendars[0]?.id || '',
         title: '',
         description: '',
         start_time: format(start, "yyyy-MM-dd'T'HH:mm"),
@@ -411,7 +488,7 @@ const CalendarPage = () => {
     setIsEventDialogOpen(false);
     setEditingEvent(null);
     setEventForm({
-      calendar_id: calendars[0]?.id || '',
+      calendar_id: writableCalendars[0]?.id || '',
       title: '',
       description: '',
       start_time: '',
@@ -472,10 +549,31 @@ const CalendarPage = () => {
       return;
     }
     if (editingEvent) {
-      updateEventMutation.mutate();
+      // Server events that repeat ask whether the change applies to this occurrence or the series.
+      if (editingEvent.recurrence && isRemoteEvent(editingEvent) && eventForm.calendar_id === editingEvent.calendar_id) {
+        setPendingScope({ kind: 'update', event: editingEvent, recurring: true });
+        return;
+      }
+      updateEventMutation.mutate(undefined);
     } else {
       createEventMutation.mutate();
     }
+  };
+
+  /** Local events are deleted at once; server events are confirmed, repeating ones with a scope. */
+  const requestDeleteEvent = (event: CalendarEvent) => {
+    if (!isRemoteEvent(event)) {
+      deleteEventMutation.mutate({ id: event.id });
+      return;
+    }
+    setPendingScope({ kind: 'delete', event, recurring: Boolean(event.recurrence) });
+  };
+
+  const runPendingScope = (scope?: RecurrenceScope) => {
+    if (!pendingScope) return;
+    if (pendingScope.kind === 'update') updateEventMutation.mutate(scope);
+    else deleteEventMutation.mutate({ id: pendingScope.event.id, scope });
+    setPendingScope(null);
   };
 
   const toggleCalendarVisibility = (calendarId: string, checked: boolean) => {
@@ -526,7 +624,10 @@ const CalendarPage = () => {
                 </DialogTrigger>
                 <DialogContent>
                   <DialogHeader>
-                    <DialogTitle>Add Calendar Account</DialogTitle>
+                    <DialogTitle>Add calendar account</DialogTitle>
+                    <DialogDescription>
+                      Calendars of a mail account are set up in the mail account's settings.
+                    </DialogDescription>
                   </DialogHeader>
                   <form
                     className="space-y-3"
@@ -536,36 +637,88 @@ const CalendarPage = () => {
                     }}
                   >
                     <div className="space-y-2">
-                      <Label>Provider</Label>
+                      <Label htmlFor="calendar-account-provider">Type</Label>
                       <Select
                         value={accountForm.provider}
                         onValueChange={(value) => setAccountForm((prev) => ({ ...prev, provider: value as CalendarProvider }))}
                       >
-                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectTrigger id="calendar-account-provider"><SelectValue /></SelectTrigger>
                         <SelectContent>
                           {providerOptions.map((provider) => (
                             <SelectItem key={provider.value} value={provider.value}>{provider.label}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                      <p className="text-xs text-muted-foreground">
+                        {providerOptions.find((provider) => provider.value === accountForm.provider)?.description}
+                      </p>
                     </div>
+                    {accountForm.provider !== 'ics' && (
+                      <div className="space-y-2">
+                        <Label htmlFor="calendar-account-email">Email</Label>
+                        <Input
+                          id="calendar-account-email"
+                          type="email"
+                          value={accountForm.account_email}
+                          onChange={(event) => setAccountForm((prev) => ({ ...prev, account_email: event.target.value }))}
+                          placeholder="name@example.com"
+                          required={accountForm.provider === 'caldav' && !accountForm.username.trim()}
+                        />
+                      </div>
+                    )}
+                    {accountForm.provider === 'caldav' && (
+                      <>
+                        <div className="space-y-2">
+                          <Label htmlFor="calendar-account-username">User name (optional)</Label>
+                          <Input
+                            id="calendar-account-username"
+                            value={accountForm.username}
+                            onChange={(event) => setAccountForm((prev) => ({ ...prev, username: event.target.value }))}
+                            placeholder="Same as the email if empty"
+                            autoComplete="username"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="calendar-account-password">Password</Label>
+                          <Input
+                            id="calendar-account-password"
+                            type="password"
+                            value={accountForm.password}
+                            onChange={(event) => setAccountForm((prev) => ({ ...prev, password: event.target.value }))}
+                            placeholder="Password or app password"
+                            autoComplete="current-password"
+                            required
+                          />
+                        </div>
+                      </>
+                    )}
+                    {accountForm.provider !== 'local' && (
+                      <div className="space-y-2">
+                        <Label htmlFor="calendar-account-url">
+                          {accountForm.provider === 'ics' ? 'Subscription address' : 'Server address (optional)'}
+                        </Label>
+                        <Input
+                          id="calendar-account-url"
+                          value={accountForm.url}
+                          onChange={(event) => setAccountForm((prev) => ({ ...prev, url: event.target.value }))}
+                          placeholder={accountForm.provider === 'ics' ? 'https://calendar.example.com/feed.ics' : 'Found automatically, e.g. https://dav.example.com/'}
+                          autoComplete="off"
+                          spellCheck={false}
+                          required={accountForm.provider === 'ics'}
+                        />
+                      </div>
+                    )}
                     <div className="space-y-2">
-                      <Label>Email</Label>
+                      <Label htmlFor="calendar-account-name">Display name</Label>
                       <Input
-                        value={accountForm.account_email}
-                        onChange={(event) => setAccountForm((prev) => ({ ...prev, account_email: event.target.value }))}
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Display name</Label>
-                      <Input
+                        id="calendar-account-name"
                         value={accountForm.display_name}
                         onChange={(event) => setAccountForm((prev) => ({ ...prev, display_name: event.target.value }))}
                       />
                     </div>
                     <Button type="submit" className="w-full" disabled={createAccountMutation.isPending}>
                       {createAccountMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                      Create Account
+                      {createAccountMutation.isPending && accountForm.provider !== 'local' ? 'Connecting…' : accountForm.provider === 'local' ? 'Create account' : 'Connect'}
                     </Button>
                   </form>
                 </DialogContent>
@@ -598,7 +751,7 @@ const CalendarPage = () => {
                       >
                         <SelectTrigger><SelectValue placeholder="Select account" /></SelectTrigger>
                         <SelectContent>
-                          {accounts.map((account) => (
+                          {localAccounts.map((account) => (
                             <SelectItem key={account.id} value={account.id}>
                               {account.display_name || account.account_email || account.provider}
                             </SelectItem>
@@ -653,24 +806,57 @@ const CalendarPage = () => {
               ) : groupedCalendars.length === 0 ? (
                 <EmptyState compact title="No calendars yet" description="Add an account, then create a calendar." />
               ) : null}
-              {groupedCalendars.map(({ account, calendars: accountCalendars }) => (
+              {groupedCalendars.map(({ account, calendars: accountCalendars }) => {
+                const remote = isRemoteCalendarAccount(account);
+                const status = account && remote ? accountSyncText(account) : null;
+                const syncing = syncAccountMutation.isPending && syncAccountMutation.variables === account?.id;
+                return (
                 <div key={account?.id || `unknown-${accountCalendars[0]?.account_id}`} className="rounded-md border p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div>
-                      <p className="text-sm font-semibold">{account?.display_name || account?.account_email || account?.provider || 'Account'}</p>
-                      <p className="text-xs text-muted-foreground">{account?.provider || 'unknown'}</p>
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold truncate" title={account?.display_name || account?.account_email || undefined}>{account?.display_name || account?.account_email || account?.provider || 'Account'}</p>
+                      <p className="text-xs text-muted-foreground truncate">
+                        {providerLabels[account?.provider || ''] || account?.provider || 'Unknown'}
+                        {account?.provider_config?.server?.label ? ` · ${account.provider_config.server.label}` : ''}
+                        {account?.mail_account_id ? ' · from mail account' : ''}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-1 shrink-0">
+                      {account && remote && account.is_active && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title="Sync now"
+                          aria-label="Sync now"
+                          disabled={syncing}
+                          onClick={() => syncAccountMutation.mutate(account.id)}
+                        >
+                          <RefreshCw className={`h-4 w-4 ${syncing || account.sync_status === 'syncing' ? 'animate-spin' : ''}`} />
+                        </Button>
+                      )}
+                      {account && remote && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          title={account.is_active ? 'Pause sync' : 'Resume sync'}
+                          aria-label={account.is_active ? 'Pause sync' : 'Resume sync'}
+                          disabled={setAccountActiveMutation.isPending}
+                          onClick={() => setAccountActiveMutation.mutate({ id: account.id, active: !account.is_active })}
+                        >
+                          {account.is_active ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                        </Button>
+                      )}
                       {account && (
                         <Button
                           variant="ghost"
                           size="icon"
                           className="text-destructive hover:text-destructive"
-                          title="Delete account"
+                          title={remote ? 'Remove account' : 'Delete account'}
+                          aria-label={remote ? 'Remove account' : 'Delete account'}
                           onClick={() => {
-                            const accepted = window.confirm(
-                              'Delete this calendar account? All calendars and linked events in this account will be removed.'
-                            );
+                            const accepted = window.confirm(remote
+                              ? 'Remove this calendar account from UniHub? Its calendars and events are removed here; nothing is deleted on the server.'
+                              : 'Delete this calendar account? All calendars and linked events in this account will be removed.');
                             if (!accepted) return;
                             deleteAccountMutation.mutate(account.id);
                           }}
@@ -680,6 +866,9 @@ const CalendarPage = () => {
                       )}
                     </div>
                   </div>
+                  {status && (
+                    <p className={`-mt-1 mb-2 text-xs ${status.error ? 'text-destructive' : 'text-muted-foreground'}`}>{status.text}</p>
+                  )}
 
                   <div className="space-y-2">
                     {accountCalendars.map((calendar) => {
@@ -694,7 +883,8 @@ const CalendarPage = () => {
                             />
                             <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: calendar.color }} />
                             <span className="flex-1 truncate">{calendar.name}</span>
-                            <Button
+                            {isReadOnlyCalendar(calendar.id) && <span className="text-xs text-muted-foreground shrink-0">Read-only</span>}
+                            {!remote && <Button
                               type="button"
                               variant="ghost"
                               size="icon"
@@ -711,7 +901,7 @@ const CalendarPage = () => {
                               }}
                             >
                               <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
+                            </Button>}
                           </label>
                           <div className="flex items-center gap-2">
                             <Input
@@ -739,7 +929,8 @@ const CalendarPage = () => {
                     })}
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>
@@ -777,9 +968,18 @@ const CalendarPage = () => {
                 </DialogTrigger>
                 <DialogContent className="sm:max-w-[560px]">
                   <DialogHeader>
-                    <DialogTitle>{editingEvent ? 'Edit Event' : 'Create Event'}</DialogTitle>
+                    <DialogTitle>{editingReadOnly ? 'Event' : editingEvent ? 'Edit event' : 'Create event'}</DialogTitle>
+                    {(editingReadOnly || editingEvent?.recurrence) && (
+                      <DialogDescription>
+                        {editingEvent?.recurrence && <Repeat className="mr-1.5 inline h-3.5 w-3.5 align-[-0.125em]" aria-hidden />}
+                        {editingReadOnly
+                          ? 'This calendar is read-only. Change the event where the calendar is published.'
+                          : 'Repeating event. Saving asks whether to change only this event or the whole series.'}
+                      </DialogDescription>
+                    )}
                   </DialogHeader>
                   <form onSubmit={submitEventForm} className="space-y-3">
+                    <fieldset disabled={editingReadOnly} className="space-y-3 min-w-0">
                     <div className="space-y-2">
                       <Label>Calendar</Label>
                       <Select
@@ -788,7 +988,7 @@ const CalendarPage = () => {
                       >
                         <SelectTrigger><SelectValue placeholder="Select calendar" /></SelectTrigger>
                         <SelectContent>
-                          {calendars.map((calendar) => (
+                          {eventCalendarOptions.map((calendar) => (
                             <SelectItem key={calendar.id} value={calendar.id}>
                               {calendar.name}
                             </SelectItem>
@@ -843,14 +1043,17 @@ const CalendarPage = () => {
                         onChange={(event) => setEventForm((prev) => ({ ...prev, description: event.target.value }))}
                       />
                     </div>
-                    <div className="space-y-2">
-                      <Label>Attendees (comma-separated emails)</Label>
-                      <Input
-                        value={eventForm.attendee_emails}
-                        onChange={(event) => setEventForm((prev) => ({ ...prev, attendee_emails: event.target.value }))}
-                        placeholder="alice@example.com, bob@example.com"
-                      />
-                    </div>
+                    {/* Attendees are kept in UniHub only; they are not sent to calendar servers. */}
+                    {!isRemoteCalendarAccount(calendarAccountOf(eventForm.calendar_id)) && (
+                      <div className="space-y-2">
+                        <Label>Attendees (comma-separated emails)</Label>
+                        <Input
+                          value={eventForm.attendee_emails}
+                          onChange={(event) => setEventForm((prev) => ({ ...prev, attendee_emails: event.target.value }))}
+                          placeholder="alice@example.com, bob@example.com"
+                        />
+                      </div>
+                    )}
                     <div className="space-y-2">
                       <Label>Reminders</Label>
                       <div className="grid grid-cols-2 gap-2">
@@ -876,12 +1079,27 @@ const CalendarPage = () => {
                         })}
                       </div>
                     </div>
-                    <div className="flex justify-end gap-2 pt-2">
-                      <Button type="button" variant="outline" onClick={resetEventForm}>Cancel</Button>
-                      <Button type="submit" disabled={createEventMutation.isPending || updateEventMutation.isPending}>
-                        {(createEventMutation.isPending || updateEventMutation.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                        {editingEvent ? 'Save' : 'Create'}
-                      </Button>
+                    </fieldset>
+                    <div className="flex flex-wrap justify-end gap-2 pt-2">
+                      {editingEvent && !editingReadOnly && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="mr-auto text-destructive hover:text-destructive"
+                          disabled={deleteEventMutation.isPending}
+                          onClick={() => requestDeleteEvent(editingEvent)}
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete
+                        </Button>
+                      )}
+                      <Button type="button" variant="outline" onClick={resetEventForm}>{editingReadOnly ? 'Close' : 'Cancel'}</Button>
+                      {!editingReadOnly && (
+                        <Button type="submit" disabled={createEventMutation.isPending || updateEventMutation.isPending}>
+                          {(createEventMutation.isPending || updateEventMutation.isPending) && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                          {editingEvent ? 'Save' : 'Create'}
+                        </Button>
+                      )}
                     </div>
                   </form>
                 </DialogContent>
@@ -987,7 +1205,10 @@ const CalendarPage = () => {
                     selectedDateEvents.map((event) => (
                       <div key={event.id} className="relative rounded border p-3" style={{ borderLeft: `4px solid ${event.color}` }}>
                         {event.todo_status === 'done' && <CheckCircle2 className="h-5 w-5 text-green-600 absolute right-2 top-2" />}
-                        <h4 className="font-semibold pr-7">{event.title}</h4>
+                        <h4 className="font-semibold pr-7 flex items-center gap-1.5">
+                          {event.recurrence && <Repeat className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="Repeats" />}
+                          <span className="min-w-0 break-words">{event.title}</span>
+                        </h4>
                         <div className="mt-1 text-sm text-muted-foreground flex items-center gap-2">
                           <Clock className="h-4 w-4" />
                           {event.all_day
@@ -1005,15 +1226,18 @@ const CalendarPage = () => {
                             <Edit className="h-3.5 w-3.5 mr-1" />
                             Edit
                           </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="text-destructive hover:text-destructive"
-                            onClick={() => deleteEventMutation.mutate(event.id)}
-                          >
-                            <Trash2 className="h-3.5 w-3.5 mr-1" />
-                            Delete
-                          </Button>
+                          {!isReadOnlyCalendar(event.calendar_id) && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="text-destructive hover:text-destructive"
+                              disabled={deleteEventMutation.isPending}
+                              onClick={() => requestDeleteEvent(event)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5 mr-1" />
+                              Delete
+                            </Button>
+                          )}
                         </div>
                         {event.attendees.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-2">
@@ -1070,6 +1294,36 @@ const CalendarPage = () => {
           </Card>
         </div>
       </div>
+
+      <AlertDialog open={pendingScope !== null} onOpenChange={(open) => { if (!open) setPendingScope(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingScope?.kind === 'update' ? 'Change repeating event' : pendingScope?.recurring ? 'Delete repeating event' : 'Delete event'}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingScope?.kind === 'update'
+                ? 'Apply the change to this event only, or to every event in the series? Changing the series time also resets ToDo progress of its events.'
+                : pendingScope?.recurring
+                  ? 'Delete only this event, or every event in the series? It is also deleted on the calendar server.'
+                  : `Delete “${pendingScope?.event.title ?? ''}”? It is also deleted on the calendar server.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            {pendingScope?.recurring ? (
+              <>
+                <AlertDialogAction className={buttonVariants({ variant: 'outline' })} onClick={() => runPendingScope('occurrence')}>
+                  This event
+                </AlertDialogAction>
+                <AlertDialogAction onClick={() => runPendingScope('series')}>All events</AlertDialogAction>
+              </>
+            ) : (
+              <AlertDialogAction onClick={() => runPendingScope()}>Delete</AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

@@ -16,6 +16,8 @@ export interface MailChangedEvent { accountId: string | null; reason: string | n
 export const LIVE_POLL_MS = { syncJobs: 60_000, writebacks: 60_000, mailList: 300_000 } as const;
 
 const SYNC_JOBS_KEY = ['mail-sync-jobs'] as const;
+// Calendar sync changes events, calendars, account status and the mail account's calendar section.
+const CALENDAR_ROOTS = new Set(['calendar-events', 'calendar-accounts', 'calendar-calendars', 'upcoming-events', 'mail-calendar']);
 const COUNT_ROOTS = new Set(['mail-unread-counts', 'dashboard-unread-mail', 'email-count', 'stats']);
 // Refetches of one kind of query start at most this often, however many events arrive.
 const COALESCE_MS = 1500;
@@ -24,7 +26,7 @@ const BACKOFF_MAX_MS = 5 * 60_000;
 // A connection that stayed open this long resets the backoff.
 const STABLE_MS = 30_000;
 
-type Group = 'jobs' | 'writebacks' | 'lists';
+type Group = 'jobs' | 'writebacks' | 'lists' | 'calendar';
 
 interface Options {
   client: QueryClient;
@@ -78,6 +80,7 @@ export function startServerEvents({
     lastRun.set(group, Date.now());
     if (group === 'jobs') void client.invalidateQueries({ queryKey: SYNC_JOBS_KEY });
     if (group === 'writebacks') void client.invalidateQueries({ queryKey: mailQueryKeys.writebacks });
+    if (group === 'calendar') void client.invalidateQueries({ predicate: query => CALENDAR_ROOTS.has(String(query.queryKey[0])) });
     if (group === 'lists') {
       const accounts = new Set(changedAccounts);
       const folders = foldersChanged;
@@ -113,6 +116,7 @@ export function startServerEvents({
     schedule('jobs');
     schedule('writebacks');
     schedule('lists');
+    schedule('calendar');
   }
 
   function close() {
@@ -154,6 +158,7 @@ export function startServerEvents({
       if (data?.reason === 'folders' || data?.reason === 'operation') foldersChanged = true;
       schedule('lists');
     }));
+    current.addEventListener('calendar.changed', live(() => schedule('calendar')));
     current.addEventListener('end', live(event => {
       const reason = parse<{ reason?: string }>(event)?.reason;
       close();

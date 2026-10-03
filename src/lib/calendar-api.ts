@@ -4,7 +4,10 @@ import { api } from '@/lib/api';
 
 export type TodoStatus = 'done' | 'changed' | 'time_moved' | 'cancelled' | null;
 export type CalendarRsvpStatus = 'needsAction' | 'accepted' | 'tentative' | 'declined';
-export type CalendarProvider = 'local';
+export type CalendarProvider = 'local' | 'caldav' | 'ics';
+export type CalendarSyncStatus = 'pending' | 'syncing' | 'ok' | 'error' | 'paused' | null;
+/** How an edit or delete of one occurrence of a synced series applies. */
+export type RecurrenceScope = 'occurrence' | 'series';
 
 export interface CalendarSubtask {
   id: string;
@@ -37,14 +40,43 @@ export interface CalendarAccount {
   provider: CalendarProvider;
   account_email: string | null;
   display_name: string | null;
+  username?: string | null;
+  discovery_url?: string | null;
+  base_url?: string | null;
   token_expires_at: null;
-  provider_config: Record<string, never>;
+  provider_config: {
+    server?: { url: string; source: 'manual' | 'provider' | 'dns' | 'well-known' | 'subscription'; label: string };
+    hint?: string | null;
+    timeZone?: string | null;
+  };
   capabilities: Record<string, unknown>;
   is_active: boolean;
+  sync_status?: CalendarSyncStatus;
+  sync_error?: string | null;
   last_synced_at: string | null;
+  next_sync_at?: string | null;
+  mail_account_id?: string | null;
   created_at: string;
   updated_at: string;
 }
+
+/** Calendar of a mail account, as shown on the mail account's edit page. */
+export interface MailCalendarLink {
+  enabled: boolean;
+  account: CalendarAccount | null;
+  calendars: Pick<CalendarCalendar, 'id' | 'name' | 'color' | 'read_only' | 'is_visible'>[];
+  event_count: number;
+  provider: { id: string; label: string; supported: boolean; hint: string | null } | null;
+}
+
+export const isRemoteCalendarAccount = (account?: Pick<CalendarAccount, 'provider'> | null) => (
+  account?.provider === 'caldav' || account?.provider === 'ics'
+);
+
+/** The browser's zone, used for floating and all-day times of synced events. */
+export const browserTimeZone = () => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined; } catch { return undefined; }
+};
 
 export interface CalendarCalendar {
   id: string;
@@ -174,20 +206,47 @@ export const calendarApi = {
     provider: CalendarProvider;
     account_email?: string | null;
     display_name?: string | null;
+    username?: string | null;
+    password?: string;
+    /** CalDAV server address (optional) or iCalendar subscription address. */
+    url?: string | null;
+    time_zone?: string;
     is_active?: boolean;
     default_calendar_name?: string;
     default_calendar_color?: string;
-  }): Promise<{ account: CalendarAccount }> {
-    const response = await api.post<{ account: CalendarAccount }>('/calendar/accounts', payload);
+  }): Promise<{ account: CalendarAccount; calendars?: CalendarCalendar[]; server?: { url: string; label: string }; hint?: string | null }> {
+    const response = await api.post<{ account: CalendarAccount; calendars?: CalendarCalendar[]; server?: { url: string; label: string }; hint?: string | null }>('/calendar/accounts', payload);
     if (response.error) throw new Error(response.error);
     if (!response.data?.account) throw new Error('Calendar account response missing');
     return response.data;
+  },
+
+  async syncAccount(id: string): Promise<CalendarAccount | null> {
+    const response = await api.post<{ account: CalendarAccount | null }>(`/calendar/accounts/${encodeURIComponent(id)}/sync`, {});
+    if (response.error) throw new Error(response.error);
+    return response.data?.account ?? null;
+  },
+
+  async fetchMailCalendar(mailAccountId: string, signal?: AbortSignal): Promise<MailCalendarLink> {
+    const response = await api.get<{ calendar: MailCalendarLink }>(`/mail/accounts/${encodeURIComponent(mailAccountId)}/calendar`, { signal });
+    if (response.error) throw new Error(response.error);
+    if (!response.data?.calendar) throw new Error('Calendar settings response missing');
+    return response.data.calendar;
+  },
+
+  /** caldav_url: omitted keeps the current address, '' finds it automatically. */
+  async setMailCalendar(mailAccountId: string, payload: { enabled: boolean; caldav_url?: string; time_zone?: string }): Promise<MailCalendarLink> {
+    const response = await api.put<{ calendar: MailCalendarLink }>(`/mail/accounts/${encodeURIComponent(mailAccountId)}/calendar`, payload);
+    if (response.error) throw new Error(response.error);
+    if (!response.data?.calendar) throw new Error('Calendar settings response missing');
+    return response.data.calendar;
   },
 
   async updateAccount(id: string, payload: Partial<{
     account_email: string | null;
     display_name: string | null;
     is_active: boolean;
+    password: string;
   }>): Promise<CalendarAccount> {
     const response = await api.put<{ account: CalendarAccount }>(`/calendar/accounts/${id}`, payload);
     if (response.error) throw new Error(response.error);
@@ -245,12 +304,16 @@ export const calendarApi = {
     return normalizeEvent(event);
   },
 
-  async updateEvent(id: string, payload: Partial<CalendarEvent>): Promise<CalendarEvent> {
-    const response = await api.put<{ event: CalendarEvent }>(`/calendar/events/${id}`, payload);
+  /**
+   * A synced recurring event changed for the whole series comes back as
+   * `replaced`: its occurrences were rebuilt and the edited id is gone.
+   */
+  async updateEvent(id: string, payload: Partial<CalendarEvent>, scope?: RecurrenceScope): Promise<{ event: CalendarEvent | null; replaced: boolean }> {
+    const response = await api.put<{ event: CalendarEvent | null; replaced?: boolean }>(`/calendar/events/${id}`, scope ? { ...payload, scope } : payload);
     if (response.error) throw new Error(response.error);
-    const event = response.data?.event;
-    if (!event) throw new Error('Event response missing');
-    return normalizeEvent(event);
+    const event = response.data?.event ?? null;
+    if (!event && !response.data?.replaced) throw new Error('Event response missing');
+    return { event: event ? normalizeEvent(event) : null, replaced: response.data?.replaced === true };
   },
 
   async updateTodoStatus(
@@ -264,8 +327,8 @@ export const calendarApi = {
     return normalizeEvent(event);
   },
 
-  async deleteEvent(id: string): Promise<void> {
-    const response = await api.delete(`/calendar/events/${id}`);
+  async deleteEvent(id: string, scope?: RecurrenceScope): Promise<void> {
+    const response = await api.delete(`/calendar/events/${id}${scope ? `?scope=${scope}` : ''}`);
     if (response.error) throw new Error(response.error);
   },
 

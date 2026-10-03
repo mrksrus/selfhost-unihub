@@ -4,6 +4,7 @@ const fs = require('fs');
 const { db } = require('../state');
 const { DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } = require('./mail');
 const { resolveCalDavUrl } = require('../security/caldav-transport');
+const { accountCredentialScope } = require('./caldav');
 const { chooseTargetId, writeOwnedRow, resolveOwnedReference, assertOwnedRelationship } = require('./backup-ownership');
 const { inspectRecordingAudio } = require('./recording-audio');
 const { normalizeBackupPayload } = require('./backup-format');
@@ -230,13 +231,13 @@ async function importBackupForUser(userId, backup, {
       const targetAccountId = await resolveOwnedReference(connection, userId, 'calendar_accounts', row.account_id, calendarAccountIdMap);
       if (row.external_id) {
         const [accounts] = await connection.execute(
-          'SELECT provider, discovery_url, base_url FROM calendar_accounts WHERE id = ? AND user_id = ?', [targetAccountId, userId]
+          'SELECT provider, discovery_url, base_url, provider_config FROM calendar_accounts WHERE id = ? AND user_id = ?', [targetAccountId, userId]
         );
         const account = accounts[0];
         if (account?.provider === 'caldav') {
           try {
-            const origin = account.discovery_url || account.base_url;
-            resolveCalDavUrl(row.external_id, account.base_url || origin, origin);
+            const scope = accountCredentialScope(account);
+            resolveCalDavUrl(row.external_id, account.base_url || account.discovery_url, scope);
           } catch (error) {
             await connection.execute('UPDATE calendar_accounts SET is_active = FALSE WHERE id = ? AND user_id = ?', [targetAccountId, userId]);
             validation.warnings.push(`Restored calendar account ${targetAccountId} is inactive: ${error.message}`);

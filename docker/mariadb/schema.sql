@@ -80,10 +80,13 @@ CREATE TABLE `calendar_accounts` (
   `last_synced_at` timestamp NULL DEFAULT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `mail_account_id` char(36) DEFAULT NULL,
+  `next_sync_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_calendar_accounts_user` (`user_id`),
   KEY `idx_calendar_accounts_provider` (`provider`),
   KEY `idx_calendar_accounts_active` (`user_id`,`is_active`),
+  KEY `idx_calendar_accounts_mail` (`user_id`,`mail_account_id`),
   CONSTRAINT `calendar_accounts_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -101,6 +104,8 @@ CREATE TABLE `calendar_calendars` (
   `sync_token` text DEFAULT NULL COMMENT 'provider incremental sync token',
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `remote_ctag` varchar(255) DEFAULT NULL,
+  `remote_expanded_on` date DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_calendar_external` (`account_id`,`external_id`),
   KEY `idx_calendar_calendars_user` (`user_id`),
@@ -142,11 +147,14 @@ CREATE TABLE `calendar_event_external_refs` (
   `last_synced_at` timestamp NULL DEFAULT current_timestamp(),
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `remote_object_id` char(36) DEFAULT NULL,
+  `recurrence_id` varchar(64) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_provider_event` (`account_id`,`external_event_id`),
   KEY `calendar_id` (`calendar_id`),
   KEY `idx_event_refs_user` (`user_id`),
   KEY `idx_event_refs_event` (`event_id`),
+  KEY `idx_event_refs_remote_object` (`remote_object_id`),
   CONSTRAINT `calendar_event_external_refs_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `calendar_event_external_refs_ibfk_2` FOREIGN KEY (`event_id`) REFERENCES `calendar_events` (`id`) ON DELETE CASCADE,
   CONSTRAINT `calendar_event_external_refs_ibfk_3` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE,
@@ -197,6 +205,27 @@ CREATE TABLE `calendar_events` (
   KEY `idx_events_notification_scan` (`updated_at`,`start_time`),
   CONSTRAINT `calendar_events_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_calendar_events_calendar_id` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `calendar_remote_objects` (
+  `id` char(36) NOT NULL,
+  `user_id` char(36) NOT NULL,
+  `account_id` char(36) NOT NULL,
+  `calendar_id` char(36) NOT NULL,
+  `href` text NOT NULL,
+  `href_hash` char(64) NOT NULL,
+  `etag` varchar(255) DEFAULT NULL,
+  `uid` varchar(500) DEFAULT NULL,
+  `ics` mediumtext NOT NULL,
+  `created_at` timestamp NULL DEFAULT current_timestamp(),
+  `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_calendar_remote_object` (`calendar_id`,`href_hash`),
+  KEY `user_id` (`user_id`),
+  KEY `idx_calendar_remote_objects_account` (`account_id`),
+  CONSTRAINT `calendar_remote_objects_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `calendar_remote_objects_ibfk_2` FOREIGN KEY (`account_id`) REFERENCES `calendar_accounts` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `calendar_remote_objects_ibfk_3` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `contacts` (

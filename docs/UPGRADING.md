@@ -5,6 +5,23 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.17.0 Calendar sync
+
+The database upgrade runs at startup (migration 12, `calendar-sync`): new
+columns on the calendar tables and a new `calendar_remote_objects` table. No
+data is removed by the upgrade.
+
+- **Calendars imported by 0.16 or earlier start syncing.** They are linked to
+  the mail account with the same address when its settings are opened. Their
+  first sync replaces the imported events, so the ToDo status and subtasks of
+  those events start empty.
+- **Gmail, Outlook and Exchange accounts** have no CalDAV with a password. To
+  see their calendar, paste the calendar's secret or published ICS address in
+  the mail account's Calendar section (read-only).
+- **Outbound network.** Calendar servers are contacted every 15 minutes per
+  account. Servers at private addresses still need `TRUSTED_MAIL_HOSTS`.
+- **Service worker.** Reload UniHub or accept the update prompt.
+
 ## 0.16.0 MariaDB
 
 **UniHub now runs on MariaDB instead of MySQL. There is no in-place upgrade.**

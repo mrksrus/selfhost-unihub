@@ -51,6 +51,7 @@ background jobs and do not depend on the proxy connection after job creation.
 | `api/src/services/mail-sync-state.js` | Per-folder UID progress and resets |
 | `api/src/services/mail-idle.js` | IMAP IDLE supervisor: one read-only INBOX session per eligible account; changes become ordinary durable jobs |
 | `api/src/services/offline.js` | Owner-scoped, size-bounded offline snapshots |
+| `api/src/services/caldav.js`, `calendar-sync.js`, `calendar-ical.js`, `calendar-accounts.js` | CalDAV discovery and requests, the sync engine and writeback, iCalendar parsing and recurrence expansion, calendars of mail accounts |
 | `api/src/services/notifications.js` | Durable notification events, delivery state and reminder worker |
 | `api/src/security/encryption.js` | AES-256-GCM helpers |
 | `api/src/security/client-ip.js`, `login-limits.js` | Explicit proxy trust and separate IP/account attempt budgets |

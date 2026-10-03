@@ -142,6 +142,15 @@ async function start() {
   setTimeout(pruneMailJobs, 60 * 1000).unref?.();
   setInterval(pruneMailJobs, 60 * 60 * 1000);
 
+  // Each calendar account schedules its own next sync (next_sync_at); this
+  // timer only picks up the accounts that are due. A restart interrupts runs.
+  const { runCalendarSyncPass } = require('./services/calendar-sync');
+  await db.execute("UPDATE calendar_accounts SET sync_status = 'pending' WHERE sync_status = 'syncing'")
+    .catch(error => console.error('[CALENDAR] Could not reset interrupted syncs:', error.message));
+  const runCalendarSync = () => runCalendarSyncPass().catch(error => console.error('[CALENDAR] Sync pass failed:', error.message));
+  setTimeout(runCalendarSync, 20 * 1000).unref?.();
+  setInterval(runCalendarSync, 60 * 1000);
+
   setInterval(async () => {
     try {
       const deleted = await cleanupExpiredRecordingUploads();
