@@ -153,14 +153,66 @@ Endpoints:
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| GET | `/api/auth/2fa/status` | Current 2FA status and recovery-code count |
+| GET | `/api/auth/2fa/status` | Current 2FA status, recovery-code count and `secretReadable` |
 | POST | `/api/auth/2fa/setup/start` | Generate secret and `otpauth_uri` |
 | POST | `/api/auth/2fa/setup/confirm` | Verify code, enable 2FA, return recovery codes |
 | POST | `/api/auth/2fa/disable` | Require current password and second factor |
 | POST | `/api/auth/2fa/recovery-codes/regenerate` | Require second factor and return new recovery codes |
 | POST | `/api/auth/2fa/login` | Complete sign-in challenge |
 
-Disabling 2FA deletes all other sessions for the user.
+Setup in **Settings > Security** shows a QR code, the setup key and an **Open
+in authenticator app** link (the `otpauth://` URI, for an authenticator on the
+same device). The QR code is drawn in the browser, so the secret is not sent to
+any other service. Enabling and disabling 2FA both delete all other sessions of
+the user: sessions opened with the password alone end when 2FA is turned on.
+
+Regenerating recovery codes accepts an authenticator code or a recovery code.
+
+### When ENCRYPTION_KEY changed
+
+The authenticator secret is encrypted with `ENCRYPTION_KEY`. After that key
+changes, the secret can no longer be read, so authenticator codes stop working.
+Recovery codes are bcrypt hashes and keep working:
+
+- sign-in with a recovery code still succeeds
+- `GET /api/auth/2fa/status` returns `secretReadable: false` and Settings shows
+  a warning instead of **New Recovery Codes**
+- regenerating recovery codes returns `409` before checking the code, so no
+  recovery code is used up
+- the fix is to disable 2FA with a recovery code and set it up again
+
+Without recovery codes, an admin resets 2FA for the user (below).
+
+### Admin reset
+
+`POST /api/admin/users/:id/2fa/reset` with `{ "current_password": "..." }` is
+for a user who lost both the authenticator and the recovery codes. In **Admin >
+Users**, accounts with 2FA show a **2FA** badge and a **Reset 2FA** button.
+
+- the admin confirms with their own password; each admin gets 10 attempts per
+  10 minutes (`429` with `Retry-After` after that)
+- admins cannot reset their own 2FA here (`400`); they turn it off in Settings,
+  which needs a code, so a stolen admin session cannot remove it
+- the reset clears the secret and recovery codes, deletes the user's pending
+  sign-in challenges and all their sessions, and closes their live connections
+- the user then signs in with their password and can set up 2FA again
+
+Check that the request really comes from the user before resetting.
+
+If the only admin has lost both the authenticator and the recovery codes, turn
+2FA off in the database. With the bundled MariaDB container:
+
+```sh
+docker exec -it unihub-db mariadb -u unihub -p unihub
+```
+
+```sql
+UPDATE users
+SET two_factor_enabled = FALSE, encrypted_two_factor_secret = NULL, two_factor_recovery_codes = NULL
+WHERE email = 'admin@example.com';
+```
+
+Then sign in with the password and set up 2FA again.
 
 ## Auth and Profile Endpoints
 
@@ -185,6 +237,7 @@ Admin routes require an authenticated user whose `users.role` is `admin`.
 | DELETE | `/api/admin/users/:id` | Delete user |
 | PUT | `/api/admin/users/:id/role` | Set role to `user` or `admin` |
 | PUT | `/api/admin/users/:id/activate` | Activate/deactivate user |
+| POST | `/api/admin/users/:id/2fa/reset` | Turn off another user's 2FA and delete their sessions; needs the admin's password |
 | GET | `/api/admin/storage` | Aggregate server storage counts and byte usage |
 | GET | `/api/admin/settings/signup-mode` | Read signup mode |
 | PUT | `/api/admin/settings/signup-mode` | Set signup mode |
@@ -195,6 +248,7 @@ Safety checks:
 - the last active admin cannot be deleted
 - the last active admin cannot be demoted
 - the last active admin cannot be deactivated
+- admins cannot reset their own 2FA through the admin endpoint
 - deactivating a user deletes their sessions
 
 The storage overview returns aggregate counts and byte totals for mail

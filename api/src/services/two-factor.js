@@ -147,15 +147,23 @@ async function verifyRecoveryCode(code, recoveryHashes) {
   return { ok: false, nextHashes: recoveryHashes };
 }
 
+/** Authenticator secret of a user row, or null when it is missing or ENCRYPTION_KEY changed since it was stored. */
+function readTwoFactorSecret(userRow) {
+  return userRow?.encrypted_two_factor_secret ? decrypt(userRow.encrypted_two_factor_secret) : null;
+}
+
 async function getTwoFactorStatus(userId) {
   const [rows] = await db.execute(
-    'SELECT two_factor_enabled, two_factor_recovery_codes FROM users WHERE id = ?',
+    'SELECT two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE id = ?',
     [userId]
   );
   if (rows.length === 0) return null;
+  const enabled = !!rows[0].two_factor_enabled;
   return {
-    enabled: !!rows[0].two_factor_enabled,
+    enabled,
     recoveryCodesRemaining: parseRecoveryHashes(rows[0].two_factor_recovery_codes).length,
+    // false: authenticator codes cannot be checked; only recovery codes still work.
+    secretReadable: !enabled || readTwoFactorSecret(rows[0]) !== null,
   };
 }
 
@@ -173,8 +181,8 @@ async function enableTwoFactor(userId, secret) {
   return recoveryCodes;
 }
 
-async function disableTwoFactor(userId) {
-  await db.execute(
+async function disableTwoFactor(userId, connection = db) {
+  await connection.execute(
     `UPDATE users
      SET two_factor_enabled = FALSE,
          encrypted_two_factor_secret = NULL,
@@ -187,7 +195,7 @@ async function disableTwoFactor(userId) {
 async function verifyUserSecondFactor(userRow, code, connection = db) {
   if (!userRow?.two_factor_enabled) return { ok: true, usedRecoveryCode: false };
 
-  const secret = userRow.encrypted_two_factor_secret ? decrypt(userRow.encrypted_two_factor_secret) : null;
+  const secret = readTwoFactorSecret(userRow);
   if (secret && verifyTotp(secret, code)) {
     return { ok: true, usedRecoveryCode: false };
   }
@@ -251,6 +259,7 @@ module.exports = {
   generateRecoveryCodes,
   hashRecoveryCodes,
   parseRecoveryHashes,
+  readTwoFactorSecret,
   getTwoFactorStatus,
   enableTwoFactor,
   disableTwoFactor,

@@ -24,6 +24,7 @@ const {
   enableTwoFactor,
   disableTwoFactor,
   verifyUserSecondFactor,
+  readTwoFactorSecret,
   createTwoFactorLoginChallenge,
   consumeTwoFactorLoginChallenge,
   deleteTwoFactorLoginChallenge,
@@ -63,6 +64,9 @@ function checkLoginBudget(res, scope, identity) {
   res?.setHeader('Retry-After', String(retryAfter));
   return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
 }
+
+const UNREADABLE_SECRET_MESSAGE = 'The authenticator key can no longer be read because the server encryption key changed. '
+  + 'Turn two-factor authentication off with a recovery code and set it up again.';
 
 function validCredentials(email, password) {
   return typeof email === 'string' && email.trim().length > 0 && email.length <= 254
@@ -322,6 +326,10 @@ module.exports = {
         return { error: 'Two-factor authentication is already enabled', status: 400 };
       }
       const recoveryCodes = await enableTwoFactor(userId, secret);
+      // Sessions on other devices were opened with the password alone.
+      const currentToken = getAuthTokenFromRequest(req) || '';
+      await db.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, currentToken]);
+      serverEvents.closeUser(userId, { exceptToken: currentToken });
       return {
         enabled: true,
         recoveryCodes,
@@ -376,10 +384,11 @@ module.exports = {
       );
       if (users.length === 0) return { error: 'User not found', status: 404 };
       if (!users[0].two_factor_enabled) return { error: 'Two-factor authentication is not enabled', status: 400 };
+      // Checked first, so a recovery code is not used up by a request that cannot succeed.
+      const secret = readTwoFactorSecret(users[0]);
+      if (!secret) return { error: UNREADABLE_SECRET_MESSAGE, status: 409 };
       const verification = await verifyUserSecondFactor(users[0], code);
       if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
-      const secret = users[0].encrypted_two_factor_secret ? require('../security/encryption').decrypt(users[0].encrypted_two_factor_secret) : null;
-      if (!secret) return { error: 'Two-factor secret is unavailable', status: 500 };
       const recoveryCodes = await enableTwoFactor(userId, secret);
       return {
         recoveryCodes,

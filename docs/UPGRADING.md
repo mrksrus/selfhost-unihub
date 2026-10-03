@@ -5,6 +5,11 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.17.3 Two-factor authentication fixes
+
+No database upgrade or configuration change. Users who turn on 2FA after the
+upgrade are signed out on their other devices.
+
 ## 0.17.2 Connect calendar
 
 No database upgrade or configuration change.

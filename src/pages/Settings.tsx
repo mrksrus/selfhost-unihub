@@ -4,6 +4,7 @@ import AppearanceSettings from '@/components/theme/AppearanceSettings';
 import { lazy, Suspense, useState, useEffect } from 'react';
 import type { User as AuthUser } from '@/contexts/auth-context';
 import NotificationSettings from '@/components/pwa/NotificationSettings';
+import { TotpQrCode } from '@/components/settings/TotpQrCode';
 const BackupSettings = lazy(() => import('@/components/settings/BackupSettings'));
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
@@ -96,6 +97,7 @@ type UserPreferences = {
 type TwoFactorStatus = {
   enabled: boolean;
   recoveryCodesRemaining: number;
+  secretReadable?: boolean;
 };
 
 type TwoFactorSetup = {
@@ -850,11 +852,18 @@ const Settings = () => {
                       ? `Enabled. ${twoFactorStatus.recoveryCodesRemaining} recovery code${twoFactorStatus.recoveryCodesRemaining === 1 ? '' : 's'} remaining.`
                       : 'Require an authenticator code when signing in.'}
                   </p>
+                  {twoFactorStatus?.enabled && twoFactorStatus.secretReadable === false && (
+                    <p className="text-sm text-destructive mt-1" role="alert">
+                      Authenticator codes cannot be checked because the server encryption key changed. Turn two-factor
+                      authentication off with a recovery code and set it up again.
+                    </p>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {twoFactorStatus?.enabled ? (
                     <>
-                      <Dialog open={twoFactorRecoveryOpen} onOpenChange={(open) => {
+                      {/* New codes need a readable authenticator key; without one the server refuses. */}
+                      {twoFactorStatus.secretReadable !== false && <Dialog open={twoFactorRecoveryOpen} onOpenChange={(open) => {
                         setTwoFactorRecoveryOpen(open);
                         if (!open) setTwoFactorCode('');
                       }}>
@@ -887,7 +896,7 @@ const Settings = () => {
                             </div>
                           </div>
                         </DialogContent>
-                      </Dialog>
+                      </Dialog>}
                       <Dialog open={twoFactorDisableOpen} onOpenChange={(open) => {
                         setTwoFactorDisableOpen(open);
                         if (!open) setTwoFactorDisableForm({ current_password: '', code: '' });
@@ -974,20 +983,25 @@ const Settings = () => {
               {!newRecoveryCodes ? (
                 <>
                   <p className="text-sm text-muted-foreground">
-                    Add this account to your authenticator app using the manual key below, then enter the 6-digit code it shows.
+                    Scan the code with your authenticator app, or on this device open it in the app or type the key.
+                    Then enter the 6-digit code the app shows.
                   </p>
-                  <div className="space-y-2">
-                    <Label>Manual setup key</Label>
-                    <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-sm break-all">
-                      {twoFactorSetup?.secret}
+                  {twoFactorSetup?.otpauth_uri && (
+                    <div className="flex flex-col items-center gap-3 sm:flex-row sm:items-start">
+                      <TotpQrCode uri={twoFactorSetup.otpauth_uri} />
+                      <div className="w-full min-w-0 space-y-3">
+                        <div className="space-y-2">
+                          <Label>Setup key</Label>
+                          <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-sm break-all">
+                            {twoFactorSetup.secret}
+                          </div>
+                        </div>
+                        <Button variant="outline" asChild className="w-full sm:w-auto">
+                          <a href={twoFactorSetup.otpauth_uri}>Open in authenticator app</a>
+                        </Button>
+                      </div>
                     </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Authenticator URI</Label>
-                    <div className="rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs break-all">
-                      {twoFactorSetup?.otpauth_uri}
-                    </div>
-                  </div>
+                  )}
                   <div className="space-y-2">
                     <Label htmlFor="confirm2faCode">Authentication code</Label>
                     <Input
@@ -1009,7 +1023,8 @@ const Settings = () => {
               ) : (
                 <>
                   <p className="text-sm text-muted-foreground">
-                    Two-factor authentication is enabled. Store these recovery codes now; they will not be shown again.
+                    Two-factor authentication is enabled and your other devices were signed out. Store these recovery
+                    codes now; they will not be shown again.
                   </p>
                   <div className="grid grid-cols-2 gap-2 rounded-md border border-border p-3 font-mono text-sm">
                     {newRecoveryCodes.map((code) => <span key={code}>{code}</span>)}
