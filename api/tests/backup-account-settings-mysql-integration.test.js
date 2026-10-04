@@ -127,17 +127,17 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   destination('services/calendar-sync').syncCalendarAccountInBackground = (accountId, options) => { started_syncs.push(['calendar', accountId, options.userId]); };
 
   const restoreJobs = destination('services/backup-restore-jobs');
-  async function restore() {
+  async function restore(userId = destinationUser) {
     const upload = path.join(directory, uuid() + '.upload');
     await fs.writeFile(upload, bytes);
-    const created = await restoreJobs.createUploadedRestoreJob(destinationUser, upload, { sections: 'full', conflict_mode: 'replace', credentials_mode: 'restore' });
+    const created = await restoreJobs.createUploadedRestoreJob(userId, upload, { sections: 'full', conflict_mode: 'replace', credentials_mode: 'restore' });
     assert.equal(created.status, 'awaiting_password');
-    await restoreJobs.unlockRestoreJob(destinationUser, created.id, password);
-    const validated = await waitFor(() => restoreJobs.getRestoreJob(destinationUser, created.id), job => job?.status === 'validated', 'Validation');
+    await restoreJobs.unlockRestoreJob(userId, created.id, password);
+    const validated = await waitFor(() => restoreJobs.getRestoreJob(userId, created.id), job => job?.status === 'validated', 'Validation');
     assert.deepEqual(validated.validation_result.account_only_sections, ['calendar', 'mail']);
     assert.deepEqual(validated.validation_result.counts, { user_settings: 1, calendar_accounts: 3, mail_accounts: 1 });
-    await restoreJobs.startRestoreJob(destinationUser, created.id);
-    return waitFor(() => restoreJobs.getRestoreJob(destinationUser, created.id), job => job?.status === 'completed', 'Restore');
+    await restoreJobs.startRestoreJob(userId, created.id);
+    return waitFor(() => restoreJobs.getRestoreJob(userId, created.id), job => job?.status === 'completed', 'Restore');
   }
 
   await restore();
@@ -192,4 +192,20 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.deepEqual(started_syncs, []);
   assert.equal((await pool.execute('SELECT id FROM mail_engine_jobs WHERE mail_account_id = ?', [restoredMail.id]))[0].length, 1);
+
+  // With Mail disabled the first download waits, paused like the user's other
+  // accounts, and runs once Mail is turned on, even with background sync off.
+  const disabledUser = await newUser('accounts-mail-disabled');
+  await destination('services/module-settings').setUserModules(disabledUser, { modules: { mail: { enabled: false } } });
+  started_syncs.length = 0;
+  await restore(disabledUser);
+  const waiting = (await rows('mail_accounts', disabledUser))[0];
+  assert.equal(waiting.is_active, 1);
+  const engineState = async () => (await pool.execute(`SELECT j.state, a.paused_reason FROM mail_engine_jobs j
+    JOIN mail_engine_accounts a ON a.mail_account_id = j.mail_account_id WHERE j.mail_account_id = ?`, [waiting.id]))[0];
+  assert.deepEqual(await engineState(), [{ state: 'paused', paused_reason: 'Mail module disabled' }]);
+  await waitFor(async () => started_syncs, calls => calls.length === 3, 'Calendar sync start');
+  assert.equal(started_syncs.some(call => call[0] === 'mail'), false, 'Disabled Mail is not woken');
+  await destination('routes/modules')['PUT /api/modules']({}, disabledUser, { modules: { mail: { enabled: true, background: false } } });
+  assert.deepEqual(await engineState(), [{ state: 'queued', paused_reason: null }]);
 });

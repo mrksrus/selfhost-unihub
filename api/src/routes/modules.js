@@ -21,12 +21,14 @@ module.exports = {
         } else {
           // Background off is a scheduling preference enforced at admission,
           // not an account fence: user Sync/flag/move work must keep running
-          // without clearing it. Only queued/running read work is dropped.
+          // without clearing it. Only queued/running background read work is
+          // dropped; a requested Sync, such as a restored account's first
+          // download, resumes.
           for (const account of accounts) {
             if (Number(account.is_active) && !account.disconnected_at)
               await require('../services/mail-engine/runtime').resumeAccount({ userId, accountId: account.id,
                 resumeStreams: mail.background, reasons: USER_PAUSES });
-            if (!mail.background) await cancelMailAccountSync(account.id);
+            if (!mail.background) await cancelMailAccountSync(account.id, { keepManual: true });
           }
           // The IDLE session is background work: close it now, or start it
           // without waiting for the supervisor's next eligibility pass.

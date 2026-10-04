@@ -206,10 +206,13 @@ async function resumeAccount({ userId, accountId, resumeStreams = true, reasons 
       lease_owner = NULL, lease_until = NULL, completed_at = UTC_TIMESTAMP(),
       error = 'Reconnect retained prior provider intent for review; this historical job was not replayed'
       WHERE mail_account_id = ? AND user_id = ? AND state = 'paused' AND NOT (${readOnly})`, [accountId, userId]);
-    const [resumed] = resumeStreams ? await cx.execute(`UPDATE mail_engine_jobs SET state = 'queued', cancellation_requested = FALSE,
+    // Without streams, background read work stays paused until an explicit
+    // Sync; a Sync the user already requested (manual_refresh) resumes now.
+    const [resumed] = await cx.execute(`UPDATE mail_engine_jobs SET state = 'queued', cancellation_requested = FALSE,
       lease_owner = NULL, lease_until = NULL, worker_generation = NULL, due_at = UTC_TIMESTAMP(),
       phase = 'revalidation', completed_at = NULL, error = NULL
-      WHERE mail_account_id = ? AND user_id = ? AND state = 'paused' AND (${readOnly})`, [accountId, userId]) : [{ affectedRows: 0 }];
+      WHERE mail_account_id = ? AND user_id = ? AND state = 'paused' AND (${readOnly})${resumeStreams ? '' : ' AND manual_refresh = TRUE'}`,
+    [accountId, userId]);
     return { resumed: resumed.affectedRows, retired: retired.affectedRows };
   });
 }

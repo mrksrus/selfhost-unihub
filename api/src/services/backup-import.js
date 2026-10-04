@@ -10,6 +10,7 @@ const { inspectRecordingAudio } = require('./recording-audio');
 const { normalizeBackupPayload } = require('./backup-format');
 const { restoreMailRecovery, validateRestoredMailDestinations } = require('./backup-mail-recovery');
 const { pauseMailRestore, restoreMailEngineEvidence } = require('./backup-mail-engine');
+const { isModuleEnabled } = require('./module-settings');
 const {
   isFileRangeSource,
   normalizeMysqlDateTime,
@@ -435,10 +436,13 @@ async function importBackupForUser(userId, backup, {
           // The first download is queued in the restore transaction, so it is not
           // lost if the process stops right after the restore completes. It is
           // user initiated like a new account's, so it runs with background
-          // sync off.
-          await require('./mail-engine/runtime').enqueueJob({ userId, accountId: targetAccountId,
+          // sync off. With Mail disabled it waits, paused like the user's other
+          // accounts, until Mail is turned on.
+          const runtime = require('./mail-engine/runtime');
+          await runtime.enqueueJob({ userId, accountId: targetAccountId,
             kind: 'sync', priority: 5, manualRefresh: true }, connection);
-          startMailAccountIds.push(targetAccountId);
+          if (await isModuleEnabled(userId, 'mail', connection)) startMailAccountIds.push(targetAccountId);
+          else await runtime.pauseAccount({ userId, accountId: targetAccountId, reason: 'Mail module disabled' }, connection);
         }
         continue;
       }

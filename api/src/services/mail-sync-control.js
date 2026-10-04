@@ -20,7 +20,8 @@ function normalizeSyncFetchLimit(value, fallbackValue = DEFAULT_MAIL_SYNC_FETCH_
   return normalized;
 }
 
-async function cancelMailAccountSync(accountId) {
+// keepManual leaves user-requested sync jobs (manual_refresh) queued.
+async function cancelMailAccountSync(accountId, { keepManual = false } = {}) {
   // HTTP /sync/cancel is read-only. Accepted operation/reconcile jobs remain
   // runnable and keep their dispatch/uncertainty journal intact.
   const key = normalizeMailAccountId(accountId);
@@ -30,7 +31,7 @@ async function cancelMailAccountSync(accountId) {
   for (;;) {
     const [jobs] = await db.execute(`SELECT id FROM mail_engine_jobs WHERE user_id = ? AND mail_account_id = ?
       AND kind IN (${[...READ_ONLY_MAIL_JOB_KINDS].map(() => '?').join(',')})
-      AND state IN ('queued','running') AND id > ? ORDER BY id LIMIT 100`,
+      AND state IN ('queued','running')${keepManual ? ' AND manual_refresh = FALSE' : ''} AND id > ? ORDER BY id LIMIT 100`,
     [accounts[0].user_id, key, ...READ_ONLY_MAIL_JOB_KINDS, cursor]);
     if (!jobs.length) break;
     for (const job of jobs) {

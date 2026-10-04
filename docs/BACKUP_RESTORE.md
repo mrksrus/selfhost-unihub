@@ -71,7 +71,8 @@ Restoring it is like signing in to each account again:
 - mail accounts keep their mode and windows. A Sync account's policy is
   confirmed, because nothing was imported that a provider sync could delete
 - after the restore, mail sync starts and downloads mail per the account's
-  settings, as for a newly added account, also when background sync is off;
+  settings, as for a newly added account, also when background sync is off.
+  If Mail is turned off, the download waits and starts when Mail is turned on;
   calendar sync discovers the calendars again and downloads events
 - an account that is already connected (same email address or ID) is left
   unchanged and reported as a warning. Other accounts are not paused

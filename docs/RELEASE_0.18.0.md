@@ -20,6 +20,9 @@ No database upgrade. See [Account Settings Backup](https://github.com/mrksrus/se
 
 ### Changed
 
+- **Turning Mail back on resumes a Sync you asked for.** A Sync that was
+  waiting while Mail was turned off now continues when Mail is turned on, also
+  with background sync off. Background sync work still waits for the next Sync.
 - **Clearer backup names.** Saved backups and restore reviews show section
   names, such as "Settings, Account settings backup", instead of internal IDs.
 
