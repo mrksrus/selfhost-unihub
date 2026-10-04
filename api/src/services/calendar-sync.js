@@ -551,21 +551,25 @@ async function pauseCalendarsOfDisconnectedMail() {
   }
 }
 
-// The reverse: a calendar paused by a mail disconnect (marked by its message)
-// whose mail account is connected again but missed the reconnect's handover,
-// because Calendar was off or being restored or the update failed.
-const PAUSED_FOR_RECONNECTED_MAIL = `ca.provider = 'caldav' AND ca.is_active = FALSE AND ca.sync_status = 'paused' AND ca.sync_error = ?
-  AND m.is_active = TRUE AND m.disconnected_at IS NULL AND m.encrypted_password IS NOT NULL`;
+// The reverse: a linked calendar that missed a mail reconnect or login change
+// (Calendar was off or being restored, or the update failed) is paused by the
+// disconnect (marked by its message) or holds an older copy of the mail login.
+// A linked calendar always uses the mail login; the copy is the same ciphertext.
+const LINKED_MISSING_MAIL_LOGIN = `ca.provider = 'caldav'
+  AND m.is_active = TRUE AND m.disconnected_at IS NULL AND m.encrypted_password IS NOT NULL
+  AND ((ca.is_active = FALSE AND ca.sync_status = 'paused' AND ca.sync_error = ?)
+    OR NOT (ca.encrypted_password <=> m.encrypted_password)
+    OR NOT (ca.username <=> COALESCE(NULLIF(m.username, ''), m.email_address)))`;
 
-async function resumeCalendarsOfReconnectedMail() {
+async function refreshCalendarsOfConnectedMail() {
   const [users] = await db.execute(`SELECT DISTINCT ca.user_id FROM calendar_accounts ca
-    JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ${PAUSED_FOR_RECONNECTED_MAIL}`, [MAIL_DISCONNECTED_MESSAGE]);
+    JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ${LINKED_MISSING_MAIL_LOGIN}`, [MAIL_DISCONNECTED_MESSAGE]);
   const { updateLinkedCalendarCredentials } = require('./calendar-accounts');
   for (const { user_id: userId } of users) {
     if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) continue;
     const [rows] = await db.execute(`SELECT DISTINCT ca.mail_account_id FROM calendar_accounts ca
       JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
-      WHERE ca.user_id = ? AND ${PAUSED_FOR_RECONNECTED_MAIL}`, [userId, MAIL_DISCONNECTED_MESSAGE]);
+      WHERE ca.user_id = ? AND ${LINKED_MISSING_MAIL_LOGIN}`, [userId, MAIL_DISCONNECTED_MESSAGE]);
     for (const row of rows) await updateLinkedCalendarCredentials(userId, row.mail_account_id);
   }
 }
@@ -662,7 +666,7 @@ async function runCalendarSyncPass() {
   let synced = 0;
   try {
     await pauseCalendarsOfDisconnectedMail().catch(error => console.warn('[CALENDAR] Could not pause calendars of disconnected mail:', error.message));
-    await resumeCalendarsOfReconnectedMail().catch(error => console.warn('[CALENDAR] Could not resume calendars of reconnected mail:', error.message));
+    await refreshCalendarsOfConnectedMail().catch(error => console.warn('[CALENDAR] Could not pass the mail login to linked calendars:', error.message));
     const [rows] = await db.execute(
       `SELECT id, user_id FROM calendar_accounts
        WHERE provider IN ('caldav', 'ics') AND is_active = TRUE AND (next_sync_at IS NULL OR next_sync_at <= UTC_TIMESTAMP())
