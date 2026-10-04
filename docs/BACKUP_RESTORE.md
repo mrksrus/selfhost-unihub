@@ -376,7 +376,9 @@ favorite state are included.
 ### Calendar and ToDo
 
 - local accounts match by provider `local`
-- external accounts match by provider plus account identity
+- CalDAV accounts match by provider plus account identity
+- calendar subscriptions match by their feed URL; subscriptions without a
+  readable URL are restored as new accounts
 - calendars match by external ID or same-name local calendar rules
 - events match by ID, then local event identity
 - subtasks, attendees, and external references are remapped to restored events

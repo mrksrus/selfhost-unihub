@@ -92,11 +92,20 @@ test('an account settings backup restores accounts as fresh sign-ins without con
     account_email: 'calendar@example.test', username: 'calendar-user', discovery_url: 'https://8.8.8.8/dav/', base_url: 'https://8.8.8.8/dav/',
     encrypted_password: sourceCrypto.encrypt('synthetic-calendar-password'), is_active: 1, sync_status: 'ok' });
   await insert('calendar_calendars', { id: uuid(), user_id: sourceUser, account_id: calendarAccountId, name: 'Remote', external_id: 'https://8.8.8.8/dav/remote/' });
+  // Subscriptions keep their feed URL encrypted; email and base_url are empty.
+  for (const [name, feed] of [['Holidays', 'https://8.8.8.8/holidays.ics'], ['Sports', 'https://8.8.8.8/sports.ics']]) {
+    await insert('calendar_accounts', { id: uuid(), user_id: sourceUser, provider: 'ics', display_name: name,
+      encrypted_password: sourceCrypto.encrypt(feed), discovery_url: 'https://8.8.8.8', is_active: 1, sync_status: 'ok' });
+  }
   const localAccountId = uuid();
   await insert('calendar_accounts', { id: localAccountId, user_id: sourceUser, provider: 'local', display_name: 'Local', is_active: 1 });
   await insert('calendar_calendars', { id: uuid(), user_id: sourceUser, account_id: localAccountId, name: 'Local only' });
 
   const exportJobs = source('services/export-jobs');
+  // Account settings stand in for Mail here; that is not a full backup.
+  const almostFull = await exportJobs.startDataExportJob(sourceUser, { sections: ['settings', 'contacts', 'calendar', 'recordings', 'accounts'], encrypt: false });
+  assert.equal(almostFull.scope, 'partial');
+  await waitFor(() => exportJobs.getDataExportJob(sourceUser, almostFull.id), job => job?.status === 'ready', 'Partial export');
   const started = await exportJobs.startDataExportJob(sourceUser, { sections: ['accounts', 'settings'], encrypt: true });
   assert.deepEqual(started.requested_sections, ['settings', 'accounts']);
   assert.equal(started.scope, 'partial');
@@ -127,7 +136,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
     await restoreJobs.unlockRestoreJob(destinationUser, created.id, password);
     const validated = await waitFor(() => restoreJobs.getRestoreJob(destinationUser, created.id), job => job?.status === 'validated', 'Validation');
     assert.deepEqual(validated.validation_result.account_only_sections, ['calendar', 'mail']);
-    assert.deepEqual(validated.validation_result.counts, { user_settings: 1, calendar_accounts: 1, mail_accounts: 1 });
+    assert.deepEqual(validated.validation_result.counts, { user_settings: 1, calendar_accounts: 3, mail_accounts: 1 });
     await restoreJobs.startRestoreJob(destinationUser, created.id);
     return waitFor(() => restoreJobs.getRestoreJob(destinationUser, created.id), job => job?.status === 'completed', 'Restore');
   }
@@ -153,14 +162,18 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   assert.equal((await rows('mail_folders', destinationUser)).some(row => row.slug === 'custom-folder'), false);
   assert.deepEqual(await rows('contacts', destinationUser), [], 'Unselected sections are not exported');
   const calendarAccounts = await rows('calendar_accounts', destinationUser);
-  assert.deepEqual(calendarAccounts.map(row => row.provider), ['caldav'], 'Local calendars are calendar content');
-  assert.equal(calendarAccounts[0].is_active, 1);
-  assert.equal(calendarAccounts[0].last_synced_at, null);
-  assert.equal(destinationCrypto.decrypt(calendarAccounts[0].encrypted_password), 'synthetic-calendar-password');
+  assert.deepEqual(calendarAccounts.map(row => row.provider).sort(), ['caldav', 'ics', 'ics'], 'Local calendars are calendar content');
+  const caldav = calendarAccounts.find(row => row.provider === 'caldav');
+  assert.equal(caldav.is_active, 1);
+  assert.equal(caldav.last_synced_at, null);
+  assert.equal(destinationCrypto.decrypt(caldav.encrypted_password), 'synthetic-calendar-password');
+  assert.deepEqual(calendarAccounts.filter(row => row.provider === 'ics').map(row => destinationCrypto.decrypt(row.encrypted_password)).sort(),
+    ['https://8.8.8.8/holidays.ics', 'https://8.8.8.8/sports.ics'], 'Each subscription is restored');
   assert.deepEqual(await rows('calendar_calendars', destinationUser), [], 'Calendars are discovered again by sync');
   assert.equal((await rows('user_settings', destinationUser)).length, 1);
-  await waitFor(async () => started_syncs, calls => calls.length === 3, 'Sync start');
-  assert.deepEqual(started_syncs, [['folders', destinationUser], ['mail', restoredMail.id, { background: true }], ['calendar', calendarAccounts[0].id, destinationUser]]);
+  await waitFor(async () => started_syncs, calls => calls.length === 5, 'Sync start');
+  assert.deepEqual(started_syncs.slice(0, 2), [['folders', destinationUser], ['mail', restoredMail.id, { background: true }]]);
+  assert.deepEqual(started_syncs.slice(2).map(call => call[1]).sort(), calendarAccounts.map(row => row.id).sort());
 
   // Restoring the same settings again leaves connected accounts unchanged.
   started_syncs.length = 0;
@@ -169,7 +182,8 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   assert.match(again.result_counts.warnings.join('\n'), /Mail account synced@example.test is already connected/);
   assert.match(again.result_counts.warnings.join('\n'), /Calendar account calendar@example.test is already connected/);
   assert.equal((await rows('mail_accounts', destinationUser)).length, 2);
-  assert.equal((await rows('calendar_accounts', destinationUser)).length, 1);
+  assert.match(again.result_counts.warnings.join('\n'), /Calendar account Sports is already connected/);
+  assert.equal((await rows('calendar_accounts', destinationUser)).length, 3);
   assert.equal((await rows('mail_accounts', destinationUser)).find(row => row.id === restoredMail.id).sync_window_days, 30);
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.deepEqual(started_syncs, []);

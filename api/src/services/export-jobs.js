@@ -495,7 +495,7 @@ async function startDataExportJob(userId, { sections, scope, encrypt = true, mai
     [
       jobId,
       userId,
-      normalizedSections.length === EXPORT_SECTIONS.size && mailAccountId === null ? 'full' : 'partial',
+      [...EXPORT_SECTIONS].every(section => normalizedSections.includes(section)) && mailAccountId === null ? 'full' : 'partial',
       JSON.stringify(normalizedSections),
       encrypt === false ? 0 : 1,
       mailAccountId,

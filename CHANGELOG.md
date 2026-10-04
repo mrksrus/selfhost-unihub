@@ -33,6 +33,10 @@ No database upgrade. See [Account Settings Backup](https://github.com/mrksrus/se
 
 ### Fixed
 
+- **Several calendar subscriptions in one restore.** Restoring a backup with
+  more than one calendar subscription (ICS feed) without an email address kept
+  only the first; with **Replace matching** the others overwrote it.
+  Subscriptions are now matched by their feed address.
 - **Saved backup buttons on phones.** Download, Review for restore and Delete
   no longer overflow the backup card on narrow screens.
 

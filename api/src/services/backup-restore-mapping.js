@@ -199,6 +199,17 @@ async function findExistingCalendarAccountForRestore(connection, row, userId) {
     );
     if (localAccounts.length) return localAccounts[0].id;
   }
+  if (row.provider === 'ics') {
+    // A subscription's identity is its feed URL, stored encrypted; email and
+    // base_url are usually empty for every subscription.
+    const feedUrl = row.encrypted_password ? decrypt(row.encrypted_password) : null;
+    if (!feedUrl) return null;
+    const [subscriptions] = await connection.execute(
+      "SELECT id, encrypted_password FROM calendar_accounts WHERE user_id = ? AND provider = 'ics' AND encrypted_password IS NOT NULL",
+      [userId]
+    );
+    return subscriptions.find(account => decrypt(account.encrypted_password) === feedUrl)?.id || null;
+  }
   const [existingByIdentity] = await connection.execute(
     `SELECT id FROM calendar_accounts
      WHERE user_id = ?
