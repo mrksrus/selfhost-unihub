@@ -322,14 +322,22 @@ async function updateLinkedCalendarCredentials(userId, mailAccountId) {
   const mail = mails[0];
   if (!mail || !mail.encrypted_password || !mail.is_active) return;
   const [rows] = await db.execute("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, mailAccountId]);
+  // Both writes take the login from the mail row and only while it is still
+  // connected: this can run outside the mail lock, and a Disconnect that
+  // committed meanwhile must not get its calendar back.
+  const linkedToConnectedMail = `UPDATE calendar_accounts ca
+    JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id`;
+  const mailConnected = 'm.is_active = TRUE AND m.disconnected_at IS NULL AND m.encrypted_password IS NOT NULL';
   for (const row of rows) {
-    await db.execute('UPDATE calendar_accounts SET username = ?, encrypted_password = ? WHERE id = ?',
-      [mail.username || mail.email_address, mail.encrypted_password, row.id]);
+    await db.execute(`${linkedToConnectedMail}
+      SET ca.username = COALESCE(NULLIF(m.username, ''), m.email_address), ca.encrypted_password = m.encrypted_password
+      WHERE ca.id = ? AND ca.user_id = ? AND ${mailConnected}`, [row.id, userId]);
     // Resumed only when active or paused by the mail disconnect: a calendar the
     // user paused keeps the new login but stays paused.
-    const [resumed] = await db.execute(
-      `UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL
-       WHERE id = ? AND (is_active = TRUE OR sync_error = ?)`, [row.id, MAIL_DISCONNECTED_MESSAGE]);
+    const [resumed] = await db.execute(`${linkedToConnectedMail}
+      SET ca.is_active = TRUE, ca.sync_status = 'pending', ca.sync_error = NULL, ca.next_sync_at = NULL
+      WHERE ca.id = ? AND ca.user_id = ? AND (ca.is_active = TRUE OR ca.sync_error = ?) AND ${mailConnected}`,
+    [row.id, userId, MAIL_DISCONNECTED_MESSAGE]);
     if (resumed.affectedRows) calendarSync.syncCalendarAccountInBackground(row.id, { userId, reason: 'credentials' });
   }
 }

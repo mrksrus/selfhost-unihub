@@ -171,6 +171,18 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     await setUserModules(other.user, { modules: { calendar: { enabled: true } } });
     await calendarSync.runCalendarSyncPass();
     assert.equal(await sameLogin(), 1, 'The pass gives the active calendar the new mail login');
+
+    // A refresh decided from a stale read of connected mail does nothing once
+    // a Disconnect committed: the writes recheck the mail row.
+    await lifecycle.disconnectAccount(other.user, other.mail);
+    await calendarAccounts.pauseLinkedCalendar(other.user, other.mail);
+    const executeBefore = pool.execute.bind(pool);
+    pool.execute = async (sql, params) => sql.startsWith('SELECT id, email_address, username, encrypted_password, is_active FROM mail_accounts')
+      ? [[{ id: other.mail, email_address: 'other@example.test', username: 'other@example.test', encrypted_password: 'stale', is_active: 1 }]]
+      : executeBefore(sql, params);
+    try { await calendarAccounts.updateLinkedCalendarCredentials(other.user, other.mail); } finally { pool.execute = executeBefore; }
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE AND encrypted_password IS NULL',
+      [other.calendarAccount]), 1, 'A disconnected account does not get its calendar back');
     await connection.execute("UPDATE mail_accounts SET is_active = FALSE, disconnected_at = UTC_TIMESTAMP(), encrypted_password = NULL WHERE id = ?", [paused.mail]);
     await calendarSync.runCalendarSyncPass();
 
