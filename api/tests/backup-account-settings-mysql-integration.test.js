@@ -124,7 +124,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   const started_syncs = [];
   const mail = destination('services/mail');
   mail.ensureDefaultMailFoldersForUser = async userId => { started_syncs.push(['folders', userId]); };
-  mail.scheduleMailAccountSync = async (accountId, options) => { started_syncs.push(['mail', accountId, options]); return { skipped: false }; };
+  mail.scheduleMailAccountSync = async (accountId, options = {}) => { started_syncs.push(['mail', accountId, !!options.background]); return { skipped: false }; };
   destination('services/calendar-sync').syncCalendarAccountInBackground = (accountId, options) => { started_syncs.push(['calendar', accountId, options.userId]); };
 
   const restoreJobs = destination('services/backup-restore-jobs');
@@ -172,7 +172,9 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   assert.deepEqual(await rows('calendar_calendars', destinationUser), [], 'Calendars are discovered again by sync');
   assert.equal((await rows('user_settings', destinationUser)).length, 1);
   await waitFor(async () => started_syncs, calls => calls.length === 5, 'Sync start');
-  assert.deepEqual(started_syncs.slice(0, 2), [['folders', destinationUser], ['mail', restoredMail.id, { background: true }]]);
+  // Queued like a new account's first sync, not as a background pass that
+  // a disabled background setting would skip.
+  assert.deepEqual(started_syncs.slice(0, 2), [['folders', destinationUser], ['mail', restoredMail.id, false]]);
   assert.deepEqual(started_syncs.slice(2).map(call => call[1]).sort(), calendarAccounts.map(row => row.id).sort());
 
   // Restoring the same settings again leaves connected accounts unchanged.

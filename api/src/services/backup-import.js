@@ -45,14 +45,15 @@ const { backupFromZipBuffer, backupFromZipFile } = require('./backup-zip-reader'
 const accountLabel = row => row.email_address || row.account_email || row.display_name || row.id;
 
 // Account settings restore like a fresh sign-in: the first download starts now
-// instead of waiting for the next scheduled pass. Failures stay visible on
-// the account and the scheduled passes retry.
+// instead of waiting for the next scheduled pass. As for a newly added account,
+// it is queued as user initiated, so it runs even with background sync off.
+// Failures stay visible on the account and the scheduled passes retry.
 function startRestoredAccountSync(userId, { mailAccountIds, calendarAccountIds }) {
   setImmediate(async () => {
     try {
       const mail = require('./mail');
       if (mailAccountIds.length) await mail.ensureDefaultMailFoldersForUser(userId);
-      for (const accountId of mailAccountIds) await mail.scheduleMailAccountSync(accountId, { background: true });
+      for (const accountId of mailAccountIds) await mail.scheduleMailAccountSync(accountId);
     } catch (error) {
       console.warn('[BACKUP RESTORE] Could not start mail sync for restored accounts:', error.message);
     }
