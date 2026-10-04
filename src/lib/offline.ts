@@ -1,4 +1,4 @@
-import { knownModules, legacyOfflineModules, moduleForPath, type ModulePreference } from '@/lib/modules';
+import { defaultPages, knownModules, knownPages, legacyOfflineModules, moduleForPath, type ModulePreference, type PagePreference } from '@/lib/modules';
 import type { User } from '@/contexts/auth-context';
 
 type Row = Record<string, unknown>;
@@ -16,6 +16,7 @@ export interface OfflineSnapshot {
   emails: Row[];
   user?: User;
   modules?: ModulePreference[];
+  pages?: PagePreference[];
 }
 interface SnapshotPointer { epoch: string; key: string; userId: string }
 const DATABASE = 'unihub-offline-v1';
@@ -238,7 +239,7 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   const params = url.searchParams;
   if (path.startsWith('/auth/')) return null;
   const modules = snapshot.modules ? knownModules(snapshot.modules) : legacyOfflineModules;
-  if (path === '/modules') return { data: { modules } };
+  if (path === '/modules') return { data: { modules, pages: snapshot.pages ? knownPages(snapshot.pages) : defaultPages(modules) } };
   const moduleId = moduleForPath(path);
   if (moduleId && !modules.some(module => module.id === moduleId && module.enabled)) return { error: 'This module was disabled when the offline copy was saved.', status: 403 };
   if (path === '/contacts') {

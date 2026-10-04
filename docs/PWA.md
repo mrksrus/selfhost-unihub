@@ -26,6 +26,8 @@ Mail notifications follow successful IMAP ingestion. New INBOX mail is usually n
 
 The server checks due calendar reminders every 30 seconds. It persists delivery state, retries transient push failures, and catches up within a two-hour reminder window after restart. Edited, deleted, hidden, done, or cancelled events are rechecked before delivery. Recurrence retains the calendar's existing behavior: notifications concern stored event occurrences; this change does not introduce recurrence expansion.
 
+Recordings that are still uploading when UniHub is closed finish in the service worker where the browser allows it (Background Sync). When they cannot, the device shows **Recording not uploaded yet**; if the browser stopped the worker first, the server sends that notice as a push after 10 minutes without progress. See [Recordings on the device](RECORDINGS.md#recordings-on-the-device).
+
 ## Install prompt
 
 Browsers that support it show an **Install UniHub** card: **Install** opens the browser's install dialog, **Later** asks again after a day (also when the browser dialog is cancelled), and **No** stops asking in that browser. An unanswered card appears at most once a day. The choice is stored in the browser's local storage, so clearing site data resets it. The app can still be installed from the browser menu.

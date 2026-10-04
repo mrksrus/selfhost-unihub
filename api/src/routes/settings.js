@@ -21,7 +21,7 @@ const USER_SETTING_DEFAULTS = {
 
 const USER_SETTING_ALLOWED_VALUES = {
   email_link_behavior: new Set(['mailto', 'internal']),
-  default_start_page: new Set(['mail', 'calendar', 'todo', 'contacts', 'recordings', 'dashboard']),
+  default_start_page: new Set(['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'dashboard']),
 };
 
 async function getUserPreferences(userId) {

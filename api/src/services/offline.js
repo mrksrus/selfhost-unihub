@@ -1,5 +1,5 @@
 const { db } = require('../state');
-const { getOrderedUserModules } = require('./module-settings');
+const { getOrderedUserModules, getUserPages } = require('./module-settings');
 const { presentMailFiling } = require('./mail-filing');
 const { folderConnections } = require('./mail-folder-reconciliation');
 const { serializeCalendarEvent, serializeCalendarAccount, serializeCalendarCalendar,
@@ -91,6 +91,7 @@ async function collectOfflineSnapshot(connection, userId) {
     is_read: !!row.is_read, is_starred: !!row.is_starred, is_draft: false, has_attachments: !!row.has_attachments,
     attachments: attachmentsByEmail.get(row.id) || [] }));
   const snapshot = { version: 1, userId, savedAt: new Date().toISOString(), modules: moduleStates,
+    pages: await getUserPages(userId, connection),
     contacts: data.contacts.map(row => ({ ...row, is_favorite: !!row.is_favorite })), events,
     calendars: projectRows(data.calendars.map(serializeCalendarCalendar), SECTIONS.calendars),
     calendarAccounts: projectRows(data.calendarAccounts.map(serializeCalendarAccount), SECTIONS.calendarAccounts),

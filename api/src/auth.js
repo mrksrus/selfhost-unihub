@@ -75,6 +75,12 @@ function validateCsrfToken(req, res) {
   if (url === '/api/mail/sync/background' && req.headers['x-background-sync'] === '1') {
     return true;
   }
+  // Recordings saved on the device finish uploading from the service worker,
+  // which cannot read the CSRF cookie. The same custom-header rule applies.
+  if (/^\/api\/recordings\/uploads\/[^/]+(\/(chunk|complete))?$/.test(url)
+    && ['POST', 'DELETE'].includes(method) && req.headers['x-background-sync'] === '1') {
+    return true;
+  }
 
   // Get CSRF token from cookie and header
   const cookieToken = req.headers.cookie

@@ -1,8 +1,8 @@
-const { getOrderedUserModules, setUserModules } = require('../services/module-settings');
+const { getOrderedUserModules, getUserPages, setUserModules } = require('../services/module-settings');
 module.exports = {
   'GET /api/modules': async (_req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    return { modules: await getOrderedUserModules(userId) };
+    return { modules: await getOrderedUserModules(userId), pages: await getUserPages(userId) };
   },
   'PUT /api/modules': async (_req, userId, body) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
@@ -35,7 +35,7 @@ module.exports = {
           else void idleSupervisor.refresh();
         }
       }
-      return { modules };
+      return { modules, pages: await getUserPages(userId) };
     }
     catch (error) { if (error.status === 400) return { error: error.message, status: 400 }; throw error; }
   },

@@ -16,6 +16,8 @@ The cached profile is only a local viewing identity. A network failure can open 
 
 **Clear device data**, explicit logout and switching accounts invalidate offline access, including other open tabs. Late downloads cannot restore a cleared snapshot or publish the previous account's data. Browser storage limits, manual site-data removal and browser eviction can remove the snapshot; it is a convenience copy, not a backup.
 
+Recordings that are not uploaded yet are kept apart from the snapshot, for their own account only, and are not removed by logout or **Clear device data**, because they may be the only copy. Discard them under **Recordings → On this device**. See [Recordings on the device](RECORDINGS.md#recordings-on-the-device).
+
 ## Black, white and blue
 
 New installations default to **Dark**: black page backgrounds, white text and blue accents. **Settings → General → Appearance** also provides Light and System, saved on this browser. Existing calendar colors remain user data; newly created calendar defaults use blue. Success/warning/destructive colors remain meaningful.

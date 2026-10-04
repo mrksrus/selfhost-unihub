@@ -5,6 +5,12 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.17.4 Recordings on the device and separate pages
+
+No database upgrade or configuration change. Page choices are stored as new
+user settings. Modules hidden before the upgrade keep all their pages hidden.
+The Recordings module is now labelled **Recordings and Music**.
+
 ## 0.17.3 Two-factor authentication fixes
 
 No database upgrade or configuration change. Users who turn on 2FA after the

@@ -2,15 +2,16 @@ import { useModules } from '@/hooks/use-modules';
 import { NavLink, useLocation } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { MoreHorizontal } from 'lucide-react';
-import { BOTTOM_NAV_PAGES, MODULE_PAGES, orderedModulePages } from '@/lib/navigation';
+import { BOTTOM_NAV_PAGES, navigationPages, pageLink } from '@/lib/navigation';
 
 const BottomNav = () => {
-  const { modules, canNavigate } = useModules();
+  const { pages, canNavigate } = useModules();
   const location = useLocation();
-  // The first module pages in the user's order; the rest are listed on More.
-  const shown = orderedModulePages(modules, canNavigate).slice(0, BOTTOM_NAV_PAGES);
-  const navItems = [...shown, { name: 'More', href: '/more', icon: MoreHorizontal }];
-  const moreHrefs = ['/more', '/music', '/dashboard', ...MODULE_PAGES.filter((page) => !shown.includes(page)).map((page) => page.href)];
+  // The first pages in the user's order; the rest are listed on More, which
+  // is also marked for hidden pages opened by link.
+  const shown = navigationPages(pages, canNavigate).slice(0, BOTTOM_NAV_PAGES);
+  const navItems = [...shown, { id: 'more', name: 'More', href: '/more', icon: MoreHorizontal }];
+  const moreHrefs = ['/more', ...pages.map((page) => pageLink(page.id).href).filter((href) => !shown.some((page) => page.href === href))];
 
   return (
     <nav
@@ -24,7 +25,7 @@ const BottomNav = () => {
             : location.pathname.startsWith(item.href);
         return (
           <NavLink
-            key={item.name}
+            key={item.id}
             to={item.href}
             className={cn(
               'flex flex-col items-center justify-center gap-1 py-3 px-4 min-w-[64px] flex-1 text-xs font-medium transition-colors',

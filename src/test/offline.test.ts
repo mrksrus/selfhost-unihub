@@ -187,8 +187,16 @@ describe('offline module preferences', () => {
   it('projects saved preferences and blocks disabled module reads', () => {
     const stored = snapshot();
     stored.modules = [{ id: 'mail', label: 'Mail', enabled: false, visible: true, background: false }];
-    expect(resolveOfflineEndpoint(stored, '/modules')).toEqual({ data: { modules: stored.modules } });
+    expect(resolveOfflineEndpoint(stored, '/modules')).toEqual({ data: { modules: stored.modules, pages: expect.any(Array) } });
     expect(resolveOfflineEndpoint(stored, '/mail/emails')).toEqual(expect.objectContaining({ status: 403 }));
+  });
+  it('keeps the saved pages and derives them for snapshots saved before pages existed', () => {
+    const stored = snapshot();
+    stored.modules = [{ id: 'calendar', label: 'Calendar and ToDo', enabled: true, visible: false, background: true }];
+    const derived = resolveOfflineEndpoint(stored, '/modules') as { data: { pages: { id: string; visible: boolean }[] } };
+    expect(derived.data.pages.filter(page => !page.visible).map(page => page.id)).toEqual(['calendar', 'todo']);
+    stored.pages = [{ id: 'todo', label: 'ToDo', module: 'calendar', visible: true }, { id: 'old' as never, label: 'Old', module: null, visible: true }];
+    expect(resolveOfflineEndpoint(stored, '/modules')).toEqual({ data: { modules: stored.modules, pages: [stored.pages[0]] } });
   });
   it('preserves default access for old snapshots', () => {
     const result = resolveOfflineEndpoint(snapshot(), '/modules') as { data: { modules: { enabled: boolean }[] } };
@@ -199,6 +207,6 @@ describe('offline module preferences', () => {
     const stored = snapshot();
     const mail = { id: 'mail' as const, label: 'Mail', enabled: true, visible: true, background: true };
     stored.modules = [mail, { ...mail, id: 'games' as never, label: 'Games' }, { ...mail, id: 'notes' as never, label: 'Notes' }];
-    expect(resolveOfflineEndpoint(stored, '/modules')).toEqual({ data: { modules: [mail] } });
+    expect(resolveOfflineEndpoint(stored, '/modules')).toEqual({ data: { modules: [mail], pages: expect.any(Array) } });
   });
 });

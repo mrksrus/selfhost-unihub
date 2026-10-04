@@ -3,7 +3,22 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '@/lib/api';
 import { createPcm16WavBlob } from '@/lib/wav';
-import { uploadRecordingChunks } from '@/lib/recording-upload';
+import { runRecordingUpload, type RecordingUploadJob } from '@/lib/recording-upload';
+import {
+  appendCaptureBatch,
+  createCapture,
+  deleteCapture,
+  deleteStoredRecording,
+  finishCapture,
+  listCaptures,
+  readStoredRecordingBlob,
+  recoverCapture,
+  saveStoredRecording,
+  updateStoredRecording,
+  type StoredRecording,
+} from '@/lib/recording-queue';
+import { kickRecordingUploads, pageUploadRequest, useStoredRecordings } from '@/hooks/use-recording-uploads';
+import { useAuth } from '@/contexts/useAuth';
 import { RecordingPlayer } from '@/components/recordings/RecordingPlayer';
 import {
   recordingCategories,
@@ -38,6 +53,7 @@ import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-state
 import {
   Download,
   Edit,
+  HardDrive,
   FileAudio,
   Loader2,
   Mic,
@@ -56,9 +72,19 @@ type PendingAudio = {
   contentType: string;
   source: 'recorded' | 'imported';
   durationSeconds: number | null;
+  // The copy kept on this device, when the browser allows it.
+  jobId: string | null;
 };
 
-const CHUNK_SIZE = 512 * 1024;
+// Audio of a running recording is written to the device this often, so a
+// crash or a closed app loses at most this much.
+const CAPTURE_FLUSH_MS = 2000;
+const VOICE_PROCESSING = ['autoGainControl', 'noiseSuppression', 'echoCancellation'] as const;
+const VOICE_PROCESSING_LABELS: Record<typeof VOICE_PROCESSING[number], string> = {
+  autoGainControl: 'automatic volume',
+  noiseSuppression: 'noise suppression',
+  echoCancellation: 'echo cancellation',
+};
 const EMPTY_RECORDINGS: Recording[] = [];
 
 function formatBytes(value: number) {
@@ -120,6 +146,30 @@ function formatRecordedAt(value: string | null | undefined) {
   return date.toLocaleString();
 }
 
+function captureLockName(id: string) {
+  return `unihub-capture:${id}`;
+}
+
+// Automatic volume control makes the level of music rise and fall. The
+// browser may ignore the request in getUserMedia, so check what it applied.
+async function disableVoiceProcessing(track: MediaStreamTrack) {
+  const active = () => {
+    const settings = track.getSettings();
+    return VOICE_PROCESSING.filter(key => settings[key] === true);
+  };
+  if (active().length) {
+    await track.applyConstraints({ autoGainControl: false, noiseSuppression: false, echoCancellation: false }).catch(() => {});
+  }
+  return active();
+}
+
+function storedRecordingStatus(item: StoredRecording, bytesUploaded: number) {
+  if (item.state === 'draft') return item.recovered ? 'Recovered, not saved yet' : 'Not saved yet';
+  if (item.state === 'failed') return `Upload refused: ${item.error || 'unknown error'}`;
+  const percent = item.size ? Math.round((bytesUploaded / item.size) * 100) : 0;
+  return item.error ? `Waiting to upload (${percent}%): ${item.error}` : `Uploading (${percent}%)`;
+}
+
 function saveBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
@@ -133,6 +183,8 @@ function saveBlob(blob: Blob, filename: string) {
 
 const Recordings = () => {
   const { toast } = useToast();
+  const { user } = useAuth();
+  const userId = user?.id;
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -146,6 +198,14 @@ const Recordings = () => {
   const pcmSampleRateRef = useRef(44100);
   const workletStoppedResolveRef = useRef<(() => void) | null>(null);
   const stopInProgressRef = useRef(false);
+  const captureIdRef = useRef<string | null>(null);
+  const captureBatchRef = useRef<ArrayBuffer[]>([]);
+  const captureBatchSamplesRef = useRef(0);
+  const captureWritesRef = useRef<Promise<void>>(Promise.resolve());
+  const captureFailedRef = useRef(false);
+  const captureTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const captureReleaseRef = useRef<(() => void) | null>(null);
+  const interruptionShownRef = useRef(false);
   const startedAtRef = useRef<number | null>(null);
   const pausedAtRef = useRef<number | null>(null);
   const pausedMsRef = useRef(0);
@@ -177,6 +237,13 @@ const Recordings = () => {
   });
   const [deleteTarget, setDeleteTarget] = useState<Recording | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
+  const [discardTarget, setDiscardTarget] = useState<StoredRecording | null>(null);
+  const {
+    recordings: storedRecordings,
+    progress: storedProgress,
+    available: deviceStorageAvailable,
+  } = useStoredRecordings();
+  const otherStoredRecordings = storedRecordings.filter(item => item.id !== pendingAudio?.jobId);
 
   const recordingFilters = useMemo(() => ({
     search,
@@ -210,6 +277,12 @@ const Recordings = () => {
   }, [recordingState]);
 
   useEffect(() => () => {
+    // Leaving the page mid-recording keeps what was captured. The next visit
+    // recovers it as a draft.
+    persistCaptureBatch();
+    if (captureTimerRef.current) clearInterval(captureTimerRef.current);
+    const release = captureReleaseRef.current;
+    void captureWritesRef.current.finally(() => release?.());
     streamRef.current?.getTracks().forEach((track) => track.stop());
     recorderWorkletRef.current?.disconnect();
     audioSourceRef.current?.disconnect();
@@ -227,51 +300,164 @@ const Recordings = () => {
     return () => URL.revokeObjectURL(url);
   }, [pendingAudio]);
 
-  const uploadAudio = useMutation({
-    mutationFn: async (audio: PendingAudio) => {
-      setUploadProgress(0);
-      const start = await recordingsApi.startUpload({
+  // Interrupted recordings (closed app, crash, reload) are rebuilt from the
+  // audio written while recording. A capture still locked belongs to a
+  // recording running in another tab.
+  useEffect(() => {
+    if (!userId) return undefined;
+    let cancelled = false;
+    const recover = async (capture: Awaited<ReturnType<typeof listCaptures>>[number]) => {
+      const startedAt = new Date(capture.startedAt);
+      const job = await recoverCapture(capture, {
+        title: `Recovered recording ${startedAt.toLocaleString()}`,
+        original_filename: `recording-${startedAt.toISOString().replace(/[:.]/g, '-')}.wav`,
+        content_type: 'audio/wav',
+        duration_seconds: null,
+        source: 'recorded',
+        category: 'none',
+        recorded_at: startedAt.toISOString(),
+        metadata: {},
+        tags: [],
+      });
+      if (job && !cancelled) {
+        toast({ title: 'Interrupted recording recovered', description: 'It is listed under "On this device". Check it and save it.' });
+      }
+    };
+    void (async () => {
+      for (const capture of await listCaptures(userId)) {
+        if (cancelled) return;
+        if (navigator.locks) {
+          await navigator.locks.request(captureLockName(capture.id), { ifAvailable: true }, async lock => {
+            if (lock) await recover(capture);
+          });
+        } else if (Date.now() - capture.updatedAt > 60 * 60 * 1000) {
+          await recover(capture);
+        }
+      }
+    })().catch(() => {});
+    return () => { cancelled = true; };
+  }, [toast, userId]);
+
+  useEffect(() => {
+    if (recordingState === 'idle') return undefined;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [recordingState]);
+
+  const resetForm = () => {
+    setPendingAudio(null);
+    setTitle('');
+    setDescription('');
+    setTagInput('');
+    setCategory('none');
+    setRecordedAt(toDatetimeLocalValue(new Date()));
+    setMusicChords('');
+    setUploadProgress(null);
+  };
+
+  const saveAudio = useMutation({
+    mutationFn: async (audio: PendingAudio): Promise<'queued' | 'uploaded'> => {
+      const details: RecordingUploadJob['details'] = {
         title: title.trim() || filenameWithoutExtension(audio.filename),
         description: description.trim(),
         original_filename: audio.filename,
         content_type: audio.contentType || audio.blob.type || 'audio/webm',
-        total_bytes: audio.blob.size,
         duration_seconds: audio.durationSeconds,
         source: audio.source,
         category,
         recorded_at: datetimeLocalToIso(recordedAt),
         metadata: category === 'music' ? { chords: musicChords } : {},
         tags: parseTags(tagInput),
+      };
+      const id = audio.jobId ?? crypto.randomUUID();
+
+      // Kept on the device first, so the upload can finish in the background
+      // and survives a closed app.
+      if (userId) {
+        try {
+          const queued = audio.jobId
+            ? await updateStoredRecording(audio.jobId, { state: 'queued', details, error: null })
+            : null;
+          if (!queued) {
+            const now = Date.now();
+            await saveStoredRecording({
+              id, userId, state: 'queued', details, size: audio.blob.size, bytesUploaded: 0,
+              error: null, recovered: false, createdAt: now, updatedAt: now,
+            }, audio.blob);
+          }
+          // Asks the browser not to clear the stored audio when space runs low.
+          void navigator.storage?.persist?.().catch(() => false);
+          kickRecordingUploads();
+          return 'queued';
+        } catch {
+          // No device storage (for example some private windows). Upload
+          // directly; the page has to stay open until it finishes.
+        }
+      }
+
+      setUploadProgress(0);
+      const outcome = await runRecordingUpload({ id, blob: audio.blob, details }, {
+        request: pageUploadRequest,
+        onProgress: bytes => setUploadProgress(Math.round((bytes / audio.blob.size) * 100)),
       });
-
-      const uploadId = start.id;
-      const chunkSize = Math.min(start.max_chunk_bytes || CHUNK_SIZE, CHUNK_SIZE);
-      await uploadRecordingChunks(
-        audio.blob,
-        chunkSize,
-        chunk => recordingsApi.uploadChunk(uploadId, chunk),
-        setUploadProgress,
-      );
-
-      return recordingsApi.completeUpload(uploadId);
+      if (outcome.kind === 'done') return 'uploaded';
+      if (outcome.kind === 'signed-out') throw new Error('Sign in again, then save the recording.');
+      throw new Error(outcome.kind === 'paused' ? 'The upload was paused.' : outcome.error);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
-      setPendingAudio(null);
-      setTitle('');
-      setDescription('');
-      setTagInput('');
-      setCategory('none');
-      setRecordedAt(toDatetimeLocalValue(new Date()));
-      setMusicChords('');
-      setUploadProgress(null);
-      toast({ title: 'Recording saved' });
+    onSuccess: (result) => {
+      resetForm();
+      if (result === 'uploaded') {
+        queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
+        toast({ title: 'Recording saved' });
+      } else {
+        toast({ title: 'Uploading recording', description: 'It is kept on this device until the upload finishes. You can leave this page.' });
+      }
     },
     onError: (error: Error) => {
       setUploadProgress(null);
       toast({ title: 'Recording upload failed', description: error.message, variant: 'destructive' });
     },
   });
+
+  const discardPendingAudio = () => {
+    const jobId = pendingAudio?.jobId;
+    resetForm();
+    if (jobId) void deleteStoredRecording(jobId).catch(() => {});
+  };
+
+  const continueStoredRecording = async (item: StoredRecording) => {
+    const blob = await readStoredRecordingBlob(item.id).catch(() => null);
+    if (!blob) {
+      toast({ title: 'The audio of this recording is missing on this device', variant: 'destructive' });
+      return;
+    }
+    setPendingAudio({
+      blob,
+      filename: item.details.original_filename,
+      contentType: item.details.content_type,
+      source: item.details.source,
+      durationSeconds: item.details.duration_seconds,
+      jobId: item.id,
+    });
+    setTitle(item.details.title);
+    setDescription(item.details.description || '');
+    setTagInput((item.details.tags || []).join(', '));
+    setCategory(item.details.category || 'none');
+    setRecordedAt(toDatetimeLocalValue(item.details.recorded_at || new Date(item.createdAt)));
+    setMusicChords(item.details.metadata?.chords || '');
+  };
+
+  const retryStoredRecording = async (item: StoredRecording) => {
+    await updateStoredRecording(item.id, { state: 'queued', error: null }).catch(() => null);
+    kickRecordingUploads();
+  };
+
+  const downloadStoredRecording = async (item: StoredRecording) => {
+    const blob = await readStoredRecordingBlob(item.id).catch(() => null);
+    if (blob) saveBlob(blob, item.details.original_filename);
+    else toast({ title: 'The audio of this recording is missing on this device', variant: 'destructive' });
+  };
 
   const updateRecording = useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: Parameters<typeof recordingsApi.update>[1] }) => recordingsApi.update(id, payload),
@@ -296,6 +482,61 @@ const Recordings = () => {
       toast({ title: 'Could not delete recording', description: error.message, variant: 'destructive' });
     },
   });
+
+  // Writes the audio received since the last write. Writes run one after the
+  // other so batches keep their order.
+  function persistCaptureBatch() {
+    const captureId = captureIdRef.current;
+    if (!captureId || captureFailedRef.current || !captureBatchRef.current.length) return captureWritesRef.current;
+    const batch = new Blob(captureBatchRef.current);
+    const samples = captureBatchSamplesRef.current;
+    captureBatchRef.current = [];
+    captureBatchSamplesRef.current = 0;
+    captureWritesRef.current = captureWritesRef.current
+      .then(() => appendCaptureBatch(captureId, batch, samples))
+      .catch(() => { captureFailedRef.current = true; });
+    return captureWritesRef.current;
+  }
+
+  // Holds a lock for the whole recording, so a recovery in another tab
+  // leaves this capture alone.
+  const startCapture = async (sampleRate: number) => {
+    captureIdRef.current = null;
+    captureBatchRef.current = [];
+    captureBatchSamplesRef.current = 0;
+    captureFailedRef.current = false;
+    captureWritesRef.current = Promise.resolve();
+    if (!userId) return;
+    const captureId = crypto.randomUUID();
+    try {
+      if (navigator.locks) {
+        await new Promise<void>((acquired) => {
+          void navigator.locks.request(captureLockName(captureId), () => {
+            acquired();
+            return new Promise<void>((release) => { captureReleaseRef.current = release; });
+          });
+        });
+      }
+      const now = Date.now();
+      await createCapture({ id: captureId, userId, sampleRate, sampleCount: 0, batches: 0, startedAt: now, updatedAt: now });
+      captureIdRef.current = captureId;
+      captureTimerRef.current = setInterval(() => void persistCaptureBatch(), CAPTURE_FLUSH_MS);
+    } catch {
+      captureReleaseRef.current?.();
+      captureReleaseRef.current = null;
+      toast({ title: 'Recording is kept in memory only', description: 'This browser does not allow storing it on the device. Keep the app open until you save it.' });
+    }
+  };
+
+  const endCapture = () => {
+    if (captureTimerRef.current) clearInterval(captureTimerRef.current);
+    captureTimerRef.current = null;
+    captureReleaseRef.current?.();
+    captureReleaseRef.current = null;
+    captureIdRef.current = null;
+    captureBatchRef.current = [];
+    captureBatchSamplesRef.current = 0;
+  };
 
   const releaseRecordingResources = async () => {
     recorderWorkletRef.current?.disconnect();
@@ -329,9 +570,17 @@ const Recordings = () => {
         },
       });
       streamRef.current = stream;
+      const track = stream.getAudioTracks()[0];
+      const processing = track ? await disableVoiceProcessing(track) : [];
+      if (processing.length) {
+        toast({
+          title: 'The browser keeps audio processing on',
+          description: `It did not allow turning off ${processing.map(key => VOICE_PROCESSING_LABELS[key]).join(', ')}. The volume may change on its own during the recording.`,
+        });
+      }
       // Keep the microphone's rate where available so capture does not need an
       // extra resampling step. WAV records the actual context rate in its header.
-      const sampleRate = stream.getAudioTracks()[0]?.getSettings().sampleRate;
+      const sampleRate = track?.getSettings().sampleRate;
       const audioContext = new AudioContextClass({
         ...(sampleRate ? { sampleRate } : {}),
         latencyHint: 'balanced',
@@ -365,6 +614,23 @@ const Recordings = () => {
       stopInProgressRef.current = false;
       setElapsedSeconds(0);
       setPendingAudio(null);
+      interruptionShownRef.current = false;
+      await startCapture(audioContext.sampleRate);
+
+      // A phone call or another app can take the microphone or suspend audio.
+      // Keep what was recorded and tell the user.
+      if (track) track.onended = () => {
+        toast({ title: 'The microphone was turned off', description: 'The recording was stopped. What was recorded so far is kept.', variant: 'destructive' });
+        void stopRecording();
+      };
+      audioContext.onstatechange = () => {
+        if (audioContext.state === 'running' || audioContext.state === 'closed' || stopInProgressRef.current) return;
+        void audioContext.resume().catch(() => {});
+        if (!interruptionShownRef.current) {
+          interruptionShownRef.current = true;
+          toast({ title: 'Recording was interrupted', description: 'The system paused audio. The recording may have a gap.', variant: 'destructive' });
+        }
+      };
 
       worklet.port.onmessage = (event: MessageEvent<{
         type?: string;
@@ -374,6 +640,10 @@ const Recordings = () => {
         if (event.data.type === 'pcm' && event.data.buffer && event.data.samples) {
           pcmChunksRef.current.push(event.data.buffer);
           pcmSampleCountRef.current += event.data.samples;
+          if (captureIdRef.current) {
+            captureBatchRef.current.push(event.data.buffer);
+            captureBatchSamplesRef.current += event.data.samples;
+          }
         } else if (event.data.type === 'stopped') {
           workletStoppedResolveRef.current?.();
           workletStoppedResolveRef.current = null;
@@ -383,6 +653,9 @@ const Recordings = () => {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Microphone access failed';
       toast({ title: 'Could not start recording', description: message, variant: 'destructive' });
+      const captureId = captureIdRef.current;
+      endCapture();
+      if (captureId) void deleteCapture(captureId).catch(() => {});
       await releaseRecordingResources();
     }
   };
@@ -436,14 +709,59 @@ const Recordings = () => {
       pcmChunksRef.current = [];
       pcmSampleCountRef.current = 0;
       const stoppedAt = new Date();
+      const filename = `recording-${stoppedAt.toISOString().replace(/[:.]/g, '-')}.wav`;
+      const recordingTitle = title || `Recording ${stoppedAt.toLocaleString()}`;
+      const durationSeconds = sampleCount / sampleRate;
+
+      // The finished file replaces the capture on the device as a draft, so
+      // it survives until it is saved or discarded.
+      const captureId = captureIdRef.current;
+      let jobId: string | null = null;
+      if (captureId && userId && !captureFailedRef.current) {
+        if (captureTimerRef.current) clearInterval(captureTimerRef.current);
+        await captureWritesRef.current;
+        try {
+          await finishCapture(captureId, {
+            id: captureId,
+            userId,
+            state: 'draft',
+            details: {
+              title: recordingTitle,
+              original_filename: filename,
+              content_type: 'audio/wav',
+              duration_seconds: durationSeconds,
+              source: 'recorded',
+              category: 'none',
+              recorded_at: stoppedAt.toISOString(),
+              metadata: {},
+              tags: [],
+            },
+            size: blob.size,
+            bytesUploaded: 0,
+            error: null,
+            recovered: false,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }, blob);
+          jobId = captureId;
+        } catch {
+          // The capture stays and is recovered on the next visit.
+        }
+      } else if (captureId) {
+        // Writing failed part way. The full recording is in memory, so the
+        // partial copy would only come back as a broken duplicate.
+        void deleteCapture(captureId).catch(() => {});
+      }
+      endCapture();
       setPendingAudio({
         blob,
-        filename: `recording-${stoppedAt.toISOString().replace(/[:.]/g, '-')}.wav`,
+        filename,
         contentType: 'audio/wav',
         source: 'recorded',
-        durationSeconds: sampleCount / sampleRate,
+        durationSeconds,
+        jobId,
       });
-      setTitle((current) => current || `Recording ${stoppedAt.toLocaleString()}`);
+      setTitle(recordingTitle);
       setRecordedAt(toDatetimeLocalValue(stoppedAt));
       setRecordingState('idle');
     } catch (error: unknown) {
@@ -452,6 +770,7 @@ const Recordings = () => {
     } finally {
       workletStoppedResolveRef.current = null;
       setRecordingState('idle');
+      endCapture();
       await releaseRecordingResources();
       stopInProgressRef.current = false;
     }
@@ -469,6 +788,7 @@ const Recordings = () => {
       contentType: file.type || 'audio/mpeg',
       source: 'imported',
       durationSeconds: null,
+      jobId: null,
     });
     setTitle(filenameWithoutExtension(file.name));
     setRecordedAt(toDatetimeLocalValue(new Date()));
@@ -516,7 +836,7 @@ const Recordings = () => {
               </div>
               <div>
                 <CardTitle className="text-lg">Recorder</CardTitle>
-                <CardDescription>Uncompressed WAV recording with local preview before upload</CardDescription>
+                <CardDescription>Uncompressed WAV, kept on this device until the upload finishes</CardDescription>
               </div>
             </div>
           </CardHeader>
@@ -546,7 +866,7 @@ const Recordings = () => {
                   </Button>
                 </>
               )}
-              <span className="font-mono text-sm text-muted-foreground">{formatDuration(elapsedSeconds)}</span>
+              <span className="font-mono text-sm text-muted-foreground">{elapsedSeconds > 0 ? formatDuration(elapsedSeconds) : '0:00'}</span>
               {recordingState !== 'idle' && (
                 <Badge variant={recordingState === 'recording' ? 'default' : 'secondary'}>
                   {recordingState}
@@ -617,11 +937,11 @@ const Recordings = () => {
                 </div>
                 {uploadProgress !== null && <Progress value={uploadProgress} />}
                 <div className="flex flex-wrap justify-end gap-2">
-                  <Button variant="outline" onClick={() => setPendingAudio(null)} disabled={uploadAudio.isPending}>
+                  <Button variant="outline" onClick={discardPendingAudio} disabled={saveAudio.isPending}>
                     Discard
                   </Button>
-                  <Button onClick={() => uploadAudio.mutate(pendingAudio)} disabled={uploadAudio.isPending || !title.trim()}>
-                    {uploadAudio.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                  <Button onClick={() => saveAudio.mutate(pendingAudio)} disabled={saveAudio.isPending || !title.trim()}>
+                    {saveAudio.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                     Save recording
                   </Button>
                 </div>
@@ -657,6 +977,79 @@ const Recordings = () => {
           </CardContent>
         </Card>
       </div>
+
+      {otherStoredRecordings.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-accent/10">
+                <HardDrive className="h-5 w-5 text-accent" />
+              </div>
+              <div>
+                <CardTitle className="text-lg">On this device</CardTitle>
+                <CardDescription>Not on the server yet. Uploads continue in the background.</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {otherStoredRecordings.map((item) => {
+              const bytesUploaded = storedProgress[item.id] ?? item.bytesUploaded;
+              return (
+                <div key={item.id} className="rounded-lg border border-border p-4 space-y-3">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0 space-y-1">
+                      <h2 className="font-semibold text-foreground truncate">{item.details.title}</h2>
+                      <p className="text-xs text-muted-foreground">
+                        {formatRecordedAt(item.details.recorded_at || new Date(item.createdAt).toISOString())} • {formatBytes(item.size)} • {formatDuration(item.details.duration_seconds)}
+                      </p>
+                      <p className={item.state === 'failed' ? 'text-sm text-destructive' : 'text-sm text-muted-foreground'}>
+                        {storedRecordingStatus(item, bytesUploaded)}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2 sm:justify-end">
+                      {item.state === 'draft' && (
+                        <Button size="sm" onClick={() => void continueStoredRecording(item)} disabled={!!pendingAudio || recordingState !== 'idle'}>
+                          <Edit className="h-4 w-4 mr-2" />
+                          Continue
+                        </Button>
+                      )}
+                      {item.state === 'failed' && (
+                        <Button size="sm" variant="outline" onClick={() => void retryStoredRecording(item)}>
+                          <Upload className="h-4 w-4 mr-2" />
+                          Try again
+                        </Button>
+                      )}
+                      {item.state === 'queued' && item.error && (
+                        <Button size="sm" variant="outline" onClick={kickRecordingUploads}>
+                          <Upload className="h-4 w-4 mr-2" />
+                          Retry now
+                        </Button>
+                      )}
+                      <Button size="sm" variant="outline" onClick={() => void downloadStoredRecording(item)}>
+                        <Download className="h-4 w-4 mr-2" />
+                        Download
+                      </Button>
+                      {item.state !== 'queued' && (
+                        <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => setDiscardTarget(item)}>
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Discard
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  {item.state === 'queued' && <Progress value={item.size ? (bytesUploaded / item.size) * 100 : 0} />}
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
+
+      {!deviceStorageAvailable && (
+        <p className="text-sm text-muted-foreground">
+          This browser does not allow storing recordings on the device. Keep the app open until an upload finishes.
+        </p>
+      )}
 
       <Card>
         <CardHeader>
@@ -872,6 +1265,29 @@ const Recordings = () => {
           </div>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={!!discardTarget} onOpenChange={(open) => !open && setDiscardTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard recording?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {discardTarget?.details.title || 'This recording'} is only on this device. Discarding deletes its audio for good.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => {
+                if (discardTarget) void deleteStoredRecording(discardTarget.id).catch(() => {});
+                setDiscardTarget(null);
+              }}
+            >
+              Discard
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>

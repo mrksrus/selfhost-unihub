@@ -3,7 +3,6 @@ import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
 import { cn } from '@/lib/utils';
 import {
-  LayoutDashboard,
   Settings,
   Shield,
   LogOut,
@@ -11,7 +10,7 @@ import {
   ChevronRight,
   MoreHorizontal,
 } from 'lucide-react';
-import { orderedModulePages } from '@/lib/navigation';
+import { navigationPages } from '@/lib/navigation';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Separator } from '@/components/ui/separator';
@@ -20,11 +19,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 
 const moreNavigation = [
   { name: 'More', href: '/more', icon: MoreHorizontal },
-  { name: 'Today', href: '/dashboard', icon: LayoutDashboard },
 ];
 
 const AppSidebar = () => {
-  const { modules, canNavigate } = useModules();
+  const { pages, canNavigate } = useModules();
   const { user, signOut } = useAuth();
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
@@ -76,11 +74,11 @@ const AppSidebar = () => {
 
       {/* Navigation */}
       <nav className="flex-1 py-4 px-3 space-y-1 overflow-y-auto">
-        {orderedModulePages(modules, canNavigate).map((item) => {
+        {navigationPages(pages, canNavigate).map((item) => {
           const isActive = location.pathname.startsWith(item.href);
           return (
             <NavLink
-              key={item.name}
+              key={item.id}
               to={item.href}
               aria-label={item.name}
               title={collapsed ? item.name : undefined}
@@ -108,9 +106,7 @@ const AppSidebar = () => {
         })}
         <div className="pt-3 mt-3 border-t border-sidebar-border/70">
           {moreNavigation.filter(item => canNavigate(item.href)).map((item) => {
-            const isActive = location.pathname === item.href || (
-              item.href === '/more' && ['/music', '/dashboard'].includes(location.pathname)
-            );
+            const isActive = location.pathname === item.href;
             return (
               <NavLink
                 key={item.name}

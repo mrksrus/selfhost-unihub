@@ -1,17 +1,15 @@
 import { useModules } from '@/hooks/use-modules';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
-import { ChevronRight, LayoutDashboard, Music2, Settings, Shield } from 'lucide-react';
-import { BOTTOM_NAV_PAGES, orderedModulePages } from '@/lib/navigation';
+import { ChevronRight, Settings, Shield } from 'lucide-react';
+import { BOTTOM_NAV_PAGES, navigationPages } from '@/lib/navigation';
 
 const More = () => {
-  const { modules, canNavigate } = useModules();
+  const { pages, canNavigate } = useModules();
   const { user } = useAuth();
   const links = [
-    // Module pages that do not fit in the mobile bar, in the user's order.
-    ...orderedModulePages(modules, canNavigate).slice(BOTTOM_NAV_PAGES).map(page => ({ title: page.name, href: page.href, icon: page.icon })),
-    { title: 'Music', href: '/music', icon: Music2 },
-    { title: 'Today', href: '/dashboard', icon: LayoutDashboard },
+    // Pages that do not fit in the mobile bar, in the user's order.
+    ...navigationPages(pages, canNavigate).slice(BOTTOM_NAV_PAGES).map(page => ({ title: page.name, href: page.href, icon: page.icon })),
     { title: 'Settings', href: '/settings', icon: Settings },
   ];
 

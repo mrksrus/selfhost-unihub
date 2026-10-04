@@ -3,7 +3,7 @@ import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, MoreHorizontal, Plus, Search, Settings, Users } from 'lucide-react';
+import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, MoreHorizontal, Music2, Plus, Search, Settings, Users } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
   CommandDialog,
@@ -33,6 +33,7 @@ const staticActions = [
   { id: 'contacts', label: 'Open Contacts', href: '/contacts', icon: Users },
   { id: 'new-contact', label: 'Add Contact', href: '/contacts?action=new', icon: Plus },
   { id: 'recordings', label: 'Open Recordings', href: '/recordings', icon: Mic },
+  { id: 'music', label: 'Open Music', href: '/music', icon: Music2 },
   { id: 'more', label: 'Open More', href: '/more', icon: MoreHorizontal },
   { id: 'dashboard', label: 'Open Today', href: '/dashboard', icon: LayoutDashboard },
   { id: 'settings', label: 'Open Settings', href: '/settings', icon: Settings },

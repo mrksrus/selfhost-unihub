@@ -1,25 +1,27 @@
-import { Calendar, CheckSquare, Mail, Mic, Users, type LucideIcon } from 'lucide-react';
-import type { ModuleId, ModulePreference } from '@/lib/modules';
+import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, Music2, Users, type LucideIcon } from 'lucide-react';
+import type { PageId, PagePreference } from '@/lib/modules';
 
-export type ModulePage = { module: ModuleId; name: string; href: string; icon: LucideIcon };
+export type NavigationPage = { id: PageId; name: string; href: string; icon: LucideIcon };
 
-// One entry per module page. Calendar and ToDo belong to the same module and stay together.
-export const MODULE_PAGES: ModulePage[] = [
-  { module: 'mail', name: 'Mail', href: '/mail', icon: Mail },
-  { module: 'calendar', name: 'Calendar', href: '/calendar', icon: Calendar },
-  { module: 'calendar', name: 'ToDo', href: '/todo', icon: CheckSquare },
-  { module: 'contacts', name: 'Contacts', href: '/contacts', icon: Users },
-  { module: 'recordings', name: 'Recordings', href: '/recordings', icon: Mic },
-];
+const PAGE_LINKS: Record<PageId, { href: string; icon: LucideIcon }> = {
+  mail: { href: '/mail', icon: Mail },
+  calendar: { href: '/calendar', icon: Calendar },
+  todo: { href: '/todo', icon: CheckSquare },
+  contacts: { href: '/contacts', icon: Users },
+  recordings: { href: '/recordings', icon: Mic },
+  music: { href: '/music', icon: Music2 },
+  today: { href: '/dashboard', icon: LayoutDashboard },
+};
 
-// The mobile bar has room for this many module pages next to More.
+export const pageLink = (id: PageId) => PAGE_LINKS[id];
+
+// The mobile bar has room for this many pages next to More.
 export const BOTTOM_NAV_PAGES = 4;
 
-// Module pages in the user's saved module order (the API returns modules in that order).
-export function orderedModulePages(modules: ModulePreference[], canNavigate: (href: string) => boolean): ModulePage[] {
-  const rank = (id: ModuleId) => { const index = modules.findIndex(module => module.id === id); return index < 0 ? modules.length : index; };
-  return MODULE_PAGES.filter(page => canNavigate(page.href))
-    .map((page, index) => ({ page, index }))
-    .sort((a, b) => rank(a.page.module) - rank(b.page.module) || a.index - b.index)
-    .map(({ page }) => page);
+// Pages shown in navigation, in the user's saved page order (the API returns them in that order).
+export function navigationPages(pages: PagePreference[], canNavigate: (href: string) => boolean): NavigationPage[] {
+  return pages
+    .filter(page => PAGE_LINKS[page.id])
+    .map(page => ({ id: page.id, name: page.label, ...PAGE_LINKS[page.id] }))
+    .filter(page => canNavigate(page.href));
 }

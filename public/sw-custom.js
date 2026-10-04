@@ -106,7 +106,9 @@ async function deliverNotification(payload) {
   await self.registration.showNotification(String(payload.title || 'UniHub').slice(0, 120), {
     body: String(payload.body || '').slice(0, 400),
     icon: '/icons/icon-192x192.png', badge: '/icons/icon-72x72.png',
-    tag: payload.dedupeKey, renotify: false,
+    // A payload tag groups notices that replace each other, such as reminders
+    // about one recording upload.
+    tag: typeof payload.tag === 'string' && payload.tag.length <= 128 ? payload.tag : payload.dedupeKey, renotify: false,
     data: { url: notificationTargetUrl(payload), userId: activeUser, eventId: payload.eventId, emailId: payload.emailId },
   });
   // Suppression and failures never acknowledge delivery. Shared worker storage deduplicates tabs and transports.
@@ -159,14 +161,18 @@ self.addEventListener('message', event => {
   event.waitUntil(task.then(shown => event.ports?.[0]?.postMessage({ ok: true, shown }), () => event.ports?.[0]?.postMessage({ ok: false })));
 });
 // Retired installations may have a pending one-shot/periodic registration. Do not poll or consume reminders.
-self.addEventListener('sync', event => event.waitUntil(Promise.resolve()));
+// Recording uploads have their own sync handler in recording-uploads-sw.js.
+self.addEventListener('sync', event => { if (event.tag !== 'recording-uploads') event.waitUntil(Promise.resolve()); });
 self.addEventListener('periodicsync', event => event.waitUntil(Promise.resolve()));
 self.addEventListener('notificationclick', event => {
   event.notification.close();
   event.waitUntil((async () => {
-    const generic = event.notification.data?.generic === true;
+    // Notices about recordings kept on this device carry no private content
+    // and always lead to the Recordings page.
+    const generic = event.notification.data?.generic === true || event.notification.data?.recordingUpload === true;
     if (!generic && await readStore('meta', 'userId') !== event.notification.data?.userId) return;
-    const targetUrl = generic ? new URL('/', self.location.origin).toString() : notificationTargetUrl(event.notification.data);
+    const targetUrl = event.notification.data?.recordingUpload === true ? new URL('/recordings', self.location.origin).toString()
+      : generic ? new URL('/', self.location.origin).toString() : notificationTargetUrl(event.notification.data);
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of clients) {
       if (new URL(client.url).origin !== self.location.origin) continue;

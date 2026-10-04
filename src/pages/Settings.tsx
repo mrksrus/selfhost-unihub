@@ -91,7 +91,7 @@ type MailFolder = {
 
 type UserPreferences = {
   email_link_behavior: 'mailto' | 'internal';
-  default_start_page: 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'dashboard';
+  default_start_page: 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'music' | 'dashboard';
 };
 
 type TwoFactorStatus = {
@@ -738,6 +738,7 @@ const Settings = () => {
                       <SelectItem value="todo">ToDo</SelectItem>
                       <SelectItem value="contacts">Contacts</SelectItem>
                       <SelectItem value="recordings">Recordings</SelectItem>
+                      <SelectItem value="music">Music</SelectItem>
                       <SelectItem value="dashboard">Today</SelectItem>
                     </SelectContent>
                   </Select>

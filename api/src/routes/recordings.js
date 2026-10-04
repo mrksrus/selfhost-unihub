@@ -7,8 +7,10 @@ const {
   getRecordingForUser,
   ensureRecordingMp3,
   startRecordingUpload,
+  getRecordingUploadStatus,
   appendRecordingUploadChunk,
   completeRecordingUpload,
+  abortRecordingUpload,
   updateRecording,
   deleteRecording,
 } = require('../services/recordings');
@@ -52,6 +54,30 @@ module.exports = {
     } catch (error) {
       console.error('Start recording upload error:', error);
       return { error: error.message || 'Failed to start recording upload', status: 500 };
+    }
+  },
+
+  'GET /api/recordings/uploads/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const uploadId = getUploadId(req);
+      if (!uploadId) return { error: 'Invalid upload id', status: 400 };
+      return await getRecordingUploadStatus(userId, uploadId);
+    } catch (error) {
+      console.error('Recording upload status error:', error);
+      return { error: 'Failed to load recording upload', status: 500 };
+    }
+  },
+
+  'DELETE /api/recordings/uploads/:id': async (req, userId) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const uploadId = getUploadId(req);
+      if (!uploadId) return { error: 'Invalid upload id', status: 400 };
+      return await abortRecordingUpload(userId, uploadId);
+    } catch (error) {
+      console.error('Abort recording upload error:', error);
+      return { error: 'Failed to cancel recording upload', status: 500 };
     }
   },
 

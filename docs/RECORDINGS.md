@@ -7,8 +7,11 @@ files, then store them in UniHub with metadata and tags.
 
 Frontend capabilities:
 
-- mono 16-bit PCM WAV microphone recording through `AudioWorklet`
+- mono 16-bit PCM WAV microphone recording through `AudioWorklet`, with the
+  browser's automatic gain control, noise suppression and echo cancellation off
 - pause/resume while recording
+- recordings kept on the device until the server has them, with crash recovery
+- uploads that continue after the app is closed, or a notification when they cannot
 - local playback before upload
 - import existing audio files
 - original-format playback and server-side MP3 export
@@ -111,9 +114,17 @@ Example payload:
   "total_bytes": 1048576,
   "duration_seconds": 300.5,
   "source": "recorded",
-  "tags": ["work", "planning"]
+  "tags": ["work", "planning"],
+  "upload_id": "optional lowercase UUID chosen by the client"
 }
 ```
+
+With `upload_id`, start can be repeated safely: the same ID resumes the
+existing upload (409 if `total_bytes` differs, 410 once it expired), and an ID
+that already became a recording answers `{ "completed": true, "recording": … }`.
+The browser uses the ID of the recording kept on the device, so an upload whose
+start answer was lost never leaves a second upload behind. Without `upload_id`
+the server picks a random one.
 
 Response includes:
 
@@ -165,6 +176,64 @@ supplied filename or MIME type. This is format identification, not malware
 scanning or a complete decode check. MP3 conversion restricts the decoder to
 that detected format and disallows network input protocols.
 
+## Recordings on the device
+
+The browser keeps every recording in IndexedDB (`unihub-recordings-v1`) until
+the server confirms it, so closing the app, a crash or a lost connection does
+not lose audio. The code is in `src/lib/recording-queue.ts`,
+`src/lib/recording-upload.ts`, `src/hooks/use-recording-uploads.ts` and
+`src/sw/recording-uploads.ts`.
+
+**While recording.** The `AudioWorklet` sends 16-bit samples to the page,
+which writes them to IndexedDB every 2 seconds. If the tab or the browser
+closes before **Stop**, the next visit to Recordings turns the written samples
+into a WAV file and offers it as a draft marked *recovered*. At most the last
+2 seconds are lost. A Web Lock per recording keeps other tabs from recovering
+a recording that is still running.
+
+**Volume.** Phones and laptops apply automatic gain control to microphones by
+default. On music this makes the volume swell and fade. UniHub asks for gain
+control, noise suppression and echo cancellation to be off, checks what the
+browser actually applied and warns when one is still on. The WAV file is the
+unmodified signal; nothing is compressed or resampled after capture.
+
+**After Stop.** The recording is a draft on the device, listed under **On
+this device** with Continue, Download and Discard. **Save** queues it. The
+queue uploads one recording at a time, oldest first, in 512 KiB chunks, each
+with its SHA-256. The server checks every chunk, then the file signature, so a
+recording arrives byte for byte or not at all. The recording is deleted from
+the device only after the server has stored it. Rejected files (for example too
+large) stay on the device as *failed*, with Try again and Download.
+
+**Who uploads.** One uploader at a time, guarded by the Web Lock
+`unihub-recording-uploads`:
+
+1. The open page uploads while it is visible, and retries with backoff (15
+   seconds up to 5 minutes) after network or server errors.
+2. When the page is hidden or closed it hands the queue to the service worker.
+   With Background Sync (Chrome, Edge, Android) the browser wakes the worker
+   when there is a connection, even after the app is closed, and retries with
+   backoff. Without it (Safari, Firefox) the worker gets a short time after the
+   page hides.
+3. If the worker cannot finish, it shows **Recording not uploaded yet**, or
+   **Sign in to finish uploading** when the session ended. Background Sync's
+   last attempt does the same.
+4. If the browser stops the worker before it can say so (iOS does this), the
+   server notices: an upload that has not moved for 10 minutes sends the push
+   notification **Recording not uploaded yet** with the percentage reached.
+   It uses the same notification tag as the device's notice, so the user sees
+   one notice per recording, and it is dropped if the upload moved on.
+
+The service worker sends `X-Background-Sync: 1` instead of the CSRF token,
+which it cannot read. The server accepts that header only for the upload start,
+chunk, complete and cancel routes. Notifications need notification permission
+(Settings → Notifications); without it, the recording still waits on the device
+and uploads the next time UniHub is open.
+
+Recordings belong to the account that made them. A queued recording of another
+account waits until that account signs in on the device again. Signing out does
+not delete recordings kept on the device.
+
 ## API Endpoints
 
 All endpoints require authentication. Write endpoints require CSRF.
@@ -172,9 +241,11 @@ All endpoints require authentication. Write endpoints require CSRF.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/recordings` | List recordings |
-| POST | `/api/recordings/uploads/start` | Create upload session |
+| POST | `/api/recordings/uploads/start` | Create or resume upload session |
+| GET | `/api/recordings/uploads/:id` | Upload progress |
 | POST | `/api/recordings/uploads/:id/chunk` | Append base64 chunk |
-| POST | `/api/recordings/uploads/:id/complete` | Finalize upload |
+| POST | `/api/recordings/uploads/:id/complete` | Finalize upload (repeatable) |
+| DELETE | `/api/recordings/uploads/:id` | Cancel upload and remove its temp file |
 | GET | `/api/recordings/:id/file` | Stream audio file |
 | PUT | `/api/recordings/:id` | Update title/description/tags |
 | DELETE | `/api/recordings/:id` | Delete recording and file |

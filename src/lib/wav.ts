@@ -35,7 +35,7 @@ export function createPcm16WavHeader(sampleRate: number, sampleCount: number) {
   return header;
 }
 
-export function createPcm16WavBlob(chunks: ArrayBuffer[], sampleRate: number, sampleCount: number) {
+export function createPcm16WavBlob(chunks: BlobPart[], sampleRate: number, sampleCount: number) {
   return new Blob([createPcm16WavHeader(sampleRate, sampleCount), ...chunks], {
     type: 'audio/wav',
   });

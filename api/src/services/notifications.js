@@ -10,6 +10,7 @@ const {
 } = require('./notification-rules');
 
 const SESSION_WARNING_MS = 2 * 24 * 60 * 60 * 1000;
+const RECORDING_STALL_MS = 10 * 60 * 1000;
 let running = false;
 let keyPromise = null;
 const jsonValue = value => typeof value === 'string' ? JSON.parse(value) : value;
@@ -284,6 +285,11 @@ async function eventStillCurrent(row, payload, connection) {
     const [events] = await connection.execute('SELECT e.todo_status, c.is_visible FROM calendar_events e LEFT JOIN calendar_calendars c ON c.id = e.calendar_id WHERE e.id = ? AND e.user_id = ?', [row.source_id, row.user_id]);
     return !!events[0] && events[0].is_visible !== 0 && !['done', 'cancelled'].includes(events[0].todo_status);
   }
+  if (row.kind === 'recording') {
+    // An upload that moved on, finished or was cancelled needs no warning.
+    const [uploads] = await connection.execute('SELECT bytes_received FROM recording_uploads WHERE id = ? AND user_id = ?', [row.source_id, row.user_id]);
+    return !!uploads[0] && Number(uploads[0].bytes_received) === Number(payload.bytesReceived);
+  }
   if (row.kind === 'mail') {
     const [emails] = await connection.execute('SELECT folder, is_draft, is_read FROM emails WHERE id = ? AND user_id = ?', [row.source_id, row.user_id]);
     return !!emails[0] && !emails[0].is_draft && !emails[0].is_read && !EXCLUDED_MAIL_FOLDERS.has(emails[0].folder);
@@ -356,6 +362,25 @@ async function enqueueSessionExpiryWarnings(connection) {
   }
   return queued;
 }
+// A recording upload stops when the app is closed and the browser gives the
+// service worker no time to finish it. The recording stays on the device that
+// made it; tell the user to open UniHub there. Works without Background Sync.
+async function enqueueStalledRecordingUploads(connection) {
+  const [rows] = await connection.execute(`SELECT r.id, r.user_id, r.title, r.bytes_received, r.total_bytes, r.expires_at FROM recording_uploads r
+    JOIN users u ON u.id = r.user_id
+    WHERE u.is_active = TRUE AND r.expires_at > UTC_TIMESTAMP() AND r.updated_at <= UTC_TIMESTAMP() - INTERVAL ? SECOND
+    ORDER BY r.updated_at LIMIT 100`, [Math.ceil(RECORDING_STALL_MS / 1000)]);
+  let queued = 0;
+  for (const row of rows) {
+    const bytesReceived = Number(row.bytes_received);
+    const percent = Math.min(99, Math.floor((bytesReceived / Math.max(1, Number(row.total_bytes))) * 100));
+    const eventId = await enqueueEvent({ userId: row.user_id, dedupeKey: `recording-upload:${row.id}:${bytesReceived}`, kind: 'recording', sourceId: row.id,
+      title: 'Recording not uploaded yet', body: `"${String(row.title || 'Recording').slice(0, 80)}" stopped at ${percent}%. It is saved on the device that recorded it. Open UniHub there to finish.`,
+      url: '/recordings', expiresAt: asUtcDate(row.expires_at), data: { bytesReceived, tag: `recording-upload:${row.id}` } }, connection);
+    if (eventId) queued++;
+  }
+  return queued;
+}
 async function processNotificationJobs() {
   if (running) return { skipped: true };
   running = true;
@@ -373,6 +398,7 @@ async function processNotificationJobs() {
     await connection.execute(`DELETE FROM notification_reminders WHERE due_at < ? ${calendarUsers.length ? `AND user_id NOT IN (${calendarUsers.map(() => '?').join(', ')})` : ''}`, [new Date(now.getTime() - REMINDER_GRACE_MS), ...calendarUsers]);
     await enqueueDueReminders(connection, now, await blockedNotificationModules(connection));
     await enqueueSessionExpiryWarnings(connection);
+    await enqueueStalledRecordingUploads(connection);
     const delivered = await deliverPending(connection, now, await blockedNotificationModules(connection));
     const pausedUsers = [...paused].filter(([, modules]) => modules.has('calendar') || modules.has('mail')).map(([userId]) => userId);
     await connection.execute(`DELETE FROM notification_events WHERE expires_at < UTC_TIMESTAMP() - INTERVAL 30 DAY ${pausedUsers.length ? `AND user_id NOT IN (${pausedUsers.map(() => '?').join(', ')})` : ''}`, pausedUsers);
@@ -386,4 +412,4 @@ async function processNotificationJobs() {
     running = false;
   }
 }
-module.exports = { ensureNotificationSchema, getVapidKeys, subscribe, unsubscribe, subscriptionStatus, deviceStatus, enqueueMailNotification, enqueueCalendarNotification, enqueueTestNotification, enqueueEvent, processNotificationJobs };
+module.exports = { ensureNotificationSchema, getVapidKeys, subscribe, unsubscribe, subscriptionStatus, deviceStatus, enqueueMailNotification, enqueueCalendarNotification, enqueueTestNotification, enqueueEvent, enqueueStalledRecordingUploads, eventStillCurrent, processNotificationJobs };

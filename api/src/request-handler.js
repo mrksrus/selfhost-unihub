@@ -155,6 +155,8 @@ async function dispatchRequest(req, res) {
       routeKey = `${req.method} /api/recordings/uploads/:id/chunk`;
     } else if (url.pathname.endsWith('/complete')) {
       routeKey = `${req.method} /api/recordings/uploads/:id/complete`;
+    } else if (req.method === 'GET' || req.method === 'DELETE') {
+      routeKey = `${req.method} /api/recordings/uploads/:id`;
     }
   } else if (routeKey.includes('/api/recordings/') && url.pathname.endsWith('/file')) {
     routeKey = `${req.method} /api/recordings/:id/file`;

@@ -3,8 +3,21 @@ const MODULE_CATALOG = Object.freeze([
   { id: 'mail', label: 'Mail', backgroundSupported: true },
   { id: 'calendar', label: 'Calendar and ToDo', backgroundSupported: true },
   { id: 'contacts', label: 'Contacts', backgroundSupported: false },
-  { id: 'recordings', label: 'Recordings', backgroundSupported: false },
+  { id: 'recordings', label: 'Recordings and Music', backgroundSupported: false },
 ].map(module => Object.freeze({ ...module, recoverySection: module.id, visible: true, enabled: true, background: true })));
+
+// Pages in the navigation. A module can have several pages; they are shown,
+// hidden and ordered one by one, but enabling a module still enables all of
+// them. Today belongs to no module.
+const PAGE_CATALOG = Object.freeze([
+  { id: 'mail', label: 'Mail', module: 'mail' },
+  { id: 'calendar', label: 'Calendar', module: 'calendar' },
+  { id: 'todo', label: 'ToDo', module: 'calendar' },
+  { id: 'contacts', label: 'Contacts', module: 'contacts' },
+  { id: 'recordings', label: 'Recordings', module: 'recordings' },
+  { id: 'music', label: 'Music', module: 'recordings' },
+  { id: 'today', label: 'Today', module: null },
+].map(page => Object.freeze(page)));
 
 // Removed modules whose choices may still be stored in user_settings or backups.
 // They are ignored when read and rejected in new updates.
@@ -18,4 +31,4 @@ function getModuleForPath(pathname) {
   for (const id of ['contacts', 'calendar', 'recordings']) if (pathname === `/api/settings/clear-${id}`) return id;
   return null;
 }
-module.exports = { MODULE_CATALOG, RETIRED_MODULE_IDS, getModuleForPath };
+module.exports = { MODULE_CATALOG, PAGE_CATALOG, RETIRED_MODULE_IDS, getModuleForPath };

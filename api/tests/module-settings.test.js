@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { MODULE_CATALOG, getModuleForPath } = require('../src/services/module-catalog');
-const { ORDER_KEY, SETTING_KEY, modulesFromValue, orderFromValue, validateModuleUpdates, validateModuleRequest, getUserModules, getOrderedUserModules, setUserModules, isModuleEnabled, isModuleBackgroundEnabled } = require('../src/services/module-settings');
+const { ORDER_KEY, SETTING_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY, getUserPages, pageOrderFromValue, pagesFromValues, modulesFromValue, orderFromValue, validateModuleUpdates, validateModuleRequest, getUserModules, getOrderedUserModules, setUserModules, isModuleEnabled, isModuleBackgroundEnabled } = require('../src/services/module-settings');
 const { SECTION_POLICIES } = require('../src/services/backup-catalog');
 const { validateBackupPayload } = require('../src/services/backup-validate');
 
@@ -87,7 +87,7 @@ function keyedSettings(initial = {}) {
     const id = `${params[0]}:${params[1]}`;
     if (sql.startsWith('INSERT INTO user_settings')) {
       writes.push(params[1]);
-      if (params[1] === SETTING_KEY) {
+      if (params[1] === SETTING_KEY || params[1] === PAGE_SETTING_KEY) {
         const merged = JSON.parse(records.get(id) || '{}');
         for (const [module, values] of Object.entries(JSON.parse(params[2]))) merged[module] = { ...merged[module], ...values };
         records.set(id, JSON.stringify(merged));
@@ -128,4 +128,46 @@ test('saved order from older releases or backups never hides or breaks modules',
   for (const value of [null, '{broken', '{"mail":1}', '"mail"', JSON.stringify(['mail', 'mail', 7])]) {
     assert.deepEqual(orderFromValue(value), ['mail', 'calendar', 'contacts', 'recordings'], String(value));
   }
+});
+
+const allPages = ['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'today'];
+
+test('pages are shown, hidden and ordered one by one while modules stay enabled together', async () => {
+  const connection = keyedSettings();
+  assert.deepEqual((await getUserPages('owner', connection)).map(page => [page.id, page.module, page.visible]), [
+    ['mail', 'mail', true], ['calendar', 'calendar', true], ['todo', 'calendar', true], ['contacts', 'contacts', true],
+    ['recordings', 'recordings', true], ['music', 'recordings', true], ['today', null, true]]);
+  await setUserModules('owner', { pages: { todo: { visible: false } } }, connection);
+  await setUserModules('owner', { pages: { music: { visible: false }, today: { visible: false } } }, connection);
+  const order = ['today', 'music', 'mail', 'todo', 'calendar', 'contacts', 'recordings'];
+  const modules = await setUserModules('owner', { page_order: order }, connection);
+  assert.deepEqual(connection.writes, [PAGE_SETTING_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY]);
+  const pages = await getUserPages('owner', connection);
+  assert.deepEqual(pages.map(page => page.id), order);
+  assert.deepEqual(pages.filter(page => !page.visible).map(page => page.id), ['today', 'music', 'todo']);
+  // Hiding a page never disables or hides its module.
+  assert.equal(modules.every(module => module.enabled && module.visible), true);
+  assert.equal(await isModuleEnabled('owner', 'calendar', connection), true);
+  assert.deepEqual((await getUserPages('other', connection)).every(page => page.visible), true);
+});
+
+test('page requests accept only visibility of known pages and a complete page order', () => {
+  for (const input of [{ pages: [] }, { pages: { notes: { visible: true } } }, { pages: { todo: { enabled: false } } },
+    { pages: { todo: { visible: 'no' } } }, { pages: { todo: null } }, { page_order: allPages.slice(1) },
+    { page_order: [...allPages, 'notes'] }, { page_order: [...allPages.slice(1), 'todo'] }, { page_order: 'mail' }]) {
+    assert.throws(() => validateModuleRequest(input), { status: 400 }, JSON.stringify(input));
+  }
+  assert.deepEqual(validateModuleRequest({ pages: { today: { visible: false } }, page_order: allPages }).pageOrder, allPages);
+});
+
+test('pages without a choice follow the module order and the older module visibility', () => {
+  const modules = modulesFromValue(JSON.stringify({ calendar: { visible: false } }));
+  const pages = pagesFromValues(modules, ['recordings', 'calendar', 'mail', 'contacts'], JSON.stringify({ todo: { visible: true } }), null);
+  assert.deepEqual(pages.map(page => page.id), ['recordings', 'music', 'calendar', 'todo', 'mail', 'contacts', 'today']);
+  assert.deepEqual(pages.filter(page => !page.visible).map(page => page.id), ['calendar']);
+  // Unreadable or outdated page choices are ignored rather than failing the module list.
+  for (const value of [null, '{broken', '[]', JSON.stringify({ notes: { visible: false }, todo: { visible: 'no' } })]) {
+    assert.equal(pagesFromValues(modulesFromValue(null), orderFromValue(null), value, '{broken').every(page => page.visible), true, String(value));
+  }
+  assert.deepEqual(pageOrderFromValue(JSON.stringify(['today', 'notes', 'today', 'music'])), ['today', 'music', 'mail', 'calendar', 'todo', 'contacts', 'recordings']);
 });

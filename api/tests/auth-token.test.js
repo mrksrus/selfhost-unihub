@@ -83,3 +83,17 @@ test('expired session rows and bad signatures are rejected without renewal', asy
   db.row.expires_at = new Date(Date.now() + 3600000);
   assert.equal(await verifyToken(cookieRequest(forged), { renew: true }), null);
 });
+
+test('only recording uploads accept the service worker header instead of a CSRF token', () => {
+  const { validateCsrfToken } = require('../src/auth');
+  const request = (method, url, headers = {}) => ({ method, url, headers });
+  const background = { 'x-background-sync': '1' };
+  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/start', background)), true);
+  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/chunk', background)), true);
+  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/complete', background)), true);
+  assert.equal(validateCsrfToken(request('DELETE', '/api/recordings/uploads/abc', background)), true);
+  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/chunk')), false);
+  assert.equal(validateCsrfToken(request('DELETE', '/api/recordings/abc', background)), false);
+  assert.equal(validateCsrfToken(request('PUT', '/api/recordings/uploads/abc', background)), false);
+  assert.equal(validateCsrfToken(request('POST', '/api/contacts', background)), false);
+});

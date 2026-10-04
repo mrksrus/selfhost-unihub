@@ -4,6 +4,7 @@ import { useAuth } from '@/contexts/useAuth';
 import { useBackgroundNotificationChecks } from '@/hooks/use-background-notification-checks';
 import { useCalendarNotifications } from '@/hooks/use-calendar-notifications';
 import { useMailNotifications } from '@/hooks/use-mail-notifications';
+import { useRecordingUploadRunner } from '@/hooks/use-recording-uploads';
 import AppSidebar from './AppSidebar';
 import MobileHeader from './MobileHeader';
 import BottomNav from './BottomNav';
@@ -15,6 +16,7 @@ const AppLayout = () => {
   useBackgroundNotificationChecks();
   useCalendarNotifications();
   useMailNotifications();
+  useRecordingUploadRunner();
 
   if (loading) {
     return (

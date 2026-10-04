@@ -37,6 +37,8 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   await connection.execute(`CREATE TEMPORARY TABLE calendar_events (id CHAR(36) PRIMARY KEY, user_id CHAR(36), calendar_id CHAR(36), title VARCHAR(255), start_time DATETIME, end_time DATETIME,
     reminders JSON, reminder_minutes INT, todo_status VARCHAR(24), is_todo_only BOOLEAN DEFAULT FALSE, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE emails (id CHAR(36) PRIMARY KEY, user_id CHAR(36), subject TEXT, from_name TEXT, from_address TEXT, folder VARCHAR(64), is_draft BOOLEAN DEFAULT FALSE, is_read BOOLEAN DEFAULT FALSE) ${options}`);
+  await connection.execute(`CREATE TEMPORARY TABLE recording_uploads (id CHAR(36) PRIMARY KEY, user_id CHAR(36), title VARCHAR(255), total_bytes BIGINT, bytes_received BIGINT DEFAULT 0,
+    expires_at DATETIME, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ${options}`);
   await connection.execute(`CREATE TEMPORARY TABLE backup_restore_jobs (id CHAR(36) PRIMARY KEY, user_id CHAR(36), requested_sections JSON, status VARCHAR(24)) ${options}`);
   const userId = crypto.randomUUID(); const sessionId = crypto.randomUUID();
   await connection.execute("INSERT INTO users (id, email, role) VALUES (?, 'admin@example.com', 'admin')", [userId]);
@@ -98,6 +100,25 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   assert.equal(cancelled.status, 'cancelled');
   assert.equal(sent.length, 2);
   assert.equal((await service.getVapidKeys()).publicKey, keys.publicKey);
+
+  // A recording upload that stopped moving warns once per stopping point.
+  const uploadId = crypto.randomUUID();
+  await connection.execute("INSERT INTO recording_uploads VALUES (?, ?, 'Song idea', 1000, 400, ?, UTC_TIMESTAMP() - INTERVAL 11 MINUTE)",
+    [uploadId, userId, new Date(Date.now() + 86400000)]);
+  await service.processNotificationJobs();
+  await service.processNotificationJobs();
+  const stalled = sent.filter(item => item.kind === 'recording');
+  assert.equal(stalled.length, 1);
+  assert.equal(stalled[0].tag, `recording-upload:${uploadId}`);
+  assert.match(stalled[0].body, /stopped at 40%/);
+  // Progress before delivery cancels the warning.
+  const movedId = await service.enqueueEvent({ userId, dedupeKey: `recording-upload:${uploadId}:0`, kind: 'recording', sourceId: uploadId,
+    title: 'Old', url: '/recordings', data: { bytesReceived: 0 }, expiresAt: new Date(Date.now() + 3600000) }, executor);
+  await service.processNotificationJobs();
+  const [[moved]] = await connection.execute('SELECT status FROM notification_deliveries WHERE event_id = ?', [movedId]);
+  assert.equal(moved.status, 'cancelled');
+  await connection.execute('DELETE FROM recording_uploads WHERE id = ?', [uploadId]);
+  sent.length = 2;
 
   // An unused session nearing its end warns the device once.
   await connection.execute('UPDATE sessions SET expires_at = ? WHERE id = ?', [new Date(Date.now() + 30 * 3600000), sessionId]);

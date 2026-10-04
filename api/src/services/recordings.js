@@ -6,12 +6,16 @@ const { inspectRecordingAudio } = require('./recording-audio');
 const { createAudioConversionQueue } = require('./audio-conversion-queue');
 const { MAX_CONVERTED_BYTES, runAudioConversion } = require('./audio-transcode');
 
-const RECORDINGS_ROOT = '/app/uploads/recordings';
+const RECORDINGS_ROOT = process.env.RECORDINGS_ROOT || '/app/uploads/recordings';
 const MAX_RECORDING_BYTES = 500 * 1024 * 1024;
 const MAX_CHUNK_BYTES = 768 * 1024;
 const UPLOAD_TTL_HOURS = 24;
 const RECORDING_CATEGORIES = new Set(['none', 'music', 'journal', 'memory', 'reminder']);
 const mp3ConversionJobs = new Map();
+// Chunk, complete and abort for one upload run one at a time in this process.
+// The page and the service worker can both retry the same upload.
+const uploadLocks = new Map();
+const UPLOAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const mp3ConversionQueue = createAudioConversionQueue();
 
 function sanitizeFilename(value, fallback = 'recording') {
@@ -354,6 +358,38 @@ async function getRecordingForUser(userId, recordingId) {
   return rows[0] || null;
 }
 
+async function withUploadLock(uploadId, task) {
+  const previous = uploadLocks.get(uploadId) || Promise.resolve();
+  const run = previous.then(task);
+  const tail = run.catch(() => {});
+  uploadLocks.set(uploadId, tail);
+  try {
+    return await run;
+  } finally {
+    if (uploadLocks.get(uploadId) === tail) uploadLocks.delete(uploadId);
+  }
+}
+
+function serializeUpload(upload) {
+  const expiresAt = upload.expires_at instanceof Date ? upload.expires_at.toISOString() : upload.expires_at;
+  return {
+    id: upload.id,
+    bytes_received: Number(upload.bytes_received),
+    total_bytes: Number(upload.total_bytes),
+    max_chunk_bytes: MAX_CHUNK_BYTES,
+    expires_at: expiresAt,
+  };
+}
+
+async function findUpload(userId, uploadId) {
+  const [rows] = await db.execute(
+    `SELECT *, expires_at < UTC_TIMESTAMP() AS is_expired
+     FROM recording_uploads WHERE id = ? AND user_id = ? LIMIT 1`,
+    [uploadId, userId]
+  );
+  return rows[0] || null;
+}
+
 async function startRecordingUpload(userId, input = {}) {
   const totalBytes = Number(input.total_bytes);
   if (!Number.isSafeInteger(totalBytes) || totalBytes <= 0) {
@@ -363,7 +399,26 @@ async function startRecordingUpload(userId, input = {}) {
     return { error: 'Recording exceeds the 500 MB limit', status: 400 };
   }
 
-  const uploadId = crypto.randomUUID();
+  // The client may name the upload so a start whose response was lost can be
+  // repeated without leaving a second, abandoned upload behind.
+  if (input.upload_id !== undefined) {
+    const uploadId = String(input.upload_id).toLowerCase();
+    if (!UPLOAD_ID_PATTERN.test(uploadId)) return { error: 'Invalid upload_id', status: 400 };
+    return withUploadLock(uploadId, () => createRecordingUpload(userId, uploadId, totalBytes, input));
+  }
+  return createRecordingUpload(userId, crypto.randomUUID(), totalBytes, input);
+}
+
+async function createRecordingUpload(userId, uploadId, totalBytes, input) {
+  const existing = await findUpload(userId, uploadId);
+  if (existing) {
+    if (Number(existing.total_bytes) !== totalBytes) return { error: 'Upload exists with a different size', status: 409 };
+    if (Number(existing.is_expired)) return { error: 'Upload expired', status: 410 };
+    return { upload: serializeUpload(existing) };
+  }
+  const recording = await getRecordingForUser(userId, uploadId);
+  if (recording) return { completed: true, recording: serializeRecording(recording) };
+
   const title = normalizeTitle(input.title || input.original_filename);
   const originalFilename = sanitizeFilename(input.original_filename || `${title}.webm`, 'recording.webm');
   const contentType = normalizeContentType(input.content_type);
@@ -374,62 +429,58 @@ async function startRecordingUpload(userId, input = {}) {
   const tempDir = path.join(RECORDINGS_ROOT, '.tmp', String(userId));
   const tempPath = path.join(tempDir, `${uploadId}.part`);
   await fs.promises.mkdir(tempDir, { recursive: true });
-  await fs.promises.writeFile(tempPath, Buffer.alloc(0), { flag: 'wx' });
+  // No upload row exists here, so a file at this path is left from a start
+  // that failed before its row was written.
+  await fs.promises.writeFile(tempPath, Buffer.alloc(0));
   const expiresAt = new Date(Date.now() + UPLOAD_TTL_HOURS * 60 * 60 * 1000);
 
-  await db.execute(
-    `INSERT INTO recording_uploads
-      (id, user_id, title, description, original_filename, content_type, total_bytes, duration_seconds, source, category, recorded_at, metadata, tags, temp_path, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      uploadId,
-      userId,
-      title,
-      normalizeDescription(input.description),
-      originalFilename,
-      contentType,
-      totalBytes,
-      durationSeconds,
-      normalizeSource(input.source),
-      normalizeCategory(input.category),
-      recordedAt,
-      serializeMetadata(input.metadata),
-      JSON.stringify(normalizeTags(input.tags)),
-      tempPath,
-      expiresAt,
-    ]
-  );
+  try {
+    await db.execute(
+      `INSERT INTO recording_uploads
+        (id, user_id, title, description, original_filename, content_type, total_bytes, duration_seconds, source, category, recorded_at, metadata, tags, temp_path, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        uploadId,
+        userId,
+        title,
+        normalizeDescription(input.description),
+        originalFilename,
+        contentType,
+        totalBytes,
+        durationSeconds,
+        normalizeSource(input.source),
+        normalizeCategory(input.category),
+        recordedAt,
+        serializeMetadata(input.metadata),
+        JSON.stringify(normalizeTags(input.tags)),
+        tempPath,
+        expiresAt,
+      ]
+    );
+  } catch (error) {
+    await fs.promises.rm(tempPath, { force: true });
+    // Another account already uses this id.
+    if (error.code === 'ER_DUP_ENTRY') return { error: 'Upload id is already in use', status: 409 };
+    throw error;
+  }
 
-  return {
-    upload: {
-      id: uploadId,
-      bytes_received: 0,
-      total_bytes: totalBytes,
-      max_chunk_bytes: MAX_CHUNK_BYTES,
-      expires_at: expiresAt.toISOString(),
-    },
-  };
+  return { upload: serializeUpload({ id: uploadId, bytes_received: 0, total_bytes: totalBytes, expires_at: expiresAt }) };
+}
+
+// The page and the service worker resume from here after a lost response or
+// a closed app. A completed upload answers with its recording.
+async function getRecordingUploadStatus(userId, uploadId) {
+  const upload = await findUpload(userId, uploadId);
+  if (upload) {
+    if (Number(upload.is_expired)) return { error: 'Upload expired', status: 410 };
+    return { upload: serializeUpload(upload) };
+  }
+  const recording = await getRecordingForUser(userId, uploadId);
+  if (recording) return { completed: true, recording: serializeRecording(recording) };
+  return { error: 'Upload not found', status: 404 };
 }
 
 async function appendRecordingUploadChunk(userId, uploadId, input = {}) {
-  const [rows] = await db.execute(
-    'SELECT * FROM recording_uploads WHERE id = ? AND user_id = ? LIMIT 1',
-    [uploadId, userId]
-  );
-  const upload = rows[0];
-  if (!upload) return { error: 'Upload not found', status: 404 };
-  if (new Date(upload.expires_at).getTime() < Date.now()) {
-    return { error: 'Upload expired', status: 410 };
-  }
-  if (!isPathUnderRoot(upload.temp_path)) {
-    return { error: 'Invalid upload path', status: 500 };
-  }
-
-  const expectedOffset = Number(input.offset);
-  if (!Number.isFinite(expectedOffset) || expectedOffset !== Number(upload.bytes_received)) {
-    return { error: `Invalid chunk offset; expected ${upload.bytes_received}`, status: 409 };
-  }
-
   const chunkBase64 = String(input.data_base64 || '');
   if (!chunkBase64) return { error: 'data_base64 is required', status: 400 };
   let buffer;
@@ -447,97 +498,148 @@ async function appendRecordingUploadChunk(userId, uploadId, input = {}) {
     }
   }
 
-  const nextBytes = Number(upload.bytes_received) + buffer.length;
-  if (nextBytes > Number(upload.total_bytes)) {
-    return { error: 'Chunk exceeds declared upload size', status: 400 };
-  }
+  return withUploadLock(uploadId, async () => {
+    const upload = await findUpload(userId, uploadId);
+    if (!upload) return { error: 'Upload not found', status: 404 };
+    if (Number(upload.is_expired)) return { error: 'Upload expired', status: 410 };
+    if (!isPathUnderRoot(upload.temp_path)) {
+      return { error: 'Invalid upload path', status: 500 };
+    }
 
-  await fs.promises.appendFile(path.resolve(upload.temp_path), buffer);
-  await db.execute(
-    'UPDATE recording_uploads SET bytes_received = ? WHERE id = ? AND user_id = ?',
-    [nextBytes, uploadId, userId]
-  );
-  return { upload: { id: uploadId, bytes_received: nextBytes, total_bytes: Number(upload.total_bytes) } };
+    const received = Number(upload.bytes_received);
+    const expectedOffset = Number(input.offset);
+    if (!Number.isSafeInteger(expectedOffset) || expectedOffset !== received) {
+      // The client resumes from bytes_received, e.g. after a lost response.
+      return { error: `Invalid chunk offset; expected ${received}`, status: 409, upload: serializeUpload(upload) };
+    }
+    const nextBytes = received + buffer.length;
+    if (nextBytes > Number(upload.total_bytes)) {
+      return { error: 'Chunk exceeds declared upload size', status: 400 };
+    }
+
+    // Write at the recorded offset, not at the end of the file: bytes left by
+    // a write whose database update never happened are cut off and replaced.
+    const handle = await fs.promises.open(path.resolve(upload.temp_path), 'r+');
+    try {
+      await handle.truncate(received);
+      let written = 0;
+      while (written < buffer.length) {
+        const { bytesWritten } = await handle.write(buffer, written, buffer.length - written, received + written);
+        written += bytesWritten;
+      }
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+
+    const expiresAt = new Date(Date.now() + UPLOAD_TTL_HOURS * 60 * 60 * 1000);
+    const [result] = await db.execute(
+      'UPDATE recording_uploads SET bytes_received = ?, expires_at = ? WHERE id = ? AND user_id = ? AND bytes_received = ?',
+      [nextBytes, expiresAt, uploadId, userId, received]
+    );
+    if (!result?.affectedRows) {
+      return { error: 'Upload changed while this chunk was written. Please retry.', status: 409 };
+    }
+    return { upload: serializeUpload({ ...upload, bytes_received: nextBytes, expires_at: expiresAt }) };
+  });
 }
 
 async function completeRecordingUpload(userId, uploadId, input = {}) {
-  const [rows] = await db.execute(
-    'SELECT * FROM recording_uploads WHERE id = ? AND user_id = ? LIMIT 1',
-    [uploadId, userId]
-  );
-  const upload = rows[0];
-  if (!upload) return { error: 'Upload not found', status: 404 };
-  if (Number(upload.bytes_received) !== Number(upload.total_bytes)) {
-    return { error: 'Upload is incomplete', status: 409 };
-  }
-  if (!isPathUnderRoot(upload.temp_path)) {
-    return { error: 'Invalid upload path', status: 500 };
-  }
-
-  const stat = await fs.promises.stat(upload.temp_path);
-  if (stat.size !== Number(upload.total_bytes)) {
-    return { error: 'Uploaded file size does not match declared size', status: 409 };
-  }
-
-  const expectedSha256 = normalizeSha256(input.sha256);
-  if (expectedSha256) {
-    const actualSha256 = await calculateFileSha256(upload.temp_path);
-    if (actualSha256 !== expectedSha256) {
-      return {
-        error: 'Recording upload failed its integrity check. The saved bytes differ from the local preview.',
-        status: 409,
-      };
+  return withUploadLock(uploadId, async () => {
+    const upload = await findUpload(userId, uploadId);
+    if (!upload) {
+      // A retry after a lost response finds the recording this upload became.
+      const existing = await getRecordingForUser(userId, uploadId);
+      if (existing) return { recording: serializeRecording(existing) };
+      return { error: 'Upload not found', status: 404 };
     }
-  }
+    if (Number(upload.bytes_received) !== Number(upload.total_bytes)) {
+      return { error: 'Upload is incomplete', status: 409, upload: serializeUpload(upload) };
+    }
+    if (!isPathUnderRoot(upload.temp_path)) {
+      return { error: 'Invalid upload path', status: 500 };
+    }
 
-  const recordingId = crypto.randomUUID();
-  const finalDir = path.join(RECORDINGS_ROOT, String(userId));
-  const audioFormat = await inspectRecordingAudio(upload.temp_path);
-  const storedContentType = audioFormat.contentType;
-  const storedFilename = replaceFilenameExtension(upload.original_filename, audioFormat.extension);
-  const ext = audioFormat.extension;
-  const finalPath = path.join(finalDir, `${recordingId}${ext}`);
-  await fs.promises.mkdir(finalDir, { recursive: true });
-  await fs.promises.rename(path.resolve(upload.temp_path), finalPath);
-  const storedStat = await fs.promises.stat(finalPath);
+    const tempPath = path.resolve(upload.temp_path);
+    const stat = await fs.promises.stat(tempPath);
+    if (stat.size !== Number(upload.total_bytes)) {
+      return { error: 'Uploaded file size does not match declared size', status: 409 };
+    }
 
-  let connection;
-  try {
-    connection = await db.getConnection();
-    await connection.beginTransaction();
-    await connection.execute(
-      `INSERT INTO recordings
-        (id, user_id, title, description, original_filename, content_type, size_bytes, duration_seconds, storage_path, source, category, recorded_at, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        recordingId,
-        userId,
-        upload.title,
-        upload.description || null,
-        storedFilename || null,
-        storedContentType,
-        storedStat.size,
-        upload.duration_seconds === null ? null : Number(upload.duration_seconds),
-        finalPath,
-        upload.source || 'imported',
-        normalizeCategory(upload.category),
-        normalizeRecordedAt(upload.recorded_at),
-        serializeMetadata(upload.metadata),
-      ]
-    );
-    await ensureRecordingTags(userId, recordingId, parseTagsJson(upload.tags), connection);
-    await connection.execute('DELETE FROM recording_uploads WHERE id = ? AND user_id = ?', [uploadId, userId]);
-    await connection.commit();
-  } catch (error) {
-    if (connection) await connection.rollback().catch(() => {});
-    await fs.promises.rm(finalPath, { force: true }).catch(() => {});
-    throw error;
-  } finally {
-    connection?.release();
-  }
+    const expectedSha256 = normalizeSha256(input.sha256);
+    if (expectedSha256) {
+      const actualSha256 = await calculateFileSha256(tempPath);
+      if (actualSha256 !== expectedSha256) {
+        return {
+          error: 'Recording upload failed its integrity check. The saved bytes differ from the local preview.',
+          status: 409,
+        };
+      }
+    }
 
-  const recording = await getRecordingForUser(userId, recordingId);
-  return { recording: serializeRecording(recording) };
+    const recordingId = upload.id;
+    const finalDir = path.join(RECORDINGS_ROOT, String(userId));
+    const audioFormat = await inspectRecordingAudio(tempPath);
+    const storedContentType = audioFormat.contentType;
+    const storedFilename = replaceFilenameExtension(upload.original_filename, audioFormat.extension);
+    const finalPath = path.join(finalDir, `${recordingId}${audioFormat.extension}`);
+    await fs.promises.mkdir(finalDir, { recursive: true });
+    await fs.promises.rename(tempPath, finalPath);
+
+    let connection;
+    try {
+      const storedStat = await fs.promises.stat(finalPath);
+      connection = await db.getConnection();
+      await connection.beginTransaction();
+      await connection.execute(
+        `INSERT INTO recordings
+          (id, user_id, title, description, original_filename, content_type, size_bytes, duration_seconds, storage_path, source, category, recorded_at, metadata)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          recordingId,
+          userId,
+          upload.title,
+          upload.description || null,
+          storedFilename || null,
+          storedContentType,
+          storedStat.size,
+          upload.duration_seconds === null ? null : Number(upload.duration_seconds),
+          finalPath,
+          upload.source || 'imported',
+          normalizeCategory(upload.category),
+          normalizeRecordedAt(upload.recorded_at),
+          serializeMetadata(upload.metadata),
+        ]
+      );
+      await ensureRecordingTags(userId, recordingId, parseTagsJson(upload.tags), connection);
+      await connection.execute('DELETE FROM recording_uploads WHERE id = ? AND user_id = ?', [uploadId, userId]);
+      await connection.commit();
+    } catch (error) {
+      if (connection) await connection.rollback().catch(() => {});
+      // Keep the uploaded bytes so completing can be retried.
+      await fs.promises.rename(finalPath, tempPath).catch(renameError => {
+        console.error('Could not return a recording upload to its temporary path:', renameError.message);
+      });
+      throw error;
+    } finally {
+      connection?.release();
+    }
+
+    const recording = await getRecordingForUser(userId, recordingId);
+    return { recording: serializeRecording(recording) };
+  });
+}
+
+async function abortRecordingUpload(userId, uploadId) {
+  return withUploadLock(uploadId, async () => {
+    const upload = await findUpload(userId, uploadId);
+    if (!upload) return { deleted: false };
+    if (upload.temp_path && isPathUnderRoot(upload.temp_path)) {
+      await fs.promises.rm(path.resolve(upload.temp_path), { force: true });
+    }
+    await db.execute('DELETE FROM recording_uploads WHERE id = ? AND user_id = ?', [uploadId, userId]);
+    return { deleted: true };
+  });
 }
 
 async function updateRecording(userId, recordingId, input = {}) {
@@ -589,10 +691,18 @@ async function cleanupExpiredRecordingUploads() {
     'SELECT id, temp_path FROM recording_uploads WHERE expires_at < UTC_TIMESTAMP() LIMIT 100'
   );
   for (const row of rows || []) {
-    if (row.temp_path && isPathUnderRoot(row.temp_path)) {
-      await fs.promises.rm(path.resolve(row.temp_path), { force: true }).catch(() => {});
-    }
-    await db.execute('DELETE FROM recording_uploads WHERE id = ?', [row.id]).catch(() => {});
+    await withUploadLock(row.id, async () => {
+      // A chunk that arrived meanwhile extended the upload.
+      const [[current]] = await db.execute(
+        'SELECT expires_at < UTC_TIMESTAMP() AS is_expired FROM recording_uploads WHERE id = ?',
+        [row.id]
+      );
+      if (!current || !Number(current.is_expired)) return;
+      if (row.temp_path && isPathUnderRoot(row.temp_path)) {
+        await fs.promises.rm(path.resolve(row.temp_path), { force: true }).catch(() => {});
+      }
+      await db.execute('DELETE FROM recording_uploads WHERE id = ?', [row.id]);
+    }).catch(() => {});
   }
   return rows.length;
 }
@@ -616,8 +726,10 @@ module.exports = {
   ensureRecordingMp3,
   deleteRecordingFiles,
   startRecordingUpload,
+  getRecordingUploadStatus,
   appendRecordingUploadChunk,
   completeRecordingUpload,
+  abortRecordingUpload,
   updateRecording,
   deleteRecording,
   cleanupExpiredRecordingUploads,

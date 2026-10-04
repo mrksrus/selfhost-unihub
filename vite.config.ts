@@ -1,7 +1,40 @@
-import { defineConfig } from "vite";
+import { build, defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
+
+const alias = { "@": path.resolve(__dirname, "./src") };
+const RECORDING_UPLOADS_WORKER = "recording-uploads-sw.js";
+
+// The service worker loads this with importScripts, so it must be one classic
+// script. It shares the upload code with the page (src/lib/recording-*.ts).
+function recordingUploadsWorker(): Plugin {
+  return {
+    name: "unihub-recording-uploads-worker",
+    apply: "build",
+    async generateBundle() {
+      const result = await build({
+        configFile: false,
+        logLevel: "warn",
+        resolve: { alias },
+        build: {
+          write: false,
+          minify: true,
+          lib: {
+            entry: path.resolve(__dirname, "src/sw/recording-uploads.ts"),
+            formats: ["iife"],
+            name: "UniHubRecordingUploads",
+            fileName: () => RECORDING_UPLOADS_WORKER,
+          },
+        },
+      });
+      const outputs = (Array.isArray(result) ? result : [result]) as Array<{ output: Array<{ type: string; code?: string }> }>;
+      const chunk = outputs[0]?.output.find(item => item.type === "chunk");
+      if (!chunk?.code) throw new Error("Recording upload worker did not build");
+      this.emitFile({ type: "asset", fileName: RECORDING_UPLOADS_WORKER, source: chunk.code });
+    },
+  };
+}
 
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
@@ -14,6 +47,7 @@ export default defineConfig(() => ({
   },
   plugins: [
     react(),
+    recordingUploadsWorker(),
     VitePWA({
       registerType: "prompt",
       includeAssets: ["favicon.ico", "favicon.svg", "robots.txt"],
@@ -32,8 +66,9 @@ export default defineConfig(() => ({
             && !/^\/api\/(backup\/jobs\/[^/]+\/download|recordings\/[^/]+\/file|mail\/attachments\/[^/]+)$/.test(url.pathname),
           handler: 'NetworkOnly',
         }],
-        // Inject custom service worker code
-        importScripts: ['/sw-custom.js'],
+        // Inject custom service worker code. Recording uploads come first so
+        // their sync handler is registered before the catch-all in sw-custom.js.
+        importScripts: [`/${RECORDING_UPLOADS_WORKER}`, '/sw-custom.js'],
       },
       manifest: {
         name: "UniHub",
@@ -84,8 +119,6 @@ export default defineConfig(() => ({
     }),
   ],
   resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-    },
+    alias,
   },
 }));

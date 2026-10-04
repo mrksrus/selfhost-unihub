@@ -5,21 +5,23 @@ import { MemoryRouter } from 'react-router-dom';
 import ModuleGuard from '@/components/modules/ModuleGuard';
 import ModuleSettings from '@/components/settings/ModuleSettings';
 import BottomNav from '@/components/layout/BottomNav';
-import { useModules, type ModulePreference } from '@/hooks/use-modules';
-import { orderedModulePages } from '@/lib/navigation';
-import { knownModules } from '@/lib/modules';
+import { PAGES_QUERY_KEY, useModules, type ModulePreference, type PagePreference } from '@/hooks/use-modules';
+import { defaultPages, knownModules } from '@/lib/modules';
 import { api } from '@/lib/api';
 
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'owner' } }) }));
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
-function renderWithClient(children: React.ReactNode, modules?: ModulePreference[], path = '/') {
+function renderWithClient(children: React.ReactNode, modules?: ModulePreference[], path = '/', pages?: PagePreference[]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   if (modules) client.setQueryData(['modules'], modules);
+  if (pages) client.setQueryData(PAGES_QUERY_KEY, pages);
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>{children}</MemoryRouter></QueryClientProvider>);
 }
 const module = (id: ModulePreference['id'], label: string, extra: Partial<ModulePreference> = {}): ModulePreference =>
   ({ id, label, visible: true, enabled: true, background: true, ...extra });
-const defaults = [module('mail', 'Mail'), module('calendar', 'Calendar and ToDo'), module('contacts', 'Contacts'), module('recordings', 'Recordings')];
+const defaults = [module('mail', 'Mail'), module('calendar', 'Calendar and ToDo'), module('contacts', 'Contacts'), module('recordings', 'Recordings and Music')];
+const pageNames = (pages: PagePreference[]) => pages.map(page => page.label);
+const reorder = (pages: PagePreference[], ids: string[]) => ids.map(id => pages.find(page => page.id === id)!);
 function NavigationProbe() { const { canNavigate } = useModules(); return <span>{canNavigate('/contacts') ? 'Navigation shown' : 'Navigation hidden'}</span>; }
 
 describe('optional module access', () => {
@@ -41,36 +43,62 @@ describe('optional module access', () => {
   });
 });
 
-describe('module order', () => {
-  it('orders module pages by the saved module order and keeps Calendar before ToDo', () => {
-    const order = [defaults[3], defaults[1], defaults[0], defaults[2]];
-    expect(orderedModulePages(order, () => true).map(page => page.name)).toEqual(['Recordings', 'Calendar', 'ToDo', 'Mail', 'Contacts']);
-    expect(orderedModulePages(order, href => href !== '/calendar').map(page => page.name)).toEqual(['Recordings', 'ToDo', 'Mail', 'Contacts']);
+describe('pages', () => {
+  it('follows the module order and module visibility until pages are set up', () => {
+    const order = [defaults[3], { ...defaults[1], visible: false }, defaults[0], defaults[2]];
+    const pages = defaultPages(order);
+    expect(pageNames(pages)).toEqual(['Recordings', 'Music', 'Calendar', 'ToDo', 'Mail', 'Contacts', 'Today']);
+    expect(pages.filter(page => !page.visible).map(page => page.id)).toEqual(['calendar', 'todo']);
+  });
+
+  it('shows and hides pages of one module separately but enables them together', () => {
+    const pages = defaultPages(defaults).map(page => page.id === 'todo' || page.id === 'today' ? { ...page, visible: false } : page);
+    renderWithClient(<BottomNav />, defaults, '/mail', pages);
+    expect(within(screen.getByRole('navigation')).getAllByRole('link').map(link => link.textContent))
+      .toEqual(['Mail', 'Calendar', 'Contacts', 'Recordings', 'More']);
+    cleanup();
+    const recordingsOff = defaults.map(item => item.id === 'recordings' ? { ...item, enabled: false } : item);
+    function Probe() { const { canNavigate, canAccess } = useModules(); return <p>{[canNavigate('/music'), canAccess('/music'), canNavigate('/dashboard'), canNavigate('/todo'), canAccess('/todo')].join(' ')}</p>; }
+    renderWithClient(<Probe />, recordingsOff, '/', pages);
+    expect(screen.getByText('false false false false true')).toBeInTheDocument();
   });
 
   it('shows the first four pages in the mobile bar and marks More for the rest', () => {
-    renderWithClient(<BottomNav />, [defaults[3], defaults[2], defaults[0], defaults[1]], '/todo');
+    const pages = reorder(defaultPages(defaults), ['recordings', 'contacts', 'mail', 'today', 'calendar', 'todo', 'music']);
+    renderWithClient(<BottomNav />, defaults, '/todo', pages);
     const links = within(screen.getByRole('navigation')).getAllByRole('link');
-    expect(links.map(link => link.textContent)).toEqual(['Recordings', 'Contacts', 'Mail', 'Calendar', 'More']);
+    expect(links.map(link => link.textContent)).toEqual(['Recordings', 'Contacts', 'Mail', 'Today', 'More']);
     expect(links[4].className).toContain('text-accent');
   });
 
-  it('moves a module and saves the full order', async () => {
-    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { modules: [defaults[1], defaults[0], defaults[2], defaults[3]] } });
-    renderWithClient(<ModuleSettings />, defaults);
+  it('moves a page and saves the full page order', async () => {
+    const pages = defaultPages(defaults);
+    const moved = reorder(pages, ['calendar', 'mail', 'todo', 'contacts', 'recordings', 'music', 'today']);
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { modules: defaults, pages: moved } });
+    renderWithClient(<ModuleSettings />, defaults, '/', pages);
     expect(screen.getByRole('button', { name: 'Move Mail up' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Move Recordings down' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Move Today down' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Move Mail down' }));
-    await waitFor(() => expect(put).toHaveBeenCalledWith('/modules', { order: ['calendar', 'mail', 'contacts', 'recordings'] }));
-    await waitFor(() => expect(screen.getAllByRole('heading', { level: 3 }).map(heading => heading.textContent))
-      .toEqual(['Calendar and ToDo', 'Mail', 'Contacts', 'Recordings']));
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/modules', { page_order: ['calendar', 'mail', 'todo', 'contacts', 'recordings', 'music', 'today'] }));
+    await waitFor(() => expect(screen.getAllByRole('heading', { level: 3 }).slice(0, 3).map(heading => heading.textContent))
+      .toEqual(['Calendar', 'Mail', 'ToDo']));
+  });
+
+  it('hides one page without touching its module', async () => {
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: { modules: defaults, pages: defaultPages(defaults) } });
+    renderWithClient(<ModuleSettings />, defaults, '/', defaultPages(defaults));
+    fireEvent.click(screen.getByRole('switch', { name: 'Music: show in navigation' }));
+    await waitFor(() => expect(put).toHaveBeenCalledWith('/modules', { pages: { music: { visible: false } } }));
+    expect(screen.queryByRole('switch', { name: 'Recordings and Music: visible' })).not.toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Recordings and Music: enabled' })).toBeChecked();
   });
 
   it('puts rows back when the order is not saved', async () => {
-    vi.spyOn(api, 'put').mockResolvedValue({ error: 'Module order must list every module once', status: 400 });
-    renderWithClient(<ModuleSettings />, defaults);
+    vi.spyOn(api, 'put').mockResolvedValue({ error: 'Page order must list every page once', status: 400 });
+    renderWithClient(<ModuleSettings />, defaults, '/', defaultPages(defaults));
     fireEvent.click(screen.getByRole('button', { name: 'Move Contacts up' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Module order must list every module once');
-    expect(screen.getAllByRole('heading', { level: 3 }).map(heading => heading.textContent)).toEqual(['Mail', 'Calendar and ToDo', 'Contacts', 'Recordings']);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Page order must list every page once');
+    expect(screen.getAllByRole('heading', { level: 3 }).slice(0, 7).map(heading => heading.textContent))
+      .toEqual(['Mail', 'Calendar', 'ToDo', 'Contacts', 'Recordings', 'Music', 'Today']);
   });
 });
