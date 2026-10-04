@@ -464,12 +464,12 @@ const Recordings = () => {
   const discardRecording = async (item: StoredRecording, force: boolean) => {
     setDiscarding(true);
     try {
-      if (item.state !== 'queued') {
+      if (item.state === 'draft') {
         await deleteStoredRecording(item.id);
         setDiscardTarget(null);
         return;
       }
-      stopRecordingUploads();
+      if (item.state === 'queued') stopRecordingUploads();
       const result = await discardStoredRecording(item.id, pageUploadRequest, { force });
       if (result.kind === 'not-cancelled') {
         setDiscardUnconfirmed(true);

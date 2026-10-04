@@ -27,10 +27,11 @@ async function isSectionRestoreActive(userId, section) {
   return sections.has(section);
 }
 
-async function getActiveRestoreSectionsByUser(connection = db) {
+async function getActiveRestoreSectionsByUser(connection = db, userId = null) {
   const [rows] = await connection.execute(
     `SELECT user_id, requested_sections FROM backup_restore_jobs
-     WHERE status IN ('queued', 'running', 'cancelling')`
+     WHERE status IN ('queued', 'running', 'cancelling')${userId ? ' AND user_id = ?' : ''}`,
+    userId ? [userId] : []
   );
   const active = new Map();
   for (const row of rows) {

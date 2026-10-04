@@ -147,6 +147,30 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   assert.equal(quietWarnings(), 1, 'the queued warning is sent once after the restore');
   await connection.execute('DELETE FROM recording_uploads WHERE id = ?', [quietId]);
 
+  // A restore that starts while pushes go out holds back the rest of them.
+  const racing = [crypto.randomUUID(), crypto.randomUUID()];
+  const racingRestore = crypto.randomUUID();
+  for (const id of racing) {
+    await connection.execute("INSERT INTO recording_uploads VALUES (?, ?, 'Racing take', 1000, 200, ?, UTC_TIMESTAMP())", [id, userId, new Date(Date.now() + 86400000)]);
+    await service.enqueueEvent({ userId, dedupeKey: `recording-upload:${id}:200`, kind: 'recording', sourceId: id,
+      title: 'Recording not uploaded yet', url: '/recordings', data: { bytesReceived: 200, tag: `recording-upload:${id}` }, expiresAt: new Date(Date.now() + 3600000) }, executor);
+  }
+  const racingWarnings = () => sent.filter(item => racing.some(id => item.tag === `recording-upload:${id}`)).length;
+  const plainSend = webPush.sendNotification;
+  webPush.sendNotification = async (subscriptionInfo, payload) => {
+    webPush.sendNotification = plainSend;
+    await connection.execute("INSERT INTO backup_restore_jobs VALUES (?, ?, '[\"recordings\"]', 'queued')", [racingRestore, userId]);
+    return plainSend(subscriptionInfo, payload);
+  };
+  await service.processNotificationJobs();
+  assert.equal(racingWarnings(), 1, 'the push after the restore started is held back');
+  const [[held]] = await connection.execute("SELECT COUNT(*) AS total FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id WHERE e.source_id IN (?, ?) AND d.status = 'pending' AND d.attempts = 0", racing);
+  assert.equal(held.total, 1, 'the held push keeps its attempts');
+  await connection.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [racingRestore]);
+  await service.processNotificationJobs();
+  assert.equal(racingWarnings(), 2);
+  await connection.execute('DELETE FROM recording_uploads WHERE id IN (?, ?)', racing);
+
   // Uploads that cannot get a new warning do not hold back newer ones.
   const otherUser = crypto.randomUUID();
   await connection.execute("INSERT INTO users (id, email, role) VALUES (?, 'alex@example.com', 'user')", [otherUser]);

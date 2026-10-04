@@ -206,7 +206,9 @@ the device only after the server has stored it. Rejected files (for example too
 large) stay on the device as *failed*, with Try again and Download.
 
 **Discard.** Every recording on the device can be discarded, also one that is
-still waiting to upload. For a waiting recording the page stops its own upload,
+still waiting to upload. Discarding a refused recording also cancels its upload
+on the server, which may still hold the bytes. For a waiting recording the page
+stops its own upload,
 waits up to 30 seconds for the upload lock (another tab or the service worker
 may be sending a chunk), and cancels the server's partial upload. Only then is
 the audio deleted on the device. If the upload finished in the meantime, the

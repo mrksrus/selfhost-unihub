@@ -322,7 +322,8 @@ async function deliverPending(connection, now, activeRestores = new Map()) {
     const payload = jsonValue(row.payload);
     const current = await eventStillCurrent(row, payload, connection);
     // Recheck after source reads, before changing queued work or starting network IO.
-    if (moduleId && !await isModuleBackgroundEnabled(row.user_id, moduleId, connection)) continue;
+    // A restore may have started since the snapshot the rows were selected with.
+    if (moduleId && (!await isModuleBackgroundEnabled(row.user_id, moduleId, connection) || (await getActiveRestoreSectionsByUser(connection, row.user_id)).get(row.user_id)?.has(moduleId))) continue;
     if (!current) {
       await connection.execute("UPDATE notification_deliveries SET status = 'cancelled' WHERE event_id = ? AND subscription_id = ?", [row.event_id, row.subscription_id]);
       continue;

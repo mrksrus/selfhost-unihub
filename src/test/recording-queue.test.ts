@@ -155,6 +155,17 @@ describe('recordings kept on the device', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it('cancels the server upload of a refused recording, also without Web Locks, and leaves drafts to the device', async () => {
+    const blob = new Blob(['take']);
+    await saveStoredRecording({ ...job('a', 'u1', blob, 'failed'), error: 'Unsupported file' }, blob);
+    await saveStoredRecording(job('b', 'u1', blob, 'draft'), blob);
+    const request = vi.fn<UploadRequest>(async () => ({ status: 200, body: { deleted: true } }));
+    expect(await discardStoredRecording('a', request)).toEqual({ kind: 'discarded' });
+    expect(await discardStoredRecording('b', request)).toEqual({ kind: 'discarded' });
+    expect(request.mock.calls.map(([method, path]) => `${method} ${path}`)).toEqual(['DELETE /recordings/uploads/a']);
+    expect(await listStoredRecordings('u1')).toHaveLength(0);
+  });
+
   it('does not discard while another uploader keeps the upload lock, or without Web Locks', async () => {
     const blob = new Blob(['take']);
     await saveStoredRecording(job('a', 'u1', blob), blob);

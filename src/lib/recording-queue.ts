@@ -303,6 +303,8 @@ export type DiscardResult =
 // Discarding a waiting upload needs the upload lock: without Web Locks another
 // tab or the service worker could keep the audio in memory and finish the
 // upload after it was deleted here.
+const readJob = (id: string) => transaction(['jobs'], 'readonly', tx => requestResult<StoredRecording | undefined>(tx.objectStore('jobs').get(id)));
+
 export const canDiscardQueuedRecordings = () => typeof navigator !== 'undefined' && !!navigator.locks;
 
 // Discards a recording that may have a partial upload on the server. Holding
@@ -311,14 +313,20 @@ export const canDiscardQueuedRecordings = () => typeof navigator !== 'undefined'
 // no longer finish. Without the server's answer the copy here is kept, unless
 // the user confirmed discarding it anyway (force). An upload that finished in
 // the meantime is reported as uploaded and is in the library.
+// A refused (failed) recording may still have its uploaded bytes on the
+// server; no uploader touches it, so it needs no Web Locks.
 export async function discardStoredRecording(id: string, request: UploadRequest, options: { force?: boolean; timeoutMs?: number } = {}): Promise<DiscardResult> {
-  if (!canDiscardQueuedRecordings()) return { kind: 'unsupported' };
+  if (await readJob(id).then(job => job?.state === 'queued') && !canDiscardQueuedRecordings()) return { kind: 'unsupported' };
   const signal = AbortSignal.timeout(options.timeoutMs ?? 30_000);
   try {
     return await withRecordingUploadLock<DiscardResult>(signal, async () => {
       // Another uploader held the lock and finished; it deleted the local copy.
-      const job = await transaction(['jobs'], 'readonly', tx => requestResult<StoredRecording | undefined>(tx.objectStore('jobs').get(id)));
+      const job = await readJob(id);
       if (!job) return { kind: 'uploaded' };
+      if (job.state === 'draft') {
+        await deleteStoredRecording(id);
+        return { kind: 'discarded' };
+      }
       const removed = await request('DELETE', `/recordings/uploads/${id}`);
       if (removed.status === 200 && removed.body?.deleted === false) {
         // No upload in progress: it never started, expired, or became a

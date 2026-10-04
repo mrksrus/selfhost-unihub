@@ -148,7 +148,7 @@ test('delivery retry preserves pending state, and edited/deleted reminder is can
   const row = { event_id: 'n1', subscription_id: 's1', attempts: 0, user_id: 'u1', kind: 'reminder', source_id: 'e1', payload: { reminderMinutes: 0, dedupeKey: 'old-occurrence' }, expires_at: new Date(now.getTime() + 60000) };
   const connection = { async execute(sql, values) {
     if (sql.includes('FROM notification_deliveries d')) return [[row]];
-    if (sql.startsWith('SELECT e.*')) return [[]];
+    if (sql.startsWith('SELECT e.*') || sql.includes('FROM backup_restore_jobs')) return [[]];
     writes.push({ sql, values }); return [{}];
   } };
   const service = loadService({ async execute(sql) {
