@@ -123,7 +123,6 @@ test('an account settings backup restores accounts as fresh sign-ins without con
 
   const started_syncs = [];
   const mail = destination('services/mail');
-  mail.ensureDefaultMailFoldersForUser = async userId => { started_syncs.push(['folders', userId]); };
   mail.scheduleMailAccountSync = async (accountId, options = {}) => { started_syncs.push(['mail', accountId, !!options.background]); return { skipped: false }; };
   destination('services/calendar-sync').syncCalendarAccountInBackground = (accountId, options) => { started_syncs.push(['calendar', accountId, options.userId]); };
 
@@ -171,11 +170,14 @@ test('an account settings backup restores accounts as fresh sign-ins without con
     ['https://8.8.8.8/holidays.ics', 'https://8.8.8.8/sports.ics'], 'Each subscription is restored');
   assert.deepEqual(await rows('calendar_calendars', destinationUser), [], 'Calendars are discovered again by sync');
   assert.equal((await rows('user_settings', destinationUser)).length, 1);
-  await waitFor(async () => started_syncs, calls => calls.length === 5, 'Sync start');
-  // Queued like a new account's first sync, not as a background pass that
-  // a disabled background setting would skip.
-  assert.deepEqual(started_syncs.slice(0, 2), [['folders', destinationUser], ['mail', restoredMail.id, false]]);
-  assert.deepEqual(started_syncs.slice(2).map(call => call[1]).sort(), calendarAccounts.map(row => row.id).sort());
+  // The first download is durable with the restore and user initiated, so a
+  // disabled background setting or a restart right after the restore cannot
+  // skip it.
+  const [jobs] = await pool.execute('SELECT kind, state, manual_refresh FROM mail_engine_jobs WHERE mail_account_id = ?', [restoredMail.id]);
+  assert.deepEqual(jobs.map(job => [job.kind, job.state, Number(job.manual_refresh)]), [['sync', 'queued', 1]]);
+  await waitFor(async () => started_syncs, calls => calls.length === 4, 'Sync start');
+  assert.deepEqual(started_syncs[0], ['mail', restoredMail.id, false]);
+  assert.deepEqual(started_syncs.slice(1).map(call => call[1]).sort(), calendarAccounts.map(row => row.id).sort());
 
   // Restoring the same settings again leaves connected accounts unchanged.
   started_syncs.length = 0;
@@ -189,4 +191,5 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   assert.equal((await rows('mail_accounts', destinationUser)).find(row => row.id === restoredMail.id).sync_window_days, 30);
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.deepEqual(started_syncs, []);
+  assert.equal((await pool.execute('SELECT id FROM mail_engine_jobs WHERE mail_account_id = ?', [restoredMail.id]))[0].length, 1);
 });

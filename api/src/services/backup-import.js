@@ -45,14 +45,13 @@ const { backupFromZipBuffer, backupFromZipFile } = require('./backup-zip-reader'
 const accountLabel = row => row.email_address || row.account_email || row.display_name || row.id;
 
 // Account settings restore like a fresh sign-in: the first download starts now
-// instead of waiting for the next scheduled pass. As for a newly added account,
-// it is queued as user initiated, so it runs even with background sync off.
-// Failures stay visible on the account and the scheduled passes retry.
+// instead of waiting for the next scheduled pass. The mail sync job was queued
+// with the restore; this wakes the scheduler and reuses that job. Failures stay
+// visible on the account and the scheduled passes retry.
 function startRestoredAccountSync(userId, { mailAccountIds, calendarAccountIds }) {
   setImmediate(async () => {
     try {
       const mail = require('./mail');
-      if (mailAccountIds.length) await mail.ensureDefaultMailFoldersForUser(userId);
       for (const accountId of mailAccountIds) await mail.scheduleMailAccountSync(accountId);
     } catch (error) {
       console.warn('[BACKUP RESTORE] Could not start mail sync for restored accounts:', error.message);
@@ -432,7 +431,15 @@ async function importBackupForUser(userId, backup, {
             row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, active ? 1 : 0,
             restoredWindow(row.sync_window_days, null), restoredWindow(row.trash_window_days, DEFAULT_TRASH_WINDOW_DAYS)]
         );
-        if (active) startMailAccountIds.push(targetAccountId);
+        if (active) {
+          // The first download is queued in the restore transaction, so it is not
+          // lost if the process stops right after the restore completes. It is
+          // user initiated like a new account's, so it runs with background
+          // sync off.
+          await require('./mail-engine/runtime').enqueueJob({ userId, accountId: targetAccountId,
+            kind: 'sync', priority: 5, manualRefresh: true }, connection);
+          startMailAccountIds.push(targetAccountId);
+        }
         continue;
       }
       if (existingById.length) {
