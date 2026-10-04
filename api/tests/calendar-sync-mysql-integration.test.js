@@ -287,9 +287,18 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       // backup taken right after upgrading can link it again.
       const thirdMail = await insertMail(userId, 'unmarked@example.test');
       const unmarked = await insertCalDav(userId, 'unmarked@example.test', current, thirdMail);
+      // Restored by 0.18.1 and not linked again yet: only marked, with a copy
+      // of the mail password, and switched off by a mail disconnect.
+      const restoredCopy = await insertCalDav(userId, 'gone@example.test', { ...current, mailLinked: true }, null, 'copied-mail-password');
+      await connection.execute("UPDATE calendar_accounts SET is_active = FALSE, sync_status = 'paused', sync_error = ? WHERE id = ?",
+        [calendarSync.MAIL_DISCONNECTED_MESSAGE, restoredCopy]);
       await connection.execute('DELETE FROM schema_migrations WHERE id >= 13');
       await require('../src/services/database').ensureSchema();
       assert.deepEqual(config((await mailLink(unmarked)).provider_config), { ...current, mailLinked: true });
       assert.equal(config((await mailLink(standalone)).provider_config).mailLinked, undefined);
+      const [[upgraded]] = await connection.execute('SELECT encrypted_password, is_active, sync_status, sync_error FROM calendar_accounts WHERE id = ?', [restoredCopy]);
+      assert.deepEqual({ ...upgraded, is_active: Number(upgraded.is_active) }, { encrypted_password: null, is_active: 1, sync_status: 'pending', sync_error: null });
+      assert.notEqual((await connection.execute('SELECT encrypted_password FROM calendar_accounts WHERE id = ?', [standalone]))[0][0].encrypted_password, null,
+        'A calendar added on its own keeps its password');
     });
   });

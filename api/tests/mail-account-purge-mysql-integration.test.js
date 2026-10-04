@@ -173,6 +173,20 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     const [[unlinked]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.deepEqual(await calendarSync.resolveLogin(unlinked), login);
     assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, paused.mail);
+
+    // That relink raced with connecting the calendar of a newly added mail
+    // account: the one just connected stays its calendar, and the restored
+    // one waits without using the mail login.
+    const connectedNow = crypto.randomUUID();
+    await connection.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active, mail_account_id, created_at)
+      VALUES (?, ?, 'caldav', 'paused@example.test', '{"mailLinked":true}', TRUE, ?, UTC_TIMESTAMP() + INTERVAL 1 MINUTE)`, [connectedNow, paused.user, paused.mail]);
+    await require('../src/services/calendar-accounts').keepMailCalendar(paused.user, paused.mail, connectedNow);
+    const [[mailRow]] = await connection.execute('SELECT id, email_address FROM mail_accounts WHERE id = ?', [paused.mail]);
+    assert.equal((await require('../src/services/calendar-accounts').linkedCalendarAccount(paused.user, mailRow)).id, connectedNow);
+    const [[orphan]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    assert.equal(orphan.mail_account_id, null);
+    await assert.rejects(calendarSync.resolveLogin(orphan), { code: 'MAIL_CALENDAR_UNLINKED' });
+    assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, null);
     assert.equal(await count('SELECT COUNT(*) AS n FROM emails WHERE user_id = ?', [other.user]), 2);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [other.user]), 2);
   });

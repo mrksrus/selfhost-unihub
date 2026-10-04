@@ -239,6 +239,13 @@ async function relinkRestoredCalendar(account) {
   return null;
 }
 
+// A new mail account's calendar is the one just connected for it. A restored
+// one that a calendar sync linked to it by address meanwhile is unlinked again
+// (it then waits, like when the sync came later).
+async function keepMailCalendar(userId, mailAccountId, accountId) {
+  await db.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE user_id = ? AND mail_account_id = ? AND id <> ?', [userId, mailAccountId, accountId]);
+}
+
 async function describeLink(userId, mail, account) {
   const provider = caldav.matchCalendarProvider({ emailAddress: mail.email_address, imapHost: mail.imap_host });
   const base = {
@@ -341,6 +348,7 @@ module.exports = {
   setMailCalendar,
   linkedCalendarAccount,
   relinkRestoredCalendar,
+  keepMailCalendar,
   restoredMailCalendar,
   loadSerializedAccount,
 };

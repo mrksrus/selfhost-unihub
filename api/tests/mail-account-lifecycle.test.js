@@ -173,13 +173,17 @@ test('purge removes the linked calendar in the same transaction as the account',
 test('disconnect reads linked calendars in its transaction and stops their work after the commit', async t => {
   const { api, calls } = fixture(t, { active: true, calendars: 1 });
   const calendarSync = require('../src/services/calendar-sync');
-  const original = calendarSync.stopCalendarAccountWork;
-  t.after(() => { calendarSync.stopCalendarAccountWork = original; });
+  const { stopCalendarAccountWork, stopLinkedCalendarWork } = calendarSync;
+  t.after(() => Object.assign(calendarSync, { stopCalendarAccountWork, stopLinkedCalendarWork }));
   calendarSync.stopCalendarAccountWork = id => calls.push({ sql: `STOP ${id}` });
-  await api.disconnectAccount('owner', 'account');
+  calendarSync.stopLinkedCalendarWork = async (...args) => { calls.push({ sql: `STOP LINKED ${args.join(' ')}` }); throw new Error('database gone'); };
+  const result = await api.disconnectAccount('owner', 'account');
+  assert.equal(result.disconnected, true, 'The committed disconnect is reported even when the second read fails');
   const index = sql => calls.findIndex(call => call.sql.startsWith(sql));
   assert.ok(index('COMMIT') >= 0);
   assert.ok(index('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?') < index('COMMIT'),
-    'No database read is left to fail after the commit');
+    'The calendars to stop are known before the commit');
   assert.ok(index('STOP calendar-account-0') > index('COMMIT'));
+  // Read again after the commit: a restored calendar a sync linked meanwhile.
+  assert.ok(index('STOP LINKED owner account') > index('STOP calendar-account-0'));
 });

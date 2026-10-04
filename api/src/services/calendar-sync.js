@@ -58,19 +58,21 @@ function hrefHash(href) {
 }
 
 const NO_PASSWORD_MESSAGE = 'No password is saved for this calendar account. Enter it again to resume sync.';
+const MAIL_CALENDAR_UNLINKED_MESSAGE = 'This calendar belongs to a mail account it is not linked to. Add that mail account in Mail to resume sync, or remove this calendar.';
 
 // A calendar connected from a mail account has no password of its own: every
 // sync and change reads the mail login as stored at that moment, and finds
 // none while the mail account is disconnected. A restored one that is not
 // linked again yet (backups keep only its mark) finds its mail account first;
-// so does one without a password from before the mark. A copy of the mail
-// password an older backup brought back is used only when no mail account
-// with its address exists.
+// so does one without a password from before the mark. A marked one never
+// uses a copy of the mail password an older backup brought back: without its
+// mail account it waits.
 async function resolveLogin(account) {
   let mailAccountId = account.mail_account_id;
   const marked = (jsonValue(account.provider_config, {}) || {}).mailLinked === true;
   if (!mailAccountId && (marked || !account.encrypted_password)) mailAccountId = await require('./calendar-accounts').relinkRestoredCalendar(account);
   if (!mailAccountId) {
+    if (marked) throw syncError(MAIL_CALENDAR_UNLINKED_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED');
     if (!account.encrypted_password) throw syncError(NO_PASSWORD_MESSAGE, 409, 'CALDAV_NO_PASSWORD');
     return { username: account.username || account.account_email, encryptedPassword: account.encrypted_password };
   }
@@ -121,10 +123,15 @@ function stopCalendarAccountWork(accountId) {
 }
 // For tests: accounts with work running.
 const runningCalendarWorkCount = () => accountWork.size;
+// After a mail disconnect committed: its calendars are read again, so one a
+// sync linked meanwhile is stopped too, and open views show the new status.
 async function stopLinkedCalendarWork(userId, mailAccountId) {
   // Only CalDAV accounts use the mail login; a subscription is not stopped.
   const [rows] = await db.execute("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, mailAccountId]);
-  for (const row of rows) stopCalendarAccountWork(row.id);
+  for (const row of rows) {
+    stopCalendarAccountWork(row.id);
+    publishCalendarChanged(userId, row.id, 'status');
+  }
 }
 
 async function resolveTimeZone(account) {
@@ -586,7 +593,7 @@ async function noteMissingLogin(account, message) {
   publishCalendarChanged(account.user_id, account.id, 'status');
 }
 
-const MISSING_LOGIN = new Set(['MAIL_ACCOUNT_DISCONNECTED', 'CALDAV_NO_PASSWORD']);
+const MISSING_LOGIN = new Map([['MAIL_ACCOUNT_DISCONNECTED', 'mail-disconnected'], ['CALDAV_NO_PASSWORD', 'no-password'], ['MAIL_CALENDAR_UNLINKED', 'mail-unlinked']]);
 
 async function syncLocked(accountId, { userId, full }, signal) {
   // Reloaded under the lock: a change while the lock was awaited counts.
@@ -597,7 +604,7 @@ async function syncLocked(accountId, { userId, full }, signal) {
     try { login = await accountLogin(account, signal); } catch (error) {
       if (!MISSING_LOGIN.has(error.code)) throw error;
       await noteMissingLogin(account, error.message);
-      return { skipped: true, reason: error.code === 'CALDAV_NO_PASSWORD' ? 'no-password' : 'mail-disconnected' };
+      return { skipped: true, reason: MISSING_LOGIN.get(error.code) };
     }
   }
   await db.execute("UPDATE calendar_accounts SET sync_status = 'syncing' WHERE id = ?", [account.id]);

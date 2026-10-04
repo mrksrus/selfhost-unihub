@@ -466,22 +466,32 @@ async function ensureSchema() {
       // it needs it, instead of keeping a copy. The copies go, and calendars
       // that were switched off only because their mail account was
       // disconnected are on again (they wait while it stays disconnected).
+      // Restored ones not linked again yet (only marked) are included.
       id: 14,
       name: 'calendar-linked-login',
       up: async connection => {
+        const { sql, params } = await mailCalDavScope(connection);
         await connection.execute(`UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL
-          WHERE provider = 'caldav' AND mail_account_id IS NOT NULL AND is_active = FALSE AND sync_error = ?`,
-        ['The mail account is disconnected. Reconnect it to resume calendar sync.']);
-        await connection.execute(`UPDATE calendar_accounts SET encrypted_password = NULL
-          WHERE provider = 'caldav' AND mail_account_id IS NOT NULL AND encrypted_password IS NOT NULL`);
+          WHERE ${sql} AND is_active = FALSE AND sync_error = ?`,
+        [...params, 'The mail account is disconnected. Reconnect it to resume calendar sync.']);
+        await connection.execute(`UPDATE calendar_accounts SET encrypted_password = NULL WHERE ${sql} AND encrypted_password IS NOT NULL`, params);
       },
       verify: async connection => {
-        const [[left]] = await connection.execute(`SELECT COUNT(*) AS n FROM calendar_accounts
-          WHERE provider = 'caldav' AND mail_account_id IS NOT NULL AND encrypted_password IS NOT NULL`);
-        if (Number(left.n) !== 0) throw new Error('Linked calendar accounts still hold a copied password');
+        const { sql, params } = await mailCalDavScope(connection);
+        const [[left]] = await connection.execute(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE ${sql} AND encrypted_password IS NOT NULL`, params);
+        if (Number(left.n) !== 0) throw new Error('Mail calendar accounts still hold a copied password');
       },
     },
   ]);
+}
+
+// CalDAV accounts of a mail account: linked, or marked and not linked again
+// yet after a restore.
+async function mailCalDavScope(connection) {
+  const [unlinked] = await connection.execute("SELECT id, provider_config FROM calendar_accounts WHERE provider = 'caldav' AND mail_account_id IS NULL");
+  const ids = unlinked.filter(row => (safeJsonParse(row.provider_config, {}) || {}).mailLinked === true).map(row => row.id);
+  const marked = ids.length ? ` OR id IN (${ids.map(() => '?').join(', ')})` : '';
+  return { sql: `provider = 'caldav' AND (mail_account_id IS NOT NULL${marked})`, params: ids };
 }
 
 async function unmarkedMailCalendars(connection) {

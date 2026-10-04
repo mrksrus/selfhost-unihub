@@ -285,6 +285,8 @@ module.exports = {
             mailAccountId: accountId,
             timeZone: body.time_zone,
           });
+          await calendarAccounts.keepMailCalendar(userId, accountId, connected.account.id)
+            .catch(error => console.warn(`[CALDAV] Could not unlink an older calendar of ${email_address}:`, error.message));
           calendarSync = {
             attempted: true,
             success: true,

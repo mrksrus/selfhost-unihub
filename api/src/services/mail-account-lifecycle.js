@@ -79,8 +79,11 @@ async function disconnectAccount(userId, accountId) {
       await connection.commit();
       // After the commit: a linked calendar's running sync or change stops now;
       // any that starts later finds the account disconnected.
-      const { stopCalendarAccountWork } = require('./calendar-sync');
+      const { stopCalendarAccountWork, stopLinkedCalendarWork } = require('./calendar-sync');
       for (const row of linkedCalendars) stopCalendarAccountWork(row.id);
+      // Read again: a restored calendar a sync linked after the read above is
+      // stopped too (a sync linking it later reads the disconnected account).
+      await stopLinkedCalendarWork(userId, accountId).catch(error => console.error('[MAIL] Could not stop linked calendar work:', error.message));
       return { message: 'Account disconnected. Retained mail and operation history are still available.', disconnected: true, retained_mail: true };
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
