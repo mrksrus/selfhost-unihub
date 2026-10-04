@@ -498,9 +498,13 @@ async function runAccountSync(accountId, { userId, reason, full }) {
     : await isModuleEnabled(account.user_id, 'calendar');
   if (!allowed || await isSectionRestoreActive(account.user_id, 'calendar')) return { skipped: true, reason: 'paused' };
   if (!account.is_active) return { skipped: true, reason: 'inactive' };
-  if (await pauseIfMailDisconnected(account)) return { skipped: true, reason: 'mail-disconnected' };
 
-  return withAccountLock(account.id, async () => {
+  return withAccountLock(accountId, async () => {
+    // Reloaded under the lock: a disconnect or credential change while the
+    // lock was awaited must not leave this run with the old login.
+    const account = await loadAccount(accountId, userId);
+    if (!account?.is_active) return { skipped: true, reason: 'inactive' };
+    if (await pauseIfMailDisconnected(account)) return { skipped: true, reason: 'mail-disconnected' };
     await db.execute("UPDATE calendar_accounts SET sync_status = 'syncing' WHERE id = ?", [account.id]);
     publishCalendarChanged(account.user_id, account.id, 'status');
     const now = Date.now();
