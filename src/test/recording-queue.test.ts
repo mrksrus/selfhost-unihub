@@ -6,6 +6,7 @@ import {
   appendCaptureBatch,
   createCapture,
   deleteStoredRecording,
+  discardStoredRecording,
   finishCapture,
   listCaptures,
   listStoredRecordings,
@@ -88,6 +89,39 @@ describe('recordings kept on the device', () => {
     const refused = await processRecordingQueue({ userId: 'u1', request: server(() => ({ status: 400, body: { error: 'Unsupported file' } })).request });
     expect(refused.failed).toHaveLength(1);
     expect((await listStoredRecordings('u1'))[0]).toMatchObject({ state: 'failed', error: 'Unsupported file' });
+    expect(await readStoredRecordingBlob('a')).not.toBeNull();
+  });
+
+  it('discards a queued recording only after the server cancelled its upload, unless forced', async () => {
+    const blob = new Blob(['take']);
+    await saveStoredRecording(job('a', 'u1', blob), blob);
+    const calls: string[] = [];
+    const unreachable: UploadRequest = async (method, path) => { calls.push(`${method} ${path}`); return { status: 0, body: null }; };
+    expect(await discardStoredRecording('a', unreachable)).toEqual({ kind: 'not-cancelled', status: 0 });
+    expect(await readStoredRecordingBlob('a')).not.toBeNull();
+    expect(await discardStoredRecording('a', unreachable, { force: true })).toEqual({ kind: 'discarded' });
+    expect(await readStoredRecordingBlob('a')).toBeNull();
+    expect(calls).toEqual(['DELETE /recordings/uploads/a', 'DELETE /recordings/uploads/a']);
+
+    await saveStoredRecording(job('b', 'u1', blob), blob);
+    const cancelled: UploadRequest = async () => ({ status: 200, body: { deleted: true } });
+    expect(await discardStoredRecording('b', cancelled)).toEqual({ kind: 'discarded' });
+    expect(await listStoredRecordings('u1')).toHaveLength(0);
+  });
+
+  it('does not discard while another uploader keeps the upload lock', async () => {
+    const blob = new Blob(['take']);
+    await saveStoredRecording(job('a', 'u1', blob), blob);
+    // An uploader in another tab holds the lock; the request waits until it gives up.
+    const request = vi.fn<UploadRequest>(async () => ({ status: 200, body: { deleted: true } }));
+    vi.stubGlobal('navigator', { ...navigator, locks: { request: (_name: string, options: { signal?: AbortSignal }) => new Promise((_resolve, reject) => options.signal?.addEventListener('abort', () => reject(options.signal?.reason))) } });
+    try {
+      expect(await discardStoredRecording('a', request, { timeoutMs: 20 })).toEqual({ kind: 'busy' });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.stubGlobal('Blob', NodeBlob);
+    }
+    expect(request).not.toHaveBeenCalled();
     expect(await readStoredRecordingBlob('a')).not.toBeNull();
   });
 

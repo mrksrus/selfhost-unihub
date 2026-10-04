@@ -66,6 +66,10 @@ function enqueueDelivery(task) {
   deliveryQueue = next.catch(() => {});
   return next;
 }
+// Recording uploads (recording-uploads-sw.js) name a recording in a notice
+// only while its account is the one bound here. The check and the notice run
+// in this queue, so a sign-out or account switch cannot land between them.
+self.unihubWithBoundUser = (userId, task) => enqueueDelivery(async () => task(await readStore('meta', 'userId') === userId));
 function safeTargetUrl(input) {
   try {
     const url = new URL(typeof input === 'string' ? input : '/dashboard', self.location.origin);

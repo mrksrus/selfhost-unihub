@@ -12,7 +12,8 @@ and [Modules](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/MODULES.
   there until the server has stored it. If the app or the browser closes before
   **Stop**, the next visit to Recordings offers it as a recovered draft. The
   new **On this device** list shows drafts, waiting uploads with their progress,
-  and files the server refused, each with Download.
+  and files the server refused, each with Download and Discard. Discarding a
+  waiting upload also cancels it on the server.
 - **Uploads continue after the app is closed.** The upload runs while UniHub is
   open, on any page. When it is closed, the service worker finishes it where the
   browser allows (Background Sync in Chrome, Edge and Android). If it cannot,

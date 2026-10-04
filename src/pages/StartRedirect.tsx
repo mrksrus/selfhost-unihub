@@ -36,7 +36,8 @@ const StartRedirect = () => {
   }
 
   const desired = startPagePaths[data?.default_start_page || 'mail'] || '/mail';
-  const target = modules.canNavigate(desired) ? desired : navigationPages(modules.pages, modules.canNavigate)[0]?.href || '/dashboard';
+  // A hidden start page still opens; only a disabled module falls back to navigation.
+  const target = modules.canAccess(desired) ? desired : navigationPages(modules.pages, modules.canNavigate)[0]?.href || '/dashboard';
   return <Navigate to={target} replace />;
 };
 

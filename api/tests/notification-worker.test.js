@@ -125,3 +125,15 @@ test('pushes that cannot be shown get a generic notice without content, never no
   }));
   assert.deepEqual(visited, ['https://unihub.test/']);
 });
+
+test('recording upload notices name a recording only for the bound account, after a queued sign-out', async () => {
+  const fixture = worker();
+  const seen = [];
+  const reset = fixture.context.enqueueDelivery(async () => fixture.setUser(null));
+  await fixture.context.self.unihubWithBoundUser('user-1', async bound => { seen.push(bound); });
+  await reset;
+  fixture.setUser('user-1');
+  await fixture.context.self.unihubWithBoundUser('user-1', async bound => { seen.push(bound); });
+  await fixture.context.self.unihubWithBoundUser('user-2', async bound => { seen.push(bound); });
+  assert.deepEqual(seen, [false, true, false]);
+});

@@ -32,6 +32,8 @@ interface ExtendableMessageEvent extends ExtendableEvent {
 type SyncRegistration = ServiceWorkerRegistration & { sync?: { register(tag: string): Promise<void> } };
 interface WorkerScope {
   registration: ServiceWorkerRegistration;
+  // From public/sw-custom.js: runs task with whether userId is the bound account.
+  unihubWithBoundUser?: (userId: string, task: (bound: boolean) => Promise<void>) => Promise<unknown>;
   addEventListener(type: 'sync', listener: (event: SyncEvent) => void): void;
   addEventListener(type: 'message', listener: (event: ExtendableMessageEvent) => void): void;
 }
@@ -99,8 +101,12 @@ const uploadTag = (id: string) => `recording-upload:${id}`;
 async function reportResult(userId: string, result: QueueRunResult, finalAttempt: boolean) {
   await closeNotifications(result.uploaded.map(recording => uploadTag(recording.id)));
   for (const job of result.failed) {
-    await notify(uploadTag(job.id), 'Recording could not be uploaded',
-      `"${job.details.title}" was refused by the server: ${job.error}. It is still saved on this device.`, userId);
+    // The account may have signed out or switched since the upload began.
+    // Without the bound account rechecked the notice leaves out the title.
+    const show = async (bound: boolean) => notify(uploadTag(job.id), 'Recording could not be uploaded', bound
+      ? `"${job.details.title}" was refused by the server: ${job.error}. It is still saved on this device.`
+      : 'A recording was refused by the server. It is still saved on this device.', userId);
+    await (scope.unihubWithBoundUser ? scope.unihubWithBoundUser(userId, show) : show(false)).catch(() => {});
   }
   const pending = (await listStoredRecordings(userId)).filter(job => job.state === 'queued');
   if (!pending.length) {

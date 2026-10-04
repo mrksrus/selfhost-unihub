@@ -17,6 +17,7 @@ import {
 } from '@/lib/recording-queue';
 
 const QUEUED_EVENT = 'unihub:recording-queued';
+const STOP_EVENT = 'unihub:recording-stop';
 const FIRST_RETRY_MS = 15_000;
 const MAX_RETRY_MS = 5 * 60_000;
 
@@ -35,8 +36,14 @@ export function kickRecordingUploads() {
   window.dispatchEvent(new Event(QUEUED_EVENT));
 }
 
+// Stops this page's upload pass after the current chunk, so a discard can
+// take the upload lock. kickRecordingUploads() starts it again.
+export function stopRecordingUploads() {
+  window.dispatchEvent(new Event(STOP_EVENT));
+}
+
 // Notices that a recording is not uploaded yet are stale once it is.
-async function closeUploadNotices(tags: string[]) {
+export async function closeUploadNotices(tags: string[]) {
   if (!('serviceWorker' in navigator) || !tags.length) return;
   const registration = await navigator.serviceWorker.getRegistration().catch(() => undefined);
   const notifications = await registration?.getNotifications().catch(() => []) ?? [];
@@ -126,6 +133,7 @@ export function useRecordingUploadRunner() {
     };
     const onOnline = () => { retryDelay = FIRST_RETRY_MS; void run(); };
     const onQueued = () => void run();
+    const onStop = () => controller?.abort();
     const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(RECORDING_UPLOADS_CHANNEL);
     if (channel) channel.onmessage = (event: MessageEvent<RecordingQueueMessage>) => {
       if (event.data?.type !== 'uploaded' || event.data.userId !== userId) return;
@@ -138,6 +146,7 @@ export function useRecordingUploadRunner() {
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('online', onOnline);
     window.addEventListener(QUEUED_EVENT, onQueued);
+    window.addEventListener(STOP_EVENT, onStop);
     void run();
     return () => {
       disposed = true;
@@ -148,6 +157,7 @@ export function useRecordingUploadRunner() {
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('online', onOnline);
       window.removeEventListener(QUEUED_EVENT, onQueued);
+      window.removeEventListener(STOP_EVENT, onStop);
     };
   }, [queryClient, toast, userId]);
 }

@@ -293,6 +293,29 @@ export async function processRecordingQueue(options: {
   return result;
 }
 
+export type DiscardResult = { kind: 'discarded' } | { kind: 'busy' } | { kind: 'not-cancelled'; status: number };
+
+// Discards a recording that may have a partial upload on the server. Holding
+// the upload lock keeps every uploader away; then the server's copy is
+// removed, since left there it would remind the user about an upload that can
+// no longer finish. Without the server's answer the copy here is kept, unless
+// the user confirmed discarding it anyway (force).
+export async function discardStoredRecording(id: string, request: UploadRequest, options: { force?: boolean; timeoutMs?: number } = {}): Promise<DiscardResult> {
+  const signal = AbortSignal.timeout(options.timeoutMs ?? 30_000);
+  try {
+    return await withRecordingUploadLock<DiscardResult>(signal, async () => {
+      const removed = await request('DELETE', `/recordings/uploads/${id}`);
+      if (removed.status !== 200 && !options.force) return { kind: 'not-cancelled', status: removed.status };
+      await deleteStoredRecording(id);
+      return { kind: 'discarded' };
+    });
+  } catch (error) {
+    // Another tab or the service worker kept uploading for the whole wait.
+    if (signal.aborted) return { kind: 'busy' };
+    throw error;
+  }
+}
+
 // One uploader at a time across tabs and the service worker. Without Web
 // Locks (old browsers) the uploads still work: the server refuses a chunk at
 // the wrong offset, so two uploaders cannot corrupt a file.

@@ -205,6 +205,14 @@ recording arrives byte for byte or not at all. The recording is deleted from
 the device only after the server has stored it. Rejected files (for example too
 large) stay on the device as *failed*, with Try again and Download.
 
+**Discard.** Every recording on the device can be discarded, also one that is
+still waiting to upload. For a waiting recording the page stops its own upload,
+waits up to 30 seconds for the upload lock (another tab or the service worker
+may be sending a chunk), and cancels the server's partial upload. Only then is
+the audio deleted on the device. If the server cannot be reached, the dialog
+asks again with **Discard anyway**; the partial upload is then removed on the
+server when it expires.
+
 **Who uploads.** One uploader at a time, guarded by the Web Lock
 `unihub-recording-uploads`:
 
@@ -217,7 +225,10 @@ large) stay on the device as *failed*, with Try again and Download.
    page hides.
 3. If the worker cannot finish, it shows **Recording not uploaded yet**, or
    **Sign in to finish uploading** when the session ended. Background Sync's
-   last attempt does the same.
+   last attempt does the same. A recording the server refused gets **Recording
+   could not be uploaded**; it names the recording only after the worker has
+   checked, in the same queue as sign-out, that its account is still the one
+   signed in on the device.
 4. If the browser stops the worker before it can say so (iOS does this), the
    server notices: an upload that has not moved for 10 minutes sends the push
    notification **Recording not uploaded yet** with the percentage reached.

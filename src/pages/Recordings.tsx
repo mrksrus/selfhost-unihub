@@ -9,6 +9,7 @@ import {
   createCapture,
   deleteCapture,
   deleteStoredRecording,
+  discardStoredRecording,
   finishCapture,
   listCaptures,
   readStoredRecordingBlob,
@@ -17,7 +18,7 @@ import {
   updateStoredRecording,
   type StoredRecording,
 } from '@/lib/recording-queue';
-import { kickRecordingUploads, pageUploadRequest, useStoredRecordings } from '@/hooks/use-recording-uploads';
+import { closeUploadNotices, kickRecordingUploads, pageUploadRequest, stopRecordingUploads, useStoredRecordings } from '@/hooks/use-recording-uploads';
 import { useAuth } from '@/contexts/useAuth';
 import { RecordingPlayer } from '@/components/recordings/RecordingPlayer';
 import {
@@ -238,6 +239,9 @@ const Recordings = () => {
   const [deleteTarget, setDeleteTarget] = useState<Recording | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [discardTarget, setDiscardTarget] = useState<StoredRecording | null>(null);
+  // Set when the server did not confirm cancelling the upload; asks again.
+  const [discardUnconfirmed, setDiscardUnconfirmed] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const {
     recordings: storedRecordings,
     progress: storedProgress,
@@ -451,6 +455,38 @@ const Recordings = () => {
   const retryStoredRecording = async (item: StoredRecording) => {
     await updateStoredRecording(item.id, { state: 'queued', error: null }).catch(() => null);
     kickRecordingUploads();
+  };
+
+  // A queued recording may be uploading from this page, another tab or the
+  // service worker; discarding stops this page's uploads, waits for the upload
+  // lock and cancels the server's partial copy before deleting it here.
+  const discardRecording = async (item: StoredRecording, force: boolean) => {
+    setDiscarding(true);
+    try {
+      if (item.state !== 'queued') {
+        await deleteStoredRecording(item.id);
+        setDiscardTarget(null);
+        return;
+      }
+      stopRecordingUploads();
+      const result = await discardStoredRecording(item.id, pageUploadRequest, { force });
+      if (result.kind === 'not-cancelled') {
+        setDiscardUnconfirmed(true);
+        return;
+      }
+      setDiscardTarget(null);
+      if (result.kind === 'busy') {
+        toast({ title: 'Recording is still uploading', description: 'Try discarding it again in a moment.', variant: 'destructive' });
+        return;
+      }
+      void closeUploadNotices([`recording-upload:${item.id}`]);
+    } catch {
+      setDiscardTarget(null);
+      toast({ title: 'Recording was not discarded', variant: 'destructive' });
+    } finally {
+      setDiscarding(false);
+      if (item.state === 'queued') kickRecordingUploads();
+    }
   };
 
   const downloadStoredRecording = async (item: StoredRecording) => {
@@ -1029,12 +1065,10 @@ const Recordings = () => {
                         <Download className="h-4 w-4 mr-2" />
                         Download
                       </Button>
-                      {item.state !== 'queued' && (
-                        <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => setDiscardTarget(item)}>
-                          <Trash2 className="h-4 w-4 mr-2" />
-                          Discard
-                        </Button>
-                      )}
+                      <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => { setDiscardUnconfirmed(false); setDiscardTarget(item); }}>
+                        <Trash2 className="h-4 w-4 mr-2" />
+                        Discard
+                      </Button>
                     </div>
                   </div>
                   {item.state === 'queued' && <Progress value={item.size ? (bytesUploaded / item.size) * 100 : 0} />}
@@ -1266,24 +1300,30 @@ const Recordings = () => {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog open={!!discardTarget} onOpenChange={(open) => !open && setDiscardTarget(null)}>
+      <AlertDialog open={!!discardTarget} onOpenChange={(open) => !open && !discarding && setDiscardTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Discard recording?</AlertDialogTitle>
+            <AlertDialogTitle>{discardUnconfirmed ? 'Discard anyway?' : 'Discard recording?'}</AlertDialogTitle>
             <AlertDialogDescription>
-              {discardTarget?.details.title || 'This recording'} is only on this device. Discarding deletes its audio for good.
+              {discardUnconfirmed
+                ? 'The server did not confirm cancelling the upload. Discarding now deletes the audio on this device; the part already uploaded is removed when the upload expires, and you may still get a notice that it stalled.'
+                : discardTarget?.state === 'queued'
+                  ? `${discardTarget.details.title || 'This recording'} has not finished uploading. Discarding cancels the upload and deletes its audio for good.`
+                  : `${discardTarget?.details.title || 'This recording'} is only on this device. Discarding deletes its audio for good.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={discarding}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => {
-                if (discardTarget) void deleteStoredRecording(discardTarget.id).catch(() => {});
-                setDiscardTarget(null);
+              disabled={discarding}
+              onClick={(event) => {
+                event.preventDefault();
+                if (discardTarget) void discardRecording(discardTarget, discardUnconfirmed);
               }}
             >
-              Discard
+              {discarding && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {discardUnconfirmed ? 'Discard anyway' : 'Discard'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

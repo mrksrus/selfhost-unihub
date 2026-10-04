@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import StartRedirect from '@/pages/StartRedirect';
 import ModuleGuard from '@/components/modules/ModuleGuard';
 import ModuleSettings from '@/components/settings/ModuleSettings';
 import BottomNav from '@/components/layout/BottomNav';
@@ -69,6 +70,19 @@ describe('pages', () => {
     const links = within(screen.getByRole('navigation')).getAllByRole('link');
     expect(links.map(link => link.textContent)).toEqual(['Recordings', 'Contacts', 'Mail', 'Today', 'More']);
     expect(links[4].className).toContain('text-accent');
+  });
+
+  it('opens a hidden start page, and falls back to the first shown page when its module is disabled', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({ data: { preferences: { default_start_page: 'music' } } });
+    function Where() { return <p>At {useLocation().pathname}</p>; }
+    const app = <Routes><Route path="/" element={<StartRedirect />} /><Route path="*" element={<Where />} /></Routes>;
+    const pages = reorder(defaultPages(defaults), ['contacts', 'mail', 'calendar', 'todo', 'recordings', 'music', 'today'])
+      .map(page => page.id === 'music' ? { ...page, visible: false } : page);
+    renderWithClient(app, defaults, '/', pages);
+    expect(await screen.findByText('At /music')).toBeInTheDocument();
+    cleanup();
+    renderWithClient(app, defaults.map(item => item.id === 'recordings' ? { ...item, enabled: false } : item), '/', pages);
+    expect(await screen.findByText('At /contacts')).toBeInTheDocument();
   });
 
   it('moves a page and saves the full page order', async () => {
