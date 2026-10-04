@@ -195,7 +195,8 @@ export function MailCalendarSettings({ account }: { account: MailAccount }) {
 
       {link?.enabled && calendarAccount && (
         <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" variant="outline" disabled={busy || (!calendarAccount.is_active && !account.is_active)}
+          {/* A CalDAV calendar uses the mail login: nothing to sync while the mail account is off. */}
+          <Button type="button" size="sm" variant="outline" disabled={busy || (calendarAccount.provider === 'caldav' && !account.is_active)}
             onClick={() => (calendarAccount.is_active ? syncNow.mutate(calendarAccount.id) : change.mutate({ enabled: true }))}>
             {syncNow.isPending ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5 mr-1.5" />}
             {calendarAccount.is_active ? 'Sync now' : 'Resume sync'}

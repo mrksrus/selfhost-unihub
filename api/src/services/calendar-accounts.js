@@ -101,9 +101,15 @@ async function insertIcsAccount({ userId, url, displayName, feedName, mailAccoun
   return { account: rows[0], calendars: [] };
 }
 
+// A linked account is compared by its mail account's current login (its own
+// username is the one it was connected with).
 async function findDuplicate(userId, provider, baseUrl, username) {
   const [rows] = await db.execute(
-    `SELECT id, display_name, mail_account_id, provider_config FROM calendar_accounts WHERE user_id = ? AND provider = ? AND base_url = ? AND COALESCE(username, '') = ? LIMIT 1`,
+    `SELECT ca.id, ca.display_name, ca.mail_account_id, ca.provider_config FROM calendar_accounts ca
+     LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+     WHERE ca.user_id = ? AND ca.provider = ? AND ca.base_url = ?
+       AND COALESCE(IF(m.id IS NULL, NULL, COALESCE(NULLIF(m.username, ''), m.email_address)), ca.username, '') = ?
+     ORDER BY ca.created_at ASC LIMIT 1`,
     [userId, provider, baseUrl, username || '']
   );
   return rows[0] || null;

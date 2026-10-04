@@ -270,6 +270,16 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       caldav.listCalendars = async args => { logins.push([args.username, args.password]); return listCalendars(args); };
       try { assert.equal((await calendarSync.syncCalendarAccount(restoredLogin, { userId })).ok, true); } finally { caldav.listCalendars = listCalendars; }
       assert.deepEqual(logins, [['archive@example.test', 'synthetic-mail-password']]);
+      // A later mail login change, then the address set again: still the same
+      // account (matched by the mail login, not the one it was connected with),
+      // with its events and ToDo state.
+      await connection.execute("UPDATE mail_accounts SET username = 'renamed-login' WHERE id = ?", [archiveMail]);
+      calendarSync.syncCalendarAccountInBackground = () => {};
+      try {
+        link = await calendarAccounts.setMailCalendar(userId, archiveMail, { enabled: true, caldav_url: `${BASE}/dav/` });
+      } finally { calendarSync.syncCalendarAccountInBackground = backgroundSync; }
+      assert.equal(link.account.id, restoredLogin);
+      assert.equal((await connection.execute("SELECT todo_status FROM calendar_events WHERE id = ?", [restoredEvent.id]))[0][0].todo_status, 'done');
       const [[keptTodo]] = await connection.execute('SELECT todo_status FROM calendar_events WHERE id = ?', [restoredEvent.id]);
       assert.equal(keptTodo.todo_status, 'done');
 

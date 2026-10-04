@@ -74,7 +74,8 @@ async function disconnectAccount(userId, accountId) {
       // The inactive account is a durable scheduling/dispatch guard, not a purge.
       // Linked calendars are read before the commit, so stopping their work
       // afterwards needs no database and cannot fail.
-      const [linkedCalendars] = await connection.execute('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?', [userId, accountId]);
+      // Only CalDAV accounts use the mail login; a subscription goes on.
+      const [linkedCalendars] = await connection.execute("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, accountId]);
       await connection.commit();
       // After the commit: a linked calendar's running sync or change stops now;
       // any that starts later finds the account disconnected.

@@ -66,6 +66,29 @@ test('a restored mail calendar without a password stays on; another calendar acc
   }
 });
 
+test('a mail calendar from an older backup comes back without the copied password, and on when only a mail disconnect paused it', () => {
+  const dataKey = crypto.randomBytes(32);
+  const message = 'The mail account is disconnected. Reconnect it to resume calendar sync.';
+  const accounts = copy => [
+    { id: 'paused-by-mail', provider: 'caldav', provider_config: JSON.stringify({ mailLinked: true }), encrypted_password: copy, is_active: false, sync_status: 'paused', sync_error: message },
+    { id: 'paused-by-user', provider: 'caldav', provider_config: JSON.stringify({ mailLinked: true }), encrypted_password: copy, is_active: false, sync_status: 'paused', sync_error: null },
+    { id: 'own-login', provider: 'caldav', provider_config: JSON.stringify({ server: {} }), encrypted_password: copy, is_active: true },
+  ];
+  const portable = { portable_credentials: encryptPortableCredentialBundle({ mail_accounts: [], calendar_accounts: ['paused-by-mail', 'paused-by-user', 'own-login'].map(id => ({ id, password: 'copied' })) }, dataKey),
+    data: { mail_accounts: [], calendar_accounts: accounts(null) } };
+  const legacy = { data: { mail_accounts: [], calendar_accounts: accounts(encrypt('copied')) } };
+  const warnings = [];
+  prepareCredentialsForRestore(portable, dataKey, warnings);
+  prepareCredentialsForRestore(legacy, null, warnings);
+  for (const backup of [portable, legacy]) {
+    const [byMail, byUser, own] = backup.data.calendar_accounts;
+    assert.deepEqual([byMail.encrypted_password, byMail.is_active, byMail.sync_status, byMail.sync_error], [null, true, 'pending', null]);
+    assert.deepEqual([byUser.encrypted_password, byUser.is_active], [null, false], 'A pause of the user stays');
+    assert.equal(decrypt(own.encrypted_password), 'copied');
+  }
+  assert.deepEqual(warnings, []);
+});
+
 test('encrypted archive payload retains the filtered portable credential bundle', async (t) => {
   const dataKey = crypto.randomBytes(32);
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'unihub-portable-archive-'));

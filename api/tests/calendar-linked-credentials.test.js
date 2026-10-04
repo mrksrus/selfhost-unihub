@@ -32,7 +32,7 @@ function calendarFixture(t, { account = {}, mail = MAIL_LOGIN, caldav = {} } = {
   const execute = async (sql, params) => {
     if (sql.includes('FROM calendar_calendars c JOIN calendar_accounts a')) return [[{ calendar_row_id: params[0], account_id: 'linked', read_only: 0, url: 'https://dav.example.test/cal/' }]];
     if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[row]];
-    if (sql.startsWith('SELECT id FROM calendar_accounts')) return [[{ id: row.id }]];
+    if (sql.startsWith('SELECT id FROM calendar_accounts')) return [sql.includes("provider = 'caldav'") && row.provider !== 'caldav' ? [] : [{ id: row.id }]];
     if (sql.includes('FROM mail_accounts m WHERE m.id = ?')) return [state.mail ? [{ ...state.mail }] : []];
     if (sql.includes('FROM calendar_event_external_refs r JOIN calendar_remote_objects')) return [[{ object_id: 'object', href: '/a.ics', etag: '"1"', ics: 'BEGIN:VEVENT\r\nEND:VEVENT' }]];
     if (sql.includes('GET_LOCK')) return [[{ acquired: 1 }]];
@@ -149,6 +149,55 @@ test('a mail account reconnected while its stopped sync unwinds is not noted as 
   assert.equal(calls, 2, 'A new sync runs after the stopped one');
 });
 
+test('a mail disconnect does not stop or mark a linked subscription, which does not use the mail login', async t => {
+  let release, fetching;
+  const fetched = new Promise(resolve => { fetching = resolve; });
+  const { sync, writes } = calendarFixture(t, {
+    account: { provider: 'ics', encrypted_password: 'https://feeds.example.test/a.ics' },
+    caldav: { fetchIcsFeed: () => { fetching(); return new Promise(resolve => { release = () => resolve({ notModified: true }); }); } },
+  });
+  const run = sync.syncCalendarAccount('linked', { userId: 'owner' });
+  await fetched;
+  await sync.stopLinkedCalendarWork('owner', 'mail');
+  release();
+  assert.equal((await run).ok, true);
+  assert.ok(writes.every(([sql]) => !sql.includes("sync_status = 'paused'")));
+});
+
+test('a reconnect while a linked calendar syncs starts a new sync after that run', async t => {
+  let calls = 0, first, release;
+  const started = new Promise(resolve => { first = resolve; });
+  let second;
+  const again = new Promise(resolve => { second = resolve; });
+  const { sync } = calendarFixture(t, { caldav: { listCalendars: () => {
+    calls += 1;
+    if (calls === 1) { first(); return new Promise(resolve => { release = () => resolve([]); }); }
+    second();
+    return Promise.resolve([]);
+  } } });
+  const run = sync.syncCalendarAccount('linked', { userId: 'owner' });
+  await started;
+  await sync.syncLinkedCalendars('owner', 'mail');
+  assert.equal(calls, 1, 'The reconnect does not join the running sync silently');
+  release();
+  await run;
+  await again;
+  assert.equal(calls, 2);
+});
+
+test('a restored mail calendar that still holds a copied password uses its mail account when there is one', async t => {
+  const logins = [];
+  const { sync, state } = calendarFixture(t, {
+    account: { mail_account_id: null, encrypted_password: 'old-copy', username: 'old-user', provider_config: JSON.stringify({ mailLinked: true }) },
+    caldav: { listCalendars: async ({ username, password }) => { logins.push([username, password]); return []; } },
+  });
+  state.relinkTo = 'mail';
+  await sync.syncCalendarAccount('linked', { userId: 'owner' });
+  state.relinkTo = null;
+  await sync.syncCalendarAccount('linked', { userId: 'owner' });
+  assert.deepEqual(logins, [['owner@example.test', 'mail-login'], ['old-user', 'old-copy']], 'The copy is used only without a mail account');
+});
+
 test('a finished calendar sync releases its stop switch', async t => {
   let sync, running;
   ({ sync } = calendarFixture(t, { caldav: { listCalendars: async () => { running = sync.runningCalendarWorkCount(); return []; } } }));
@@ -176,6 +225,7 @@ test('a linked calendar is listed as paused while its mail account is disconnect
   assert.deepEqual(view({ mail_connected: 0 }), ['paused', MAIL_DISCONNECTED_MESSAGE]);
   assert.deepEqual(view({ mail_connected: 1 }), ['ok', null]);
   assert.deepEqual(view({ mail_connected: 1, sync_status: 'paused', sync_error: MAIL_DISCONNECTED_MESSAGE }), ['pending', null], 'A noted pause ends with the reconnect');
+  assert.deepEqual(view({ mail_connected: 1, sync_status: 'syncing', sync_error: MAIL_DISCONNECTED_MESSAGE })[0], 'syncing', 'The first sync after it shows');
   assert.deepEqual(view({ mail_connected: 0, is_active: 0, sync_status: 'paused' }), ['paused', null], 'A pause of the user is shown as it is');
   assert.deepEqual(view({}), ['ok', null], 'Read without the mail account: stored status');
 });

@@ -6,7 +6,7 @@ const { encrypt, decrypt } = require('../security/encryption');
 const { decryptPortableCredentialBundle } = require('./backup-container');
 const { MAIL_RAW_STORAGE_ROOT, validateMailHostPolicy } = require('./mail');
 const { validateDavUrlPolicy, accountCredentialScope } = require('./caldav');
-const { safeJsonParse } = require('./calendar');
+const { safeJsonParse, MAIL_DISCONNECTED_MESSAGE } = require('./calendar');
 const { resolveCalDavUrl } = require('../security/caldav-transport');
 const { RECORDINGS_ROOT } = require('./recordings');
 const { resolveOwnedReference } = require('./backup-ownership');
@@ -21,12 +21,25 @@ const {
   sanitizeArchivePathPart,
 } = require('./backup-common');
 
+const isMailCalDav = account => account.provider === 'caldav' && (safeJsonParse(account.provider_config, {}) || {}).mailLinked === true;
+
 // A restored calendar account without credentials is restored paused, except
 // one marked as a mail calendar: it uses the login of its mail account, which
 // it finds by address when it is first used.
 function restoredCalendarLacksLogin(account) {
   if (account.provider === 'local' || account.encrypted_password || account.encrypted_access_token || account.encrypted_refresh_token) return false;
-  return !(account.provider === 'caldav' && (safeJsonParse(account.provider_config, {}) || {}).mailLinked === true);
+  return !isMailCalDav(account);
+}
+
+// A mail calendar from a backup of 0.18.1 or earlier: like database upgrade
+// 14, without the copied mail password, and on again when only a mail
+// disconnect had switched it off.
+function upgradeRestoredMailCalendar(account) {
+  if (!isMailCalDav(account)) return;
+  account.encrypted_password = null;
+  if (!account.is_active && account.sync_error === MAIL_DISCONNECTED_MESSAGE) {
+    Object.assign(account, { is_active: true, sync_status: 'pending', sync_error: null });
+  }
 }
 
 function prepareCredentialsForRestore(backup, portableCredentialKey, warnings) {
@@ -57,6 +70,7 @@ function prepareCredentialsForRestore(backup, portableCredentialKey, warnings) {
       account.encrypted_refresh_token = item?.refresh_token !== null && item?.refresh_token !== undefined
         ? encrypt(item.refresh_token)
         : null;
+      upgradeRestoredMailCalendar(account);
       if (restoredCalendarLacksLogin(account)) account.is_active = false;
     }
     return;
@@ -78,6 +92,7 @@ function prepareCredentialsForRestore(backup, portableCredentialKey, warnings) {
     }
   }
   for (const account of data.calendar_accounts || []) {
+    upgradeRestoredMailCalendar(account);
     for (const field of ['encrypted_password', 'encrypted_access_token', 'encrypted_refresh_token']) {
       if (!account[field]) continue;
       const value = decrypt(account[field]);

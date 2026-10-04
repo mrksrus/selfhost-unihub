@@ -87,7 +87,7 @@ function serializeCalendarAccount(row) {
   const provider = normalizeCalendarAccountProvider(row.provider) || 'local';
   const linkedLogin = provider === 'caldav' && row.mail_account_id && row.mail_connected !== undefined && row.is_active;
   const mailDisconnected = linkedLogin && !Number(row.mail_connected);
-  const reconnected = linkedLogin && !mailDisconnected && row.sync_error === MAIL_DISCONNECTED_MESSAGE;
+  const reconnected = linkedLogin && !mailDisconnected && row.sync_status === 'paused' && row.sync_error === MAIL_DISCONNECTED_MESSAGE;
   // Capabilities stored by older versions predate writeback; the provider
   // defaults are authoritative.
   const capabilities = { ...(safeJsonParse(row.capabilities, null) || {}), ...CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] };
