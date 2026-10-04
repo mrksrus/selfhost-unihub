@@ -472,7 +472,11 @@ async function withAccountLock(accountId, fn) {
 async function runAccountSync(accountId, { userId, reason, full }) {
   const account = await loadAccount(accountId, userId);
   if (!account || !REMOTE_PROVIDERS.has(account.provider)) throw syncError('Calendar account not found', 404, 'CALENDAR_ACCOUNT_NOT_FOUND');
-  const background = reason === 'scheduled';
+  // A first sync never attempted (connected or restored, or interrupted by a
+  // restart) is owed like the connect itself: it needs only the module, not
+  // background sync, so it also runs after Calendar is turned on or a restart.
+  const firstSyncOwed = !account.last_synced_at && account.sync_status === 'pending';
+  const background = reason === 'scheduled' && !firstSyncOwed;
   const allowed = background
     ? await isModuleBackgroundEnabled(account.user_id, 'calendar')
     : await isModuleEnabled(account.user_id, 'calendar');

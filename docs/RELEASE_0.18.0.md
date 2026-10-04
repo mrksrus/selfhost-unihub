@@ -28,6 +28,10 @@ No database upgrade. See [Account Settings Backup](https://github.com/mrksrus/se
 
 ### Fixed
 
+- **A new calendar account's first sync is not lost.** If UniHub restarted
+  right after a calendar account was connected or restored, or Calendar was
+  off, its first sync waited for background sync. It now runs once Calendar is
+  on, also with background sync off.
 - **Several calendar subscriptions in one restore.** Restoring a backup with
   more than one calendar subscription (ICS feed) without an email address kept
   only the first; with **Replace matching** the others overwrote it.

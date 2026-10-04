@@ -172,6 +172,21 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       assert.deepEqual(serverWrites, [['delete', `${BASE}${href}`]]);
     });
 
+    await t.test('an owed first sync waits for the module, not for background sync', async () => {
+      const userId = crypto.randomUUID();
+      await connection.execute('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)', [userId, 'first@example.test', 'synthetic-hash']);
+      const accountId = await insertCalDav(userId, 'first@example.test', current);
+      await connection.execute("UPDATE calendar_accounts SET sync_status = 'pending' WHERE id = ?", [accountId]);
+      const scheduled = () => calendarSync.syncCalendarAccount(accountId, { userId, reason: 'scheduled' });
+
+      await setUserModules(userId, { modules: { calendar: { enabled: false } } });
+      assert.deepEqual(await scheduled(), { skipped: true, reason: 'paused' });
+      await setUserModules(userId, { modules: { calendar: { enabled: true, background: false } } });
+      assert.equal((await scheduled()).ok, true, 'The owed first sync runs with background sync off');
+      // Once synced, scheduled syncs follow the background setting again.
+      assert.deepEqual(await scheduled(), { skipped: true, reason: 'paused' });
+    });
+
     await t.test('turning a mail calendar off follows the Calendar module and restore gate', async () => {
       const userId = users.gate;
       const mailId = await insertMail(userId, 'gate@example.test');

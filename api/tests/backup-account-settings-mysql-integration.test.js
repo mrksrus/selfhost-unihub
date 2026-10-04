@@ -165,6 +165,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   const caldav = calendarAccounts.find(row => row.provider === 'caldav');
   assert.equal(caldav.is_active, 1);
   assert.equal(caldav.last_synced_at, null);
+  assert.deepEqual(calendarAccounts.map(row => row.sync_status), ['pending', 'pending', 'pending'], 'The first sync is owed');
   assert.equal(destinationCrypto.decrypt(caldav.encrypted_password), 'synthetic-calendar-password');
   assert.deepEqual(calendarAccounts.filter(row => row.provider === 'ics').map(row => destinationCrypto.decrypt(row.encrypted_password)).sort(),
     ['https://8.8.8.8/holidays.ics', 'https://8.8.8.8/sports.ics'], 'Each subscription is restored');

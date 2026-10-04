@@ -46,9 +46,10 @@ const { backupFromZipBuffer, backupFromZipFile } = require('./backup-zip-reader'
 const accountLabel = row => row.email_address || row.account_email || row.display_name || row.id;
 
 // Account settings restore like a fresh sign-in: the first download starts now
-// instead of waiting for the next scheduled pass. The mail sync job was queued
-// with the restore; this wakes the scheduler and reuses that job. Failures stay
-// visible on the account and the scheduled passes retry.
+// instead of waiting for the next scheduled pass. Both are already durable: the
+// mail sync job was queued with the restore, and restored calendar accounts are
+// pending, which the calendar pass treats as an owed first sync. This only
+// starts them sooner. Failures stay visible on the account.
 function startRestoredAccountSync(userId, { mailAccountIds, calendarAccountIds }) {
   setImmediate(async () => {
     try {
@@ -241,7 +242,9 @@ async function importBackupForUser(userId, backup, {
             row.encrypted_access_token || null, row.encrypted_refresh_token || null, normalizeMysqlDateTime(row.token_expires_at),
             row.provider_config ? (typeof row.provider_config === 'string' ? row.provider_config : JSON.stringify(row.provider_config)) : null,
             row.capabilities ? (typeof row.capabilities === 'string' ? row.capabilities : JSON.stringify(row.capabilities)) : null,
-            active ? 1 : 0, null, null, null,
+            // Pending and never synced: the first sync is owed and the calendar
+            // pass runs it even if this start is lost or Calendar is off now.
+            active ? 1 : 0, active ? 'pending' : null, null, null,
           ],
           []
         );
