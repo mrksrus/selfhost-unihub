@@ -18,7 +18,8 @@ account got out of step. Database upgrade 14 runs at startup. See
 - **Restored mail calendars find their mail account.** A calendar restored
   from a backup that belonged to a mail account is no longer restored paused
   for lack of a password. It finds the mail account with its address and uses
-  that login. Without that mail account it waits, and says to add it. From
+  that login, as does one whose mail account was deleted and added again.
+  Without that mail account it waits, and says to add it. From
   backups of older versions, the copied mail password is left out, and a
   calendar that only a mail disconnect had switched off comes back on.
 - **Calendar views follow a mail disconnect.** Open Calendar pages show a
@@ -30,6 +31,7 @@ account got out of step. Database upgrade 14 runs at startup. See
 ### Upgrade
 
 - The upgrade removes the copied mail passwords from linked calendars (also
-  from restored ones not linked again yet), and turns calendars that were
+  from mail calendars not linked yet, restored or from before 0.17, while a
+  mail account with their address exists), and turns calendars that were
   switched off only by a mail disconnect back on.
   They sync once their mail account is connected.

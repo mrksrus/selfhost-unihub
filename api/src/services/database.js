@@ -466,7 +466,8 @@ async function ensureSchema() {
       // it needs it, instead of keeping a copy. The copies go, and calendars
       // that were switched off only because their mail account was
       // disconnected are on again (they wait while it stays disconnected).
-      // Restored ones not linked again yet (only marked) are included.
+      // Mail calendars not linked yet (restored, or from before 0.17) are
+      // included; they find their mail account when first used.
       id: 14,
       name: 'calendar-linked-login',
       up: async connection => {
@@ -485,11 +486,17 @@ async function ensureSchema() {
   ]);
 }
 
-// CalDAV accounts of a mail account: linked, or marked and not linked again
-// yet after a restore.
+// CalDAV accounts of a mail account: linked; marked and not linked again yet
+// after a restore; or connected before 0.17 (no server entry, never linked)
+// while a mail account with their address exists.
 async function mailCalDavScope(connection) {
-  const [unlinked] = await connection.execute("SELECT id, provider_config FROM calendar_accounts WHERE provider = 'caldav' AND mail_account_id IS NULL");
-  const ids = unlinked.filter(row => (safeJsonParse(row.provider_config, {}) || {}).mailLinked === true).map(row => row.id);
+  const [unlinked] = await connection.execute(`SELECT ca.id, ca.provider_config,
+      EXISTS (SELECT 1 FROM mail_accounts m WHERE m.user_id = ca.user_id AND LOWER(m.email_address) = LOWER(ca.account_email)) AS has_mail
+    FROM calendar_accounts ca WHERE ca.provider = 'caldav' AND ca.mail_account_id IS NULL`);
+  const ids = unlinked.filter(row => {
+    const config = safeJsonParse(row.provider_config, {}) || {};
+    return config.mailLinked === true || (!config.server && Number(row.has_mail));
+  }).map(row => row.id);
   const marked = ids.length ? ` OR id IN (${ids.map(() => '?').join(', ')})` : '';
   return { sql: `provider = 'caldav' AND (mail_account_id IS NOT NULL${marked})`, params: ids };
 }

@@ -180,13 +180,35 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     const connectedNow = crypto.randomUUID();
     await connection.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active, mail_account_id, created_at)
       VALUES (?, ?, 'caldav', 'paused@example.test', '{"mailLinked":true}', TRUE, ?, UTC_TIMESTAMP() + INTERVAL 1 MINUTE)`, [connectedNow, paused.user, paused.mail]);
-    await require('../src/services/calendar-accounts').keepMailCalendar(paused.user, paused.mail, connectedNow);
+    const stopped = [], stopWork = calendarSync.stopCalendarAccountWork;
+    calendarSync.stopCalendarAccountWork = id => stopped.push(id);
+    try { await require('../src/services/calendar-accounts').keepMailCalendar(paused.user, paused.mail, connectedNow); }
+    finally { calendarSync.stopCalendarAccountWork = stopWork; }
+    assert.deepEqual(stopped, [paused.calendarAccount], 'Its running work, which read the mail login, stops');
     const [[mailRow]] = await connection.execute('SELECT id, email_address FROM mail_accounts WHERE id = ?', [paused.mail]);
     assert.equal((await require('../src/services/calendar-accounts').linkedCalendarAccount(paused.user, mailRow)).id, connectedNow);
     const [[orphan]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.equal(orphan.mail_account_id, null);
     await assert.rejects(calendarSync.resolveLogin(orphan), { code: 'MAIL_CALENDAR_UNLINKED' });
     assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, null);
+
+    // Its mail account deleted without the calendar (all mail accounts
+    // cleared): the stale link goes and the calendar waits; a mail account
+    // with its address added again is found.
+    await connection.execute('DELETE FROM calendar_accounts WHERE id = ?', [connectedNow]);
+    await connection.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ?', [paused.mail, paused.calendarAccount]);
+    const settingsRoutes = require('../src/routes/settings');
+    await settingsRoutes['POST /api/settings/clear-mail-accounts']({}, paused.user);
+    const [[stale]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    assert.equal(stale.mail_account_id, paused.mail);
+    await assert.rejects(calendarSync.resolveLogin(stale), { code: 'MAIL_CALENDAR_UNLINKED' });
+    assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, null);
+    const again = crypto.randomUUID();
+    await connection.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, username, imap_host, encrypted_password, is_active)
+      VALUES (?, ?, 'paused@example.test', 'custom', 'paused@example.test', 'imap.example.test', ?, TRUE)`, [again, paused.user, encrypt('synthetic-password')]);
+    const [[waitingAgain]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    assert.equal((await calendarSync.resolveLogin(waitingAgain)).username, 'paused@example.test');
+    assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, again);
     assert.equal(await count('SELECT COUNT(*) AS n FROM emails WHERE user_id = ?', [other.user]), 2);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [other.user]), 2);
   });

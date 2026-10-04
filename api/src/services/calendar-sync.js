@@ -18,7 +18,7 @@ const { isSectionRestoreActive } = require('./restore-locks');
 const { publishCalendarChanged } = require('./server-events');
 const caldav = require('./caldav');
 const ical = require('./calendar-ical');
-const { toMysqlDatetime, parseDatetimeToMillis, MAIL_DISCONNECTED_MESSAGE, MAIL_CONNECTED_SQL } = require('./calendar');
+const { toMysqlDatetime, parseDatetimeToMillis, MAIL_DISCONNECTED_MESSAGE, MAIL_CONNECTED_SQL, wasMailCalendar } = require('./calendar');
 
 const SYNC_INTERVAL_MS = 15 * 60 * 1000;
 const ERROR_RETRY_MS = 30 * 60 * 1000;
@@ -60,25 +60,42 @@ function hrefHash(href) {
 const NO_PASSWORD_MESSAGE = 'No password is saved for this calendar account. Enter it again to resume sync.';
 const MAIL_CALENDAR_UNLINKED_MESSAGE = 'This calendar belongs to a mail account it is not linked to. Add that mail account in Mail to resume sync, or remove this calendar.';
 
+async function mailAccountWithAddress(account) {
+  if (!account.account_email) return false;
+  const [rows] = await db.execute('SELECT id FROM mail_accounts WHERE user_id = ? AND LOWER(email_address) = LOWER(?) LIMIT 1', [account.user_id, account.account_email]);
+  return rows.length > 0;
+}
+
 // A calendar connected from a mail account has no password of its own: every
 // sync and change reads the mail login as stored at that moment, and finds
-// none while the mail account is disconnected. A restored one that is not
-// linked again yet (backups keep only its mark) finds its mail account first;
-// so does one without a password from before the mark. A marked one never
-// uses a copy of the mail password an older backup brought back: without its
-// mail account it waits.
+// none while the mail account is disconnected. One that is not linked (a
+// restored one: backups keep only its mark; one connected before 0.17; one
+// whose mail account was deleted) finds its mail account by address first.
+// A mail calendar never uses a copy of the mail password while a mail account
+// with its address exists, and a marked one never: it waits. Only an
+// unmarked one from before 0.17 whose mail account is gone keeps using its
+// password, as its own.
 async function resolveLogin(account) {
   let mailAccountId = account.mail_account_id;
-  const marked = (jsonValue(account.provider_config, {}) || {}).mailLinked === true;
-  if (!mailAccountId && (marked || !account.encrypted_password)) mailAccountId = await require('./calendar-accounts').relinkRestoredCalendar(account);
+  if (!mailAccountId && wasMailCalendar(account)) mailAccountId = await require('./calendar-accounts').relinkRestoredCalendar(account);
   if (!mailAccountId) {
-    if (marked) throw syncError(MAIL_CALENDAR_UNLINKED_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED');
+    const marked = (jsonValue(account.provider_config, {}) || {}).mailLinked === true;
+    if (marked || (wasMailCalendar(account) && await mailAccountWithAddress(account))) {
+      throw syncError(MAIL_CALENDAR_UNLINKED_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED');
+    }
     if (!account.encrypted_password) throw syncError(NO_PASSWORD_MESSAGE, 409, 'CALDAV_NO_PASSWORD');
     return { username: account.username || account.account_email, encryptedPassword: account.encrypted_password };
   }
-  const [[mail]] = await db.execute(`SELECT COALESCE(NULLIF(m.username, ''), m.email_address) AS username, m.encrypted_password
-    FROM mail_accounts m WHERE m.id = ? AND m.user_id = ? AND ${MAIL_CONNECTED_SQL}`, [mailAccountId, account.user_id]);
-  if (!mail) throw syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
+  const [[mail]] = await db.execute(`SELECT COALESCE(NULLIF(m.username, ''), m.email_address) AS username, m.encrypted_password,
+      (${MAIL_CONNECTED_SQL}) AS connected
+    FROM mail_accounts m WHERE m.id = ? AND m.user_id = ?`, [mailAccountId, account.user_id]);
+  if (!mail && account.mail_account_id) {
+    // Its mail account was deleted (e.g. all mail accounts cleared): the link
+    // goes, and it looks for a mail account with its address again.
+    await db.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE id = ? AND mail_account_id = ?', [account.id, account.mail_account_id]);
+    return resolveLogin({ ...account, mail_account_id: null });
+  }
+  if (!mail || !Number(mail.connected)) throw syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
   return { username: mail.username, encryptedPassword: mail.encrypted_password };
 }
 

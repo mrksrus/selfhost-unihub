@@ -74,10 +74,14 @@ above; if it is used first (by its sync), it finds the mail account with its
 address itself. Without a mail account of that address (or when that one
 already has another calendar) it waits, listed as paused with "This calendar
 belongs to a mail account it is not linked to"; adding the mail account in
-Mail resumes it. Up to 0.18.1 a linked account kept a copy of the mail
-password; upgrading to 0.18.2 removes those copies (also from restored
-calendars not linked again yet) and turns calendars that were switched off
-only by a mail disconnect back on.
+Mail resumes it. A calendar connected from mail before 0.17 and never linked
+finds its mail account the same way, and so does one whose mail account was
+deleted (e.g. by clearing all mail accounts): its link goes first. Up to
+0.18.1 a linked account kept a copy of the mail password; upgrading to 0.18.2
+removes those copies (also from mail calendars not linked yet while a mail
+account with their address exists) and turns calendars that were switched
+off only by a mail disconnect back on. Only a calendar from before 0.17
+whose mail account is gone keeps its password, as its own.
 
 New mail accounts try the calendar by default (**Sync the calendar too**). The
 mail account is created even when no calendar is found; the result says why.

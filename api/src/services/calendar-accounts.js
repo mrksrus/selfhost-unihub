@@ -241,9 +241,14 @@ async function relinkRestoredCalendar(account) {
 
 // A new mail account's calendar is the one just connected for it. A restored
 // one that a calendar sync linked to it by address meanwhile is unlinked again
-// (it then waits, like when the sync came later).
+// (it then waits, like when the sync came later), and its running work, which
+// read the mail login, is stopped: a disconnect would no longer find it.
 async function keepMailCalendar(userId, mailAccountId, accountId) {
-  await db.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE user_id = ? AND mail_account_id = ? AND id <> ?', [userId, mailAccountId, accountId]);
+  const [others] = await db.execute('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND id <> ?', [userId, mailAccountId, accountId]);
+  for (const other of others) {
+    await db.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE id = ? AND mail_account_id = ?', [other.id, mailAccountId]);
+    calendarSync.stopCalendarAccountWork(other.id);
+  }
 }
 
 async function describeLink(userId, mail, account) {

@@ -292,8 +292,16 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const restoredCopy = await insertCalDav(userId, 'gone@example.test', { ...current, mailLinked: true }, null, 'copied-mail-password');
       await connection.execute("UPDATE calendar_accounts SET is_active = FALSE, sync_status = 'paused', sync_error = ? WHERE id = ?",
         [calendarSync.MAIL_DISCONNECTED_MESSAGE, restoredCopy]);
+      // Connected from mail before 0.17 and never linked: its copy goes while a
+      // mail account with its address exists; without one it is its own.
+      await insertMail(userId, 'prior@example.test');
+      const priorCopy = await insertCalDav(userId, 'prior@example.test', legacy, null, 'copied-mail-password');
+      const priorAlone = await insertCalDav(userId, 'alone@example.test', legacy, null, 'own-password');
       await connection.execute('DELETE FROM schema_migrations WHERE id >= 13');
       await require('../src/services/database').ensureSchema();
+      const password = async id => (await connection.execute('SELECT encrypted_password FROM calendar_accounts WHERE id = ?', [id]))[0][0].encrypted_password;
+      assert.equal(await password(priorCopy), null);
+      assert.notEqual(await password(priorAlone), null);
       assert.deepEqual(config((await mailLink(unmarked)).provider_config), { ...current, mailLinked: true });
       assert.equal(config((await mailLink(standalone)).provider_config).mailLinked, undefined);
       const [[upgraded]] = await connection.execute('SELECT encrypted_password, is_active, sync_status, sync_error FROM calendar_accounts WHERE id = ?', [restoredCopy]);
