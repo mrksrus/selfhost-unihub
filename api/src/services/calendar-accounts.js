@@ -14,7 +14,7 @@ const { isValidTimeZone } = require('./calendar-ical');
 const { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES, serializeCalendarAccount, safeJsonParse } = require('./calendar');
 const calendarSync = require('./calendar-sync');
 
-const MAIL_DISCONNECTED_MESSAGE = 'The mail account is disconnected. Reconnect it to resume calendar sync.';
+const { MAIL_DISCONNECTED_MESSAGE } = calendarSync;
 
 function fail(message, status = 400, code) {
   return Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
@@ -332,8 +332,11 @@ async function updateLinkedCalendarCredentials(userId, mailAccountId) {
 }
 
 // Disconnecting mail removes its stored password; the calendar pauses with it
-// and keeps its events until the account is reconnected or removed.
+// and keeps its events until the account is reconnected or removed. With
+// Calendar off or being restored its data stays untouched here; calendar sync
+// pauses the account before it would use the login again.
 async function pauseLinkedCalendar(userId, mailAccountId) {
+  if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) return;
   const [rows] = await db.execute("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, mailAccountId]);
   for (const row of rows) {
     await db.execute(

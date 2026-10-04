@@ -469,6 +469,22 @@ async function withAccountLock(accountId, fn) {
   }
 }
 
+const MAIL_DISCONNECTED_MESSAGE = 'The mail account is disconnected. Reconnect it to resume calendar sync.';
+
+// A mail-linked CalDAV account uses the mail login. Disconnecting mail pauses
+// it right away only while Calendar is on and not being restored; otherwise
+// this check pauses it, and removes the copied password, before it is used.
+async function pauseIfMailDisconnected(account) {
+  if (account.provider !== 'caldav' || !account.mail_account_id) return false;
+  const [[mail]] = await db.execute('SELECT is_active, disconnected_at, encrypted_password FROM mail_accounts WHERE id = ? AND user_id = ?',
+    [account.mail_account_id, account.user_id]);
+  if (mail && Number(mail.is_active) && !mail.disconnected_at && mail.encrypted_password) return false;
+  await db.execute("UPDATE calendar_accounts SET is_active = FALSE, encrypted_password = NULL, sync_status = 'paused', sync_error = ? WHERE id = ? AND user_id = ?",
+    [MAIL_DISCONNECTED_MESSAGE, account.id, account.user_id]);
+  publishCalendarChanged(account.user_id, account.id, 'status');
+  return true;
+}
+
 async function runAccountSync(accountId, { userId, reason, full }) {
   const account = await loadAccount(accountId, userId);
   if (!account || !REMOTE_PROVIDERS.has(account.provider)) throw syncError('Calendar account not found', 404, 'CALENDAR_ACCOUNT_NOT_FOUND');
@@ -482,6 +498,7 @@ async function runAccountSync(accountId, { userId, reason, full }) {
     : await isModuleEnabled(account.user_id, 'calendar');
   if (!allowed || await isSectionRestoreActive(account.user_id, 'calendar')) return { skipped: true, reason: 'paused' };
   if (!account.is_active) return { skipped: true, reason: 'inactive' };
+  if (await pauseIfMailDisconnected(account)) return { skipped: true, reason: 'mail-disconnected' };
 
   return withAccountLock(account.id, async () => {
     await db.execute("UPDATE calendar_accounts SET sync_status = 'syncing' WHERE id = ?", [account.id]);
@@ -808,6 +825,7 @@ function calendarErrorResponse(error, fallback) {
 }
 
 module.exports = {
+  MAIL_DISCONNECTED_MESSAGE,
   SYNC_INTERVAL_MS,
   calendarErrorResponse,
   REMOTE_PROVIDERS,

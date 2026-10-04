@@ -4,7 +4,7 @@ const { getDb, setDb } = require('../src/state');
 
 function stub(path, exports) { require.cache[path] = { id: path, filename: path, loaded: true, exports }; }
 
-test('a mail login change reaches the linked calendar only while Calendar is on and not being restored', async t => {
+test('a mail login change or disconnect reaches the linked calendar only while Calendar is on and not being restored', async t => {
   const paths = ['../src/services/module-settings', '../src/services/restore-locks', '../src/services/calendar-sync', '../src/services/calendar-accounts']
     .map(path => require.resolve(path));
   const saved = paths.map(path => require.cache[path]);
@@ -16,7 +16,7 @@ test('a mail login change reaches the linked calendar only while Calendar is on 
   const state = { calendar: true, restoring: false }, writes = [], syncs = [];
   stub(paths[0], { isModuleEnabled: async (_userId, id) => id !== 'calendar' || state.calendar });
   stub(paths[1], { isSectionRestoreActive: async (_userId, section) => section === 'calendar' && state.restoring });
-  stub(paths[2], { syncCalendarAccountInBackground: id => syncs.push(id), deleteCalendarAccount: async () => {} });
+  stub(paths[2], { syncCalendarAccountInBackground: id => syncs.push(id), deleteCalendarAccount: async () => {}, MAIL_DISCONNECTED_MESSAGE: 'disconnected' });
   delete require.cache[paths[3]];
   setDb({ execute: async (sql, params) => {
     if (sql.startsWith('SELECT id, email_address')) return [[{ id: 'mail', email_address: 'owner@example.test', username: 'owner', encrypted_password: 'enc', is_active: 1 }]];
@@ -24,15 +24,19 @@ test('a mail login change reaches the linked calendar only while Calendar is on 
     if (sql.startsWith('UPDATE calendar_accounts')) { writes.push(params); return [{ affectedRows: 1 }]; }
     throw new Error(`Unexpected SQL ${sql}`);
   } });
-  const { updateLinkedCalendarCredentials } = require('../src/services/calendar-accounts');
+  const { updateLinkedCalendarCredentials, pauseLinkedCalendar } = require('../src/services/calendar-accounts');
 
-  state.calendar = false;
-  await updateLinkedCalendarCredentials('owner', 'mail');
-  state.calendar = true; state.restoring = true;
-  await updateLinkedCalendarCredentials('owner', 'mail');
+  for (const change of [updateLinkedCalendarCredentials, pauseLinkedCalendar]) {
+    state.calendar = false; state.restoring = false;
+    await change('owner', 'mail');
+    state.calendar = true; state.restoring = true;
+    await change('owner', 'mail');
+  }
   assert.deepEqual(writes, []); assert.deepEqual(syncs, []);
 
   state.restoring = false;
   await updateLinkedCalendarCredentials('owner', 'mail');
   assert.equal(writes.length, 1); assert.deepEqual(syncs, ['calendar-account']);
+  await pauseLinkedCalendar('owner', 'mail');
+  assert.equal(writes.length, 2); assert.deepEqual(writes[1], ['disconnected', 'calendar-account']);
 });

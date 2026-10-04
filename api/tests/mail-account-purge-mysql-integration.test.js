@@ -46,6 +46,8 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     const { encrypt } = require('../src/security/encryption');
     const lifecycle = require('../src/services/mail-account-lifecycle');
     const { setUserModules } = require('../src/services/module-settings');
+    const calendarAccounts = require('../src/services/calendar-accounts');
+    const calendarSync = require('../src/services/calendar-sync');
 
     // Each user has a connected mail account with two messages and a linked
     // calendar account holding one calendar with two events.
@@ -69,6 +71,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     };
     const owner = await seed('owner');
     const other = await seed('other');
+    const paused = await seed('paused');
     const count = async (sql, params) => Number((await connection.execute(sql, params))[0][0].n);
 
     const preview = await lifecycle.purgePreview(owner.user, owner.mail, undefined, { disconnecting: true });
@@ -105,6 +108,17 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [owner.user]), 0);
 
     assert.equal(await count('SELECT COUNT(*) AS n FROM mail_accounts WHERE user_id = ? AND is_active = TRUE', [other.user]), 1);
+
+    // Disconnect while Calendar is off leaves calendar data alone; the next
+    // calendar sync pauses the linked account before it uses the mail login.
+    await setUserModules(paused.user, { modules: { calendar: { enabled: false } } });
+    await lifecycle.disconnectAccount(paused.user, paused.mail);
+    await calendarAccounts.pauseLinkedCalendar(paused.user, paused.mail);
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = TRUE', [paused.calendarAccount]), 1);
+    await setUserModules(paused.user, { modules: { calendar: { enabled: true } } });
+    assert.deepEqual(await calendarSync.syncCalendarAccount(paused.calendarAccount, { userId: paused.user }), { skipped: true, reason: 'mail-disconnected' });
+    assert.equal(await count(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE
+      AND encrypted_password IS NULL AND sync_status = 'paused'`, [paused.calendarAccount]), 1);
     assert.equal(await count('SELECT COUNT(*) AS n FROM emails WHERE user_id = ?', [other.user]), 2);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [other.user]), 2);
   });
