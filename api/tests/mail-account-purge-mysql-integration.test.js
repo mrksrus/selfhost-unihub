@@ -171,6 +171,14 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     await setUserModules(other.user, { modules: { calendar: { enabled: true } } });
     await calendarSync.runCalendarSyncPass();
     assert.equal(await sameLogin(), 1, 'The pass gives the active calendar the new mail login');
+    // A sync or writeback before the next pass takes the current login itself.
+    await connection.execute("UPDATE calendar_accounts SET username = 'old-login', encrypted_password = 'old-copy' WHERE id = ?", [other.calendarAccount]);
+    const [[staleLogin]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [other.calendarAccount]);
+    const currentLogin = await calendarSync.useCurrentMailLogin(staleLogin);
+    assert.equal(await sameLogin(), 1, 'The stored copy is replaced');
+    const [[mailLogin]] = await connection.execute('SELECT username, encrypted_password FROM mail_accounts WHERE id = ?', [other.mail]);
+    assert.deepEqual([currentLogin.username, currentLogin.encrypted_password], [mailLogin.username, mailLogin.encrypted_password]);
+    assert.equal(await calendarSync.useCurrentMailLogin(currentLogin), currentLogin, 'An up-to-date copy is not rewritten');
 
     // A refresh decided from a stale read of connected mail does nothing once
     // a Disconnect committed: the writes recheck the mail row.

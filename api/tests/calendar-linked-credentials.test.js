@@ -229,3 +229,51 @@ test('a mail disconnect after the last server response keeps the sync from repor
   await assert.rejects(sync.syncCalendarAccount('linked', { userId: 'owner' }), error => error.code === 'MAIL_ACCOUNT_DISCONNECTED');
   assert.ok(statusWrites.every(params => !['ok', 'error'].includes(params[0])), 'No success or error status over the pause');
 });
+
+test('a linked calendar that missed a mail login change uses the current login for sync and writebacks', async t => {
+  const paths = ['../src/services/module-settings', '../src/services/restore-locks', '../src/services/caldav', '../src/services/calendar-sync', '../src/security/encryption']
+    .map(path => require.resolve(path));
+  const saved = paths.map(path => require.cache[path]);
+  const savedDb = getDb();
+  t.after(() => {
+    setDb(savedDb);
+    paths.forEach((path, index) => { if (saved[index]) require.cache[path] = saved[index]; else delete require.cache[path]; });
+  });
+  const logins = [];
+  const stop = Object.assign(new Error('stop here'), { code: 'TEST_STOP' });
+  stub(paths[0], { isModuleEnabled: async () => true, isModuleBackgroundEnabled: async () => true });
+  stub(paths[1], { isSectionRestoreActive: async () => false });
+  stub(paths[2], {
+    accountCredentialScope: () => null,
+    listCalendars: async ({ username, password }) => { logins.push(['sync', username, password]); return []; },
+    putCalendarObject: async ({ username, password }) => { logins.push(['write', username, password]); throw stop; },
+  });
+  stub(paths[4], { decrypt: value => value, encrypt: value => value });
+  delete require.cache[paths[3]];
+  let refreshed = false;
+  const execute = async (sql, params) => {
+    if (sql.includes('FROM calendar_calendars c JOIN calendar_accounts a')) return [[{ calendar_row_id: 'calendar', account_id: 'linked', read_only: 0, url: 'https://dav.example.test/cal/' }]];
+    if (sql.startsWith('SELECT * FROM calendar_accounts')) {
+      return [[{ id: 'linked', user_id: 'owner', provider: 'caldav', mail_account_id: 'mail', is_active: 1, base_url: 'https://dav.example.test/',
+        last_synced_at: '2026-10-01 00:00:00', sync_status: 'ok', ...(refreshed ? { username: 'new-user', encrypted_password: 'new-login' } : { username: 'old-user', encrypted_password: 'old-copy' }) }]];
+    }
+    if (sql.startsWith('SELECT is_active, disconnected_at')) return [[{ is_active: 1, disconnected_at: null, encrypted_password: 'new-login' }]];
+    if (sql.includes('SET ca.username = COALESCE')) {
+      assert.deepEqual(params, ['linked', 'owner']);
+      const changed = !refreshed; refreshed = true;
+      return [{ affectedRows: changed ? 1 : 0 }];
+    }
+    if (sql.includes('GET_LOCK')) return [[{ acquired: 1 }]];
+    if (sql.includes('RELEASE_LOCK')) return [[{}]];
+    if (sql.startsWith('UPDATE calendar_accounts SET')) return [{ affectedRows: 1 }];
+    return [[]];
+  };
+  setDb({ execute, getConnection: async () => ({ execute, release() {} }) });
+  const sync = require('../src/services/calendar-sync');
+
+  await sync.syncCalendarAccount('linked', { userId: 'owner' });
+  refreshed = false;
+  await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event: { id: 'event', calendar_id: 'calendar', title: 'Meeting', start_time: '2026-10-05 10:00:00', end_time: '2026-10-05 11:00:00' } }),
+    error => error === stop);
+  assert.deepEqual(logins, [['sync', 'new-user', 'new-login'], ['write', 'new-user', 'new-login']]);
+});
