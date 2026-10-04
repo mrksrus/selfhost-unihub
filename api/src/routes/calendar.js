@@ -191,7 +191,8 @@ module.exports = {
         }
         updates.push('is_active = ?');
         params.push(body.is_active === false ? 0 : 1);
-        if (body.is_active === false && remote) updates.push("sync_status = 'paused'");
+        // Cleared: a user's pause is never resumed by a mail reconnect.
+        if (body.is_active === false && remote) updates.push("sync_status = 'paused'", 'sync_error = NULL');
         if (body.is_active !== false) resume = true;
       }
       resume = resume && remote && body.is_active !== false;

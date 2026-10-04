@@ -128,6 +128,25 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     assert.equal(await count(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE
       AND encrypted_password IS NULL AND sync_status = 'paused'`, [paused.calendarAccount]), 1);
 
+    // A reconnect while Calendar is off leaves the calendar paused; the next
+    // pass with Calendar on hands the login over. A calendar the user paused
+    // (no disconnect message) stays paused.
+    await setUserModules(paused.user, { modules: { calendar: { enabled: false } } });
+    await connection.execute('UPDATE mail_accounts SET is_active = TRUE, disconnected_at = NULL, encrypted_password = ? WHERE id = ?',
+      [encrypt('synthetic-password'), paused.mail]);
+    await calendarAccounts.updateLinkedCalendarCredentials(paused.user, paused.mail);
+    await calendarSync.runCalendarSyncPass();
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE AND encrypted_password IS NULL', [paused.calendarAccount]), 1);
+    await setUserModules(paused.user, { modules: { calendar: { enabled: true } } });
+    await connection.execute("UPDATE calendar_accounts SET is_active = FALSE, sync_status = 'paused', sync_error = NULL WHERE id = ?", [other.calendarAccount]);
+    await calendarSync.runCalendarSyncPass();
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = TRUE AND encrypted_password IS NOT NULL', [paused.calendarAccount]), 1,
+      'The pass resumes the calendar of the reconnected mail account');
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE', [other.calendarAccount]), 1,
+      'A calendar paused by its user stays paused');
+    await connection.execute("UPDATE mail_accounts SET is_active = FALSE, disconnected_at = UTC_TIMESTAMP(), encrypted_password = NULL WHERE id = ?", [paused.mail]);
+    await calendarSync.runCalendarSyncPass();
+
     // A pause decided from a stale read does nothing once the mail account
     // reconnected and passed its login on: the write rechecks the mail row.
     const [[stale]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);

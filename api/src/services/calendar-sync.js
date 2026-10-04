@@ -545,6 +545,25 @@ async function pauseCalendarsOfDisconnectedMail() {
   }
 }
 
+// The reverse: a calendar paused by a mail disconnect (marked by its message)
+// whose mail account is connected again but missed the reconnect's handover,
+// because Calendar was off or being restored or the update failed.
+const PAUSED_FOR_RECONNECTED_MAIL = `ca.provider = 'caldav' AND ca.is_active = FALSE AND ca.sync_status = 'paused' AND ca.sync_error = ?
+  AND m.is_active = TRUE AND m.disconnected_at IS NULL AND m.encrypted_password IS NOT NULL`;
+
+async function resumeCalendarsOfReconnectedMail() {
+  const [users] = await db.execute(`SELECT DISTINCT ca.user_id FROM calendar_accounts ca
+    JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ${PAUSED_FOR_RECONNECTED_MAIL}`, [MAIL_DISCONNECTED_MESSAGE]);
+  const { updateLinkedCalendarCredentials } = require('./calendar-accounts');
+  for (const { user_id: userId } of users) {
+    if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) continue;
+    const [rows] = await db.execute(`SELECT DISTINCT ca.mail_account_id FROM calendar_accounts ca
+      JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+      WHERE ca.user_id = ? AND ${PAUSED_FOR_RECONNECTED_MAIL}`, [userId, MAIL_DISCONNECTED_MESSAGE]);
+    for (const row of rows) await updateLinkedCalendarCredentials(userId, row.mail_account_id);
+  }
+}
+
 async function runAccountSync(accountId, { userId, reason, full }) {
   const account = await loadAccount(accountId, userId);
   if (!account || !REMOTE_PROVIDERS.has(account.provider)) throw syncError('Calendar account not found', 404, 'CALENDAR_ACCOUNT_NOT_FOUND');
@@ -637,6 +656,7 @@ async function runCalendarSyncPass() {
   let synced = 0;
   try {
     await pauseCalendarsOfDisconnectedMail().catch(error => console.warn('[CALENDAR] Could not pause calendars of disconnected mail:', error.message));
+    await resumeCalendarsOfReconnectedMail().catch(error => console.warn('[CALENDAR] Could not resume calendars of reconnected mail:', error.message));
     const [rows] = await db.execute(
       `SELECT id, user_id FROM calendar_accounts
        WHERE provider IN ('caldav', 'ics') AND is_active = TRUE AND (next_sync_at IS NULL OR next_sync_at <= UTC_TIMESTAMP())

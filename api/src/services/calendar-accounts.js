@@ -315,7 +315,7 @@ async function setMailCalendar(userId, mailAccountId, { enabled, caldav_url: cal
 // The mail password or login changed, or the account reconnected: the linked
 // CalDAV account uses that login too. Calendar data changes only while the
 // module is on and no calendar restore runs; otherwise the calendar keeps its
-// state and Connect calendar picks the login up later.
+// state and the next calendar pass picks the login up.
 async function updateLinkedCalendarCredentials(userId, mailAccountId) {
   if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) return;
   const [mails] = await db.execute('SELECT id, email_address, username, encrypted_password, is_active FROM mail_accounts WHERE id = ? AND user_id = ?', [mailAccountId, userId]);

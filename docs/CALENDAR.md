@@ -66,7 +66,11 @@ calendar sync, event change or move pauses the account, and removes the copied
 password, before it would log in; the change is refused with "The mail account
 is disconnected", and a move is refused before the target calendar is changed.
 Each calendar pass also removes such a copied password from linked accounts
-that are already inactive, once Calendar is on and not being restored.
+that are already inactive, once Calendar is on and not being restored. The
+reverse also runs each pass: a calendar paused by a mail disconnect whose mail
+account is connected again, but missed the reconnect (Calendar was off or being
+restored, or the update failed), takes the mail login back and resumes. A
+calendar you paused yourself stays paused.
 
 New mail accounts try the calendar by default (**Sync the calendar too**). The
 mail account is created even when no calendar is found; the result says why.

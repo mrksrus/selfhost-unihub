@@ -38,7 +38,9 @@ and [Offline](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/OFFLINE.
 - **Disconnect also stops the linked calendar.** Disconnecting a mail account
   now cancels a sync or event change of its linked calendar that is running at
   that moment, and no later one uses the mail password again, also when
-  Calendar was turned off at the time.
+  Calendar was turned off at the time. Reconnecting the mail account resumes
+  the calendar, also when that was missed at the time (Calendar off, or a
+  failed update); a calendar you paused yourself stays paused.
 - **Offline mode ends by itself.** One request that failed in the network (a
   restart, a proxy hiccup) switched the open app to read-only offline mode until
   **Retry connection** was clicked or the page was reloaded, even though
