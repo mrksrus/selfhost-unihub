@@ -27,6 +27,9 @@ account got out of step. Database upgrade 14 runs at startup. See
   from a backup that belonged to a mail account is no longer restored paused
   for lack of a password. It finds the mail account with its address and uses
   that login.
+- **Collapsed sidebars stay collapsed.** On desktop, the app navigation and
+  the mail account and folder list remember whether you collapsed them, also
+  after a reload. The choice is kept in this browser.
 
 ### Upgrade
 

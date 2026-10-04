@@ -30,6 +30,7 @@ import { MailAccountRemovalDialogs } from '@/components/mail/MailAccountRemovalD
 import { MailFolderDialogs } from '@/components/mail/MailFolderDialogs';
 import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
 import { systemFolders, ALL_ACCOUNTS, LEGACY_ACCOUNT, ALL_MAIL } from '@/components/mail/mail-page-model';
+import { usePersistedFlag } from '@/hooks/use-persisted-flag';
 
 /**
  * Mail: account/folder sidebar, message list and reader (side by side on wide
@@ -63,7 +64,7 @@ const MailPage = () => {
   const accountEditor = useMailAccountEditor();
   const compose = useMailCompose({ activeMailAccountId, selectedAccount, setSelectedAccount, isMobile });
   const accountRemoval = useMailAccountRemoval(() => setSelectedAccount(ALL_ACCOUNTS));
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = usePersistedFlag('mail_sidebar_collapsed');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);

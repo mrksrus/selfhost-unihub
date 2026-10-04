@@ -14,7 +14,7 @@ import { navigationPages } from '@/lib/navigation';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Separator } from '@/components/ui/separator';
-import { useState } from 'react';
+import { usePersistedFlag } from '@/hooks/use-persisted-flag';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const moreNavigation = [
@@ -25,7 +25,7 @@ const AppSidebar = () => {
   const { pages, canNavigate } = useModules();
   const { user, signOut } = useAuth();
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = usePersistedFlag('app_sidebar_collapsed');
 
   const userInitials = user?.full_name
     ?.split(' ')
