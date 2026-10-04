@@ -3,6 +3,8 @@ const path = require('node:path');
 const { db } = require('../state');
 const { withMailAccountLock } = require('./mail-account-lock');
 const { isSectionRestoreActive } = require('./restore-locks');
+const { isModuleEnabled } = require('./module-settings');
+const { publishCalendarChanged } = require('./server-events');
 
 const fail = (message, status = 409) => Object.assign(new Error(message), { status });
 const enabled = value => value === true || value === 1 || value === '1';
@@ -27,9 +29,12 @@ async function purgePreview(userId, accountId, executor = db, { disconnecting = 
     LEFT JOIN calendar_events ev ON ev.calendar_id = cc.id AND ev.user_id = ca.user_id
     WHERE ca.mail_account_id = ? AND ca.user_id = ?`, [accountId, userId]);
   const calendarAccounts = Number(calendar.calendar_accounts) || 0;
-  // Purging also removes the linked calendar, which a calendar restore may be writing.
+  // Purging also removes the linked calendar: Calendar data changes only while
+  // that module is on and no calendar restore is writing it.
+  const calendarOff = calendarAccounts > 0 && !await isModuleEnabled(userId, 'calendar');
   const calendarRestoring = calendarAccounts > 0 && await isSectionRestoreActive(userId, 'calendar');
   const reason = enabled(account.is_active) && !disconnecting ? 'Disconnect this account before permanently removing its retained mail.'
+    : calendarOff ? 'This account has a linked calendar and Calendar is turned off. Turn Calendar on to delete it with the account.'
     : calendarRestoring ? 'Calendar restore is in progress. Try again when it has finished.'
     : Number(counts.recovered_elsewhere) ? 'This account is the source of mail retained in another account.'
       : Number(operations.unresolved_operations) ? 'Provider changes have an unresolved outcome. Reconnect and reconcile them before purging.' : null;
@@ -96,7 +101,7 @@ async function purgeAccount(userId, accountId, confirmation) {
   await require('./mail').stopMailAccountWork(accountId, 'Account purging');
   return withMailAccountLock(accountId, async () => {
     const connection = await db.getConnection();
-    let attachments = [], rawPaths = [], preview;
+    let attachments = [], rawPaths = [], preview, linkedCalendars = [];
     try {
       await connection.beginTransaction();
       const [[account]] = await connection.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
@@ -104,6 +109,7 @@ async function purgeAccount(userId, accountId, confirmation) {
       // Admission locks item rows. Acquire them before the final unresolved-effect
       // check, preventing a concurrently accepted command from escaping the gate.
       const [messages] = await connection.execute('SELECT id, raw_storage_path FROM emails WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
+      [linkedCalendars] = await connection.execute('SELECT id FROM calendar_accounts WHERE mail_account_id = ? AND user_id = ? FOR UPDATE', [accountId, userId]);
       preview = await purgePreview(userId, accountId, connection);
       if (preview.blocked) throw fail(preview.reason);
       if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
@@ -111,10 +117,20 @@ async function purgeAccount(userId, accountId, confirmation) {
         JOIN emails e ON e.id = a.email_id AND e.user_id = a.user_id WHERE e.mail_account_id = ? AND e.user_id = ?`, [accountId, userId]);
       rawPaths = messages.map(row => row.raw_storage_path);
       await connection.execute('DELETE FROM mail_engine_quarantine WHERE mail_account_id = ? AND user_id = ?', [accountId, userId]);
+      // The linked calendar goes in the same transaction: either the account is
+      // gone with all its local data, or nothing changed and purge can be retried.
+      if (linkedCalendars.length) {
+        const placeholders = linkedCalendars.map(() => '?').join(', ');
+        const [calendars] = await connection.execute(`SELECT id FROM calendar_calendars WHERE user_id = ? AND account_id IN (${placeholders})`,
+          [userId, ...linkedCalendars.map(row => row.id)]);
+        await require('./calendar-sync').deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
+        await connection.execute('DELETE FROM calendar_accounts WHERE mail_account_id = ? AND user_id = ?', [accountId, userId]);
+      }
       await connection.execute('DELETE FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
       await connection.commit();
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
+    for (const row of linkedCalendars) publishCalendarChanged(userId, row.id, 'sync');
     const safeAttachments = [];
     for (const stored of new Set(attachments.map(row => row.storage_path).filter(Boolean))) {
       const [[used]] = await db.execute('SELECT id FROM email_attachments WHERE storage_path = ? LIMIT 1', [stored]);
@@ -122,7 +138,7 @@ async function purgeAccount(userId, accountId, confirmation) {
     }
     const files = await require('./mail').deleteStoredAttachmentFiles(safeAttachments);
     const raw = await removeUnreferencedRaw(rawPaths);
-    return { message: 'Disconnected account and its retained local mail permanently removed. Provider mail was not changed.', purged: true,
+    return { message: 'Disconnected account and its retained local mail and linked calendar permanently removed. Provider mail and events were not changed.', purged: true,
       email_count: preview.email_count, deletedAttachmentFiles: files.deletedFiles, failedAttachmentFiles: files.failedFiles,
       deletedRawFiles: raw.deletedFiles, failedRawFiles: raw.failedFiles };
   });

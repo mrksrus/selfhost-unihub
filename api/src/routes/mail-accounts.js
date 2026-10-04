@@ -617,8 +617,6 @@ module.exports = {
             throw error;
           })
           : await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'));
-        await calendarAccounts.removeLinkedCalendars(userId, id)
-          .catch(error => console.warn('[CALENDAR] Could not remove linked calendar:', error.message));
         return result;
       }
       const result = await mailAccountLifecycle.disconnectAccount(userId, id);

@@ -6,9 +6,10 @@ function fixture(t, settings = {}) {
   const savedDb = getDb();
   const servicePath = require.resolve('../src/services/mail');
   const lifecyclePath = require.resolve('../src/services/mail-account-lifecycle');
-  const savedService = require.cache[servicePath], savedLifecycle = require.cache[lifecyclePath];
+  const modulesPath = require.resolve('../src/services/module-settings');
+  const savedService = require.cache[servicePath], savedLifecycle = require.cache[lifecyclePath], savedModules = require.cache[modulesPath];
   const calls = [], cancellations = [];
-  const state = { owned: true, active: false, unresolved: 0, recovered: 0, calendars: 0, restoring: [], unresolvedAfterDisconnect: 0, ...settings };
+  const state = { owned: true, active: false, unresolved: 0, recovered: 0, calendars: 0, calendarEnabled: true, restoring: [], unresolvedAfterDisconnect: 0, ...settings };
   const execute = async (sql, params = []) => {
     calls.push({ sql, params });
     if (sql.includes('FROM backup_restore_jobs')) return [state.restoring.length ? [{ requested_sections: JSON.stringify(state.restoring) }] : []];
@@ -21,6 +22,9 @@ function fixture(t, settings = {}) {
     if (sql.startsWith('SELECT COUNT(*) AS unresolved_operations')) return [[{ unresolved_operations: state.unresolved }]];
     if (sql.startsWith('SELECT id, raw_storage_path FROM emails')) return [[{ id: 'message', raw_storage_path: null }]];
     if (sql.startsWith('SELECT a.storage_path')) return [[]];
+    if (sql.startsWith('SELECT id FROM calendar_accounts')) return [Array.from({ length: state.calendars }, (_, index) => ({ id: `calendar-account-${index}` }))];
+    if (sql.startsWith('SELECT id FROM calendar_calendars')) return [state.calendars ? [{ id: 'calendar' }] : []];
+    if (/^DELETE FROM calendar_(events|calendars|accounts)/.test(sql)) return [{ affectedRows: 1 }];
     if (sql.startsWith('UPDATE mail_accounts')) { state.active = false; state.unresolved += state.unresolvedAfterDisconnect; return [{ affectedRows: 1 }]; }
     if (sql.startsWith('UPDATE mail_server_messages') || sql.startsWith('DELETE FROM mail_accounts') || sql.startsWith('DELETE FROM mail_engine_quarantine')) return [{ affectedRows: 1 }];
     throw new Error(`Unexpected fixture SQL: ${sql}`);
@@ -32,12 +36,16 @@ function fixture(t, settings = {}) {
     stopMailAccountWork: async id => cancellations.push(id),
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   } };
+  require.cache[modulesPath] = { id: modulesPath, filename: modulesPath, loaded: true, exports: {
+    isModuleEnabled: async (_userId, id) => id !== 'calendar' || state.calendarEnabled,
+  } };
   delete require.cache[lifecyclePath];
   const api = require('../src/services/mail-account-lifecycle');
   t.after(() => {
     setDb(savedDb);
     if (savedService) require.cache[servicePath] = savedService; else delete require.cache[servicePath];
     if (savedLifecycle) require.cache[lifecyclePath] = savedLifecycle; else delete require.cache[lifecyclePath];
+    if (savedModules) require.cache[modulesPath] = savedModules; else delete require.cache[modulesPath];
   });
   return { api, calls, cancellations, state };
 }
@@ -94,7 +102,7 @@ test('explicit eligible purge deletes only the owned disconnected account after 
   assert.match(removes[1].sql, /mail_accounts/);
   for (const removal of removes) assert.deepEqual(removal.params, ['account', 'owner']);
   assert.ok(calls.findIndex(call => call.sql.includes('FROM emails') && call.sql.includes('FOR UPDATE')) < calls.indexOf(removes[0]));
-  assert.match(result.message, /Provider mail was not changed/);
+  assert.match(result.message, /Provider mail and events were not changed/);
 });
 
 test('preview counts the linked calendar that a purge removes', async t => {
@@ -138,4 +146,21 @@ test('disconnect and delete reports a disconnected account when the final purge 
     error.disconnected === true && /disconnected and its local mail kept/.test(error.message));
   assert.equal(state.active, false);
   assert.ok(calls.every(call => !call.sql.startsWith('DELETE FROM')));
+});
+
+test('purge refuses to remove a linked calendar while Calendar is turned off', async t => {
+  const { api, calls, cancellations } = fixture(t, { active: true, calendars: 1, calendarEnabled: false });
+  assert.match((await api.purgePreview('owner', 'account', undefined, { disconnecting: true })).reason, /Calendar is turned off/);
+  await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'account'), /Calendar is turned off/);
+  assert.deepEqual(cancellations, []);
+  assert.ok(calls.every(call => !/^(UPDATE|DELETE)/.test(call.sql)));
+});
+
+test('purge removes the linked calendar in the same transaction as the account', async t => {
+  const { api, calls } = fixture(t, { calendars: 1 });
+  await api.purgeAccount('owner', 'account', 'account');
+  const order = sql => calls.findIndex(call => call.sql.startsWith(sql));
+  assert.ok(order('DELETE FROM calendar_events') > order('BEGIN'));
+  assert.ok(order('DELETE FROM calendar_accounts') < order('DELETE FROM mail_accounts'));
+  assert.ok(order('DELETE FROM mail_accounts') < order('COMMIT'));
 });

@@ -340,11 +340,6 @@ async function pauseLinkedCalendar(userId, mailAccountId) {
   }
 }
 
-async function removeLinkedCalendars(userId, mailAccountId) {
-  const [rows] = await db.execute('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?', [userId, mailAccountId]);
-  for (const row of rows) await removeCalendarAccount(userId, row.id);
-}
-
 module.exports = {
   connectCalDavAccount,
   connectIcsSubscription,
@@ -353,6 +348,5 @@ module.exports = {
   setMailCalendar,
   updateLinkedCalendarCredentials,
   pauseLinkedCalendar,
-  removeLinkedCalendars,
   loadSerializedAccount,
 };
