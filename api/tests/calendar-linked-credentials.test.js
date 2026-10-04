@@ -75,3 +75,30 @@ test('calendar sync rechecks the linked mail account under its lock and pauses i
   assert.deepEqual(await syncCalendarAccount('calendar-account', { userId: 'owner' }), { skipped: true, reason: 'mail-disconnected' });
   assert.deepEqual(order, ['load', 'lock', 'load', 'mail', ['pause', [MAIL_DISCONNECTED_MESSAGE, 'calendar-account', 'owner']]]);
 });
+
+test('a calendar writeback refuses and pauses the account when its mail account is disconnected', async t => {
+  const paths = ['../src/services/module-settings', '../src/services/restore-locks', '../src/services/caldav', '../src/services/calendar-sync']
+    .map(path => require.resolve(path));
+  const saved = paths.map(path => require.cache[path]);
+  const savedDb = getDb();
+  t.after(() => {
+    setDb(savedDb);
+    paths.forEach((path, index) => { if (saved[index]) require.cache[path] = saved[index]; else delete require.cache[path]; });
+  });
+  stub(paths[0], { isModuleEnabled: async () => true, isModuleBackgroundEnabled: async () => true });
+  stub(paths[1], { isSectionRestoreActive: async () => false });
+  stub(paths[2], new Proxy({}, { get: (_target, name) => () => assert.fail(`CalDAV ${String(name)} must not be called`) }));
+  delete require.cache[paths[3]];
+  const pauses = [];
+  setDb({ execute: async (sql, params) => {
+    if (sql.includes('FROM calendar_calendars c JOIN calendar_accounts a')) return [[{ calendar_row_id: 'calendar', account_id: 'calendar-account', read_only: 0 }]];
+    if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[{ id: 'calendar-account', user_id: 'owner', provider: 'caldav', mail_account_id: 'mail', is_active: 1, encrypted_password: 'copied' }]];
+    if (sql.startsWith('SELECT is_active, disconnected_at')) return [[{ is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]];
+    if (sql.startsWith('UPDATE calendar_accounts SET is_active = FALSE')) { pauses.push(params); return [{ affectedRows: 1 }]; }
+    throw new Error(`Unexpected SQL ${sql}`);
+  } });
+  const { pushCreatedEvent } = require('../src/services/calendar-sync');
+  await assert.rejects(pushCreatedEvent({ userId: 'owner', event: { id: 'event', calendar_id: 'calendar', title: 'Meeting' } }),
+    error => error.status === 409 && error.code === 'MAIL_ACCOUNT_DISCONNECTED');
+  assert.equal(pauses.length, 1);
+});

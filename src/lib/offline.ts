@@ -335,11 +335,14 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   if(path.startsWith('/mail/attachments/')) return {error:'Attachments are available when you reconnect.',status:503};
   return {error:'This feature needs a connection to UniHub. Your offline mail, contacts and calendar are still available.',status:503};
 }
-export async function readOfflineResponse<T>(endpoint: string): Promise<{data:T}|{error:string;status?:number}|null> {
+// `stillOffline` is checked after the snapshot read: a live API answer that
+// arrived meanwhile wins, and this request just reports its own failure.
+export async function readOfflineResponse<T>(endpoint: string, stillOffline: () => boolean = () => true): Promise<{data:T}|{error:string;status?:number}|null> {
   if(!account)return null;
   const observed=generation, expectedAccount=account;
   const snapshot=await storedSnapshot().catch(()=>null);
   if(!snapshot||generation!==observed||account!==expectedAccount||snapshot.userId!==account)return null;
+  if(!stillOffline())return null;
   const response = resolveOfflineEndpoint(snapshot,endpoint);
   if (response && 'data' in response) setOfflineMode(true);
   return response as {data:T}|{error:string;status?:number}|null;

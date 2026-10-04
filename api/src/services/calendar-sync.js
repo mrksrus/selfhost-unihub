@@ -611,6 +611,9 @@ function assertWritable({ account, calendar }) {
 }
 
 async function writeContext(ctx) {
+  // Every writeback builds its login here; a disconnected mail account's
+  // copied password is never used for a provider change.
+  if (await pauseIfMailDisconnected(ctx.account)) throw syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
   return {
     ...ctx,
     login: accountLogin(ctx.account),

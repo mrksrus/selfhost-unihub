@@ -32,6 +32,18 @@ describe('offline mode after a transient failure', () => {
     expect((await api.delete('/mail/accounts/x')).error).toBeUndefined();
   });
 
+  it('does not return to offline mode when a slower failed request finishes after a live answer', async () => {
+    api.setCsrfToken('csrf');
+    const fetchMock = vi.fn((url: string) => url.endsWith('/contacts')
+      ? Promise.reject(new TypeError('Failed to fetch'))
+      : Promise.resolve(json({ events: [] })));
+    vi.stubGlobal('fetch', fetchMock);
+    const [failed, live] = await Promise.all([api.get('/contacts'), api.get('/calendar/events')]);
+    expect(live.data).toEqual({ events: [] });
+    expect(failed.error).toBeTruthy();
+    expect(isOfflineMode()).toBe(false);
+  });
+
   it('stays offline while a proxy reports the API unavailable', async () => {
     api.setCsrfToken('csrf');
     setOfflineMode(true);

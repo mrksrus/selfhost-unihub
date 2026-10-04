@@ -72,6 +72,8 @@ class ApiClient {
   private baseUrl: string;
   private csrfToken: string | null = null;
   private sessionRetryAt = 0;
+  // Counts API answers, so a slower failed request cannot bring offline mode back.
+  private apiAnswers = 0;
 
   constructor(baseUrl: string = API_URL) {
     this.baseUrl = baseUrl;
@@ -139,13 +141,17 @@ class ApiClient {
       headers['X-CSRF-Token'] = this.csrfToken;
     }
 
+    const answersBefore = this.apiAnswers;
     try {
       const response = await fetch(url, {
         ...options,
         headers,
         credentials: 'include',
       });
-      if (isOfflineMode() && reachedApi(response.status)) this.leaveOfflineMode();
+      if (reachedApi(response.status)) {
+        this.apiAnswers++;
+        if (isOfflineMode()) this.leaveOfflineMode();
+      }
 
       const contentType = response.headers.get('content-type') || '';
       const isJson = contentType.includes('application/json');
@@ -188,7 +194,7 @@ class ApiClient {
     } catch (error) {
       if (options.signal?.aborted) throw error;
       if (method === 'GET' && !endpoint.startsWith('/auth/')) {
-        const cached = await readOfflineResponse<T>(endpoint);
+        const cached = await readOfflineResponse<T>(endpoint, () => this.apiAnswers === answersBefore);
         if (cached) return cached;
       }
       return {
