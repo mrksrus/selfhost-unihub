@@ -461,6 +461,26 @@ async function ensureSchema() {
         if ((await unmarkedMailCalendars(connection)).length) throw new Error('Linked calendar accounts without the mailLinked mark remain');
       },
     },
+    {
+      // 0.18.2: a calendar linked to a mail account reads the mail login when
+      // it needs it, instead of keeping a copy. The copies go, and calendars
+      // that were switched off only because their mail account was
+      // disconnected are on again (they wait while it stays disconnected).
+      id: 14,
+      name: 'calendar-linked-login',
+      up: async connection => {
+        await connection.execute(`UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL
+          WHERE provider = 'caldav' AND mail_account_id IS NOT NULL AND is_active = FALSE AND sync_error = ?`,
+        ['The mail account is disconnected. Reconnect it to resume calendar sync.']);
+        await connection.execute(`UPDATE calendar_accounts SET encrypted_password = NULL
+          WHERE provider = 'caldav' AND mail_account_id IS NOT NULL AND encrypted_password IS NOT NULL`);
+      },
+      verify: async connection => {
+        const [[left]] = await connection.execute(`SELECT COUNT(*) AS n FROM calendar_accounts
+          WHERE provider = 'caldav' AND mail_account_id IS NOT NULL AND encrypted_password IS NOT NULL`);
+        if (Number(left.n) !== 0) throw new Error('Linked calendar accounts still hold a copied password');
+      },
+    },
   ]);
 }
 

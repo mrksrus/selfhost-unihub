@@ -55,23 +55,25 @@ account with the same server and login in place, keeping its events and their
 ToDo state; this also relinks one restored from a 0.17.0 backup, which kept
 neither the link nor the mark.
 
-A linked CalDAV account uses the mail login. A new mail password or login, or
-a reconnect, is passed on to it; disconnecting the mail account first stops
-any sync or event change of it that is running (open requests are aborted),
-then pauses it and removes the copied password; purging the mail account deletes it with its
-calendars and events in the same transaction. These changes to calendar data
-happen only while the Calendar module is on and no calendar restore runs (a
-purge is refused instead). When a disconnect skipped the pause, the next
-calendar sync, event change or move pauses the account, and removes the copied
-password, before it would log in; the change is refused with "The mail account
-is disconnected", and a move is refused before the target calendar is changed.
-Each calendar pass also removes such a copied password from linked accounts
-that are already inactive, once Calendar is on and not being restored. The
-reverse also runs each pass: a calendar paused by a mail disconnect whose mail
-account is connected again, but missed the reconnect (Calendar was off or being
-restored, or the update failed), takes the mail login back and resumes, and a
-linked calendar holding an older copy of the mail login gets the current one. A
-calendar you paused yourself gets the login but stays paused.
+A linked CalDAV account has no password of its own: each sync and event
+change reads the mail account's login at that moment. A new mail password or
+login therefore applies right away, and a reconnect or login change starts a
+sync of the linked calendar. While the mail account is disconnected (or paused
+by a restore) the calendar waits: it is listed as paused with "The mail account
+is disconnected", its sync is skipped, and an event change or move is refused
+before anything is sent (a move before the target calendar is changed).
+Disconnecting also stops any sync or event change of it that is running: reads
+are aborted, a change already sent to the server is completed and kept.
+Pausing the calendar yourself is separate and stays as you set it. Purging the
+mail account deletes the calendar with its calendars and events in the same
+transaction; it is refused while Calendar is turned off or being restored.
+
+A calendar restored from a backup carries the `mailLinked` mark but no link
+and no password. Opening the mail account's settings links it as described
+above; if it is used first (by its sync), it finds the mail account with its
+address itself. Up to 0.18.1 a linked account kept a copy of the mail
+password; upgrading to 0.18.2 removes those copies and turns calendars that
+were switched off only by a mail disconnect back on.
 
 New mail accounts try the calendar by default (**Sync the calendar too**). The
 mail account is created even when no calendar is found; the result says why.

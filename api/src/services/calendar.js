@@ -65,8 +65,29 @@ function normalizeCalendarAccountProvider(provider) {
   return null;
 }
 
+const MAIL_DISCONNECTED_MESSAGE = 'The mail account is disconnected. Reconnect it to resume calendar sync.';
+// SQL condition on a mail_accounts row m: it is connected and has a login.
+const MAIL_CONNECTED_SQL = 'm.is_active = TRUE AND m.disconnected_at IS NULL AND m.encrypted_password IS NOT NULL';
+
+// The link to a mail account is not in backups, so it is recovered by
+// address, but only for accounts that belonged to a mail account: those
+// marked mailLinked, and CalDAV accounts from before 0.17 (their config has no
+// server entry), which could only be created when adding a mail account. A
+// calendar account added on its own is never taken over.
+function wasMailCalendar(account) {
+  const config = safeJsonParse(account.provider_config, {}) || {};
+  if (config.mailLinked === true) return true;
+  return account.provider === 'caldav' && !config.server;
+}
+
+// mail_connected (when the row was read with its mail account): a linked
+// calendar shows as paused while its mail account is disconnected, and a
+// pause noted by an earlier sync ends with the reconnect.
 function serializeCalendarAccount(row) {
   const provider = normalizeCalendarAccountProvider(row.provider) || 'local';
+  const linkedLogin = provider === 'caldav' && row.mail_account_id && row.mail_connected !== undefined && row.is_active;
+  const mailDisconnected = linkedLogin && !Number(row.mail_connected);
+  const reconnected = linkedLogin && !mailDisconnected && row.sync_error === MAIL_DISCONNECTED_MESSAGE;
   // Capabilities stored by older versions predate writeback; the provider
   // defaults are authoritative.
   const capabilities = { ...(safeJsonParse(row.capabilities, null) || {}), ...CALENDAR_PROVIDER_DEFAULT_CAPABILITIES[provider] };
@@ -84,8 +105,8 @@ function serializeCalendarAccount(row) {
     provider_config: safeJsonParse(row.provider_config, {}) || {},
     capabilities,
     is_active: !!row.is_active,
-    sync_status: row.sync_status || null,
-    sync_error: row.sync_error || null,
+    sync_status: mailDisconnected ? 'paused' : reconnected ? 'pending' : row.sync_status || null,
+    sync_error: mailDisconnected ? MAIL_DISCONNECTED_MESSAGE : reconnected ? null : row.sync_error || null,
     last_synced_at: timestamp(row.last_synced_at),
     next_sync_at: timestamp(row.next_sync_at),
     mail_account_id: row.mail_account_id || null,
@@ -366,6 +387,9 @@ function formatProviderDateRange(value) {
 
 module.exports = {
   CALENDAR_PROVIDER_DEFAULT_CAPABILITIES,
+  MAIL_DISCONNECTED_MESSAGE,
+  MAIL_CONNECTED_SQL,
+  wasMailCalendar,
   parseDatetimeToMillis,
   toMysqlDatetime,
   safeJsonParse,

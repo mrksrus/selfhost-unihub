@@ -46,7 +46,6 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     const { encrypt } = require('../src/security/encryption');
     const lifecycle = require('../src/services/mail-account-lifecycle');
     const { setUserModules } = require('../src/services/module-settings');
-    const calendarAccounts = require('../src/services/calendar-accounts');
     const calendarSync = require('../src/services/calendar-sync');
 
     // Each user has a connected mail account with two messages and a linked
@@ -127,109 +126,53 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [restored.user]), 0);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ?', [standalone]), 1);
 
-    // Disconnect while Calendar is off leaves calendar data alone; the next
-    // calendar sync pauses the linked account before it uses the mail login.
+    // A linked calendar has no password of its own. Disconnecting mail leaves
+    // the calendar row as it is; its sync then waits (noted as paused) until
+    // the mail account is connected again, and a pause of its user is its own.
+    const calendarRow = async id => (await connection.execute(
+      'SELECT is_active, encrypted_password, sync_status, sync_error, mail_account_id FROM calendar_accounts WHERE id = ?', [id]))[0][0];
+    await connection.execute('UPDATE calendar_accounts SET encrypted_password = NULL WHERE id IN (?, ?)', [paused.calendarAccount, other.calendarAccount]);
     await setUserModules(paused.user, { modules: { calendar: { enabled: false } } });
     await lifecycle.disconnectAccount(paused.user, paused.mail);
-    await calendarAccounts.pauseLinkedCalendar(paused.user, paused.mail);
-    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = TRUE', [paused.calendarAccount]), 1);
-    await connection.execute("UPDATE calendar_accounts SET encrypted_password = 'copied-mail-password' WHERE id = ?", [paused.calendarAccount]);
-    await calendarSync.runCalendarSyncPass();
-    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND encrypted_password IS NOT NULL', [paused.calendarAccount]), 1,
-      'The pass leaves calendar data alone while Calendar is off');
     await setUserModules(paused.user, { modules: { calendar: { enabled: true } } });
-    await calendarSync.runCalendarSyncPass();
-    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND encrypted_password IS NULL', [paused.calendarAccount]), 1,
-      'The next pass removes the copied password');
+    const [[pausedRow]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    assert.equal(Number(pausedRow.is_active), 1, 'Disconnecting mail does not switch the calendar off');
+    await assert.rejects(calendarSync.resolveLogin(pausedRow), { code: 'MAIL_ACCOUNT_DISCONNECTED' });
     assert.deepEqual(await calendarSync.syncCalendarAccount(paused.calendarAccount, { userId: paused.user }), { skipped: true, reason: 'mail-disconnected' });
+    const waiting = await calendarRow(paused.calendarAccount);
+    assert.deepEqual([Number(waiting.is_active), waiting.encrypted_password, waiting.sync_status, waiting.sync_error],
+      [1, null, 'paused', calendarSync.MAIL_DISCONNECTED_MESSAGE]);
+    const listed = async userId => {
+      const routes = require('../src/routes/calendar');
+      const { accounts } = await routes['GET /api/calendar/accounts']({ url: '/api/calendar/accounts' }, userId);
+      return accounts.filter(account => account.provider === 'caldav').map(account => [account.sync_status, account.sync_error]);
+    };
+    assert.deepEqual(await listed(paused.user), [['paused', calendarSync.MAIL_DISCONNECTED_MESSAGE]]);
 
-    assert.equal(await count(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE
-      AND encrypted_password IS NULL AND sync_status = 'paused'`, [paused.calendarAccount]), 1);
-
-    // A reconnect while Calendar is off leaves the calendar paused; the next
-    // pass with Calendar on hands the login over. A calendar the user paused
-    // (no disconnect message) stays paused.
-    await setUserModules(paused.user, { modules: { calendar: { enabled: false } } });
+    // Reconnected (a new password): the calendar uses it right away, with no
+    // copy written, and is listed as waiting for its next sync.
     await connection.execute('UPDATE mail_accounts SET is_active = TRUE, disconnected_at = NULL, encrypted_password = ? WHERE id = ?',
-      [encrypt('synthetic-password'), paused.mail]);
-    await calendarAccounts.updateLinkedCalendarCredentials(paused.user, paused.mail);
-    await calendarSync.runCalendarSyncPass();
-    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE AND encrypted_password IS NULL', [paused.calendarAccount]), 1);
-    await setUserModules(paused.user, { modules: { calendar: { enabled: true } } });
+      [encrypt('new-synthetic-password'), paused.mail]);
+    const login = await calendarSync.resolveLogin(pausedRow);
+    const [[mailLogin]] = await connection.execute('SELECT encrypted_password FROM mail_accounts WHERE id = ?', [paused.mail]);
+    assert.deepEqual(login, { username: 'paused@example.test', encryptedPassword: mailLogin.encrypted_password });
+    assert.equal((await calendarRow(paused.calendarAccount)).encrypted_password, null);
+    assert.deepEqual(await listed(paused.user), [['pending', null]]);
+
+    // A pause of the user: a sync while the mail account is disconnected
+    // does not overwrite it.
     await connection.execute("UPDATE calendar_accounts SET is_active = FALSE, sync_status = 'paused', sync_error = NULL WHERE id = ?", [other.calendarAccount]);
-    await calendarSync.runCalendarSyncPass();
-    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = TRUE AND encrypted_password IS NOT NULL', [paused.calendarAccount]), 1,
-      'The pass resumes the calendar of the reconnected mail account');
-    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE', [other.calendarAccount]), 1,
-      'A calendar paused by its user stays paused');
-    // A disconnect only removes its copied password; a reconnect gives the new
-    // login back but does not resume it.
     await lifecycle.disconnectAccount(other.user, other.mail);
-    await calendarAccounts.pauseLinkedCalendar(other.user, other.mail);
-    assert.equal(await count(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE
-      AND encrypted_password IS NULL AND sync_error IS NULL`, [other.calendarAccount]), 1);
-    await connection.execute('UPDATE mail_accounts SET is_active = TRUE, disconnected_at = NULL, encrypted_password = ? WHERE id = ?',
-      [encrypt('synthetic-password'), other.mail]);
-    await calendarAccounts.updateLinkedCalendarCredentials(other.user, other.mail);
-    await calendarSync.runCalendarSyncPass();
-    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE AND encrypted_password IS NOT NULL',
-      [other.calendarAccount]), 1, 'The user pause survives a mail reconnect');
-    // Calendar off through a disconnect and a reconnect with a new password:
-    // the active calendar keeps the old copy until the next pass with Calendar on.
-    await connection.execute("UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'ok' WHERE id = ?", [other.calendarAccount]);
-    await setUserModules(other.user, { modules: { calendar: { enabled: false } } });
-    await lifecycle.disconnectAccount(other.user, other.mail);
-    await calendarAccounts.pauseLinkedCalendar(other.user, other.mail);
-    await connection.execute('UPDATE mail_accounts SET is_active = TRUE, disconnected_at = NULL, encrypted_password = ? WHERE id = ?',
-      [encrypt('new-synthetic-password'), other.mail]);
-    await calendarAccounts.updateLinkedCalendarCredentials(other.user, other.mail);
-    const sameLogin = () => count(`SELECT COUNT(*) AS n FROM calendar_accounts ca JOIN mail_accounts m ON m.id = ca.mail_account_id
-      WHERE ca.id = ? AND ca.is_active = TRUE AND ca.encrypted_password = m.encrypted_password`, [other.calendarAccount]);
-    assert.equal(await sameLogin(), 0);
-    await setUserModules(other.user, { modules: { calendar: { enabled: true } } });
-    await calendarSync.runCalendarSyncPass();
-    assert.equal(await sameLogin(), 1, 'The pass gives the active calendar the new mail login');
-    // A sync or writeback before the next pass takes the current login itself.
-    await connection.execute("UPDATE calendar_accounts SET username = 'old-login', encrypted_password = 'old-copy' WHERE id = ?", [other.calendarAccount]);
-    const [[staleLogin]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [other.calendarAccount]);
-    const currentLogin = await calendarSync.useCurrentMailLogin(staleLogin);
-    assert.equal(await sameLogin(), 1, 'The stored copy is replaced');
-    const [[mailLogin]] = await connection.execute('SELECT username, encrypted_password FROM mail_accounts WHERE id = ?', [other.mail]);
-    assert.deepEqual([currentLogin.username, currentLogin.encrypted_password], [mailLogin.username, mailLogin.encrypted_password]);
-    assert.equal(await calendarSync.useCurrentMailLogin(currentLogin), currentLogin, 'An up-to-date copy is not rewritten');
+    assert.deepEqual(await calendarSync.syncCalendarAccount(other.calendarAccount, { userId: other.user }), { skipped: true, reason: 'inactive' });
+    const userPause = await calendarRow(other.calendarAccount);
+    assert.deepEqual([Number(userPause.is_active), userPause.sync_error], [0, null]);
 
-    // A refresh decided from a stale read of connected mail does nothing once
-    // a Disconnect committed: the writes recheck the mail row.
-    await lifecycle.disconnectAccount(other.user, other.mail);
-    await calendarAccounts.pauseLinkedCalendar(other.user, other.mail);
-    const executeBefore = pool.execute.bind(pool);
-    pool.execute = async (sql, params) => sql.startsWith('SELECT id, email_address, username, encrypted_password, is_active FROM mail_accounts')
-      ? [[{ id: other.mail, email_address: 'other@example.test', username: 'other@example.test', encrypted_password: 'stale', is_active: 1 }]]
-      : executeBefore(sql, params);
-    try { await calendarAccounts.updateLinkedCalendarCredentials(other.user, other.mail); } finally { pool.execute = executeBefore; }
-    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE AND encrypted_password IS NULL',
-      [other.calendarAccount]), 1, 'A disconnected account does not get its calendar back');
-    await connection.execute("UPDATE mail_accounts SET is_active = FALSE, disconnected_at = UTC_TIMESTAMP(), encrypted_password = NULL WHERE id = ?", [paused.mail]);
-    await calendarSync.runCalendarSyncPass();
-
-    // A pause decided from a stale read does nothing once the mail account
-    // reconnected and passed its login on: the write rechecks the mail row.
-    const [[stale]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
-    await connection.execute("UPDATE mail_accounts SET is_active = TRUE, disconnected_at = NULL, encrypted_password = 'reconnected' WHERE id = ?", [paused.mail]);
-    await connection.execute("UPDATE calendar_accounts SET is_active = TRUE, encrypted_password = 'reconnected' WHERE id = ?", [paused.calendarAccount]);
-    const [[mailBefore]] = await connection.execute('SELECT is_active FROM mail_accounts WHERE id = ?', [paused.mail]);
-    assert.equal(Number(mailBefore.is_active), 1);
-    const realExecute = pool.execute.bind(pool);
-    // The function's first mail read sees the old state; its write and later reads are real.
-    let staleReads = 1;
-    pool.execute = async (sql, params) => sql.startsWith('SELECT is_active, disconnected_at') && staleReads-- > 0
-      ? [[{ is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]] : realExecute(sql, params);
-    let disconnected;
-    try { disconnected = await calendarSync.pauseIfMailDisconnected(stale); } finally { pool.execute = realExecute; }
-    assert.equal(disconnected, false, 'A reconnect that won the race lets the calendar work go on');
-    // The same holds for the route's pause after a failed one-step delete.
-    await calendarAccounts.pauseLinkedCalendar(paused.user, paused.mail);
-    assert.equal(await count("SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = TRUE AND encrypted_password = 'reconnected'", [paused.calendarAccount]), 1);
+    // A restored mail calendar (link not restored, no password of its own)
+    // finds its mail account the first time it needs a login.
+    await connection.execute(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = '{"mailLinked":true}' WHERE id = ?`, [paused.calendarAccount]);
+    const [[unlinked]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    assert.deepEqual(await calendarSync.resolveLogin(unlinked), login);
+    assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, paused.mail);
     assert.equal(await count('SELECT COUNT(*) AS n FROM emails WHERE user_id = ?', [other.user]), 2);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [other.user]), 2);
   });

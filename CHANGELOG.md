@@ -6,6 +6,34 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.18.2
+
+A calendar connected from a mail account no longer keeps its own copy of the
+mail password. It reads the mail account's login each time it syncs or saves
+a change. This removes a whole group of cases where the copy and the mail
+account got out of step. Database upgrade 14 runs at startup. See
+[Calendar](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/CALENDAR.md).
+
+### Changed
+
+- **A linked calendar follows its mail account.** A new mail password or a
+  reconnect applies to the calendar right away, also when Calendar was turned
+  off or being restored at the time. While the mail account is disconnected,
+  or paused by a restore, the calendar is shown as paused with "The mail
+  account is disconnected" and syncs again once the mail account is
+  reconnected. Disconnecting mail no longer switches the calendar off; a
+  calendar you paused yourself stays paused.
+- **Restored mail calendars find their mail account.** A calendar restored
+  from a backup that belonged to a mail account is no longer restored paused
+  for lack of a password. It finds the mail account with its address and uses
+  that login.
+
+### Upgrade
+
+- The upgrade removes the copied mail passwords from linked calendars, and
+  turns calendars that were switched off only by a mail disconnect back on.
+  They sync once their mail account is connected.
+
 ## 0.18.1
 
 Removes a mail account together with its local data in one step, reconnects

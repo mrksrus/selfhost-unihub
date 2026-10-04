@@ -529,9 +529,11 @@ module.exports = {
       }
 
       const updatedAccount = await loadAccountJson(userId, id);
+      // A linked calendar reads the mail login when it needs it; it only syncs
+      // now instead of at its next turn.
       if (encrypted_password || username !== undefined || email_address || body.is_active === true) {
-        await calendarAccounts.updateLinkedCalendarCredentials(userId, id)
-          .catch(error => console.warn('[CALENDAR] Could not update linked calendar login:', error.message));
+        await require('../services/calendar-sync').syncLinkedCalendars(userId, id)
+          .catch(error => console.warn('[CALENDAR] Could not start linked calendar sync:', error.message));
       }
       if (body.is_active === true) setImmediate(() => startMailSyncInBackground(id).catch(error => console.error('[SYNC] Reconnect scheduling failed:', error.message)));
       if (modeChange.changed && modeChange.mode === 'download') {
@@ -610,19 +612,11 @@ module.exports = {
       const id = extractMailRouteId(req);
       const query = new URL(req.url, 'http://localhost').searchParams;
       if (query.get('purge') === 'true') {
-        const result = query.get('disconnect') === 'true'
-          ? await mailAccountLifecycle.disconnectAndPurgeAccount(userId, id, query.get('confirm_purge')).catch(async error => {
-            if (error.disconnected) await calendarAccounts.pauseLinkedCalendar(userId, id)
-              .catch(pauseError => console.warn('[CALENDAR] Could not pause linked calendar:', pauseError.message));
-            throw error;
-          })
+        return query.get('disconnect') === 'true'
+          ? await mailAccountLifecycle.disconnectAndPurgeAccount(userId, id, query.get('confirm_purge'))
           : await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'));
-        return result;
       }
-      const result = await mailAccountLifecycle.disconnectAccount(userId, id);
-      await calendarAccounts.pauseLinkedCalendar(userId, id)
-        .catch(error => console.warn('[CALENDAR] Could not pause linked calendar:', error.message));
-      return result;
+      return await mailAccountLifecycle.disconnectAccount(userId, id);
     } catch (error) {
       return { error: error.status ? error.message : 'Could not change mail account connection', status: error.status || 500 };
     }

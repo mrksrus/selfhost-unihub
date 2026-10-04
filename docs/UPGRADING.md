@@ -5,6 +5,13 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.18.2 Linked calendars use the mail login directly
+
+Database upgrade 14 runs at startup; no configuration change. It removes the
+copies of mail passwords that calendars linked to a mail account kept, and
+turns on again calendars that were switched off only because their mail
+account was disconnected. They sync once the mail account is connected.
+
 ## 0.18.1 Delete local account data, reconnect restored accounts
 
 No database upgrade or configuration change. Mail accounts that a restore

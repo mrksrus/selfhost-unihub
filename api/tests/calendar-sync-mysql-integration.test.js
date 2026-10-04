@@ -221,7 +221,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       let link = await calendarAccounts.getMailCalendarLink(userId, mailId);
       assert.equal(link.enabled, false);
       const config = value => typeof value === 'string' ? JSON.parse(value) : value;
-      const mailLink = async id => (await connection.execute('SELECT mail_account_id, provider_config FROM calendar_accounts WHERE id = ?', [id]))[0][0];
+      const mailLink = async id => (await connection.execute('SELECT mail_account_id, provider_config, encrypted_password FROM calendar_accounts WHERE id = ?', [id]))[0][0];
       assert.equal((await mailLink(standalone)).mail_account_id, null);
 
       // Connected before 0.17: no server entry in its configuration.
@@ -231,6 +231,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const linked = await mailLink(older);
       assert.equal(linked.mail_account_id, mailId);
       assert.equal(config(linked.provider_config).mailLinked, true, 'the mark survives a backup');
+      assert.equal(linked.encrypted_password, null, 'Linked, it uses the mail login and keeps no password of its own');
       assert.equal((await mailLink(standalone)).mail_account_id, null);
 
       // Restored from a backup: the link column is empty but the mark is kept.
@@ -263,6 +264,12 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const adopted = await mailLink(restoredLogin);
       assert.equal(adopted.mail_account_id, archiveMail);
       assert.equal(config(adopted.provider_config).mailLinked, true);
+      assert.equal(adopted.encrypted_password, null);
+      // Its sync logs in with the mail login.
+      const listCalendars = caldav.listCalendars, logins = [];
+      caldav.listCalendars = async args => { logins.push([args.username, args.password]); return listCalendars(args); };
+      try { assert.equal((await calendarSync.syncCalendarAccount(restoredLogin, { userId })).ok, true); } finally { caldav.listCalendars = listCalendars; }
+      assert.deepEqual(logins, [['archive@example.test', 'synthetic-mail-password']]);
       const [[keptTodo]] = await connection.execute('SELECT todo_status FROM calendar_events WHERE id = ?', [restoredEvent.id]);
       assert.equal(keptTodo.todo_status, 'done');
 
@@ -270,7 +277,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       // backup taken right after upgrading can link it again.
       const thirdMail = await insertMail(userId, 'unmarked@example.test');
       const unmarked = await insertCalDav(userId, 'unmarked@example.test', current, thirdMail);
-      await connection.execute('DELETE FROM schema_migrations WHERE id = 13');
+      await connection.execute('DELETE FROM schema_migrations WHERE id >= 13');
       await require('../src/services/database').ensureSchema();
       assert.deepEqual(config((await mailLink(unmarked)).provider_config), { ...current, mailLinked: true });
       assert.equal(config((await mailLink(standalone)).provider_config).mailLinked, undefined);

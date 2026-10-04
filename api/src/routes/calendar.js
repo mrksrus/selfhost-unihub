@@ -24,6 +24,7 @@ const {
   loadCalendarWithAccount,
   getCalendarSubtaskIdFromReq,
   serializeCalendarSubtask,
+  MAIL_CONNECTED_SQL,
 } = require('../services/calendar');
 const calendarSync = require('../services/calendar-sync');
 const calendarAccounts = require('../services/calendar-accounts');
@@ -78,8 +79,11 @@ module.exports = {
     if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
     try {
       await ensureDefaultLocalCalendarForUser(userId);
+      // With the state of a linked mail account, whose login a calendar uses.
       const [rows] = await db.execute(
-        'SELECT * FROM calendar_accounts WHERE user_id = ? ORDER BY created_at ASC',
+        `SELECT ca.*, (${MAIL_CONNECTED_SQL}) AS mail_connected FROM calendar_accounts ca
+         LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+         WHERE ca.user_id = ? ORDER BY ca.created_at ASC`,
         [userId]
       );
       return { accounts: rows.map((row) => serializeCalendarAccount(row)) };
@@ -186,8 +190,11 @@ module.exports = {
         resume = true;
       }
       if (has(body, 'is_active')) {
-        if (body.is_active !== false && account.provider === 'caldav' && !account.encrypted_password && !resume) {
-          return { error: 'Enter the password again to resume sync.', status: 409, code: 'CALDAV_NO_PASSWORD' };
+        // Resumed only with a login: its own password, or a connected mail account.
+        if (body.is_active !== false && account.provider === 'caldav' && !resume) {
+          const missing = await calendarSync.resolveLogin(account).then(() => null, error => error);
+          if (missing?.code === 'CALDAV_NO_PASSWORD') return { error: 'Enter the password again to resume sync.', status: 409, code: 'CALDAV_NO_PASSWORD' };
+          if (missing) return calendarSync.calendarErrorResponse(missing, 'Could not resume sync');
         }
         updates.push('is_active = ?');
         params.push(body.is_active === false ? 0 : 1);

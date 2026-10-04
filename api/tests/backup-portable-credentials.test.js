@@ -50,6 +50,22 @@ test('portable backup credentials are re-encrypted for the destination server', 
   assert.equal(decrypt(backup.data.calendar_accounts[0].encrypted_refresh_token), 'refresh-token');
 });
 
+test('a restored mail calendar without a password stays on; another calendar account without one is paused', () => {
+  const dataKey = crypto.randomBytes(32);
+  const calendar = (id, providerConfig) => ({ id, provider: 'caldav', provider_config: providerConfig, encrypted_password: null,
+    encrypted_access_token: null, encrypted_refresh_token: null, is_active: true });
+  const accounts = () => [calendar('mail-calendar', JSON.stringify({ mailLinked: true })), calendar('own-login', JSON.stringify({ server: {} })), calendar('unmarked', null)];
+  const portable = { portable_credentials: encryptPortableCredentialBundle({ mail_accounts: [], calendar_accounts: [] }, dataKey),
+    data: { mail_accounts: [], calendar_accounts: accounts() } };
+  const legacy = { data: { mail_accounts: [], calendar_accounts: accounts() } };
+  prepareCredentialsForRestore(portable, dataKey, []);
+  prepareCredentialsForRestore(legacy, null, []);
+  for (const backup of [portable, legacy]) {
+    assert.deepEqual(backup.data.calendar_accounts.map(account => [account.id, account.is_active]),
+      [['mail-calendar', true], ['own-login', false], ['unmarked', false]]);
+  }
+});
+
 test('encrypted archive payload retains the filtered portable credential bundle', async (t) => {
   const dataKey = crypto.randomBytes(32);
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'unihub-portable-archive-'));

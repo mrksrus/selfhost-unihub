@@ -1,8 +1,9 @@
 // Connecting server calendars: CalDAV accounts found from a mail login (or a
 // CalDAV address), and read-only iCalendar subscriptions. A calendar account
-// connected from a mail account stays linked to it (mail_account_id): it
-// shares the mail password, pauses when the mail account is disconnected and
-// is removed when the mail account is purged.
+// connected from a mail account stays linked to it (mail_account_id): it has
+// no password of its own but uses the mail login (see calendar-sync
+// resolveLogin), so it waits while the mail account is disconnected, and it is
+// removed when the mail account is purged.
 const crypto = require('crypto');
 const { db } = require('../state');
 const { encrypt, decrypt } = require('../security/encryption');
@@ -11,10 +12,8 @@ const { isSectionRestoreActive } = require('./restore-locks');
 const { publishCalendarChanged } = require('./server-events');
 const caldav = require('./caldav');
 const { isValidTimeZone } = require('./calendar-ical');
-const { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES, serializeCalendarAccount, safeJsonParse } = require('./calendar');
+const { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES, MAIL_DISCONNECTED_MESSAGE, MAIL_CONNECTED_SQL, serializeCalendarAccount, safeJsonParse, wasMailCalendar } = require('./calendar');
 const calendarSync = require('./calendar-sync');
-
-const { MAIL_DISCONNECTED_MESSAGE } = calendarSync;
 
 function fail(message, status = 400, code) {
   return Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
@@ -43,9 +42,11 @@ async function loadSerializedAccount(userId, accountId) {
 }
 
 // existing: an account with the same login that is taken over in place, so
-// its calendars, events and their ToDo state are kept.
+// its calendars, events and their ToDo state are kept. One linked to a mail
+// account stores no password.
 async function saveCalDavAccount({ userId, emailAddress, displayName, username, password, mailAccountId, timeZone, found, existing = null }) {
   const accountId = existing?.id || crypto.randomUUID();
+  const storedPassword = mailAccountId ? null : encrypt(password);
   const previous = safeJsonParse(existing?.provider_config, {}) || {};
   const providerConfig = {
     principalHref: found.discovery.principalHref || null,
@@ -60,7 +61,7 @@ async function saveCalDavAccount({ userId, emailAddress, displayName, username, 
       `UPDATE calendar_accounts SET account_email = ?, username = ?, encrypted_password = ?, discovery_url = ?, base_url = ?, provider_config = ?,
          is_active = TRUE, sync_status = 'pending', sync_error = NULL, mail_account_id = ?, next_sync_at = NULL
        WHERE id = ? AND user_id = ?`,
-      [emailAddress || null, (username || emailAddress || '').slice(0, 255) || null, encrypt(password), found.server.url, found.discovery.baseUrl,
+      [emailAddress || null, (username || emailAddress || '').slice(0, 255) || null, storedPassword, found.server.url, found.discovery.baseUrl,
         JSON.stringify(providerConfig), mailAccountId || null, accountId, userId]
     );
   } else {
@@ -70,7 +71,7 @@ async function saveCalDavAccount({ userId, emailAddress, displayName, username, 
          provider_config, capabilities, is_active, sync_status, sync_error, mail_account_id, next_sync_at)
        VALUES (?, ?, 'caldav', ?, ?, ?, ?, ?, ?, ?, ?, TRUE, 'pending', NULL, ?, NULL)`,
       [accountId, userId, emailAddress || null, (displayName || emailAddress || found.server.label || 'Calendar').slice(0, 255),
-        (username || emailAddress || '').slice(0, 255) || null, encrypt(password), found.server.url, found.discovery.baseUrl,
+        (username || emailAddress || '').slice(0, 255) || null, storedPassword, found.server.url, found.discovery.baseUrl,
         JSON.stringify(providerConfig), JSON.stringify(CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.caldav), mailAccountId || null]
     );
   }
@@ -178,22 +179,13 @@ async function removeCalendarAccount(userId, accountId) {
 
 async function loadMailAccount(userId, mailAccountId) {
   const [rows] = await db.execute(
-    'SELECT id, user_id, email_address, display_name, username, imap_host, encrypted_password, is_active, disconnected_at FROM mail_accounts WHERE id = ? AND user_id = ?',
+    `SELECT m.id, m.user_id, m.email_address, m.display_name, m.username, m.imap_host, m.encrypted_password, m.is_active, m.disconnected_at,
+       (${MAIL_CONNECTED_SQL}) AS connected
+     FROM mail_accounts m WHERE m.id = ? AND m.user_id = ?`,
     [mailAccountId, userId]
   );
   if (!rows[0]) throw fail('Account not found', 404);
   return rows[0];
-}
-
-// The link to a mail account is not in backups, so it is recovered by
-// address, but only for accounts that belonged to a mail account: those
-// marked mailLinked, and CalDAV accounts from before 0.17 (their config has no
-// server entry), which could only be created when adding a mail account. A
-// calendar account added on its own is never taken over.
-function wasMailCalendar(account) {
-  const config = safeJsonParse(account.provider_config, {}) || {};
-  if (config.mailLinked === true) return true;
-  return account.provider === 'caldav' && !config.server;
 }
 
 // A restored calendar account this mail account takes over when its link is
@@ -213,15 +205,32 @@ async function linkedCalendarAccount(userId, mail) {
   const candidate = await restoredMailCalendar(userId, mail);
   if (!candidate) return null;
   // The link and its mark are written together: backups keep only the mark.
+  // A CalDAV account drops a password restored with it: it uses the mail login.
   const config = { ...(safeJsonParse(candidate.provider_config, {}) || {}), mailLinked: true };
-  const [result] = await db.execute('UPDATE calendar_accounts SET mail_account_id = ?, provider_config = ? WHERE id = ? AND mail_account_id IS NULL',
-    [mail.id, JSON.stringify(config), candidate.id]);
+  const [result] = await db.execute(`UPDATE calendar_accounts SET mail_account_id = ?, provider_config = ?,
+      encrypted_password = IF(provider = 'caldav', NULL, encrypted_password)
+    WHERE id = ? AND mail_account_id IS NULL`, [mail.id, JSON.stringify(config), candidate.id]);
   if (!result.affectedRows) {
     // A concurrent request linked it first.
     const [again] = await db.execute('SELECT * FROM calendar_accounts WHERE id = ? AND mail_account_id = ?', [candidate.id, mail.id]);
     return again[0] || null;
   }
-  return { ...candidate, mail_account_id: mail.id, provider_config: JSON.stringify(config) };
+  return { ...candidate, mail_account_id: mail.id, provider_config: JSON.stringify(config),
+    encrypted_password: candidate.provider === 'caldav' ? null : candidate.encrypted_password };
+}
+
+// The other way round, when a restored calendar is used before its mail
+// account read the link: it finds that mail account by address. Returns the
+// mail account id, or null when it belongs to none (or another account of
+// that mail account was linked first).
+async function relinkRestoredCalendar(account) {
+  if (account.mail_account_id || !account.account_email || !wasMailCalendar(account)) return null;
+  const [mails] = await db.execute('SELECT id, email_address FROM mail_accounts WHERE user_id = ? AND LOWER(email_address) = LOWER(?) ORDER BY created_at ASC',
+    [account.user_id, account.account_email]);
+  for (const mail of mails) {
+    if ((await linkedCalendarAccount(account.user_id, mail))?.id === account.id) return mail.id;
+  }
+  return null;
 }
 
 async function describeLink(userId, mail, account) {
@@ -242,7 +251,7 @@ async function describeLink(userId, mail, account) {
   return {
     ...base,
     enabled: true,
-    account: serializeCalendarAccount(account),
+    account: serializeCalendarAccount({ ...account, mail_connected: mail.connected }),
     calendars: calendars.map(row => ({ id: row.id, name: row.name, color: row.color, read_only: !!row.read_only, is_visible: !!row.is_visible })),
     event_count: Number(count.n) || 0,
   };
@@ -281,10 +290,10 @@ async function setMailCalendar(userId, mailAccountId, { enabled, caldav_url: cal
   const addressChanged = requestedUrl !== undefined && (existing?.provider === 'ics' ? !!requestedUrl : requestedUrl !== existingUrl);
   if (existing && !addressChanged) {
     if (existing.provider === 'caldav' && !existing.is_active) {
-      if (!mail.is_active || !mail.encrypted_password) throw fail(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
+      if (!Number(mail.connected)) throw fail(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
       await db.execute(
-        "UPDATE calendar_accounts SET is_active = TRUE, encrypted_password = ?, username = ?, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL WHERE id = ?",
-        [mail.encrypted_password, mail.username || mail.email_address, existing.id]
+        "UPDATE calendar_accounts SET is_active = TRUE, encrypted_password = NULL, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL WHERE id = ?",
+        [existing.id]
       );
     } else {
       await db.execute('UPDATE calendar_accounts SET next_sync_at = NULL WHERE id = ?', [existing.id]);
@@ -296,7 +305,7 @@ async function setMailCalendar(userId, mailAccountId, { enabled, caldav_url: cal
   const password = mail.encrypted_password ? decrypt(mail.encrypted_password) : null;
   const manualUrl = requestedUrl !== undefined ? requestedUrl : existingUrl;
   const subscription = manualUrl && looksLikeIcsFeed(manualUrl, caldav.matchCalendarProvider({ emailAddress: mail.email_address, imapHost: mail.imap_host }));
-  if (!subscription && (!mail.is_active || !password)) throw fail(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
+  if (!subscription && (!Number(mail.connected) || !password)) throw fail(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
   // Connect the new address first; the old calendars are only replaced once
   // it works.
   const connected = await connectCalDavAccount({
@@ -318,49 +327,6 @@ async function setMailCalendar(userId, mailAccountId, { enabled, caldav_url: cal
   return { ...await describeLink(userId, mail, rows[0]), server: connected.server || null, hint: connected.hint || null };
 }
 
-// The mail password or login changed, or the account reconnected: the linked
-// CalDAV account uses that login too. Calendar data changes only while the
-// module is on and no calendar restore runs; otherwise the calendar keeps its
-// state and the next calendar pass picks the login up.
-async function updateLinkedCalendarCredentials(userId, mailAccountId, { sync = true } = {}) {
-  if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) return;
-  const [mails] = await db.execute('SELECT id, email_address, username, encrypted_password, is_active FROM mail_accounts WHERE id = ? AND user_id = ?', [mailAccountId, userId]);
-  const mail = mails[0];
-  if (!mail || !mail.encrypted_password || !mail.is_active) return;
-  const [rows] = await db.execute("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, mailAccountId]);
-  // Both writes take the login from the mail row and only while it is still
-  // connected: this can run outside the mail lock, and a Disconnect that
-  // committed meanwhile must not get its calendar back.
-  const linkedToConnectedMail = `UPDATE calendar_accounts ca
-    JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id`;
-  const mailConnected = 'm.is_active = TRUE AND m.disconnected_at IS NULL AND m.encrypted_password IS NOT NULL';
-  for (const row of rows) {
-    await db.execute(`${linkedToConnectedMail}
-      SET ca.username = COALESCE(NULLIF(m.username, ''), m.email_address), ca.encrypted_password = m.encrypted_password
-      WHERE ca.id = ? AND ca.user_id = ? AND ${mailConnected}`, [row.id, userId]);
-    // Resumed only when active or paused by the mail disconnect: a calendar the
-    // user paused keeps the new login but stays paused.
-    const [resumed] = await db.execute(`${linkedToConnectedMail}
-      SET ca.is_active = TRUE, ca.sync_status = 'pending', ca.sync_error = NULL, ca.next_sync_at = NULL
-      WHERE ca.id = ? AND ca.user_id = ? AND (ca.is_active = TRUE OR ca.sync_error = ?) AND ${mailConnected}`,
-    [row.id, userId, MAIL_DISCONNECTED_MESSAGE]);
-    if (resumed.affectedRows && sync) calendarSync.syncCalendarAccountInBackground(row.id, { userId, reason: 'credentials' });
-  }
-}
-
-// Disconnecting mail removes its stored password; the calendar pauses with it
-// and keeps its events until the account is reconnected or removed. With
-// Calendar off or being restored its data stays untouched here; calendar sync
-// pauses the account before it would use the login again.
-async function pauseLinkedCalendar(userId, mailAccountId) {
-  if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) return;
-  const [rows] = await db.execute(`SELECT id, user_id, provider, mail_account_id FROM calendar_accounts
-    WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'`, [userId, mailAccountId]);
-  // Conditional on the mail account still being disconnected: this can run
-  // outside the mail lock, after a reconnect already passed its login on.
-  for (const row of rows) await calendarSync.pauseIfMailDisconnected(row);
-}
-
 module.exports = {
   connectCalDavAccount,
   connectIcsSubscription,
@@ -368,8 +334,7 @@ module.exports = {
   getMailCalendarLink,
   setMailCalendar,
   linkedCalendarAccount,
+  relinkRestoredCalendar,
   restoredMailCalendar,
-  updateLinkedCalendarCredentials,
-  pauseLinkedCalendar,
   loadSerializedAccount,
 };

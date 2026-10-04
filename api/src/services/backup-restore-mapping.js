@@ -6,6 +6,7 @@ const { encrypt, decrypt } = require('../security/encryption');
 const { decryptPortableCredentialBundle } = require('./backup-container');
 const { MAIL_RAW_STORAGE_ROOT, validateMailHostPolicy } = require('./mail');
 const { validateDavUrlPolicy, accountCredentialScope } = require('./caldav');
+const { safeJsonParse } = require('./calendar');
 const { resolveCalDavUrl } = require('../security/caldav-transport');
 const { RECORDINGS_ROOT } = require('./recordings');
 const { resolveOwnedReference } = require('./backup-ownership');
@@ -19,6 +20,14 @@ const {
   normalizeIdentifier,
   sanitizeArchivePathPart,
 } = require('./backup-common');
+
+// A restored calendar account without credentials is restored paused, except
+// one marked as a mail calendar: it uses the login of its mail account, which
+// it finds by address when it is first used.
+function lacksLogin(account) {
+  if (account.provider === 'local' || account.encrypted_password || account.encrypted_access_token || account.encrypted_refresh_token) return false;
+  return !(account.provider === 'caldav' && (safeJsonParse(account.provider_config, {}) || {}).mailLinked === true);
+}
 
 function prepareCredentialsForRestore(backup, portableCredentialKey, warnings) {
   const data = backup?.data || {};
@@ -48,14 +57,7 @@ function prepareCredentialsForRestore(backup, portableCredentialKey, warnings) {
       account.encrypted_refresh_token = item?.refresh_token !== null && item?.refresh_token !== undefined
         ? encrypt(item.refresh_token)
         : null;
-      if (
-        account.provider !== 'local'
-        && !account.encrypted_password
-        && !account.encrypted_access_token
-        && !account.encrypted_refresh_token
-      ) {
-        account.is_active = false;
-      }
+      if (lacksLogin(account)) account.is_active = false;
     }
     return;
   }
@@ -86,14 +88,7 @@ function prepareCredentialsForRestore(backup, portableCredentialKey, warnings) {
         account[field] = encrypt(value);
       }
     }
-    if (
-      account.provider !== 'local'
-      && !account.encrypted_password
-      && !account.encrypted_access_token
-      && !account.encrypted_refresh_token
-    ) {
-      account.is_active = false;
-    }
+    if (lacksLogin(account)) account.is_active = false;
   }
   if (unavailableCredentials > 0) {
     warnings.push(
