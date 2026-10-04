@@ -504,17 +504,24 @@ const LINKED_TO_DISCONNECTED_MAIL = `ca.provider = 'caldav' AND ca.mail_account_
 // this check pauses it, and removes the copied password, before it is used.
 async function pauseIfMailDisconnected(account) {
   if (account.provider !== 'caldav' || !account.mail_account_id) return false;
-  const [[mail]] = await db.execute('SELECT is_active, disconnected_at, encrypted_password FROM mail_accounts WHERE id = ? AND user_id = ?',
-    [account.mail_account_id, account.user_id]);
-  if (mail && Number(mail.is_active) && !mail.disconnected_at && mail.encrypted_password) return false;
+  const mailConnected = async () => {
+    const [[mail]] = await db.execute('SELECT is_active, disconnected_at, encrypted_password FROM mail_accounts WHERE id = ? AND user_id = ?',
+      [account.mail_account_id, account.user_id]);
+    return !!(mail && Number(mail.is_active) && !mail.disconnected_at && mail.encrypted_password);
+  };
+  if (await mailConnected()) return false;
   // The mail state is checked again in the write itself: a reconnect that
   // committed meanwhile (and passed its login on) is not undone.
   const [paused] = await db.execute(`UPDATE calendar_accounts ca
     LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
     SET ca.is_active = FALSE, ca.encrypted_password = NULL, ca.sync_status = 'paused', ca.sync_error = ?
     WHERE ca.id = ? AND ca.user_id = ? AND ${LINKED_TO_DISCONNECTED_MAIL}`, [MAIL_DISCONNECTED_MESSAGE, account.id, account.user_id]);
-  if (paused.affectedRows) publishCalendarChanged(account.user_id, account.id, 'status');
-  return true;
+  if (paused.affectedRows) {
+    publishCalendarChanged(account.user_id, account.id, 'status');
+    return true;
+  }
+  // Nothing paused: either it already was, or a reconnect won the race.
+  return !await mailConnected();
 }
 
 async function assertMailLoginUsable(account) {

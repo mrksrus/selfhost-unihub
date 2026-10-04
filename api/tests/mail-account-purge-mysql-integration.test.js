@@ -136,10 +136,13 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     const [[mailBefore]] = await connection.execute('SELECT is_active FROM mail_accounts WHERE id = ?', [paused.mail]);
     assert.equal(Number(mailBefore.is_active), 1);
     const realExecute = pool.execute.bind(pool);
-    // The function's own mail read sees the old state; only its write is real.
-    pool.execute = async (sql, params) => sql.startsWith('SELECT is_active, disconnected_at')
+    // The function's first mail read sees the old state; its write and later reads are real.
+    let staleReads = 1;
+    pool.execute = async (sql, params) => sql.startsWith('SELECT is_active, disconnected_at') && staleReads-- > 0
       ? [[{ is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]] : realExecute(sql, params);
-    try { await calendarSync.pauseIfMailDisconnected(stale); } finally { pool.execute = realExecute; }
+    let disconnected;
+    try { disconnected = await calendarSync.pauseIfMailDisconnected(stale); } finally { pool.execute = realExecute; }
+    assert.equal(disconnected, false, 'A reconnect that won the race lets the calendar work go on');
     // The same holds for the route's pause after a failed one-step delete.
     await calendarAccounts.pauseLinkedCalendar(paused.user, paused.mail);
     assert.equal(await count("SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = TRUE AND encrypted_password = 'reconnected'", [paused.calendarAccount]), 1);
