@@ -141,7 +141,7 @@ async function deviceStatus(userId, endpoint) {
 }
 
 function notificationModule(kind) {
-  return kind === 'mail' ? 'mail' : ['calendar', 'todo', 'reminder'].includes(kind) ? 'calendar' : null;
+  return kind === 'mail' ? 'mail' : ['calendar', 'todo', 'reminder'].includes(kind) ? 'calendar' : kind === 'recording' ? 'recordings' : null;
 }
 async function blockedNotificationModules(connection) {
   const blocked = await getActiveRestoreSectionsByUser(connection);
@@ -299,7 +299,7 @@ async function eventStillCurrent(row, payload, connection) {
 async function deliverPending(connection, now, activeRestores = new Map()) {
   const exclusions = [];
   const excludedParams = [];
-  for (const [section, kinds] of [['calendar', "'calendar', 'todo', 'reminder'"], ['mail', "'mail'"]]) {
+  for (const [section, kinds] of [['calendar', "'calendar', 'todo', 'reminder'"], ['mail', "'mail'"], ['recordings', "'recording'"]]) {
     const users = [...activeRestores].filter(([, sections]) => sections.has(section)).map(([userId]) => userId);
     if (users.length) {
       exclusions.push(`NOT (e.kind IN (${kinds}) AND e.user_id IN (${users.map(() => '?').join(', ')}))`);
@@ -365,11 +365,20 @@ async function enqueueSessionExpiryWarnings(connection) {
 // A recording upload stops when the app is closed and the browser gives the
 // service worker no time to finish it. The recording stays on the device that
 // made it; tell the user to open UniHub there. Works without Background Sync.
-async function enqueueStalledRecordingUploads(connection) {
+async function enqueueStalledRecordingUploads(connection, blocked = new Map()) {
+  // No warning while Recordings is switched off or being restored.
+  const skipped = [...blocked].filter(([, modules]) => modules.has('recordings')).map(([userId]) => userId);
+  // Only uploads that can still get a new warning (a signed-in device, no warning
+  // yet for this stopping point), so handled uploads never fill the batch.
   const [rows] = await connection.execute(`SELECT r.id, r.user_id, r.title, r.bytes_received, r.total_bytes, r.expires_at FROM recording_uploads r
     JOIN users u ON u.id = r.user_id
     WHERE u.is_active = TRUE AND r.expires_at > UTC_TIMESTAMP() AND r.updated_at <= UTC_TIMESTAMP() - INTERVAL ? SECOND
-    ORDER BY r.updated_at LIMIT 100`, [Math.ceil(RECORDING_STALL_MS / 1000)]);
+    ${skipped.length ? `AND r.user_id NOT IN (${skipped.map(() => '?').join(', ')})` : ''}
+    AND EXISTS (SELECT 1 FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id
+      WHERE p.user_id = r.user_id AND s.expires_at > UTC_TIMESTAMP())
+    AND NOT EXISTS (SELECT 1 FROM notification_events e WHERE e.user_id = r.user_id
+      AND e.event_key = SHA2(CONCAT('recording-upload:', r.id, ':', r.bytes_received), 256))
+    ORDER BY r.updated_at LIMIT 100`, [Math.ceil(RECORDING_STALL_MS / 1000), ...skipped]);
   let queued = 0;
   for (const row of rows) {
     const bytesReceived = Number(row.bytes_received);
@@ -398,7 +407,7 @@ async function processNotificationJobs() {
     await connection.execute(`DELETE FROM notification_reminders WHERE due_at < ? ${calendarUsers.length ? `AND user_id NOT IN (${calendarUsers.map(() => '?').join(', ')})` : ''}`, [new Date(now.getTime() - REMINDER_GRACE_MS), ...calendarUsers]);
     await enqueueDueReminders(connection, now, await blockedNotificationModules(connection));
     await enqueueSessionExpiryWarnings(connection);
-    await enqueueStalledRecordingUploads(connection);
+    await enqueueStalledRecordingUploads(connection, await blockedNotificationModules(connection));
     const delivered = await deliverPending(connection, now, await blockedNotificationModules(connection));
     const pausedUsers = [...paused].filter(([, modules]) => modules.has('calendar') || modules.has('mail')).map(([userId]) => userId);
     await connection.execute(`DELETE FROM notification_events WHERE expires_at < UTC_TIMESTAMP() - INTERVAL 30 DAY ${pausedUsers.length ? `AND user_id NOT IN (${pausedUsers.map(() => '?').join(', ')})` : ''}`, pausedUsers);

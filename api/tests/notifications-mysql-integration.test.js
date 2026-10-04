@@ -120,6 +120,47 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   await connection.execute('DELETE FROM recording_uploads WHERE id = ?', [uploadId]);
   sent.length = 2;
 
+  // No warning while Recordings is switched off or being restored; one afterwards.
+  const quietId = crypto.randomUUID();
+  const quietWarnings = () => sent.filter(item => item.tag === `recording-upload:${quietId}`).length;
+  await connection.execute("INSERT INTO recording_uploads VALUES (?, ?, 'Quiet take', 1000, 500, ?, UTC_TIMESTAMP() - INTERVAL 11 MINUTE)",
+    [quietId, userId, new Date(Date.now() + 86400000)]);
+  const { SETTING_KEY } = require('../src/services/module-settings');
+  await connection.execute('INSERT INTO user_settings VALUES (?, ?, ?)', [userId, SETTING_KEY, JSON.stringify({ recordings: { enabled: false } })]);
+  await service.processNotificationJobs();
+  const [[offEvents]] = await connection.execute("SELECT COUNT(*) AS total FROM notification_events WHERE source_id = ?", [quietId]);
+  assert.equal(offEvents.total, 0, 'a disabled Recordings module queues no warning');
+  await connection.execute('DELETE FROM user_settings WHERE user_id = ? AND setting_key = ?', [userId, SETTING_KEY]);
+  const recordingsRestore = crypto.randomUUID();
+  await connection.execute("INSERT INTO backup_restore_jobs VALUES (?, ?, '[\"recordings\"]', 'running')", [recordingsRestore, userId]);
+  await service.processNotificationJobs();
+  const [[restoreEvents]] = await connection.execute("SELECT COUNT(*) AS total FROM notification_events WHERE source_id = ?", [quietId]);
+  assert.equal(restoreEvents.total, 0, 'a Recordings restore queues no warning');
+  // A warning queued before the restore started waits for it to end.
+  await service.enqueueEvent({ userId, dedupeKey: `recording-upload:${quietId}:500`, kind: 'recording', sourceId: quietId,
+    title: 'Recording not uploaded yet', url: '/recordings', data: { bytesReceived: 500, tag: `recording-upload:${quietId}` }, expiresAt: new Date(Date.now() + 3600000) }, executor);
+  await service.processNotificationJobs();
+  assert.equal(quietWarnings(), 0, 'a Recordings restore defers delivery');
+  await connection.execute('DELETE FROM backup_restore_jobs WHERE id = ?', [recordingsRestore]);
+  await service.processNotificationJobs();
+  await service.processNotificationJobs();
+  assert.equal(quietWarnings(), 1, 'the queued warning is sent once after the restore');
+  await connection.execute('DELETE FROM recording_uploads WHERE id = ?', [quietId]);
+
+  // Uploads that cannot get a new warning do not hold back newer ones.
+  const otherUser = crypto.randomUUID();
+  await connection.execute("INSERT INTO users (id, email, role) VALUES (?, 'alex@example.com', 'user')", [otherUser]);
+  const unsubscribed = Array.from({ length: 100 }, () => crypto.randomUUID());
+  await connection.execute(`INSERT INTO recording_uploads VALUES ${unsubscribed.map(() => "(?, ?, 'Old take', 1000, 100, ?, UTC_TIMESTAMP() - INTERVAL 30 MINUTE)").join(', ')}`,
+    unsubscribed.flatMap(id => [id, otherUser, new Date(Date.now() + 86400000)]));
+  const newerId = crypto.randomUUID();
+  await connection.execute("INSERT INTO recording_uploads VALUES (?, ?, 'New take', 1000, 300, ?, UTC_TIMESTAMP() - INTERVAL 11 MINUTE)",
+    [newerId, userId, new Date(Date.now() + 86400000)]);
+  await service.processNotificationJobs();
+  assert.equal(sent.filter(item => item.tag === `recording-upload:${newerId}`).length, 1);
+  await connection.execute('DELETE FROM recording_uploads');
+  sent.length = 2;
+
   // An unused session nearing its end warns the device once.
   await connection.execute('UPDATE sessions SET expires_at = ? WHERE id = ?', [new Date(Date.now() + 30 * 3600000), sessionId]);
   await service.processNotificationJobs();

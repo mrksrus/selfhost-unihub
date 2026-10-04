@@ -222,7 +222,9 @@ large) stay on the device as *failed*, with Try again and Download.
    server notices: an upload that has not moved for 10 minutes sends the push
    notification **Recording not uploaded yet** with the percentage reached.
    It uses the same notification tag as the device's notice, so the user sees
-   one notice per recording, and it is dropped if the upload moved on.
+   one notice per recording, and it is dropped if the upload moved on. It is
+   not sent while Recordings is disabled, and waits while a restore of
+   recordings is running.
 
 The service worker sends `X-Background-Sync: 1` instead of the CSRF token,
 which it cannot read. The server accepts that header only for the upload start,
