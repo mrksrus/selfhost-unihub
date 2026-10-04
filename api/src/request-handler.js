@@ -271,6 +271,7 @@ async function dispatchRequest(req, res) {
           res.writeHead(409, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             error: `Restore in progress for ${section}. This section is temporarily read-only.`,
+            code: 'RESTORE_IN_PROGRESS',
             status: 409,
           }));
           return;

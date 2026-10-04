@@ -174,6 +174,24 @@ describe('resumable recording upload', () => {
     }
   });
 
+  it('waits for a Recordings restore at any step instead of failing the recording', async () => {
+    const { blob } = audio(10_000);
+    const restoring = { status: 409, body: { error: 'Restore in progress for recordings. This section is temporarily read-only.', code: 'RESTORE_IN_PROGRESS' } };
+    for (const step of ['start', 'chunk', 'complete']) {
+      const server = fakeServer();
+      let answered = 0;
+      server.answerWith((_method, path) => path.endsWith(`/${step}`) && (step !== 'chunk' || ++answered === 2) ? restoring : null);
+      const outcome = await runRecordingUpload({ id: 'a', blob, details }, { request: server.request, chunkBytes: 4096 });
+      expect(outcome).toMatchObject({ kind: 'retry', error: restoring.body.error, bytesUploaded: step === 'start' ? 0 : step === 'chunk' ? 4096 : 10_000 });
+      // Nothing was restarted or deleted on the way.
+      expect(server.log.filter(entry => entry.startsWith('DELETE'))).toEqual([]);
+    }
+    // A 409 without the code at start is still a lasting conflict.
+    const server = fakeServer();
+    server.answerWith((_method, path) => path.endsWith('/start') ? { status: 409, body: { error: 'Upload id is taken' } } : null);
+    expect((await runRecordingUpload({ id: 'a', blob, details }, { request: server.request })).kind).toBe('failed');
+  });
+
   it('stops between chunks when paused', async () => {
     const server = fakeServer();
     const { blob } = audio(10_000);

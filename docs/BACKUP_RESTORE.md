@@ -465,6 +465,10 @@ Reads and unaffected sections remain available. Affected writes return:
 409 Restore in progress
 ```
 
+The JSON body carries `code: "RESTORE_IN_PROGRESS"`, so clients can tell this
+temporary answer from a lasting conflict. Waiting recording uploads stay queued
+and try again after the restore.
+
 Account deletion is blocked during any active restore.
 
 During mail restore:

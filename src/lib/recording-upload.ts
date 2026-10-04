@@ -89,6 +89,11 @@ function completedRecording(response: UploadResponse) {
   return response.status === 200 && recording && typeof recording.id === 'string' ? recording : null;
 }
 
+// While Recordings is being restored the server refuses writes with this 409.
+// It ends with the restore, so the upload waits and tries again.
+class RestoreInProgress extends Error {}
+const restoreInProgress = (response: UploadResponse) => response.status === 409 && response.body?.code === 'RESTORE_IN_PROGRESS';
+
 function classify(response: UploadResponse, fallback: string, bytesUploaded: number): RecordingUploadOutcome {
   const error = errorText(response, fallback);
   if (response.status === 401) return { kind: 'signed-out', bytesUploaded };
@@ -105,6 +110,21 @@ function classify(response: UploadResponse, fallback: string, bytesUploaded: num
 // finished upload returns its recording. A lost response therefore never
 // corrupts or duplicates the recording.
 export async function runRecordingUpload(job: RecordingUploadJob, options: RunOptions): Promise<RecordingUploadOutcome> {
+  let bytesUploaded = 0;
+  const request: UploadRequest = async (method, path, body) => {
+    const response = await options.request(method, path, body);
+    if (restoreInProgress(response)) throw new RestoreInProgress(errorText(response, 'Restore in progress'));
+    return response;
+  };
+  try {
+    return await uploadSteps(job, { ...options, request, onProgress: value => { bytesUploaded = value; options.onProgress?.(value); } });
+  } catch (error) {
+    if (error instanceof RestoreInProgress) return { kind: 'retry', error: error.message, bytesUploaded };
+    throw error;
+  }
+}
+
+async function uploadSteps(job: RecordingUploadJob, options: RunOptions): Promise<RecordingUploadOutcome> {
   const { request, signal } = options;
   const path = `/recordings/uploads/${job.id}`;
   let offset = 0;
@@ -137,7 +157,7 @@ export async function runRecordingUpload(job: RecordingUploadJob, options: RunOp
       if (removed.status !== 200) return classify(removed, 'Could not restart the upload', offset);
       return start();
     }
-    // A 409 here means the id is taken or the size differs: a retry cannot fix that.
+    // Otherwise a 409 here means the id is taken or the size differs: a retry cannot fix that.
     if (response.status === 409) return { kind: 'failed', error: errorText(response, 'Upload conflict'), bytesUploaded: offset };
     return classify(response, 'Could not start the upload', offset);
   };

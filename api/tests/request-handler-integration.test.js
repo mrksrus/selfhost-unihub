@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 
-function handlerHarness(t, { userId = 'u1', route, moduleEnabled = true } = {}) {
+function handlerHarness(t, { userId = 'u1', route, moduleEnabled = true, restoring = [] } = {}) {
   const paths = ['../src/request-handler', '../src/auth', '../src/routes', '../src/services/module-settings', '../src/services/restore-locks'].map(require.resolve);
   const previous = paths.map(name => require.cache[name]);
   t.after(() => paths.forEach((name, i) => { if (previous[i]) require.cache[name] = previous[i]; else delete require.cache[name]; }));
@@ -11,7 +11,7 @@ function handlerHarness(t, { userId = 'u1', route, moduleEnabled = true } = {}) 
   delete require.cache[paths[0]];
   stub(paths[1], { verifyToken: async () => userId, validateCsrfToken: () => true, refreshSessionCookies: () => {} });
   stub(paths[3], { isModuleEnabled: async () => moduleEnabled });
-  stub(paths[4], { getActiveRestoreSections: async () => new Set() });
+  stub(paths[4], { getActiveRestoreSections: async () => new Set(restoring) });
   stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
     'POST /api/mail/writebacks/:id/accept-server-state': route,
     'POST /api/admin/users/:id/2fa/reset': route,
@@ -97,4 +97,13 @@ test('disabled module reads, attachments and writes are rejected before reaching
   assert.equal(calls, 0);
   assert.equal((await run('GET', '/api/modules')).status, 200);
   assert.equal(calls, 1);
+});
+
+test('writes during a restore of their section get a 409 that clients can tell from lasting conflicts', async (t) => {
+  let called = false;
+  const run = handlerHarness(t, { restoring: ['mail'], route: async () => { called = true; return { success: true }; } });
+  const result = await run('PUT', '/api/mail/emails/e1', '{}', { 'content-type': 'application/json' });
+  assert.equal(result.status, 409);
+  assert.equal(result.body.code, 'RESTORE_IN_PROGRESS');
+  assert.equal(called, false);
 });
