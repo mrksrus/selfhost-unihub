@@ -102,3 +102,57 @@ test('a calendar writeback refuses and pauses the account when its mail account 
     error => error.status === 409 && error.code === 'MAIL_ACCOUNT_DISCONNECTED');
   assert.equal(pauses.length, 1);
 });
+
+function calendarSyncFixture(t, { modules = () => true, mailConnected = false, active = false } = {}) {
+  const paths = ['../src/services/module-settings', '../src/services/restore-locks', '../src/services/caldav', '../src/services/calendar-sync']
+    .map(path => require.resolve(path));
+  const saved = paths.map(path => require.cache[path]);
+  const savedDb = getDb();
+  t.after(() => {
+    setDb(savedDb);
+    paths.forEach((path, index) => { if (saved[index]) require.cache[path] = saved[index]; else delete require.cache[path]; });
+  });
+  stub(paths[0], { isModuleEnabled: async userId => modules(userId), isModuleBackgroundEnabled: async userId => modules(userId) });
+  stub(paths[1], { isSectionRestoreActive: async () => false });
+  stub(paths[2], new Proxy({}, { get: (_target, name) => () => assert.fail(`CalDAV ${String(name)} must not be called`) }));
+  delete require.cache[paths[3]];
+  const calls = [];
+  const execute = async (sql, params) => {
+    calls.push(sql);
+    if (sql.includes('FROM calendar_calendars c JOIN calendar_accounts a')) return [[{ calendar_row_id: params[0], account_id: `${params[0]}-account`, read_only: 0 }]];
+    if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[{ id: params[0], user_id: 'owner', provider: 'caldav', mail_account_id: 'mail', is_active: active ? 1 : 0, encrypted_password: 'copied' }]];
+    if (sql.includes('FROM calendar_event_external_refs r JOIN calendar_remote_objects')) return [[{ object_id: 'object', href: '/a.ics', etag: '"1"', ics: 'BEGIN:VEVENT\r\nEND:VEVENT' }]];
+    if (sql.startsWith('SELECT is_active, disconnected_at')) return [[mailConnected ? { is_active: 1, disconnected_at: null, encrypted_password: 'mail' } : { is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]];
+    if (sql.startsWith('SELECT ca.id, ca.user_id')) return [[{ id: 'stale-on', user_id: 'calendar-on', provider: 'caldav', mail_account_id: 'mail' }, { id: 'stale-off', user_id: 'calendar-off', provider: 'caldav', mail_account_id: 'mail' }]];
+    if (sql.startsWith('UPDATE calendar_accounts SET is_active = FALSE')) return [{ affectedRows: 1, params }];
+    if (sql.startsWith('SELECT id, user_id FROM calendar_accounts')) return [[]];
+    if (sql.includes('GET_LOCK')) return [[{ acquired: 1 }]];
+    if (sql.includes('RELEASE_LOCK')) return [[{}]];
+    throw new Error(`Unexpected SQL ${sql}`);
+  };
+  setDb({ execute, getConnection: async () => ({ execute, release() {} }) });
+  return { sync: require('../src/services/calendar-sync'), calls };
+}
+
+test('an inactive linked calendar loses the password of a disconnected mail account when it is synced', async t => {
+  const { sync, calls } = calendarSyncFixture(t);
+  assert.deepEqual(await sync.syncCalendarAccount('linked', { userId: 'owner' }), { skipped: true, reason: 'mail-disconnected' });
+  assert.ok(calls.some(sql => sql.startsWith('UPDATE calendar_accounts SET is_active = FALSE')));
+});
+
+test('each calendar pass clears copied passwords of disconnected mail only for users with Calendar available', async t => {
+  const executed = [];
+  const { sync } = calendarSyncFixture(t, { modules: userId => userId === 'calendar-on' });
+  const realDb = getDb();
+  setDb({ ...realDb, execute: async (sql, params) => { executed.push([sql, params]); return realDb.execute(sql, params); } });
+  await sync.runCalendarSyncPass();
+  const pauses = executed.filter(([sql]) => sql.startsWith('UPDATE calendar_accounts SET is_active = FALSE')).map(([, params]) => params[1]);
+  assert.deepEqual(pauses, ['stale-on']);
+});
+
+test('moving an event out of a calendar whose mail is disconnected is refused before the target is touched', async t => {
+  const { sync, calls } = calendarSyncFixture(t, { active: true });
+  await assert.rejects(sync.pushEventMove({ userId: 'owner', event: { id: 'event', calendar_id: 'source', title: 'Meeting' }, targetCalendarId: 'target', changes: {} }),
+    error => error.code === 'MAIL_ACCOUNT_DISCONNECTED');
+  assert.ok(calls.every(sql => !/calendar_event_external_refs WHERE event_id|INSERT INTO/.test(sql)), 'no link removed or object created');
+});

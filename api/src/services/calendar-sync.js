@@ -479,10 +479,30 @@ async function pauseIfMailDisconnected(account) {
   const [[mail]] = await db.execute('SELECT is_active, disconnected_at, encrypted_password FROM mail_accounts WHERE id = ? AND user_id = ?',
     [account.mail_account_id, account.user_id]);
   if (mail && Number(mail.is_active) && !mail.disconnected_at && mail.encrypted_password) return false;
-  await db.execute("UPDATE calendar_accounts SET is_active = FALSE, encrypted_password = NULL, sync_status = 'paused', sync_error = ? WHERE id = ? AND user_id = ?",
-    [MAIL_DISCONNECTED_MESSAGE, account.id, account.user_id]);
-  publishCalendarChanged(account.user_id, account.id, 'status');
+  const [paused] = await db.execute(`UPDATE calendar_accounts SET is_active = FALSE, encrypted_password = NULL, sync_status = 'paused', sync_error = ?
+    WHERE id = ? AND user_id = ? AND (is_active = TRUE OR encrypted_password IS NOT NULL)`, [MAIL_DISCONNECTED_MESSAGE, account.id, account.user_id]);
+  if (paused.affectedRows) publishCalendarChanged(account.user_id, account.id, 'status');
   return true;
+}
+
+async function assertMailLoginUsable(account) {
+  if (await pauseIfMailDisconnected(account)) throw syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
+}
+
+// A disconnect while Calendar was off or being restored left the copied mail
+// password on the linked account, also on one that is already inactive (which
+// neither sync nor writebacks reach). Each pass removes it once Calendar is
+// available again.
+async function pauseCalendarsOfDisconnectedMail() {
+  const [rows] = await db.execute(`SELECT ca.id, ca.user_id, ca.provider, ca.mail_account_id FROM calendar_accounts ca
+    LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+    WHERE ca.provider = 'caldav' AND ca.mail_account_id IS NOT NULL AND (ca.is_active = TRUE OR ca.encrypted_password IS NOT NULL)
+      AND (m.id IS NULL OR m.is_active = FALSE OR m.disconnected_at IS NOT NULL OR m.encrypted_password IS NULL)
+    LIMIT ${ACCOUNTS_PER_PASS}`);
+  for (const row of rows) {
+    if (!await isModuleEnabled(row.user_id, 'calendar') || await isSectionRestoreActive(row.user_id, 'calendar')) continue;
+    await pauseIfMailDisconnected(row);
+  }
 }
 
 async function runAccountSync(accountId, { userId, reason, full }) {
@@ -497,14 +517,16 @@ async function runAccountSync(accountId, { userId, reason, full }) {
     ? await isModuleBackgroundEnabled(account.user_id, 'calendar')
     : await isModuleEnabled(account.user_id, 'calendar');
   if (!allowed || await isSectionRestoreActive(account.user_id, 'calendar')) return { skipped: true, reason: 'paused' };
-  if (!account.is_active) return { skipped: true, reason: 'inactive' };
+  // An inactive account may still hold a disconnected mail account's password.
+  if (!account.is_active) return { skipped: true, reason: await pauseIfMailDisconnected(account) ? 'mail-disconnected' : 'inactive' };
 
   return withAccountLock(accountId, async () => {
     // Reloaded under the lock: a disconnect or credential change while the
     // lock was awaited must not leave this run with the old login.
     const account = await loadAccount(accountId, userId);
-    if (!account?.is_active) return { skipped: true, reason: 'inactive' };
+    if (!account) return { skipped: true, reason: 'inactive' };
     if (await pauseIfMailDisconnected(account)) return { skipped: true, reason: 'mail-disconnected' };
+    if (!account.is_active) return { skipped: true, reason: 'inactive' };
     await db.execute("UPDATE calendar_accounts SET sync_status = 'syncing' WHERE id = ?", [account.id]);
     publishCalendarChanged(account.user_id, account.id, 'status');
     const now = Date.now();
@@ -568,6 +590,7 @@ async function runCalendarSyncPass() {
   passRunning = true;
   let synced = 0;
   try {
+    await pauseCalendarsOfDisconnectedMail().catch(error => console.warn('[CALENDAR] Could not pause calendars of disconnected mail:', error.message));
     const [rows] = await db.execute(
       `SELECT id, user_id FROM calendar_accounts
        WHERE provider IN ('caldav', 'ics') AND is_active = TRUE AND (next_sync_at IS NULL OR next_sync_at <= UTC_TIMESTAMP())
@@ -613,7 +636,7 @@ function assertWritable({ account, calendar }) {
 async function writeContext(ctx) {
   // Every writeback builds its login here; a disconnected mail account's
   // copied password is never used for a provider change.
-  if (await pauseIfMailDisconnected(ctx.account)) throw syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED');
+  await assertMailLoginUsable(ctx.account);
   return {
     ...ctx,
     login: accountLogin(ctx.account),
@@ -779,6 +802,9 @@ async function pushEventMove({ userId, event, targetCalendarId, changes }) {
   if (source.recurring) throw syncError('Recurring events cannot be moved to another calendar.', 400, 'CALENDAR_RECURRING_MOVE');
   if (source.remote && source.link) assertWritable(source.ctx);
   else if (source.remote) await assertNotPendingLink(source.ctx, userId, event.id);
+  // The source login is needed to remove the old object; check it before the
+  // target is created, so a refusal cannot leave a copy on both sides.
+  if (source.remote && source.link) await assertMailLoginUsable(source.ctx.account);
   if (target) {
     // Create the copy before unlinking the old one so a failure leaves it as it was.
     const moved = { ...event, ...changes, calendar_id: targetCalendarId };

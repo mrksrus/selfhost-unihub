@@ -115,7 +115,14 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     await lifecycle.disconnectAccount(paused.user, paused.mail);
     await calendarAccounts.pauseLinkedCalendar(paused.user, paused.mail);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = TRUE', [paused.calendarAccount]), 1);
+    await connection.execute("UPDATE calendar_accounts SET encrypted_password = 'copied-mail-password' WHERE id = ?", [paused.calendarAccount]);
+    await calendarSync.runCalendarSyncPass();
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND encrypted_password IS NOT NULL', [paused.calendarAccount]), 1,
+      'The pass leaves calendar data alone while Calendar is off');
     await setUserModules(paused.user, { modules: { calendar: { enabled: true } } });
+    await calendarSync.runCalendarSyncPass();
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND encrypted_password IS NULL', [paused.calendarAccount]), 1,
+      'The next pass removes the copied password');
     assert.deepEqual(await calendarSync.syncCalendarAccount(paused.calendarAccount, { userId: paused.user }), { skipped: true, reason: 'mail-disconnected' });
     assert.equal(await count(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE
       AND encrypted_password IS NULL AND sync_status = 'paused'`, [paused.calendarAccount]), 1);

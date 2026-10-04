@@ -61,9 +61,11 @@ removes the copied password; purging the mail account deletes it with its
 calendars and events in the same transaction. These changes to calendar data
 happen only while the Calendar module is on and no calendar restore runs (a
 purge is refused instead). When a disconnect skipped the pause, the next
-calendar sync or event change pauses the account, and removes the copied
+calendar sync, event change or move pauses the account, and removes the copied
 password, before it would log in; the change is refused with "The mail account
-is disconnected".
+is disconnected", and a move is refused before the target calendar is changed.
+Each calendar pass also removes such a copied password from linked accounts
+that are already inactive, once Calendar is on and not being restored.
 
 New mail accounts try the calendar by default (**Sync the calendar too**). The
 mail account is created even when no calendar is found; the result says why.
