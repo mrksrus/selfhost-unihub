@@ -158,7 +158,7 @@ test('moving an event out of a calendar whose mail is disconnected is refused be
   assert.ok(calls.every(sql => !/calendar_event_external_refs WHERE event_id|INSERT INTO/.test(sql)), 'no link removed or object created');
 });
 
-test('a mail disconnect stops a linked calendar sync that is already talking to the server', async t => {
+function stoppableSyncFixture(t, listCalendars) {
   const paths = ['../src/services/module-settings', '../src/services/restore-locks', '../src/services/caldav', '../src/services/calendar-sync', '../src/security/encryption']
     .map(path => require.resolve(path));
   const saved = paths.map(path => require.cache[path]);
@@ -169,12 +169,7 @@ test('a mail disconnect stops a linked calendar sync that is already talking to 
   });
   stub(paths[0], { isModuleEnabled: async () => true, isModuleBackgroundEnabled: async () => true });
   stub(paths[1], { isSectionRestoreActive: async () => false });
-  let reached;
-  const listing = new Promise(resolve => { reached = resolve; });
-  stub(paths[2], { accountCredentialScope: () => null, listCalendars: ({ signal }) => {
-    reached(signal);
-    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
-  } });
+  stub(paths[2], { accountCredentialScope: () => null, listCalendars });
   stub(paths[4], { decrypt: value => value, encrypt: value => value });
   delete require.cache[paths[3]];
   const statusWrites = [];
@@ -189,8 +184,16 @@ test('a mail disconnect stops a linked calendar sync that is already talking to 
     return [[]];
   };
   setDb({ execute, getConnection: async () => ({ execute, release() {} }) });
-  const sync = require('../src/services/calendar-sync');
+  return { sync: require('../src/services/calendar-sync'), statusWrites };
+}
 
+test('a mail disconnect stops a linked calendar sync that is already talking to the server', async t => {
+  let reached;
+  const listing = new Promise(resolve => { reached = resolve; });
+  const { sync, statusWrites } = stoppableSyncFixture(t, ({ signal }) => {
+    reached(signal);
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+  });
   const run = sync.syncCalendarAccount('linked', { userId: 'owner' });
   const signal = await listing;
   assert.equal(signal.aborted, false);
@@ -198,4 +201,14 @@ test('a mail disconnect stops a linked calendar sync that is already talking to 
   assert.equal(signal.aborted, true);
   await assert.rejects(run, error => error.code === 'MAIL_ACCOUNT_DISCONNECTED');
   assert.ok(statusWrites.every(params => !String(params[0]).includes('aborted')), 'A stopped run does not report a sync error');
+});
+
+test('a mail disconnect after the last server response keeps the sync from reporting success', async t => {
+  let sync, statusWrites;
+  ({ sync, statusWrites } = stoppableSyncFixture(t, async () => {
+    await sync.stopLinkedCalendarWork('owner', 'mail');
+    return [];
+  }));
+  await assert.rejects(sync.syncCalendarAccount('linked', { userId: 'owner' }), error => error.code === 'MAIL_ACCOUNT_DISCONNECTED');
+  assert.ok(statusWrites.every(params => !['ok', 'error'].includes(params[0])), 'No success or error status over the pause');
 });

@@ -581,9 +581,11 @@ async function runAccountSync(accountId, { userId, reason, full }) {
       // Everything readable is up to date; unreadable entries are reported
       // and downloaded again by the next sync.
       const unreadable = ctx.stats.unreadable;
+      if (signal.aborted) throw signal.reason;
+      // Conditional: a pause after the last server response keeps its status.
       await db.execute(
         `UPDATE calendar_accounts SET sync_status = ?, sync_error = ?, last_synced_at = UTC_TIMESTAMP(),
-           next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND WHERE id = ?`,
+           next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND WHERE id = ? AND is_active = TRUE`,
         [unreadable ? 'error' : 'ok', unreadable ? unreadableMessage(unreadable) : null, Math.round(SYNC_INTERVAL_MS / 1000), account.id]
       );
     } catch (error) {
@@ -591,7 +593,8 @@ async function runAccountSync(accountId, { userId, reason, full }) {
       if (signal.aborted) throw signal.reason;
       const retryMs = error?.status === 401 || error?.status === 403 ? AUTH_ERROR_RETRY_MS : ERROR_RETRY_MS;
       await db.execute(
-        `UPDATE calendar_accounts SET sync_status = 'error', sync_error = ?, next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND WHERE id = ?`,
+        `UPDATE calendar_accounts SET sync_status = 'error', sync_error = ?, next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND
+         WHERE id = ? AND is_active = TRUE`,
         [userFacingError(error), Math.round(retryMs / 1000), account.id]
       ).catch(() => {});
       publishCalendarChanged(account.user_id, account.id, 'sync');
@@ -871,16 +874,19 @@ async function pushEventMove({ userId, event, targetCalendarId, changes }) {
 }
 
 async function removeSourceObject(userId, source, link) {
-  const ctx = await writeContext(source.ctx);
+  const accountId = source.ctx.account.id;
   try {
+    // Inside the try: a mail disconnect during the move refuses the source
+    // login, and the move still completes with the target copy.
+    const ctx = await writeContext(source.ctx);
     await caldav.deleteCalendarObject({ url: objectUrl(ctx.account, link.object), etag: link.object.etag, ...ctx.login });
-    await db.execute('DELETE FROM calendar_remote_objects WHERE id = ? AND account_id = ?', [link.object.id, ctx.account.id]);
+    await db.execute('DELETE FROM calendar_remote_objects WHERE id = ? AND account_id = ?', [link.object.id, accountId]);
   } catch (error) {
     // The copy in the target calendar exists; the next sync shows the old one again.
     console.warn('[CALENDAR] Could not remove moved event from its old calendar:', error.message);
-    syncCalendarAccountInBackground(ctx.account.id, { userId, reason: 'conflict' });
+    syncCalendarAccountInBackground(accountId, { userId, reason: 'conflict' });
   }
-  publishCalendarChanged(userId, ctx.account.id, 'local');
+  publishCalendarChanged(userId, accountId, 'local');
 }
 
 // Route response for a failed sync or writeback. Raw server statuses must not
