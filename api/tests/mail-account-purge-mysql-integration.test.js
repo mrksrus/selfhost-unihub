@@ -124,8 +124,23 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND encrypted_password IS NULL', [paused.calendarAccount]), 1,
       'The next pass removes the copied password');
     assert.deepEqual(await calendarSync.syncCalendarAccount(paused.calendarAccount, { userId: paused.user }), { skipped: true, reason: 'mail-disconnected' });
+
     assert.equal(await count(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE
       AND encrypted_password IS NULL AND sync_status = 'paused'`, [paused.calendarAccount]), 1);
+
+    // A pause decided from a stale read does nothing once the mail account
+    // reconnected and passed its login on: the write rechecks the mail row.
+    const [[stale]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    await connection.execute("UPDATE mail_accounts SET is_active = TRUE, disconnected_at = NULL, encrypted_password = 'reconnected' WHERE id = ?", [paused.mail]);
+    await connection.execute("UPDATE calendar_accounts SET is_active = TRUE, encrypted_password = 'reconnected' WHERE id = ?", [paused.calendarAccount]);
+    const [[mailBefore]] = await connection.execute('SELECT is_active FROM mail_accounts WHERE id = ?', [paused.mail]);
+    assert.equal(Number(mailBefore.is_active), 1);
+    const realExecute = pool.execute.bind(pool);
+    // The function's own mail read sees the old state; only its write is real.
+    pool.execute = async (sql, params) => sql.startsWith('SELECT is_active, disconnected_at')
+      ? [[{ is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]] : realExecute(sql, params);
+    try { await calendarSync.pauseIfMailDisconnected(stale); } finally { pool.execute = realExecute; }
+    assert.equal(await count("SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = TRUE AND encrypted_password = 'reconnected'", [paused.calendarAccount]), 1);
     assert.equal(await count('SELECT COUNT(*) AS n FROM emails WHERE user_id = ?', [other.user]), 2);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [other.user]), 2);
   });

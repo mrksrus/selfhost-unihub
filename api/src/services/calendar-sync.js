@@ -470,6 +470,12 @@ async function withAccountLock(accountId, fn) {
 }
 
 const MAIL_DISCONNECTED_MESSAGE = 'The mail account is disconnected. Reconnect it to resume calendar sync.';
+// calendar_accounts ca LEFT JOIN mail_accounts m: a mail-linked CalDAV account
+// still active or holding a password while its mail account is gone,
+// inactive or disconnected.
+const LINKED_TO_DISCONNECTED_MAIL = `ca.provider = 'caldav' AND ca.mail_account_id IS NOT NULL
+  AND (ca.is_active = TRUE OR ca.encrypted_password IS NOT NULL)
+  AND (m.id IS NULL OR m.is_active = FALSE OR m.disconnected_at IS NOT NULL OR m.encrypted_password IS NULL)`;
 
 // A mail-linked CalDAV account uses the mail login. Disconnecting mail pauses
 // it right away only while Calendar is on and not being restored; otherwise
@@ -479,8 +485,12 @@ async function pauseIfMailDisconnected(account) {
   const [[mail]] = await db.execute('SELECT is_active, disconnected_at, encrypted_password FROM mail_accounts WHERE id = ? AND user_id = ?',
     [account.mail_account_id, account.user_id]);
   if (mail && Number(mail.is_active) && !mail.disconnected_at && mail.encrypted_password) return false;
-  const [paused] = await db.execute(`UPDATE calendar_accounts SET is_active = FALSE, encrypted_password = NULL, sync_status = 'paused', sync_error = ?
-    WHERE id = ? AND user_id = ? AND (is_active = TRUE OR encrypted_password IS NOT NULL)`, [MAIL_DISCONNECTED_MESSAGE, account.id, account.user_id]);
+  // The mail state is checked again in the write itself: a reconnect that
+  // committed meanwhile (and passed its login on) is not undone.
+  const [paused] = await db.execute(`UPDATE calendar_accounts ca
+    LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+    SET ca.is_active = FALSE, ca.encrypted_password = NULL, ca.sync_status = 'paused', ca.sync_error = ?
+    WHERE ca.id = ? AND ca.user_id = ? AND ${LINKED_TO_DISCONNECTED_MAIL}`, [MAIL_DISCONNECTED_MESSAGE, account.id, account.user_id]);
   if (paused.affectedRows) publishCalendarChanged(account.user_id, account.id, 'status');
   return true;
 }
@@ -494,14 +504,15 @@ async function assertMailLoginUsable(account) {
 // neither sync nor writebacks reach). Each pass removes it once Calendar is
 // available again.
 async function pauseCalendarsOfDisconnectedMail() {
-  const [rows] = await db.execute(`SELECT ca.id, ca.user_id, ca.provider, ca.mail_account_id FROM calendar_accounts ca
-    LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
-    WHERE ca.provider = 'caldav' AND ca.mail_account_id IS NOT NULL AND (ca.is_active = TRUE OR ca.encrypted_password IS NOT NULL)
-      AND (m.id IS NULL OR m.is_active = FALSE OR m.disconnected_at IS NOT NULL OR m.encrypted_password IS NULL)
-    LIMIT ${ACCOUNTS_PER_PASS}`);
-  for (const row of rows) {
-    if (!await isModuleEnabled(row.user_id, 'calendar') || await isSectionRestoreActive(row.user_id, 'calendar')) continue;
-    await pauseIfMailDisconnected(row);
+  // Users first, so users who keep Calendar off cannot crowd out the others.
+  const [users] = await db.execute(`SELECT DISTINCT ca.user_id FROM calendar_accounts ca
+    LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ${LINKED_TO_DISCONNECTED_MAIL}`);
+  for (const { user_id: userId } of users) {
+    if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) continue;
+    const [rows] = await db.execute(`SELECT ca.id, ca.user_id, ca.provider, ca.mail_account_id FROM calendar_accounts ca
+      LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+      WHERE ca.user_id = ? AND ${LINKED_TO_DISCONNECTED_MAIL}`, [userId]);
+    for (const row of rows) await pauseIfMailDisconnected(row);
   }
 }
 
@@ -859,6 +870,7 @@ function calendarErrorResponse(error, fallback) {
 
 module.exports = {
   MAIL_DISCONNECTED_MESSAGE,
+  pauseIfMailDisconnected,
   SYNC_INTERVAL_MS,
   calendarErrorResponse,
   REMOTE_PROVIDERS,

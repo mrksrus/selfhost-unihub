@@ -66,7 +66,7 @@ test('calendar sync rechecks the linked mail account under its lock and pauses i
       order.push('mail');
       return [[{ is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]];
     }
-    if (sql.startsWith('UPDATE calendar_accounts SET is_active = FALSE')) { order.push(['pause', params]); return [{ affectedRows: 1 }]; }
+    if (sql.includes('SET ca.is_active = FALSE')) { order.push(['pause', params]); return [{ affectedRows: 1 }]; }
     throw new Error(`Unexpected SQL ${sql}`);
   };
   setDb({ execute, getConnection: async () => ({ execute, release() {} }) });
@@ -94,7 +94,7 @@ test('a calendar writeback refuses and pauses the account when its mail account 
     if (sql.includes('FROM calendar_calendars c JOIN calendar_accounts a')) return [[{ calendar_row_id: 'calendar', account_id: 'calendar-account', read_only: 0 }]];
     if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[{ id: 'calendar-account', user_id: 'owner', provider: 'caldav', mail_account_id: 'mail', is_active: 1, encrypted_password: 'copied' }]];
     if (sql.startsWith('SELECT is_active, disconnected_at')) return [[{ is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]];
-    if (sql.startsWith('UPDATE calendar_accounts SET is_active = FALSE')) { pauses.push(params); return [{ affectedRows: 1 }]; }
+    if (sql.includes('SET ca.is_active = FALSE')) { pauses.push(params); return [{ affectedRows: 1 }]; }
     throw new Error(`Unexpected SQL ${sql}`);
   } });
   const { pushCreatedEvent } = require('../src/services/calendar-sync');
@@ -123,8 +123,9 @@ function calendarSyncFixture(t, { modules = () => true, mailConnected = false, a
     if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[{ id: params[0], user_id: 'owner', provider: 'caldav', mail_account_id: 'mail', is_active: active ? 1 : 0, encrypted_password: 'copied' }]];
     if (sql.includes('FROM calendar_event_external_refs r JOIN calendar_remote_objects')) return [[{ object_id: 'object', href: '/a.ics', etag: '"1"', ics: 'BEGIN:VEVENT\r\nEND:VEVENT' }]];
     if (sql.startsWith('SELECT is_active, disconnected_at')) return [[mailConnected ? { is_active: 1, disconnected_at: null, encrypted_password: 'mail' } : { is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]];
-    if (sql.startsWith('SELECT ca.id, ca.user_id')) return [[{ id: 'stale-on', user_id: 'calendar-on', provider: 'caldav', mail_account_id: 'mail' }, { id: 'stale-off', user_id: 'calendar-off', provider: 'caldav', mail_account_id: 'mail' }]];
-    if (sql.startsWith('UPDATE calendar_accounts SET is_active = FALSE')) return [{ affectedRows: 1, params }];
+    if (sql.startsWith('SELECT DISTINCT ca.user_id')) return [[{ user_id: 'calendar-off' }, { user_id: 'calendar-on' }]];
+    if (sql.startsWith('SELECT ca.id, ca.user_id')) return [[{ id: `stale-${params[0] === 'calendar-on' ? 'on' : 'off'}`, user_id: params[0], provider: 'caldav', mail_account_id: 'mail' }]];
+    if (sql.includes('SET ca.is_active = FALSE')) return [{ affectedRows: 1, params }];
     if (sql.startsWith('SELECT id, user_id FROM calendar_accounts')) return [[]];
     if (sql.includes('GET_LOCK')) return [[{ acquired: 1 }]];
     if (sql.includes('RELEASE_LOCK')) return [[{}]];
@@ -137,7 +138,7 @@ function calendarSyncFixture(t, { modules = () => true, mailConnected = false, a
 test('an inactive linked calendar loses the password of a disconnected mail account when it is synced', async t => {
   const { sync, calls } = calendarSyncFixture(t);
   assert.deepEqual(await sync.syncCalendarAccount('linked', { userId: 'owner' }), { skipped: true, reason: 'mail-disconnected' });
-  assert.ok(calls.some(sql => sql.startsWith('UPDATE calendar_accounts SET is_active = FALSE')));
+  assert.ok(calls.some(sql => sql.includes('SET ca.is_active = FALSE')));
 });
 
 test('each calendar pass clears copied passwords of disconnected mail only for users with Calendar available', async t => {
@@ -146,7 +147,7 @@ test('each calendar pass clears copied passwords of disconnected mail only for u
   const realDb = getDb();
   setDb({ ...realDb, execute: async (sql, params) => { executed.push([sql, params]); return realDb.execute(sql, params); } });
   await sync.runCalendarSyncPass();
-  const pauses = executed.filter(([sql]) => sql.startsWith('UPDATE calendar_accounts SET is_active = FALSE')).map(([, params]) => params[1]);
+  const pauses = executed.filter(([sql]) => sql.includes('SET ca.is_active = FALSE')).map(([, params]) => params[1]);
   assert.deepEqual(pauses, ['stale-on']);
 });
 
