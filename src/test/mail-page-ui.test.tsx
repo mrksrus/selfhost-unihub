@@ -147,6 +147,15 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     expect(folderNav).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
   });
 
+  it('opens with the account and folder list collapsed when it was collapsed before', async () => {
+    localStorage.setItem('mail_sidebar_collapsed', 'true');
+    renderMailPage();
+    const expand = await screen.findByRole('button', { name: 'Expand account and folder navigation' });
+    fireEvent.click(expand);
+    expect(await screen.findByRole('button', { name: 'Collapse account and folder navigation' })).toBeInTheDocument();
+    expect(localStorage.getItem('mail_sidebar_collapsed')).toBe('false');
+  });
+
   it('shows a save/discard prompt when closing a dirty compose', async () => {
     renderMailPage();
 
