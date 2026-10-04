@@ -157,3 +157,45 @@ test('moving an event out of a calendar whose mail is disconnected is refused be
     error => error.code === 'MAIL_ACCOUNT_DISCONNECTED');
   assert.ok(calls.every(sql => !/calendar_event_external_refs WHERE event_id|INSERT INTO/.test(sql)), 'no link removed or object created');
 });
+
+test('a mail disconnect stops a linked calendar sync that is already talking to the server', async t => {
+  const paths = ['../src/services/module-settings', '../src/services/restore-locks', '../src/services/caldav', '../src/services/calendar-sync', '../src/security/encryption']
+    .map(path => require.resolve(path));
+  const saved = paths.map(path => require.cache[path]);
+  const savedDb = getDb();
+  t.after(() => {
+    setDb(savedDb);
+    paths.forEach((path, index) => { if (saved[index]) require.cache[path] = saved[index]; else delete require.cache[path]; });
+  });
+  stub(paths[0], { isModuleEnabled: async () => true, isModuleBackgroundEnabled: async () => true });
+  stub(paths[1], { isSectionRestoreActive: async () => false });
+  let reached;
+  const listing = new Promise(resolve => { reached = resolve; });
+  stub(paths[2], { accountCredentialScope: () => null, listCalendars: ({ signal }) => {
+    reached(signal);
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+  } });
+  stub(paths[4], { decrypt: value => value, encrypt: value => value });
+  delete require.cache[paths[3]];
+  const statusWrites = [];
+  const execute = async (sql, params) => {
+    if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[{ id: 'linked', user_id: 'owner', provider: 'caldav', mail_account_id: 'mail', is_active: 1, encrypted_password: 'copied', base_url: 'https://dav.example.test/', last_synced_at: '2026-10-01 00:00:00', sync_status: 'ok' }]];
+    if (sql.startsWith('SELECT is_active, disconnected_at')) return [[{ is_active: 1, disconnected_at: null, encrypted_password: 'mail' }]];
+    if (sql.startsWith('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?')) return [[{ id: 'linked' }]];
+    if (sql.includes('GET_LOCK')) return [[{ acquired: 1 }]];
+    if (sql.includes('RELEASE_LOCK')) return [[{}]];
+    if (sql.startsWith('UPDATE calendar_accounts SET sync_status')) { statusWrites.push(params); return [{ affectedRows: 1 }]; }
+    if (sql.startsWith('SELECT timezone') || sql.includes('FROM users')) return [[{ timezone: 'UTC' }]];
+    return [[]];
+  };
+  setDb({ execute, getConnection: async () => ({ execute, release() {} }) });
+  const sync = require('../src/services/calendar-sync');
+
+  const run = sync.syncCalendarAccount('linked', { userId: 'owner' });
+  const signal = await listing;
+  assert.equal(signal.aborted, false);
+  await sync.stopLinkedCalendarWork('owner', 'mail');
+  assert.equal(signal.aborted, true);
+  await assert.rejects(run, error => error.code === 'MAIL_ACCOUNT_DISCONNECTED');
+  assert.ok(statusWrites.every(params => !String(params[0]).includes('aborted')), 'A stopped run does not report a sync error');
+});

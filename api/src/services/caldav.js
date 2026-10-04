@@ -150,8 +150,8 @@ function scopeOrigin(scope) {
   return typeof scope === 'object' && scope ? scope.origin : scope;
 }
 
-function auth({ username, password, credentialScope }) {
-  return { username, password, credentialOrigin: credentialScope };
+function auth({ username, password, credentialScope, signal }) {
+  return { username, password, credentialOrigin: credentialScope, signal };
 }
 
 const XML_HEADER = '<?xml version="1.0" encoding="utf-8"?>';
@@ -213,9 +213,9 @@ async function discoverCalDavCalendars({ discoveryUrl, username, password, crede
   return { baseUrl: calendarHomeUrl, principalHref: principalHref || null, calendars };
 }
 
-async function listCalendars({ homeUrl, username, password, credentialScope }) {
+async function listCalendars({ homeUrl, username, password, credentialScope, signal }) {
   const home = await davRequest(homeUrl, {
-    ...auth({ username, password, credentialScope }), depth: '1',
+    ...auth({ username, password, credentialScope, signal }), depth: '1',
     body: `${XML_HEADER}\n<d:propfind ${NAMESPACES}><d:prop>${CALENDAR_PROPS}</d:prop></d:propfind>`,
   });
   return splitDavResponses(home.text)
@@ -336,8 +336,8 @@ function davTime(ms) {
 // All event objects that touch the window, with their ETags. Servers expand
 // recurrences for time-range matching, so a series that started years ago
 // but still recurs is included.
-async function listCalendarObjects({ calendarUrl, username, password, credentialScope, windowStartMs, windowEndMs }) {
-  const login = auth({ username, password, credentialScope });
+async function listCalendarObjects({ calendarUrl, username, password, credentialScope, signal, windowStartMs, windowEndMs }) {
+  const login = auth({ username, password, credentialScope, signal });
   const parse = (text, base, skipSelf) => splitDavResponses(text).flatMap(response => {
     const href = getFirstTag(response, 'href');
     if (!href || !responseStatusOk(response)) return [];
@@ -366,8 +366,8 @@ async function listCalendarObjects({ calendarUrl, username, password, credential
   }
 }
 
-async function fetchCalendarObjects({ calendarUrl, objects, username, password, credentialScope }) {
-  const login = auth({ username, password, credentialScope });
+async function fetchCalendarObjects({ calendarUrl, objects, username, password, credentialScope, signal }) {
+  const login = auth({ username, password, credentialScope, signal });
   const results = [];
   for (let index = 0; index < objects.length; index += MULTIGET_BATCH) {
     const batch = objects.slice(index, index + MULTIGET_BATCH);
@@ -412,8 +412,8 @@ function conflictError() {
 
 // Create (etag null) or replace (etag known) one calendar object. A changed
 // ETag means someone else edited it: nothing is overwritten.
-async function putCalendarObject({ url, ics, etag, username, password, credentialScope }) {
-  const login = auth({ username, password, credentialScope });
+async function putCalendarObject({ url, ics, etag, username, password, credentialScope, signal }) {
+  const login = auth({ username, password, credentialScope, signal });
   const result = await davRequest(url, {
     ...login, method: 'PUT', body: ics, contentType: 'text/calendar; charset=utf-8', accept: '*/*',
     headers: etag ? { 'If-Match': etag } : { 'If-None-Match': '*' }, acceptStatuses: [412],
@@ -422,9 +422,9 @@ async function putCalendarObject({ url, ics, etag, username, password, credentia
   return { etag: result.headers.etag || await readObjectEtag(url, login).catch(() => null) };
 }
 
-async function deleteCalendarObject({ url, etag, username, password, credentialScope }) {
+async function deleteCalendarObject({ url, etag, username, password, credentialScope, signal }) {
   const result = await davRequest(url, {
-    ...auth({ username, password, credentialScope }), method: 'DELETE', accept: '*/*',
+    ...auth({ username, password, credentialScope, signal }), method: 'DELETE', accept: '*/*',
     headers: etag ? { 'If-Match': etag } : {}, acceptStatuses: [404, 410, 412],
   });
   if (result.status === 412) throw conflictError();

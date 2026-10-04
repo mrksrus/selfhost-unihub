@@ -57,7 +57,8 @@ test('disconnect clears credentials and deletion policy but retains every mail/o
   assert.deepEqual(cancellations, ['account']);
   assert.ok(calls.every(call => !/DELETE FROM/.test(call.sql)));
   assert.match(calls.find(call => call.sql.startsWith('UPDATE mail_accounts')).sql, /encrypted_password = NULL/);
-  assert.equal(calls.at(-1).sql, 'COMMIT');
+  const commit = calls.findIndex(call => call.sql === 'COMMIT');
+  assert.ok(commit >= 0 && calls.every((call, index) => index < commit || !/^(UPDATE|DELETE|INSERT)/.test(call.sql)), 'Every write is inside the commit');
 });
 
 test('another owner cannot inspect or disconnect an account', async t => {
@@ -163,4 +164,12 @@ test('purge removes the linked calendar in the same transaction as the account',
   assert.ok(order('DELETE FROM calendar_events') > order('BEGIN'));
   assert.ok(order('DELETE FROM calendar_accounts') < order('DELETE FROM mail_accounts'));
   assert.ok(order('DELETE FROM mail_accounts') < order('COMMIT'));
+});
+
+test('disconnect stops linked calendar work only after the disconnect is committed', async t => {
+  const { api, calls } = fixture(t, { active: true, calendars: 1 });
+  await api.disconnectAccount('owner', 'account');
+  const commit = calls.findIndex(call => call.sql === 'COMMIT');
+  const stop = calls.findIndex(call => call.sql.startsWith('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?'));
+  assert.ok(commit >= 0 && stop > commit);
 });

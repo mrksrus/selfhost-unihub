@@ -126,3 +126,27 @@ test('same-origin principal, home and calendar discovery continues to work', asy
   assert.equal(result.calendars[0].displayName, 'Personal');
   assert.deepEqual(calls.map(call => call.path), ['/discovery', '/principal', '/home/']);
 });
+
+test('a stopped account signal aborts a CalDAV request before it is sent and while it waits', async t => {
+  const stopped = new AbortController();
+  stopped.abort();
+  const calls = installDavFixture(t, []);
+  await assert.rejects(davRequest(`${origin}/dav/`, { ...credentials, signal: stopped.signal }));
+  assert.equal(calls.length, 0, 'Nothing is sent once the account work was stopped');
+
+  // Like node:https, the request is torn down when its signal aborts.
+  let destroyed = false;
+  https.request.mock.mockImplementation(options => {
+    const request = new EventEmitter();
+    request.destroy = error => { destroyed = true; queueMicrotask(() => request.emit('error', error || new Error('destroyed'))); };
+    request.end = () => {};
+    options.signal.addEventListener('abort', () => request.destroy(new Error('The operation was aborted')), { once: true });
+    return request;
+  });
+  const running = new AbortController();
+  const pending = davRequest(`${origin}/dav/`, { ...credentials, signal: running.signal });
+  await new Promise(resolve => setImmediate(resolve));
+  running.abort();
+  await assert.rejects(pending);
+  assert.equal(destroyed, true, 'The open request is torn down');
+});

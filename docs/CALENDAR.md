@@ -56,8 +56,9 @@ ToDo state; this also relinks one restored from a 0.17.0 backup, which kept
 neither the link nor the mark.
 
 A linked CalDAV account uses the mail login. A new mail password or login, or
-a reconnect, is passed on to it; disconnecting the mail account pauses it and
-removes the copied password; purging the mail account deletes it with its
+a reconnect, is passed on to it; disconnecting the mail account first stops
+any sync or event change of it that is running (open requests are aborted),
+then pauses it and removes the copied password; purging the mail account deletes it with its
 calendars and events in the same transaction. These changes to calendar data
 happen only while the Calendar module is on and no calendar restore runs (a
 purge is refused instead). When a disconnect skipped the pause, the next

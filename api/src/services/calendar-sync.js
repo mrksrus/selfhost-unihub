@@ -56,12 +56,34 @@ function hrefHash(href) {
   return crypto.createHash('sha256').update(String(href)).digest('hex');
 }
 
-function accountLogin(account) {
+function accountLogin(account, signal) {
   return {
     username: account.username || account.account_email,
     password: account.encrypted_password ? decrypt(account.encrypted_password) : null,
     credentialScope: account.base_url ? caldav.accountCredentialScope(account) : null,
+    signal,
   };
+}
+
+// One stop switch per calendar account. Sync runs and writebacks take the
+// current signal before they check the linked mail account and pass it to
+// every CalDAV request. A mail disconnect commits first and then stops the
+// switch: work that started earlier is aborted mid-request, work that starts
+// later sees the disconnected mail account in its check.
+const accountWork = new Map();
+function accountWorkSignal(accountId) {
+  let controller = accountWork.get(accountId);
+  if (!controller) accountWork.set(accountId, controller = new AbortController());
+  return controller.signal;
+}
+function stopCalendarAccountWork(accountId) {
+  const controller = accountWork.get(accountId);
+  accountWork.delete(accountId);
+  controller?.abort(Object.assign(new Error('Calendar work stopped: the mail account was disconnected.'), { status: 409, code: 'MAIL_ACCOUNT_DISCONNECTED' }));
+}
+async function stopLinkedCalendarWork(userId, mailAccountId) {
+  const [rows] = await db.execute('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?', [userId, mailAccountId]);
+  for (const row of rows) stopCalendarAccountWork(row.id);
 }
 
 async function resolveTimeZone(account) {
@@ -534,6 +556,7 @@ async function runAccountSync(accountId, { userId, reason, full }) {
   return withAccountLock(accountId, async () => {
     // Reloaded under the lock: a disconnect or credential change while the
     // lock was awaited must not leave this run with the old login.
+    const signal = accountWorkSignal(accountId);
     const account = await loadAccount(accountId, userId);
     if (!account) return { skipped: true, reason: 'inactive' };
     if (await pauseIfMailDisconnected(account)) return { skipped: true, reason: 'mail-disconnected' };
@@ -543,7 +566,7 @@ async function runAccountSync(accountId, { userId, reason, full }) {
     const now = Date.now();
     const ctx = {
       account,
-      login: account.provider === 'caldav' ? accountLogin(account) : null,
+      login: account.provider === 'caldav' ? accountLogin(account, signal) : null,
       timeZone: await resolveTimeZone(account),
       windowStartMs: now - WINDOW_PAST_MS,
       windowEndMs: now + WINDOW_FUTURE_MS,
@@ -564,6 +587,8 @@ async function runAccountSync(accountId, { userId, reason, full }) {
         [unreadable ? 'error' : 'ok', unreadable ? unreadableMessage(unreadable) : null, Math.round(SYNC_INTERVAL_MS / 1000), account.id]
       );
     } catch (error) {
+      // Stopped by a mail disconnect: the pause already set the status.
+      if (signal.aborted) throw signal.reason;
       const retryMs = error?.status === 401 || error?.status === 403 ? AUTH_ERROR_RETRY_MS : ERROR_RETRY_MS;
       await db.execute(
         `UPDATE calendar_accounts SET sync_status = 'error', sync_error = ?, next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND WHERE id = ?`,
@@ -647,10 +672,11 @@ function assertWritable({ account, calendar }) {
 async function writeContext(ctx) {
   // Every writeback builds its login here; a disconnected mail account's
   // copied password is never used for a provider change.
+  const signal = accountWorkSignal(ctx.account.id);
   await assertMailLoginUsable(ctx.account);
   return {
     ...ctx,
-    login: accountLogin(ctx.account),
+    login: accountLogin(ctx.account, signal),
     timeZone: await resolveTimeZone(ctx.account),
   };
 }
@@ -871,6 +897,8 @@ function calendarErrorResponse(error, fallback) {
 module.exports = {
   MAIL_DISCONNECTED_MESSAGE,
   pauseIfMailDisconnected,
+  stopCalendarAccountWork,
+  stopLinkedCalendarWork,
   SYNC_INTERVAL_MS,
   calendarErrorResponse,
   REMOTE_PROVIDERS,

@@ -131,12 +131,16 @@ function requestOnce(url, target, { method, username, password, authorization, b
 // acceptStatuses: non-2xx statuses returned to the caller instead of thrown.
 async function davRequest(urlString, {
   method = 'PROPFIND', username, password, body, depth = ['PROPFIND', 'REPORT'].includes(method) ? '0' : null,
-  credentialOrigin = urlString, headers, contentType, accept, anonymous = false, acceptStatuses = [], timeoutMs = DAV_TIMEOUT_MS,
+  credentialOrigin = urlString, headers, contentType, accept, anonymous = false, acceptStatuses = [], timeoutMs = DAV_TIMEOUT_MS, signal,
 }, { request = https.request, resolveTarget = resolveMailConnectionTarget } = {}) {
   let current = anonymous ? parseCalDavUrl(urlString).toString() : resolveCalDavUrl(urlString, undefined, credentialOrigin);
   const controller = new AbortController();
   const deadline = Date.now() + timeoutMs;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // The caller's signal (account work stopped by a mail disconnect) aborts too.
+  const stop = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', stop, { once: true });
   try {
     for (let redirects = 0; redirects <= MAX_DAV_REDIRECTS; redirects += 1) {
       controller.signal.throwIfAborted();
@@ -165,6 +169,7 @@ async function davRequest(urlString, {
     }
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
   }
 }
 
