@@ -16,11 +16,13 @@ test('a mail login change or disconnect reaches the linked calendar only while C
   const state = { calendar: true, restoring: false }, writes = [], syncs = [];
   stub(paths[0], { isModuleEnabled: async (_userId, id) => id !== 'calendar' || state.calendar });
   stub(paths[1], { isSectionRestoreActive: async (_userId, section) => section === 'calendar' && state.restoring });
-  stub(paths[2], { syncCalendarAccountInBackground: id => syncs.push(id), deleteCalendarAccount: async () => {}, MAIL_DISCONNECTED_MESSAGE: 'disconnected' });
+  const pauses = [];
+  stub(paths[2], { syncCalendarAccountInBackground: id => syncs.push(id), deleteCalendarAccount: async () => {}, MAIL_DISCONNECTED_MESSAGE: 'disconnected',
+    pauseIfMailDisconnected: async account => { pauses.push(account.id); return true; } });
   delete require.cache[paths[3]];
   setDb({ execute: async (sql, params) => {
     if (sql.startsWith('SELECT id, email_address')) return [[{ id: 'mail', email_address: 'owner@example.test', username: 'owner', encrypted_password: 'enc', is_active: 1 }]];
-    if (sql.startsWith('SELECT id FROM calendar_accounts')) return [[{ id: 'calendar-account' }]];
+    if (/^SELECT id[^]*? FROM calendar_accounts/.test(sql)) return [[{ id: 'calendar-account' }]];
     if (sql.startsWith('UPDATE calendar_accounts')) { writes.push(params); return [{ affectedRows: 1 }]; }
     throw new Error(`Unexpected SQL ${sql}`);
   } });
@@ -32,13 +34,13 @@ test('a mail login change or disconnect reaches the linked calendar only while C
     state.calendar = true; state.restoring = true;
     await change('owner', 'mail');
   }
-  assert.deepEqual(writes, []); assert.deepEqual(syncs, []);
+  assert.deepEqual(writes, []); assert.deepEqual(syncs, []); assert.deepEqual(pauses, []);
 
   state.restoring = false;
   await updateLinkedCalendarCredentials('owner', 'mail');
   assert.equal(writes.length, 1); assert.deepEqual(syncs, ['calendar-account']);
   await pauseLinkedCalendar('owner', 'mail');
-  assert.equal(writes.length, 2); assert.deepEqual(writes[1], ['disconnected', 'calendar-account']);
+  assert.equal(writes.length, 1); assert.deepEqual(pauses, ['calendar-account'], 'The pause goes through the conditional mail check');
 });
 
 test('calendar sync rechecks the linked mail account under its lock and pauses instead of logging in', async t => {

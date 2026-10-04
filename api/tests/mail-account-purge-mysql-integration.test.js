@@ -140,6 +140,8 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     pool.execute = async (sql, params) => sql.startsWith('SELECT is_active, disconnected_at')
       ? [[{ is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]] : realExecute(sql, params);
     try { await calendarSync.pauseIfMailDisconnected(stale); } finally { pool.execute = realExecute; }
+    // The same holds for the route's pause after a failed one-step delete.
+    await calendarAccounts.pauseLinkedCalendar(paused.user, paused.mail);
     assert.equal(await count("SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = TRUE AND encrypted_password = 'reconnected'", [paused.calendarAccount]), 1);
     assert.equal(await count('SELECT COUNT(*) AS n FROM emails WHERE user_id = ?', [other.user]), 2);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [other.user]), 2);

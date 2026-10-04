@@ -337,14 +337,11 @@ async function updateLinkedCalendarCredentials(userId, mailAccountId) {
 // pauses the account before it would use the login again.
 async function pauseLinkedCalendar(userId, mailAccountId) {
   if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) return;
-  const [rows] = await db.execute("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, mailAccountId]);
-  for (const row of rows) {
-    await db.execute(
-      "UPDATE calendar_accounts SET is_active = FALSE, encrypted_password = NULL, sync_status = 'paused', sync_error = ? WHERE id = ?",
-      [MAIL_DISCONNECTED_MESSAGE, row.id]
-    );
-    publishCalendarChanged(userId, row.id, 'status');
-  }
+  const [rows] = await db.execute(`SELECT id, user_id, provider, mail_account_id FROM calendar_accounts
+    WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'`, [userId, mailAccountId]);
+  // Conditional on the mail account still being disconnected: this can run
+  // outside the mail lock, after a reconnect already passed its login on.
+  for (const row of rows) await calendarSync.pauseIfMailDisconnected(row);
 }
 
 module.exports = {
