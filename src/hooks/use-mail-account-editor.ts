@@ -26,6 +26,16 @@ const isHostTrustError = (error: Error): error is MailHostTrustError => (
 );
 
 /** State and requests of the add/edit mail account dialog, including the host trust review step. */
+/**
+ * Saving an inactive account reconnects it. Disconnect deleted its password, so
+ * a new one is needed; an account a restore paused may still have its saved
+ * password, which the server tests again before switching it back on.
+ */
+export function reconnects(account: MailAccount, password: string) {
+  if (!account.disconnected_at && account.is_active) return false;
+  return !!password || (!account.disconnected_at && !!account.has_saved_password);
+}
+
 export function useMailAccountEditor() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -200,8 +210,7 @@ export function useMailAccountEditor() {
       if (modeReview.blocked) return;
       setSaveError(null);
       updateAccount.mutate({ id: editingAccount.id, ...accountForm, ...confirmation(),
-        // A restore pauses accounts without disconnecting them; a new password reconnects both.
-        ...((editingAccount.disconnected_at || !editingAccount.is_active) && accountForm.password ? { is_active: true } : {}) });
+        ...(reconnects(editingAccount, accountForm.password) ? { is_active: true } : {}) });
     } else {
       addAccount.mutate(accountForm);
     }

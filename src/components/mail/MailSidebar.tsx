@@ -169,7 +169,8 @@ export function MailAccountList({ accounts, loading, selectedAccount, legacyCoun
                     <div className="flex-1 min-w-0 text-left">
                       <p className="truncate">{account.display_name || account.email_address}</p>
                       <p className="text-xs text-muted-foreground truncate">{account.email_address}</p>
-                      {(account.disconnected_at || !account.is_active) && <p className="text-xs text-warning">Disconnected · local mail retained</p>}
+                      {account.disconnected_at ? <p className="text-xs text-warning">Disconnected · local mail retained</p>
+                        : !account.is_active && <p className="text-xs text-warning">Paused · edit the account to reconnect</p>}
                       {getServerDeleteStatus(account) && (
                         <p className="text-xs text-destructive truncate">{getServerDeleteStatus(account)}</p>
                       )}

@@ -11,7 +11,8 @@ import { MailAccountSyncWarnings, MailSyncPolicyNotice } from '@/components/mail
 import { needsSyncPolicyDecision } from '@/lib/mail-api';
 import { MailCalendarAddOption, MailCalendarSettings } from '@/components/mail/MailCalendarSettings';
 import { mailProviders, type MailHostAssessment, type MailHostCertificate } from '@/components/mail/mail-page-model';
-import type { MailAccountEditor } from '@/hooks/use-mail-account-editor';
+import { reconnects, type MailAccountEditor } from '@/hooks/use-mail-account-editor';
+import type { MailAccount } from '@/lib/mail-api';
 
 const formatCertificateName = (value?: Record<string, string> | null) => {
   if (!value) return 'Unknown';
@@ -84,6 +85,12 @@ function HostTrustConfirmation({ editor }: { editor: MailAccountEditor }) {
 }
 
 /** Add/edit mail account dialog. `trigger` is the sidebar button that opens it for a new account. */
+function passwordHint(account: MailAccount) {
+  if (account.is_active && !account.disconnected_at) return '(leave blank to keep current)';
+  if (reconnects(account, '')) return '(leave blank to reconnect with the saved password)';
+  return '(required to reconnect; leaving blank keeps local mail disconnected)';
+}
+
 export function MailAccountDialog({ editor, trigger, touch = false }: { editor: MailAccountEditor; trigger: ReactNode; touch?: boolean }) {
   return (
     <Dialog open={editor.isOpen} onOpenChange={editor.onOpenChange}>
@@ -166,7 +173,7 @@ export function MailAccountDialog({ editor, trigger, touch = false }: { editor: 
               )}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Password {editor.editingAccount && (editor.editingAccount.disconnected_at || !editor.editingAccount.is_active ? '(required to reconnect; leaving blank keeps local mail disconnected)' : '(leave blank to keep current)')}</Label>
+              <Label htmlFor="password">Password {editor.editingAccount && passwordHint(editor.editingAccount)}</Label>
               <Input
                 id="password"
                 type="password"

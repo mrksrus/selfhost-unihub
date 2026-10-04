@@ -13,6 +13,8 @@ export interface MailAccount {
   smtp_port?: number | null;
   is_active: boolean;
   disconnected_at?: string | null;
+  /** Whether UniHub still stores a password for it (Disconnect deletes it). */
+  has_saved_password?: boolean;
   last_synced_at: string | null;
   sync_fetch_limit?: string;
   sync_mode?: 'download' | 'sync';

@@ -359,3 +359,57 @@ test('update mail account can disable server deletion without password changes',
   assert.equal(imapTests, 0, 'Identity rejection precedes provider connection');
 
 });
+
+test('reconnect uses the saved password of an account a restore paused, never of a disconnected one', async (t) => {
+  const routePath = require.resolve('../src/routes/mail');
+  const mailServicePath = require.resolve('../src/services/mail');
+  const statePath = require.resolve('../src/state');
+  const encryptionPath = require.resolve('../src/security/encryption');
+  const saved = Object.fromEntries([routePath, mailServicePath, statePath, encryptionPath].map(path => [path, require.cache[path]]));
+  t.after(() => {
+    for (const [path, entry] of Object.entries(saved)) { if (entry) require.cache[path] = entry; else delete require.cache[path]; }
+  });
+  t.after(require('./helpers/mail-service-modules').evictMailRouteModules());
+  const resumes = [], updates = [], loginTests = [];
+  t.mock.method(require('../src/services/mail-engine/runtime'), 'resumeAccount', async input => { resumes.push(input); return { resumed: 0, retired: 0 }; });
+  let row;
+  setRequireStub(statePath, { db: { execute: async (sql, params = []) => {
+    if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: 'account-1', user_id: 'user-1', email_address: 'user@example.test', username: 'user@example.test',
+      imap_host: 'mail.example.test', imap_port: 993, smtp_host: 'mail.example.test', smtp_port: 587, allow_self_signed: 0, delete_emails_on_server: 0, sync_mode: 'download', ...row }]];
+    if (sql.includes('UPDATE mail_accounts SET')) { updates.push({ sql, params }); return [{ affectedRows: 1 }]; }
+    if (sql.includes('SELECT id, user_id, email_address')) return [[{ id: 'account-1', user_id: 'user-1', email_address: 'user@example.test', is_active: 1 }]];
+    return [[]];
+  } } });
+  setRequireStub(encryptionPath, { encrypt: value => `encrypted:${value}` });
+  setRequireStub(mailServicePath, {
+    DEFAULT_MAIL_SYNC_FETCH_LIMIT: 'all', MAIL_SENDER_RULE_MATCH_TYPES: new Set(['domain', 'email']), SYSTEM_MAIL_FOLDER_SET: new Set(),
+    toBooleanFlag: value => value === true || value === 1 || value === '1',
+    ensureDefaultMailFoldersForUser: async () => {},
+    normalizeSyncFetchLimit: (value, fallback = 'all') => value || fallback,
+    validateMailHostPolicy: async () => ({ accepted: true, mailHostTrust: {} }),
+    buildMailHostTrustResult: async () => ({}),
+    testImapConnection: async account => { loginTests.push(account.encrypted_password); return { success: true }; },
+    stopMailAccountWork: async () => {},
+    scheduleMailAccountSync: () => ({ started: true, promise: Promise.resolve({ success: true }) }),
+    syncMailAccount: async () => ({ success: true }),
+    isAnyMailAccountSyncRunning: () => false, getRunningMailSyncAccountIds: () => [], getRunningMailServerDeleteAccountIds: () => [],
+  });
+  const routes = require('../src/routes/mail');
+  const put = body => routes['PUT /api/mail/accounts/:id']({ headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' }, 'user-1', body);
+
+  row = { is_active: 0, disconnected_at: null, encrypted_password: 'encrypted:restored' };
+  const paused = await put({ is_active: true });
+  assert.equal(paused.error, undefined);
+  assert.deepEqual(loginTests, ['encrypted:restored'], 'The saved password is tested before the account is switched on');
+  assert.match(updates[0].sql, /is_active = TRUE, disconnected_at = NULL/);
+  assert.doesNotMatch(updates[0].sql, /encrypted_password/);
+  assert.deepEqual(resumes, [{ userId: 'user-1', accountId: 'account-1' }]);
+
+  for (const state of [{ is_active: 0, disconnected_at: null, encrypted_password: null },
+    { is_active: 0, disconnected_at: '2026-10-04 09:00:00', encrypted_password: 'encrypted:left-over' }]) {
+    row = state;
+    const refused = await put({ is_active: true });
+    assert.equal(refused.status, 400); assert.match(refused.error, /credentials again/);
+  }
+  assert.equal(loginTests.length, 1); assert.equal(updates.length, 1);
+});

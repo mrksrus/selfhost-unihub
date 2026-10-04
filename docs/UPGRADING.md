@@ -8,7 +8,10 @@ version-specific upgrade guidance. Preserve existing data and keys when upgradin
 ## 0.18.1 Delete local account data, reconnect restored accounts
 
 No database upgrade or configuration change. Mail accounts that a restore
-paused stay paused until you enter their password in the account settings.
+paused stay paused until you open their settings and **Save**; when the backup
+restored their password, the field can stay empty and the saved password is
+used. Do not disconnect them first, because Disconnect deletes the saved
+password.
 
 ## 0.18.0 Selective backups
 

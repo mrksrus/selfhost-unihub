@@ -42,7 +42,8 @@ const ACCOUNT_COLUMNS = `id, user_id, email_address, display_name, provider, use
   smtp_host, smtp_port, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
   server_delete_enabled_at, server_delete_grace_until, server_delete_last_run_at,
   is_active, disconnected_at, engine_version, last_synced_at, created_at,
-  sync_window_days, trash_window_days, sync_policy_confirmed_at`;
+  sync_window_days, trash_window_days, sync_policy_confirmed_at,
+  (encrypted_password IS NOT NULL) AS has_saved_password`;
 
 // Sync policy fields of the account JSON. Removal counts are only computed for
 // Sync accounts whose policy is not confirmed yet (what confirming would remove).
@@ -57,7 +58,7 @@ async function withPolicyFields(account) {
     catch (error) { console.error('[ACCOUNT] Could not check Sync warnings:', error.message); }
   }
   const { sync_policy_confirmed_at: confirmedAt, ...rest } = account;
-  return { ...rest, delete_emails_on_server: toBooleanFlag(account.delete_emails_on_server),
+  return { ...rest, delete_emails_on_server: toBooleanFlag(account.delete_emails_on_server), has_saved_password: toBooleanFlag(account.has_saved_password),
     sync_window_days: windows.sync, trash_window_days: windows.trash,
     sync_policy_confirmed: !!confirmedAt, sync_policy_pending_removals: pending, sync_warnings: warnings };
 }
@@ -374,7 +375,9 @@ module.exports = {
       }
       const nextEncryptedPassword = encrypted_password ? encrypt(encrypted_password) : existingAccount.encrypted_password;
       if (body.is_active !== undefined && typeof body.is_active !== 'boolean') return { error: 'Active state must be boolean', status: 400 };
-      if (body.is_active === true && existingAccount.disconnected_at && !encrypted_password) {
+      // Disconnect deletes the stored password; an account a restore paused
+      // keeps it, so it reconnects with that password after a fresh login test.
+      if (body.is_active === true && !encrypted_password && (existingAccount.disconnected_at || !existingAccount.encrypted_password)) {
         return { error: 'Reconnect by providing and verifying the account credentials again.', status: 400 };
       }
       if (body.is_active === false) return { error: 'Use Disconnect to pause this account and remove its stored credentials.', status: 400 };
@@ -526,7 +529,7 @@ module.exports = {
       }
 
       const updatedAccount = await loadAccountJson(userId, id);
-      if (encrypted_password || username !== undefined || email_address) {
+      if (encrypted_password || username !== undefined || email_address || body.is_active === true) {
         await calendarAccounts.updateLinkedCalendarCredentials(userId, id)
           .catch(error => console.warn('[CALENDAR] Could not update linked calendar login:', error.message));
       }

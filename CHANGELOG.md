@@ -31,11 +31,16 @@ and [Offline](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/OFFLINE.
 
 ### Fixed
 
-- **Accounts paused by a restore can be reconnected.** A restore pauses every
-  mail account so Sync cannot remove restored mail before you check it again.
-  Entering the password in the account settings did not switch such an account
-  back on, and resuming it from the sync overview was refused. Saving with the
-  password now reconnects it.
+- **Accounts paused by a restore can be reconnected, with their saved
+  password.** A restore pauses every mail account so Sync cannot remove
+  restored mail before you check it again. Entering the password in the account
+  settings did not switch such an account back on, and resuming it from the
+  sync overview was refused. Now **Save** in the account settings reconnects
+  it. When the backup included the password (credentials restored), leave the
+  field empty: UniHub tests the saved password with the provider and uses it,
+  so no new app password is needed. The sidebar shows such an account as
+  **Paused** instead of **Disconnected**. Do not disconnect it first:
+  Disconnect deletes the saved password.
 - **Offline mode ends by itself.** One request that failed in the network (a
   restart, a proxy hiccup) switched the open app to read-only offline mode until
   **Retry connection** was clicked or the page was reloaded, even though

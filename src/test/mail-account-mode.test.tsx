@@ -187,6 +187,21 @@ describe('reconnecting a paused account', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/accounts/a2', expect.objectContaining({ encrypted_password: 'app-password', is_active: true })));
   });
 
+  it('reconnects a paused account with its saved password when the field stays empty', async () => {
+    const dialog = mountEditor({ ...downloadAccount, is_active: false, disconnected_at: null, has_saved_password: true });
+    expect(within(dialog).getByText(/reconnect with the saved password/)).toBeInTheDocument();
+    fireEvent.click(saveButton(dialog));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/accounts/a2', expect.objectContaining({ is_active: true, encrypted_password: undefined })));
+  });
+
+  it('needs a new password for a disconnected account even if one was saved before', async () => {
+    const dialog = mountEditor({ ...downloadAccount, is_active: false, disconnected_at: '2026-10-04T09:00:00Z', has_saved_password: true });
+    expect(within(dialog).getByText(/required to reconnect/)).toBeInTheDocument();
+    fireEvent.click(saveButton(dialog));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.put).mock.calls[0][1]).not.toHaveProperty('is_active');
+  });
+
   it('does not reactivate without a password', async () => {
     const dialog = mountEditor({ ...downloadAccount, is_active: false, disconnected_at: null });
     fireEvent.change(within(dialog).getByLabelText(/Display name/i), { target: { value: 'Archive' } });
