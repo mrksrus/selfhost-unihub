@@ -209,9 +209,12 @@ large) stay on the device as *failed*, with Try again and Download.
 still waiting to upload. For a waiting recording the page stops its own upload,
 waits up to 30 seconds for the upload lock (another tab or the service worker
 may be sending a chunk), and cancels the server's partial upload. Only then is
-the audio deleted on the device. If the server cannot be reached, the dialog
-asks again with **Discard anyway**; the partial upload is then removed on the
-server when it expires.
+the audio deleted on the device. If the upload finished in the meantime, the
+page says so instead: the recording is in the library and can be deleted
+there. If the server cannot be reached, the dialog asks again with **Discard
+anyway**; the partial upload is then removed on the server when it expires.
+Browsers without Web Locks cannot keep other uploaders away, so they offer
+Discard only for drafts and refused files.
 
 **Who uploads.** One uploader at a time, guarded by the Web Lock
 `unihub-recording-uploads`:

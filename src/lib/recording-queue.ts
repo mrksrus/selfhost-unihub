@@ -293,19 +293,47 @@ export async function processRecordingQueue(options: {
   return result;
 }
 
-export type DiscardResult = { kind: 'discarded' } | { kind: 'busy' } | { kind: 'not-cancelled'; status: number };
+export type DiscardResult =
+  | { kind: 'discarded' }
+  | { kind: 'uploaded' }
+  | { kind: 'busy' }
+  | { kind: 'unsupported' }
+  | { kind: 'not-cancelled'; status: number };
+
+// Discarding a waiting upload needs the upload lock: without Web Locks another
+// tab or the service worker could keep the audio in memory and finish the
+// upload after it was deleted here.
+export const canDiscardQueuedRecordings = () => typeof navigator !== 'undefined' && !!navigator.locks;
 
 // Discards a recording that may have a partial upload on the server. Holding
 // the upload lock keeps every uploader away; then the server's copy is
 // removed, since left there it would remind the user about an upload that can
 // no longer finish. Without the server's answer the copy here is kept, unless
-// the user confirmed discarding it anyway (force).
+// the user confirmed discarding it anyway (force). An upload that finished in
+// the meantime is reported as uploaded and is in the library.
 export async function discardStoredRecording(id: string, request: UploadRequest, options: { force?: boolean; timeoutMs?: number } = {}): Promise<DiscardResult> {
+  if (!canDiscardQueuedRecordings()) return { kind: 'unsupported' };
   const signal = AbortSignal.timeout(options.timeoutMs ?? 30_000);
   try {
     return await withRecordingUploadLock<DiscardResult>(signal, async () => {
+      // Another uploader held the lock and finished; it deleted the local copy.
+      const job = await transaction(['jobs'], 'readonly', tx => requestResult<StoredRecording | undefined>(tx.objectStore('jobs').get(id)));
+      if (!job) return { kind: 'uploaded' };
       const removed = await request('DELETE', `/recordings/uploads/${id}`);
-      if (removed.status !== 200 && !options.force) return { kind: 'not-cancelled', status: removed.status };
+      if (removed.status === 200 && removed.body?.deleted === false) {
+        // No upload in progress: it never started, expired, or became a
+        // recording whose answer did not reach the uploader. Completing again
+        // returns that recording (the upload id is the recording id) and
+        // changes nothing otherwise.
+        const finished = await request('POST', `/recordings/uploads/${id}/complete`, {});
+        if (finished.status === 200 && finished.body?.recording) {
+          await deleteStoredRecording(id);
+          return { kind: 'uploaded' };
+        }
+        if (finished.status !== 404 && !options.force) return { kind: 'not-cancelled', status: finished.status };
+      } else if (removed.status !== 200 && !options.force) {
+        return { kind: 'not-cancelled', status: removed.status };
+      }
       await deleteStoredRecording(id);
       return { kind: 'discarded' };
     });

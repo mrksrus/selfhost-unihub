@@ -92,7 +92,22 @@ describe('recordings kept on the device', () => {
     expect(await readStoredRecordingBlob('a')).not.toBeNull();
   });
 
+  // jsdom has no Web Locks. This one runs holders one after the other.
+  function withLocks(hold?: Promise<void>) {
+    let queue = hold ?? Promise.resolve();
+    const request = (_name: string, options: { signal?: AbortSignal }, task: () => Promise<unknown>) => new Promise((resolve, reject) => {
+      options.signal?.addEventListener('abort', () => reject(options.signal?.reason));
+      queue = queue.then(() => (options.signal?.aborted ? undefined : task().then(resolve, reject)));
+    });
+    vi.stubGlobal('navigator', { ...navigator, locks: { request } });
+  }
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal('Blob', NodeBlob);
+  });
+
   it('discards a queued recording only after the server cancelled its upload, unless forced', async () => {
+    withLocks();
     const blob = new Blob(['take']);
     await saveStoredRecording(job('a', 'u1', blob), blob);
     const calls: string[] = [];
@@ -109,18 +124,44 @@ describe('recordings kept on the device', () => {
     expect(await listStoredRecordings('u1')).toHaveLength(0);
   });
 
-  it('does not discard while another uploader keeps the upload lock', async () => {
+  it('reports an upload that finished instead of discarding, and discards one the server never had', async () => {
+    withLocks();
     const blob = new Blob(['take']);
     await saveStoredRecording(job('a', 'u1', blob), blob);
-    // An uploader in another tab holds the lock; the request waits until it gives up.
+    await saveStoredRecording(job('b', 'u1', blob), blob);
+    // 'a' became a recording, but its uploader never heard back.
+    const request = vi.fn<UploadRequest>(async (method, path) => {
+      if (method === 'DELETE') return { status: 200, body: { deleted: false } };
+      return path.includes('/a/') ? { status: 200, body: { recording: { id: 'a' } } } : { status: 404, body: { error: 'Upload not found' } };
+    });
+    expect(await discardStoredRecording('a', request)).toEqual({ kind: 'uploaded' });
+    expect(await discardStoredRecording('b', request)).toEqual({ kind: 'discarded' });
+    expect(request.mock.calls.map(([method, path]) => `${method} ${path}`)).toEqual([
+      'DELETE /recordings/uploads/a', 'POST /recordings/uploads/a/complete',
+      'DELETE /recordings/uploads/b', 'POST /recordings/uploads/b/complete',
+    ]);
+    expect(await listStoredRecordings('u1')).toHaveLength(0);
+  });
+
+  it('reports an upload another uploader finished while discard waited for the lock', async () => {
+    const blob = new Blob(['take']);
+    await saveStoredRecording(job('a', 'u1', blob), blob);
+    let finish!: () => void;
+    withLocks(new Promise<void>(resolve => { finish = resolve; }).then(() => deleteStoredRecording('a')));
+    const request = vi.fn<UploadRequest>(async () => ({ status: 200, body: { deleted: false } }));
+    const discarding = discardStoredRecording('a', request);
+    finish();
+    expect(await discarding).toEqual({ kind: 'uploaded' });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it('does not discard while another uploader keeps the upload lock, or without Web Locks', async () => {
+    const blob = new Blob(['take']);
+    await saveStoredRecording(job('a', 'u1', blob), blob);
     const request = vi.fn<UploadRequest>(async () => ({ status: 200, body: { deleted: true } }));
-    vi.stubGlobal('navigator', { ...navigator, locks: { request: (_name: string, options: { signal?: AbortSignal }) => new Promise((_resolve, reject) => options.signal?.addEventListener('abort', () => reject(options.signal?.reason))) } });
-    try {
-      expect(await discardStoredRecording('a', request, { timeoutMs: 20 })).toEqual({ kind: 'busy' });
-    } finally {
-      vi.unstubAllGlobals();
-      vi.stubGlobal('Blob', NodeBlob);
-    }
+    expect(await discardStoredRecording('a', request)).toEqual({ kind: 'unsupported' });
+    withLocks(new Promise(() => {}));
+    expect(await discardStoredRecording('a', request, { timeoutMs: 20 })).toEqual({ kind: 'busy' });
     expect(request).not.toHaveBeenCalled();
     expect(await readStoredRecordingBlob('a')).not.toBeNull();
   });

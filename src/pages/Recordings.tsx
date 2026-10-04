@@ -8,6 +8,7 @@ import {
   appendCaptureBatch,
   createCapture,
   deleteCapture,
+  canDiscardQueuedRecordings,
   deleteStoredRecording,
   discardStoredRecording,
   finishCapture,
@@ -475,11 +476,15 @@ const Recordings = () => {
         return;
       }
       setDiscardTarget(null);
-      if (result.kind === 'busy') {
+      if (result.kind === 'busy' || result.kind === 'unsupported') {
         toast({ title: 'Recording is still uploading', description: 'Try discarding it again in a moment.', variant: 'destructive' });
         return;
       }
       void closeUploadNotices([`recording-upload:${item.id}`]);
+      if (result.kind === 'uploaded') {
+        queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
+        toast({ title: 'Recording was already uploaded', description: `${item.details.title || 'The recording'} finished uploading before it could be discarded. Delete it from your recordings if you do not want it.` });
+      }
     } catch {
       setDiscardTarget(null);
       toast({ title: 'Recording was not discarded', variant: 'destructive' });
@@ -1065,10 +1070,12 @@ const Recordings = () => {
                         <Download className="h-4 w-4 mr-2" />
                         Download
                       </Button>
-                      <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => { setDiscardUnconfirmed(false); setDiscardTarget(item); }}>
-                        <Trash2 className="h-4 w-4 mr-2" />
-                        Discard
-                      </Button>
+                      {(item.state !== 'queued' || canDiscardQueuedRecordings()) && (
+                        <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => { setDiscardUnconfirmed(false); setDiscardTarget(item); }}>
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Discard
+                        </Button>
+                      )}
                     </div>
                   </div>
                   {item.state === 'queued' && <Progress value={item.size ? (bytesUploaded / item.size) * 100 : 0} />}
