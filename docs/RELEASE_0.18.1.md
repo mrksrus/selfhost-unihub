@@ -37,7 +37,8 @@ and [Offline](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/OFFLINE.
   Disconnect deletes the saved password.
 - **Disconnect also stops the linked calendar.** Disconnecting a mail account
   now cancels a sync or event change of its linked calendar that is running at
-  that moment, and no later one uses the mail password again, also when
+  that moment (a change the server is already saving is completed and kept),
+  and no later one uses the mail password again, also when
   Calendar was turned off at the time. Reconnecting the mail account resumes
   the calendar, also when that was missed at the time (Calendar off, or a
   failed update). A missed password change reaches it the same way, and at

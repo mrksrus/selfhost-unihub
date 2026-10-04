@@ -125,6 +125,8 @@ function requestOnce(url, target, { method, username, password, authorization, b
   });
 }
 
+const READ_METHODS = new Set(['PROPFIND', 'REPORT', 'GET', 'HEAD', 'OPTIONS']);
+
 // anonymous: no credentials are sent, so redirects may cross origins (every hop
 // is still HTTPS and checked against the outbound network policy). Discovery
 // uses it to learn where a domain's /.well-known/caldav really points.
@@ -137,21 +139,28 @@ async function davRequest(urlString, {
   const controller = new AbortController();
   const deadline = Date.now() + timeoutMs;
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  // The caller's signal (account work stopped by a mail disconnect) aborts too.
+  // The caller's signal (account work stopped by a mail disconnect) stops the
+  // request before it is sent. A read is also aborted while it waits; a sent
+  // write is let finish, since the server may already have applied it and the
+  // caller has to record that.
+  const readOnly = READ_METHODS.has(method);
   const stop = () => controller.abort();
-  if (signal?.aborted) controller.abort();
-  else signal?.addEventListener('abort', stop, { once: true });
+  if (readOnly) {
+    if (signal?.aborted) controller.abort();
+    else signal?.addEventListener('abort', stop, { once: true });
+  }
+  const throwIfStopped = () => { signal?.throwIfAborted(); controller.signal.throwIfAborted(); };
   try {
     for (let redirects = 0; redirects <= MAX_DAV_REDIRECTS; redirects += 1) {
-      controller.signal.throwIfAborted();
+      throwIfStopped();
       const url = parseCalDavUrl(current);
       const target = await resolveTarget(url.hostname, { timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())) });
-      controller.signal.throwIfAborted();
+      throwIfStopped();
       const options = { method, username, password, body, depth, headers, contentType, accept, anonymous, signal: controller.signal };
       let response = await requestOnce(url, target, options, request);
       const challenge = response.status === 401 && !anonymous ? parseDigestChallenge(response.headers?.['www-authenticate']) : null;
       if (challenge) {
-        controller.signal.throwIfAborted();
+        throwIfStopped();
         const authorization = digestAuthorization(challenge, { method, uri: `${url.pathname}${url.search}`, username, password });
         response = await requestOnce(url, target, { ...options, authorization }, request);
       }

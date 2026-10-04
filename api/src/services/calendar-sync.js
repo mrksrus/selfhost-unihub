@@ -68,8 +68,10 @@ function accountLogin(account, signal) {
 // One stop switch per calendar account. Sync runs and writebacks take the
 // current signal before they check the linked mail account and pass it to
 // every CalDAV request. A mail disconnect commits first and then stops the
-// switch: work that started earlier is aborted mid-request, work that starts
-// later sees the disconnected mail account in its check.
+// switch: work that started earlier sends no further request and its reads
+// are aborted mid-request (a write already sent is let finish, so its result
+// is recorded), work that starts later sees the disconnected mail account in
+// its check.
 // Each entry is counted by the work using it and removed when the last one
 // ends, so the map holds only accounts with work running.
 const accountWork = new Map();

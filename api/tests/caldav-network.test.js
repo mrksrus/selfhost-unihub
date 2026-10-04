@@ -150,3 +150,35 @@ test('a stopped account signal aborts a CalDAV request before it is sent and whi
   await assert.rejects(pending);
   assert.equal(destroyed, true, 'The open request is torn down');
 });
+
+test('a stopped account signal lets a sent CalDAV write finish but sends no further request', async t => {
+  const calls = installDavFixture(t, []);
+  let respond;
+  https.request.mock.mockImplementation((options, onResponse) => {
+    const request = new EventEmitter();
+    request.destroy = () => { request.destroyed = true; };
+    request.end = body => {
+      calls.push({ ...options, body });
+      respond = () => {
+        const response = new PassThrough();
+        response.statusCode = 201;
+        response.headers = { etag: '"new"' };
+        onResponse(response);
+        response.end();
+      };
+    };
+    options.signal.addEventListener('abort', () => request.destroy(), { once: true });
+    return request;
+  });
+  const running = new AbortController();
+  const options = { ...credentials, method: 'PUT', body: 'BEGIN:VCALENDAR', contentType: 'text/calendar', accept: '*/*', signal: running.signal };
+  const pending = davRequest(`${origin}/dav/cal/event.ics`, options);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length, 1, 'The write was sent');
+  running.abort();
+  assert.equal(calls[0].signal.aborted, false, 'The sent write is not torn down');
+  respond();
+  assert.equal((await pending).status, 201, "The server's answer is still read");
+  await assert.rejects(davRequest(`${origin}/dav/cal/event.ics`, options));
+  assert.equal(calls.length, 1, 'Nothing more is sent once the account work was stopped');
+});
