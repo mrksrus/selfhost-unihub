@@ -38,9 +38,9 @@ test('a mail login change or disconnect reaches the linked calendar only while C
 
   state.restoring = false;
   await updateLinkedCalendarCredentials('owner', 'mail');
-  assert.equal(writes.length, 1); assert.deepEqual(syncs, ['calendar-account']);
+  assert.equal(writes.length, 2); assert.deepEqual(syncs, ['calendar-account']);
   await pauseLinkedCalendar('owner', 'mail');
-  assert.equal(writes.length, 1); assert.deepEqual(pauses, ['calendar-account'], 'The pause goes through the conditional mail check');
+  assert.equal(writes.length, 2); assert.deepEqual(pauses, ['calendar-account'], 'The pause goes through the conditional mail check');
 });
 
 test('calendar sync rechecks the linked mail account under its lock and pauses instead of logging in', async t => {
@@ -69,6 +69,7 @@ test('calendar sync rechecks the linked mail account under its lock and pauses i
       return [[{ is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]];
     }
     if (sql.includes('SET ca.is_active = FALSE')) { order.push(['pause', params]); return [{ affectedRows: 1 }]; }
+    if (sql.includes('SET ca.encrypted_password = NULL')) return [{ affectedRows: 0 }];
     throw new Error(`Unexpected SQL ${sql}`);
   };
   setDb({ execute, getConnection: async () => ({ execute, release() {} }) });
@@ -97,6 +98,7 @@ test('a calendar writeback refuses and pauses the account when its mail account 
     if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[{ id: 'calendar-account', user_id: 'owner', provider: 'caldav', mail_account_id: 'mail', is_active: 1, encrypted_password: 'copied' }]];
     if (sql.startsWith('SELECT is_active, disconnected_at')) return [[{ is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]];
     if (sql.includes('SET ca.is_active = FALSE')) { pauses.push(params); return [{ affectedRows: 1 }]; }
+    if (sql.includes('SET ca.encrypted_password = NULL')) return [{ affectedRows: 0 }];
     throw new Error(`Unexpected SQL ${sql}`);
   } });
   const { pushCreatedEvent } = require('../src/services/calendar-sync');
@@ -125,9 +127,10 @@ function calendarSyncFixture(t, { modules = () => true, mailConnected = false, a
     if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[{ id: params[0], user_id: 'owner', provider: 'caldav', mail_account_id: 'mail', is_active: active ? 1 : 0, encrypted_password: 'copied' }]];
     if (sql.includes('FROM calendar_event_external_refs r JOIN calendar_remote_objects')) return [[{ object_id: 'object', href: '/a.ics', etag: '"1"', ics: 'BEGIN:VEVENT\r\nEND:VEVENT' }]];
     if (sql.startsWith('SELECT is_active, disconnected_at')) return [[mailConnected ? { is_active: 1, disconnected_at: null, encrypted_password: 'mail' } : { is_active: 0, disconnected_at: '2026-10-04 12:00:00', encrypted_password: null }]];
-    if (sql.startsWith('SELECT DISTINCT ca.user_id')) return [[{ user_id: 'calendar-off' }, { user_id: 'calendar-on' }]];
+    if (sql.startsWith('SELECT DISTINCT ca.user_id')) return [sql.includes('LEFT JOIN') ? [{ user_id: 'calendar-off' }, { user_id: 'calendar-on' }] : []];
     if (sql.startsWith('SELECT ca.id, ca.user_id')) return [[{ id: `stale-${params[0] === 'calendar-on' ? 'on' : 'off'}`, user_id: params[0], provider: 'caldav', mail_account_id: 'mail' }]];
     if (sql.includes('SET ca.is_active = FALSE')) return [{ affectedRows: 1, params }];
+    if (sql.includes('SET ca.encrypted_password = NULL')) return [{ affectedRows: 0 }];
     if (sql.startsWith('SELECT id, user_id FROM calendar_accounts')) return [[]];
     if (sql.includes('GET_LOCK')) return [[{ acquired: 1 }]];
     if (sql.includes('RELEASE_LOCK')) return [[{}]];

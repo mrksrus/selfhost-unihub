@@ -78,20 +78,20 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     assert.deepEqual({ emails: preview.email_count, calendars: preview.calendar_accounts, events: preview.calendar_events, blocked: preview.blocked },
       { emails: 2, calendars: 1, events: 2, blocked: false });
     assert.equal((await lifecycle.purgePreview(owner.user, owner.mail)).blocked, true, 'a plain purge still needs a disconnected account');
-    await assert.rejects(lifecycle.disconnectAndPurgeAccount(other.user, owner.mail, owner.mail), error => error.status === 404);
+    await assert.rejects(lifecycle.disconnectAndPurgeAccount(other.user, owner.mail, 'owner@example.test'), error => error.status === 404);
 
     // With Calendar off, its data is not changed through the mail route: the
     // delete is refused before anything happens, including the disconnect.
     await setUserModules(owner.user, { modules: { calendar: { enabled: false } } });
     assert.match((await lifecycle.purgePreview(owner.user, owner.mail, undefined, { disconnecting: true })).reason, /Calendar is turned off/);
-    await assert.rejects(lifecycle.disconnectAndPurgeAccount(owner.user, owner.mail, owner.mail), /Calendar is turned off/);
+    await assert.rejects(lifecycle.disconnectAndPurgeAccount(owner.user, owner.mail, 'owner@example.test'), /Calendar is turned off/);
     assert.equal(await count('SELECT COUNT(*) AS n FROM mail_accounts WHERE user_id = ? AND is_active = TRUE', [owner.user]), 1);
     await setUserModules(owner.user, { modules: { calendar: { enabled: true } } });
 
     // A failing calendar delete rolls the whole purge back.
     await connection.execute(`CREATE TRIGGER purge_test_block BEFORE DELETE ON calendar_events FOR EACH ROW
       SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'synthetic calendar delete failure'`);
-    await assert.rejects(lifecycle.disconnectAndPurgeAccount(owner.user, owner.mail, owner.mail), /synthetic calendar delete failure/);
+    await assert.rejects(lifecycle.disconnectAndPurgeAccount(owner.user, owner.mail, 'owner@example.test'), /synthetic calendar delete failure/);
     await connection.execute('DROP TRIGGER purge_test_block');
     assert.equal(await count('SELECT COUNT(*) AS n FROM mail_accounts WHERE user_id = ? AND disconnected_at IS NOT NULL', [owner.user]), 1,
       'The disconnect happened, the purge did not');
@@ -99,7 +99,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [owner.user]), 2);
 
     // Retry of the now disconnected account: a plain purge removes everything.
-    const result = await lifecycle.purgeAccount(owner.user, owner.mail, owner.mail);
+    const result = await lifecycle.purgeAccount(owner.user, owner.mail, 'owner@example.test');
     assert.equal(result.purged, true);
 
     assert.equal(await count('SELECT COUNT(*) AS n FROM mail_accounts WHERE user_id = ?', [owner.user]), 0);
@@ -144,6 +144,18 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
       'The pass resumes the calendar of the reconnected mail account');
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE', [other.calendarAccount]), 1,
       'A calendar paused by its user stays paused');
+    // A disconnect only removes its copied password; a reconnect gives the new
+    // login back but does not resume it.
+    await lifecycle.disconnectAccount(other.user, other.mail);
+    await calendarAccounts.pauseLinkedCalendar(other.user, other.mail);
+    assert.equal(await count(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE
+      AND encrypted_password IS NULL AND sync_error IS NULL`, [other.calendarAccount]), 1);
+    await connection.execute('UPDATE mail_accounts SET is_active = TRUE, disconnected_at = NULL, encrypted_password = ? WHERE id = ?',
+      [encrypt('synthetic-password'), other.mail]);
+    await calendarAccounts.updateLinkedCalendarCredentials(other.user, other.mail);
+    await calendarSync.runCalendarSyncPass();
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ? AND is_active = FALSE AND encrypted_password IS NOT NULL',
+      [other.calendarAccount]), 1, 'The user pause survives a mail reconnect');
     await connection.execute("UPDATE mail_accounts SET is_active = FALSE, disconnected_at = UTC_TIMESTAMP(), encrypted_password = NULL WHERE id = ?", [paused.mail]);
     await calendarSync.runCalendarSyncPass();
 

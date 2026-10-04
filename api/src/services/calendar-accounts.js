@@ -323,11 +323,14 @@ async function updateLinkedCalendarCredentials(userId, mailAccountId) {
   if (!mail || !mail.encrypted_password || !mail.is_active) return;
   const [rows] = await db.execute("SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND provider = 'caldav'", [userId, mailAccountId]);
   for (const row of rows) {
-    await db.execute(
-      "UPDATE calendar_accounts SET username = ?, encrypted_password = ?, is_active = TRUE, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL WHERE id = ?",
-      [mail.username || mail.email_address, mail.encrypted_password, row.id]
-    );
-    calendarSync.syncCalendarAccountInBackground(row.id, { userId, reason: 'credentials' });
+    await db.execute('UPDATE calendar_accounts SET username = ?, encrypted_password = ? WHERE id = ?',
+      [mail.username || mail.email_address, mail.encrypted_password, row.id]);
+    // Resumed only when active or paused by the mail disconnect: a calendar the
+    // user paused keeps the new login but stays paused.
+    const [resumed] = await db.execute(
+      `UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL
+       WHERE id = ? AND (is_active = TRUE OR sync_error = ?)`, [row.id, MAIL_DISCONNECTED_MESSAGE]);
+    if (resumed.affectedRows) calendarSync.syncCalendarAccountInBackground(row.id, { userId, reason: 'credentials' });
   }
 }
 

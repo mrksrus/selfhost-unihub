@@ -5,6 +5,7 @@ const { withMailAccountLock } = require('./mail-account-lock');
 const { isSectionRestoreActive } = require('./restore-locks');
 const { isModuleEnabled } = require('./module-settings');
 const { publishCalendarChanged } = require('./server-events');
+const { addressConfirmed } = require('./mail-account-mode');
 
 const fail = (message, status = 409) => Object.assign(new Error(message), { status });
 const enabled = value => value === true || value === 1 || value === '1';
@@ -95,11 +96,16 @@ async function removeUnreferencedRaw(storagePaths, executor = db) {
   return { deletedFiles, failedFiles };
 }
 
-async function purgeAccount(userId, accountId, confirmation) {
-  if (confirmation !== accountId) throw fail('Explicit account purge confirmation is required', 400);
-  if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
-  const [[owned]] = await db.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+// The typed account address is checked here, not only by the dialog.
+async function assertPurgeConfirmed(userId, accountId, confirmation) {
+  const [[owned]] = await db.execute('SELECT id, email_address FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
   if (!owned) throw fail('Account not found', 404);
+  if (!addressConfirmed(owned, confirmation)) throw fail('Type the account email address to confirm permanent deletion.', 400);
+}
+
+async function purgeAccount(userId, accountId, confirmation) {
+  await assertPurgeConfirmed(userId, accountId, confirmation);
+  if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
   const initialPreview = await purgePreview(userId, accountId);
   if (initialPreview.blocked) throw fail(initialPreview.reason);
   await require('./mail').stopMailAccountWork(accountId, 'Account purging');
@@ -152,7 +158,7 @@ async function purgeAccount(userId, accountId, confirmation) {
 // already blocked; a purge refused after the disconnect (an operation became
 // unresolved meanwhile) leaves the account disconnected with its mail kept.
 async function disconnectAndPurgeAccount(userId, accountId, confirmation) {
-  if (confirmation !== accountId) throw fail('Explicit account purge confirmation is required', 400);
+  await assertPurgeConfirmed(userId, accountId, confirmation);
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
   const preview = await purgePreview(userId, accountId, db, { disconnecting: true });
   if (preview.blocked) throw fail(preview.reason);

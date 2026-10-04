@@ -63,8 +63,9 @@ export function useMailAccountRemoval(onPurged: () => void) {
   };
 
   const purgeAccount = useMutation({
-    mutationFn: async ({ id, disconnect }: { id: string; disconnect: boolean }) => {
-      const response = await api.delete(`/mail/accounts/${encodeURIComponent(id)}?purge=true${disconnect ? '&disconnect=true' : ''}&confirm_purge=${encodeURIComponent(id)}`);
+    // The server checks the typed address too.
+    mutationFn: async ({ id, disconnect, address }: { id: string; disconnect: boolean; address: string }) => {
+      const response = await api.delete(`/mail/accounts/${encodeURIComponent(id)}?purge=true${disconnect ? '&disconnect=true' : ''}&confirm_purge=${encodeURIComponent(address.trim())}`);
       if (response.error) throw new Error(response.error);
     },
     onSuccess: () => {

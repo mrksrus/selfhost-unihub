@@ -72,7 +72,7 @@ export function MailAccountRemovalDialogs({ removal, accounts }: { removal: Mail
         <AlertDialogFooter>
           <AlertDialogCancel>Keep local data</AlertDialogCancel>
           <Button type="button" variant="destructive" disabled={!purgePreview || purgePreview.blocked || purgePreview.account_id !== accountToPurge || !confirmed || purgeAccount.isPending}
-            onClick={() => accountToPurge && purgeAccount.mutate({ id: accountToPurge, disconnect: purgeDisconnects })}>
+            onClick={() => accountToPurge && purgeAccount.mutate({ id: accountToPurge, disconnect: purgeDisconnects, address: purgeConfirmation })}>
             {purgeDisconnects ? 'Disconnect and delete' : 'Delete local data'}
           </Button>
         </AlertDialogFooter>

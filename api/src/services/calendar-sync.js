@@ -511,12 +511,18 @@ async function pauseIfMailDisconnected(account) {
   };
   if (await mailConnected()) return false;
   // The mail state is checked again in the write itself: a reconnect that
-  // committed meanwhile (and passed its login on) is not undone.
+  // committed meanwhile (and passed its login on) is not undone. An account
+  // the user paused only loses the copied password and keeps its own pause
+  // (no disconnect message), so a reconnect does not resume it.
   const [paused] = await db.execute(`UPDATE calendar_accounts ca
     LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
     SET ca.is_active = FALSE, ca.encrypted_password = NULL, ca.sync_status = 'paused', ca.sync_error = ?
-    WHERE ca.id = ? AND ca.user_id = ? AND ${LINKED_TO_DISCONNECTED_MAIL}`, [MAIL_DISCONNECTED_MESSAGE, account.id, account.user_id]);
-  if (paused.affectedRows) {
+    WHERE ca.id = ? AND ca.user_id = ? AND ca.is_active = TRUE AND ${LINKED_TO_DISCONNECTED_MAIL}`, [MAIL_DISCONNECTED_MESSAGE, account.id, account.user_id]);
+  const [cleared] = await db.execute(`UPDATE calendar_accounts ca
+    LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+    SET ca.encrypted_password = NULL
+    WHERE ca.id = ? AND ca.user_id = ? AND ca.is_active = FALSE AND ${LINKED_TO_DISCONNECTED_MAIL}`, [account.id, account.user_id]);
+  if (paused.affectedRows || cleared.affectedRows) {
     publishCalendarChanged(account.user_id, account.id, 'status');
     return true;
   }

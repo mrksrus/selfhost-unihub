@@ -15,7 +15,7 @@ function fixture(t, settings = {}) {
     if (sql.includes('FROM backup_restore_jobs')) return [state.restoring.length ? [{ requested_sections: JSON.stringify(state.restoring) }] : []];
     if (sql.startsWith('SELECT COUNT(DISTINCT ca.id)')) return [[{ calendar_accounts: state.calendars, calendar_events: state.calendars * 3 }]];
     if (sql.startsWith('SELECT id') && sql.includes('FROM mail_accounts')) {
-      return [state.owned && params[1] === 'owner' ? [{ id: 'account', is_active: state.active ? 1 : 0 }] : []];
+      return [state.owned && params[1] === 'owner' ? [{ id: 'account', email_address: 'owner@example.test', is_active: state.active ? 1 : 0 }] : []];
     }
     if (sql.startsWith('SELECT COUNT(*) AS email_count')) return [[{ email_count: 2, raw_count: 0, recovered_elsewhere: state.recovered }]];
     if (sql.startsWith('SELECT COUNT(*) AS attachment_count')) return [[{ attachment_count: 0 }]];
@@ -65,37 +65,39 @@ test('another owner cannot inspect or disconnect an account', async t => {
   const { api, calls, cancellations } = fixture(t);
   await assert.rejects(api.purgePreview('foreign-owner', 'account'), error => error.status === 404);
   await assert.rejects(api.disconnectAccount('foreign-owner', 'account'), error => error.status === 404);
-  await assert.rejects(api.purgeAccount('foreign-owner', 'account', 'account'), error => error.status === 404);
+  await assert.rejects(api.purgeAccount('foreign-owner', 'account', 'Owner@Example.test '), error => error.status === 404);
   assert.deepEqual(cancellations, []);
   assert.ok(calls.every(call => !/^(UPDATE|DELETE)/.test(call.sql)));
 });
 
 test('purge needs explicit matching confirmation before any cancellation or deletion', async t => {
   const { api, calls, cancellations } = fixture(t);
-  await assert.rejects(api.purgeAccount('owner', 'account', 'another-account'), error => error.status === 400);
-  assert.deepEqual(calls, []); assert.deepEqual(cancellations, []);
+  // The account ID from the URL is not a confirmation; the typed address is.
+  await assert.rejects(api.purgeAccount('owner', 'account', 'account'), error => error.status === 400);
+  await assert.rejects(api.purgeAccount('owner', 'account', 'other@example.test'), error => error.status === 400);
+  assert.ok(calls.every(call => call.sql.startsWith('SELECT id, email_address FROM mail_accounts'))); assert.deepEqual(cancellations, []);
 });
 
 test('purge is blocked for a still connected account', async t => {
   const { api, calls } = fixture(t, { active: true });
   const preview = await api.purgePreview('owner', 'account');
   assert.equal(preview.blocked, true); assert.match(preview.reason, /Disconnect/);
-  await assert.rejects(api.purgeAccount('owner', 'account', 'account'), error => error.status === 409);
+  await assert.rejects(api.purgeAccount('owner', 'account', 'Owner@Example.test '), error => error.status === 409);
   assert.ok(calls.every(call => !call.sql.startsWith('DELETE FROM')));
 });
 
 test('purge protects unresolved provider effects and original source of recovered mail', async t => {
   const { api, calls, state } = fixture(t, { unresolved: 1 });
   assert.equal((await api.purgePreview('owner', 'account')).unresolved_operations, 1);
-  await assert.rejects(api.purgeAccount('owner', 'account', 'account'), /unresolved outcome/);
+  await assert.rejects(api.purgeAccount('owner', 'account', 'Owner@Example.test '), /unresolved outcome/);
   state.unresolved = 0; state.recovered = 1;
-  await assert.rejects(api.purgeAccount('owner', 'account', 'account'), /source of mail retained/);
+  await assert.rejects(api.purgeAccount('owner', 'account', 'Owner@Example.test '), /source of mail retained/);
   assert.ok(calls.every(call => !call.sql.startsWith('DELETE FROM')));
 });
 
 test('explicit eligible purge deletes only the owned disconnected account after final locked preview', async t => {
   const { api, calls } = fixture(t);
-  const result = await api.purgeAccount('owner', 'account', 'account');
+  const result = await api.purgeAccount('owner', 'account', 'Owner@Example.test ');
   assert.equal(result.purged, true);
   const removes = calls.filter(call => call.sql.startsWith('DELETE FROM'));
   assert.equal(removes.length, 2);
@@ -115,7 +117,7 @@ test('preview counts the linked calendar that a purge removes', async t => {
 test('purge waits for a calendar restore only when a linked calendar would be removed', async t => {
   const { api, calls, state } = fixture(t, { calendars: 1, restoring: ['calendar'] });
   assert.match((await api.purgePreview('owner', 'account')).reason, /Calendar restore/);
-  await assert.rejects(api.purgeAccount('owner', 'account', 'account'), /Calendar restore/);
+  await assert.rejects(api.purgeAccount('owner', 'account', 'Owner@Example.test '), /Calendar restore/);
   assert.ok(calls.every(call => !call.sql.startsWith('DELETE FROM')));
   state.calendars = 0;
   assert.equal((await api.purgePreview('owner', 'account')).blocked, false);
@@ -124,7 +126,7 @@ test('purge waits for a calendar restore only when a linked calendar would be re
 test('disconnect and delete removes a connected account in one confirmed step', async t => {
   const { api, calls, cancellations } = fixture(t, { active: true });
   assert.equal((await api.purgePreview('owner', 'account', undefined, { disconnecting: true })).blocked, false);
-  const result = await api.disconnectAndPurgeAccount('owner', 'account', 'account');
+  const result = await api.disconnectAndPurgeAccount('owner', 'account', 'Owner@Example.test ');
   assert.equal(result.purged, true);
   const disconnect = calls.findIndex(call => call.sql.startsWith('UPDATE mail_accounts'));
   const remove = calls.findIndex(call => call.sql.startsWith('DELETE FROM mail_accounts'));
@@ -134,16 +136,16 @@ test('disconnect and delete removes a connected account in one confirmed step', 
 
 test('disconnect and delete changes nothing without confirmation or when the purge is blocked', async t => {
   const { api, calls, cancellations, state } = fixture(t, { active: true });
-  await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'other'), error => error.status === 400);
+  await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'account'), error => error.status === 400);
   state.unresolved = 1;
-  await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'account'), /unresolved outcome/);
+  await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'Owner@Example.test '), /unresolved outcome/);
   assert.equal(state.active, true); assert.deepEqual(cancellations, []);
   assert.ok(calls.every(call => !/^(UPDATE|DELETE)/.test(call.sql)));
 });
 
 test('disconnect and delete reports a disconnected account when the final purge check refuses', async t => {
   const { api, calls, state } = fixture(t, { active: true, unresolvedAfterDisconnect: 1 });
-  await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'account'), error =>
+  await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'Owner@Example.test '), error =>
     error.disconnected === true && /disconnected and its local mail kept/.test(error.message));
   assert.equal(state.active, false);
   assert.ok(calls.every(call => !call.sql.startsWith('DELETE FROM')));
@@ -152,14 +154,14 @@ test('disconnect and delete reports a disconnected account when the final purge 
 test('purge refuses to remove a linked calendar while Calendar is turned off', async t => {
   const { api, calls, cancellations } = fixture(t, { active: true, calendars: 1, calendarEnabled: false });
   assert.match((await api.purgePreview('owner', 'account', undefined, { disconnecting: true })).reason, /Calendar is turned off/);
-  await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'account'), /Calendar is turned off/);
+  await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'Owner@Example.test '), /Calendar is turned off/);
   assert.deepEqual(cancellations, []);
   assert.ok(calls.every(call => !/^(UPDATE|DELETE)/.test(call.sql)));
 });
 
 test('purge removes the linked calendar in the same transaction as the account', async t => {
   const { api, calls } = fixture(t, { calendars: 1 });
-  await api.purgeAccount('owner', 'account', 'account');
+  await api.purgeAccount('owner', 'account', 'Owner@Example.test ');
   const order = sql => calls.findIndex(call => call.sql.startsWith(sql));
   assert.ok(order('DELETE FROM calendar_events') > order('BEGIN'));
   assert.ok(order('DELETE FROM calendar_accounts') < order('DELETE FROM mail_accounts'));

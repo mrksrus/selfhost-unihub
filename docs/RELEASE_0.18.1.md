@@ -21,7 +21,7 @@ and [Offline](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/OFFLINE.
 
 - **Deleting a disconnected account's data** (the bin icon) also lists the
   linked calendar and its events, and is confirmed with the account address
-  instead of the account ID.
+  instead of the account ID. The server checks the typed address too.
 
 ### Fixed
 

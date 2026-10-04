@@ -31,8 +31,8 @@ beforeEach(() => {
   });
   vi.mocked(api.delete).mockImplementation(async path => {
     if (path === '/mail/accounts/account-1') { disconnected = true; return { data: { success: true } }; }
-    if (path === '/mail/accounts/account-1?purge=true&confirm_purge=account-1') return { data: { success: true } };
-    if (path === '/mail/accounts/account-1?purge=true&disconnect=true&confirm_purge=account-1') return { data: { success: true } };
+    if (path === '/mail/accounts/account-1?purge=true&confirm_purge=Owner%40Example.test') return { data: { success: true } };
+    if (path === '/mail/accounts/account-1?purge=true&disconnect=true&confirm_purge=owner%40example.test') return { data: { success: true } };
     throw new Error(`Unexpected DELETE ${path}`);
   });
 });
@@ -79,7 +79,7 @@ describe('mail retention controls', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     fireEvent.change(screen.getByLabelText(/Type the account address/), { target: { value: 'Owner@Example.test ' } });
     expect(button).toBeEnabled();
     fireEvent.click(button);
-    await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1?purge=true&confirm_purge=account-1'));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1?purge=true&confirm_purge=Owner%40Example.test'));
   });
   it('disconnects and deletes a connected account in one confirmed step', async () => {
     calendarLinked = true; mount();
@@ -91,7 +91,7 @@ describe('mail retention controls', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     const button = screen.getByRole('button', { name: 'Disconnect and delete' });
     fireEvent.change(screen.getByLabelText(/Type the account address/), { target: { value: 'owner@example.test' } });
     fireEvent.click(button);
-    await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1?purge=true&disconnect=true&confirm_purge=account-1'));
+    await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1?purge=true&disconnect=true&confirm_purge=owner%40example.test'));
   });
   it('does not offer purge while provider effects are unresolved', async () => {
     disconnected = true; blocked = true; mount();
