@@ -65,11 +65,14 @@ async function disconnectAccount(userId, accountId) {
         WHERE mail_account_id = ? AND user_id = ? AND delete_status IN ('pending', 'failed')`, [accountId, userId]);
       // Accepted intents and their uncertain attempts are preserved unchanged.
       // The inactive account is a durable scheduling/dispatch guard, not a purge.
+      // Linked calendars are read before the commit, so stopping their work
+      // afterwards needs no database and cannot fail.
+      const [linkedCalendars] = await connection.execute('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?', [userId, accountId]);
       await connection.commit();
       // After the commit: a linked calendar's running sync or change stops now;
       // any that starts later finds the account disconnected.
-      await require('./calendar-sync').stopLinkedCalendarWork(userId, accountId)
-        .catch(error => console.warn('[CALENDAR] Could not stop linked calendar work:', error.message));
+      const { stopCalendarAccountWork } = require('./calendar-sync');
+      for (const row of linkedCalendars) stopCalendarAccountWork(row.id);
       return { message: 'Account disconnected. Retained mail and operation history are still available.', disconnected: true, retained_mail: true };
     } catch (error) { await connection.rollback(); throw error; }
     finally { connection.release(); }
