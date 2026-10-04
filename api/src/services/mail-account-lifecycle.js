@@ -9,7 +9,9 @@ const enabled = value => value === true || value === 1 || value === '1';
 const unresolved = `(state IN ('executing', 'verifying', 'reconciling')
   OR (dispatched = TRUE AND status <> 'done' AND state NOT IN ('confirmed', 'rejected')))`;
 
-async function purgePreview(userId, accountId, executor = db) {
+// `disconnecting`: the preview for "Disconnect and delete", which disconnects
+// first, so a still connected account does not block it.
+async function purgePreview(userId, accountId, executor = db, { disconnecting = false } = {}) {
   const [[account]] = await executor.execute('SELECT id, is_active FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
   if (!account) throw fail('Account not found', 404);
   const [[counts]] = await executor.execute(`SELECT COUNT(*) AS email_count,
@@ -20,11 +22,20 @@ async function purgePreview(userId, accountId, executor = db) {
     JOIN emails e ON e.id = a.email_id AND e.user_id = a.user_id WHERE e.mail_account_id = ? AND e.user_id = ?`, [accountId, userId]);
   const [[operations]] = await executor.execute(`SELECT COUNT(*) AS unresolved_operations FROM mail_writebacks
     WHERE mail_account_id = ? AND user_id = ? AND ${unresolved}`, [accountId, userId]);
-  const reason = enabled(account.is_active) ? 'Disconnect this account before permanently removing its retained mail.'
+  const [[calendar]] = await executor.execute(`SELECT COUNT(DISTINCT ca.id) AS calendar_accounts, COUNT(ev.id) AS calendar_events
+    FROM calendar_accounts ca LEFT JOIN calendar_calendars cc ON cc.account_id = ca.id AND cc.user_id = ca.user_id
+    LEFT JOIN calendar_events ev ON ev.calendar_id = cc.id AND ev.user_id = ca.user_id
+    WHERE ca.mail_account_id = ? AND ca.user_id = ?`, [accountId, userId]);
+  const calendarAccounts = Number(calendar.calendar_accounts) || 0;
+  // Purging also removes the linked calendar, which a calendar restore may be writing.
+  const calendarRestoring = calendarAccounts > 0 && await isSectionRestoreActive(userId, 'calendar');
+  const reason = enabled(account.is_active) && !disconnecting ? 'Disconnect this account before permanently removing its retained mail.'
+    : calendarRestoring ? 'Calendar restore is in progress. Try again when it has finished.'
     : Number(counts.recovered_elsewhere) ? 'This account is the source of mail retained in another account.'
       : Number(operations.unresolved_operations) ? 'Provider changes have an unresolved outcome. Reconnect and reconcile them before purging.' : null;
   return { account_id: accountId, email_count: Number(counts.email_count), raw_count: Number(counts.raw_count) || 0,
     attachment_count: Number(attachments.attachment_count), unresolved_operations: Number(operations.unresolved_operations),
+    calendar_accounts: calendarAccounts, calendar_events: Number(calendar.calendar_events) || 0,
     blocked: Boolean(reason), reason };
 }
 
@@ -117,4 +128,19 @@ async function purgeAccount(userId, accountId, confirmation) {
   });
 }
 
-module.exports = { purgePreview, disconnectAccount, purgeAccount, removeUnreferencedRaw };
+// One step for "Disconnect and delete": nothing changes when the purge is
+// already blocked; a purge refused after the disconnect (an operation became
+// unresolved meanwhile) leaves the account disconnected with its mail kept.
+async function disconnectAndPurgeAccount(userId, accountId, confirmation) {
+  if (confirmation !== accountId) throw fail('Explicit account purge confirmation is required', 400);
+  if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
+  const preview = await purgePreview(userId, accountId, db, { disconnecting: true });
+  if (preview.blocked) throw fail(preview.reason);
+  await disconnectAccount(userId, accountId);
+  try { return await purgeAccount(userId, accountId, confirmation); }
+  catch (error) {
+    throw Object.assign(error, { message: `The account was disconnected and its local mail kept: ${error.message}`, disconnected: true });
+  }
+}
+
+module.exports = { purgePreview, disconnectAccount, purgeAccount, disconnectAndPurgeAccount, removeUnreferencedRaw };

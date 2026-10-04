@@ -174,7 +174,7 @@ const MailPage = () => {
           movableFolders={movableFolders} bulk={bulk} onDeleteDraft={compose.setDraftToDelete} />
       )}
 
-      <MailAccountRemovalDialogs removal={accountRemoval} />
+      <MailAccountRemovalDialogs removal={accountRemoval} accounts={accounts} />
 
       {selectedEmail && (
         <MailReader email={selectedEmail} accounts={accounts} location={`${accountLabel} / ${folderLabel}`}

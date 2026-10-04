@@ -5,6 +5,11 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.18.1 Delete local account data, reconnect restored accounts
+
+No database upgrade or configuration change. Mail accounts that a restore
+paused stay paused until you enter their password in the account settings.
+
 ## 0.18.0 Selective backups
 
 No database upgrade or configuration change. Backups made with 0.18.0 that use

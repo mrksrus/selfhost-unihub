@@ -115,6 +115,8 @@ export interface MailPurgePreview {
   attachment_count: number;
   raw_count: number;
   unresolved_operations: number;
+  calendar_accounts?: number;
+  calendar_events?: number;
   blocked: boolean;
   reason?: string | null;
 }

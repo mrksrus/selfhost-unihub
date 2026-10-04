@@ -178,6 +178,24 @@ describe('pre-save impact for an existing account', () => {
   });
 });
 
+describe('reconnecting a paused account', () => {
+  it('reactivates an account a restore paused without disconnecting it', async () => {
+    const dialog = mountEditor({ ...downloadAccount, is_active: false, disconnected_at: null });
+    expect(within(dialog).getByText(/required to reconnect/)).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText(/^Password/), { target: { value: 'app-password' } });
+    fireEvent.click(saveButton(dialog));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/accounts/a2', expect.objectContaining({ encrypted_password: 'app-password', is_active: true })));
+  });
+
+  it('does not reactivate without a password', async () => {
+    const dialog = mountEditor({ ...downloadAccount, is_active: false, disconnected_at: null });
+    fireEvent.change(within(dialog).getByLabelText(/Display name/i), { target: { value: 'Archive' } });
+    fireEvent.click(saveButton(dialog));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.put).mock.calls[0][1]).not.toHaveProperty('is_active');
+  });
+});
+
 describe('sync policy upgrade gate', () => {
   const pending: MailAccount = { ...syncAccount, id: 'p1', email_address: 'old@example.test', sync_policy_confirmed: false, sync_policy_pending_removals: 5 };
   const nothingPending: MailAccount = { ...syncAccount, id: 'p2', email_address: 'empty@example.test', sync_policy_confirmed: false, sync_policy_pending_removals: 0 };

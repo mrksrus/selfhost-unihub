@@ -568,7 +568,8 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 | GET | `/api/mail/accounts/:id/mode-impact` | Local removals a mode/window choice would cause (counts only) |
 | POST | `/api/mail/accounts/:id/confirm-sync-policy` | Confirm Sync removal for an existing Sync account |
 | POST | `/api/mail/accounts/:id/backup-export` | Start a mail backup job of this account only |
-| DELETE | `/api/mail/accounts/:id` | Disconnect, or purge with explicit confirmation |
+| GET | `/api/mail/accounts/:id/purge-preview` | Counts and blocking reason for a purge; `?disconnect=true` previews disconnect and purge in one step |
+| DELETE | `/api/mail/accounts/:id` | Disconnect, or purge with `purge=true&confirm_purge=<id>`; add `disconnect=true` to disconnect and purge a connected account in one step |
 
 ### Messages
 

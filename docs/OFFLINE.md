@@ -12,7 +12,9 @@ The snapshot refreshes while an authenticated UniHub window is open, visible and
 
 After one completed save and application-shell installation, launch the installed PWA without connectivity. UniHub can reopen the last signed-in account's local snapshot and shows an offline, read-only banner with the saved time. Viewing a message does not mark it read. Editing, sending, deleting, importing, uploading and other server mutations require a connection and authenticated server session.
 
-The cached profile is only a local viewing identity. A network failure can open saved data; a confirmed 401/403 invalid session removes it. Reconnect revalidates the session before enabling writes. A server 500 error during startup does not masquerade as authenticated offline access.
+The cached profile is only a local viewing identity. A network failure can open saved data; a confirmed 401/403 invalid session removes it. Reconnect revalidates the session before enabling writes.
+
+A request that fails in the network while the app is open also switches it to offline, read-only mode when the snapshot can answer it. The next answer from the API (any status except a proxy's 502–504) ends it: with a live session the app continues directly, a saved identity from a cold start runs the full session check (at most every 30 seconds). A write refused in offline mode checks the connection once through a public route without side effects, so retrying shortly after works. **Retry connection** in the banner still checks immediately. A server 500 error during startup does not masquerade as authenticated offline access.
 
 **Clear device data**, explicit logout and switching accounts invalidate offline access, including other open tabs. Late downloads cannot restore a cleared snapshot or publish the previous account's data. Browser storage limits, manual site-data removal and browser eviction can remove the snapshot; it is a convenience copy, not a backup.
 

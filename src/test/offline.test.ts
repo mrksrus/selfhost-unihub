@@ -178,7 +178,9 @@ describe('offline API boundary', () => {
     expect(await api.put('/mail/emails/one/read', { is_read: true })).toMatchObject({ error: expect.stringContaining('read-only') });
     expect(await api.post('/auth/2fa/disable', {})).toMatchObject({ error: expect.stringContaining('read-only') });
     expect(await api.uploadBlob('/recordings', new Blob(['audio']))).toMatchObject({ error: expect.stringContaining('read-only') });
-    expect(fetchMock).not.toHaveBeenCalled();
+    // Only the side-effect-free connection check may go out, never the write.
+    expect(fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual(
+      Array(3).fill(['/api/auth/signup-mode', 'GET']));
   });
 });
 

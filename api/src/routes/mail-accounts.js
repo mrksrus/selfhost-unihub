@@ -596,7 +596,8 @@ module.exports = {
 
   'GET /api/mail/accounts/:id/purge-preview': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    try { return await mailAccountLifecycle.purgePreview(userId, req.params.id); }
+    const disconnecting = new URL(req.url, 'http://localhost').searchParams.get('disconnect') === 'true';
+    try { return await mailAccountLifecycle.purgePreview(userId, req.params.id, undefined, { disconnecting }); }
     catch (error) { return { error: error.status ? error.message : 'Could not preview account purge', status: error.status || 500 }; }
   },
 
@@ -606,7 +607,13 @@ module.exports = {
       const id = extractMailRouteId(req);
       const query = new URL(req.url, 'http://localhost').searchParams;
       if (query.get('purge') === 'true') {
-        const result = await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'));
+        const result = query.get('disconnect') === 'true'
+          ? await mailAccountLifecycle.disconnectAndPurgeAccount(userId, id, query.get('confirm_purge')).catch(async error => {
+            if (error.disconnected) await calendarAccounts.pauseLinkedCalendar(userId, id)
+              .catch(pauseError => console.warn('[CALENDAR] Could not pause linked calendar:', pauseError.message));
+            throw error;
+          })
+          : await mailAccountLifecycle.purgeAccount(userId, id, query.get('confirm_purge'));
         await calendarAccounts.removeLinkedCalendars(userId, id)
           .catch(error => console.warn('[CALENDAR] Could not remove linked calendar:', error.message));
         return result;

@@ -193,8 +193,8 @@ export function MailAccountList({ accounts, loading, selectedAccount, legacyCoun
                       variant="ghost"
                       size="icon"
                       className="h-7 w-7 text-destructive hover:text-destructive"
-                      title={account.disconnected_at ? 'Preview permanent purge' : 'Disconnect account and retain mail'}
-                      aria-label={account.disconnected_at ? `Preview purge for ${account.email_address}` : `Disconnect ${account.email_address}`}
+                      title={account.disconnected_at ? 'Delete local data' : 'Disconnect account'}
+                      aria-label={account.disconnected_at ? `Delete local data of ${account.email_address}` : `Disconnect ${account.email_address}`}
                       onClick={(e) => {
                         e.stopPropagation();
                         onRemove(account);

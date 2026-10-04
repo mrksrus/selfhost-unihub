@@ -166,7 +166,7 @@ export function MailAccountDialog({ editor, trigger, touch = false }: { editor: 
               )}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Password {editor.editingAccount && (editor.editingAccount.disconnected_at ? '(required to reconnect; leaving blank keeps local mail disconnected)' : '(leave blank to keep current)')}</Label>
+              <Label htmlFor="password">Password {editor.editingAccount && (editor.editingAccount.disconnected_at || !editor.editingAccount.is_active ? '(required to reconnect; leaving blank keeps local mail disconnected)' : '(leave blank to keep current)')}</Label>
               <Input
                 id="password"
                 type="password"

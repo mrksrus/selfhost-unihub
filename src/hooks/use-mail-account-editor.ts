@@ -200,7 +200,8 @@ export function useMailAccountEditor() {
       if (modeReview.blocked) return;
       setSaveError(null);
       updateAccount.mutate({ id: editingAccount.id, ...accountForm, ...confirmation(),
-        ...(editingAccount.disconnected_at && accountForm.password ? { is_active: true } : {}) });
+        // A restore pauses accounts without disconnecting them; a new password reconnects both.
+        ...((editingAccount.disconnected_at || !editingAccount.is_active) && accountForm.password ? { is_active: true } : {}) });
     } else {
       addAccount.mutate(accountForm);
     }

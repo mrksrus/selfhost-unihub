@@ -15,11 +15,12 @@ const { toast } = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
 let disconnected = false;
 let blocked = false;
+let calendarLinked = false;
 beforeEach(() => {
-  vi.resetAllMocks(); localStorage.clear(); setOfflineMode(false); disconnected = false; blocked = false;
+  vi.resetAllMocks(); localStorage.clear(); setOfflineMode(false); disconnected = false; blocked = false; calendarLinked = false;
   vi.mocked(api.get).mockImplementation(async path => {
     if (path === '/mail/accounts') return { data: { accounts: [{ id: 'account-1', email_address: 'owner@example.test', display_name: 'Owner', provider: 'custom', is_active: !disconnected, disconnected_at: disconnected ? '2026-09-29T00:00:00Z' : null, last_synced_at: null }] } };
-    if (path === '/mail/accounts/account-1/purge-preview') return { data: { account_id: 'account-1', email_count: 2, attachment_count: 1, raw_count: 2, unresolved_operations: blocked ? 1 : 0, blocked, reason: blocked ? 'Move outcome unresolved' : null } };
+    if (path === '/mail/accounts/account-1/purge-preview' || path === '/mail/accounts/account-1/purge-preview?disconnect=true') return { data: { account_id: 'account-1', email_count: 2, attachment_count: 1, raw_count: 2, unresolved_operations: blocked ? 1 : 0, calendar_accounts: calendarLinked ? 1 : 0, calendar_events: calendarLinked ? 4 : 0, blocked, reason: blocked ? 'Move outcome unresolved' : null } };
     if (path === '/mail/folders') return { data: { folders: [] } };
     if (path === '/mail/writebacks') return { data: { operations: [] } };
     if (path === '/mail/sync/status') return { data: { accounts: [] } };
@@ -31,6 +32,7 @@ beforeEach(() => {
   vi.mocked(api.delete).mockImplementation(async path => {
     if (path === '/mail/accounts/account-1') { disconnected = true; return { data: { success: true } }; }
     if (path === '/mail/accounts/account-1?purge=true&confirm_purge=account-1') return { data: { success: true } };
+    if (path === '/mail/accounts/account-1?purge=true&disconnect=true&confirm_purge=account-1') return { data: { success: true } };
     throw new Error(`Unexpected DELETE ${path}`);
   });
 });
@@ -62,29 +64,41 @@ describe('mail retention controls', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     fireEvent.click(screen.getByText('Retained subject'));
     expect(await screen.findByText('Disconnected · retained locally; provider presence unverified')).toBeInTheDocument();
     expect(screen.getAllByText('Retained body')).toHaveLength(2);
-    expect(screen.getByRole('button', { name: 'Preview purge for owner@example.test' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete local data of owner@example.test' })).toBeInTheDocument();
     expect(api.delete).toHaveBeenCalledTimes(1);
   });
-  it('requires a preview and the typed account ID before an explicit purge', async () => {
+  it('requires a preview and the typed account address before an explicit purge', async () => {
     disconnected = true; mount();
     await screen.findByText('Disconnected · local mail retained');
-    fireEvent.click(screen.getByRole('button', { name: 'Preview purge for owner@example.test' }));
-    expect(await screen.findByText(/2 emails, 1 attachments, 2 raw messages; 0 unresolved operations/)).toBeInTheDocument();
-    const button = screen.getByRole('button', { name: 'Purge local mail' });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete local data of owner@example.test' }));
+    expect(await screen.findByText(/2 emails, 1 attachment, 2 raw messages; 0 unresolved operations/)).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: 'Delete local data' });
     expect(button).toBeDisabled();
-    fireEvent.change(screen.getByLabelText(/Type the account ID/), { target: { value: 'wrong' } });
+    fireEvent.change(screen.getByLabelText(/Type the account address/), { target: { value: 'wrong@example.test' } });
     expect(button).toBeDisabled();
-    fireEvent.change(screen.getByLabelText(/Type the account ID/), { target: { value: 'account-1' } });
+    fireEvent.change(screen.getByLabelText(/Type the account address/), { target: { value: 'Owner@Example.test ' } });
     expect(button).toBeEnabled();
     fireEvent.click(button);
     await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1?purge=true&confirm_purge=account-1'));
   });
+  it('disconnects and deletes a connected account in one confirmed step', async () => {
+    calendarLinked = true; mount();
+    await screen.findByText('owner@example.test');
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect owner@example.test' }));
+    fireEvent.click(screen.getByRole('button', { name: 'delete local data…' }));
+    expect(await screen.findByText(/1 linked calendar account with 4 events/)).toBeInTheDocument();
+    expect(api.get).toHaveBeenCalledWith('/mail/accounts/account-1/purge-preview?disconnect=true');
+    const button = screen.getByRole('button', { name: 'Disconnect and delete' });
+    fireEvent.change(screen.getByLabelText(/Type the account address/), { target: { value: 'owner@example.test' } });
+    fireEvent.click(button);
+    await waitFor(() => expect(api.delete).toHaveBeenCalledExactlyOnceWith('/mail/accounts/account-1?purge=true&disconnect=true&confirm_purge=account-1'));
+  });
   it('does not offer purge while provider effects are unresolved', async () => {
     disconnected = true; blocked = true; mount();
     await screen.findByText('Disconnected · local mail retained');
-    fireEvent.click(screen.getByRole('button', { name: 'Preview purge for owner@example.test' }));
-    expect(await screen.findByText(/Purge blocked: Move outcome unresolved/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Purge local mail' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete local data of owner@example.test' }));
+    expect(await screen.findByText(/Delete blocked: Move outcome unresolved/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete local data' })).toBeDisabled();
     expect(api.delete).not.toHaveBeenCalled();
   });
 });

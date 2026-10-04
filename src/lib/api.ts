@@ -1,4 +1,4 @@
-import { isOfflineMode, readOfflineResponse } from '@/lib/offline';
+import { isOfflineMode, readOfflineResponse, setOfflineMode } from '@/lib/offline';
 
 // API client for UniHub backend
 
@@ -20,6 +20,10 @@ interface BlobResponse {
 function isBrowserOffline() {
   return typeof navigator !== 'undefined' && navigator.onLine === false;
 }
+
+// A proxy answering 502-504 has not reached the API.
+const reachedApi = (status: number) => status < 502 || status > 504;
+const OFFLINE_WRITE_MESSAGE = 'Offline mode is read-only. Reconnect and sign in before making changes.';
 
 function getNetworkErrorMessage(error: unknown) {
   if (isBrowserOffline()) {
@@ -67,6 +71,7 @@ type ApiRequestInit = Omit<RequestInit, 'headers'> & { headers?: Record<string, 
 class ApiClient {
   private baseUrl: string;
   private csrfToken: string | null = null;
+  private sessionRetryAt = 0;
 
   constructor(baseUrl: string = API_URL) {
     this.baseUrl = baseUrl;
@@ -74,6 +79,24 @@ class ApiClient {
 
   setCsrfToken(token: string | null) {
     this.csrfToken = token;
+  }
+
+  // One failed GET answered from the offline snapshot turns on offline mode.
+  // API responses are never service-worker cached, so any later API answer
+  // ends it. With a live session (CSRF token) the session continues; a saved
+  // identity from a cold start needs the full session check.
+  private leaveOfflineMode() {
+    if (this.csrfToken) { setOfflineMode(false); return; }
+    if (Date.now() - this.sessionRetryAt < 30_000) return;
+    this.sessionRetryAt = Date.now();
+    window.dispatchEvent(new Event('unihub:retry-session'));
+  }
+
+  // A write refused in offline mode checks whether the API is back, using a
+  // public route without side effects (/auth/me would rotate the CSRF cookie).
+  private probeConnection() {
+    if (isBrowserOffline()) return;
+    void this.get('/auth/signup-mode').catch(() => {});
   }
 
   getDownloadUrl(endpoint: string): string {
@@ -109,7 +132,8 @@ class ApiClient {
     const method = options.method?.toUpperCase() || 'GET';
     const isSessionAction = ['/auth/signin', '/auth/signup', '/auth/2fa/login', '/auth/signout'].includes(endpoint);
     if (method !== 'GET' && !isSessionAction && (isOfflineMode() || isBrowserOffline())) {
-      return { error: 'Offline mode is read-only. Reconnect and sign in before making changes.' };
+      this.probeConnection();
+      return { error: OFFLINE_WRITE_MESSAGE };
     }
     if (this.csrfToken && ['POST', 'PUT', 'DELETE'].includes(method)) {
       headers['X-CSRF-Token'] = this.csrfToken;
@@ -121,6 +145,7 @@ class ApiClient {
         headers,
         credentials: 'include',
       });
+      if (isOfflineMode() && reachedApi(response.status)) this.leaveOfflineMode();
 
       const contentType = response.headers.get('content-type') || '';
       const isJson = contentType.includes('application/json');
@@ -233,6 +258,7 @@ class ApiClient {
 
   async uploadBlob<T>(endpoint: string, blob: Blob, contentType = 'application/octet-stream'): Promise<ApiResponse<T>> {
     if (isOfflineMode() || isBrowserOffline()) {
+      this.probeConnection();
       return { error: 'Offline mode is read-only. Reconnect and sign in before uploading.' };
     }
     let url: string;
