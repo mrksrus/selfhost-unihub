@@ -92,6 +92,10 @@ test('an account settings backup restores accounts as fresh sign-ins without con
     account_email: 'calendar@example.test', username: 'calendar-user', discovery_url: 'https://8.8.8.8/dav/', base_url: 'https://8.8.8.8/dav/',
     encrypted_password: sourceCrypto.encrypt('synthetic-calendar-password'), is_active: 1, sync_status: 'ok' });
   await insert('calendar_calendars', { id: uuid(), user_id: sourceUser, account_id: calendarAccountId, name: 'Remote', external_id: 'https://8.8.8.8/dav/remote/' });
+  // Connected from the mail account: no password of its own (it uses the mail login).
+  await insert('calendar_accounts', { id: uuid(), user_id: sourceUser, provider: 'caldav', display_name: 'Mail calendar',
+    account_email: 'synced@example.test', username: 'synced-login', discovery_url: 'https://8.8.8.8/dav/', base_url: 'https://8.8.8.8/dav/synced/',
+    provider_config: JSON.stringify({ server: { url: 'https://8.8.8.8/dav/' }, mailLinked: true }), mail_account_id: mailAccountId, is_active: 1, sync_status: 'ok' });
   // Subscriptions keep their feed URL encrypted; email and base_url are empty.
   for (const [name, feed] of [['Holidays', 'https://8.8.8.8/holidays.ics'], ['Sports', 'https://8.8.8.8/sports.ics']]) {
     await insert('calendar_accounts', { id: uuid(), user_id: sourceUser, provider: 'ics', display_name: name,
@@ -135,7 +139,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
     await restoreJobs.unlockRestoreJob(userId, created.id, password);
     const validated = await waitFor(() => restoreJobs.getRestoreJob(userId, created.id), job => job?.status === 'validated', 'Validation');
     assert.deepEqual(validated.validation_result.account_only_sections, ['calendar', 'mail']);
-    assert.deepEqual(validated.validation_result.counts, { user_settings: 1, calendar_accounts: 3, mail_accounts: 1 });
+    assert.deepEqual(validated.validation_result.counts, { user_settings: 1, calendar_accounts: 4, mail_accounts: 1 });
     await restoreJobs.startRestoreJob(userId, created.id);
     return waitFor(() => restoreJobs.getRestoreJob(userId, created.id), job => job?.status === 'completed', 'Restore');
   }
@@ -161,11 +165,14 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   assert.equal((await rows('mail_folders', destinationUser)).some(row => row.slug === 'custom-folder'), false);
   assert.deepEqual(await rows('contacts', destinationUser), [], 'Unselected sections are not exported');
   const calendarAccounts = await rows('calendar_accounts', destinationUser);
-  assert.deepEqual(calendarAccounts.map(row => row.provider).sort(), ['caldav', 'ics', 'ics'], 'Local calendars are calendar content');
-  const caldav = calendarAccounts.find(row => row.provider === 'caldav');
+  assert.deepEqual(calendarAccounts.map(row => row.provider).sort(), ['caldav', 'caldav', 'ics', 'ics'], 'Local calendars are calendar content');
+  const caldav = calendarAccounts.find(row => row.account_email === 'calendar@example.test');
+  const mailCalendar = calendarAccounts.find(row => row.account_email === 'synced@example.test');
+  assert.deepEqual([mailCalendar.is_active, mailCalendar.encrypted_password, mailCalendar.mail_account_id], [1, null, null],
+    'A mail calendar is restored on: it finds its mail account when it first syncs');
   assert.equal(caldav.is_active, 1);
   assert.equal(caldav.last_synced_at, null);
-  assert.deepEqual(calendarAccounts.map(row => row.sync_status), ['pending', 'pending', 'pending'], 'The first sync is owed');
+  assert.deepEqual(calendarAccounts.map(row => row.sync_status), ['pending', 'pending', 'pending', 'pending'], 'The first sync is owed');
   assert.equal(destinationCrypto.decrypt(caldav.encrypted_password), 'synthetic-calendar-password');
   assert.deepEqual(calendarAccounts.filter(row => row.provider === 'ics').map(row => destinationCrypto.decrypt(row.encrypted_password)).sort(),
     ['https://8.8.8.8/holidays.ics', 'https://8.8.8.8/sports.ics'], 'Each subscription is restored');
@@ -176,7 +183,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   // skip it.
   const [jobs] = await pool.execute('SELECT kind, state, manual_refresh FROM mail_engine_jobs WHERE mail_account_id = ?', [restoredMail.id]);
   assert.deepEqual(jobs.map(job => [job.kind, job.state, Number(job.manual_refresh)]), [['sync', 'queued', 1]]);
-  await waitFor(async () => started_syncs, calls => calls.length === 4, 'Sync start');
+  await waitFor(async () => started_syncs, calls => calls.length === 5, 'Sync start');
   assert.deepEqual(started_syncs[0], ['mail', restoredMail.id, false]);
   assert.deepEqual(started_syncs.slice(1).map(call => call[1]).sort(), calendarAccounts.map(row => row.id).sort());
 
@@ -188,7 +195,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   assert.match(again.result_counts.warnings.join('\n'), /Calendar account calendar@example.test is already connected/);
   assert.equal((await rows('mail_accounts', destinationUser)).length, 2);
   assert.match(again.result_counts.warnings.join('\n'), /Calendar account Sports is already connected/);
-  assert.equal((await rows('calendar_accounts', destinationUser)).length, 3);
+  assert.equal((await rows('calendar_accounts', destinationUser)).length, 4);
   assert.equal((await rows('mail_accounts', destinationUser)).find(row => row.id === restoredMail.id).sync_window_days, 30);
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.deepEqual(started_syncs, []);
@@ -205,7 +212,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   const engineState = async () => (await pool.execute(`SELECT j.state, a.paused_reason FROM mail_engine_jobs j
     JOIN mail_engine_accounts a ON a.mail_account_id = j.mail_account_id WHERE j.mail_account_id = ?`, [waiting.id]))[0];
   assert.deepEqual(await engineState(), [{ state: 'paused', paused_reason: 'Mail module disabled' }]);
-  await waitFor(async () => started_syncs, calls => calls.length === 3, 'Calendar sync start');
+  await waitFor(async () => started_syncs, calls => calls.length === 4, 'Calendar sync start');
   assert.equal(started_syncs.some(call => call[0] === 'mail'), false, 'Disabled Mail is not woken');
   await destination('routes/modules')['PUT /api/modules']({}, disabledUser, { modules: { mail: { enabled: true, background: false } } });
   assert.deepEqual(await engineState(), [{ state: 'queued', paused_reason: null }]);

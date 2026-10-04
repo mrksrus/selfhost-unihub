@@ -31,6 +31,7 @@ const REMOTE_PROVIDERS = new Set(['caldav', 'ics']);
 const CALENDAR_COLORS = ['#22c55e', '#3b82f6', '#f97316', '#a855f7', '#ef4444', '#14b8a6', '#eab308', '#ec4899'];
 
 const inFlight = new Map();
+const followUps = new Set();
 let passRunning = false;
 
 function syncError(message, status = 400, code) {
@@ -556,10 +557,23 @@ async function runAccountSync(accountId, { userId, reason, full }) {
 }
 
 // No login (mail disconnected, or no password saved): the account waits, and
-// is tried again at its next turn. Conditional: a user's pause keeps its status.
+// is tried again at its next turn. Conditional: a user's pause keeps its
+// status, and a mail account connected again meanwhile is not noted as
+// disconnected. Its reconnect may have joined this run instead of starting
+// one, so the calendar syncs again right after it.
 async function noteMissingLogin(account, message) {
-  await db.execute(`UPDATE calendar_accounts SET sync_status = 'paused', sync_error = ?, next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND
-    WHERE id = ? AND is_active = TRUE`, [message, Math.round(SYNC_INTERVAL_MS / 1000), account.id]);
+  const [noted] = await db.execute(`UPDATE calendar_accounts ca
+    LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+    SET ca.sync_status = 'paused', ca.sync_error = ?, ca.next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND
+    WHERE ca.id = ? AND ca.is_active = TRUE AND (ca.mail_account_id IS NULL OR m.id IS NULL OR NOT (${MAIL_CONNECTED_SQL}))`,
+  [message, Math.round(SYNC_INTERVAL_MS / 1000), account.id]);
+  if (!noted.affectedRows) {
+    const current = await loadAccount(account.id, account.user_id);
+    if (current?.is_active && current.mail_account_id) {
+      await db.execute("UPDATE calendar_accounts SET sync_status = 'pending', next_sync_at = NULL WHERE id = ? AND is_active = TRUE", [account.id]);
+      followUps.add(account.id);
+    }
+  }
   publishCalendarChanged(account.user_id, account.id, 'status');
 }
 
@@ -628,10 +642,15 @@ async function syncLocked(accountId, { userId, full }, signal) {
   return { ok: true, ...ctx.stats };
 }
 
-// Concurrent requests for the same account share one run.
+// Concurrent requests for the same account share one run. A run that found
+// the mail account connected again only after it gave up asks for a new one
+// (followUps), started once it has ended.
 function syncCalendarAccount(accountId, { userId = null, reason = 'manual', full = false } = {}) {
   if (inFlight.has(accountId)) return inFlight.get(accountId);
-  const run = runAccountSync(accountId, { userId, reason, full }).finally(() => inFlight.delete(accountId));
+  const run = runAccountSync(accountId, { userId, reason, full }).finally(() => {
+    inFlight.delete(accountId);
+    if (followUps.delete(accountId)) syncCalendarAccountInBackground(accountId, { userId, reason: 'credentials' });
+  });
   inFlight.set(accountId, run);
   return run;
 }

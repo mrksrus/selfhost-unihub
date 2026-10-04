@@ -37,6 +37,8 @@ function calendarFixture(t, { account = {}, mail = MAIL_LOGIN, caldav = {} } = {
     if (sql.includes('FROM calendar_event_external_refs r JOIN calendar_remote_objects')) return [[{ object_id: 'object', href: '/a.ics', etag: '"1"', ics: 'BEGIN:VEVENT\r\nEND:VEVENT' }]];
     if (sql.includes('GET_LOCK')) return [[{ acquired: 1 }]];
     if (sql.includes('RELEASE_LOCK')) return [[{}]];
+    // The missing-login note applies only while the mail account is disconnected.
+    if (sql.includes("ca.sync_status = 'paused'")) { if (state.mail) return [{ affectedRows: 0 }]; writes.push([sql, params]); return [{ affectedRows: 1 }]; }
     if (/^(UPDATE|DELETE|INSERT)/.test(sql.trim())) { writes.push([sql, params]); return [{ affectedRows: 1 }]; }
     return [[]];
   };
@@ -64,9 +66,9 @@ test('a linked calendar waits while its mail account is disconnected and changes
   assert.deepEqual(await sync.syncCalendarAccount('linked', { userId: 'owner' }), { skipped: true, reason: 'mail-disconnected' });
   const noted = writes.filter(([sql]) => sql.includes("sync_status = 'paused'"));
   assert.equal(noted.length, 1);
-  assert.match(noted[0][0], /AND is_active = TRUE/, 'A pause of the user keeps its status');
+  assert.match(noted[0][0], /AND ca.is_active = TRUE/, 'A pause of the user keeps its status');
   assert.equal(noted[0][1][0], sync.MAIL_DISCONNECTED_MESSAGE);
-  assert.ok(writes.every(([sql]) => !/encrypted_password|is_active = FALSE/.test(sql)), 'No login or switch of the calendar is changed');
+  assert.ok(writes.every(([sql]) => !/encrypted_password\s*=|is_active\s*=\s*FALSE/.test(sql)), 'No login or switch of the calendar is changed');
 
   await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event }), error => error.status === 409 && error.code === 'MAIL_ACCOUNT_DISCONNECTED');
   await assert.rejects(sync.pushEventMove({ userId: 'owner', event: { ...event, calendar_id: 'source' }, targetCalendarId: 'target', changes: {} }),
@@ -105,13 +107,14 @@ test('a calendar with its own password does not look for a mail account', async 
 test('a mail disconnect stops a linked calendar sync that is already talking to the server', async t => {
   let reached;
   const listing = new Promise(resolve => { reached = resolve; });
-  const { sync, writes } = calendarFixture(t, { caldav: { listCalendars: ({ signal }) => {
+  const { sync, writes, state } = calendarFixture(t, { caldav: { listCalendars: ({ signal }) => {
     reached(signal);
     return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
   } } });
   const run = sync.syncCalendarAccount('linked', { userId: 'owner' });
   const signal = await listing;
   assert.equal(signal.aborted, false);
+  state.mail = null;
   await sync.stopLinkedCalendarWork('owner', 'mail');
   assert.equal(signal.aborted, true);
   await assert.rejects(run, error => error.code === 'MAIL_ACCOUNT_DISCONNECTED');
@@ -119,6 +122,31 @@ test('a mail disconnect stops a linked calendar sync that is already talking to 
   assert.equal(statuses.at(-1), sync.MAIL_DISCONNECTED_MESSAGE, 'The stopped run notes the disconnect, not a sync error');
   assert.ok(statuses.every(value => !String(value).includes('aborted')));
   assert.equal(sync.runningCalendarWorkCount(), 0);
+});
+
+test('a mail account reconnected while its stopped sync unwinds is not noted as disconnected and syncs again', async t => {
+  let calls = 0, reached;
+  const listing = new Promise(resolve => { reached = resolve; });
+  let followed;
+  const followUp = new Promise(resolve => { followed = resolve; });
+  const { sync, writes, state } = calendarFixture(t, { caldav: { listCalendars: ({ signal }) => {
+    calls += 1;
+    if (calls > 1) { followed(); return Promise.resolve([]); }
+    reached(signal);
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+  } } });
+  const run = sync.syncCalendarAccount('linked', { userId: 'owner' });
+  await listing;
+  await sync.stopLinkedCalendarWork('owner', 'mail');
+  // The reconnect lands before the stopped run notes the disconnect, and its
+  // own sync request joins that run.
+  const joined = sync.syncCalendarAccount('linked', { userId: 'owner' });
+  assert.equal(joined, run);
+  await assert.rejects(run, error => error.code === 'MAIL_ACCOUNT_DISCONNECTED');
+  assert.ok(writes.every(([sql]) => !sql.includes("ca.sync_status = 'paused'")), 'No disconnect is noted');
+  assert.ok(writes.some(([sql]) => sql.includes("sync_status = 'pending', next_sync_at = NULL")));
+  await followUp;
+  assert.equal(calls, 2, 'A new sync runs after the stopped one');
 });
 
 test('a finished calendar sync releases its stop switch', async t => {
@@ -130,8 +158,9 @@ test('a finished calendar sync releases its stop switch', async t => {
 });
 
 test('a mail disconnect after the last server response keeps the sync from reporting success', async t => {
-  let sync, writes;
-  ({ sync, writes } = calendarFixture(t, { caldav: { listCalendars: async () => {
+  let sync, writes, state;
+  ({ sync, writes, state } = calendarFixture(t, { caldav: { listCalendars: async () => {
+    state.mail = null;
     await sync.stopLinkedCalendarWork('owner', 'mail');
     return [];
   } } }));

@@ -27,6 +27,7 @@ const {
 } = require('./backup-validate');
 const {
   prepareCredentialsForRestore,
+  restoredCalendarLacksLogin,
   overwriteUserId,
   checkRestoredAccountPolicy,
   shouldWriteExisting,
@@ -231,8 +232,8 @@ async function importBackupForUser(userId, backup, {
           continue;
         }
         const accepted = await checkRestoredAccountPolicy(row, 'calendar', validation.warnings);
-        const active = accepted
-          && !!(row.encrypted_password || row.encrypted_access_token || row.encrypted_refresh_token);
+        // A mail calendar uses the login of its mail account (none of its own).
+        const active = accepted && !restoredCalendarLacksLogin(row);
         if (accepted && !active) validation.warnings.push(`Calendar account ${accountLabel(row)} has no usable login in this backup. Sign in again in Calendar settings to start sync.`);
         await writeOwnedRow(connection, userId, 'calendar_accounts',
           ['id', 'user_id', 'provider', 'account_email', 'display_name', 'username', 'encrypted_password', 'discovery_url', 'base_url', 'encrypted_access_token', 'encrypted_refresh_token', 'token_expires_at', 'provider_config', 'capabilities', 'is_active', 'sync_status', 'sync_error', 'last_synced_at'],
