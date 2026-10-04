@@ -316,7 +316,7 @@ async function setMailCalendar(userId, mailAccountId, { enabled, caldav_url: cal
 // CalDAV account uses that login too. Calendar data changes only while the
 // module is on and no calendar restore runs; otherwise the calendar keeps its
 // state and the next calendar pass picks the login up.
-async function updateLinkedCalendarCredentials(userId, mailAccountId) {
+async function updateLinkedCalendarCredentials(userId, mailAccountId, { sync = true } = {}) {
   if (!await isModuleEnabled(userId, 'calendar') || await isSectionRestoreActive(userId, 'calendar')) return;
   const [mails] = await db.execute('SELECT id, email_address, username, encrypted_password, is_active FROM mail_accounts WHERE id = ? AND user_id = ?', [mailAccountId, userId]);
   const mail = mails[0];
@@ -338,7 +338,7 @@ async function updateLinkedCalendarCredentials(userId, mailAccountId) {
       SET ca.is_active = TRUE, ca.sync_status = 'pending', ca.sync_error = NULL, ca.next_sync_at = NULL
       WHERE ca.id = ? AND ca.user_id = ? AND (ca.is_active = TRUE OR ca.sync_error = ?) AND ${mailConnected}`,
     [row.id, userId, MAIL_DISCONNECTED_MESSAGE]);
-    if (resumed.affectedRows) calendarSync.syncCalendarAccountInBackground(row.id, { userId, reason: 'credentials' });
+    if (resumed.affectedRows && sync) calendarSync.syncCalendarAccountInBackground(row.id, { userId, reason: 'credentials' });
   }
 }
 

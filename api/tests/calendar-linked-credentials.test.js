@@ -41,6 +41,9 @@ test('a mail login change or disconnect reaches the linked calendar only while C
   assert.equal(writes.length, 2); assert.deepEqual(syncs, ['calendar-account']);
   await pauseLinkedCalendar('owner', 'mail');
   assert.equal(writes.length, 2); assert.deepEqual(pauses, ['calendar-account'], 'The pause goes through the conditional mail check');
+  // The calendar pass refreshes the login without a sync of its own.
+  await updateLinkedCalendarCredentials('owner', 'mail', { sync: false });
+  assert.equal(writes.length, 4); assert.deepEqual(syncs, ['calendar-account']);
 });
 
 test('calendar sync rechecks the linked mail account under its lock and pauses instead of logging in', async t => {
@@ -206,6 +209,15 @@ test('a mail disconnect stops a linked calendar sync that is already talking to 
   assert.equal(signal.aborted, true);
   await assert.rejects(run, error => error.code === 'MAIL_ACCOUNT_DISCONNECTED');
   assert.ok(statusWrites.every(params => !String(params[0]).includes('aborted')), 'A stopped run does not report a sync error');
+  assert.equal(sync.runningCalendarWorkCount(), 0);
+});
+
+test('a finished calendar sync releases its stop switch', async t => {
+  let sync, running;
+  ({ sync } = stoppableSyncFixture(t, async () => { running = sync.runningCalendarWorkCount(); return []; }));
+  await sync.syncCalendarAccount('linked', { userId: 'owner' });
+  assert.equal(running, 1);
+  assert.equal(sync.runningCalendarWorkCount(), 0, 'No entry is kept after the run');
 });
 
 test('a mail disconnect after the last server response keeps the sync from reporting success', async t => {

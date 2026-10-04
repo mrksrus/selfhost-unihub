@@ -70,17 +70,31 @@ function accountLogin(account, signal) {
 // every CalDAV request. A mail disconnect commits first and then stops the
 // switch: work that started earlier is aborted mid-request, work that starts
 // later sees the disconnected mail account in its check.
+// Each entry is counted by the work using it and removed when the last one
+// ends, so the map holds only accounts with work running.
 const accountWork = new Map();
-function accountWorkSignal(accountId) {
-  let controller = accountWork.get(accountId);
-  if (!controller) accountWork.set(accountId, controller = new AbortController());
-  return controller.signal;
+function beginAccountWork(accountId) {
+  let entry = accountWork.get(accountId);
+  if (!entry) accountWork.set(accountId, entry = { controller: new AbortController(), users: 0 });
+  entry.users += 1;
+  let released = false;
+  return {
+    signal: entry.controller.signal,
+    release() {
+      if (released) return;
+      released = true;
+      entry.users -= 1;
+      if (!entry.users && accountWork.get(accountId) === entry) accountWork.delete(accountId);
+    },
+  };
 }
 function stopCalendarAccountWork(accountId) {
-  const controller = accountWork.get(accountId);
+  const entry = accountWork.get(accountId);
   accountWork.delete(accountId);
-  controller?.abort(Object.assign(new Error('Calendar work stopped: the mail account was disconnected.'), { status: 409, code: 'MAIL_ACCOUNT_DISCONNECTED' }));
+  entry?.controller.abort(Object.assign(new Error('Calendar work stopped: the mail account was disconnected.'), { status: 409, code: 'MAIL_ACCOUNT_DISCONNECTED' }));
 }
+// For tests: accounts with work running.
+const runningCalendarWorkCount = () => accountWork.size;
 async function stopLinkedCalendarWork(userId, mailAccountId) {
   const [rows] = await db.execute('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?', [userId, mailAccountId]);
   for (const row of rows) stopCalendarAccountWork(row.id);
@@ -570,7 +584,9 @@ async function refreshCalendarsOfConnectedMail() {
     const [rows] = await db.execute(`SELECT DISTINCT ca.mail_account_id FROM calendar_accounts ca
       JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
       WHERE ca.user_id = ? AND ${LINKED_MISSING_MAIL_LOGIN}`, [userId, MAIL_DISCONNECTED_MESSAGE]);
-    for (const row of rows) await updateLinkedCalendarCredentials(userId, row.mail_account_id);
+    // No sync of its own: this pass syncs it as scheduled work, which honours
+    // the Background work setting.
+    for (const row of rows) await updateLinkedCalendarCredentials(userId, row.mail_account_id, { sync: false });
   }
 }
 
@@ -590,60 +606,64 @@ async function runAccountSync(accountId, { userId, reason, full }) {
   if (!account.is_active) return { skipped: true, reason: await pauseIfMailDisconnected(account) ? 'mail-disconnected' : 'inactive' };
 
   return withAccountLock(accountId, async () => {
-    // Reloaded under the lock: a disconnect or credential change while the
-    // lock was awaited must not leave this run with the old login.
-    const signal = accountWorkSignal(accountId);
-    const account = await loadAccount(accountId, userId);
-    if (!account) return { skipped: true, reason: 'inactive' };
-    if (await pauseIfMailDisconnected(account)) return { skipped: true, reason: 'mail-disconnected' };
-    if (!account.is_active) return { skipped: true, reason: 'inactive' };
-    await db.execute("UPDATE calendar_accounts SET sync_status = 'syncing' WHERE id = ?", [account.id]);
-    publishCalendarChanged(account.user_id, account.id, 'status');
-    const now = Date.now();
-    const ctx = {
-      account,
-      login: account.provider === 'caldav' ? accountLogin(account, signal) : null,
-      timeZone: await resolveTimeZone(account),
-      windowStartMs: now - WINDOW_PAST_MS,
-      windowEndMs: now + WINDOW_FUTURE_MS,
-      // The first sync imports history; only later additions are announced.
-      notify: !!account.last_synced_at && !full,
-      newEvents: [],
-      stats: { calendars: 0, changedObjects: 0, removedObjects: 0, events: 0, removedEvents: 0, unreadable: 0 },
-    };
-    try {
-      if (account.provider === 'ics') await syncIcsAccount(ctx, { full });
-      else await syncCalDavAccount(ctx, { full });
-      // Everything readable is up to date; unreadable entries are reported
-      // and downloaded again by the next sync.
-      const unreadable = ctx.stats.unreadable;
-      if (signal.aborted) throw signal.reason;
-      // Conditional: a pause after the last server response keeps its status.
-      await db.execute(
-        `UPDATE calendar_accounts SET sync_status = ?, sync_error = ?, last_synced_at = UTC_TIMESTAMP(),
-           next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND WHERE id = ? AND is_active = TRUE`,
-        [unreadable ? 'error' : 'ok', unreadable ? unreadableMessage(unreadable) : null, Math.round(SYNC_INTERVAL_MS / 1000), account.id]
-      );
-    } catch (error) {
-      // Stopped by a mail disconnect: the pause already set the status.
-      if (signal.aborted) throw signal.reason;
-      const retryMs = error?.status === 401 || error?.status === 403 ? AUTH_ERROR_RETRY_MS : ERROR_RETRY_MS;
-      await db.execute(
-        `UPDATE calendar_accounts SET sync_status = 'error', sync_error = ?, next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND
-         WHERE id = ? AND is_active = TRUE`,
-        [userFacingError(error), Math.round(retryMs / 1000), account.id]
-      ).catch(() => {});
-      publishCalendarChanged(account.user_id, account.id, 'sync');
-      throw error;
-    }
-    const { enqueueCalendarNotification } = require('./notifications');
-    for (const eventId of ctx.newEvents.slice(0, MAX_NEW_EVENT_NOTIFICATIONS)) {
-      await enqueueCalendarNotification({ userId: account.user_id, eventId }).catch(error =>
-        console.warn('[CALENDAR] New event notification failed:', error.message));
-    }
-    publishCalendarChanged(account.user_id, account.id, 'sync');
-    return { ok: true, ...ctx.stats };
+    const work = beginAccountWork(accountId);
+    try { return await syncLocked(accountId, { userId, full }, work.signal); } finally { work.release(); }
   });
+}
+
+async function syncLocked(accountId, { userId, full }, signal) {
+  // Reloaded under the lock: a disconnect or credential change while the
+  // lock was awaited must not leave this run with the old login.
+  const account = await loadAccount(accountId, userId);
+  if (!account) return { skipped: true, reason: 'inactive' };
+  if (await pauseIfMailDisconnected(account)) return { skipped: true, reason: 'mail-disconnected' };
+  if (!account.is_active) return { skipped: true, reason: 'inactive' };
+  await db.execute("UPDATE calendar_accounts SET sync_status = 'syncing' WHERE id = ?", [account.id]);
+  publishCalendarChanged(account.user_id, account.id, 'status');
+  const now = Date.now();
+  const ctx = {
+    account,
+    login: account.provider === 'caldav' ? accountLogin(account, signal) : null,
+    timeZone: await resolveTimeZone(account),
+    windowStartMs: now - WINDOW_PAST_MS,
+    windowEndMs: now + WINDOW_FUTURE_MS,
+    // The first sync imports history; only later additions are announced.
+    notify: !!account.last_synced_at && !full,
+    newEvents: [],
+    stats: { calendars: 0, changedObjects: 0, removedObjects: 0, events: 0, removedEvents: 0, unreadable: 0 },
+  };
+  try {
+    if (account.provider === 'ics') await syncIcsAccount(ctx, { full });
+    else await syncCalDavAccount(ctx, { full });
+    // Everything readable is up to date; unreadable entries are reported
+    // and downloaded again by the next sync.
+    const unreadable = ctx.stats.unreadable;
+    if (signal.aborted) throw signal.reason;
+    // Conditional: a pause after the last server response keeps its status.
+    await db.execute(
+      `UPDATE calendar_accounts SET sync_status = ?, sync_error = ?, last_synced_at = UTC_TIMESTAMP(),
+         next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND WHERE id = ? AND is_active = TRUE`,
+      [unreadable ? 'error' : 'ok', unreadable ? unreadableMessage(unreadable) : null, Math.round(SYNC_INTERVAL_MS / 1000), account.id]
+    );
+  } catch (error) {
+    // Stopped by a mail disconnect: the pause already set the status.
+    if (signal.aborted) throw signal.reason;
+    const retryMs = error?.status === 401 || error?.status === 403 ? AUTH_ERROR_RETRY_MS : ERROR_RETRY_MS;
+    await db.execute(
+      `UPDATE calendar_accounts SET sync_status = 'error', sync_error = ?, next_sync_at = UTC_TIMESTAMP() + INTERVAL ? SECOND
+       WHERE id = ? AND is_active = TRUE`,
+      [userFacingError(error), Math.round(retryMs / 1000), account.id]
+    ).catch(() => {});
+    publishCalendarChanged(account.user_id, account.id, 'sync');
+    throw error;
+  }
+  const { enqueueCalendarNotification } = require('./notifications');
+  for (const eventId of ctx.newEvents.slice(0, MAX_NEW_EVENT_NOTIFICATIONS)) {
+    await enqueueCalendarNotification({ userId: account.user_id, eventId }).catch(error =>
+      console.warn('[CALENDAR] New event notification failed:', error.message));
+  }
+  publishCalendarChanged(account.user_id, account.id, 'sync');
+  return { ok: true, ...ctx.stats };
 }
 
 // Concurrent requests for the same account share one run.
@@ -709,16 +729,14 @@ function assertWritable({ account, calendar }) {
   if (!account.is_active) throw syncError('Sync is paused for this calendar account, so changes cannot be saved to it.', 409, 'CALENDAR_SYNC_PAUSED');
 }
 
-async function writeContext(ctx) {
-  // Every writeback builds its login here; a disconnected mail account's
-  // copied password is never used for a provider change.
-  const signal = accountWorkSignal(ctx.account.id);
-  await assertMailLoginUsable(ctx.account);
-  return {
-    ...ctx,
-    login: accountLogin(ctx.account, signal),
-    timeZone: await resolveTimeZone(ctx.account),
-  };
+// Every writeback builds its login here; a disconnected mail account's
+// copied password is never used for a provider change.
+async function withWriteContext(base, write) {
+  const work = beginAccountWork(base.account.id);
+  try {
+    await assertMailLoginUsable(base.account);
+    return await write({ ...base, login: accountLogin(base.account, work.signal), timeZone: await resolveTimeZone(base.account) });
+  } finally { work.release(); }
 }
 
 function rebuildContext(ctx) {
@@ -789,20 +807,21 @@ async function pushCreatedEvent({ userId, event, calendarId = event.calendar_id 
   if (!base) return null;
   if (event.is_todo_only) throw syncError('ToDos without a date cannot be saved to a server calendar.', 400, 'CALENDAR_TODO_REMOTE');
   assertWritable(base);
-  const ctx = await writeContext(base);
-  const { uid, ics } = ical.createEventIcs(eventFields(event), { userTimeZone: ctx.timeZone });
-  const collection = calendarUrl(ctx.account, ctx.calendar);
-  const url = new URL(`${encodeURIComponent(uid)}.ics`, collection.endsWith('/') ? collection : `${collection}/`).toString();
-  const { etag } = await caldav.putCalendarObject({ url, ics, etag: null, ...ctx.login }).catch(error => handleConflict(ctx, error));
-  const object = await storeObject(ctx.account, ctx.calendar, { href: caldav.canonicalHref(url), etag, ics });
-  await db.execute(
-    `INSERT INTO calendar_event_external_refs
-      (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
-     VALUES (?, ?, ?, ?, ?, 'caldav', ?, ?, ?, NULL, UTC_TIMESTAMP())`,
-    [crypto.randomUUID(), userId, event.id, ctx.calendar.id, ctx.account.id, externalEventId(object.id, ''), etag || null, object.id]
-  );
-  publishCalendarChanged(userId, ctx.account.id, 'local');
-  return { objectId: object.id };
+  return withWriteContext(base, async ctx => {
+    const { uid, ics } = ical.createEventIcs(eventFields(event), { userTimeZone: ctx.timeZone });
+    const collection = calendarUrl(ctx.account, ctx.calendar);
+    const url = new URL(`${encodeURIComponent(uid)}.ics`, collection.endsWith('/') ? collection : `${collection}/`).toString();
+    const { etag } = await caldav.putCalendarObject({ url, ics, etag: null, ...ctx.login }).catch(error => handleConflict(ctx, error));
+    const object = await storeObject(ctx.account, ctx.calendar, { href: caldav.canonicalHref(url), etag, ics });
+    await db.execute(
+      `INSERT INTO calendar_event_external_refs
+        (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
+       VALUES (?, ?, ?, ?, ?, 'caldav', ?, ?, ?, NULL, UTC_TIMESTAMP())`,
+      [crypto.randomUUID(), userId, event.id, ctx.calendar.id, ctx.account.id, externalEventId(object.id, ''), etag || null, object.id]
+    );
+    publishCalendarChanged(userId, ctx.account.id, 'local');
+    return { objectId: object.id };
+  });
 }
 
 // Write changed fields of an event to the server. scope applies to recurring
@@ -816,28 +835,29 @@ async function pushEventUpdate({ userId, event, changes, scope }) {
     await assertNotPendingLink(base, userId, event.id);
     return pushCreatedEvent({ userId, event: { ...event, ...changes } });
   }
-  const ctx = await writeContext(base);
-  const merged = eventFields({ ...event, ...changes });
-  const fields = {};
-  if ('title' in changes) fields.title = merged.title;
-  if ('description' in changes) fields.description = merged.description;
-  if ('location' in changes) fields.location = merged.location;
-  if ('reminders' in changes || 'reminder_minutes' in changes) fields.reminders = merged.reminders;
-  if ('start_time' in changes || 'end_time' in changes || 'all_day' in changes) {
-    Object.assign(fields, { startMs: merged.startMs, endMs: merged.endMs, allDay: merged.allDay });
-  }
-  if (!Object.keys(fields).length) return { unchanged: true };
-  const recurring = isRecurringIcs(link.object.ics);
-  const effectiveScope = recurring ? (scope === 'series' || !link.recurrenceId ? 'series' : 'occurrence') : 'series';
-  const ics = ical.updateEventIcs(link.object.ics, fields, {
-    recurrenceId: link.recurrenceId, scope: effectiveScope, previousStartMs: parseDatetimeToMillis(event.start_time), userTimeZone: ctx.timeZone,
+  return withWriteContext(base, async ctx => {
+    const merged = eventFields({ ...event, ...changes });
+    const fields = {};
+    if ('title' in changes) fields.title = merged.title;
+    if ('description' in changes) fields.description = merged.description;
+    if ('location' in changes) fields.location = merged.location;
+    if ('reminders' in changes || 'reminder_minutes' in changes) fields.reminders = merged.reminders;
+    if ('start_time' in changes || 'end_time' in changes || 'all_day' in changes) {
+      Object.assign(fields, { startMs: merged.startMs, endMs: merged.endMs, allDay: merged.allDay });
+    }
+    if (!Object.keys(fields).length) return { unchanged: true };
+    const recurring = isRecurringIcs(link.object.ics);
+    const effectiveScope = recurring ? (scope === 'series' || !link.recurrenceId ? 'series' : 'occurrence') : 'series';
+    const ics = ical.updateEventIcs(link.object.ics, fields, {
+      recurrenceId: link.recurrenceId, scope: effectiveScope, previousStartMs: parseDatetimeToMillis(event.start_time), userTimeZone: ctx.timeZone,
+    });
+    const { etag } = await caldav.putCalendarObject({ url: objectUrl(ctx.account, link.object), ics, etag: link.object.etag, ...ctx.login })
+      .catch(error => handleConflict(ctx, error));
+    const object = await storeObject(ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
+    await applyObject(rebuildContext(ctx), ctx.calendar, object);
+    publishCalendarChanged(userId, ctx.account.id, 'local');
+    return { scope: effectiveScope };
   });
-  const { etag } = await caldav.putCalendarObject({ url: objectUrl(ctx.account, link.object), ics, etag: link.object.etag, ...ctx.login })
-    .catch(error => handleConflict(ctx, error));
-  const object = await storeObject(ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
-  await applyObject(rebuildContext(ctx), ctx.calendar, object);
-  publishCalendarChanged(userId, ctx.account.id, 'local');
-  return { scope: effectiveScope };
 }
 
 // Remove an event from the server. For a recurring event, scope 'occurrence'
@@ -851,23 +871,24 @@ async function pushEventDelete({ userId, event, scope }) {
     return { localOnly: true };
   }
   assertWritable(base);
-  const ctx = await writeContext(base);
-  const url = objectUrl(ctx.account, link.object);
-  const recurring = isRecurringIcs(link.object.ics);
-  if (recurring && link.recurrenceId && scope !== 'series') {
-    const ics = ical.removeOccurrenceIcs(link.object.ics, link.recurrenceId, { userTimeZone: ctx.timeZone });
-    if (ics) {
-      const { etag } = await caldav.putCalendarObject({ url, ics, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
-      const object = await storeObject(ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
-      await applyObject(rebuildContext(ctx), ctx.calendar, object);
-      publishCalendarChanged(userId, ctx.account.id, 'local');
-      return { scope: 'occurrence' };
+  return withWriteContext(base, async ctx => {
+    const url = objectUrl(ctx.account, link.object);
+    const recurring = isRecurringIcs(link.object.ics);
+    if (recurring && link.recurrenceId && scope !== 'series') {
+      const ics = ical.removeOccurrenceIcs(link.object.ics, link.recurrenceId, { userTimeZone: ctx.timeZone });
+      if (ics) {
+        const { etag } = await caldav.putCalendarObject({ url, ics, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
+        const object = await storeObject(ctx.account, ctx.calendar, { id: link.object.id, href: link.object.href, etag, ics });
+        await applyObject(rebuildContext(ctx), ctx.calendar, object);
+        publishCalendarChanged(userId, ctx.account.id, 'local');
+        return { scope: 'occurrence' };
+      }
     }
-  }
-  await caldav.deleteCalendarObject({ url, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
-  await removeObjects(rebuildContext(ctx), [link.object.id]);
-  publishCalendarChanged(userId, ctx.account.id, 'local');
-  return { scope: 'series' };
+    await caldav.deleteCalendarObject({ url, etag: link.object.etag, ...ctx.login }).catch(error => handleConflict(ctx, error));
+    await removeObjects(rebuildContext(ctx), [link.object.id]);
+    publishCalendarChanged(userId, ctx.account.id, 'local');
+    return { scope: 'series' };
+  });
 }
 
 // Moving a single event to another calendar: create it in the target first,
@@ -915,9 +936,10 @@ async function removeSourceObject(userId, source, link) {
   try {
     // Inside the try: a mail disconnect during the move refuses the source
     // login, and the move still completes with the target copy.
-    const ctx = await writeContext(source.ctx);
-    await caldav.deleteCalendarObject({ url: objectUrl(ctx.account, link.object), etag: link.object.etag, ...ctx.login });
-    await db.execute('DELETE FROM calendar_remote_objects WHERE id = ? AND account_id = ?', [link.object.id, accountId]);
+    await withWriteContext(source.ctx, async ctx => {
+      await caldav.deleteCalendarObject({ url: objectUrl(ctx.account, link.object), etag: link.object.etag, ...ctx.login });
+      await db.execute('DELETE FROM calendar_remote_objects WHERE id = ? AND account_id = ?', [link.object.id, accountId]);
+    });
   } catch (error) {
     // The copy in the target calendar exists; the next sync shows the old one again.
     console.warn('[CALENDAR] Could not remove moved event from its old calendar:', error.message);
@@ -939,6 +961,7 @@ function calendarErrorResponse(error, fallback) {
 
 module.exports = {
   MAIL_DISCONNECTED_MESSAGE,
+  runningCalendarWorkCount,
   pauseIfMailDisconnected,
   stopCalendarAccountWork,
   stopLinkedCalendarWork,
