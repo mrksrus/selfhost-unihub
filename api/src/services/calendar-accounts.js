@@ -196,15 +196,21 @@ function wasMailCalendar(account) {
   return account.provider === 'caldav' && !config.server;
 }
 
-async function linkedCalendarAccount(userId, mail) {
-  const [linked] = await db.execute('SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC LIMIT 1', [userId, mail.id]);
-  if (linked[0]) return linked[0];
-  const [unlinked] = await db.execute(
+// A restored calendar account this mail account takes over when its link is
+// next read (no account is linked yet).
+async function restoredMailCalendar(userId, mail, executor = db) {
+  const [unlinked] = await executor.execute(
     `SELECT * FROM calendar_accounts WHERE user_id = ? AND provider IN ('caldav', 'ics') AND mail_account_id IS NULL AND LOWER(account_email) = LOWER(?)
      ORDER BY created_at ASC`,
     [userId, mail.email_address]
   );
-  const candidate = unlinked.find(wasMailCalendar);
+  return unlinked.find(wasMailCalendar) || null;
+}
+
+async function linkedCalendarAccount(userId, mail) {
+  const [linked] = await db.execute('SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? ORDER BY created_at ASC LIMIT 1', [userId, mail.id]);
+  if (linked[0]) return linked[0];
+  const candidate = await restoredMailCalendar(userId, mail);
   if (!candidate) return null;
   // The link and its mark are written together: backups keep only the mark.
   const config = { ...(safeJsonParse(candidate.provider_config, {}) || {}), mailLinked: true };
@@ -361,6 +367,8 @@ module.exports = {
   removeCalendarAccount,
   getMailCalendarLink,
   setMailCalendar,
+  linkedCalendarAccount,
+  restoredMailCalendar,
   updateLinkedCalendarCredentials,
   pauseLinkedCalendar,
   loadSerializedAccount,

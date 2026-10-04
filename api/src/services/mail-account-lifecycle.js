@@ -15,7 +15,7 @@ const unresolved = `(state IN ('executing', 'verifying', 'reconciling')
 // `disconnecting`: the preview for "Disconnect and delete", which disconnects
 // first, so a still connected account does not block it.
 async function purgePreview(userId, accountId, executor = db, { disconnecting = false } = {}) {
-  const [[account]] = await executor.execute('SELECT id, is_active FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+  const [[account]] = await executor.execute('SELECT id, email_address, is_active FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
   if (!account) throw fail('Account not found', 404);
   const [[counts]] = await executor.execute(`SELECT COUNT(*) AS email_count,
     SUM(raw_storage_path IS NOT NULL) AS raw_count,
@@ -25,10 +25,17 @@ async function purgePreview(userId, accountId, executor = db, { disconnecting = 
     JOIN emails e ON e.id = a.email_id AND e.user_id = a.user_id WHERE e.mail_account_id = ? AND e.user_id = ?`, [accountId, userId]);
   const [[operations]] = await executor.execute(`SELECT COUNT(*) AS unresolved_operations FROM mail_writebacks
     WHERE mail_account_id = ? AND user_id = ? AND ${unresolved}`, [accountId, userId]);
-  const [[calendar]] = await executor.execute(`SELECT COUNT(DISTINCT ca.id) AS calendar_accounts, COUNT(ev.id) AS calendar_events
+  const countCalendar = (column, id) => executor.execute(`SELECT COUNT(DISTINCT ca.id) AS calendar_accounts, COUNT(ev.id) AS calendar_events
     FROM calendar_accounts ca LEFT JOIN calendar_calendars cc ON cc.account_id = ca.id AND cc.user_id = ca.user_id
     LEFT JOIN calendar_events ev ON ev.calendar_id = cc.id AND ev.user_id = ca.user_id
-    WHERE ca.mail_account_id = ? AND ca.user_id = ?`, [accountId, userId]);
+    WHERE ca.${column} = ? AND ca.user_id = ?`, [id, userId]).then(([[row]]) => row);
+  let calendar = await countCalendar('mail_account_id', accountId);
+  // A restored calendar is linked again only when its link is next read; until
+  // then it is found by address and mark, and purging removes it too.
+  if (!Number(calendar.calendar_accounts)) {
+    const restored = await require('./calendar-accounts').restoredMailCalendar(userId, account, executor);
+    if (restored) calendar = await countCalendar('id', restored.id);
+  }
   const calendarAccounts = Number(calendar.calendar_accounts) || 0;
   // Purging also removes the linked calendar: Calendar data changes only while
   // that module is on and no calendar restore is writing it.
@@ -111,6 +118,12 @@ async function purgeAccount(userId, accountId, confirmation) {
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
   const initialPreview = await purgePreview(userId, accountId);
   if (initialPreview.blocked) throw fail(initialPreview.reason);
+  // Links a restored calendar (allowed now: Calendar is on and not being
+  // restored), so the transaction below removes it with the account.
+  if (initialPreview.calendar_accounts) {
+    const [[mail]] = await db.execute('SELECT id, email_address FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+    if (mail) await require('./calendar-accounts').linkedCalendarAccount(userId, mail);
+  }
   await require('./mail').stopMailAccountWork(accountId, 'Account purging');
   return withMailAccountLock(accountId, async () => {
     const connection = await db.getConnection();

@@ -22,6 +22,8 @@ function fixture(t, settings = {}) {
     if (sql.startsWith('SELECT COUNT(*) AS unresolved_operations')) return [[{ unresolved_operations: state.unresolved }]];
     if (sql.startsWith('SELECT id, raw_storage_path FROM emails')) return [[{ id: 'message', raw_storage_path: null }]];
     if (sql.startsWith('SELECT a.storage_path')) return [[]];
+    if (sql.startsWith('SELECT * FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ?')) return [state.calendars ? [{ id: 'calendar-account-0', mail_account_id: 'account' }] : []];
+    if (sql.startsWith('SELECT * FROM calendar_accounts') && sql.includes('mail_account_id IS NULL')) return [[]];
     if (sql.startsWith('SELECT id FROM calendar_accounts')) return [Array.from({ length: state.calendars }, (_, index) => ({ id: `calendar-account-${index}` }))];
     if (sql.startsWith('SELECT id FROM calendar_calendars')) return [state.calendars ? [{ id: 'calendar' }] : []];
     if (/^DELETE FROM calendar_(events|calendars|accounts)/.test(sql)) return [{ affectedRows: 1 }];

@@ -109,6 +109,24 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
 
     assert.equal(await count('SELECT COUNT(*) AS n FROM mail_accounts WHERE user_id = ? AND is_active = TRUE', [other.user]), 1);
 
+    // A restored calendar is not linked yet (backups keep only the mark): it is
+    // counted, gated and deleted like a linked one. A calendar account added on
+    // its own for the same address stays.
+    const restored = await seed('restored');
+    await connection.execute(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = '{"mailLinked":true}' WHERE id = ?`, [restored.calendarAccount]);
+    const standalone = crypto.randomUUID();
+    await connection.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active)
+      VALUES (?, ?, 'caldav', 'restored@example.test', '{"server":{"url":"https://dav.example.test"}}', TRUE)`, [standalone, restored.user]);
+    await setUserModules(restored.user, { modules: { calendar: { enabled: false } } });
+    assert.match((await lifecycle.purgePreview(restored.user, restored.mail, undefined, { disconnecting: true })).reason, /Calendar is turned off/);
+    await setUserModules(restored.user, { modules: { calendar: { enabled: true } } });
+    const restoredPreview = await lifecycle.purgePreview(restored.user, restored.mail, undefined, { disconnecting: true });
+    assert.deepEqual([restoredPreview.calendar_accounts, restoredPreview.calendar_events, restoredPreview.blocked], [1, 2, false]);
+    await lifecycle.disconnectAndPurgeAccount(restored.user, restored.mail, 'restored@example.test');
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ?', [restored.calendarAccount]), 0);
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [restored.user]), 0);
+    assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_accounts WHERE id = ?', [standalone]), 1);
+
     // Disconnect while Calendar is off leaves calendar data alone; the next
     // calendar sync pauses the linked account before it uses the mail login.
     await setUserModules(paused.user, { modules: { calendar: { enabled: false } } });

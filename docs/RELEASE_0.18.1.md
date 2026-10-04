@@ -12,7 +12,9 @@ and [Offline](https://github.com/mrksrus/selfhost-unihub/blob/main/docs/OFFLINE.
   attachments, raw messages and the linked calendar with its events) and asks
   for the account address. Confirming disconnects the account and removes it
   with that data from UniHub. Mail and events at the provider are not touched.
-  The account and its calendar are removed together or not at all. A delete
+  The account and its calendar are removed together or not at all, also a
+  calendar restored from a backup that was not linked to the account again
+  yet. A delete
   that is blocked (unresolved provider changes, mail filed in another account,
   a linked calendar while Calendar is turned off or being restored) changes
   nothing.
