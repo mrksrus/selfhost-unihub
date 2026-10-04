@@ -33,11 +33,15 @@ export default function BackupSettings({ active }: { active: boolean }) {
   });
   const backupAvailable = capabilities?.enabled === true;
   const importSections = capabilities?.sections || [];
+  const exportSections = capabilities?.export_sections || importSections;
+  const sectionLabels = new Map([...importSections, ...exportSections].map(({ id, label }) => [id, label]));
+  const sectionLabel = (id: string) => sectionLabels.get(id) || id;
 
   const queryClient = useQueryClient();
   const [backupCreating, setBackupCreating] = useState(false);
   const [backupImporting, setBackupImporting] = useState(false);
   const [backupEncryptionEnabled, setBackupEncryptionEnabled] = useState(true);
+  const [backupExportSections, setBackupExportSections] = useState<string[]>([]);
   const [backupImportFile, setBackupImportFile] = useState<File | null>(null);
   const [backupImportResult, setBackupImportResult] = useState<BackupImportResult | null>(null);
   const [selectedRestoreJobId, setSelectedRestoreJobId] = useState<string | null>(null);
@@ -107,6 +111,12 @@ export default function BackupSettings({ active }: { active: boolean }) {
     } finally {
       setBackupCreating(false);
     }
+  };
+
+  const toggleBackupExportSection = (sectionId: string) => {
+    setBackupExportSections((current) => (
+      current.includes(sectionId) ? current.filter((section) => section !== sectionId) : [...current, sectionId]
+    ));
   };
 
   const updateBackupImportSections = (sectionId: string | 'full') => {
@@ -394,21 +404,41 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 />
               </div>
 
-              <div className="flex flex-wrap gap-3">
-                <Button variant="outline" onClick={() => handleStartBackupJob('full')} disabled={!backupAvailable || backupCreating}>
+              <Button variant="outline" onClick={() => handleStartBackupJob('full')} disabled={!backupAvailable || backupCreating}>
+                {backupCreating ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
+                Create full backup
+              </Button>
+
+              <div className="space-y-2">
+                <Label>Or choose what to back up</Label>
+                <div className="flex flex-wrap gap-2">
+                  {exportSections.map(({ id: section, label }) => (
+                    <Button
+                      key={section}
+                      type="button"
+                      variant={backupExportSections.includes(section) ? 'default' : 'outline'}
+                      aria-pressed={backupExportSections.includes(section)}
+                      onClick={() => toggleBackupExportSection(section)}
+                      disabled={!backupAvailable || backupCreating || backupImporting}
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+                {exportSections.some(({ id }) => id === 'accounts') && (
+                  <p className="text-xs text-muted-foreground">
+                    Account settings saves only your mail and calendar sign-ins with their sync and retention windows.
+                    A restore signs in again and downloads mail and calendars from the provider instead of importing them.
+                    When Mail or Calendar/ToDo is also selected, that section is backed up completely.
+                  </p>
+                )}
+                <Button
+                  onClick={() => handleStartBackupJob(backupExportSections)}
+                  disabled={!backupAvailable || backupCreating || backupImporting || backupExportSections.length === 0}
+                >
                   {backupCreating ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />}
-                  Create full backup
+                  Backup
                 </Button>
-                {importSections.map(({ id: section, label }) => (
-                  <Button
-                    key={section}
-                    variant="outline"
-                    onClick={() => handleStartBackupJob([section])}
-                    disabled={!backupAvailable || backupCreating || backupImporting}
-                  >
-                    {label}
-                  </Button>
-                ))}
               </div>
 
               <div className="space-y-3">
@@ -431,7 +461,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                       <div>
                         <p className="flex items-center gap-2 font-medium text-foreground">
                           {job.encryption_enabled && <LockKeyhole className="h-4 w-4" />}
-                          {job.scope === 'full' ? 'Full backup' : `${job.requested_sections.join(', ')} backup`}
+                          {job.scope === 'full' ? 'Full backup' : `${job.requested_sections.map(sectionLabel).join(', ')} backup`}
                         </p>
                         <p className="text-xs text-muted-foreground">
                           Started {new Date(job.started_at || job.created_at).toLocaleString()} • {job.phase || job.status}
@@ -443,7 +473,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                           </p>
                         )}
                       </div>
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         {job.status === 'ready' && (
                           <Button variant="outline" size="sm" onClick={() => handleBackupDownload(job)}>
                             <Download className="h-4 w-4 mr-2" />
@@ -660,10 +690,15 @@ export default function BackupSettings({ active }: { active: boolean }) {
                     </span>
                     {backupImportResult.import_sections?.length ? (
                       <span className="text-muted-foreground">
-                        {backupImportResult.import_sections.join(', ')}
+                        {backupImportResult.import_sections.map(sectionLabel).join(', ')}
                       </span>
                     ) : null}
                   </div>
+                  {backupImportResult.account_only_sections?.length ? (
+                    <p className="mt-2 text-muted-foreground">
+                      Account settings only for {backupImportResult.account_only_sections.map(sectionLabel).join(' and ')}: accounts sign in again and download from the provider. New accounts start syncing after the restore; accounts already connected here are left unchanged.
+                    </p>
+                  ) : null}
                   {Object.keys(backupImportResult.counts || {}).length > 0 && (
                     <p className="mt-2 text-muted-foreground">
                       Records in selected archive sections: {Object.entries(backupImportResult.counts).map(([key, value]) => `${key}: ${value}`).join(' • ')}

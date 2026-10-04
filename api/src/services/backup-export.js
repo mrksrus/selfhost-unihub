@@ -8,7 +8,7 @@ const { decrypt } = require('../security/encryption');
 const { encryptPortableCredentialBundle, decryptPortableCredentialBundle } = require('./backup-container');
 const { inspectRecordingAudio } = require('./recording-audio');
 const { BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, getBackupProducer } = require('./backup-format');
-const { SECTION_POLICIES, TABLE_POLICIES, FILE_POLICIES } = require('./backup-catalog');
+const { SECTION_POLICIES, TABLE_POLICIES, FILE_POLICIES, ACCOUNT_ONLY_TABLES, normalizeBackupRequest } = require('./backup-catalog');
 const {
   BACKUP_FILE_ROOTS,
   sha256File,
@@ -19,7 +19,7 @@ const {
   jsonBuffer,
   assertBackupMetadataSize,
 } = require('./backup-common');
-const { normalizeBackupImportSections, scopeBackupForImport } = require('./backup-validate');
+const { scopeBackupForImport } = require('./backup-validate');
 
 async function readBackupFileEntry({
   kind,
@@ -192,15 +192,26 @@ const ACCOUNT_MAIL_FILTERS = Object.freeze({
   mail_engine_quarantine: 'b.mail_account_id = ?',
 });
 
+// Account settings keep only connections a restore can sign in with again:
+// every mail account and the remote calendar accounts. Local calendars have
+// nothing to download, so they belong to the complete Calendar section.
+const ACCOUNT_ONLY_FILTERS = Object.freeze({
+  mail_accounts: 'TRUE',
+  calendar_accounts: "b.provider IN ('caldav', 'ics')",
+});
+
 async function readBackupSnapshot(userId, sections, checkCancelled, mailAccountId = null) {
+  const request = normalizeBackupRequest(sections);
+  if (mailAccountId !== null && request.accountOnlySections.length) throw new Error('An account backup cannot also export account settings only');
   const connection = await db.getConnection();
   try {
     if (checkCancelled) await checkCancelled();
     await connection.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
     await connection.query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
     const data = {};
-    for (const section of normalizeBackupImportSections(sections)) {
-      for (const table of SECTION_POLICIES[section].tables) {
+    for (const section of request.sections) {
+      const accountOnly = request.accountOnlySections.includes(section);
+      for (const table of accountOnly ? [ACCOUNT_ONLY_TABLES[section]] : SECTION_POLICIES[section].tables) {
         if (checkCancelled) await checkCancelled();
         const policy = TABLE_POLICIES[table];
         const columns = policy.columns.map(column => `b.\`${column}\``).join(', ');
@@ -215,6 +226,7 @@ async function readBackupSnapshot(userId, sections, checkCancelled, mailAccountI
           where = 'r.user_id = ? AND a.user_id = ?'; params = [userId, userId];
         }
         if (table === 'recording_transcription_jobs') where += " AND b.status = 'completed'";
+        if (accountOnly) where += ` AND ${ACCOUNT_ONLY_FILTERS[table]}`;
         if (mailAccountId !== null && SECTION_POLICIES.mail.tables.includes(table)) {
           const filter = ACCOUNT_MAIL_FILTERS[table];
           if (!filter) throw new Error(`No account filter for mail table ${table}`);
@@ -252,6 +264,7 @@ async function buildBackupForUser(userId, {
   mailAccountId = null,
 } = {}) {
   const data = await readBackupSnapshot(userId, sections, checkCancelled, mailAccountId);
+  const { accountOnlySections } = normalizeBackupRequest(sections);
   const fileEntries = [];
   for (const [kind, policy] of Object.entries(FILE_POLICIES)) {
     const rootPath = BACKUP_FILE_ROOTS[kind];
@@ -317,6 +330,10 @@ async function buildBackupForUser(userId, {
     files: fileEntries,
     portable_credentials: portableCredentials,
   };
+  if (accountOnlySections.length) {
+    backup.account_only_sections = accountOnlySections;
+    backup.warnings.push('Account settings contain no mail or calendar content. A restore signs in again and downloads from the provider.');
+  }
   return backup;
 }
 
@@ -397,6 +414,7 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full', {
     data: scopedBackup.data,
     files: archiveFiles,
     portable_credentials: scopedBackup.portable_credentials || null,
+    ...(scopedBackup.account_only_sections ? { account_only_sections: scopedBackup.account_only_sections } : {}),
   };
   const dataPath = path.join(os.tmpdir(), `unihub-backup-data-${crypto.randomUUID()}.json`);
   try {
@@ -420,6 +438,7 @@ async function buildBackupArchiveEntriesForUser(userId, sections = 'full', {
       format_version: ZIP_BACKUP_FORMAT_VERSION,
       exported_at: backupPayload.exported_at,
       sections: scopedBackup.import_sections,
+      ...(backupPayload.account_only_sections ? { account_only_sections: backupPayload.account_only_sections } : {}),
       row_counts: getBackupRowCounts(backupPayload),
       file_count: archiveFiles.filter(file => file.archive_path).length,
       missing_files: missingFiles,

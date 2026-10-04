@@ -5,6 +5,12 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.18.0 Selective backups
+
+No database upgrade or configuration change. Backups made with 0.18.0 that use
+**Account settings** restore on older versions as a normal mail or calendar
+restore, with mail accounts paused.
+
 ## 0.17.4 Recordings on the device and separate pages
 
 No database upgrade or configuration change. Page choices are stored as new

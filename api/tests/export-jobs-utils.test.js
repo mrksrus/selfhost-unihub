@@ -28,6 +28,12 @@ test('normalizeSections rejects unknown sections and removes duplicates', () => 
   assert.deepEqual(normalizeSections(['mail', 'games']), ['mail']);
 });
 
+test('normalizeSections keeps account settings as requested', () => {
+  assert.deepEqual(normalizeSections(['accounts', 'settings']), ['settings', 'accounts']);
+  assert.deepEqual(normalizeSections(['mail', 'calendar', 'accounts']), ['calendar', 'mail']);
+  assert.deepEqual(parseRequestedSections('["settings","accounts"]'), ['settings', 'accounts']);
+});
+
 test('parseRequestedSections accepts JSON arrays returned as strings', () => {
   assert.deepEqual(parseRequestedSections('["contacts","mail"]'), ['contacts', 'mail']);
 });

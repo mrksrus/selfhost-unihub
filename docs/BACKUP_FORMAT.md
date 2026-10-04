@@ -81,6 +81,18 @@ Downgrading an image is not a database rollback. Preserve a matching full server
 snapshot before upgrading. Future changes must retain supported readers and
 frozen fixtures; see [Recovery contracts](DATA_RECOVERY.md).
 
+## Account settings backups
+
+Since 0.18.0 a backup can carry `account_only_sections`, a list with `mail`
+and/or `calendar`, in both `data/backup.json` and `manifest.json`. Those
+sections contain only `mail_accounts`, or `calendar_accounts` with provider
+`caldav` or `ics`, and no files. Validation rejects any other rows or files in
+them. Schema and backup versions are unchanged.
+
+UniHub 0.18.0 and later restore these accounts as new sign-ins and start sync.
+Older versions ignore the field and restore the accounts like a normal mail or
+calendar restore: mail accounts stay paused until the Sync policy is confirmed.
+
 ## Limits and exclusions
 
 The writer uses stored ZIP32 entries without compression or ZIP64:

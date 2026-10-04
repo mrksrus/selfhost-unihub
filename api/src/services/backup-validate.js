@@ -4,7 +4,7 @@ const { modulesFromValue } = require('./module-settings');
 const { validateRestoreRows } = require('./backup-ownership');
 const { AUDIO_HEADER_BYTES, identifyRecordingAudio } = require('./recording-audio');
 const { validateBackupVersionFields } = require('./backup-format');
-const { RETIRED_FILE_KINDS, RETIRED_TABLES, SECTION_POLICIES, TABLE_POLICIES, normalizeBackupSections } = require('./backup-catalog');
+const { ACCOUNT_ONLY_TABLES, RETIRED_FILE_KINDS, RETIRED_TABLES, SECTION_POLICIES, TABLE_POLICIES, normalizeBackupSections } = require('./backup-catalog');
 const {
   BACKUP_IMPORT_SECTION_TABLES,
   BACKUP_IMPORT_SECTION_FILE_KINDS,
@@ -13,6 +13,33 @@ const {
   canonicalJson,
   normalizeIdentifier,
 } = require('./backup-common');
+
+// An account-settings section carries only its account table, and calendar
+// account settings only remote connections; anything else is not a fresh
+// sign-in and must be restored as a complete section instead.
+function validateAccountOnlySections(backup) {
+  if (!Object.hasOwn(backup, 'account_only_sections')) return [];
+  const sections = backup.account_only_sections;
+  if (!Array.isArray(sections) || !sections.length || new Set(sections).size !== sections.length
+      || sections.some(section => typeof section !== 'string' || !Object.hasOwn(ACCOUNT_ONLY_TABLES, section))) {
+    return ['Backup account settings list is invalid'];
+  }
+  const errors = [];
+  for (const section of sections) {
+    for (const table of SECTION_POLICIES[section].tables) {
+      const rows = backup.data?.[table];
+      if (table !== ACCOUNT_ONLY_TABLES[section] && Array.isArray(rows) && rows.length) errors.push(`Account settings backup must not contain ${table} rows`);
+    }
+    if ((Array.isArray(backup.files) ? backup.files : []).some(file => SECTION_POLICIES[section].fileKinds.includes(file?.kind))) {
+      errors.push(`Account settings backup must not contain ${section} files`);
+    }
+  }
+  if (sections.includes('calendar') && (Array.isArray(backup.data?.calendar_accounts) ? backup.data.calendar_accounts : [])
+    .some(row => !['caldav', 'ics'].includes(row?.provider))) {
+    errors.push('Account settings backup may contain only CalDAV and subscription calendar accounts');
+  }
+  return errors;
+}
 
 function validateBackupPayload(backup, {
   fileBuffersByPath = null,
@@ -49,6 +76,7 @@ function validateBackupPayload(backup, {
     if (!Object.values(SECTION_POLICIES).some(policy => policy.fileKinds.includes(file?.kind))) errors.push(`Unsupported backup file kind: ${file?.kind}`);
   }
   errors.push(...validateRestoreRows(backup.data));
+  errors.push(...validateAccountOnlySections(backup));
   for (const row of Array.isArray(backup.data?.user_settings) ? backup.data.user_settings : []) {
     if (row?.setting_key === 'module_preferences') {
       try { modulesFromValue(row.setting_value); } catch { errors.push('Backup has invalid module preferences.'); }

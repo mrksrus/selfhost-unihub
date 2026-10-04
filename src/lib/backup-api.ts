@@ -30,6 +30,7 @@ export type BackupImportResult = {
   counts: Record<string, number>;
   conflicts?: Record<string, number>;
   import_sections?: string[];
+  account_only_sections?: string[];
   restored_files?: number;
   options?: {
     conflict_mode?: string;
@@ -67,4 +68,6 @@ export type RestoreJob = {
 };
 
 
-export type BackupCapabilities = { enabled: boolean; version: number; sections: { id: string; label: string }[]; exclusions: string[] };
+export type BackupSection = { id: string; label: string };
+
+export type BackupCapabilities = { enabled: boolean; version: number; sections: BackupSection[]; export_sections?: BackupSection[]; exclusions: string[] };

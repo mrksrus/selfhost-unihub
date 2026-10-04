@@ -34,3 +34,32 @@ test('restore write routing covers section endpoints and specific destructive se
   assert.equal(getRestoreSectionForWrite('/api/backup/restore-jobs/id/cancel'), null);
   assert.equal(getRestoreSectionForWrite('/api/contacts-unrelated'), null);
 });
+
+test('account settings are a request-only section that exports accounts without content', () => {
+  const { normalizeBackupRequest, normalizeBackupSections } = require('../src/services/backup-catalog');
+  assert.deepEqual(normalizeBackupRequest(['accounts']), { requested: ['accounts'], sections: ['calendar', 'mail'], accountOnlySections: ['calendar', 'mail'] });
+  assert.deepEqual(normalizeBackupRequest(['accounts', 'settings']), { requested: ['settings', 'accounts'], sections: ['settings', 'calendar', 'mail'], accountOnlySections: ['calendar', 'mail'] });
+  // A complete section already carries its accounts.
+  assert.deepEqual(normalizeBackupRequest(['mail', 'accounts']), { requested: ['mail', 'accounts'], sections: ['calendar', 'mail'], accountOnlySections: ['calendar'] });
+  assert.deepEqual(normalizeBackupRequest(['full', 'accounts']).accountOnlySections, []);
+  assert.deepEqual(normalizeBackupRequest(['mail', 'calendar', 'accounts']).requested, ['calendar', 'mail']);
+  assert.throws(() => normalizeBackupRequest(['games']), /Select at least one/);
+  assert.throws(() => normalizeBackupRequest(['accounts', 'unknown']), /Unsupported backup section/);
+  // Restore scope and locks: account settings write both account tables.
+  assert.deepEqual(normalizeBackupSections(['settings', 'accounts']), ['settings', 'calendar', 'mail']);
+});
+
+test('an account settings archive may carry only remote account rows', () => {
+  const { validateBackupPayload } = require('../src/services/backup-validate');
+  const { BACKUP_VERSION } = require('../src/services/backup-format');
+  const mailAccount = { id: 'm1', user_id: 'u1', email_address: 'mail@example.test', imap_host: '8.8.8.8', sync_mode: 'sync', sync_window_days: 90 };
+  const calendarAccount = { id: 'c1', user_id: 'u1', provider: 'caldav', base_url: 'https://8.8.8.8/dav/' };
+  const archive = extra => ({ app: 'unihub', version: BACKUP_VERSION, files: [], account_only_sections: ['calendar', 'mail'],
+    ...extra, data: { mail_accounts: [mailAccount], calendar_accounts: [calendarAccount], ...extra.data } });
+  assert.deepEqual(validateBackupPayload(archive({})).errors, []);
+  assert.match(validateBackupPayload(archive({ data: { emails: [{ id: 'e1', user_id: 'u1', mail_account_id: 'm1' }] } })).errors.join('\n'), /must not contain emails rows/);
+  assert.match(validateBackupPayload(archive({ data: { calendar_calendars: [{ id: 'k1', user_id: 'u1', account_id: 'c1' }] } })).errors.join('\n'), /must not contain calendar_calendars rows/);
+  assert.match(validateBackupPayload(archive({ data: { calendar_accounts: [{ ...calendarAccount, provider: 'local' }] } })).errors.join('\n'), /only CalDAV/);
+  assert.match(validateBackupPayload(archive({ account_only_sections: ['contacts'] })).errors.join('\n'), /account settings list is invalid/);
+  assert.match(validateBackupPayload(archive({ files: [{ kind: 'raw_email', id: 'e1', sha256: 'x', data_base64: '' }] })).errors.join('\n'), /must not contain mail files/);
+});

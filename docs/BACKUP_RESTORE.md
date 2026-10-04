@@ -48,15 +48,36 @@ merges selected data; it is not a complete server rollback.
 
 The Data Management page can create:
 
-- Full backup
-- Mail backup
-- Calendar/ToDo backup
-- Contacts backup
-- Recordings backup
-- Settings backup
+- Full backup, with **Create full backup**
+- A backup of the selected sections: choose any of Settings, Contacts,
+  Calendar/ToDo, Mail, Recordings and Account settings, then press **Backup**
 
 Every backup uses the same canonical restore structure. Section backups include
 only the selected rows and files.
+
+### Account Settings Backup
+
+**Account settings** saves only the mail and calendar account connections:
+server addresses, usernames, credentials, Sync or Archive mode, and the sync and
+trash windows. It contains no emails, folders, attachments, calendars, events,
+tasks or local calendars. CalDAV and calendar subscription accounts are
+included; local calendar accounts are calendar content and are not.
+
+Restoring it is like signing in to each account again:
+
+- each account that is not already connected is added and signed in
+  (active) when its credentials could be restored and its server passes the
+  network policy; otherwise it is added inactive with a warning
+- mail accounts keep their mode and windows. A Sync account's policy is
+  confirmed, because nothing was imported that a provider sync could delete
+- after the restore, mail sync starts and downloads mail per the account's
+  settings; calendar sync discovers the calendars again and downloads events
+- an account that is already connected (same email address or ID) is left
+  unchanged and reported as a warning. Other accounts are not paused
+
+When Mail or Calendar/ToDo is selected as well, that section is backed up and
+restored completely, as before. Use an encrypted backup to restore the
+credentials on another server; see [Portable Account Credentials](#portable-account-credentials).
 
 Encryption is enabled by default:
 
@@ -501,6 +522,7 @@ All endpoints require authentication. State-changing endpoints require CSRF.
 | --- | --- | --- |
 | `GET` | `/api/backup/jobs` | List generated backup jobs |
 | `POST` | `/api/backup/jobs` | Start a full/section backup; encryption defaults on |
+| `GET` | `/api/backup/capabilities` | Sections for import (`sections`) and backup creation (`export_sections`) |
 | `GET` | `/api/backup/jobs/:id` | Get backup status |
 | `GET` | `/api/backup/jobs/:id/download` | Stream a ready backup with range support |
 | `POST` | `/api/backup/jobs/:id/recovery-password/reveal` | Reveal the generated password once |
@@ -522,6 +544,13 @@ All endpoints require authentication. State-changing endpoints require CSRF.
 
 Uploads use `application/zip`, `application/octet-stream`, or
 `application/vnd.unihub.backup`.
+
+`POST /api/backup/jobs` takes `{"sections": "full" | [...], "encrypt": true}`.
+Section IDs are `settings`, `contacts`, `calendar`, `mail`, `recordings` and
+`accounts` (Account settings). `accounts` applies to Mail and Calendar/ToDo only
+when they are not also selected. The job's `requested_sections` keeps
+`accounts`, for example `["settings", "accounts"]`. Validation and restore
+results list account-only sections in `account_only_sections`.
 
 ## Storage and Database
 

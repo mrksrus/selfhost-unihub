@@ -14,7 +14,7 @@ const { pruneArchiveKeyIfUnreferenced } = require('./backup-archive-keys');
 
 const BACKUPS_ROOT = '/app/uploads/backups';
 const activeExportJobs = new Set();
-const { SECTION_POLICIES, normalizeBackupSections } = require('./backup-catalog');
+const { SECTION_POLICIES, normalizeBackupRequest } = require('./backup-catalog');
 const EXPORT_SECTIONS = new Set(Object.keys(SECTION_POLICIES));
 const ZIP32_MAX_VALUE = 0xffffffff;
 const ZIP32_MAX_ENTRIES = 0xfffe;
@@ -270,7 +270,8 @@ async function writeZip(entries, targetPath, {
   }
 }
 
-const normalizeSections = normalizeBackupSections;
+// Stored as requested: complete sections plus "accounts" for account settings.
+const normalizeSections = value => normalizeBackupRequest(value).requested;
 
 function parseRequestedSections(value) {
   if (Array.isArray(value)) return normalizeSections(value);

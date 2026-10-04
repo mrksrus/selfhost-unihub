@@ -58,12 +58,16 @@ function isTemporaryBackupUpload(req, body) {
 module.exports = {
   'GET /api/backup/capabilities': async (req, userId) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    const { SECTION_POLICIES } = require('../services/backup-catalog');
+    const { SECTION_POLICIES, ACCOUNT_SECTION } = require('../services/backup-catalog');
     const { BACKUP_VERSION } = require('../services/backup-format');
     const { DISABLED_BACKUP_ROUTES } = require('../services/backup-availability');
     const labels = { settings: 'Settings', contacts: 'Contacts', calendar: 'Calendar/ToDo', mail: 'Mail', recordings: 'Recordings' };
     return { enabled: DISABLED_BACKUP_ROUTES.size === 0, version: BACKUP_VERSION,
       sections: Object.keys(SECTION_POLICIES).map(id => ({ id, label: labels[id] || id })),
+      // Backup creation also offers the connection settings of mail and
+      // calendar accounts without their content.
+      export_sections: [...Object.keys(SECTION_POLICIES).map(id => ({ id, label: labels[id] || id })),
+        { id: ACCOUNT_SECTION, label: 'Account settings' }],
       exclusions: ['Other users, login sessions and server configuration'],
     };
   },

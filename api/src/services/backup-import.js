@@ -42,6 +42,25 @@ const {
 } = require('./backup-restore-mapping');
 const { backupFromZipBuffer, backupFromZipFile } = require('./backup-zip-reader');
 
+const accountLabel = row => row.email_address || row.account_email || row.display_name || row.id;
+
+// Account settings restore like a fresh sign-in: the first download starts now
+// instead of waiting for the next scheduled pass. Failures stay visible on
+// the account and the scheduled passes retry.
+function startRestoredAccountSync(userId, { mailAccountIds, calendarAccountIds }) {
+  setImmediate(async () => {
+    try {
+      const mail = require('./mail');
+      if (mailAccountIds.length) await mail.ensureDefaultMailFoldersForUser(userId);
+      for (const accountId of mailAccountIds) await mail.scheduleMailAccountSync(accountId, { background: true });
+    } catch (error) {
+      console.warn('[BACKUP RESTORE] Could not start mail sync for restored accounts:', error.message);
+    }
+    const { syncCalendarAccountInBackground } = require('./calendar-sync');
+    for (const accountId of calendarAccountIds) syncCalendarAccountInBackground(accountId, { userId, reason: 'restore' });
+  });
+}
+
 async function importBackupForUser(userId, backup, {
   mode = 'dry-run',
   sections = 'full',
@@ -55,6 +74,7 @@ async function importBackupForUser(userId, backup, {
   onProgress = null,
   restoreJobId = null,
   beforeCommit = null,
+  startAccountSync = startRestoredAccountSync,
 } = {}) {
   const conflictMode = normalizeConflictMode(conflict_mode);
   const calendarMode = normalizeCalendarMode(calendar_mode);
@@ -65,6 +85,11 @@ async function importBackupForUser(userId, backup, {
   // Verify the original hashes before migration changes the in-memory payload.
   if (validation.valid) backup = normalizeBackupPayload(backup);
   const scopedBackup = scopeBackupForImport(backup, sections);
+  // Sections that carry only account settings: restored accounts sign in
+  // again and download from the provider instead of restoring content.
+  const accountOnly = new Set((Array.isArray(scopedBackup.account_only_sections) ? scopedBackup.account_only_sections : [])
+    .filter(section => scopedBackup.import_sections.includes(section)));
+  const accountOnlySections = scopedBackup.import_sections.filter(section => accountOnly.has(section));
   const counts = countBackupRows(scopedBackup);
   const conflicts = await countRestoreConflicts(userId, scopedBackup).catch(() => ({}));
   if (!validation.valid || mode !== 'apply') {
@@ -75,6 +100,7 @@ async function importBackupForUser(userId, backup, {
       warnings: validation.warnings,
       counts,
       import_sections: scopedBackup.import_sections,
+      account_only_sections: accountOnlySections,
       conflicts,
       options: {
         conflict_mode: conflictMode,
@@ -113,9 +139,13 @@ async function importBackupForUser(userId, backup, {
 
     connection = await db.getConnection();
     await connection.beginTransaction();
-    if (scopedBackup.import_sections.includes('mail')) {
+    // Account settings add new connections only; existing accounts and their
+    // retained mail are not touched, so nothing needs pausing.
+    if (scopedBackup.import_sections.includes('mail') && !accountOnly.has('mail')) {
       await pauseMailRestore(connection, userId);
     }
+    const startMailAccountIds = [];
+    const startCalendarAccountIds = [];
     const calendarAccountIdMap = new Map();
     const calendarIdMap = new Map();
     const calendarEventIdMap = new Map();
@@ -193,6 +223,30 @@ async function importBackupForUser(userId, backup, {
       const existingAccountId = await findExistingCalendarAccountForRestore(connection, row, userId);
       const targetAccountId = chooseTargetId(row.id, existingAccountId, conflictMode, { canKeepBoth: true });
       calendarAccountIdMap.set(row.id, targetAccountId);
+      if (accountOnly.has('calendar')) {
+        if (existingAccountId) {
+          validation.warnings.push(`Calendar account ${accountLabel(row)} is already connected and was left unchanged.`);
+          continue;
+        }
+        const accepted = await checkRestoredAccountPolicy(row, 'calendar', validation.warnings);
+        const active = accepted
+          && !!(row.encrypted_password || row.encrypted_access_token || row.encrypted_refresh_token);
+        if (accepted && !active) validation.warnings.push(`Calendar account ${accountLabel(row)} has no usable login in this backup. Sign in again in Calendar settings to start sync.`);
+        await writeOwnedRow(connection, userId, 'calendar_accounts',
+          ['id', 'user_id', 'provider', 'account_email', 'display_name', 'username', 'encrypted_password', 'discovery_url', 'base_url', 'encrypted_access_token', 'encrypted_refresh_token', 'token_expires_at', 'provider_config', 'capabilities', 'is_active', 'sync_status', 'sync_error', 'last_synced_at'],
+          [
+            targetAccountId, row.user_id, row.provider, row.account_email || null, row.display_name || null, row.username || null,
+            row.encrypted_password || null, row.discovery_url || null, row.base_url || null,
+            row.encrypted_access_token || null, row.encrypted_refresh_token || null, normalizeMysqlDateTime(row.token_expires_at),
+            row.provider_config ? (typeof row.provider_config === 'string' ? row.provider_config : JSON.stringify(row.provider_config)) : null,
+            row.capabilities ? (typeof row.capabilities === 'string' ? row.capabilities : JSON.stringify(row.capabilities)) : null,
+            active ? 1 : 0, null, null, null,
+          ],
+          []
+        );
+        if (active) startCalendarAccountIds.push(targetAccountId);
+        continue;
+      }
       if (!shouldWriteExisting(existingAccountId, targetAccountId, conflictMode)) continue;
       await checkRestoredAccountPolicy(row, 'calendar', validation.warnings);
       const shouldRestoreCredentials = !existingAccountId || credentialsMode === 'restore' || targetAccountId !== existingAccountId;
@@ -349,6 +403,37 @@ async function importBackupForUser(userId, backup, {
         : await connection.execute('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [row.id, userId]);
       const targetAccountId = chooseTargetId(row.id, existingById[0]?.id, conflictMode, { canKeepBoth: false });
       mailAccountIdMap.set(row.id, targetAccountId);
+      if (accountOnly.has('mail')) {
+        if (existingById.length) {
+          validation.warnings.push(`Mail account ${accountLabel(row)} is already connected and was left unchanged.`);
+          continue;
+        }
+        const accepted = await checkRestoredAccountPolicy(row, 'mail', validation.warnings);
+        const active = accepted && !!row.encrypted_password;
+        if (accepted && !active) validation.warnings.push(`Mail account ${accountLabel(row)} has no usable password in this backup. Enter it in Mail settings to start sync.`);
+        const syncMode = row.sync_mode === 'sync' ? 'sync' : 'download';
+        const restoredWindow = (value, fallback) => value === undefined ? fallback
+          : value === null ? null : MAIL_WINDOW_DAYS.includes(Number(value)) ? Number(value) : fallback;
+        // Like a new sign-in: there is no local mail for this account yet, so
+        // the Sync policy is confirmed (as on account creation) and the
+        // provider's mail inside the saved windows downloads again.
+        await connection.execute(
+          `INSERT INTO mail_accounts
+             (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
+              smtp_host, smtp_port, encrypted_password, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
+              allow_self_signed, trusted_imap_fingerprint256, trusted_smtp_fingerprint256, is_active,
+              sync_window_days, trash_window_days, sync_policy_confirmed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?, ?, ?, ?, ?, ?, ${syncMode === 'sync' ? 'UTC_TIMESTAMP()' : 'NULL'})`,
+          [targetAccountId, row.user_id, row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address,
+            row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, row.encrypted_password || null,
+            normalizeSyncFetchLimit(row.sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT) || DEFAULT_MAIL_SYNC_FETCH_LIMIT,
+            syncMode, syncMode === 'sync' ? 'pending' : 'idle', row.allow_self_signed ? 1 : 0,
+            row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, active ? 1 : 0,
+            restoredWindow(row.sync_window_days, null), restoredWindow(row.trash_window_days, DEFAULT_TRASH_WINDOW_DAYS)]
+        );
+        if (active) startMailAccountIds.push(targetAccountId);
+        continue;
+      }
       if (existingById.length) {
         const [targets] = await connection.execute('SELECT email_address, username, imap_host, imap_port FROM mail_accounts WHERE id = ? AND user_id = ?', [targetAccountId, userId]);
         if (targets.length && !sameProviderMailbox(targets[0], row)) {
@@ -555,7 +640,7 @@ async function importBackupForUser(userId, backup, {
       ruleIds: mailRuleIdMap, writtenEmailIds, conflictMode, checkCancelled: checkRestoreCancelled,
       normalizeDate: normalizeMysqlDateTime, warnings: validation.warnings,
     });
-    if (scopedBackup.import_sections.includes('mail')) await restoreMailEngineEvidence(connection, userId, data, {
+    if (scopedBackup.import_sections.includes('mail') && !accountOnly.has('mail')) await restoreMailEngineEvidence(connection, userId, data, {
       accountIds: mailAccountIdMap, emailIds: emailIdMap, writtenEmailIds, restoredPaths,
       checkCancelled: checkRestoreCancelled, warnings: validation.warnings,
     });
@@ -660,6 +745,7 @@ async function importBackupForUser(userId, backup, {
       warnings: validation.warnings,
       counts,
       import_sections: scopedBackup.import_sections,
+      account_only_sections: accountOnlySections,
       restored_files: restoredPaths.size,
       conflicts,
       options: {
@@ -677,6 +763,9 @@ async function importBackupForUser(userId, backup, {
     if (beforeCommit) await beforeCommit(connection, result);
     commitAttempted = true;
     await connection.commit();
+    if (startMailAccountIds.length || startCalendarAccountIds.length) {
+      startAccountSync(userId, { mailAccountIds: startMailAccountIds, calendarAccountIds: startCalendarAccountIds });
+    }
     return result;
   } catch (error) {
     if (connection) await connection.rollback().catch(() => {});

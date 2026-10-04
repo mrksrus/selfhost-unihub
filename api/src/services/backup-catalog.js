@@ -163,21 +163,52 @@ const RETIRED_TABLES = Object.freeze({ tetris_scores: 'Saved Tetris scores from 
   notes: NOTES_SKIPPED, note_revisions: NOTES_SKIPPED, note_attachments: NOTES_SKIPPED, note_links: NOTES_SKIPPED });
 const RETIRED_FILE_KINDS = Object.freeze(['note_attachment']);
 
-function normalizeBackupSections(value = 'full') {
+// "Account settings" is a request-only section: the connection rows of mail
+// and calendar (address, server, login, sync windows) without any synced
+// content. A restore signs in again and downloads from the provider.
+const ACCOUNT_SECTION = 'accounts';
+const ACCOUNT_ONLY_TABLES = Object.freeze({ calendar: 'calendar_accounts', mail: 'mail_accounts' });
+
+function sectionList(value) {
   if (value == null) value = 'full';
+  return Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+}
+
+function normalizeBackupSections(value = 'full', { allowEmpty = false } = {}) {
   const all = Object.keys(SECTION_POLICIES);
-  const source = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
   const sections = new Set();
-  for (const item of source) {
+  for (const item of sectionList(value)) {
     const section = typeof item === 'string' ? item.trim().toLowerCase() : '';
     if (section === 'full') { for (const name of all) sections.add(name); }
     else if (section === 'todo') sections.add('calendar');
+    // Restore and lock scope: account settings touch both account tables.
+    else if (section === ACCOUNT_SECTION) { for (const name of Object.keys(ACCOUNT_ONLY_TABLES)) sections.add(name); }
     else if (RETIRED_SECTIONS.includes(section)) continue;
     else if (Object.hasOwn(SECTION_POLICIES, section)) sections.add(section);
     else throw Object.assign(new Error(`Unsupported backup section: ${String(item)}`), { status: 400, code: 'BACKUP_SECTION_UNSUPPORTED' });
   }
-  if (!sections.size) throw Object.assign(new Error('Select at least one backup section.'), { status: 400, code: 'BACKUP_SECTION_UNSUPPORTED' });
+  if (!sections.size && !allowEmpty) throw Object.assign(new Error('Select at least one backup section.'), { status: 400, code: 'BACKUP_SECTION_UNSUPPORTED' });
   return Array.from(sections);
 }
 
-module.exports = { RETIRED_SECTIONS, RETIRED_TABLES, RETIRED_FILE_KINDS, SECTION_POLICIES, TABLE_POLICIES, REFERENCES, FILE_POLICIES, WRITE_PATHS, BACKGROUND_WRITERS, assertRecoveryCatalog, getRestoreSectionForWrite, normalizeBackupSections };
+// Export request: complete sections plus, when "accounts" is selected, the
+// account-only sections not already exported completely. A selected Mail
+// section already carries its accounts, so Mail + Account settings exports
+// complete mail and only the calendar accounts.
+function normalizeBackupRequest(value = 'full') {
+  const source = sectionList(value);
+  const isAccounts = item => typeof item === 'string' && item.trim().toLowerCase() === ACCOUNT_SECTION;
+  const complete = normalizeBackupSections(source.filter(item => !isAccounts(item)), { allowEmpty: true });
+  const accountOnlySections = source.some(isAccounts)
+    ? Object.keys(ACCOUNT_ONLY_TABLES).filter(section => !complete.includes(section)) : [];
+  if (!complete.length && !source.some(isAccounts)) throw Object.assign(new Error('Select at least one backup section.'), { status: 400, code: 'BACKUP_SECTION_UNSUPPORTED' });
+  const order = Object.keys(SECTION_POLICIES);
+  return {
+    requested: [...complete.sort((a, b) => order.indexOf(a) - order.indexOf(b)), ...(accountOnlySections.length ? [ACCOUNT_SECTION] : [])],
+    sections: order.filter(section => complete.includes(section) || accountOnlySections.includes(section)),
+    accountOnlySections: order.filter(section => accountOnlySections.includes(section)),
+  };
+}
+
+module.exports = { RETIRED_SECTIONS, RETIRED_TABLES, RETIRED_FILE_KINDS, SECTION_POLICIES, TABLE_POLICIES, REFERENCES, FILE_POLICIES, WRITE_PATHS, BACKGROUND_WRITERS, assertRecoveryCatalog, getRestoreSectionForWrite, normalizeBackupSections,
+  ACCOUNT_SECTION, ACCOUNT_ONLY_TABLES, normalizeBackupRequest };
