@@ -192,16 +192,18 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     await assert.rejects(calendarSync.resolveLogin(orphan), { code: 'MAIL_CALENDAR_UNLINKED' });
     assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, null);
 
-    // Its mail account deleted without the calendar (all mail accounts
-    // cleared): the stale link goes and the calendar waits; a mail account
-    // with its address added again is found.
+    // All mail accounts cleared: the calendar stays, unlinked, and waits; a
+    // mail account with its address added again is found.
     await connection.execute('DELETE FROM calendar_accounts WHERE id = ?', [connectedNow]);
     await connection.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ?', [paused.mail, paused.calendarAccount]);
     const settingsRoutes = require('../src/routes/settings');
     await settingsRoutes['POST /api/settings/clear-mail-accounts']({}, paused.user);
-    const [[stale]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
-    assert.equal(stale.mail_account_id, paused.mail);
-    await assert.rejects(calendarSync.resolveLogin(stale), { code: 'MAIL_CALENDAR_UNLINKED' });
+    const [[cleared]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    assert.equal(cleared.mail_account_id, null);
+    await assert.rejects(calendarSync.resolveLogin(cleared), { code: 'MAIL_CALENDAR_UNLINKED' });
+    // A link left to a deleted mail account (before 0.18.2) goes when used.
+    await connection.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ?', [crypto.randomUUID(), paused.calendarAccount]);
+    await assert.rejects(calendarSync.resolveLogin(cleared), { code: 'MAIL_CALENDAR_UNLINKED' });
     assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, null);
     const again = crypto.randomUUID();
     await connection.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, username, imap_host, encrypted_password, is_active)

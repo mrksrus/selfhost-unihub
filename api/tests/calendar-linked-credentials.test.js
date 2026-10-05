@@ -24,7 +24,11 @@ function calendarFixture(t, { account = {}, mail = MAIL_LOGIN, caldav = {} } = {
     get: (target, name) => name in target ? target[name] : () => assert.fail(`CalDAV ${String(name)} must not be called`),
   }));
   stub(paths[4], { decrypt: value => value, encrypt: value => value });
-  stub(paths[5], { relinkRestoredCalendar: async row => { state.relinked.push(row.id); return state.relinkTo || null; } });
+  stub(paths[5], { relinkRestoredCalendar: async calendar => {
+    state.relinked.push(calendar.id);
+    if (state.relinkTo) row.mail_account_id = state.relinkTo;
+    return state.relinkTo || null;
+  } });
   stub(paths[6], { publishCalendarChanged: (...args) => state.published.push(args) });
   delete require.cache[paths[3]];
   const row = { id: 'linked', user_id: 'owner', provider: 'caldav', mail_account_id: 'mail', is_active: 1, encrypted_password: null,
@@ -34,9 +38,12 @@ function calendarFixture(t, { account = {}, mail = MAIL_LOGIN, caldav = {} } = {
     if (sql.includes('FROM calendar_calendars c JOIN calendar_accounts a')) return [[{ calendar_row_id: params[0], account_id: 'linked', read_only: 0, url: 'https://dav.example.test/cal/' }]];
     if (sql.startsWith('SELECT * FROM calendar_accounts')) return [[row]];
     if (sql.startsWith('SELECT id FROM calendar_accounts')) return [sql.includes("provider = 'caldav'") && row.provider !== 'caldav' ? [] : [{ id: row.id }]];
-    // state.mail null: disconnected; state.mailGone: the mail account was deleted.
-    if (sql.includes('FROM mail_accounts m WHERE m.id = ?')) {
-      return [state.mailGone ? [] : [{ ...(state.mail || { username: 'owner@example.test', encrypted_password: null }), connected: state.mail ? 1 : 0 }]];
+    // The login through the calendar's current link. state.mail null:
+    // disconnected; state.mailGone: the mail account was deleted.
+    if (sql.includes('FROM calendar_accounts ca LEFT JOIN mail_accounts m') && sql.startsWith('SELECT')) {
+      const mailId = row.mail_account_id && !state.mailGone ? row.mail_account_id : null;
+      return [[{ ...row, mail_id: mailId, mail_username: mailId ? state.mail?.username || 'owner@example.test' : null,
+        mail_password: mailId ? state.mail?.encrypted_password ?? null : null, mail_connected: mailId && state.mail ? 1 : 0 }]];
     }
     if (sql.includes('FROM mail_accounts WHERE user_id = ? AND LOWER(email_address)')) return [state.mailWithAddress ? [{ id: 'other-mail' }] : []];
     if (sql.includes('FROM calendar_event_external_refs r JOIN calendar_remote_objects')) return [[{ object_id: 'object', href: '/a.ics', etag: '"1"', ics: 'BEGIN:VEVENT\r\nEND:VEVENT' }]];
@@ -49,7 +56,7 @@ function calendarFixture(t, { account = {}, mail = MAIL_LOGIN, caldav = {} } = {
     return [[]];
   };
   setDb({ execute, getConnection: async () => ({ execute, release() {} }) });
-  return { sync: require('../src/services/calendar-sync'), writes, state };
+  return { sync: require('../src/services/calendar-sync'), writes, state, row };
 }
 
 const event = { id: 'event', calendar_id: 'calendar', title: 'Meeting', start_time: '2026-10-05 10:00:00', end_time: '2026-10-05 11:00:00' };
@@ -114,7 +121,7 @@ test('a calendar with its own password does not look for a mail account', async 
 
 test('a calendar connected from mail before 0.17 uses its mail account, not the password copied then', async t => {
   const logins = [];
-  const { sync, state } = calendarFixture(t, {
+  const { sync, state, row } = calendarFixture(t, {
     account: { mail_account_id: null, encrypted_password: 'old-copy', username: 'old-user', account_email: 'owner@example.test', provider_config: '{}' },
     caldav: { listCalendars: async ({ username, password }) => { logins.push([username, password]); return []; } },
   });
@@ -123,6 +130,7 @@ test('a calendar connected from mail before 0.17 uses its mail account, not the 
   assert.deepEqual(logins, [['owner@example.test', 'mail-login']]);
   // Not linked while a mail account with its address exists (it has another
   // calendar): it waits instead of using the copy.
+  row.mail_account_id = null;
   state.relinkTo = null;
   state.mailWithAddress = true;
   assert.deepEqual(await sync.syncCalendarAccount('linked', { userId: 'owner' }), { skipped: true, reason: 'mail-unlinked' });
@@ -197,6 +205,29 @@ test('a mail account reconnected while its stopped sync unwinds is not noted as 
   assert.equal(calls, 2, 'A new sync runs after the stopped one');
 });
 
+test('a change reads the login through the calendar\'s current link, not the row read before', async t => {
+  const { sync, row } = calendarFixture(t, { account: { provider_config: JSON.stringify({ mailLinked: true }), account_email: 'owner@example.test' } });
+  const stale = { ...row };
+  row.mail_account_id = null; // Unlinked since that read.
+  await assert.rejects(sync.resolveLogin(stale), error => error.code === 'MAIL_CALENDAR_UNLINKED');
+});
+
+test('a calendar unlinked while its sync runs notes why it stopped, not a mail disconnect', async t => {
+  let reached;
+  const listing = new Promise(resolve => { reached = resolve; });
+  const { sync, writes, row } = calendarFixture(t, { caldav: { listCalendars: ({ signal }) => {
+    reached();
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+  } } });
+  const run = sync.syncCalendarAccount('linked', { userId: 'owner' });
+  await listing;
+  row.mail_account_id = null;
+  sync.stopCalendarAccountWork('linked', 'unlinked');
+  await assert.rejects(run, error => error.code === 'MAIL_CALENDAR_UNLINKED');
+  const noted = writes.filter(([sql]) => sql.includes("ca.sync_status = 'paused'"));
+  assert.match(noted.at(-1)[1][0], /not linked to/);
+});
+
 test('a mail disconnect does not stop or mark a linked subscription, which does not use the mail login', async t => {
   let release, fetching;
   const fetched = new Promise(resolve => { fetching = resolve; });
@@ -235,19 +266,24 @@ test('a reconnect while a linked calendar syncs starts a new sync after that run
 
 test('a restored mail calendar that still holds a copied password uses only its mail account', async t => {
   const logins = [];
-  const { sync, state, writes } = calendarFixture(t, {
-    account: { mail_account_id: null, encrypted_password: 'old-copy', username: 'old-user', provider_config: JSON.stringify({ mailLinked: true }) },
+  const { sync, state, writes, row } = calendarFixture(t, {
+    account: { mail_account_id: null, encrypted_password: 'old-copy', username: 'old-user', account_email: 'owner@example.test', provider_config: JSON.stringify({ mailLinked: true }) },
     caldav: { listCalendars: async ({ username, password }) => { logins.push([username, password]); return []; } },
   });
   state.relinkTo = 'mail';
   await sync.syncCalendarAccount('linked', { userId: 'owner' });
-  // Not linked (no mail account with its address, or that one has another
-  // calendar, e.g. while it is disconnected): it waits with a note on what to do.
+  // Not linked (no mail account with its address): it waits with a note on
+  // what to do.
+  row.mail_account_id = null;
   state.relinkTo = null;
   assert.deepEqual(await sync.syncCalendarAccount('linked', { userId: 'owner' }), { skipped: true, reason: 'mail-unlinked' });
   assert.deepEqual(logins, [['owner@example.test', 'mail-login']], 'The copy is never used');
   const noted = writes.filter(([sql]) => sql.includes("sync_status = 'paused'"));
   assert.match(noted.at(-1)[1][0], /Add that mail account in Mail/);
+  // That mail account exists but has another calendar: the note says so.
+  state.mailWithAddress = true;
+  await sync.syncCalendarAccount('linked', { userId: 'owner' });
+  assert.match(writes.filter(([sql]) => sql.includes("sync_status = 'paused'")).at(-1)[1][0], /uses another calendar/);
   await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event }), error => error.status === 409 && error.code === 'MAIL_CALENDAR_UNLINKED');
 });
 

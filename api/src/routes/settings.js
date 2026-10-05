@@ -153,7 +153,25 @@ module.exports = {
         'SELECT storage_path FROM email_attachments WHERE user_id = ?',
         [userId]
       );
-      const [result] = await db.execute('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
+      // Linked calendars stay, unlinked: one connected from mail finds a mail
+      // account with its address again (its sync waits until then), and its
+      // running work, which read a deleted login, stops.
+      const connection = await db.getConnection();
+      let result, linkedCalendars;
+      try {
+        await connection.beginTransaction();
+        [linkedCalendars] = await connection.execute('SELECT id, provider FROM calendar_accounts WHERE user_id = ? AND mail_account_id IS NOT NULL', [userId]);
+        [result] = await connection.execute('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
+        await connection.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE user_id = ? AND mail_account_id IS NOT NULL', [userId]);
+        await connection.commit();
+      } catch (error) { await connection.rollback(); throw error; }
+      finally { connection.release(); }
+      const { stopCalendarAccountWork } = require('../services/calendar-sync');
+      const { publishCalendarChanged } = require('../services/server-events');
+      for (const calendar of linkedCalendars) {
+        if (calendar.provider === 'caldav') stopCalendarAccountWork(calendar.id, 'unlinked');
+        publishCalendarChanged(userId, calendar.id, 'status');
+      }
       const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
       const deleted = result.affectedRows || 0;
       return {

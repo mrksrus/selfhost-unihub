@@ -471,6 +471,10 @@ async function ensureSchema() {
       id: 14,
       name: 'calendar-linked-login',
       up: async connection => {
+        // A link to a deleted mail account (all mail accounts cleared) goes:
+        // the calendar finds a mail account with its address again.
+        await connection.execute(`UPDATE calendar_accounts ca LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
+          SET ca.mail_account_id = NULL WHERE ca.mail_account_id IS NOT NULL AND m.id IS NULL`);
         const { sql, params } = await mailCalDavScope(connection);
         await connection.execute(`UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL
           WHERE ${sql} AND is_active = FALSE AND sync_error = ?`,
@@ -481,6 +485,9 @@ async function ensureSchema() {
         const { sql, params } = await mailCalDavScope(connection);
         const [[left]] = await connection.execute(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE ${sql} AND encrypted_password IS NOT NULL`, params);
         if (Number(left.n) !== 0) throw new Error('Mail calendar accounts still hold a copied password');
+        const [[stale]] = await connection.execute(`SELECT COUNT(*) AS n FROM calendar_accounts ca
+          LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ca.mail_account_id IS NOT NULL AND m.id IS NULL`);
+        if (Number(stale.n) !== 0) throw new Error('Calendar accounts still link a deleted mail account');
       },
     },
   ]);

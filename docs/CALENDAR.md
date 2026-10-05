@@ -71,12 +71,13 @@ transaction; it is refused while Calendar is turned off or being restored.
 A calendar restored from a backup carries the `mailLinked` mark but no link
 and no password. Opening the mail account's settings links it as described
 above; if it is used first (by its sync), it finds the mail account with its
-address itself. Without a mail account of that address (or when that one
-already has another calendar) it waits, listed as paused with "This calendar
-belongs to a mail account it is not linked to"; adding the mail account in
-Mail resumes it. A calendar connected from mail before 0.17 and never linked
-finds its mail account the same way, and so does one whose mail account was
-deleted (e.g. by clearing all mail accounts): its link goes first. Up to
+address itself. Without a mail account of that address it waits, listed as
+paused with "This calendar belongs to a mail account it is not linked to";
+adding the mail account in Mail resumes it. When that mail account already
+has another calendar, the note says so: remove one of the two. A calendar
+connected from mail before 0.17 and never linked finds its mail account the
+same way, and so does one whose mail account was deleted: clearing all mail
+accounts keeps the calendars and removes their links. Up to
 0.18.1 a linked account kept a copy of the mail password; upgrading to 0.18.2
 removes those copies (also from mail calendars not linked yet while a mail
 account with their address exists) and turns calendars that were switched
