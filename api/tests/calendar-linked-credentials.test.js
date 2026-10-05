@@ -149,13 +149,26 @@ test('a calendar whose mail account was deleted drops the link and finds a mail 
   state.mailGone = true;
   assert.deepEqual(await sync.syncCalendarAccount('linked', { userId: 'owner' }), { skipped: true, reason: 'mail-unlinked' });
   const unlink = writes.find(([sql]) => sql.startsWith('UPDATE calendar_accounts SET mail_account_id = NULL'));
-  assert.deepEqual(unlink?.[1], ['linked', 'mail'], 'Only that stale link is removed');
+  assert.deepEqual(unlink?.[1].slice(1), ['linked', 'mail'], 'Only that stale link is removed');
+  assert.equal(JSON.parse(unlink[1][0]).mailLinked, true);
   assert.deepEqual(state.relinked, ['linked']);
   // The mail account added again: found by address.
   state.mailGone = false;
   state.relinkTo = 'mail';
   await sync.syncCalendarAccount('linked', { userId: 'owner' });
   assert.deepEqual(logins, [['owner@example.test', 'mail-login']]);
+});
+
+test('a calendar unlinked from a deleted mail account never uses a copied password a restore wrote over it', async t => {
+  // A 0.17.0 backup restored over the linked row: a server entry, no mark,
+  // and a copy of the mail password.
+  const { sync, state, writes } = calendarFixture(t, {
+    account: { provider_config: ownServer, encrypted_password: 'old-copy', username: 'old-user', account_email: 'owner@example.test' },
+  });
+  state.mailGone = true;
+  assert.deepEqual(await sync.syncCalendarAccount('linked', { userId: 'owner' }), { skipped: true, reason: 'mail-unlinked' });
+  const unlink = writes.find(([sql]) => sql.startsWith('UPDATE calendar_accounts SET mail_account_id = NULL'));
+  assert.match(unlink[0], /encrypted_password = IF\(provider = 'caldav', NULL/);
 });
 
 test('a mail disconnect stops a linked calendar sync that is already talking to the server', async t => {

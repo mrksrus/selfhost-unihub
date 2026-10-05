@@ -61,6 +61,17 @@ const NO_PASSWORD_MESSAGE = 'No password is saved for this calendar account. Ent
 const MAIL_CALENDAR_UNLINKED_MESSAGE = 'This calendar belongs to a mail account it is not linked to. Add that mail account in Mail to resume sync, or remove this calendar.';
 const MAIL_HAS_OTHER_CALENDAR_MESSAGE = 'The mail account with this address uses another calendar. Remove this calendar, or turn that mail account\'s calendar off to use this one.';
 
+// Unlinked because its mail account was deleted: it stays a mail calendar
+// (marked), keeps no password of its own (a copy a restore wrote over it
+// goes), and finds a mail account with its address again.
+async function unlinkFromDeletedMail(executor, calendar, mailAccountId) {
+  const config = JSON.stringify({ ...(jsonValue(calendar.provider_config, {}) || {}), mailLinked: true });
+  await executor.execute(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = ?,
+      encrypted_password = IF(provider = 'caldav', NULL, encrypted_password)
+    WHERE id = ? AND mail_account_id = ?`, [config, calendar.id, mailAccountId]);
+  return config;
+}
+
 async function mailAccountWithAddress(account) {
   if (!account.account_email) return false;
   const [rows] = await db.execute('SELECT id FROM mail_accounts WHERE user_id = ? AND LOWER(email_address) = LOWER(?) LIMIT 1', [account.user_id, account.account_email]);
@@ -88,8 +99,9 @@ async function resolveLogin(account, relinked = false) {
   if (current.mail_account_id && !link.mail_id) {
     // Its mail account was deleted: the link goes, and it looks for a mail
     // account with its address again.
-    await db.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE id = ? AND mail_account_id = ?', [account.id, current.mail_account_id]);
+    current.provider_config = await unlinkFromDeletedMail(db, current, current.mail_account_id);
     current.mail_account_id = null;
+    if (current.provider === 'caldav') current.encrypted_password = null;
   }
   if (!current.mail_account_id) {
     const mailCalendar = wasMailCalendar(current);
@@ -991,6 +1003,7 @@ module.exports = {
   resolveLogin,
   stopCalendarAccountWork,
   stopLinkedCalendarWork,
+  unlinkFromDeletedMail,
   SYNC_INTERVAL_MS,
   calendarErrorResponse,
   REMOTE_PROVIDERS,

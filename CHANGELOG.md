@@ -26,9 +26,10 @@ account got out of step. Database upgrade 14 runs at startup. See
 - **Restored mail calendars find their mail account.** A calendar restored
   from a backup that belonged to a mail account is no longer restored paused
   for lack of a password. It finds the mail account with its address and uses
-  that login. From backups of older versions, the copied mail password is
-  left out, and a calendar that only a mail disconnect had switched off comes
-  back on.
+  that login. From backups of older versions, the copied mail password of a
+  marked mail calendar is left out (one from before 0.17 never uses its copy
+  while a mail account with its address exists), and a calendar that only a
+  mail disconnect had switched off comes back on.
 - **Collapsed sidebars stay collapsed.** On desktop, the app navigation and
   the mail account and folder list remember whether you collapsed them, also
   after a reload. The choice is kept in this browser.

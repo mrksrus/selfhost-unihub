@@ -473,8 +473,14 @@ async function ensureSchema() {
       up: async connection => {
         // A link to a deleted mail account (all mail accounts cleared) goes:
         // the calendar finds a mail account with its address again.
-        await connection.execute(`UPDATE calendar_accounts ca LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
-          SET ca.mail_account_id = NULL WHERE ca.mail_account_id IS NOT NULL AND m.id IS NULL`);
+        // It stays marked and drops a CalDAV password, like at runtime.
+        const [stale] = await connection.execute(`SELECT ca.id, ca.provider_config, ca.mail_account_id FROM calendar_accounts ca
+          LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ca.mail_account_id IS NOT NULL AND m.id IS NULL`);
+        for (const row of stale) {
+          await connection.execute(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = ?,
+              encrypted_password = IF(provider = 'caldav', NULL, encrypted_password) WHERE id = ? AND mail_account_id = ?`,
+          [JSON.stringify({ ...(safeJsonParse(row.provider_config, {}) || {}), mailLinked: true }), row.id, row.mail_account_id]);
+        }
         const { sql, params } = await mailCalDavScope(connection);
         await connection.execute(`UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL
           WHERE ${sql} AND is_active = FALSE AND sync_error = ?`,

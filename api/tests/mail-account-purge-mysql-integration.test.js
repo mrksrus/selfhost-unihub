@@ -201,11 +201,17 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     // All mail accounts cleared: the calendar stays, unlinked, and waits; a
     // mail account with its address added again is found.
     await connection.execute('DELETE FROM calendar_accounts WHERE id = ?', [connectedNow]);
-    await connection.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ?', [paused.mail, paused.calendarAccount]);
+    // Written over by a 0.17.0 backup while linked: no mark, a server entry and
+    // a copy of the mail password.
+    await connection.execute(`UPDATE calendar_accounts SET mail_account_id = ?, provider_config = '{"server":{"url":"https://dav.example.test"}}',
+      encrypted_password = ? WHERE id = ?`, [paused.mail, encrypt('old-copy'), paused.calendarAccount]);
     const settingsRoutes = require('../src/routes/settings');
     await settingsRoutes['POST /api/settings/clear-mail-accounts']({}, paused.user);
     const [[cleared]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.equal(cleared.mail_account_id, null);
+    assert.equal(cleared.encrypted_password, null, 'The copy goes with the link');
+    const clearedConfig = typeof cleared.provider_config === 'string' ? JSON.parse(cleared.provider_config) : cleared.provider_config;
+    assert.equal(clearedConfig.mailLinked, true, 'It stays a mail calendar');
     await assert.rejects(calendarSync.resolveLogin(cleared), { code: 'MAIL_CALENDAR_UNLINKED' });
     // A link left to a deleted mail account (before 0.18.2) goes when used.
     await connection.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ?', [crypto.randomUUID(), paused.calendarAccount]);

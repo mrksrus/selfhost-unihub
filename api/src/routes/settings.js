@@ -156,19 +156,20 @@ module.exports = {
       // Linked calendars stay, unlinked: one connected from mail finds a mail
       // account with its address again (its sync waits until then), and its
       // running work, which read a deleted login, stops.
+      const { stopCalendarAccountWork, unlinkFromDeletedMail } = require('../services/calendar-sync');
       const connection = await db.getConnection();
       let result, linkedCalendars;
       try {
         await connection.beginTransaction();
         // Locking read: a sync linking a calendar meanwhile waits for the commit
         // and then finds its mail account gone.
-        [linkedCalendars] = await connection.execute('SELECT id, provider FROM calendar_accounts WHERE user_id = ? AND mail_account_id IS NOT NULL FOR UPDATE', [userId]);
+        [linkedCalendars] = await connection.execute(`SELECT id, provider, provider_config, mail_account_id FROM calendar_accounts
+          WHERE user_id = ? AND mail_account_id IS NOT NULL FOR UPDATE`, [userId]);
         [result] = await connection.execute('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
-        await connection.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE user_id = ? AND mail_account_id IS NOT NULL', [userId]);
+        for (const calendar of linkedCalendars) await unlinkFromDeletedMail(connection, calendar, calendar.mail_account_id);
         await connection.commit();
       } catch (error) { await connection.rollback(); throw error; }
       finally { connection.release(); }
-      const { stopCalendarAccountWork } = require('../services/calendar-sync');
       const { publishCalendarChanged } = require('../services/server-events');
       for (const calendar of linkedCalendars) {
         if (calendar.provider === 'caldav') stopCalendarAccountWork(calendar.id, 'unlinked');
