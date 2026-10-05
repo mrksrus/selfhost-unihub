@@ -181,10 +181,10 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     await connection.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active, mail_account_id, created_at)
       VALUES (?, ?, 'caldav', 'paused@example.test', '{"mailLinked":true}', TRUE, ?, UTC_TIMESTAMP() + INTERVAL 1 MINUTE)`, [connectedNow, paused.user, paused.mail]);
     const stopped = [], stopWork = calendarSync.stopCalendarAccountWork;
-    calendarSync.stopCalendarAccountWork = id => stopped.push(id);
+    calendarSync.stopCalendarAccountWork = (id, reason) => stopped.push([id, reason]);
     try { await require('../src/services/calendar-accounts').keepMailCalendar(paused.user, paused.mail, connectedNow); }
     finally { calendarSync.stopCalendarAccountWork = stopWork; }
-    assert.deepEqual(stopped, [paused.calendarAccount], 'Its running work, which read the mail login, stops');
+    assert.deepEqual(stopped, [[paused.calendarAccount, 'replaced']], 'Its running work, which read the mail login, stops');
     const [[mailRow]] = await connection.execute('SELECT id, email_address FROM mail_accounts WHERE id = ?', [paused.mail]);
     assert.equal((await require('../src/services/calendar-accounts').linkedCalendarAccount(paused.user, mailRow)).id, connectedNow);
     const [[orphan]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);

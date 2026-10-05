@@ -228,6 +228,21 @@ test('a calendar unlinked while its sync runs notes why it stopped, not a mail d
   assert.match(noted.at(-1)[1][0], /not linked to/);
 });
 
+test('a calendar replaced by another one of its mail account notes that, not to add the mail account', async t => {
+  let reached;
+  const listing = new Promise(resolve => { reached = resolve; });
+  const { sync, writes, row } = calendarFixture(t, { caldav: { listCalendars: ({ signal }) => {
+    reached();
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+  } } });
+  const run = sync.syncCalendarAccount('linked', { userId: 'owner' });
+  await listing;
+  row.mail_account_id = null;
+  sync.stopCalendarAccountWork('linked', 'replaced');
+  await assert.rejects(run, error => error.code === 'MAIL_CALENDAR_UNLINKED');
+  assert.match(writes.filter(([sql]) => sql.includes("ca.sync_status = 'paused'")).at(-1)[1][0], /uses another calendar/);
+});
+
 test('a mail disconnect does not stop or mark a linked subscription, which does not use the mail login', async t => {
   let release, fetching;
   const fetched = new Promise(resolve => { fetching = resolve; });

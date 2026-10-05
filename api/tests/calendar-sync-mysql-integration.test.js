@@ -282,6 +282,23 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       assert.equal((await connection.execute("SELECT todo_status FROM calendar_events WHERE id = ?", [restoredEvent.id]))[0][0].todo_status, 'done');
       const [[keptTodo]] = await connection.execute('SELECT todo_status FROM calendar_events WHERE id = ?', [restoredEvent.id]);
       assert.equal(keptTodo.todo_status, 'done');
+      // Its mail accounts cleared (the calendar stays, unlinked), then the mail
+      // account added again with the changed login and its calendar: the
+      // unlinked one is taken over, not duplicated.
+      await connection.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE id = ?', [restoredLogin]);
+      await connection.execute('DELETE FROM mail_accounts WHERE id = ?', [archiveMail]);
+      const readdedMail = await insertMail(userId, 'archive@example.test');
+      await connection.execute("UPDATE mail_accounts SET username = 'second-login' WHERE id = ?", [readdedMail]);
+      calendarSync.syncCalendarAccountInBackground = () => {};
+      let readded;
+      try {
+        readded = await calendarAccounts.connectCalDavAccount({ userId, emailAddress: 'archive@example.test', username: 'second-login',
+          password: 'synthetic-mail-password', imapHost: 'imap.example.test', mailAccountId: readdedMail });
+        await new Promise(resolve => setImmediate(resolve));
+      } finally { calendarSync.syncCalendarAccountInBackground = backgroundSync; }
+      assert.equal(readded.account.id, restoredLogin);
+      assert.equal((await mailLink(restoredLogin)).mail_account_id, readdedMail);
+      assert.equal((await connection.execute('SELECT todo_status FROM calendar_events WHERE id = ?', [restoredEvent.id]))[0][0].todo_status, 'done');
 
       // Linked by 0.17.0 without the mark: the 0.17.1 upgrade adds it, so a
       // backup taken right after upgrading can link it again.

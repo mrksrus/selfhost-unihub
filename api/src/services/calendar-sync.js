@@ -140,13 +140,17 @@ function beginAccountWork(accountId) {
   };
 }
 // The reason is noted on the account by a stopped sync, and returned by a
-// stopped change: its mail account was disconnected, or it was unlinked.
+// stopped change: its mail account was disconnected, it was unlinked (its
+// mail account deleted), or its mail account took another calendar.
+const STOP_REASONS = {
+  disconnected: () => syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED'),
+  unlinked: () => syncError(MAIL_CALENDAR_UNLINKED_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED'),
+  replaced: () => syncError(MAIL_HAS_OTHER_CALENDAR_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED'),
+};
 function stopCalendarAccountWork(accountId, reason = 'disconnected') {
   const entry = accountWork.get(accountId);
   accountWork.delete(accountId);
-  entry?.controller.abort(reason === 'unlinked'
-    ? syncError(MAIL_CALENDAR_UNLINKED_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED')
-    : syncError(MAIL_DISCONNECTED_MESSAGE, 409, 'MAIL_ACCOUNT_DISCONNECTED'));
+  entry?.controller.abort((STOP_REASONS[reason] || STOP_REASONS.disconnected)());
 }
 // For tests: accounts with work running.
 const runningCalendarWorkCount = () => accountWork.size;

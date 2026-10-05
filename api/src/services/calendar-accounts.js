@@ -163,7 +163,14 @@ async function connectCalDavAccount({ userId, emailAddress, displayName, usernam
     throw error;
   }
   const login = username || emailAddress;
-  const duplicate = await findDuplicate(userId, 'caldav', found.discovery.baseUrl, login);
+  let duplicate = await findDuplicate(userId, 'caldav', found.discovery.baseUrl, login);
+  // A mail calendar not linked (restored, or its mail accounts were cleared)
+  // keeps the login it was connected with, which a later mail login change
+  // does not update: it is found by its address and server instead.
+  if (!duplicate && mailAccountId) {
+    const unlinked = await restoredMailCalendar(userId, { email_address: emailAddress });
+    if (unlinked?.provider === 'caldav' && unlinked.base_url === found.discovery.baseUrl) duplicate = unlinked;
+  }
   if (duplicate && !mailAccountId) {
     throw fail(`These calendars are already connected as "${duplicate.display_name || 'Calendar'}".`, 409, 'CALENDAR_ALREADY_CONNECTED');
   }
@@ -247,7 +254,7 @@ async function keepMailCalendar(userId, mailAccountId, accountId) {
   const [others] = await db.execute('SELECT id FROM calendar_accounts WHERE user_id = ? AND mail_account_id = ? AND id <> ?', [userId, mailAccountId, accountId]);
   for (const other of others) {
     await db.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE id = ? AND mail_account_id = ?', [other.id, mailAccountId]);
-    calendarSync.stopCalendarAccountWork(other.id, 'unlinked');
+    calendarSync.stopCalendarAccountWork(other.id, 'replaced');
   }
 }
 

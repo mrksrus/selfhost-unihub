@@ -160,7 +160,9 @@ module.exports = {
       let result, linkedCalendars;
       try {
         await connection.beginTransaction();
-        [linkedCalendars] = await connection.execute('SELECT id, provider FROM calendar_accounts WHERE user_id = ? AND mail_account_id IS NOT NULL', [userId]);
+        // Locking read: a sync linking a calendar meanwhile waits for the commit
+        // and then finds its mail account gone.
+        [linkedCalendars] = await connection.execute('SELECT id, provider FROM calendar_accounts WHERE user_id = ? AND mail_account_id IS NOT NULL FOR UPDATE', [userId]);
         [result] = await connection.execute('DELETE FROM mail_accounts WHERE user_id = ?', [userId]);
         await connection.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE user_id = ? AND mail_account_id IS NOT NULL', [userId]);
         await connection.commit();
