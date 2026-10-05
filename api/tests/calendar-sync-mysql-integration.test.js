@@ -287,6 +287,9 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       // unlinked one is taken over, not duplicated.
       await connection.execute('UPDATE calendar_accounts SET mail_account_id = NULL WHERE id = ?', [restoredLogin]);
       await connection.execute('DELETE FROM mail_accounts WHERE id = ?', [archiveMail]);
+      // An older unlinked mail calendar with its address on another server.
+      const elsewhere = await insertCalDav(userId, 'archive@example.test', { ...current, mailLinked: true });
+      await connection.execute("UPDATE calendar_accounts SET base_url = 'https://other.example.test/dav/', created_at = '2020-01-01 00:00:00' WHERE id = ?", [elsewhere]);
       const readdedMail = await insertMail(userId, 'archive@example.test');
       await connection.execute("UPDATE mail_accounts SET username = 'second-login' WHERE id = ?", [readdedMail]);
       calendarSync.syncCalendarAccountInBackground = () => {};
