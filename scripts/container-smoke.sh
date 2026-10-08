@@ -104,9 +104,9 @@ if [[ "$startup_log" == *'MariaDB took longer than expected'* || "$startup_log" 
 fi
 
 # The runtime must be the Node.js major the Dockerfile's final stage names.
-expected_node_major="$(sed -nE 's/^FROM node:([0-9]+)-alpine$/\1/p' "$script_dir/../Dockerfile" | tail -n 1)"
-[[ "$expected_node_major" =~ ^[0-9]+$ ]] || { echo 'Could not read the Node.js major version from the Dockerfile.' >&2; exit 1; }
-docker exec "$container_name" node -e 'if(process.versions.node.split(".")[0]!==process.argv[1])process.exit(1);console.log("Runtime Node.js",process.version)' "$expected_node_major"
+expected_node_major="$(grep -E '^FROM ' "$script_dir/../Dockerfile" | tail -n 1 | sed -nE 's/^FROM node:([0-9]+)-alpine$/\1/p')"
+[[ "$expected_node_major" =~ ^[0-9]+$ ]] || { echo 'The Dockerfile final stage must be FROM node:<major>-alpine.' >&2; exit 1; }
+docker exec "$container_name" node -e 'if(process.versions.node.split(".")[0]!==process.argv[1]){console.error("Expected Node.js",process.argv[1],"but the image runs",process.version);process.exit(1)}console.log("Runtime Node.js",process.version)' "$expected_node_major"
 # The API must run as the unprivileged unihub user (10001) with no capabilities
 # or supplementary groups, and the old root-owned uploads must now belong to it.
 api_pid="$(docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of fs.readdirSync("/proc")){if(!/^\d+$/.test(name))continue;try{const args=fs.readFileSync(`/proc/${name}/cmdline`,"utf8").split("\0");if(args.includes("/app/api/server.js")){console.log(name);process.exit(0)}}catch{}}process.exit(1)')"

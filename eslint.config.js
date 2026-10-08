@@ -41,13 +41,14 @@ export default tseslint.config(
     },
   },
   {
-    // Node strips types from these scripts but does not turn ES imports into
-    // require(), so a value import fails at run time even though tsc accepts it.
+    // Node strips types from these scripts but does not turn ES modules into
+    // CommonJS, so a value import or export fails at run time even though tsc
+    // accepts it. Type-only imports and exports are erased and stay allowed.
     files: ["api/scripts/*.cts"],
     rules: {
       "no-restricted-syntax": ["error", {
-        selector: "ImportDeclaration[importKind!='type']",
-        message: "Scripts run as CommonJS: use `require('x') as typeof import('x')` or `import type`.",
+        selector: "Program > :matches(ImportDeclaration[importKind!='type'], ExportNamedDeclaration[exportKind!='type']:not([declaration.declare=true]), ExportDefaultDeclaration, ExportAllDeclaration[exportKind!='type'])",
+        message: "Scripts run as CommonJS: use `require('x') as typeof import('x')`, `import type` and `module.exports`.",
       }],
     },
   },
