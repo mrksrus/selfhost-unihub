@@ -1,5 +1,11 @@
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
-interface Migration { id: number; name: string; up: (connection: PoolConnection) => Promise<unknown>; verify: (connection: PoolConnection) => Promise<unknown> }
+
+interface Migration {
+  id: number;
+  name: string;
+  up: (connection: PoolConnection) => Promise<unknown>;
+  verify: (connection: PoolConnection) => Promise<unknown>;
+}
 
 // Append numbered steps. MySQL DDL commits implicitly: up() must detect work
 // already done after a crash, and verify() must reject an incomplete result.
@@ -48,4 +54,4 @@ async function runMigrations(pool: Pick<Pool, 'getConnection'>, migrations: read
   }
 }
 
-export = { runMigrations };
+export { runMigrations };

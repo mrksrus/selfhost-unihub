@@ -1,18 +1,31 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
 import type { ProtocolConnection } from '../types/imap-protocol';
-interface SenderRule { id?: string; mail_account_id?: string | null; match_type: string; match_value: string; target_folder?: string; priority?: number | string; created_at?: Date | string | null }
-interface MailFolder { id: string; user_id: string; mail_account_id: string | null; slug: string; display_name: string; is_system: StoredFlag }
-type ReturnTypeContext = Awaited<ReturnType<typeof createMailRoutingContext>>;
 
-import crypto = require('crypto');
-import imported1 = require('../state');
-const { db } = imported1;
-import imapClient = require('./mail-imap-client');
-import imported2 = require('./mail-imap-guard');
-const { guardImapConnection, runGuardedImap, closeImapConnection } = imported2;
-import imported3 = require('./mail-host-policy');
-const { buildImapConnectionConfig } = imported3;
+import crypto from 'crypto';
+import { db } from '../state';
+import * as imapClient from './mail-imap-client';
+import { guardImapConnection, runGuardedImap, closeImapConnection } from './mail-imap-guard';
+import { buildImapConnectionConfig } from './mail-host-policy';
+
+interface SenderRule {
+  id?: string;
+  mail_account_id?: string | null;
+  match_type: string;
+  match_value: string;
+  target_folder?: string;
+  priority?: number | string;
+  created_at?: Date | string | null;
+}
+interface MailFolder {
+  id: string;
+  user_id: string;
+  mail_account_id: string | null;
+  slug: string;
+  display_name: string;
+  is_system: StoredFlag;
+}
+type ReturnTypeContext = Awaited<ReturnType<typeof createMailRoutingContext>>;
 
 const MAIL_FOLDER_DEFINITIONS = [
   { slug: 'inbox', displayName: 'Inbox', position: 10 },
@@ -425,7 +438,7 @@ async function createRemoteMailFolderForUserAccounts(userId: string, folderName:
   };
 }
 
-export = {
+export {
   MAIL_FOLDER_DEFINITIONS,
   ALLOWED_MAIL_FOLDER_SET,
   SYSTEM_MAIL_FOLDER_SET,

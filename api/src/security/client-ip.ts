@@ -1,5 +1,5 @@
 import type { IncomingMessage } from 'node:http';
-import net = require('node:net');
+import net from 'node:net';
 
 function normalizeIp(value: unknown) {
   const input = String(value || '').trim();
@@ -46,4 +46,4 @@ function createClientIpResolver({ trustProxyHeaders = false, trustedProxyCidrs =
   };
 }
 
-export = { normalizeIp, createClientIpResolver };
+export { normalizeIp, createClientIpResolver };

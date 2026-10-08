@@ -1,14 +1,48 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
-interface RestoreRow extends Record<string, unknown> { id: string; mail_account_id: string; email_id: string; rule_id: string; action: string; target_value: string; base_value?: string | null; target_folder: string | null; remote_folder: string | null; remote_uid: number | string | null; remote_uidvalidity: number | string | null; attempts?: number; dispatched?: StoredFlag; dispatch_modseq?: string | null; source_occurrence_id?: string | null; intent_revision?: number | string; client_key: string; request_hash: string; state?: string; status?: string; raw_bytes?: number | null; import_complete?: StoredFlag; source_account_id: string; original_filing_account_id?: string | null; target_account_id?: string | null; original_folder: string | null; created_at?: string | Date; completed_at?: string | Date }
+import { randomUUID } from 'node:crypto';
+import { resolveOwnedReference } from './backup-ownership';
+import { ARCHIVE_COLUMNS } from './mail-engine/recovery-policy';
+
+interface RestoreRow extends Record<string, unknown> {
+  id: string;
+  mail_account_id: string;
+  email_id: string;
+  rule_id: string;
+  action: string;
+  target_value: string;
+  base_value?: string | null;
+  target_folder: string | null;
+  remote_folder: string | null;
+  remote_uid: number | string | null;
+  remote_uidvalidity: number | string | null;
+  attempts?: number;
+  dispatched?: StoredFlag;
+  dispatch_modseq?: string | null;
+  source_occurrence_id?: string | null;
+  intent_revision?: number | string;
+  client_key: string;
+  request_hash: string;
+  state?: string;
+  status?: string;
+  raw_bytes?: number | null;
+  import_complete?: StoredFlag;
+  source_account_id: string;
+  original_filing_account_id?: string | null;
+  target_account_id?: string | null;
+  original_folder: string | null;
+  created_at?: string | Date;
+  completed_at?: string | Date;
+}
 type RestoreData = Record<string, RestoreRow[] | undefined>;
-interface RestoreContext { accountIds: Map<string, string>; emailIds: Map<string, string>; writtenEmailIds: Set<string>; restoredPaths: Map<string, string>; checkCancelled: () => Promise<unknown>; warnings: string[] }
-import imported1 = require('node:crypto');
-const { randomUUID } = imported1;
-import imported2 = require('./backup-ownership');
-const { resolveOwnedReference } = imported2;
-import imported3 = require('./mail-engine/recovery-policy');
-const { ARCHIVE_COLUMNS } = imported3;
+interface RestoreContext {
+  accountIds: Map<string, string>;
+  emailIds: Map<string, string>;
+  writtenEmailIds: Set<string>;
+  restoredPaths: Map<string, string>;
+  checkCancelled: () => Promise<unknown>;
+  warnings: string[];
+}
 
 const json = (value: unknown): unknown => {
   if (value == null) return null;
@@ -27,7 +61,7 @@ async function pauseMailRestore(connection: SqlExecutor, userId: string) {
   // before the operator can release it.
   await connection.execute<RowDataPacket[]>(`UPDATE mail_engine_accounts SET generation = generation + 1,
     paused_reason = IF(paused_reason <=> ?, paused_reason, 'Restore requires provider identity revalidation'),
-    lease_owner = NULL, lease_until = NULL WHERE user_id = ?`, [require('./mail-engine/rollout').HOLD_REASON, userId]);
+    lease_owner = NULL, lease_until = NULL WHERE user_id = ?`, [(require('./mail-engine/rollout') as typeof import('./mail-engine/rollout')).HOLD_REASON, userId]);
   await connection.execute<RowDataPacket[]>(`UPDATE mail_engine_jobs SET state = 'paused', cancellation_requested = TRUE,
     lease_owner = NULL, lease_until = NULL, error = 'Restore requires provider identity revalidation'
     WHERE user_id = ? AND state IN ('queued','running','error')`, [userId]);
@@ -126,4 +160,4 @@ async function restoreMailEngineEvidence(connection: SqlExecutor, userId: string
     warnings.push('Mail accounts are paused after restore. Retained mail is available; reconnect explicitly to revalidate provider identities. Prior operations, uncertain attempts and mappings are retained as quarantined evidence and are never blindly replayed.');
   }
 }
-export = { pauseMailRestore, restoreMailEngineEvidence };
+export { pauseMailRestore, restoreMailEngineEvidence };

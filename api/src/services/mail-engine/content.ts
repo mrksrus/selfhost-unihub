@@ -2,15 +2,39 @@ import type { FileHandle } from 'node:fs/promises';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import type { AddressObject } from 'mailparser';
 import type { StoredFlag } from '../../types';
-import type { EngineJob } from '../../types/mail-engine';
+import type { ClaimedJob } from '../../types/mail-engine';
 import type { ProtocolConnection } from '../../types/imap-protocol';
-interface RawArchiveRow { raw_format?: string; raw_verified?: StoredFlag; raw_bytes?: number | string | null; raw_sha256?: string | null; raw_storage_path?: string | null; remote_missing?: StoredFlag; remote_folder?: unknown; source_folder?: unknown; remote_uid?: unknown; imap_uid?: unknown; remote_uidvalidity?: unknown; imap_uidvalidity?: unknown; import_complete?: StoredFlag }
-interface ArchiveOptions { root?: string; userId?: string | null; maxBytes?: number }
-interface BodyInput { db: Pool; connection: ProtocolConnection; account: { id: string; user_id: string; sync_mode?: string }; folder: { folderName: string; dbFolderName: string }; mailboxId: string; signal?: AbortSignal; job?: (EngineJob & { lease_owner: string; worker_generation: number }) | null; report?: (input: { phase: string; processed: number; total: null }) => unknown | Promise<unknown> }
 
-import crypto = require('node:crypto');
-import fs = require('node:fs/promises');
-import path = require('node:path');
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+
+interface RawArchiveRow {
+  raw_format?: string;
+  raw_verified?: StoredFlag;
+  raw_bytes?: number | string | null;
+  raw_sha256?: string | null;
+  raw_storage_path?: string | null;
+  remote_missing?: StoredFlag;
+  remote_folder?: unknown;
+  source_folder?: unknown;
+  remote_uid?: unknown;
+  imap_uid?: unknown;
+  remote_uidvalidity?: unknown;
+  imap_uidvalidity?: unknown;
+  import_complete?: StoredFlag;
+}
+interface ArchiveOptions { root?: string; userId?: string | null; maxBytes?: number }
+interface BodyInput {
+  db: Pool;
+  connection: ProtocolConnection;
+  account: { id: string; user_id: string; sync_mode?: string };
+  folder: { folderName: string; dbFolderName: string };
+  mailboxId: string;
+  signal?: AbortSignal;
+  job?: ClaimedJob | null;
+  report?: (input: { phase: string; processed: number; total: null }) => unknown | Promise<unknown>;
+}
 
 const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
 // Sized for the largest allowed message on a slow provider (Gmail can serve
@@ -77,7 +101,7 @@ async function readVerifiedArchive(row: RawArchiveRow | null | undefined, { root
   if (!full.startsWith(`${base}${path.sep}`)) return null;
   let handle: FileHandle | null | undefined;
   try {
-    handle = await fs.open(full, require('node:fs').constants.O_RDONLY | require('node:fs').constants.O_NOFOLLOW);
+    handle = await fs.open(full, (require('node:fs') as typeof import('node:fs')).constants.O_RDONLY | (require('node:fs') as typeof import('node:fs')).constants.O_NOFOLLOW);
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size !== Number(row.raw_bytes)) return null;
     const content = await handle.readFile();
@@ -104,7 +128,7 @@ async function fetchRawBounded(transport: typeof import('./transport'), connecti
   if (signal?.aborted) throw Object.assign(new Error('Body fetch cancelled'), { code: 'MAIL_SYNC_CANCELLED' });
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => {
-    require('../mail-imap-guard').closeImapConnection(connection);
+    (require('../mail-imap-guard') as typeof import('../mail-imap-guard')).closeImapConnection(connection);
     reject(Object.assign(new Error('Body fetch deadline exceeded'), { code: 'MAIL_BODY_TIMEOUT' }));
   }, timeoutMs); });
   try {
@@ -175,12 +199,12 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
       const probe = await transport.fetchMetadataWindow(connection, { folder: folder.folderName,
         uidvalidity: uint32(row.uidvalidity)!, startUid: uint32(row.uid)!, endUid: uint32(row.uid)!,
         maxMessages: 1, maxBytes: 1024 * 1024 }, { signal });
-      const present = require('./sync').validateWindowReply(probe,
-        { start: uint32(row.uid), end: uint32(row.uid) }, uint32(row.uidvalidity));
+      const present = (require('./sync') as typeof import('./sync')).validateWindowReply(probe,
+        { start: uint32(row.uid)!, end: uint32(row.uid)! }, uint32(row.uidvalidity)!);
       if (present.length) throw error;
       // Only previously verified exact octets inside this owner's archive root
       // may repair the import; an unverified legacy file is not provider proof.
-      raw = await readVerifiedArchive(row, { root: require('../mail').MAIL_RAW_STORAGE_ROOT, userId: account.user_id });
+      raw = await readVerifiedArchive(row, { root: (require('../mail') as typeof import('../mail')).MAIL_RAW_STORAGE_ROOT, userId: account.user_id });
       if (!raw) throw error;
     } else if (['MAIL_IMAP_LIMIT', 'MAIL_BODY_TOO_LARGE'].includes((error as NodeJS.ErrnoException).code || '')) {
       await markDeferred(row.email_id);
@@ -208,8 +232,8 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
     messageId: parsed.messageId || null, fullEmail: raw, parsed, fromAddress: address?.address || 'unknown',
     fromName: address?.name || null, toAddresses: ((parsed.to as AddressObject | undefined)?.value || []).map(a => a.address).filter(Boolean),
     folder: folder.dbFolderName, isRead: !!row.is_read,
-    archiveRaw: data => publishRaw({ root: require('../mail').MAIL_RAW_STORAGE_ROOT, ...data, raw: data.rawEmail as Buffer }),
-    enqueueDeletion: require('../mail').recordMailServerMessageForDeletion,
+    archiveRaw: data => publishRaw({ root: (require('../mail') as typeof import('../mail')).MAIL_RAW_STORAGE_ROOT, ...data, raw: data.rawEmail as Buffer }),
+    enqueueDeletion: (require('../mail') as typeof import('../mail')).recordMailServerMessageForDeletion,
     suppressNotifications: true,
     validateOccurrence: async (cx, emailId) => {
       if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id,
@@ -223,4 +247,17 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
   return { processed: 1, emailId: result.emailId, more: true };
 }
 
-export = { DEFAULT_MAX_BYTES, DEFAULT_TIMEOUT_MS, BODY_SLICE_MESSAGES, BODY_SLICE_MS, requireRawBuffer, rawDigest, publishRaw, verifyArchive, eligibleForProviderErasure, fetchRawBounded, processBodySlice, uint32 };
+export {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_TIMEOUT_MS,
+  BODY_SLICE_MESSAGES,
+  BODY_SLICE_MS,
+  requireRawBuffer,
+  rawDigest,
+  publishRaw,
+  verifyArchive,
+  eligibleForProviderErasure,
+  fetchRawBounded,
+  processBodySlice,
+  uint32,
+};

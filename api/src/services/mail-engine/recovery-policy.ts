@@ -27,4 +27,11 @@ const EXTRA_COLUMNS = Object.freeze({
 // Archive fields added by later numbered migrations (default: 5/6 as above).
 const LATER_ARCHIVE_FIELDS = Object.freeze({ 'mail_remote_occurrences.internal_date': 10 });
 const NEW_OPERATION_COLUMNS = new Set('state is_current intent_revision client_key source_occurrence_id evidence_json'.split(' '));
-export = { LATER_ARCHIVE_FIELDS, ARCHIVE_COLUMNS, ARCHIVE_KEYS, EPHEMERAL_COLUMNS, EXTRA_COLUMNS, NEW_OPERATION_COLUMNS };
+export {
+  LATER_ARCHIVE_FIELDS,
+  ARCHIVE_COLUMNS,
+  ARCHIVE_KEYS,
+  EPHEMERAL_COLUMNS,
+  EXTRA_COLUMNS,
+  NEW_OPERATION_COLUMNS,
+};

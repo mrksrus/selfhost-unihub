@@ -1,5 +1,6 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
+
 function sameUidValidity(left: unknown, right: unknown) {
   return left != null && right != null && String(left) === String(right);
 }
@@ -28,4 +29,4 @@ async function saveFolderSyncState(db: SqlExecutor, accountId: string, folderNam
   );
 }
 
-export = { sameUidValidity, loadFolderSyncState, buildFolderSearchCriteria, saveFolderSyncState };
+export { sameUidValidity, loadFolderSyncState, buildFolderSearchCriteria, saveFolderSyncState };

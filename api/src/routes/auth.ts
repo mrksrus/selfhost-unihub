@@ -1,17 +1,11 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface Input { email: string; password: string; full_name?: string | null; challenge_token?: unknown; code?: string; secret?: unknown; current_password?: string; new_password?: string; timezone?: unknown }
 import type { ServerResponse } from 'node:http';
 import type { SqlExecutor, StoredFlag } from '../types';
-interface UserRow extends RowDataPacket { id: string; email: string; full_name: string | null; avatar_url: string | null; role: string; timezone?: string | null; two_factor_enabled: StoredFlag; password_hash: string; is_active: StoredFlag; encrypted_two_factor_secret?: string | null; two_factor_recovery_codes?: unknown }
-import crypto = require('crypto');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../config');
-const { MIN_PASSWORD_LENGTH } = imported2;
-import imported3 = require('../auth');
-const {
+import crypto from 'crypto';
+import { db } from '../state';
+import { MIN_PASSWORD_LENGTH } from '../config';
+import {
   getClientIP,
   consumeAuthAttempt,
   getSignupMode,
@@ -25,9 +19,8 @@ const {
   getAuthTokenFromRequest,
   clearAuthCookie,
   clearCsrfCookie,
-} = imported3;
-import imported4 = require('../services/two-factor');
-const {
+} from '../auth';
+import {
   generateTwoFactorSecret,
   verifyTotp,
   getOtpAuthUri,
@@ -41,9 +34,34 @@ const {
   createTwoFactorLoginChallenge,
   consumeTwoFactorLoginChallenge,
   deleteTwoFactorLoginChallenge,
-} = imported4;
-import imported5 = require('../services/server-events');
-const { serverEvents } = imported5;
+} from '../services/two-factor';
+import { serverEvents } from '../services/server-events';
+
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+interface Input {
+  email: string;
+  password: string;
+  full_name?: string | null;
+  challenge_token?: unknown;
+  code?: string;
+  secret?: unknown;
+  current_password?: string;
+  new_password?: string;
+  timezone?: unknown;
+}
+interface UserRow extends RowDataPacket {
+  id: string;
+  email: string;
+  full_name: string | null;
+  avatar_url: string | null;
+  role: string;
+  timezone?: string | null;
+  two_factor_enabled: StoredFlag;
+  password_hash: string;
+  is_active: StoredFlag;
+  encrypted_two_factor_secret?: string | null;
+  two_factor_recovery_codes?: unknown;
+}
 
 async function createSessionResponse(user: Pick<UserRow, 'id' | 'email' | 'full_name' | 'avatar_url' | 'role' | 'timezone' | 'two_factor_enabled'>, res: ServerResponse, connection: SqlExecutor = db, afterCommit: (() => void)[] | null = null) {
   const token = generateToken(user.id);
@@ -71,7 +89,6 @@ async function createSessionResponse(user: Pick<UserRow, 'id' | 'email' | 'full_
   };
 }
 
-
 function checkLoginBudget(res: ServerResponse, scope: Parameters<typeof consumeAuthAttempt>[0], identity: string) {
   const retryAfter = consumeAuthAttempt(scope, identity);
   if (!retryAfter) return null;
@@ -86,7 +103,6 @@ function validCredentials(email: unknown, password: unknown) {
   return typeof email === 'string' && email.trim().length > 0 && email.length <= 254
     && typeof password === 'string' && password.length > 0 && password.length <= 1024;
 }
-
 
 export = {
   // Authentication endpoints

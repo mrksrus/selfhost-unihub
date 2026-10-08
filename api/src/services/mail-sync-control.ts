@@ -1,25 +1,17 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
-interface SyncOptions extends Record<string, unknown> { background?: boolean; followUp?: boolean }
 
-import imported1 = require('./mail-sync-scheduler');
-const { READ_ONLY_MAIL_JOB_KINDS } = imported1;
-import imported2 = require('./mail-engine/connection-pool');
-const { evictImapConnections } = imported2;
-import imported3 = require('../state');
-const { db } = imported3;
-import imported4 = require('./module-settings');
-const { isModuleEnabled, isModuleBackgroundEnabled } = imported4;
-import imported5 = require('./restore-locks');
-const { isSectionRestoreActive } = imported5;
-import imported6 = require('./mail-host-policy');
-const { toBooleanFlag } = imported6;
-import imported7 = require('./mail-durable-jobs');
-const { durableScheduler, foregroundMutationAccounts, normalizeMailAccountId } = imported7;
-import imported8 = require('./mail-server-delete');
-const { mailDeleteStopRequests } = imported8;
-import imported9 = require('./server-events');
-const { publishMailJob } = imported9;
+import { READ_ONLY_MAIL_JOB_KINDS } from './mail-sync-scheduler';
+import { evictImapConnections } from './mail-engine/connection-pool';
+import { db } from '../state';
+import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
+import { isSectionRestoreActive } from './restore-locks';
+import { toBooleanFlag } from './mail-host-policy';
+import { durableScheduler, foregroundMutationAccounts, normalizeMailAccountId } from './mail-durable-jobs';
+import { mailDeleteStopRequests } from './mail-server-delete';
+import { publishMailJob } from './server-events';
+
+interface SyncOptions extends Record<string, unknown> { background?: boolean; followUp?: boolean }
 
 const DEFAULT_MAIL_SYNC_FETCH_LIMIT = 'all';
 const MAIL_SYNC_FETCH_LIMITS = new Set(['all']);
@@ -83,14 +75,14 @@ async function stopMailAccountWork(accountId: unknown, reason = 'Account stopped
   const key = normalizeMailAccountId(accountId);
   const [accounts] = await db.execute<RowDataPacket[]>('SELECT user_id FROM mail_accounts WHERE id = ?', [key]);
   if (!accounts.length) return false;
-  await require('./mail-engine/runtime').pauseAccount({ userId: accounts[0].user_id, accountId: key, reason });
+  await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).pauseAccount({ userId: accounts[0].user_id, accountId: key, reason });
   mailDeleteStopRequests.add(key);
   foregroundMutationAccounts.delete(key);
   durableScheduler.interruptAccount(key);
   evictImapConnections(key);
   // The IDLE session is a provider connection too; a paused account is not
   // eligible again until it resumes.
-  require('./mail-idle').idleSupervisor.stopAccount(key);
+  (require('./mail-idle') as typeof import('./mail-idle')).idleSupervisor.stopAccount(key);
   inboxFollowUps.delete(key);
   return true;
 }
@@ -115,7 +107,7 @@ async function scheduleMailAccountSync(accountId: unknown, options: SyncOptions 
   // directly, so the resume belongs at admission, not only syncMailAccount.
   if (manual && await isModuleEnabled(accounts[0].user_id, 'mail')
       && !await isSectionRestoreActive(accounts[0].user_id, 'mail'))
-    await require('./mail-engine/runtime').resumeAccount({ userId: accounts[0].user_id,
+    await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).resumeAccount({ userId: accounts[0].user_id,
       accountId: id, resumeStreams: true, reasons: ['Mail module disabled', 'Mail background paused'] });
   await durableScheduler.start();
   const prior = await durableScheduler.state({ userId: accounts[0].user_id, accountId: id });
@@ -146,7 +138,7 @@ async function syncMailAccount(accountId: unknown, options: SyncOptions = {}) {
   return job.promise;
 }
 
-// A change seen by the account's IDLE session (mail-idle.js). It goes through
+// A change seen by the account's IDLE session (mail-idle.ts). It goes through
 // ordinary admission: background work, only while the account may run it now,
 // never a manual resweep. scheduler.enqueue persists the job and nudges a drain.
 const IDLE_STREAM_PRIORITY: Record<string, number> = { recent: 10, flags: 20, presence: 70 };
@@ -179,7 +171,7 @@ const MAIL_DISCOVERY_INTERVAL_SECONDS = 5 * 60;
 const MAIL_IDLE_SAFETY_NET_SECONDS = 5 * 60;
 const inboxFollowUps = new Map<string, number>();
 async function schedulePeriodicMailWork(accountId: unknown, { executor = db, scheduler = durableScheduler,
-  idleHealthy = (key: string) => require('./mail-idle').idleSupervisor.isHealthy(key), now = Date.now }: { executor?: SqlExecutor; scheduler?: typeof durableScheduler; idleHealthy?: (key: string) => boolean; now?: () => number } = {}) {
+  idleHealthy = (key: string) => (require('./mail-idle') as typeof import('./mail-idle')).idleSupervisor.isHealthy(key), now = Date.now }: { executor?: SqlExecutor; scheduler?: typeof durableScheduler; idleHealthy?: (key: string) => boolean; now?: () => number } = {}) {
   const id = normalizeMailAccountId(accountId);
   if (!id) throw new Error('Account ID required');
   const [accounts] = await executor.execute<RowDataPacket[]>('SELECT user_id FROM mail_accounts WHERE id = ?', [id]);
@@ -205,7 +197,7 @@ async function schedulePeriodicMailWork(accountId: unknown, { executor = db, sch
   return { started: false, alreadyRunning: false, discovery: false, promise: Promise.resolve({ success: true }) };
 }
 
-export = {
+export {
   DEFAULT_MAIL_SYNC_FETCH_LIMIT,
   MAIL_SYNC_FETCH_LIMITS,
   normalizeSyncFetchLimit,

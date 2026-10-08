@@ -1,13 +1,24 @@
 import type { DatabaseConfig } from './types';
 import type { Connection, ConnectionOptions } from 'mysql2';
-interface ProbeOptions { timeoutMs: number; createConnection?: (options: ConnectionOptions) => Pick<Connection, 'promise' | 'destroy'>; setTimer?: typeof setTimeout; clearTimer?: typeof clearTimeout }
-interface WaitOptions { maxWaitMs?: number; intervalMs?: number; probe?: typeof probeDatabase; now?: () => number; sleep?: (milliseconds: number) => Promise<unknown>; log?: (message: string) => void }
 
-import mysql = require('mysql2');
-import imported1 = require('node:perf_hooks');
-const { performance } = imported1;
-import imported2 = require('./services/database-config');
-const { getDatabaseConfig } = imported2;
+import mysql from 'mysql2';
+import { performance } from 'node:perf_hooks';
+import { getDatabaseConfig } from './services/database-config';
+
+interface ProbeOptions {
+  timeoutMs: number;
+  createConnection?: (options: ConnectionOptions) => Pick<Connection, 'promise' | 'destroy'>;
+  setTimer?: typeof setTimeout;
+  clearTimer?: typeof clearTimeout;
+}
+interface WaitOptions {
+  maxWaitMs?: number;
+  intervalMs?: number;
+  probe?: typeof probeDatabase;
+  now?: () => number;
+  sleep?: (milliseconds: number) => Promise<unknown>;
+  log?: (message: string) => void;
+}
 
 function seconds(value: unknown, fallback: number, allowZero = false) {
   if (!/^\d+$/.test(String(value ?? ''))) return fallback;
@@ -80,4 +91,4 @@ if (require.main === module) {
   });
 }
 
-export = { probeDatabase, waitForDatabase, seconds };
+export { probeDatabase, waitForDatabase, seconds };

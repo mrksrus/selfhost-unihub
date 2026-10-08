@@ -1,12 +1,26 @@
+// Additive MariaDB mail engine schema. DDL autocommits; every step is repeatable.
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../../types';
-interface BackfillRow { id: string; user_id: string; mail_account_id: string; is_legacy?: StoredFlag; remote_missing?: StoredFlag; remote_folder?: string | null; remote_uid?: number | string | bigint | null; remote_uidvalidity?: number | string | bigint | null; is_read?: StoredFlag; is_starred?: StoredFlag; is_draft?: StoredFlag; state?: string | null; status?: string; dispatched?: StoredFlag }
 
-// Additive MariaDB mail engine schema. DDL autocommits; every step is repeatable.
-import imported1 = require('node:crypto');
-const { randomUUID } = imported1;
-import imported2 = require('./repository-identity');
-const { assertUid32 } = imported2;
+import { randomUUID } from 'node:crypto';
+import { assertUid32 } from './repository-identity';
+
+interface BackfillRow {
+  id: string;
+  user_id: string;
+  mail_account_id: string;
+  is_legacy?: StoredFlag;
+  remote_missing?: StoredFlag;
+  remote_folder?: string | null;
+  remote_uid?: number | string | bigint | null;
+  remote_uidvalidity?: number | string | bigint | null;
+  is_read?: StoredFlag;
+  is_starred?: StoredFlag;
+  is_draft?: StoredFlag;
+  state?: string | null;
+  status?: string;
+  dispatched?: StoredFlag;
+}
 
 async function columns(db: SqlExecutor, table: string) {
   const [rows] = await db.execute<RowDataPacket[]>(`SHOW COLUMNS FROM \`${table}\``);
@@ -259,7 +273,7 @@ async function backfillEmail(db: SqlExecutor, row: BackfillRow) {
     await quarantine(db, 'emails', row, 'invalid_remote_tuple', { folder: folder || null, uid: String(uid ?? ''), epoch: String(epoch ?? '') });
     return;
   }
-  const { ensureMailbox } = require('./repository');
+  const { ensureMailbox } = require('./repository') as typeof import('./repository');
   const mailbox = await ensureMailbox({ userId: row.user_id, accountId: row.mail_account_id, folderName: folder, epoch, metadata: { allowEpochChange: false } }, db);
   if (Number(mailbox.uidvalidity) !== Number(epoch) || mailbox.state === 'quarantined') {
     await quarantine(db, 'emails', row, 'stale_epoch', { mailboxId: mailbox.id, epoch: String(epoch) });
@@ -316,5 +330,12 @@ async function verifyMailEngineSchema(db: SqlExecutor) {
   }
   if (await indexExists(db, 'mail_writebacks', 'uq_mail_writeback')) throw new Error('Legacy writeback unique index still present');
 }
-export = { migrateMailEngineSchema, backfillMailEngine, verifyMailEngineSchema,
-  migrateManualMailRefresh, verifyManualMailRefresh, migrateMailSyncPolicy, verifyMailSyncPolicy };
+export {
+  migrateMailEngineSchema,
+  backfillMailEngine,
+  verifyMailEngineSchema,
+  migrateManualMailRefresh,
+  verifyManualMailRefresh,
+  migrateMailSyncPolicy,
+  verifyMailSyncPolicy,
+};

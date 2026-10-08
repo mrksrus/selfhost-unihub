@@ -1,6 +1,5 @@
-import crypto = require('crypto');
-import imported1 = require('../config');
-const { ENCRYPTION_KEY } = imported1;
+import crypto from 'crypto';
+import { ENCRYPTION_KEY } from '../config';
 
 // ── Encryption helpers (AES-256-GCM) ─────────────────────────────
 function deriveKey(secret: string | undefined) {
@@ -33,7 +32,7 @@ function decrypt(encryptedText: string) {
   }
 }
 
-export = {
+export {
   deriveKey,
   encrypt,
   decrypt,

@@ -1,10 +1,8 @@
 import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
 import type { StoredFlag } from '../types';
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../services/mail');
-const { normalizeMailFolderSlug, ensureDefaultMailFoldersForUser, scheduleMailAccountSync } = imported2;
+import { db } from '../state';
+import { normalizeMailFolderSlug, ensureDefaultMailFoldersForUser, scheduleMailAccountSync } from '../services/mail';
 
 // Keep stored flags as the last confirmed provider state. Show an accepted
 // pending action immediately, including after a page reload or a long sync.
@@ -46,7 +44,7 @@ function extractMailRouteId(req: Pick<IncomingMessage, 'url'>, offsetFromEnd = 1
   return parts[parts.length - offsetFromEnd] || null;
 }
 
-export = {
+export {
   pendingFlagSql,
   EFFECTIVE_READ_SQL,
   EFFECTIVE_STAR_SQL,

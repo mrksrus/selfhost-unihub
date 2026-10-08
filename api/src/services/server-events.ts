@@ -1,16 +1,3 @@
-import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { EventEmitter } from 'node:events';
-interface EventStream { userId: string; tokenHash: string | null; modules: Set<string>; revalidate: ((stream: EventStream) => Promise<boolean>) | null; req: IncomingMessage; res: ServerResponse; closed: boolean; revalidating: boolean; onClose: (() => void) | null }
-interface AttachOptions { userId: unknown; req: IncomingMessage; res: ServerResponse; token?: string | null; modules?: Iterable<string> | null; revalidate?: ((stream: EventStream) => Promise<boolean>) | null }
-interface PendingEvent { type: string; data: unknown; module: string | null }
-interface ThrottleState { pending: PendingEvent | null; timer: NodeJS.Timeout | null }
-interface PublishOptions<T> { module?: string | null; throttleKey?: string | null; merge?: ((previous: T, next: T) => T) | null }
-type TimerApi = Pick<typeof globalThis, 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'>;
-type BusOptions = Partial<Record<keyof typeof DEFAULTS, number>> & { now?: () => number; timers?: TimerApi };
-interface MailJobHint { user_id?: string; mail_account_id?: unknown; state?: string; kind?: string; phase?: string | null; id?: unknown; operation_id?: string | null; processed?: unknown; total?: unknown; result?: { inserted?: unknown; updated?: unknown; processed?: unknown } }
-interface OperationHint { accountId: string | null; operationIds: (string | null)[]; state: string | null }
-interface ShutdownOptions { bus?: ReturnType<typeof createServerEvents>; server?: { close?: () => unknown } | null; signals?: Pick<EventEmitter, 'on' | 'removeListener'>; kill?: (signal: NodeJS.Signals) => unknown; graceMs?: number; timers?: Pick<TimerApi, 'setTimeout'>; onShutdown?: readonly (() => unknown)[] }
-
 // Live status push (Server-Sent Events) for the browser.
 //
 // The bus lives in this API process only. UniHub runs one API process (the mail
@@ -23,7 +10,61 @@ interface ShutdownOptions { bus?: ReturnType<typeof createServerEvents>; server?
 // addresses, folder names or provider error text. Delivery is best effort;
 // the browser refetches the authoritative state over the normal API, and keeps
 // a slow polling safety net while connected.
-import crypto = require('node:crypto');
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { EventEmitter } from 'node:events';
+
+import crypto from 'node:crypto';
+
+interface EventStream {
+  userId: string;
+  tokenHash: string | null;
+  modules: Set<string>;
+  revalidate: ((stream: EventStream) => Promise<boolean>) | null;
+  req: IncomingMessage;
+  res: ServerResponse;
+  closed: boolean;
+  revalidating: boolean;
+  onClose: (() => void) | null;
+}
+interface AttachOptions {
+  userId: unknown;
+  req: IncomingMessage;
+  res: ServerResponse;
+  token?: string | null;
+  modules?: Iterable<string> | null;
+  revalidate?: ((stream: EventStream) => Promise<boolean>) | null;
+}
+interface PendingEvent { type: string; data: unknown; module: string | null }
+interface ThrottleState { pending: PendingEvent | null; timer: NodeJS.Timeout | null }
+interface PublishOptions<T> {
+  module?: string | null;
+  throttleKey?: string | null;
+  merge?: ((previous: T, next: T) => T) | null;
+}
+type TimerApi = Pick<typeof globalThis, 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'>;
+type BusOptions = Partial<Record<keyof typeof DEFAULTS, number>> & { now?: () => number; timers?: TimerApi };
+interface MailJobHint {
+  user_id?: string;
+  mail_account_id?: unknown;
+  state?: string;
+  kind?: string;
+  phase?: string | null;
+  id?: unknown;
+  operation_id?: string | null;
+  processed?: unknown;
+  total?: unknown;
+  result?: { inserted?: unknown; updated?: unknown; processed?: unknown };
+}
+interface OperationHint { accountId: string | null; operationIds: (string | null)[]; state: string | null }
+interface ShutdownOptions {
+  bus?: ReturnType<typeof createServerEvents>;
+  server?: { close?: () => unknown } | null;
+  signals?: Pick<EventEmitter, 'on' | 'removeListener'>;
+  kill?: (signal: NodeJS.Signals) => unknown;
+  graceMs?: number;
+  timers?: Pick<TimerApi, 'setTimeout'>;
+  onShutdown?: readonly (() => unknown)[];
+}
 
 const DEFAULTS = Object.freeze({
   heartbeatMs: 25 * 1000,
@@ -358,7 +399,7 @@ function installShutdownHandler({ bus = serverEvents, server = null, signals = p
   return () => { for (const [name, handler] of Object.entries(handlers)) signals.removeListener(name, handler); };
 }
 
-export = {
+export {
   createServerEvents,
   installShutdownHandler,
   serverEvents,

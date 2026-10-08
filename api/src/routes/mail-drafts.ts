@@ -1,27 +1,36 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface DraftRow extends RowDataPacket { mail_account_id: string; subject: string | null; body_html: string | null; body_text: string | null }
-interface Input { account_id?: string; isHtml?: boolean; to?: string; subject?: string; body?: string; body_html?: string; attachments?: unknown; existing_attachment_ids?: unknown[] | null }
-import crypto = require('crypto');
-import fs = require('fs');
-import imported1 = require('util');
-const { promisify } = imported1;
-import imported2 = require('../state');
-const { db } = imported2;
-import imported3 = require('../logger');
-const { debugLog } = imported3;
-import imported4 = require('../services/mail');
-const {
+import crypto from 'crypto';
+import fs from 'fs';
+import { promisify } from 'util';
+import { db } from '../state';
+import { debugLog } from '../logger';
+import {
   toBooleanFlag,
   ensureDefaultMailFoldersForUser,
   sendEmail,
   deleteStoredAttachmentFiles,
-} = imported4;
-import imported5 = require('../services/mail-drafts');
-const { saveDraftMutation } = imported5;
-import imported6 = require('./mail-route-helpers');
-const { extractMailRouteId } = imported6;
+} from '../services/mail';
+import { saveDraftMutation } from '../services/mail-drafts';
+import { extractMailRouteId } from './mail-route-helpers';
+
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+interface DraftRow extends RowDataPacket {
+  mail_account_id: string;
+  subject: string | null;
+  body_html: string | null;
+  body_text: string | null;
+}
+interface Input {
+  account_id?: string;
+  isHtml?: boolean;
+  to?: string;
+  subject?: string;
+  body?: string;
+  body_html?: string;
+  attachments?: unknown;
+  existing_attachment_ids?: unknown[] | null;
+}
 
 const readFile = promisify(fs.readFile);
 const MAIL_DRAFT_FOLDER = 'drafts';

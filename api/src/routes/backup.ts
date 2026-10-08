@@ -1,13 +1,9 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface Input { filePath?: string; encrypt?: unknown; password?: string; sections?: string | string[]; scope?: string; mailAccountId?: string; conflict_mode?: string; conflictMode?: string; calendar_mode?: string; calendarMode?: string; credentials_mode?: string; credentialsMode?: string }
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../services/export-jobs');
-const {
+import fs from 'fs';
+import path from 'path';
+import { db } from '../state';
+import {
   startDataExportJob,
   listDataExportJobs,
   getDataExportJob,
@@ -15,9 +11,8 @@ const {
   cancelDataExportJob,
   isBackupPathUnderRoot,
   serializeJob,
-} = imported2;
-import imported3 = require('../services/backup-restore-jobs');
-const {
+} from '../services/export-jobs';
+import {
   createUploadedRestoreJob,
   createRestoreFromExport,
   unlockRestoreJob,
@@ -27,9 +22,25 @@ const {
   listRestoreJobs,
   getRestoreJob,
   serializeRestoreJob,
-} = imported3;
-import imported4 = require('../services/backup-container');
-const { revealProtectedRecoveryPassword } = imported4;
+} from '../services/backup-restore-jobs';
+import { revealProtectedRecoveryPassword } from '../services/backup-container';
+import { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } from '../services/backup-availability';
+
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+interface Input {
+  filePath?: string;
+  encrypt?: unknown;
+  password?: string;
+  sections?: string | string[];
+  scope?: string;
+  mailAccountId?: string;
+  conflict_mode?: string;
+  conflictMode?: string;
+  calendar_mode?: string;
+  calendarMode?: string;
+  credentials_mode?: string;
+  credentialsMode?: string;
+}
 
 const BACKUP_UPLOAD_ROOT = path.resolve('/app/uploads/backups/imports');
 
@@ -63,12 +74,11 @@ function isTemporaryBackupUpload(req: Request, body: Input) {
   return filePath.startsWith(`${BACKUP_UPLOAD_ROOT}${path.sep}`);
 }
 
-export = {
+const routes = {
   'GET /api/backup/capabilities': async (req: Request, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
-    const { SECTION_POLICIES, ACCOUNT_SECTION } = require('../services/backup-catalog');
-    const { BACKUP_VERSION } = require('../services/backup-format');
-    const { DISABLED_BACKUP_ROUTES } = require('../services/backup-availability');
+    const { SECTION_POLICIES, ACCOUNT_SECTION } = require('../services/backup-catalog') as typeof import('../services/backup-catalog');
+    const { BACKUP_VERSION } = require('../services/backup-format') as typeof import('../services/backup-format');
     const labels: Record<string, string> = { settings: 'Settings', contacts: 'Contacts', calendar: 'Calendar/ToDo', mail: 'Mail', recordings: 'Recordings' };
     return { enabled: DISABLED_BACKUP_ROUTES.size === 0, version: BACKUP_VERSION,
       sections: Object.keys(SECTION_POLICIES).map(id => ({ id, label: labels[id] || id })),
@@ -342,10 +352,10 @@ export = {
 };
 
 // Keep the same boundary for direct route dispatch (including internal callers).
-import imported5 = require('../services/backup-availability');
-const { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } = imported5;
 for (const route of DISABLED_BACKUP_ROUTES) {
-  module.exports[route] = async (req: Request, userId: string | null) => userId
+  (routes as Record<string, unknown>)[route] = async (req: Request, userId: string | null) => userId
     ? { error: BACKUP_DISABLED_MESSAGE, status: 503 }
     : { error: 'Unauthorized', status: 401 };
 }
+
+export = routes;

@@ -1,11 +1,11 @@
 import type { IncomingMessage } from 'node:http';
 import type { ApiError } from '../types';
+
+import { getAuthTokenFromRequest } from '../auth';
+import * as notifications from '../services/notifications';
+
 interface NotificationBody { subscription?: unknown; endpoint?: string }
 type NotificationHandler = (req: IncomingMessage, userId: string, body: NotificationBody) => unknown | Promise<unknown>;
-
-import imported1 = require('../auth');
-const { getAuthTokenFromRequest } = imported1;
-import notifications = require('../services/notifications');
 
 const authenticated = (handler: NotificationHandler) => async (req: IncomingMessage, userId: string | null, body?: NotificationBody | null) => {
   if (!userId) return { error: 'Unauthorized', status: 401 };

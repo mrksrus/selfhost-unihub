@@ -1,26 +1,32 @@
+// Durable provider operation executor. IMAP is never called inside a SQL transaction.
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../../types';
-import type { ProviderOperation } from '../../types/mail-engine';
+import type { OperationRow } from '../../types/mail-engine';
 import type { ProtocolConnection } from '../../types/imap-protocol';
-interface OperationRow extends ProviderOperation { is_current: StoredFlag; dispatched: StoredFlag; attempts: number; evidence_json?: unknown }
-interface StateContext { attemptId?: string; transmission?: string | null; evidence?: Record<string, unknown> | null; due?: number | null; generation?: number | null; workerId?: string | null; jobId?: string | null; clearDispatch?: boolean; bump?: boolean }
 
-// Durable provider operation executor. IMAP is never called inside a SQL transaction.
+import { db } from '../../state';
+import * as transport from './transport';
+import * as reconciliation from './reconciliation';
+import * as runtime from './runtime';
+import { isSectionRestoreActive } from '../restore-locks';
+import { isModuleEnabled, isModuleBackgroundEnabled } from '../module-settings';
 
-import imported1 = require('../../state');
-const { db } = imported1;
-import transport = require('./transport');
-import reconciliation = require('./reconciliation');
-import runtime = require('./runtime');
-import imported2 = require('../restore-locks');
-const { isSectionRestoreActive } = imported2;
-import imported3 = require('../module-settings');
-const { isModuleEnabled, isModuleBackgroundEnabled } = imported3;
+interface StateContext {
+  attemptId?: string;
+  transmission?: string | null;
+  evidence?: Record<string, unknown> | null;
+  due?: number | null;
+  generation?: number | null;
+  workerId?: string | null;
+  jobId?: string | null;
+  clearDispatch?: boolean;
+  bump?: boolean;
+}
 const transaction = <T>(fn: (connection: SqlExecutor) => Promise<T>): Promise<T> => (require('./repository') as typeof import('./repository')).withTransaction(fn, db); // retries deadlocks
 const bitFlag: Record<string, string> = { read: '\\Seen', star: '\\Flagged' };
 // The IMAP session survived a failed command and can serve the next operation.
 function transportUsable(connection: ProtocolConnection) {
-  return require('../mail-imap-guard').imapSessionUsable(connection);
+  return (require('../mail-imap-guard') as typeof import('../mail-imap-guard')).imapSessionUsable(connection);
 }
 const safeText = (error: unknown): string => {
   if (error && typeof error !== 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(String((error as NodeJS.ErrnoException).code || ''))) return (error as NodeJS.ErrnoException).code!;
@@ -49,7 +55,7 @@ async function accountFence(cx: SqlExecutor, op: OperationRow, generation: numbe
 // Committed operation states reach the owner's open tabs as a refetch hint.
 async function publishedState(op: OperationRow, state: string, committed: Promise<boolean>) {
   const changed = await committed;
-  if (changed) require('../server-events').publishMailOperation(op.user_id,
+  if (changed) (require('../server-events') as typeof import('../server-events')).publishMailOperation(op.user_id,
     { accountId: op.mail_account_id, operationIds: [op.id], state });
   return changed;
 }
@@ -283,7 +289,7 @@ async function applyMove(op: OperationRow, connection: ProtocolConnection, gener
         if (result.items.length === 1 && same(result.items[0].uid, uid)) {
           // A new destination MUST first be associated by verified COPYUID, never
           // by raw-hash collision; the shared settlement merges scan-first safely.
-          const { ensureMailbox, upsertOccurrence } = require('./repository');
+          const { ensureMailbox, upsertOccurrence } = require('./repository') as typeof import('./repository');
           const settled = await transaction(async cx => {
             const mailbox = await ensureMailbox({ userId: latest.user_id, accountId: latest.mail_account_id,
               folderName: latest.target_value, epoch: box.uidvalidity }, cx);
@@ -346,7 +352,7 @@ async function reconcileMoveOutcome(op: OperationRow, connection: ProtocolConnec
   }
   if (mapping && same(mapping.uidvalidity, box.uidvalidity) && items.length === 1 && same(items[0].uid, mappedUid)
     && reconciliation.validMapping(mapping, latest, { uidvalidity: box.uidvalidity, uid: mappedUid })) {
-    const { ensureMailbox, upsertOccurrence } = require('./repository');
+    const { ensureMailbox, upsertOccurrence } = require('./repository') as typeof import('./repository');
     const result = await transaction(async cx => {
       // The operation and its source are fenced again by settleMoveEvidence.
       await runtime.assertFence({ accountId: latest.mail_account_id, workerId: workerId!, generation, jobId }, cx);
@@ -423,6 +429,11 @@ async function deferAccountOffline(accountId: string, userId: string, error: unk
     AND available_at<=UTC_TIMESTAMP()`, [accountId, userId]);
   return result.affectedRows;
 }
-export = { processDueOperations, deferAccountOffline, retryDelay,
-  // pure functions surfaced for protocol/operation state tests
-  applyFlag, applyMove, beginDispatch };
+export {
+  processDueOperations,
+  deferAccountOffline,
+  retryDelay,
+  applyFlag,
+  applyMove,
+  beginDispatch,
+};

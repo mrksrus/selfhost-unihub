@@ -1,19 +1,24 @@
-import type { MailAccountIdentity, StoredFlag } from '../../types';
-type Connection = Awaited<ReturnType<typeof imapClient.connectImap>> & { idling?: boolean; socket?: { ref: () => void; unref: () => void } };
-interface ConnectionAccount extends MailAccountIdentity { id: string; encrypted_password?: string | null; allow_self_signed?: StoredFlag; trusted_imap_fingerprint256?: string | null }
-interface ConnectionOwner { key: string; fingerprint: string; createdAt: number }
-interface ParkedConnection { connection: Connection; fingerprint: string; timer?: NodeJS.Timeout }
-
 // Parks at most one idle, authenticated IMAP session per account between
 // sequential jobs so an idle account does not LOGIN for every stream slice.
 // Jobs of one account are serialized by the durable account lease, and a
 // checkout removes the entry, so a session is never shared by two running
 // jobs. Only a job that completed unaborted may park its transport; a failed,
 // aborted, cancelled or fenced job's transport is destroyed by its guard.
-import crypto = require('node:crypto');
-import imapClient = require('../mail-imap-client');
-import imported1 = require('../mail-imap-guard');
-const { guardImapConnection, runGuardedImap, imapSessionUsable, closeImapConnection } = imported1;
+import type { MailAccountIdentity, StoredFlag } from '../../types';
+
+import crypto from 'node:crypto';
+import * as imapClient from '../mail-imap-client';
+import { guardImapConnection, runGuardedImap, imapSessionUsable, closeImapConnection } from '../mail-imap-guard';
+
+type Connection = Awaited<ReturnType<typeof imapClient.connectImap>> & { idling?: boolean; socket?: { ref: () => void; unref: () => void } };
+interface ConnectionAccount extends MailAccountIdentity {
+  id: string;
+  encrypted_password?: string | null;
+  allow_self_signed?: StoredFlag;
+  trusted_imap_fingerprint256?: string | null;
+}
+interface ConnectionOwner { key: string; fingerprint: string; createdAt: number }
+interface ParkedConnection { connection: Connection; fingerprint: string; timer?: NodeJS.Timeout }
 
 const IDLE_MS = 90 * 1000;
 const MAX_AGE_MS = 30 * 60 * 1000;
@@ -95,5 +100,13 @@ function evictImapConnections(accountId: string | null = null) {
     if (entry) close(entry.connection);
   }
 }
-export = { acquireImapConnection, releaseImapConnection, evictImapConnections, fingerprint,
-  IDLE_MS, MAX_AGE_MS, stats, parkedCount: () => parked.size };
+export const parkedCount = () => parked.size;
+export {
+  acquireImapConnection,
+  releaseImapConnection,
+  evictImapConnections,
+  fingerprint,
+  IDLE_MS,
+  MAX_AGE_MS,
+  stats,
+};

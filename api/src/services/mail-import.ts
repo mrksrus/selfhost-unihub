@@ -1,24 +1,43 @@
 import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { ComposerAttachment, StagedAttachment } from '../types';
-interface RawArchive { rawStoragePath?: string; rawSha256: string; rawBytes?: number; rawFormat?: string; rawVerified?: boolean }
+
+import crypto from 'crypto';
+import { promises as fs } from 'node:fs';
+import {
+  stageAttachments,
+  discardStagedAttachments,
+  insertStagedAttachments,
+  rewriteInlineAttachments,
+} from './mail-attachments';
+
+interface RawArchive {
+  rawStoragePath?: string;
+  rawSha256: string;
+  rawBytes?: number;
+  rawFormat?: string;
+  rawVerified?: boolean;
+}
 interface ImportedMessage {
   db: Pick<Pool, 'getConnection'>;
   account: { user_id: string; sync_mode?: string };
-  accountId: string; folderName: string; uid: number; uidValidity: string | number | bigint;
+  accountId: string;
+  folderName: string;
+  uid: number;
+  uidValidity: string | number | bigint;
   existingEmail?: { id: string; raw_storage_path?: string | null } | null;
-  messageId: string | null; fullEmail: Buffer | string;
+  messageId: string | null;
+  fullEmail: Buffer | string;
   parsed: { attachments?: ComposerAttachment[]; html?: string | false; subject?: string; date?: Date; text?: string };
-  fromAddress: string; fromName: string | null; toAddresses: unknown; folder: string; isRead: boolean;
+  fromAddress: string;
+  fromName: string | null;
+  toAddresses: unknown;
+  folder: string;
+  isRead: boolean;
   archiveRaw: (input: { userId: string; emailId: string; messageId: string | null; rawEmail: Buffer | string }) => Promise<RawArchive>;
   enqueueDeletion: (input: { connection: PoolConnection; userId: string; accountId: string; emailId: string; sourceFolder: string; imapUid: number; imapUidValidity: string | number | bigint; rawStoragePath: string; rawSha256: string; rawBytes?: number; rawFormat?: string; rawVerified: true }) => Promise<unknown>;
   suppressNotifications?: boolean;
   validateOccurrence?: ((connection: PoolConnection, emailId: string) => Promise<unknown>) | null;
 }
-
-import crypto = require('crypto');
-import { promises as fs } from 'node:fs';
-import imported1 = require('./mail-attachments');
-const { stageAttachments, discardStagedAttachments, insertStagedAttachments, rewriteInlineAttachments } = imported1;
 
 // Persist one complete provider message. Existing local read/star/folder choices
 // survive repair; files are staged before a short metadata transaction.
@@ -82,7 +101,7 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
         rawSha256: archive.rawSha256, rawBytes: archive.rawBytes, rawFormat: archive.rawFormat, rawVerified: true });
     }
     if (!existingEmail && !suppressNotifications) {
-      await require('./notifications').enqueueMailNotification({ userId: account.user_id, emailId, suppressNotifications }, connection);
+      await (require('./notifications') as typeof import('./notifications')).enqueueMailNotification({ userId: account.user_id, emailId, suppressNotifications }, connection);
     }
     commitAttempted = true;
     await connection.commit();
@@ -101,7 +120,7 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
   }
   // Metadata now references the replacement. Cleanup failure leaves only an
   // orphan file, never a committed row referencing a deleted attachment.
-  const { deleteStoredAttachmentFiles, isMailRawPathUnderRoot } = require('./mail');
+  const { deleteStoredAttachmentFiles, isMailRawPathUnderRoot } = require('./mail') as typeof import('./mail');
   await deleteStoredAttachmentFiles(oldAttachments.map(row => row.storage_path));
   if (existingEmail?.raw_storage_path && existingEmail.raw_storage_path !== archive!.rawStoragePath) {
     // The caller controls archive paths; avoid deleting a restored arbitrary path.
@@ -110,4 +129,4 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
   return { emailId, isNew: !existingEmail };
 }
 
-export = { persistImportedMessage };
+export { persistImportedMessage };

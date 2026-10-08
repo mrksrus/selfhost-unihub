@@ -1,23 +1,13 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface Input { slug?: unknown; display_name?: unknown; name?: unknown; position?: unknown; mail_account_id?: unknown; match_type?: unknown; match_value?: unknown; target_folder?: unknown; priority?: unknown; is_active?: unknown; account_id?: unknown; mode?: unknown; apply?: unknown; cursor?: unknown; limit?: unknown }
 import type { SqlExecutor } from '../types';
-interface Move { email_id: string; next_folder: string }
-interface Original extends RowDataPacket { id: string; folder: string; mail_account_id: string; filing_account_id: string | null; sync_mode: string }
-type Folder = NonNullable<Parameters<typeof folderAcceptsAccount>[0]> & { id: string; display_name: string; position?: number };
-import imported1 = require('../services/mail-folder-reconciliation');
-const { folderConnections } = imported1;
-import imported2 = require('../services/mail-folder-view');
-const { membershipCountQuery, unreadMembershipQuery } = imported2;
-import imported3 = require('../services/mail-filing');
-const { filingAccountId, folderAcceptsAccount } = imported3;
-import crypto = require('crypto');
-import mailWritebacks = require('../services/mail-writebacks');
-import imported4 = require('../state');
-const { db } = imported4;
-import imported5 = require('../services/mail');
-const {
+import { folderConnections } from '../services/mail-folder-reconciliation';
+import { membershipCountQuery, unreadMembershipQuery } from '../services/mail-folder-view';
+import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
+import crypto from 'crypto';
+import * as mailWritebacks from '../services/mail-writebacks';
+import { db } from '../state';
+import {
   MAIL_SENDER_RULE_MATCH_TYPES,
   normalizeMailSenderRuleInput,
   SYSTEM_MAIL_FOLDER_SET,
@@ -29,9 +19,36 @@ const {
   toBooleanFlag,
   resolveMailSenderTargetFolder,
   createMailRoutingContext,
-} = imported5;
-import imported6 = require('./mail-route-helpers');
-const { EFFECTIVE_READ_SQL, validateUserMailFolder } = imported6;
+} from '../services/mail';
+import { EFFECTIVE_READ_SQL, validateUserMailFolder } from './mail-route-helpers';
+
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+interface Input {
+  slug?: unknown;
+  display_name?: unknown;
+  name?: unknown;
+  position?: unknown;
+  mail_account_id?: unknown;
+  match_type?: unknown;
+  match_value?: unknown;
+  target_folder?: unknown;
+  priority?: unknown;
+  is_active?: unknown;
+  account_id?: unknown;
+  mode?: unknown;
+  apply?: unknown;
+  cursor?: unknown;
+  limit?: unknown;
+}
+interface Move { email_id: string; next_folder: string }
+interface Original extends RowDataPacket {
+  id: string;
+  folder: string;
+  mail_account_id: string;
+  filing_account_id: string | null;
+  sync_mode: string;
+}
+type Folder = NonNullable<Parameters<typeof folderAcceptsAccount>[0]> & { id: string; display_name: string; position?: number };
 
 const MAIL_PAUSED_ERRORS = new Set(['Mail restore in progress', 'Mail module is disabled', 'Mail is paused']);
 const senderRuleChunk = 500;

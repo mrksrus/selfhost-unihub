@@ -1,30 +1,36 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ApiError, SqlExecutor, MailAccountIdentity, StoredFlag } from '../types';
-import type { EngineJob } from '../types/mail-engine';
+import type { ClaimedJob, OperationRow } from '../types/mail-engine';
 import type { ProtocolConnection } from '../types/imap-protocol';
-interface EngineAccount extends MailAccountIdentity { id: string; user_id: string; email_address: string; encrypted_password?: string | null; allow_self_signed?: StoredFlag; is_active?: StoredFlag; disconnected_at?: Date | null }
-type JobReport = Parameters<Parameters<typeof createDurableMailScheduler>[0]>[2];
 
-import imported1 = require('./mail-account-lock');
-const { withMailAccountLock } = imported1;
-import imported2 = require('./mail-sync-scheduler');
-const { createDurableMailScheduler, MUTATION_MAIL_JOB_KINDS } = imported2;
-import imported3 = require('./mail-engine/connection-pool');
-const { acquireImapConnection, releaseImapConnection } = imported3;
-import imported4 = require('./mail-engine/operation-batch');
-const { operationDue, processOperationBatch } = imported4;
-import imported5 = require('../state');
-const { db } = imported5;
-import imported6 = require('./server-events');
-const { publishMailJob } = imported6;
-import imported7 = require('./module-settings');
-const { isModuleEnabled, isModuleBackgroundEnabled } = imported7;
-import imported8 = require('./restore-locks');
-const { isSectionRestoreActive } = imported8;
-import imported9 = require('./mail-host-policy');
-const { toBooleanFlag, buildImapConnectionConfig } = imported9;
-import imported10 = require('./mail-folders');
-const { ensureDefaultMailFoldersForUser, listAvailableImapFolders, isVirtualMailFolderName, registerCustomImapFoldersForUser, pickImapSyncFolders } = imported10;
+import { withMailAccountLock } from './mail-account-lock';
+import { createDurableMailScheduler, MUTATION_MAIL_JOB_KINDS } from './mail-sync-scheduler';
+import { acquireImapConnection, releaseImapConnection } from './mail-engine/connection-pool';
+import { operationDue, processOperationBatch } from './mail-engine/operation-batch';
+import { db } from '../state';
+import { publishMailJob } from './server-events';
+import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
+import { isSectionRestoreActive } from './restore-locks';
+import { toBooleanFlag, buildImapConnectionConfig } from './mail-host-policy';
+import {
+  ensureDefaultMailFoldersForUser,
+  listAvailableImapFolders,
+  isVirtualMailFolderName,
+  registerCustomImapFoldersForUser,
+  pickImapSyncFolders,
+} from './mail-folders';
+
+interface EngineAccount extends MailAccountIdentity {
+  id: string;
+  user_id: string;
+  email_address: string;
+  sync_mode: string;
+  encrypted_password?: string | null;
+  allow_self_signed?: StoredFlag;
+  is_active?: StoredFlag;
+  disconnected_at?: Date | null;
+}
+type JobReport = Parameters<Parameters<typeof createDurableMailScheduler>[0]>[2];
 
 function checkCancelled(signal?: AbortSignal) {
   if (signal?.aborted) {
@@ -53,16 +59,16 @@ function getRunningMailSyncAccountIds() {
 }
 
 const runningDurableAccounts = new Set<string>();
-async function runRecoveredReconcileJob({ job, account, connection, signal, report }: { job: EngineJob; account: EngineAccount; connection: ProtocolConnection; signal: AbortSignal; report: JobReport }) {
-  const runtime = require('./mail-engine/runtime');
-  const transport = require('./mail-engine/transport');
-  const { uint32 } = require('./mail-engine/content');
-  const { settleFlagObservation } = require('./mail-engine/reconciliation');
-  const { validateWindowReply } = require('./mail-engine/sync');
+async function runRecoveredReconcileJob({ job, account, connection, signal, report }: { job: ClaimedJob; account: EngineAccount; connection: ProtocolConnection; signal: AbortSignal; report: JobReport }) {
+  const runtime = require('./mail-engine/runtime') as typeof import('./mail-engine/runtime');
+  const transport = require('./mail-engine/transport') as typeof import('./mail-engine/transport');
+  const { uint32 } = require('./mail-engine/content') as typeof import('./mail-engine/content');
+  const { settleFlagObservation } = require('./mail-engine/reconciliation') as typeof import('./mail-engine/reconciliation');
+  const { validateWindowReply } = require('./mail-engine/sync') as typeof import('./mail-engine/sync');
   const fence = () => runtime.assertFence({ accountId: account.id, jobId: job.id,
-    workerId: job.lease_owner!, generation: Number(job.worker_generation) });
+    workerId: job.lease_owner, generation: Number(job.worker_generation) });
   if (!job.operation_id || account.sync_mode !== 'sync') return { success: false, error: 'Reconciliation requires a Sync operation' };
-  const [[op]] = await db.execute<RowDataPacket[]>(`SELECT * FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=?`,
+  const [[op]] = await db.execute<(RowDataPacket & OperationRow)[]>(`SELECT * FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=?`,
     [job.operation_id, account.user_id, account.id]);
   if (!op) return { success: false, error: 'Reconciliation operation missing' };
   if (['confirmed', 'cancelled', 'superseded', 'rejected'].includes(op.state)) return { success: true };
@@ -71,7 +77,7 @@ async function runRecoveredReconcileJob({ job, account, connection, signal, repo
     // The operations executor owns the bounded MOVE outcome classifier. Its
     // dispatched branch reads provider state and can settle/mark attention;
     // it must never call nativeMove again after the persisted dispatch fence.
-    await require('./mail-engine/operations').applyMove(op, connection, Number(job.worker_generation),
+    await (require('./mail-engine/operations') as typeof import('./mail-engine/operations')).applyMove(op, connection, Number(job.worker_generation),
       signal, job.lease_owner, job.id);
     await fence();
     const [[current]] = await db.execute<RowDataPacket[]>('SELECT state FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=?',
@@ -102,7 +108,7 @@ async function runRecoveredReconcileJob({ job, account, connection, signal, repo
         [op.email_id, account.user_id, account.id]);
       if (email) {
         const settled = await settleFlagObservation({ operationId: op.id, userId: account.user_id,
-          accountId: account.id, workerGeneration: Number(job.worker_generation), workerId: job.lease_owner!,
+          accountId: account.id, workerGeneration: Number(job.worker_generation), workerId: job.lease_owner,
           jobId: job.id, source: { folder: op.remote_folder, uid, uidvalidity: Number(op.remote_uidvalidity) },
           flags: item.flags, modseq: item.modseq, observationRevision: email.observation_revision });
         if (settled.settled) return { success: true, observationOnly: true };
@@ -113,17 +119,17 @@ async function runRecoveredReconcileJob({ job, account, connection, signal, repo
   // fresh read and classifies a safe idempotent flag retry/attention. This job
   // never blindly replays an interrupted provider command.
   if (['read', 'star'].includes(op.action)) {
-    await require('./mail-engine/operations').applyFlag(op, connection, Number(job.worker_generation),
+    await (require('./mail-engine/operations') as typeof import('./mail-engine/operations')).applyFlag(op, connection, Number(job.worker_generation),
       signal, job.lease_owner, job.id);
     return { success: true, observationOnly: true };
   }
   return { success: false, error: 'Unsupported reconciliation action' };
 }
 // Jobs that provably have no provider work finish before any transport opens.
-async function durableJobIdle(job: EngineJob, account: EngineAccount) {
+async function durableJobIdle(job: ClaimedJob, account: EngineAccount) {
   if (job.kind === 'operation' && job.operation_id) return !await operationDue(account, job.operation_id);
   if (['flags', 'presence'].includes(job.kind) && job.mailbox_id && Number(job.manual_refresh) !== 1)
-    return require('./mail-engine/sync').sweepThrottled(db, { userId: account.user_id, accountId: account.id,
+    return (require('./mail-engine/sync') as typeof import('./mail-engine/sync')).sweepThrottled(db, { userId: account.user_id, accountId: account.id,
       mailboxId: job.mailbox_id, stream: job.kind });
   return false;
 }
@@ -131,13 +137,13 @@ async function durableJobIdle(job: EngineJob, account: EngineAccount) {
 // lock serializes them with settings changes and server deletion. Only the
 // account's next job after a foreground admission uses the interactive rules
 // (module enabled, follow-up refresh); due-scan retries are background work.
-async function runDurableMutationJob(job: EngineJob, signal: AbortSignal, report: JobReport) {
-  const runtime = require('./mail-engine/runtime');
+async function runDurableMutationJob(job: ClaimedJob, signal: AbortSignal, report: JobReport) {
+  const runtime = require('./mail-engine/runtime') as typeof import('./mail-engine/runtime');
   const accountId = job.mail_account_id;
   const background = !foregroundMutationAccounts.delete(accountId);
   return withMailAccountLock(accountId, async () => {
     let connection: ProtocolConnection | undefined, account: EngineAccount | undefined, needsSync = false, reusable = false;
-    const fence = () => runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner!,
+    const fence = () => runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner,
       generation: Number(job.worker_generation) });
     try {
       // The lock may have waited for a settings change or deletion pass.
@@ -147,7 +153,7 @@ async function runDurableMutationJob(job: EngineJob, signal: AbortSignal, report
       if (!account || account.sync_mode !== 'sync' || !toBooleanFlag(account.is_active) || account.disconnected_at
         || await isSectionRestoreActive(account.user_id, 'mail')
         || !await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) return { paused: true };
-      const config = await require('./mail').buildImapConnectionConfig(account, { keepalive: false });
+      const config = await (require('./mail') as typeof import('./mail')).buildImapConnectionConfig(account, { keepalive: false });
       if (!config) throw new Error('Missing credentials');
       // A click should fail fast, not wait out the read-path timeouts.
       config.imap.connTimeout = 15000; config.imap.authTimeout = 15000; config.imap.socketTimeout = 30000;
@@ -161,8 +167,8 @@ async function runDurableMutationJob(job: EngineJob, signal: AbortSignal, report
         return result;
       }
       const result = await processOperationBatch(account, connection, { background,
-        workerGeneration: Number(job.worker_generation), workerId: job.lease_owner!, jobId: job.id,
-        operationId: job.operation_id, signal }, { process: require('./mail-engine/operations').processDueOperations });
+        workerGeneration: Number(job.worker_generation), workerId: job.lease_owner, jobId: job.id,
+        operationId: job.operation_id, signal }, { process: (require('./mail-engine/operations') as typeof import('./mail-engine/operations')).processDueOperations });
       needsSync = result.needsSync;
       reusable = !result.connectionFailed;
       return { success: !result.connectionFailed, more: false, ...result };
@@ -172,22 +178,22 @@ async function runDurableMutationJob(job: EngineJob, signal: AbortSignal, report
       if (signal.aborted || (error as ApiError).code === 'MAIL_SYNC_CANCELLED') return { success: false, cancelled: true };
       // A connect/login failure backs off the account's due operations instead
       // of retrying every second; accepted intents are never discarded.
-      if (account) await require('./mail-engine/operations').deferAccountOffline(account.id, account.user_id, error);
+      if (account) await (require('./mail-engine/operations') as typeof import('./mail-engine/operations')).deferAccountOffline(account.id, account.user_id, error);
       return { success: false, error: /^[A-Z][A-Z0-9_]{1,63}$/.test(String((error as ApiError).code || '')) ? (error as ApiError).code! : 'Provider connection unavailable' };
     } finally {
       if (connection) releaseImapConnection(connection, { reusable: reusable && !signal.aborted });
       // Throttled refresh, never a manual resweep or pause resume. A foreground
       // write still settles while background sync is off.
-      if (needsSync) setImmediate(() => require('./mail').syncMailAccount(accountId,
+      if (needsSync) setImmediate(() => (require('./mail') as typeof import('./mail')).syncMailAccount(accountId,
         background ? { background: true } : { followUp: true }).catch(() => {}));
     }
   });
 }
-async function runDurableMailJob(job: EngineJob, signal: AbortSignal, report: JobReport) {
+async function runDurableMailJob(job: ClaimedJob, signal: AbortSignal, report: JobReport) {
   if (MUTATION_MAIL_JOB_KINDS.includes(job.kind)) return runDurableMutationJob(job, signal, report);
-  const runtime = require('./mail-engine/runtime');
-  const { scanMailboxSlice } = require('./mail-engine/sync');
-  const { processBodySlice } = require('./mail-engine/content');
+  const runtime = require('./mail-engine/runtime') as typeof import('./mail-engine/runtime');
+  const { scanMailboxSlice } = require('./mail-engine/sync') as typeof import('./mail-engine/sync');
+  const { processBodySlice } = require('./mail-engine/content') as typeof import('./mail-engine/content');
   const accountId = job.mail_account_id;
   let connection: ProtocolConnection | undefined, outcome: { success?: boolean } | undefined, threw = true;
   const done = <T extends { success?: boolean }>(value: T): T => { outcome = value; threw = false; return value; };
@@ -198,11 +204,11 @@ async function runDurableMailJob(job: EngineJob, signal: AbortSignal, report: Jo
     if (!await isModuleEnabled(account.user_id, 'mail') || await isSectionRestoreActive(account.user_id, 'mail'))
       return { success: false, error: 'Mail module paused or restore in progress' };
     checkCancelled(signal);
-    await runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner!,
+    await runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner,
       generation: Number(job.worker_generation) });
     if (job.kind === 'prune') {
       // Local Sync policy only: no credentials, no provider connection.
-      const result = await require('./mail-sync-policy').runPruneSlice({ account, job, signal, report });
+      const result = await (require('./mail-sync-policy') as typeof import('./mail-sync-policy')).runPruneSlice({ account, job, signal, report });
       return done({ success: true, ...result });
     }
     const config = await buildImapConnectionConfig(account);
@@ -222,10 +228,10 @@ async function runDurableMailJob(job: EngineJob, signal: AbortSignal, report: Jo
         throw new Error('Remote folder mapping incomplete');
       for (const folder of registered) {
         checkCancelled(signal);
-        const selected = await require('./mail-engine/transport').selectMailbox(connection,
+        const selected = await (require('./mail-engine/transport') as typeof import('./mail-engine/transport')).selectMailbox(connection,
           { folder: folder.remoteName, readOnly: true, signal });
-        const mailbox = await require('./mail-engine/repository').withTransaction((executor: SqlExecutor) =>
-          require('./mail-engine/repository').ensureMailbox({ userId: account.user_id,
+        const mailbox = await (require('./mail-engine/repository') as typeof import('./mail-engine/repository')).withTransaction((executor: SqlExecutor) =>
+          (require('./mail-engine/repository') as typeof import('./mail-engine/repository')).ensureMailbox({ userId: account.user_id,
             accountId, folderName: folder.remoteName, epoch: selected.uidvalidity,
             metadata: { localFolderSlug: folder.slug,
               specialUse: allMailboxes.has(folder.remoteName) ? 'all' : specialUses.get(folder.remoteName) || null } }, executor), db);
@@ -237,11 +243,11 @@ async function runDurableMailJob(job: EngineJob, signal: AbortSignal, report: Jo
             kind, priority, manualRefresh: Number(job.manual_refresh) === 1 && ['flags', 'presence'].includes(kind) });
         }
       }
-      await require('./mail-engine/sync').enqueuePendingBodies({ userId: account.user_id, accountId,
+      await (require('./mail-engine/sync') as typeof import('./mail-engine/sync')).enqueuePendingBodies({ userId: account.user_id, accountId,
         retrySlow: Number(job.manual_refresh) === 1 }, db);
       // Sync policy (retention, proven absence, Gmail merge, archive filing)
       // is applied by a low-priority local job after each discovery pass.
-      if (account.sync_mode === 'sync') await require('./mail-sync-policy').enqueuePrune({ userId: account.user_id, accountId });
+      if (account.sync_mode === 'sync') await (require('./mail-sync-policy') as typeof import('./mail-sync-policy')).enqueuePrune({ userId: account.user_id, accountId });
       // Stream jobs select a single mapped mailbox in account-scoped rounds.
       return done({ success: true, started: true, folders: registered.length });
     }
@@ -261,10 +267,10 @@ async function runDurableMailJob(job: EngineJob, signal: AbortSignal, report: Jo
     if (!mailbox) return { success: false, error: 'Durable mailbox mapping missing' };
     const folder = { folderName: mailbox.remote_name, dbFolderName: mailbox.slug };
     const result = job.kind === 'body'
-      ? await processBodySlice({ db, account, connection, folder, mailboxId: mailbox.id, signal, job: job as EngineJob & { lease_owner: string; worker_generation: number }, report })
+      ? await processBodySlice({ db, account, connection, folder, mailboxId: mailbox.id, signal, job, report })
       : await scanMailboxSlice({ db, account, connection, folder, stream: job.kind, signal, job, report,
         manualRefresh: Number(job.manual_refresh) === 1 });
-    return done({ success: true, more: result.more, ...result });
+    return done({ success: true, ...result });
   } catch (error) {
     if (signal.aborted || (error as ApiError).code === 'MAIL_SYNC_CANCELLED') return { success: false, cancelled: true };
     throw error;
@@ -289,7 +295,7 @@ const durableScheduler = createDurableMailScheduler(runDurableMailJob, { concurr
 } });
 async function startMailEngineScheduler() { await durableScheduler.start(); }
 
-export = {
+export {
   durableScheduler,
   foregroundMutationAccounts,
   normalizeMailAccountId,

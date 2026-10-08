@@ -21,4 +21,4 @@ async function withMailAccountLock<T>(accountId: unknown, callback: () => T | Pr
     if (tails.get(key) === current) tails.delete(key);
   }
 }
-export = { withMailAccountLock };
+export { withMailAccountLock };

@@ -1,6 +1,7 @@
-import type { BackupPayload } from '../../types';
 // Historical 0.9.23.0–0.10.2 data schema. These archives never contained the
 // provider-folder mapping table. Do not infer mappings from ambiguous names.
+import type { BackupPayload } from '../../types';
+
 function readV1<T extends BackupPayload>(backup: T): T {
   const data = backup.data;
   if (['mail_accounts', 'mail_folders', 'emails'].some(table => Object.hasOwn(data, table))) {
@@ -9,4 +10,4 @@ function readV1<T extends BackupPayload>(backup: T): T {
   return backup;
 }
 
-export = { readV1 };
+export { readV1 };

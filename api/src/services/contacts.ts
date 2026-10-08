@@ -1,6 +1,11 @@
 import type { StoredFlag } from '../types';
+
 type ContactField = 'first_name' | 'last_name' | 'email' | 'email2' | 'email3' | 'phone' | 'phone2' | 'phone3' | 'company' | 'job_title' | 'notes';
-interface Contact extends Partial<Record<ContactField, string | null>> { id?: string; is_favorite?: StoredFlag; created_at?: string | number | Date | null }
+interface Contact extends Partial<Record<ContactField, string | null>> {
+  id?: string;
+  is_favorite?: StoredFlag;
+  created_at?: string | number | Date | null;
+}
 
 // ── vCard helpers (3.0, compatible with Google & Apple) ──────────
 function escapeVCard(str: string | null | undefined) {
@@ -289,7 +294,7 @@ function groupDuplicateContacts<T extends Contact>(contacts: readonly T[] | null
   return Array.from(groups.values()).filter((group) => group.length > 1);
 }
 
-export = {
+export {
   escapeVCard,
   unescapeVCard,
   decodeQuotedPrintable,

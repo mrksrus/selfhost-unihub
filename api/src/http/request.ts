@@ -1,10 +1,8 @@
 import type { IncomingMessage } from 'node:http';
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('string_decoder');
-const { StringDecoder } = imported1;
-import imported2 = require('../config');
-const { ALLOWED_ORIGINS } = imported2;
+import fs from 'fs';
+import path from 'path';
+import { StringDecoder } from 'string_decoder';
+import { ALLOWED_ORIGINS } from '../config';
 
 function getRequestContentLength(req: IncomingMessage) {
   const rawLength = req.headers['content-length'];
@@ -164,7 +162,7 @@ function getAllowedOriginForRequest(req: IncomingMessage) {
   return sameHostOrigins.has(requestOrigin) ? requestOrigin : null;
 }
 
-export = {
+export {
   getRequestContentLength,
   isRequestBodyTooLarge,
   parseBody,

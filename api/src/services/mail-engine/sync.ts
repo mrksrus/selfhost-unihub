@@ -1,28 +1,65 @@
 import type { Pool, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../../types';
-import type { EngineJob, MailCursor, RemoteMailbox } from '../../types/mail-engine';
+import type { ClaimedJob, MailCursor, RemoteMailbox } from '../../types/mail-engine';
 import type { ProtocolConnection, CopyUidMapping } from '../../types/imap-protocol';
+import crypto from 'node:crypto';
+import * as repository from './repository';
+import * as runtime from './runtime';
+import * as transport from './transport';
+import { uint32, DEFAULT_MAX_BYTES } from './content';
+import { outsideWindow } from '../mail-sync-policy';
+
 type Selection = Awaited<ReturnType<typeof transport.selectMailbox>>;
 type WindowReply = Awaited<ReturnType<typeof transport.fetchMetadataWindow>>;
 type Item = WindowReply['items'][number];
-type ClaimedJob = EngineJob & { worker_generation: number; lease_owner: string };
-interface Account { id: string; user_id: string; sync_mode?: string; sync_window_days?: number | null; trash_window_days?: number | null }
+interface Account {
+  id: string;
+  user_id: string;
+  sync_mode?: string;
+  sync_window_days?: number | null;
+  trash_window_days?: number | null;
+}
 interface Folder { folderName: string; dbFolderName: string; delimiter?: string; specialUse?: string | null }
 interface Window { start: number; end: number }
 interface Identity { userId: string; accountId: string; mailboxId: string; epoch: number }
 interface MappedOperation extends RowDataPacket { remote_uid: number | string; }
 interface Mapping { operationId: string; emailId: string; mapping: CopyUidMapping }
-interface Revision extends RowDataPacket { uid: number; observation_revision: number; email_revision: number; observed_modseq: string | null }
-interface CommitInput { db: Pick<Pool, 'getConnection' | 'execute' | 'query'>; account: Account; folder: Folder; mailbox: RemoteMailbox; stream: string; epoch: number; upper: number; window: Window; items: Item[]; snapshot: Map<number, Revision>; gmail: boolean; job: ClaimedJob | null; sweepGeneration?: number; saveCoverage?: boolean }
-interface ScanInput { db: Pick<Pool, 'getConnection' | 'execute' | 'query'>; connection: ProtocolConnection; account: Account; folder: Folder; stream?: string; signal?: AbortSignal; job?: ClaimedJob | null; maxWindow?: number; targetUid?: number | null; expectedEpoch?: number | null; manualRefresh?: boolean; report?: (progress: { phase: string; processed: number; total: null; coverage?: Record<string, unknown> }) => unknown }
-import crypto = require('node:crypto');
-import repository = require('./repository');
-import runtime = require('./runtime');
-import transport = require('./transport');
-import imported1 = require('./content');
-const { uint32, DEFAULT_MAX_BYTES } = imported1;
-import imported2 = require('../mail-sync-policy');
-const { outsideWindow } = imported2;
+interface Revision extends RowDataPacket {
+  uid: number;
+  observation_revision: number;
+  email_revision: number;
+  observed_modseq: string | null;
+}
+interface CommitInput {
+  db: Pick<Pool, 'getConnection' | 'execute' | 'query'>;
+  account: Account;
+  folder: Folder;
+  mailbox: RemoteMailbox;
+  stream: string;
+  epoch: number;
+  upper: number;
+  window: Window;
+  items: Item[];
+  snapshot: Map<number, Revision>;
+  gmail: boolean;
+  job: ClaimedJob | null;
+  sweepGeneration?: number;
+  saveCoverage?: boolean;
+}
+interface ScanInput {
+  db: Pick<Pool, 'getConnection' | 'execute' | 'query'>;
+  connection: ProtocolConnection;
+  account: Account;
+  folder: Folder;
+  stream?: string;
+  signal?: AbortSignal;
+  job?: ClaimedJob | null;
+  maxWindow?: number;
+  targetUid?: number | null;
+  expectedEpoch?: number | null;
+  manualRefresh?: boolean;
+  report?: (progress: { phase: string; processed: number; total: null; coverage?: Record<string, unknown> }) => unknown;
+}
 
 const WINDOW = 128; // UID-span, not offset or message count; one fetch has <=128 items.
 const STREAMS = ['recent', 'flags', 'history', 'presence'];
@@ -202,7 +239,7 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       // operation supplies enough correlation for shared MOVE settlement.
       // A pre-existing independent tuple cannot be stolen by this operation.
       if (mapped && mapped.emailId === emailId && occurrence!.email_id === emailId) {
-        await require('./reconciliation').reconcileObservedOccurrence({ executor, userId, accountId, emailId,
+        await (require('./reconciliation') as typeof import('./reconciliation')).reconcileObservedOccurrence({ executor, userId, accountId, emailId,
           mailboxId: mailbox.id, epoch, uid: item.uid, sourceAbsent: false,
           evidence: { folder: folder.folderName, verified: true, mapping: mapped.mapping } });
       }
@@ -225,7 +262,7 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       // confirmation) or, on Gmail without a visible All Mail, files them as
       // archived. Download mode never sweeps presence.
       if (absent > 0 && account.sync_mode === 'sync')
-        await require('../mail-sync-policy').enqueuePrune({ userId, accountId }, executor);
+        await (require('../mail-sync-policy') as typeof import('../mail-sync-policy')).enqueuePrune({ userId, accountId }, executor);
       // Only this confirmed same-epoch absence may mark an item missing.
       // Gmail's other active labels (All Mail included) keep it present;
       // old/quarantined epochs and partial windows can never prove absence.
@@ -363,4 +400,17 @@ async function sweepThrottled(db: SqlExecutor, { userId, accountId, mailboxId, s
   return rows.length > 0;
 }
 
-export = { WINDOW, STREAMS, SWEEP_THROTTLE_MINUTES, BODY_PRIORITY, enqueuePendingBodies, sweepThrottled, windowFor, validateWindowReply, scanMailboxSlice, gmailCapable, upperBoundary, snapshotRevisions };
+export {
+  WINDOW,
+  STREAMS,
+  SWEEP_THROTTLE_MINUTES,
+  BODY_PRIORITY,
+  enqueuePendingBodies,
+  sweepThrottled,
+  windowFor,
+  validateWindowReply,
+  scanMailboxSlice,
+  gmailCapable,
+  upperBoundary,
+  snapshotRevisions,
+};

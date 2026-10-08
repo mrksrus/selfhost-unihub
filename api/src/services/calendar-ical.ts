@@ -1,15 +1,24 @@
-type Component = InstanceType<typeof ICAL.Component>;
-type Time = InstanceType<typeof ICAL.Time> & { timezone?: string };
-interface WallTime { year: number; month: number; day: number; hour?: number; minute?: number; second?: number }
-interface Fields { title?: unknown; description?: unknown; location?: unknown; startMs?: number; endMs?: number; allDay?: boolean; reminders?: unknown }
-interface TimeOptions { allDayValue?: Time; template?: Time | null; userTimeZone?: string }
-interface ApplyOptions { template?: { start: Time | null; end: Time | null }; userTimeZone: string }
-interface Occurrence extends ReturnType<typeof occurrenceFromComponent> { recurrenceId: string }
 // iCalendar (RFC 5545) reading and writing for synced calendars. Everything
 // here is synchronous: ical.js keeps a process-wide timezone registry, and a
 // calendar's own VTIMEZONE definitions are registered and removed again
 // without yielding, so concurrent syncs never see each other's zones.
-import crypto = require('crypto');
+import crypto from 'crypto';
+
+type Component = InstanceType<typeof ICAL.Component>;
+type Time = InstanceType<typeof ICAL.Time> & { timezone?: string };
+interface WallTime { year: number; month: number; day: number; hour?: number; minute?: number; second?: number }
+interface Fields {
+  title?: unknown;
+  description?: unknown;
+  location?: unknown;
+  startMs?: number;
+  endMs?: number;
+  allDay?: boolean;
+  reminders?: unknown;
+}
+interface TimeOptions { allDayValue?: Time; template?: Time | null; userTimeZone?: string }
+interface ApplyOptions { template?: { start: Time | null; end: Time | null }; userTimeZone: string }
+interface Occurrence extends ReturnType<typeof occurrenceFromComponent> { recurrenceId: string }
 const ICAL: typeof import('ical.js').default = require('ical.js');
 
 const MAX_OCCURRENCES_PER_SERIES = 1000;
@@ -461,7 +470,7 @@ function objectUid(ics: unknown) {
   }
 }
 
-export = {
+export {
   isValidTimeZone,
   resolveUserTimeZone,
   zonedWallTimeToUtc,

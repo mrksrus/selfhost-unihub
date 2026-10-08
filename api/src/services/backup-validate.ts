@@ -1,27 +1,27 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ArchiveEnvelope, BackupPayload, BackupFileSource } from '../types';
-import fs = require('fs');
-import imported8 = require('../state');
-const { db } = imported8;
-import imported9 = require('./module-settings');
-const { modulesFromValue } = imported9;
-import imported10 = require('./backup-ownership');
-const { validateRestoreRows } = imported10;
-import imported11 = require('./recording-audio');
-const { AUDIO_HEADER_BYTES, identifyRecordingAudio } = imported11;
-import imported12 = require('./backup-format');
-const { validateBackupVersionFields } = imported12;
-import imported13 = require('./backup-catalog');
-const { ACCOUNT_ONLY_TABLES, RETIRED_FILE_KINDS, RETIRED_TABLES, SECTION_POLICIES, TABLE_POLICIES, normalizeBackupSections } = imported13;
-import imported7 = require('./backup-common');
-const {
+import fs from 'fs';
+import { db } from '../state';
+import { modulesFromValue } from './module-settings';
+import { validateRestoreRows } from './backup-ownership';
+import { AUDIO_HEADER_BYTES, identifyRecordingAudio } from './recording-audio';
+import { validateBackupVersionFields } from './backup-format';
+import {
+  ACCOUNT_ONLY_TABLES,
+  RETIRED_FILE_KINDS,
+  RETIRED_TABLES,
+  SECTION_POLICIES,
+  TABLE_POLICIES,
+  normalizeBackupSections,
+} from './backup-catalog';
+import {
   BACKUP_IMPORT_SECTION_TABLES,
   BACKUP_IMPORT_SECTION_FILE_KINDS,
   sha256Buffer,
   sha256FileSource,
   canonicalJson,
   normalizeIdentifier,
-} = imported7;
+} from './backup-common';
 
 // An account-settings section carries only its account table, and calendar
 // account settings only remote connections; anything else is not a fresh
@@ -287,7 +287,7 @@ function scopeBackupForImport(backup: ArchiveEnvelope, sections: unknown) {
   };
 }
 
-export = {
+export {
   validateBackupPayload,
   validateBackupPayloadFromFileSources,
   countBackupRows,

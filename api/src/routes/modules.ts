@@ -1,6 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ApiError, StoredFlag } from '../types';
+
 interface ModuleRequest { modules?: { mail?: unknown }; [key: string]: unknown }
 
 const imported1: typeof import('../services/module-settings') = require('../services/module-settings');
@@ -14,7 +15,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
       const modules = await setUserModules(userId, body);
-      require('../services/server-events').serverEvents.setUserModules(userId,
+      (require('../services/server-events') as typeof import('../services/server-events')).serverEvents.setUserModules(userId,
         modules.filter(module => module.enabled).map(module => module.id));
       if (body.modules?.mail) {
         const { db }: typeof import('../state') = require('../state');
@@ -34,7 +35,7 @@ const { USER_PAUSES } = imported3;
           // download, resumes.
           for (const account of accounts) {
             if (Number(account.is_active) && !account.disconnected_at)
-              await require('../services/mail-engine/runtime').resumeAccount({ userId, accountId: account.id,
+              await (require('../services/mail-engine/runtime') as typeof import('../services/mail-engine/runtime')).resumeAccount({ userId, accountId: account.id,
                 resumeStreams: mail.background, reasons: USER_PAUSES });
             if (!mail.background) await cancelMailAccountSync(account.id, { keepManual: true });
           }

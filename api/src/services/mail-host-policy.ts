@@ -1,14 +1,31 @@
 import type { MailAccountIdentity, StoredFlag } from '../types';
-interface MailHostSettings { imap_host?: unknown; imap_port?: unknown; smtp_host?: unknown; smtp_port?: unknown }
-interface TransportAccount extends MailAccountIdentity { email_address: string; encrypted_password?: string | null; allow_self_signed?: StoredFlag }
-interface MailConnectionError { message?: string; code?: string; source?: unknown; authorizationError?: unknown; reason?: unknown; responseText?: string; authenticationFailed?: boolean }
 
-import net = require('net');
-import imapClient = require('./mail-imap-client');
-import imported1 = require('../security/encryption');
-const { decrypt } = imported1;
-import imported2 = require('../security/outbound-network');
-const { normalizeNetworkHost, isTrustedMailHost, isPublicNetworkAddress, resolveNetworkHost, resolveMailConnectionTarget } = imported2;
+import net from 'net';
+import * as imapClient from './mail-imap-client';
+import { decrypt } from '../security/encryption';
+import {
+  normalizeNetworkHost,
+  isTrustedMailHost,
+  isPublicNetworkAddress,
+  resolveNetworkHost,
+  resolveMailConnectionTarget,
+} from '../security/outbound-network';
+
+interface MailHostSettings { imap_host?: unknown; imap_port?: unknown; smtp_host?: unknown; smtp_port?: unknown }
+interface TransportAccount extends MailAccountIdentity {
+  email_address: string;
+  encrypted_password?: string | null;
+  allow_self_signed?: StoredFlag;
+}
+interface MailConnectionError {
+  message?: string;
+  code?: string;
+  source?: unknown;
+  authorizationError?: unknown;
+  reason?: unknown;
+  responseText?: string;
+  authenticationFailed?: boolean;
+}
 
 const KNOWN_MAIL_HOST_SUFFIXES = [
   'gmail.com',
@@ -269,7 +286,7 @@ async function testImapConnection(account: TransportAccount) {
   }
 }
 
-export = {
+export {
   KNOWN_MAIL_HOST_SUFFIXES,
   normalizeHost,
   isKnownMailProviderHost,

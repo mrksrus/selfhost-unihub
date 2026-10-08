@@ -1,14 +1,12 @@
 import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../../types';
 import type { EngineExecutor, MailboxInput, OccurrenceInput, CursorInput, MailboxMetadata, RemoteMailbox, RemoteOccurrence, MailCursor } from '../../types/mail-engine';
-interface ReceiptInput { userId: string; clientKey: string; requestHash: string; response: unknown }
 
-import imported1 = require('node:crypto');
-const { randomUUID } = imported1;
-import imported2 = require('../../state');
-const { db } = imported2;
-import imported3 = require('./repository-identity');
-const { assertUid32, assertDecimal64 } = imported3;
+import { randomUUID } from 'node:crypto';
+import { db } from '../../state';
+import { assertUid32, assertDecimal64 } from './repository-identity';
+
+interface ReceiptInput { userId: string; clientKey: string; requestHash: string; response: unknown }
 const STREAMS = new Set(['recent', 'history', 'flags', 'presence', 'bodies']);
 const requireId = (v: unknown, label: string) => { if (typeof v !== 'string' || !v.trim()) throw new TypeError(`${label} required`); return v; };
 const fail = (code: string, message: string) => Object.assign(new Error(message), { code });
@@ -240,4 +238,18 @@ async function finishReceipt({ userId, clientKey, requestHash, response }: Recei
     [JSON.stringify(response), userId, clientKey, requestHash]);
   if (result.affectedRows !== 1) throw fail('IDEMPOTENCY_KEY_BUSY', 'Idempotency receipt was not claimed by this request');
 }
-export = { withTransaction, isDeadlock, ownAccount, ownMailbox, ensureMailbox, upsertOccurrence, getOccurrence, loadCursor, saveCursor, markAbsentInWindow, getReceipt, recordReceipt, finishReceipt };
+export {
+  withTransaction,
+  isDeadlock,
+  ownAccount,
+  ownMailbox,
+  ensureMailbox,
+  upsertOccurrence,
+  getOccurrence,
+  loadCursor,
+  saveCursor,
+  markAbsentInWindow,
+  getReceipt,
+  recordReceipt,
+  finishReceipt,
+};

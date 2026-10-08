@@ -1,14 +1,48 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
-interface RestoreRow extends Record<string, unknown> { id: string; mail_account_id: string; email_id: string; rule_id: string; action: string; target_value: string; base_value?: string | null; target_folder: string | null; remote_folder: string | null; remote_uid: number | string | null; remote_uidvalidity: number | string | null; attempts?: number; dispatched?: StoredFlag; dispatch_modseq?: string | null; source_occurrence_id?: string | null; intent_revision?: number | string; client_key: string; request_hash: string; state?: string; status?: string; raw_bytes?: number | null; import_complete?: StoredFlag; source_account_id: string; original_filing_account_id?: string | null; target_account_id?: string | null; original_folder: string | null; created_at?: string | Date; completed_at?: string | Date }
+import { writeOwnedRow, resolveOwnedReference } from './backup-ownership';
+import { folderAcceptsAccount, filingAccountId } from './mail-filing';
+import { folderConnections } from './mail-folder-reconciliation';
+
+interface RestoreRow extends Record<string, unknown> {
+  id: string;
+  mail_account_id: string;
+  email_id: string;
+  rule_id: string;
+  action: string;
+  target_value: string;
+  base_value?: string | null;
+  target_folder: string | null;
+  remote_folder: string | null;
+  remote_uid: number | string | null;
+  remote_uidvalidity: number | string | null;
+  attempts?: number;
+  dispatched?: StoredFlag;
+  dispatch_modseq?: string | null;
+  source_occurrence_id?: string | null;
+  intent_revision?: number | string;
+  client_key: string;
+  request_hash: string;
+  state?: string;
+  status?: string;
+  raw_bytes?: number | null;
+  import_complete?: StoredFlag;
+  source_account_id: string;
+  original_filing_account_id?: string | null;
+  target_account_id?: string | null;
+  original_folder: string | null;
+  created_at?: string | Date;
+  completed_at?: string | Date;
+}
 type RestoreData = Record<string, RestoreRow[] | undefined>;
-interface RestoreContext { accountIds: Map<string, string>; emailIds: Map<string, string>; writtenEmailIds: Set<string>; restoredPaths: Map<string, string>; checkCancelled: () => Promise<unknown>; warnings: string[] }
-import imported1 = require('./backup-ownership');
-const { writeOwnedRow, resolveOwnedReference } = imported1;
-import imported2 = require('./mail-filing');
-const { folderAcceptsAccount, filingAccountId } = imported2;
-import imported3 = require('./mail-folder-reconciliation');
-const { folderConnections } = imported3;
+interface RestoreContext {
+  accountIds: Map<string, string>;
+  emailIds: Map<string, string>;
+  writtenEmailIds: Set<string>;
+  restoredPaths: Map<string, string>;
+  checkCancelled: () => Promise<unknown>;
+  warnings: string[];
+}
 
 function jsonArray(value: unknown, field: string): Record<string, unknown>[] {
   let result = Buffer.isBuffer(value) ? value.toString('utf8') : value;
@@ -112,4 +146,4 @@ async function validateRestoredMailDestinations(connection: SqlExecutor, userId:
   }
 }
 
-export = { restoreMailRecovery, validateRestoredMailDestinations, jsonArray };
+export { restoreMailRecovery, validateRestoredMailDestinations, jsonArray };

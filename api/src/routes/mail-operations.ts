@@ -1,18 +1,21 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
+import * as mailWritebacks from '../services/mail-writebacks';
+import * as mailRepository from '../services/mail-engine/repository';
+import { folderConnections } from '../services/mail-folder-reconciliation';
+import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
+import crypto from 'crypto';
+import { db } from '../state';
+import { validateUserMailFolder } from './mail-route-helpers';
+
 type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface Input { is_read?: unknown; is_starred?: unknown; email_ids?: string[]; folder?: unknown; account_id?: unknown }
-import mailWritebacks = require('../services/mail-writebacks');
-import mailRepository = require('../services/mail-engine/repository');
-import imported1 = require('../services/mail-folder-reconciliation');
-const { folderConnections } = imported1;
-import imported2 = require('../services/mail-filing');
-const { filingAccountId, folderAcceptsAccount } = imported2;
-import crypto = require('crypto');
-import imported3 = require('../state');
-const { db } = imported3;
-import imported4 = require('./mail-route-helpers');
-const { validateUserMailFolder } = imported4;
+interface Input {
+  is_read?: unknown;
+  is_starred?: unknown;
+  email_ids?: string[];
+  folder?: unknown;
+  account_id?: unknown;
+}
 
 function operationOptions(req: Request) {
   const key = req.headers?.['idempotency-key'];

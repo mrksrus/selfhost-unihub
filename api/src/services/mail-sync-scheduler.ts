@@ -1,16 +1,43 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
-import type { EngineJob, EnqueueJob } from '../types/mail-engine';
-interface ProgressChange { phase?: string | null; processed?: number | null; total?: number | null; coverage?: unknown }
-interface JobResult { inserted?: number; updated?: number; processed?: number; success?: boolean; cancelled?: boolean; paused?: boolean; error?: string | null; more?: boolean; retryAt?: Date | null; refreshPending?: boolean; [key: string]: unknown }
-type RunJob = (job: EngineJob, signal: AbortSignal, report: (change: ProgressChange) => Promise<void>) => Promise<JobResult | undefined>;
-interface RunningJob { controller: AbortController; job: EngineJob; finished: Promise<void>; cancellationRequested: boolean }
-type SchedulerRepository = Pick<typeof runtime, 'claimDueJob' | 'updateJob' | 'completeJob' | 'enqueueJob' | 'recoverExpiredJobs' | 'releaseUnstartedJob' | 'requestCancellation' | 'getJobStatus'> & { withTransaction?: <T>(callback: (connection: SqlExecutor) => Promise<T>) => Promise<T> };
-interface SchedulerOptions { repository?: SchedulerRepository; concurrency?: number; readConcurrency?: number; workerId?: string; onState?: (state: Partial<Omit<EngineJob, 'processed'>> & { processed?: number | null; state: string; error?: string | null; result?: JobResult }) => void; pollMs?: number; leaseSeconds?: number; recoveryMs?: number; now?: () => number }
+import type { ClaimedJob, EngineJob, EnqueueJob } from '../types/mail-engine';
 
-import runtime = require('./mail-engine/runtime');
-import imported1 = require('node:crypto');
-const { randomUUID } = imported1;
+import * as runtime from './mail-engine/runtime';
+import { randomUUID } from 'node:crypto';
+
+interface ProgressChange { phase?: string | null; processed?: number | null; total?: number | null; coverage?: unknown }
+interface JobResult {
+  inserted?: number;
+  updated?: number;
+  processed?: number;
+  success?: boolean;
+  cancelled?: boolean;
+  paused?: boolean;
+  error?: string | null;
+  more?: boolean;
+  retryAt?: Date | null;
+  refreshPending?: boolean;
+  [key: string]: unknown;
+}
+type RunJob = (job: ClaimedJob, signal: AbortSignal, report: (change: ProgressChange) => Promise<void>) => Promise<JobResult | undefined>;
+interface RunningJob {
+  controller: AbortController;
+  job: ClaimedJob;
+  finished: Promise<void>;
+  cancellationRequested: boolean;
+}
+type SchedulerRepository = Pick<typeof runtime, 'claimDueJob' | 'updateJob' | 'completeJob' | 'enqueueJob' | 'recoverExpiredJobs' | 'releaseUnstartedJob' | 'requestCancellation' | 'getJobStatus'> & { withTransaction?: <T>(callback: (connection: SqlExecutor) => Promise<T>) => Promise<T> };
+interface SchedulerOptions {
+  repository?: SchedulerRepository;
+  concurrency?: number;
+  readConcurrency?: number;
+  workerId?: string;
+  onState?: (state: Partial<Omit<EngineJob, 'processed'>> & { processed?: number | null; state: string; error?: string | null; result?: JobResult }) => void;
+  pollMs?: number;
+  leaseSeconds?: number;
+  recoveryMs?: number;
+  now?: () => number;
+}
 // 'prune' never contacts the provider; it applies Sync policy to local copies
 // and yields to interactive work like the provider read jobs.
 const READ_ONLY_MAIL_JOB_KINDS = new Set(['sync', 'recent', 'flags', 'history', 'presence', 'body', 'prune']);
@@ -44,7 +71,7 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
     startPromise.catch(() => { startPromise = null; });
     return startPromise;
   }
-  async function execute(job: EngineJob) {
+  async function execute(job: ClaimedJob) {
     const controller = new AbortController();
     let release!: () => void;
     const finished = new Promise<void>(resolve => { release = resolve; });
@@ -107,7 +134,7 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
             manualRefresh: result?.refreshPending === true }, cx);
         }
       };
-      const transaction = repository === runtime ? require('./mail-engine/repository').withTransaction : repository.withTransaction;
+      const transaction = repository === runtime ? (require('./mail-engine/repository') as typeof import('./mail-engine/repository')).withTransaction : repository.withTransaction;
       if (typeof transaction === 'function') await transaction(completion);
       else await completion(undefined); // injectable legacy test repositories
       onState({ ...job, state, result });
@@ -118,7 +145,7 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
       controller.abort(); // no more provider commands after lost lease
       if ((error as NodeJS.ErrnoException)?.code !== 'MAIL_WORKER_FENCED') {
         try {
-          const transaction = repository === runtime ? require('./mail-engine/repository').withTransaction : repository.withTransaction;
+          const transaction = repository === runtime ? (require('./mail-engine/repository') as typeof import('./mail-engine/repository')).withTransaction : repository.withTransaction;
           const completion = async (cx: SqlExecutor | undefined) => {
             await repository.completeJob({ jobId: job.id, accountId: job.mail_account_id,
               workerId, generation: Number(job.worker_generation), state: yielded ? 'idle' : 'error',
@@ -216,4 +243,4 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
   return { start, enqueue, cancel, yieldReadWork, interruptAccount, state: (input: { userId: string; accountId: string }) => repository.getJobStatus(input), drain, stop,
     ids: () => [...running.keys()] };
 }
-export = { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS, MUTATION_MAIL_JOB_KINDS };
+export { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS, MUTATION_MAIL_JOB_KINDS };

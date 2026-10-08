@@ -1,17 +1,13 @@
 import type { Pool, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../../types';
-import type { EngineExecutor, EngineJob, JobOwner, WorkerFence, EnqueueJob } from '../../types/mail-engine';
+import type { ClaimedJob, EngineExecutor, EngineJob, JobOwner, WorkerFence, EnqueueJob } from '../../types/mail-engine';
 
-import imported1 = require('node:crypto');
-const { randomUUID } = imported1;
-import imported2 = require('../../state');
-const { db } = imported2;
-import imported3 = require('./repository');
-const { withTransaction, ownAccount } = imported3;
-import imported4 = require('./repository-identity');
-const { bool } = imported4;
-import imported5 = require('./rollout');
-const { HOLD_REASON } = imported5;
+import { randomUUID } from 'node:crypto';
+import { db } from '../../state';
+import { withTransaction, ownAccount } from './repository';
+import { bool } from './repository-identity';
+import { HOLD_REASON } from './rollout';
+
 const requireId = (value: unknown, name: string) => { if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name} required`); return value; };
 const fenced = () => Object.assign(new Error('Mail worker lease or generation was lost'), { code: 'MAIL_WORKER_FENCED' });
 const tx = <T>(executor: EngineExecutor, callback: (connection: SqlExecutor) => T | PromiseLike<T>): T | PromiseLike<T> => typeof executor.getConnection === 'function' ? withTransaction(callback, executor as Pick<Pool, 'getConnection'>) : callback(executor);
@@ -92,7 +88,7 @@ async function claimDueJob({ workerId, leaseSeconds = 30, kinds = null, accountI
         lease_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND), worker_generation = ?,
         started_at = COALESCE(started_at,UTC_TIMESTAMP()), heartbeat_at = UTC_TIMESTAMP()
         WHERE id = ?`, [workerId, leaseSeconds, generation, job.id]);
-      const [claimed] = await cx.execute<(RowDataPacket & EngineJob)[]>('SELECT * FROM mail_engine_jobs WHERE id = ?', [job.id]);
+      const [claimed] = await cx.execute<(RowDataPacket & ClaimedJob)[]>('SELECT * FROM mail_engine_jobs WHERE id = ?', [job.id]);
       return claimed[0];
     }
     return null;
@@ -306,4 +302,18 @@ async function beginOperationAttempt({ operationId, userId, accountId, workerId,
     return attempts[0];
   });
 }
-export = { enqueueJob, claimDueJob, assertFence, updateJob, releaseUnstartedJob, completeJob, requestCancellation, pauseAccount, resumeAccount, recoverExpiredJobs, pruneFinishedJobs, getJobStatus, beginOperationAttempt };
+export {
+  enqueueJob,
+  claimDueJob,
+  assertFence,
+  updateJob,
+  releaseUnstartedJob,
+  completeJob,
+  requestCancellation,
+  pauseAccount,
+  resumeAccount,
+  recoverExpiredJobs,
+  pruneFinishedJobs,
+  getJobStatus,
+  beginOperationAttempt,
+};

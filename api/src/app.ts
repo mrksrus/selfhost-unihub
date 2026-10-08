@@ -1,41 +1,29 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-interface PoolStatistics { _allConnections?: { length: number }; _freeConnections?: { length: number }; _connectionQueue?: { length: number } }
 
-import imported1 = require('./services/mail-folder-reconciliation');
-const { prepareFolderReconciliation } = imported1;
-import http = require('http');
-import imported2 = require('./config');
-const { PORT } = imported2;
-import imported3 = require('./state');
-const { db } = imported3;
-import imported4 = require('./services/database');
-const { initDatabase, ensurePerformanceIndexes } = imported4;
-import imported5 = require('./services/mail');
-const { schedulePeriodicMailWork, runMailServerDeletionPass } = imported5;
-import imported6 = require('./services/mail-writebacks');
-const { runDueWritebacks } = imported6;
-import imported7 = require('./services/mail-engine/runtime');
-const { pruneFinishedJobs } = imported7;
-import imported8 = require('./services/recordings');
-const { cleanupExpiredRecordingUploads } = imported8;
-import imported9 = require('./services/backup-availability');
-const { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } = imported9;
-import imported10 = require('./services/export-jobs');
-const { resumePendingDataExportJobs } = imported10;
-import imported11 = require('./services/backup-restore-jobs');
-const { resumePendingRestoreJobs } = imported11;
-import imported12 = require('./services/data-inventory');
-const { verifyDatabaseInventory } = imported12;
-import imported13 = require('./services/restore-locks');
-const { isSectionRestoreActive } = imported13;
-import imported14 = require('./request-handler');
-const { handleRequest } = imported14;
-import imported15 = require('./services/server-events');
-const { installShutdownHandler } = imported15;
-import imported16 = require('./services/mail-idle');
-const { idleSupervisor } = imported16;
-import imported17 = require('./services/notifications');
-const { ensureNotificationSchema, processNotificationJobs } = imported17;
+import { prepareFolderReconciliation } from './services/mail-folder-reconciliation';
+import http from 'http';
+import { PORT } from './config';
+import { db } from './state';
+import { initDatabase, ensurePerformanceIndexes } from './services/database';
+import { schedulePeriodicMailWork, runMailServerDeletionPass } from './services/mail';
+import { runDueWritebacks } from './services/mail-writebacks';
+import { pruneFinishedJobs } from './services/mail-engine/runtime';
+import { cleanupExpiredRecordingUploads } from './services/recordings';
+import { suspendPendingBackupJobs, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
+import { resumePendingDataExportJobs } from './services/export-jobs';
+import { resumePendingRestoreJobs } from './services/backup-restore-jobs';
+import { verifyDatabaseInventory } from './services/data-inventory';
+import { isSectionRestoreActive } from './services/restore-locks';
+import { handleRequest } from './request-handler';
+import { installShutdownHandler } from './services/server-events';
+import { idleSupervisor } from './services/mail-idle';
+import { ensureNotificationSchema, processNotificationJobs } from './services/notifications';
+
+interface PoolStatistics {
+  _allConnections?: { length: number };
+  _freeConnections?: { length: number };
+  _connectionQueue?: { length: number };
+}
 
 // Wake recent discovery independently of historical backfill. The durable
 // scheduler coalesces due work; this timer is not the authority for its state.
@@ -164,7 +152,7 @@ async function start() {
 
   // Each calendar account schedules its own next sync (next_sync_at); this
   // timer only picks up the accounts that are due. A restart interrupts runs.
-  const { runCalendarSyncPass } = require('./services/calendar-sync');
+  const { runCalendarSyncPass } = require('./services/calendar-sync') as typeof import('./services/calendar-sync');
   await db.execute("UPDATE calendar_accounts SET sync_status = 'pending' WHERE sync_status = 'syncing'")
     .catch(error => console.error('[CALENDAR] Could not reset interrupted syncs:', (error as Error).message));
   const runCalendarSync = () => runCalendarSyncPass().catch((error: Error) => console.error('[CALENDAR] Sync pass failed:', (error as Error).message));
@@ -230,7 +218,6 @@ async function start() {
   console.log('✓ Database connection pool health check enabled (every 15 minutes)');
 }
 
-
-export = {
+export {
   start,
 };

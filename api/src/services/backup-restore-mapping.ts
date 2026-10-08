@@ -1,30 +1,19 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, BackupFile, BackupFileSource, ApiError } from '../types';
 import type { RestoreRow, RestoreArchive, ImportOptions } from '../types/backup-restore';
-interface Credentials { mail_accounts?: { id: string; password?: string | null }[]; calendar_accounts?: { id: string; password?: string | null; access_token?: string | null; refresh_token?: string | null }[] }
-import crypto = require('crypto');
-import fs = require('fs');
-import path = require('path');
-import imported10 = require('stream/promises');
-const { finished } = imported10;
-import imported11 = require('../security/encryption');
-const { encrypt, decrypt } = imported11;
-import imported12 = require('./backup-container');
-const { decryptPortableCredentialBundle } = imported12;
-import imported13 = require('./mail');
-const { MAIL_RAW_STORAGE_ROOT, validateMailHostPolicy } = imported13;
-import imported14 = require('./caldav');
-const { validateDavUrlPolicy, accountCredentialScope } = imported14;
-import imported15 = require('./calendar');
-const { safeJsonParse, MAIL_DISCONNECTED_MESSAGE } = imported15;
-import imported16 = require('../security/caldav-transport');
-const { resolveCalDavUrl } = imported16;
-import imported17 = require('./recordings');
-const { RECORDINGS_ROOT } = imported17;
-import imported18 = require('./backup-ownership');
-const { resolveOwnedReference } = imported18;
-import imported9 = require('./backup-common');
-const {
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { finished } from 'stream/promises';
+import { encrypt, decrypt } from '../security/encryption';
+import { decryptPortableCredentialBundle } from './backup-container';
+import { MAIL_RAW_STORAGE_ROOT, validateMailHostPolicy } from './mail';
+import { validateDavUrlPolicy, accountCredentialScope } from './caldav';
+import { safeJsonParse, MAIL_DISCONNECTED_MESSAGE } from './calendar';
+import { resolveCalDavUrl } from '../security/caldav-transport';
+import { RECORDINGS_ROOT } from './recordings';
+import { resolveOwnedReference } from './backup-ownership';
+import {
   ATTACHMENTS_ROOT,
   sha256Buffer,
   isFileRangeSource,
@@ -33,7 +22,12 @@ const {
   normalizeMysqlDateTime,
   normalizeIdentifier,
   sanitizeArchivePathPart,
-} = imported9;
+} from './backup-common';
+
+interface Credentials {
+  mail_accounts?: { id: string; password?: string | null }[];
+  calendar_accounts?: { id: string; password?: string | null; access_token?: string | null; refresh_token?: string | null }[];
+}
 
 const isMailCalDav = (account: RestoreRow) => account.provider === 'caldav' && ((safeJsonParse(account.provider_config, {}) || {}) as { mailLinked?: unknown }).mailLinked === true;
 
@@ -307,7 +301,6 @@ async function findExistingEmailForRestore(connection: SqlExecutor, row: Restore
   const byId = existingById.find(item => !claimedIds.has(item.id));
   if (byId) return byId.id;
 
-
   if (row.source_folder && row.imap_uid !== null && row.imap_uid !== undefined) {
     const params = [userId, targetMailAccountId, row.source_folder, row.imap_uid];
     let query = `
@@ -536,7 +529,7 @@ async function writeRestoredFile(userId: string, file: BackupFile, {
   return targetPath;
 }
 
-export = {
+export {
   prepareCredentialsForRestore,
   restoredCalendarLacksLogin,
   overwriteUserId,

@@ -1,35 +1,62 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { ApiError, MailAccountIdentity, SqlExecutor, StoredFlag } from '../types';
-import type { CalendarAccount } from '../types/calendar';
-interface AccountRow extends CalendarAccount { provider: string; encrypted_password?: string | null }
-interface MailRow extends MailAccountIdentity { id: string; user_id: string; email_address: string; display_name?: string | null; encrypted_password?: string | null; is_active?: StoredFlag; disconnected_at?: Date | string | null; connected?: number | string | null }
-type MailAddress = Pick<MailRow, 'id' | 'email_address'>;
-interface Config { timeZone?: unknown; mailLinked?: boolean; server?: { source?: string; url?: string } }
-interface ConnectInput { userId: string; emailAddress?: string | null; displayName?: string | null; username?: string | null; password?: string | null; imapHost?: string | null; caldavUrl?: string | null; mailAccountId?: string | null; timeZone?: unknown }
-interface IcsInput { userId: string; url: string; displayName?: string | null; mailAccountId?: string | null; emailAddress?: string | null; timeZone?: unknown }
 // Connecting server calendars: CalDAV accounts found from a mail login (or a
 // CalDAV address), and read-only iCalendar subscriptions. A calendar account
 // connected from a mail account stays linked to it (mail_account_id): it has
 // no password of its own but uses the mail login (see calendar-sync
 // resolveLogin), so it waits while the mail account is disconnected, and it is
 // removed when the mail account is purged.
-import crypto = require('crypto');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../security/encryption');
-const { encrypt, decrypt } = imported2;
-import imported3 = require('./module-settings');
-const { isModuleEnabled } = imported3;
-import imported4 = require('./restore-locks');
-const { isSectionRestoreActive } = imported4;
-import imported5 = require('./server-events');
-const { publishCalendarChanged } = imported5;
-import caldav = require('./caldav');
-import imported6 = require('./calendar-ical');
-const { isValidTimeZone } = imported6;
-import imported7 = require('./calendar');
-const { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES, MAIL_DISCONNECTED_MESSAGE, MAIL_CONNECTED_SQL, serializeCalendarAccount, safeJsonParse, wasMailCalendar } = imported7;
-import calendarSync = require('./calendar-sync');
+import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { ApiError, MailAccountIdentity, SqlExecutor, StoredFlag } from '../types';
+import type { CalendarAccount } from '../types/calendar';
+import crypto from 'crypto';
+import { db } from '../state';
+import { encrypt, decrypt } from '../security/encryption';
+import { isModuleEnabled } from './module-settings';
+import { isSectionRestoreActive } from './restore-locks';
+import { publishCalendarChanged } from './server-events';
+import * as caldav from './caldav';
+import { isValidTimeZone } from './calendar-ical';
+import {
+  CALENDAR_PROVIDER_DEFAULT_CAPABILITIES,
+  MAIL_DISCONNECTED_MESSAGE,
+  MAIL_CONNECTED_SQL,
+  serializeCalendarAccount,
+  safeJsonParse,
+  wasMailCalendar,
+} from './calendar';
+import * as calendarSync from './calendar-sync';
+
+interface AccountRow extends CalendarAccount { provider: string; encrypted_password?: string | null }
+interface MailRow extends MailAccountIdentity {
+  id: string;
+  user_id: string;
+  email_address: string;
+  display_name?: string | null;
+  encrypted_password?: string | null;
+  is_active?: StoredFlag;
+  disconnected_at?: Date | string | null;
+  connected?: number | string | null;
+}
+type MailAddress = Pick<MailRow, 'id' | 'email_address'>;
+interface Config { timeZone?: unknown; mailLinked?: boolean; server?: { source?: string; url?: string } }
+interface ConnectInput {
+  userId: string;
+  emailAddress?: string | null;
+  displayName?: string | null;
+  username?: string | null;
+  password?: string | null;
+  imapHost?: string | null;
+  caldavUrl?: string | null;
+  mailAccountId?: string | null;
+  timeZone?: unknown;
+}
+interface IcsInput {
+  userId: string;
+  url: string;
+  displayName?: string | null;
+  mailAccountId?: string | null;
+  emailAddress?: string | null;
+  timeZone?: unknown;
+}
 
 function fail(message: string, status = 400, code?: string) {
   return Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
@@ -372,7 +399,7 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
   return { ...await describeLink(userId, mail, rows[0]), server: ('server' in connected ? connected.server : null) || null, hint: ('hint' in connected ? connected.hint : null) || null };
 }
 
-export = {
+export {
   connectCalDavAccount,
   connectIcsSubscription,
   removeCalendarAccount,

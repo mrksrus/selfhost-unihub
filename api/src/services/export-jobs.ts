@@ -1,32 +1,69 @@
 import type { RowDataPacket, ExecuteValues } from 'mysql2/promise';
 import type { ApiError, StoredFlag } from '../types';
-type CheckCancelled = (() => Promise<unknown>) | null;
-interface ZipEntry { name: string; filePath?: string; data?: Buffer | string; modifiedAt?: Date; cleanupAfterWrite?: boolean; expectedSize?: number; expectedSha256?: string }
-interface PreparedEntry { name: string; filePath?: string; data?: Buffer; modifiedAt: Date; size: number; crc32: number; sha256?: string }
-interface ExportOptions { sections?: unknown; scope?: unknown; encrypt?: boolean; mailAccountId?: string | null }
-interface ExportRow extends RowDataPacket { id: string; user_id: string; scope: string; status: string; phase?: string; progress?: number; cancel_requested?: StoredFlag; requested_sections?: unknown; mail_account_id?: string | null; file_path?: string | null; file_size?: number | null; file_sha256?: string | null; content_type?: string | null; encryption_enabled?: StoredFlag; backup_uuid?: string | null; recovery_password_available?: StoredFlag; recovery_password_revealed?: StoredFlag; server_unlock_available?: StoredFlag; error?: string | null; created_at: Date | string; updated_at: Date | string; started_at?: Date | string | null; completed_at?: Date | string | null; downloaded_at?: Date | string | null }
-import crypto = require('crypto');
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('../config');
-const { BACKUP_UPLOAD_MAX_SIZE } = imported1;
-import imported2 = require('../state');
-const { db } = imported2;
-import imported3 = require('./backup');
-const { buildBackupArchiveEntriesForUser, sha256File } = imported3;
-import imported4 = require('./backup-container');
-const {
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { BACKUP_UPLOAD_MAX_SIZE } from '../config';
+import { db } from '../state';
+import { buildBackupArchiveEntriesForUser, sha256File } from './backup';
+import {
   encryptBackupFile,
   generateRecoveryPassword,
   wrapDataKeyForServer,
   protectRecoveryPassword,
-} = imported4;
-import imported5 = require('./backup-archive-keys');
-const { pruneArchiveKeyIfUnreferenced } = imported5;
+} from './backup-container';
+import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
+
+type CheckCancelled = (() => Promise<unknown>) | null;
+interface ZipEntry {
+  name: string;
+  filePath?: string;
+  data?: Buffer | string;
+  modifiedAt?: Date;
+  cleanupAfterWrite?: boolean;
+  expectedSize?: number;
+  expectedSha256?: string;
+}
+interface PreparedEntry {
+  name: string;
+  filePath?: string;
+  data?: Buffer;
+  modifiedAt: Date;
+  size: number;
+  crc32: number;
+  sha256?: string;
+}
+interface ExportOptions { sections?: unknown; scope?: unknown; encrypt?: boolean; mailAccountId?: string | null }
+interface ExportRow extends RowDataPacket {
+  id: string;
+  user_id: string;
+  scope: string;
+  status: string;
+  phase?: string;
+  progress?: number;
+  cancel_requested?: StoredFlag;
+  requested_sections?: unknown;
+  mail_account_id?: string | null;
+  file_path?: string | null;
+  file_size?: number | null;
+  file_sha256?: string | null;
+  content_type?: string | null;
+  encryption_enabled?: StoredFlag;
+  backup_uuid?: string | null;
+  recovery_password_available?: StoredFlag;
+  recovery_password_revealed?: StoredFlag;
+  server_unlock_available?: StoredFlag;
+  error?: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  started_at?: Date | string | null;
+  completed_at?: Date | string | null;
+  downloaded_at?: Date | string | null;
+}
 
 const BACKUPS_ROOT = '/app/uploads/backups';
 const activeExportJobs = new Set();
-const { SECTION_POLICIES, normalizeBackupRequest } = require('./backup-catalog');
+const { SECTION_POLICIES, normalizeBackupRequest } = require('./backup-catalog') as typeof import('./backup-catalog');
 const EXPORT_SECTIONS = new Set(Object.keys(SECTION_POLICIES));
 const ZIP32_MAX_VALUE = 0xffffffff;
 const ZIP32_MAX_ENTRIES = 0xfffe;
@@ -682,7 +719,7 @@ async function cancelDataExportJob(userId: string, jobId: string | null) {
   return { job: serializeJob((await getDataExportJob(userId, jobId))!) };
 }
 
-export = {
+export {
   BACKUPS_ROOT,
   EXPORT_SECTIONS,
   normalizeSections,

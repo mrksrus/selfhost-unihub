@@ -1,22 +1,38 @@
+// Provider evidence and local operation settlement share one short transaction.
+// Never infer generic occurrence identity from a Message-ID or raw hash alone.
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../../types';
 import type { ProviderOperation } from '../../types/mail-engine';
 import type { CopyUidMapping } from '../../types/imap-protocol';
-interface OperationIdentity { operationId: string; userId: string; accountId: string }
-interface Settlement extends OperationIdentity { attemptId?: string | null; workerGeneration?: number | string | null; workerId?: string | null; jobId?: string | null; executor?: SqlExecutor }
-interface Destination { uid?: number; uidvalidity?: number; mailboxId?: string; folder?: string }
-interface FlagSettlement extends Settlement { source?: { uid: ProviderOperation['remote_uid']; uidvalidity: ProviderOperation['remote_uidvalidity']; folder: string | null }; flags: string[]; modseq?: string | number | bigint | null; observationRevision?: number | null }
-interface MoveSettlement extends Settlement { mapping?: CopyUidMapping | null; destination?: Destination | null; source?: { absent?: boolean } | null; evidence?: { verified?: boolean; unique?: boolean } }
 
-// Provider evidence and local operation settlement share one short transaction.
-// Never infer generic occurrence identity from a Message-ID or raw hash alone.
-import imported1 = require('../../state');
-const { db } = imported1;
-import runtime = require('./runtime');
+import { db } from '../../state';
+import * as runtime from './runtime';
+
+interface OperationIdentity { operationId: string; userId: string; accountId: string }
+interface Settlement extends OperationIdentity {
+  attemptId?: string | null;
+  workerGeneration?: number | string | null;
+  workerId?: string | null;
+  jobId?: string | null;
+  executor?: SqlExecutor;
+}
+interface Destination { uid?: number; uidvalidity?: number; mailboxId?: string; folder?: string }
+interface FlagSettlement extends Settlement {
+  source?: { uid: ProviderOperation['remote_uid']; uidvalidity: ProviderOperation['remote_uidvalidity']; folder: string | null };
+  flags: string[];
+  modseq?: string | number | bigint | null;
+  observationRevision?: number | null;
+}
+interface MoveSettlement extends Settlement {
+  mapping?: CopyUidMapping | null;
+  destination?: Destination | null;
+  source?: { absent?: boolean } | null;
+  evidence?: { verified?: boolean; unique?: boolean };
+}
 
 async function transaction<T>(fn: (connection: SqlExecutor) => Promise<T>, executor?: SqlExecutor): Promise<T> {
   if (executor) return fn(executor);
-  return require('./repository').withTransaction(fn, db); // retries deadlocks
+  return (require('./repository') as typeof import('./repository')).withTransaction(fn, db); // retries deadlocks
 }
 const uint = (value: unknown) => Number.isSafeInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 4294967295;
 const same = (a: unknown, b: unknown) => String(a) === String(b);
@@ -196,4 +212,4 @@ async function reconcileObservedOccurrence({ executor, userId, accountId, emailI
     return result;
   }, executor);
 }
-export = { settleFlagObservation, settleMoveEvidence, reconcileObservedOccurrence, validMapping };
+export { settleFlagObservation, settleMoveEvidence, reconcileObservedOccurrence, validMapping };

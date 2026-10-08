@@ -1,10 +1,8 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
-import imported1 = require('../state');
-const { db } = imported1;
+import { db } from '../state';
 
-import imported2 = require('./backup-catalog');
-const { normalizeBackupSections } = imported2;
+import { normalizeBackupSections } from './backup-catalog';
 
 function normalizeSections(value: unknown) {
   let source = Buffer.isBuffer(value) ? value.toString('utf8') : value;
@@ -46,7 +44,7 @@ async function getActiveRestoreSectionsByUser(connection: SqlExecutor = db, user
   return active;
 }
 
-export = {
+export {
   getActiveRestoreSections,
   isSectionRestoreActive,
   getActiveRestoreSectionsByUser,

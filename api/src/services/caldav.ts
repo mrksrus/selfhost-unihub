@@ -1,21 +1,29 @@
-import type { ApiError } from '../types';
-type CredentialScope = Parameters<typeof resolveCalDavUrl>[2];
-interface Login { username?: string; password?: string; credentialScope?: CredentialScope; signal?: AbortSignal }
-interface ProviderInput { emailAddress?: string | null; imapHost?: string | null }
-interface Provider { id: string; label: string; domains: string[]; hosts: string[]; url?: string; scope?: CredentialScope; hint?: string; unsupported?: boolean }
-interface CalendarObject { href: string; url: string; etag: string | null }
-interface ReceivedObject { href: string; etag: string | null; ics: string }
-interface Failure { url: string; error: ApiError }
-type Resolvers = { resolveSrv?: typeof dns.resolveSrv; resolveTxt?: typeof dns.resolveTxt };
 // CalDAV (RFC 4791) and iCalendar subscription client: server discovery from a
 // mail login, calendar listing, change detection and object read/write. All
 // network access goes through caldav-transport, which enforces HTTPS, the
 // outbound network policy and the credential scope.
-const dns: typeof import('node:dns/promises') = require('node:dns').promises;
-import imported1 = require('../security/outbound-network');
-const { resolveMailConnectionTarget } = imported1;
-import imported2 = require('../security/caldav-transport');
-const { parseCalDavUrl, resolveCalDavUrl, credentialScopeAllows, davRequest } = imported2;
+import type { ApiError } from '../types';
+import { promises as dns } from 'node:dns';
+import { resolveMailConnectionTarget } from '../security/outbound-network';
+import { parseCalDavUrl, resolveCalDavUrl, credentialScopeAllows, davRequest } from '../security/caldav-transport';
+
+type CredentialScope = Parameters<typeof resolveCalDavUrl>[2];
+interface Login { username?: string; password?: string; credentialScope?: CredentialScope; signal?: AbortSignal }
+interface ProviderInput { emailAddress?: string | null; imapHost?: string | null }
+interface Provider {
+  id: string;
+  label: string;
+  domains: string[];
+  hosts: string[];
+  url?: string;
+  scope?: CredentialScope;
+  hint?: string;
+  unsupported?: boolean;
+}
+interface CalendarObject { href: string; url: string; etag: string | null }
+interface ReceivedObject { href: string; etag: string | null; ics: string }
+interface Failure { url: string; error: ApiError }
+type Resolvers = { resolveSrv?: typeof dns.resolveSrv; resolveTxt?: typeof dns.resolveTxt };
 
 const PROBE_TIMEOUT_MS = 6000;
 const MULTIGET_BATCH = 50;
@@ -460,7 +468,7 @@ async function fetchIcsFeed({ url, etag }: { url: string; etag?: string | null }
   return { notModified: false, text: result.text, etag: result.headers.etag || null };
 }
 
-export = {
+export {
   CALENDAR_PROVIDERS,
   matchCalendarProvider,
   validateDavUrlPolicy,

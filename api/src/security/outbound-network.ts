@@ -1,12 +1,15 @@
 import type { LookupAddress } from 'node:dns';
-interface ResolveOptions { lookup?: (hostname: string, options: { all: true; verbatim: true }) => Promise<LookupAddress[]>; timeoutMs?: number; trustedHosts?: readonly string[] }
 
 import { promises as dns } from 'node:dns';
-import net = require('node:net');
-import imported1 = require('node:url');
-const { domainToASCII } = imported1;
-import imported2 = require('../config');
-const { TRUSTED_MAIL_HOSTS } = imported2;
+import net from 'node:net';
+import { domainToASCII } from 'node:url';
+import { TRUSTED_MAIL_HOSTS } from '../config';
+
+interface ResolveOptions {
+  lookup?: (hostname: string, options: { all: true; verbatim: true }) => Promise<LookupAddress[]>;
+  timeoutMs?: number;
+  trustedHosts?: readonly string[];
+}
 
 // Default-deny special-use ranges, including IPv4-mapped IPv6 and transition
 // mechanisms that can otherwise hide a connection to a private IPv4 address.
@@ -95,7 +98,7 @@ async function resolveMailConnectionTarget(host: unknown, options: ResolveOption
   return { hostname, ...selected };
 }
 
-export = {
+export {
   normalizeNetworkHost,
   isPublicNetworkAddress,
   isTrustedMailHost,

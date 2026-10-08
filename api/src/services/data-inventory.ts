@@ -1,14 +1,19 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
-interface ExcludedPolicy { treatment: string; reason: string; columns: readonly string[]; introducedIn?: Readonly<Record<string, number>>; removedIn?: number }
+
+import { TABLE_POLICIES, REFERENCES, assertRecoveryCatalog } from './backup-catalog';
+import { EPHEMERAL_COLUMNS } from './mail-engine/recovery-policy';
+
+interface ExcludedPolicy {
+  treatment: string;
+  reason: string;
+  columns: readonly string[];
+  introducedIn?: Readonly<Record<string, number>>;
+  removedIn?: number;
+}
 interface InventoryField { treatment: string; introducedIn: number; removedIn: number }
 interface ColumnRow { table_name: string; column_name: string }
 interface RelationshipRow extends ColumnRow { parent_table: string; parent_column: string }
-
-import imported1 = require('./backup-catalog');
-const { TABLE_POLICIES, REFERENCES, assertRecoveryCatalog } = imported1;
-import imported2 = require('./mail-engine/recovery-policy');
-const { EPHEMERAL_COLUMNS } = imported2;
 
 // Only non-archive data belongs here. Archive fields and their import treatment
 // come from the same allowlist used by export; every excluded field is named.
@@ -126,4 +131,4 @@ function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
   }
 }
 
-export = { NON_ARCHIVE_POLICIES, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
+export { NON_ARCHIVE_POLICIES, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };

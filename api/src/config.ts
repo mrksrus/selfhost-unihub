@@ -23,7 +23,7 @@ const BACKUP_UPLOAD_MAX_SIZE = 3900 * 1024 * 1024;
 // Leave room for JSON metadata and the message body as well.
 const MAIL_COMPOSE_REQUEST_MAX_SIZE = 40 * 1024 * 1024;
 
-export = {
+export {
   PORT,
   JWT_SECRET,
   ENCRYPTION_KEY,

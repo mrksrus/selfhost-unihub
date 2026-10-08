@@ -1,22 +1,40 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
 import type { CalendarAccount, CalendarCalendar, CalendarSubtask, CalendarAttendee, CalendarEvent } from '../types/calendar';
-interface Section { columns: string; table: string; order: string; filter?: string; limit?: number }
-interface OfflineMail extends Record<string, unknown> { id: string; mail_account_id?: string | null; filing_account_id?: string | null; remote_missing?: StoredFlag; is_legacy?: StoredFlag }
-interface OfflineFolder extends Record<string, unknown> { slug: string }
-interface OfflineData { contacts: Record<string, unknown>[]; events: CalendarEvent[]; subtasks: CalendarSubtask[]; attendees: CalendarAttendee[]; calendars: CalendarCalendar[]; calendarAccounts: CalendarAccount[]; mailAccounts: Record<string, unknown>[]; folders: OfflineFolder[]; emails: OfflineMail[] }
 
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('./module-settings');
-const { getOrderedUserModules, getUserPages } = imported2;
-import imported3 = require('./mail-filing');
-const { presentMailFiling } = imported3;
-import imported4 = require('./mail-folder-reconciliation');
-const { folderConnections } = imported4;
-import imported5 = require('./calendar');
-const { serializeCalendarEvent, serializeCalendarAccount, serializeCalendarCalendar,
-  serializeCalendarSubtask, serializeCalendarAttendee, safeJsonParse } = imported5;
+import { db } from '../state';
+import { getOrderedUserModules, getUserPages } from './module-settings';
+import { presentMailFiling } from './mail-filing';
+import { folderConnections } from './mail-folder-reconciliation';
+import {
+  serializeCalendarEvent,
+  serializeCalendarAccount,
+  serializeCalendarCalendar,
+  serializeCalendarSubtask,
+  serializeCalendarAttendee,
+  safeJsonParse,
+} from './calendar';
+
+interface Section { columns: string; table: string; order: string; filter?: string; limit?: number }
+interface OfflineMail extends Record<string, unknown> {
+  id: string;
+  mail_account_id?: string | null;
+  filing_account_id?: string | null;
+  remote_missing?: StoredFlag;
+  is_legacy?: StoredFlag;
+}
+interface OfflineFolder extends Record<string, unknown> { slug: string }
+interface OfflineData {
+  contacts: Record<string, unknown>[];
+  events: CalendarEvent[];
+  subtasks: CalendarSubtask[];
+  attendees: CalendarAttendee[];
+  calendars: CalendarCalendar[];
+  calendarAccounts: CalendarAccount[];
+  mailAccounts: Record<string, unknown>[];
+  folders: OfflineFolder[];
+  emails: OfflineMail[];
+}
 
 const OFFLINE_MAIL_LIMIT = 100;
 const OFFLINE_MAX_BYTES = 32 * 1024 * 1024;
@@ -129,4 +147,4 @@ async function createOfflineSnapshot(userId: string) {
   } catch (error) { await connection.rollback().catch(() => {}); throw error; }
   finally { connection.release(); }
 }
-export = { createOfflineSnapshot, collectOfflineSnapshot, OFFLINE_MAX_BYTES, OFFLINE_MAIL_LIMIT };
+export { createOfflineSnapshot, collectOfflineSnapshot, OFFLINE_MAX_BYTES, OFFLINE_MAIL_LIMIT };

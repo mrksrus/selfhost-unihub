@@ -1,32 +1,23 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ApiError, BackupPayload, BackupRow, BackupFile, ArchiveEnvelope } from '../types';
-type CheckCancelled = (() => Promise<unknown>) | null;
-interface SnapshotRow extends BackupRow { id: string; encrypted_password?: string | null; encrypted_access_token?: string | null; encrypted_refresh_token?: string | null; filing_account_id?: string | null }
-type SnapshotData = BackupPayload['data'] & { mail_accounts?: SnapshotRow[]; calendar_accounts?: SnapshotRow[] };
-interface ExportFile extends BackupFile { kind: string; id: string; source_path?: string; size_bytes: number; sha256: string | null; data_base64?: string | null }
-interface ExportBackup extends ArchiveEnvelope { account_only_sections?: string[]; files: ExportFile[]; warnings: string[]; exported_at: string; portable_credentials: ReturnType<typeof encryptPortableCredentialBundle> | null; data: SnapshotData }
-interface BackupOptions { includeFileData?: boolean; portableCredentialKey?: Buffer | null; checkCancelled?: CheckCancelled; sections?: unknown; mailAccountId?: string | null }
-interface CredentialBundle { mail_accounts: { id: string; password: string }[]; calendar_accounts: { id: string; password: string | null; access_token: string | null; refresh_token: string | null }[] }
-import crypto = require('crypto');
-import fs = require('fs');
-import os = require('os');
-import path = require('path');
-import imported1 = require('stream/promises');
-const { finished } = imported1;
-import imported2 = require('../state');
-const { db } = imported2;
-import imported3 = require('../security/encryption');
-const { decrypt } = imported3;
-import imported4 = require('./backup-container');
-const { encryptPortableCredentialBundle, decryptPortableCredentialBundle } = imported4;
-import imported5 = require('./recording-audio');
-const { inspectRecordingAudio } = imported5;
-import imported6 = require('./backup-format');
-const { BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, getBackupProducer } = imported6;
-import imported7 = require('./backup-catalog');
-const { SECTION_POLICIES, TABLE_POLICIES, FILE_POLICIES, ACCOUNT_ONLY_TABLES, normalizeBackupRequest } = imported7;
-import imported8 = require('./backup-common');
-const {
+import crypto from 'crypto';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { finished } from 'stream/promises';
+import { db } from '../state';
+import { decrypt } from '../security/encryption';
+import { encryptPortableCredentialBundle, decryptPortableCredentialBundle } from './backup-container';
+import { inspectRecordingAudio } from './recording-audio';
+import { BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, getBackupProducer } from './backup-format';
+import {
+  SECTION_POLICIES,
+  TABLE_POLICIES,
+  FILE_POLICIES,
+  ACCOUNT_ONLY_TABLES,
+  normalizeBackupRequest,
+} from './backup-catalog';
+import {
   BACKUP_FILE_ROOTS,
   sha256File,
   normalizeRows,
@@ -35,9 +26,45 @@ const {
   getBackupRowCounts,
   jsonBuffer,
   assertBackupMetadataSize,
-} = imported8;
-import imported9 = require('./backup-validate');
-const { scopeBackupForImport } = imported9;
+} from './backup-common';
+import { scopeBackupForImport } from './backup-validate';
+
+type CheckCancelled = (() => Promise<unknown>) | null;
+interface SnapshotRow extends BackupRow {
+  id: string;
+  encrypted_password?: string | null;
+  encrypted_access_token?: string | null;
+  encrypted_refresh_token?: string | null;
+  filing_account_id?: string | null;
+}
+type SnapshotData = BackupPayload['data'] & { mail_accounts?: SnapshotRow[]; calendar_accounts?: SnapshotRow[] };
+interface ExportFile extends BackupFile {
+  kind: string;
+  id: string;
+  source_path?: string;
+  size_bytes: number;
+  sha256: string | null;
+  data_base64?: string | null;
+}
+interface ExportBackup extends ArchiveEnvelope {
+  account_only_sections?: string[];
+  files: ExportFile[];
+  warnings: string[];
+  exported_at: string;
+  portable_credentials: ReturnType<typeof encryptPortableCredentialBundle> | null;
+  data: SnapshotData;
+}
+interface BackupOptions {
+  includeFileData?: boolean;
+  portableCredentialKey?: Buffer | null;
+  checkCancelled?: CheckCancelled;
+  sections?: unknown;
+  mailAccountId?: string | null;
+}
+interface CredentialBundle {
+  mail_accounts: { id: string; password: string }[];
+  calendar_accounts: { id: string; password: string | null; access_token: string | null; refresh_token: string | null }[];
+}
 
 async function readBackupFileEntry({
   kind,
@@ -488,7 +515,7 @@ async function buildBackupArchiveEntriesForUser(userId: string, sections: unknow
   }
 }
 
-export = {
+export {
   readBackupFileEntry,
   writeBackupJsonFile,
   assertBackupFilesComplete,

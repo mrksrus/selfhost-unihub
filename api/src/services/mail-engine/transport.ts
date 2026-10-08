@@ -1,15 +1,15 @@
-import type { FetchMessageObject, FetchQueryObject, MailboxObject } from 'imapflow';
-import type { ProtocolConnection, ProtocolError, ParsedResponse, ExecOptions, CopyUidMapping } from '../../types/imap-protocol';
-
-
 // All ImapFlow protocol coupling of the mail engine stays inside the transport.
 // SELECT/EXAMINE and FETCH use the library API. UID STORE and UID MOVE are
 // issued through ImapFlow's command queue (exec) with explicitly built
 // arguments: the convenience methods hide NO/BAD and MODIFIED, filter flags by
 // PERMANENTFLAGS, put UNCHANGEDSINCE after the flag list, and messageMove()
 // silently falls back to COPY + STORE + EXPUNGE when MOVE is not advertised.
-import imported1 = require('../mail-imap-guard');
-const { runGuardedImap, closeImapConnection } = imported1;
+import type { FetchMessageObject, FetchQueryObject, MailboxObject } from 'imapflow';
+import type { ProtocolConnection, ProtocolError, ParsedResponse, ExecOptions, CopyUidMapping } from '../../types/imap-protocol';
+
+
+import { runGuardedImap, closeImapConnection } from '../mail-imap-guard';
+
 const imapTools: { normalizePath: (connection: ProtocolConnection, folder: string) => string; encodePath: (connection: ProtocolConnection, folder: string) => string } = require('imapflow/lib/tools.js');
 const MAX_UID = 0xffffffff;
 const MAX_WINDOW = 250;
@@ -83,7 +83,13 @@ async function selectMailbox(connection: ProtocolConnection, { folder, readOnly 
 // Streams one UID FETCH. Any failure (budget, malformed or out-of-range data,
 // NO/BAD) tears the session down: a half-consumed FETCH must never be followed
 // by another command on the same connection.
-interface MetadataItem { uid: number; flags: string[]; modseq: string | null; gmailMsgId: string | null; internalDate: string | null; }
+interface MetadataItem {
+  uid: number;
+  flags: string[];
+  modseq: string | null;
+  gmailMsgId: string | null;
+  internalDate: string | null;
+}
 async function fetchItems<T>(connection: ProtocolConnection, range: string, query: FetchQueryObject, signal: AbortSignal | undefined, onMessage: (message: FetchMessageObject, collected: T[]) => T, { timeoutMs }: { timeoutMs?: number } = {}): Promise<T[]> {
   const detach = bindAbort(connection, signal);
   try {
@@ -243,4 +249,4 @@ async function nativeMove(connection: ProtocolConnection, { uid, uidvalidity, so
         ? 'both' : codes[0]?.placement || null, reason: mappingStatus === 'valid' ? null : mappingStatus === 'missing' ? 'COPYUID not provided' : 'COPYUID malformed or inconsistent' } };
   } finally { detach(); }
 }
-export = { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove };
+export { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove };

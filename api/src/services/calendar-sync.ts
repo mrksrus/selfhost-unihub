@@ -1,20 +1,3 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { SqlExecutor, ApiError } from '../types';
-import type { CalendarAccount, CalendarCalendar, CalendarEvent } from '../types/calendar';
-interface Account extends CalendarAccount { provider: string; encrypted_password?: string | null; base_url?: string | null }
-interface Calendar extends CalendarCalendar { remote_ctag?: string | null; remote_expanded_on?: Date | string | null }
-interface ObjectRecord extends RowDataPacket { id: string; href: string; etag: string | null; ics: string; href_hash: string }
-interface BaseContext { account: Account; calendar: Calendar }
-type Login = Awaited<ReturnType<typeof accountLogin>>;
-interface AccountConfig { mailLinked?: unknown; server?: unknown; timeZone?: unknown }
-type StopReason = keyof typeof STOP_REASONS;
-interface WriteContext extends BaseContext { login: Login; timeZone: string; signal?: AbortSignal }
-interface Context { account: Account; login?: Login | null; timeZone: string; windowStartMs: number; windowEndMs: number; notify: boolean; newEvents: string[]; stats: { calendars: number; changedObjects: number; removedObjects: number; events: number; removedEvents: number; unreadable: number } }
-interface ObjectListing { href: string; etag: string | null; url?: string; ics?: string }
-interface FetchedObject { href: string; etag: string | null; ics: string }
-interface SyncOptions { userId?: string | null; reason?: string; full?: boolean }
-interface EventInput { userId: string; event: CalendarEvent }
-type WriteDescription = { remote: false; ctx?: never; link?: never; recurring?: never } | { remote: true; ctx: BaseContext; link: Awaited<ReturnType<typeof loadEventLink>>; recurring: boolean; readOnly: boolean };
 // Two-way calendar sync for CalDAV accounts and read-only iCalendar
 // subscriptions.
 //
@@ -27,21 +10,58 @@ type WriteDescription = { remote: false; ctx?: never; link?: never; recurring?: 
 // Edits made in UniHub are written to the server first (with If-Match); the
 // local rows are then rebuilt from the new server copy, so the server stays
 // the authority and a conflicting edit elsewhere is never overwritten.
-import crypto = require('crypto');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../security/encryption');
-const { decrypt } = imported2;
-import imported3 = require('./module-settings');
-const { isModuleEnabled, isModuleBackgroundEnabled } = imported3;
-import imported4 = require('./restore-locks');
-const { isSectionRestoreActive } = imported4;
-import imported5 = require('./server-events');
-const { publishCalendarChanged } = imported5;
-import caldav = require('./caldav');
-import ical = require('./calendar-ical');
-import imported6 = require('./calendar');
-const { toMysqlDatetime, parseDatetimeToMillis, MAIL_DISCONNECTED_MESSAGE, MAIL_CONNECTED_SQL, wasMailCalendar } = imported6;
+import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { SqlExecutor, ApiError } from '../types';
+import type { CalendarAccount, CalendarCalendar, CalendarEvent } from '../types/calendar';
+import crypto from 'crypto';
+import { db } from '../state';
+import { decrypt } from '../security/encryption';
+import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
+import { isSectionRestoreActive } from './restore-locks';
+import { publishCalendarChanged } from './server-events';
+import * as caldav from './caldav';
+import * as ical from './calendar-ical';
+import {
+  toMysqlDatetime,
+  parseDatetimeToMillis,
+  MAIL_DISCONNECTED_MESSAGE,
+  MAIL_CONNECTED_SQL,
+  wasMailCalendar,
+} from './calendar';
+
+interface Account extends CalendarAccount {
+  provider: string;
+  encrypted_password?: string | null;
+  base_url?: string | null;
+}
+interface Calendar extends CalendarCalendar { remote_ctag?: string | null; remote_expanded_on?: Date | string | null }
+interface ObjectRecord extends RowDataPacket {
+  id: string;
+  href: string;
+  etag: string | null;
+  ics: string;
+  href_hash: string;
+}
+interface BaseContext { account: Account; calendar: Calendar }
+type Login = Awaited<ReturnType<typeof accountLogin>>;
+interface AccountConfig { mailLinked?: unknown; server?: unknown; timeZone?: unknown }
+type StopReason = keyof typeof STOP_REASONS;
+interface WriteContext extends BaseContext { login: Login; timeZone: string; signal?: AbortSignal }
+interface Context {
+  account: Account;
+  login?: Login | null;
+  timeZone: string;
+  windowStartMs: number;
+  windowEndMs: number;
+  notify: boolean;
+  newEvents: string[];
+  stats: { calendars: number; changedObjects: number; removedObjects: number; events: number; removedEvents: number; unreadable: number };
+}
+interface ObjectListing { href: string; etag: string | null; url?: string; ics?: string }
+interface FetchedObject { href: string; etag: string | null; ics: string }
+interface SyncOptions { userId?: string | null; reason?: string; full?: boolean }
+interface EventInput { userId: string; event: CalendarEvent }
+type WriteDescription = { remote: false; ctx?: never; link?: never; recurring?: never } | { remote: true; ctx: BaseContext; link: Awaited<ReturnType<typeof loadEventLink>>; recurring: boolean; readOnly: boolean };
 
 const SYNC_INTERVAL_MS = 15 * 60 * 1000;
 const ERROR_RETRY_MS = 30 * 60 * 1000;
@@ -111,8 +131,16 @@ async function mailAccountWithAddress(account: Pick<Account, 'user_id' | 'accoun
 // one never: it waits. Only an unmarked one from before 0.17 whose mail
 // account is gone keeps using its password, as its own.
 interface LoginLink extends RowDataPacket {
-  provider: string; provider_config: unknown; account_email: string | null; username: string | null; encrypted_password: string | null;
-  mail_account_id: string | null; mail_id: string | null; mail_username: string | null; mail_password: string | null; mail_connected: number | string | null;
+  provider: string;
+  provider_config: unknown;
+  account_email: string | null;
+  username: string | null;
+  encrypted_password: string | null;
+  mail_account_id: string | null;
+  mail_id: string | null;
+  mail_username: string | null;
+  mail_password: string | null;
+  mail_connected: number | string | null;
 }
 async function resolveLogin(account: Account, relinked = false): Promise<{ username: string | null | undefined; encryptedPassword: string }> {
   const [[link]] = await db.execute<LoginLink[]>(`SELECT ca.provider, ca.provider_config, ca.account_email, ca.username, ca.encrypted_password, ca.mail_account_id,
@@ -132,7 +160,7 @@ async function resolveLogin(account: Account, relinked = false): Promise<{ usern
   }
   if (!current.mail_account_id) {
     const mailCalendar = wasMailCalendar(current);
-    if (mailCalendar && !relinked && await require('./calendar-accounts').relinkRestoredCalendar(current)) return resolveLogin(account, true);
+    if (mailCalendar && !relinked && await (require('./calendar-accounts') as typeof import('./calendar-accounts')).relinkRestoredCalendar(current)) return resolveLogin(account, true);
     const marked = ((jsonValue(current.provider_config, {}) || {}) as AccountConfig).mailLinked === true;
     const mailExists = mailCalendar && await mailAccountWithAddress(current);
     if (mailExists) throw syncError(MAIL_HAS_OTHER_CALENDAR_MESSAGE, 409, 'MAIL_CALENDAR_UNLINKED');
@@ -724,7 +752,7 @@ async function syncLocked(accountId: string, { userId, full }: SyncOptions, sign
     publishCalendarChanged(account.user_id, account.id, 'sync');
     throw error;
   }
-  const { enqueueCalendarNotification } = require('./notifications');
+  const { enqueueCalendarNotification } = require('./notifications') as typeof import('./notifications');
   for (const eventId of ctx.newEvents.slice(0, MAX_NEW_EVENT_NOTIFICATIONS)) {
     await enqueueCalendarNotification({ userId: account.user_id, eventId }).catch((error: Error) =>
       console.warn('[CALENDAR] New event notification failed:', error.message));
@@ -1029,7 +1057,7 @@ function calendarErrorResponse(error: unknown, fallback: string) {
   return { error: (error as ApiError)?.message ? `${fallback}: ${(error as ApiError).message}` : fallback, status: 502, code: 'CALDAV_UNREACHABLE' };
 }
 
-export = {
+export {
   MAIL_DISCONNECTED_MESSAGE,
   runningCalendarWorkCount,
   syncLinkedCalendars,

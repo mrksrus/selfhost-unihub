@@ -1,8 +1,8 @@
+// Narrow shared contracts for newly converted modules. External values remain
+// unknown until their existing runtime validation has checked them.
 import type { IncomingMessage } from 'node:http';
 import type { PoolConnection } from 'mysql2/promise';
 
-// Narrow shared contracts for newly converted modules. External values remain
-// unknown until their existing runtime validation has checked them.
 export interface DatabaseConfig {
   host: string;
   port: number;

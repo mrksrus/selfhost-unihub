@@ -1,11 +1,18 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import type { EventEmitter } from 'node:events';
+
+import { spawn } from 'node:child_process';
+
 interface ApiIdentity { uid: number; gid: number }
 type OwnedChild = ChildProcess & { ownerChannel?: boolean };
-interface SupervisorOptions { spawnChild?: (command: string, args: string[], options: SpawnOptions) => ChildProcess; delayMs?: number; graceMs?: number; exit?: (code: number) => void; signals?: Pick<EventEmitter, 'on' | 'removeListener'>; apiUser?: ApiIdentity | null }
-
-import imported1 = require('node:child_process');
-const { spawn } = imported1;
+interface SupervisorOptions {
+  spawnChild?: (command: string, args: string[], options: SpawnOptions) => ChildProcess;
+  delayMs?: number;
+  graceMs?: number;
+  exit?: (code: number) => void;
+  signals?: Pick<EventEmitter, 'on' | 'removeListener'>;
+  apiUser?: ApiIdentity | null;
+}
 
 // The image sets UNIHUB_API_UID/GID. When the supervisor runs as root (it must,
 // for Nginx to bind port 80), the API process drops to that user through
@@ -73,7 +80,7 @@ function superviseServices({ spawnChild = spawn, delayMs = 2000, graceMs = 10000
   console.log('✓ Starting Node.js API server...');
   // The wrapper clears supplementary groups, then sets gid and uid, before any
   // API code loads; server.js stays in the command line for process lookups.
-  if (apiUser) launch(process.execPath, [require('node:path').join(__dirname, 'drop-privileges.js'),
+  if (apiUser) launch(process.execPath, [(require('node:path') as typeof import('node:path')).join(__dirname, 'drop-privileges.js'),
     String(apiUser.uid), String(apiUser.gid), '/app/api/server.js'], undefined,
   { env: { ...process.env, HOME: '/tmp' }, stdio: ['inherit', 'inherit', 'inherit', 'ipc'] }).ownerChannel = true;
   else launch(process.execPath, ['/app/api/server.js']);
@@ -93,4 +100,4 @@ if (require.main === module) {
   superviseServices({ delayMs: Number.isSafeInteger(seconds) && seconds >= 0 && seconds <= 300 ? seconds * 1000 : 2000,
     apiUser: apiIdentity() });
 }
-export = { superviseServices, apiIdentity };
+export { superviseServices, apiIdentity };

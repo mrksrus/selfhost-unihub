@@ -1,22 +1,20 @@
 import type { FileHandle } from 'node:fs/promises';
 import type { ArchiveEnvelope, FileRangeSource } from '../types';
-interface Checksums { algorithm?: string; entries?: Record<string, string> }
 
-import crypto = require('crypto');
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('string_decoder');
-const { StringDecoder } = imported1;
-import imported2 = require('./backup-format');
-const { ZIP_BACKUP_FORMAT, BACKUP_METADATA_LIMITS, validateArchiveVersionFields } = imported2;
-import imported3 = require('./backup-common');
-const {
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { StringDecoder } from 'string_decoder';
+import { ZIP_BACKUP_FORMAT, BACKUP_METADATA_LIMITS, validateArchiveVersionFields } from './backup-format';
+import {
   sha256Buffer,
   isFileRangeSource,
   createFileRangeStream,
   legacyZipWriterPath,
   assertBackupMetadataSize,
-} = imported3;
+} from './backup-common';
+
+interface Checksums { algorithm?: string; entries?: Record<string, string> }
 
 function findEndOfCentralDirectory(buffer: Buffer) {
   const minOffset = Math.max(0, buffer.length - 65557);
@@ -356,7 +354,7 @@ async function backupFromZipFile(filePath: string) {
   return { backup, manifest, checksums, fileSourcesByPath };
 }
 
-export = {
+export {
   readZipEntries,
   backupFromZipBuffer,
   readZipFileEntries,

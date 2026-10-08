@@ -1,18 +1,15 @@
 import type { ApiError } from '../types';
+
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { MAIL_RAW_STORAGE_ROOT } from './mail';
+import { RECORDINGS_ROOT } from './recordings';
+import { BACKUP_METADATA_LIMITS } from './backup-format';
+import { SECTION_POLICIES } from './backup-catalog';
+
 interface FileRangeSource { filePath: string; start: number; size: number }
 type DateValue = string | number | Date | null | undefined;
-
-import crypto = require('crypto');
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('./mail');
-const { MAIL_RAW_STORAGE_ROOT } = imported1;
-import imported2 = require('./recordings');
-const { RECORDINGS_ROOT } = imported2;
-import imported3 = require('./backup-format');
-const { BACKUP_METADATA_LIMITS } = imported3;
-import imported4 = require('./backup-catalog');
-const { SECTION_POLICIES } = imported4;
 
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
 
@@ -198,7 +195,7 @@ function assertBackupMetadataSize(name: string, size: number) {
   }
 }
 
-export = {
+export {
   ATTACHMENTS_ROOT,
   BACKUP_FILE_ROOTS,
   BACKUP_IMPORT_SECTION_TABLES,

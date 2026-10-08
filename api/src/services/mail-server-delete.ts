@@ -1,27 +1,33 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, ApiError } from '../types';
 import type { ProtocolConnection, ProtocolError } from '../types/imap-protocol';
-interface QueueInput { connection?: SqlExecutor; userId: string; accountId: string; emailId: string; sourceFolder?: string; imapUid?: number | null; imapUidValidity?: number | null; rawStoragePath?: string | null; rawSha256?: string | null; rawBytes?: number | null; rawFormat?: string | null; rawVerified?: boolean }
-import imported1 = require('./mail-account-lock');
-const { withMailAccountLock } = imported1;
-import crypto = require('crypto');
-import imapClient = require('./mail-imap-client');
-import imported2 = require('./mail-imap-guard');
-const { guardImapConnection, runGuardedImap, closeImapConnection } = imported2;
-import fs = require('fs');
-import path = require('path');
-import imported3 = require('util');
-const { promisify } = imported3;
-import imported4 = require('../state');
-const { db } = imported4;
-import imported5 = require('./module-settings');
-const { isModuleBackgroundEnabled } = imported5;
-import imported6 = require('./restore-locks');
-const { isSectionRestoreActive } = imported6;
-import imported7 = require('./mail-host-policy');
-const { toBooleanFlag, buildImapConnectionConfig } = imported7;
-import imported8 = require('./mail-durable-jobs');
-const { normalizeMailAccountId, isMailAccountSyncRunning } = imported8;
+import { withMailAccountLock } from './mail-account-lock';
+import crypto from 'crypto';
+import * as imapClient from './mail-imap-client';
+import { guardImapConnection, runGuardedImap, closeImapConnection } from './mail-imap-guard';
+import fs from 'fs';
+import path from 'path';
+import { promisify } from 'util';
+import { db } from '../state';
+import { isModuleBackgroundEnabled } from './module-settings';
+import { isSectionRestoreActive } from './restore-locks';
+import { toBooleanFlag, buildImapConnectionConfig } from './mail-host-policy';
+import { normalizeMailAccountId, isMailAccountSyncRunning } from './mail-durable-jobs';
+
+interface QueueInput {
+  connection?: SqlExecutor;
+  userId: string;
+  accountId: string;
+  emailId: string;
+  sourceFolder?: string;
+  imapUid?: number | null;
+  imapUidValidity?: string | number | bigint | null;
+  rawStoragePath?: string | null;
+  rawSha256?: string | null;
+  rawBytes?: number | null;
+  rawFormat?: string | null;
+  rawVerified?: boolean;
+}
 
 const rm = promisify(fs.rm);
 
@@ -158,7 +164,7 @@ async function recordMailServerMessageForDeletion({
   rawFormat,
   rawVerified,
 }: QueueInput) {
-  const { uint32, verifyArchive } = require('./mail-engine/content');
+  const { uint32, verifyArchive } = require('./mail-engine/content') as typeof import('./mail-engine/content');
   const normalizedUid = uint32(imapUid), epoch = uint32(imapUidValidity);
   const folderName = String(sourceFolder || '');
   if (!userId || !accountId || !emailId || !folderName || !normalizedUid || !epoch
@@ -366,7 +372,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
         break;
       }
 
-      const { uint32, eligibleForProviderErasure } = require('./mail-engine/content');
+      const { uint32, eligibleForProviderErasure } = require('./mail-engine/content') as typeof import('./mail-engine/content');
       const uid = uint32(message.imap_uid);
       const sourceFolder = String(message.source_folder || '');
       const expectedEpoch = uint32(message.imap_uidvalidity);
@@ -484,7 +490,7 @@ async function runMailServerDeletionPass({ accountId = null, limit = MAIL_SERVER
   return { skipped: false, accounts: results };
 }
 
-export = {
+export {
   mailDeleteStopRequests,
   MAIL_SERVER_DELETE_GRACE_MS,
   MAIL_SERVER_DELETE_BATCH_SIZE,

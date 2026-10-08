@@ -1,17 +1,15 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface Input { account_id?: string; min_age_ms?: unknown }
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../services/mail');
-const {
+import { db } from '../state';
+import {
   scheduleMailAccountSync,
   getMailSyncState,
   cancelMailAccountSync,
-} = imported2;
-import imported3 = require('./mail-route-helpers');
-const { startMailSyncInBackground } = imported3;
+} from '../services/mail';
+import { startMailSyncInBackground } from './mail-route-helpers';
+
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+interface Input { account_id?: string; min_age_ms?: unknown }
 
 const BACKGROUND_MAIL_SYNC_MIN_AGE_MS = 10 * 60 * 1000;
 

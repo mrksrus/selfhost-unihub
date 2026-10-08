@@ -1,3 +1,15 @@
+
+// Recovery declarations are shared by export, section scoping and restore locks.
+// columns is an explicit archive allowlist. fieldPolicies describes import behavior;
+// metadata retained for inspection need not overwrite destination operational state.
+import {
+  ARCHIVE_COLUMNS,
+  ARCHIVE_KEYS,
+  EXTRA_COLUMNS,
+  NEW_OPERATION_COLUMNS,
+  LATER_ARCHIVE_FIELDS,
+} from './mail-engine/recovery-policy';
+
 interface SectionPolicy { tables: readonly string[]; fileKinds: readonly string[] }
 interface TablePolicy {
   section: string;
@@ -8,12 +20,6 @@ interface TablePolicy {
   fieldPolicies: Readonly<Record<string, string>>;
   rowPolicy?: string;
 }
-
-// Recovery declarations are shared by export, section scoping and restore locks.
-// columns is an explicit archive allowlist. fieldPolicies describes import behavior;
-// metadata retained for inspection need not overwrite destination operational state.
-import imported1 = require('./mail-engine/recovery-policy');
-const { ARCHIVE_COLUMNS, ARCHIVE_KEYS, EXTRA_COLUMNS, NEW_OPERATION_COLUMNS, LATER_ARCHIVE_FIELDS } = imported1;
 const SECTION_POLICIES: Readonly<Record<string, SectionPolicy>> = Object.freeze({
   settings: { tables: ["user", "user_settings"], fileKinds: [] },
   contacts: { tables: ["contacts"], fileKinds: [] },
@@ -56,7 +62,6 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   recording_tag_links: table('recordings', 'recording_id tag_id user_id created_at', ["recording_id", "tag_id"], {}),
   recording_transcription_jobs: Object.freeze({ ...table('recordings', 'id user_id recording_id status provider model language transcript_text error created_at updated_at', ['id'], { status: 'completed_only', error: 'reset', created_at: 'preserve', updated_at: 'preserve' }), rowPolicy: 'Only completed transcripts are exported; queued, running and failed attempts are not resumed.' }),
 });
-
 
 const TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Object.freeze({
   ...BASE_TABLE_POLICIES,
@@ -222,5 +227,20 @@ function normalizeBackupRequest(value: unknown = 'full') {
   };
 }
 
-export = { RETIRED_SECTIONS, RETIRED_TABLES, RETIRED_FILE_KINDS, SECTION_POLICIES, TABLE_POLICIES, REFERENCES, FILE_POLICIES, WRITE_PATHS, BACKGROUND_WRITERS, assertRecoveryCatalog, getRestoreSectionForWrite, normalizeBackupSections,
-  ACCOUNT_SECTION, ACCOUNT_ONLY_TABLES, normalizeBackupRequest };
+export {
+  RETIRED_SECTIONS,
+  RETIRED_TABLES,
+  RETIRED_FILE_KINDS,
+  SECTION_POLICIES,
+  TABLE_POLICIES,
+  REFERENCES,
+  FILE_POLICIES,
+  WRITE_PATHS,
+  BACKGROUND_WRITERS,
+  assertRecoveryCatalog,
+  getRestoreSectionForWrite,
+  normalizeBackupSections,
+  ACCOUNT_SECTION,
+  ACCOUNT_ONLY_TABLES,
+  normalizeBackupRequest,
+};

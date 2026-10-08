@@ -1,7 +1,7 @@
 import type { SqlExecutor, ComposerAttachment, StagedAttachment } from '../types';
-import crypto = require('crypto');
+import crypto from 'crypto';
 import { promises as fs } from 'node:fs';
-import path = require('path');
+import path from 'path';
 
 function attachmentError(message: string) {
   return Object.assign(new Error(message), { status: 400 });
@@ -83,4 +83,11 @@ function rewriteInlineAttachments(html: string | false | null | undefined, stage
   return result;
 }
 
-export = { normalizeComposerAttachments, validateAttachmentTotals, stageAttachments, discardStagedAttachments, insertStagedAttachments, rewriteInlineAttachments };
+export {
+  normalizeComposerAttachments,
+  validateAttachmentTotals,
+  stageAttachments,
+  discardStagedAttachments,
+  insertStagedAttachments,
+  rewriteInlineAttachments,
+};

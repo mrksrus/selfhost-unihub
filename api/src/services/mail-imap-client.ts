@@ -1,16 +1,16 @@
+// The only place that constructs ImapFlow clients. Callers keep building the
+// transport-neutral { imap: {...} } config in mail-host-policy.ts (pinned IP,
+// TLS hostname, trust decision); this module only translates it. Tests replace
+// connectImap through this module object, never the library.
 import type { ProtocolConnection } from '../types/imap-protocol';
 import type { ImapFlowOptions } from 'imapflow';
 import type { ConnectionOptions } from 'node:tls';
+
+import { ImapFlow } from 'imapflow';
+
 interface MailConnectionConfig { imap: { host: string; port?: string | number; tls?: boolean; tlsOptions?: ConnectionOptions; user: string; password: string; socketTimeout?: number; idleRestartMs?: number; connTimeout?: number; authTimeout?: number; keepalive?: unknown } }
 
-// The only place that constructs ImapFlow clients. Callers keep building the
-// transport-neutral { imap: {...} } config in mail-host-policy.js (pinned IP,
-// TLS hostname, trust decision); this module only translates it. Tests replace
-// connectImap through this module object, never the library.
-import imported1 = require('imapflow');
-const { ImapFlow } = imported1;
-
-// Raw messages are capped at 50 MiB (mail-engine/transport.js), the largest
+// Raw messages are capped at 50 MiB (mail-engine/transport.ts), the largest
 // message Gmail accepts. ImapFlow checks a literal's announced size before
 // buffering it, so a larger body fails the connection instead of being read
 // into memory.
@@ -40,7 +40,7 @@ function imapFlowOptions(config: MailConnectionConfig): ImapFlowOptions & { conn
   const tls = { ...(imap.tlsOptions || {}) };
   if (!tls.servername) delete tls.servername;
   const socketTimeout = positive(imap.socketTimeout, 60000);
-  // An IDLE session (mail-idle.js) re-issues IDLE every maxIdleTime itself; the
+  // An IDLE session (mail-idle.ts) re-issues IDLE every maxIdleTime itself; the
   // socket watchdog only has to catch a peer that went silent for longer.
   const idleMs = positive(imap.idleRestartMs, 0);
   return {
@@ -108,4 +108,4 @@ async function connectImap(config: MailConnectionConfig) {
   return client as ProtocolConnection;
 }
 
-export = { connectImap, imapFlowOptions, MAX_LITERAL_BYTES };
+export { connectImap, imapFlowOptions, MAX_LITERAL_BYTES };

@@ -1,28 +1,45 @@
 import type { PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor, ApiError } from '../types';
+
+import crypto from 'crypto';
+import { db } from '../state';
+import { encrypt, decrypt } from '../security/encryption';
+import { pushAgent } from './push-transport';
+import { isModuleBackgroundEnabled, getBackgroundPausedModulesByUser } from './module-settings';
+import { getActiveRestoreSectionsByUser } from './restore-locks';
+import {
+  REMINDER_GRACE_MS,
+  EXCLUDED_MAIL_FOLDERS,
+  asUtcDate,
+  reminderMinutes,
+  reminderKey,
+  reminderIsCurrent,
+  hash,
+  normalizeSubscription,
+  retryDisposition,
+} from './notification-rules';
+
 interface VapidKeys { publicKey: string; privateKey: string; subject: string }
-interface NotificationPayload extends Record<string, unknown> { dedupeKey?: string; reminderMinutes?: unknown; bytesReceived?: unknown }
-interface EventInput { userId: string; dedupeKey: string; kind: string; sourceId?: string | null; title?: unknown; body?: unknown; url: string; expiresAt: Date; data?: Record<string, unknown>; endpointHash?: string | null }
+interface NotificationPayload extends Record<string, unknown> {
+  dedupeKey?: string;
+  reminderMinutes?: unknown;
+  bytesReceived?: unknown;
+}
+interface EventInput {
+  userId: string;
+  dedupeKey: string;
+  kind: string;
+  sourceId?: string | null;
+  title?: unknown;
+  body?: unknown;
+  url: string;
+  expiresAt: Date;
+  data?: Record<string, unknown>;
+  endpointHash?: string | null;
+}
 interface EventRow { kind: string; source_id: string | null; user_id: string }
 type BlockedModules = ReadonlyMap<string, ReadonlySet<string>>;
 type PushError = Error & { statusCode?: number };
-
-import crypto = require('crypto');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../security/encryption');
-const { encrypt, decrypt } = imported2;
-import imported3 = require('./push-transport');
-const { pushAgent } = imported3;
-import imported4 = require('./module-settings');
-const { isModuleBackgroundEnabled, getBackgroundPausedModulesByUser } = imported4;
-import imported5 = require('./restore-locks');
-const { getActiveRestoreSectionsByUser } = imported5;
-import imported6 = require('./notification-rules');
-const {
-  REMINDER_GRACE_MS, EXCLUDED_MAIL_FOLDERS, asUtcDate, reminderMinutes,
-  reminderKey, reminderIsCurrent, hash, normalizeSubscription, retryDisposition,
-} = imported6;
 
 const SESSION_WARNING_MS = 2 * 24 * 60 * 60 * 1000;
 const RECORDING_STALL_MS = 10 * 60 * 1000;
@@ -83,7 +100,7 @@ async function getVapidKeys(): Promise<VapidKeys> {
   if (!keyPromise) keyPromise = (async () => {
     let [rows] = await db.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
     if (!rows.length) {
-      const webPush = require('web-push');
+      const webPush = require('web-push') as typeof import('web-push');
       const keys = webPush.generateVAPIDKeys();
       const [admins] = await db.execute<RowDataPacket[]>("SELECT email FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1");
       const subject = process.env.WEB_PUSH_SUBJECT || `mailto:${admins[0]?.email || 'notifications@unihub.invalid'}`;
@@ -329,7 +346,7 @@ async function deliverPending(connection: SqlExecutor, now: Date, activeRestores
     ORDER BY d.available_at LIMIT 25`, [now, now, ...excludedParams]);
   if (!rows.length) return 0;
   const keys = await getVapidKeys();
-  const webPush = require('web-push');
+  const webPush = require('web-push') as typeof import('web-push');
   let delivered = 0;
   for (const row of rows) {
     const moduleId = notificationModule(row.kind);
@@ -437,4 +454,18 @@ async function processNotificationJobs() {
     running = false;
   }
 }
-export = { ensureNotificationSchema, getVapidKeys, subscribe, unsubscribe, subscriptionStatus, deviceStatus, enqueueMailNotification, enqueueCalendarNotification, enqueueTestNotification, enqueueEvent, enqueueStalledRecordingUploads, eventStillCurrent, processNotificationJobs };
+export {
+  ensureNotificationSchema,
+  getVapidKeys,
+  subscribe,
+  unsubscribe,
+  subscriptionStatus,
+  deviceStatus,
+  enqueueMailNotification,
+  enqueueCalendarNotification,
+  enqueueTestNotification,
+  enqueueEvent,
+  enqueueStalledRecordingUploads,
+  eventStillCurrent,
+  processNotificationJobs,
+};

@@ -1,5 +1,6 @@
-import type { BackupPayload } from '../../types';
 // The schema 3 restore model separates provider identity from local filing.
+import type { BackupPayload } from '../../types';
+
 function readV3<T extends BackupPayload>(backup: T, { legacyDefaults = false } = {}) {
   if (legacyDefaults) {
     for (const folder of backup.data.mail_folders || []) {
@@ -23,4 +24,4 @@ function readV3<T extends BackupPayload>(backup: T, { legacyDefaults = false } =
   }
   return backup;
 }
-export = { readV3 };
+export { readV3 };

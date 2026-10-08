@@ -1,6 +1,7 @@
-import type { DatabaseConfig } from '../types';
 // Shared by API connections and the container readiness probe. Keep connection
 // credentials and transport defaults identical in both startup paths.
+import type { DatabaseConfig } from '../types';
+
 function getDatabaseConfig(environment: NodeJS.ProcessEnv = process.env): DatabaseConfig | null {
   if (environment.DATABASE_URL) {
     const dbUrl = new URL(environment.DATABASE_URL);
@@ -22,4 +23,4 @@ function getDatabaseConfig(environment: NodeJS.ProcessEnv = process.env): Databa
   return { host, port: parseInt(port, 10) || 3306, user, password, database };
 }
 
-export = { getDatabaseConfig };
+export { getDatabaseConfig };

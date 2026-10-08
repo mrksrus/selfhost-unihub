@@ -1,4 +1,5 @@
 import type { MailAccountIdentity } from '../types';
+
 const enabled = (value: unknown) => value === true || value === 1 || value === '1' || value === 'true';
 
 function mailAccountModeChange(account: MailAccountIdentity | null | undefined, body: Record<string, unknown>) {
@@ -36,4 +37,4 @@ function sameProviderMailbox(left: MailAccountIdentity, right: MailAccountIdenti
     && login(left) === login(right)
     && host(left.email_address) === host(right.email_address);
 }
-export = { mailAccountModeChange, addressConfirmed, sameProviderMailbox };
+export { mailAccountModeChange, addressConfirmed, sameProviderMailbox };

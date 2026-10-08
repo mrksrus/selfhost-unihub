@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import type { RowDataPacket } from 'mysql2/promise';
 // Run inside the target image with the deployment's existing database/keys.
 // Never starts HTTP, sync, notification or provider workers.
-import imported1 = require('./src/services/mail-engine/rollout');
-const { requireAccountId, prepareRollout, releaseRollout, rolloutStatus } = imported1;
+import type { RowDataPacket } from 'mysql2/promise';
+import { requireAccountId, prepareRollout, releaseRollout, rolloutStatus } from './src/services/mail-engine/rollout';
+
 async function main(argv = process.argv.slice(2)) {
   const [command, accountId] = argv;
   if (!['prepare', 'release', 'status'].includes(command) || argv.length !== (command === 'status' ? 1 : 2)) {
@@ -27,7 +27,7 @@ async function main(argv = process.argv.slice(2)) {
       if (!accounts.some(a => a.id === accountId) || accounts.some(a => a.sync_mode !== 'sync')) {
         throw new Error('Prepare requires an existing active canary and a Sync-only active account cohort');
       }
-      await require('./src/services/database').ensureSchema();
+      await (require('./src/services/database') as typeof import('./src/services/database')).ensureSchema();
     }
     const result = command === 'prepare' ? await prepareRollout(pool, accountId)
       : command === 'release' ? await releaseRollout(pool, accountId) : await rolloutStatus(pool);
@@ -40,4 +40,4 @@ if (require.main === module) main().catch(error => {
   console.error(error.code ? `Mail rollout failed (${error.code}); no success was established.` : error.message);
   process.exitCode = 1;
 });
-export = { main };
+export { main };

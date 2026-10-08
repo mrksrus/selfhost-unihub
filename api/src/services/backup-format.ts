@@ -1,16 +1,11 @@
 import type { ApiError, ArchiveEnvelope } from '../types';
-import imported1 = require('../../package.json');
-const { version: appVersion } = imported1;
-import imported2 = require('./backup-formats/v1');
-const { readV1 } = imported2;
-import imported3 = require('./backup-formats/v2');
-const { readV2 } = imported3;
-import imported4 = require('./backup-formats/v3');
-const { readV3 } = imported4;
-import imported5 = require('./backup-formats/v4');
-const { readV4 } = imported5;
-import imported6 = require('./backup-catalog');
-const { RETIRED_TABLES, RETIRED_FILE_KINDS } = imported6;
+import packageJson = require('../../package.json');
+const { version: appVersion } = packageJson;
+import { readV1 } from './backup-formats/v1';
+import { readV2 } from './backup-formats/v2';
+import { readV3 } from './backup-formats/v3';
+import { readV4 } from './backup-formats/v4';
+import { RETIRED_TABLES, RETIRED_FILE_KINDS } from './backup-catalog';
 
 const BACKUP_VERSION = 4;
 const ZIP_BACKUP_FORMAT = 'unihub-restorable-backup';
@@ -97,7 +92,13 @@ function normalizeBackupPayload(backup: ArchiveEnvelope): ArchiveEnvelope {
   return result;
 }
 
-export = {
-  BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION, BACKUP_METADATA_LIMITS,
-  getBackupProducer, validateBackupVersionFields, validateArchiveVersionFields, normalizeBackupPayload,
+export {
+  BACKUP_VERSION,
+  ZIP_BACKUP_FORMAT,
+  ZIP_BACKUP_FORMAT_VERSION,
+  BACKUP_METADATA_LIMITS,
+  getBackupProducer,
+  validateBackupVersionFields,
+  validateArchiveVersionFields,
+  normalizeBackupPayload,
 };

@@ -1,9 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../services/module-settings');
-const { getUserModules } = imported2;
+import { db } from '../state';
+import { getUserModules } from '../services/module-settings';
 
 function escapeLike(value: unknown) {
   return String(value || '').replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');

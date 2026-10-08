@@ -1,4 +1,4 @@
-import fs = require('fs');
+import fs from 'fs';
 
 // Debug logging helper - write to container filesystem and console
 const DEBUG_LOG_PATH = '/app/debug.log';
@@ -24,7 +24,7 @@ const debugLog = (location: string, message: string, data: unknown, hypothesisId
   }
 };
 
-export = {
+export {
   DEBUG_LOG_PATH,
   debugLog,
 };

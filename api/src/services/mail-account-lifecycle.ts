@@ -1,19 +1,13 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
-import fs = require('node:fs/promises');
-import path = require('node:path');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('./mail-account-lock');
-const { withMailAccountLock } = imported2;
-import imported3 = require('./restore-locks');
-const { isSectionRestoreActive } = imported3;
-import imported4 = require('./module-settings');
-const { isModuleEnabled } = imported4;
-import imported5 = require('./server-events');
-const { publishCalendarChanged } = imported5;
-import imported6 = require('./mail-account-mode');
-const { addressConfirmed } = imported6;
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { db } from '../state';
+import { withMailAccountLock } from './mail-account-lock';
+import { isSectionRestoreActive } from './restore-locks';
+import { isModuleEnabled } from './module-settings';
+import { publishCalendarChanged } from './server-events';
+import { addressConfirmed } from './mail-account-mode';
 
 type IdRow = RowDataPacket & { id: string };
 interface CalendarCounts { calendar_accounts: number | string; calendar_events: number | string }
@@ -44,7 +38,7 @@ async function purgePreview(userId: string, accountId: string, executor: SqlExec
   // A restored calendar is linked again only when its link is next read; until
   // then it is found by address and mark, and purging removes it too.
   if (!Number(calendar.calendar_accounts)) {
-    const restored = await require('./calendar-accounts').restoredMailCalendar(userId, account, executor);
+    const restored = await (require('./calendar-accounts') as typeof import('./calendar-accounts')).restoredMailCalendar(userId, account, executor);
     if (restored) calendar = await countCalendar('id', restored.id);
   }
   const calendarAccounts = Number(calendar.calendar_accounts) || 0;
@@ -67,7 +61,7 @@ async function disconnectAccount(userId: string, accountId: string) {
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore is in progress');
   const [[owned]] = await db.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
   if (!owned) throw fail('Account not found', 404);
-  await require('./mail').stopMailAccountWork(accountId, 'Account disconnected');
+  await (require('./mail') as typeof import('./mail')).stopMailAccountWork(accountId, 'Account disconnected');
   return withMailAccountLock(accountId, async () => {
     const connection = await db.getConnection();
     try {
@@ -90,7 +84,7 @@ async function disconnectAccount(userId: string, accountId: string) {
       await connection.commit();
       // After the commit: a linked calendar's running sync or change stops now;
       // any that starts later finds the account disconnected.
-      const { stopCalendarAccountWork, stopLinkedCalendarWork } = require('./calendar-sync');
+      const { stopCalendarAccountWork, stopLinkedCalendarWork } = require('./calendar-sync') as typeof import('./calendar-sync');
       for (const row of linkedCalendars) stopCalendarAccountWork(row.id);
       // Read again: a restored calendar a sync linked after the read above is
       // stopped too (a sync linking it later reads the disconnected account).
@@ -137,9 +131,9 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
   // restored), so the transaction below removes it with the account.
   if (initialPreview.calendar_accounts) {
     const [[mail]] = await db.execute<(RowDataPacket & { id: string; email_address: string })[]>('SELECT id, email_address FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
-    if (mail) await require('./calendar-accounts').linkedCalendarAccount(userId, mail);
+    if (mail) await (require('./calendar-accounts') as typeof import('./calendar-accounts')).linkedCalendarAccount(userId, mail);
   }
-  await require('./mail').stopMailAccountWork(accountId, 'Account purging');
+  await (require('./mail') as typeof import('./mail')).stopMailAccountWork(accountId, 'Account purging');
   return withMailAccountLock(accountId, async () => {
     const connection = await db.getConnection();
     let attachments: (RowDataPacket & { storage_path: string })[] = [], rawPaths: (string | null)[] = [];
@@ -165,7 +159,7 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
         const placeholders = linkedCalendars.map(() => '?').join(', ');
         const [calendars] = await connection.execute<IdRow[]>(`SELECT id FROM calendar_calendars WHERE user_id = ? AND account_id IN (${placeholders})`,
           [userId, ...linkedCalendars.map(row => row.id)]);
-        await require('./calendar-sync').deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
+        await (require('./calendar-sync') as typeof import('./calendar-sync')).deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
         await connection.execute('DELETE FROM calendar_accounts WHERE mail_account_id = ? AND user_id = ?', [accountId, userId]);
       }
       await connection.execute('DELETE FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
@@ -178,7 +172,7 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
       const [[used]] = await db.execute<RowDataPacket[]>('SELECT id FROM email_attachments WHERE storage_path = ? LIMIT 1', [stored]);
       if (!used) safeAttachments.push(stored);
     }
-    const files = await require('./mail').deleteStoredAttachmentFiles(safeAttachments);
+    const files = await (require('./mail') as typeof import('./mail')).deleteStoredAttachmentFiles(safeAttachments);
     const raw = await removeUnreferencedRaw(rawPaths);
     return { message: 'Disconnected account and its retained local mail and linked calendar permanently removed. Provider mail and events were not changed.', purged: true,
       email_count: preview!.email_count, deletedAttachmentFiles: files.deletedFiles, failedAttachmentFiles: files.failedFiles,
@@ -202,4 +196,4 @@ async function disconnectAndPurgeAccount(userId: string, accountId: string, conf
   }
 }
 
-export = { purgePreview, disconnectAccount, purgeAccount, disconnectAndPurgeAccount, removeUnreferencedRaw };
+export { purgePreview, disconnectAccount, purgeAccount, disconnectAndPurgeAccount, removeUnreferencedRaw };

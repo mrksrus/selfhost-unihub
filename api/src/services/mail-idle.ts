@@ -1,12 +1,3 @@
-import type { RowDataPacket } from 'mysql2/promise';
-import type { Socket } from 'node:net';
-import type { ImapFlow } from 'imapflow';
-type IdleClient = ImapFlow & { socket?: Socket; isClosed?: boolean };
-type IdleError = Error & { authenticationFailed?: boolean };
-interface Eligible { accountId: string; userId: string; mailboxId: string; remoteName: string; syncMode: string; fingerprint: string }
-interface Session extends Eligible { client: IdleClient | null; state: string; generation: number; failures: number; quickReturn: number; idleSince: number | null; retryAt: number | null; retryTimer: NodeJS.Timeout | null; debounceTimer: NodeJS.Timeout | null; pending: Set<string> }
-type IdleInput = { accountId: string; userId: string; mailboxId: string; kinds: string[] };
-type Overrides = Partial<typeof DEFAULTS> & { now?: () => number; random?: () => number; timers?: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout; setInterval: typeof setInterval; clearInterval: typeof clearInterval }; log?: (...args: unknown[]) => void; listEligible?: () => Promise<Eligible[]>; connect?: (entry: Session) => Promise<IdleClient>; enqueue?: (input: IdleInput) => Promise<unknown> }
 // IMAP IDLE push for INBOX (RFC 2177). One dedicated, read-only session per
 // eligible account sits in IDLE on the account's INBOX, separate from the job
 // connection pool. It only notices changes: an untagged EXISTS/EXPUNGE/FLAGS
@@ -22,8 +13,35 @@ type Overrides = Partial<typeof DEFAULTS> & { now?: () => number; random?: () =>
 // restore, recovery pauses). Paths that must stop the socket at once call
 // stopAccount(): stopMailAccountWork (disconnect, purge, settings change,
 // module off) and the background toggle.
-import imported1 = require('./mail-engine/connection-pool');
-const { fingerprint } = imported1;
+import type { RowDataPacket } from 'mysql2/promise';
+import type { Socket } from 'node:net';
+import type { ImapFlow } from 'imapflow';
+import { fingerprint } from './mail-engine/connection-pool';
+
+type IdleClient = ImapFlow & { socket?: Socket; isClosed?: boolean };
+type IdleError = Error & { authenticationFailed?: boolean };
+interface Eligible {
+  accountId: string;
+  userId: string;
+  mailboxId: string;
+  remoteName: string;
+  syncMode: string;
+  fingerprint: string;
+}
+interface Session extends Eligible {
+  client: IdleClient | null;
+  state: string;
+  generation: number;
+  failures: number;
+  quickReturn: number;
+  idleSince: number | null;
+  retryAt: number | null;
+  retryTimer: NodeJS.Timeout | null;
+  debounceTimer: NodeJS.Timeout | null;
+  pending: Set<string>;
+}
+type IdleInput = { accountId: string; userId: string; mailboxId: string; kinds: string[] };
+type Overrides = Partial<typeof DEFAULTS> & { now?: () => number; random?: () => number; timers?: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout; setInterval: typeof setInterval; clearInterval: typeof clearInterval }; log?: (...args: unknown[]) => void; listEligible?: () => Promise<Eligible[]>; connect?: (entry: Session) => Promise<IdleClient>; enqueue?: (input: IdleInput) => Promise<unknown> }
 
 function envInt(name: string, fallback: number, low: number, high: number) {
   const raw = process.env[name];
@@ -86,7 +104,7 @@ function createIdleSupervisor(overrides: Overrides = {}) {
   const log = options.log || ((...args) => console.log(...args));
   const listEligible = options.listEligible || defaultListEligible;
   const connect = options.connect || defaultConnect;
-  const enqueue = options.enqueue || (input => require('./mail-sync-control').enqueueIdleRefresh(input));
+  const enqueue = options.enqueue || (input => (require('./mail-sync-control') as typeof import('./mail-sync-control')).enqueueIdleRefresh(input));
   const sessions = new Map<string, Session>();
   // Not tracked, not retried until the account's connection fingerprint
   // (host, port, user, password, trust) changes: auth failure, no IDLE.
@@ -305,8 +323,8 @@ function createIdleSupervisor(overrides: Overrides = {}) {
 // background sync on, no mail restore running. Both modes import new INBOX mail.
 async function defaultListEligible() {
   const { db }: typeof import('../state') = require('../state');
-  const { getBackgroundPausedModulesByUser } = require('./module-settings');
-  const { getActiveRestoreSectionsByUser } = require('./restore-locks');
+  const { getBackgroundPausedModulesByUser } = require('./module-settings') as typeof import('./module-settings');
+  const { getActiveRestoreSectionsByUser } = require('./restore-locks') as typeof import('./restore-locks');
   const [rows] = await db.execute<RowDataPacket[]>(`SELECT a.id, a.user_id, a.sync_mode, a.imap_host, a.imap_port, a.username,
       a.email_address, a.encrypted_password, a.allow_self_signed, a.trusted_imap_fingerprint256,
       m.id AS mailbox_id, m.remote_name
@@ -336,9 +354,9 @@ async function defaultConnect(entry: Eligible) {
   const config: Parameters<typeof import('./mail-imap-client').connectImap>[0] | null = await (require('./mail-host-policy') as typeof import('./mail-host-policy')).buildImapConnectionConfig(account as RowDataPacket & Parameters<typeof import('./mail-host-policy').buildImapConnectionConfig>[0], { keepalive: true });
   if (!config) throw Object.assign(new Error('Mail credentials unavailable'), { authenticationFailed: true });
   config.imap.idleRestartMs = DEFAULTS.idleRestartMs;
-  return require('./mail-imap-client').connectImap(config);
+  return (require('./mail-imap-client') as typeof import('./mail-imap-client')).connectImap(config);
 }
 
 const idleSupervisor = createIdleSupervisor();
 
-export = { createIdleSupervisor, idleSupervisor, kindsFor, supportsIdle, defaultListEligible, DEFAULTS };
+export { createIdleSupervisor, idleSupervisor, kindsFor, supportsIdle, defaultListEligible, DEFAULTS };

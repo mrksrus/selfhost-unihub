@@ -31,4 +31,4 @@ function getModuleForPath(pathname: string) {
   for (const id of ['contacts', 'calendar', 'recordings']) if (pathname === `/api/settings/clear-${id}`) return id;
   return null;
 }
-export = { MODULE_CATALOG, PAGE_CATALOG, RETIRED_MODULE_IDS, getModuleForPath };
+export { MODULE_CATALOG, PAGE_CATALOG, RETIRED_MODULE_IDS, getModuleForPath };

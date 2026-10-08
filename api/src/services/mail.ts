@@ -1,91 +1,87 @@
 // Facade for the mail service. The code lives in the mail-* modules below;
 // callers and tests use require('./mail'), and t.mock.method(mail, name) on
 // this object intercepts the calls that go through it (see mail-durable-jobs).
-import imported1 = require('./mail-account-lock');
-const { withMailAccountLock } = imported1;
-import hostPolicy = require('./mail-host-policy');
-import folders = require('./mail-folders');
-import durableJobs = require('./mail-durable-jobs');
-import serverDelete = require('./mail-server-delete');
-import syncControl = require('./mail-sync-control');
-import imported2 = require('./mail-send');
-const { sendEmail } = imported2;
+import * as accountLock from './mail-account-lock';
+import * as hostPolicy from './mail-host-policy';
+import * as folders from './mail-folders';
+import * as durableJobs from './mail-durable-jobs';
+import * as serverDelete from './mail-server-delete';
+import * as syncControl from './mail-sync-control';
+import * as send from './mail-send';
 
-export = {
-  buildImapConnectionConfig: hostPolicy.buildImapConnectionConfig,
-  withMailAccountLock,
-  cancelMailAccountSync: syncControl.cancelMailAccountSync,
-  stopMailAccountWork: syncControl.stopMailAccountWork,
-  schedulePeriodicMailWork: syncControl.schedulePeriodicMailWork,
-  MAIL_DISCOVERY_INTERVAL_SECONDS: syncControl.MAIL_DISCOVERY_INTERVAL_SECONDS,
-  yieldMailReadWork: syncControl.yieldMailReadWork,
-  runMailOperationsNow: syncControl.runMailOperationsNow,
-  KNOWN_MAIL_HOST_SUFFIXES: hostPolicy.KNOWN_MAIL_HOST_SUFFIXES,
-  DEFAULT_MAIL_SYNC_FETCH_LIMIT: syncControl.DEFAULT_MAIL_SYNC_FETCH_LIMIT,
-  MAIL_SYNC_FETCH_LIMITS: syncControl.MAIL_SYNC_FETCH_LIMITS,
-  MAIL_SERVER_DELETE_GRACE_MS: serverDelete.MAIL_SERVER_DELETE_GRACE_MS,
-  MAIL_SERVER_DELETE_BATCH_SIZE: serverDelete.MAIL_SERVER_DELETE_BATCH_SIZE,
-  MAIL_RAW_STORAGE_ROOT: serverDelete.MAIL_RAW_STORAGE_ROOT,
-  MAIL_FOLDER_DEFINITIONS: folders.MAIL_FOLDER_DEFINITIONS,
-  ALLOWED_MAIL_FOLDER_SET: folders.ALLOWED_MAIL_FOLDER_SET,
-  SYSTEM_MAIL_FOLDER_SET: folders.SYSTEM_MAIL_FOLDER_SET,
-  MAIL_SENDER_RULE_MATCH_TYPES: folders.MAIL_SENDER_RULE_MATCH_TYPES,
-  normalizeMailFolderSlug: folders.normalizeMailFolderSlug,
-  normalizeMailFolderDisplayName: folders.normalizeMailFolderDisplayName,
-  allocateCollisionSafeMailFolderSlug: folders.allocateCollisionSafeMailFolderSlug,
-  getSystemMailFolderDisplayName: folders.getSystemMailFolderDisplayName,
-  loadMailFoldersForUser: folders.loadMailFoldersForUser,
-  mailFolderExists: folders.mailFolderExists,
-  normalizeHost: hostPolicy.normalizeHost,
-  normalizeSyncFetchLimit: syncControl.normalizeSyncFetchLimit,
-  normalizeMailAccountId: durableJobs.normalizeMailAccountId,
-  isMailAccountSyncRunning: durableJobs.isMailAccountSyncRunning,
-  isAnyMailAccountSyncRunning: durableJobs.isAnyMailAccountSyncRunning,
-  getRunningMailSyncAccountIds: durableJobs.getRunningMailSyncAccountIds,
-  isMailServerDeleteRunning: serverDelete.isMailServerDeleteRunning,
-  isAnyMailServerDeleteRunning: serverDelete.isAnyMailServerDeleteRunning,
-  getRunningMailServerDeleteAccountIds: serverDelete.getRunningMailServerDeleteAccountIds,
-  normalizeSenderEmail: folders.normalizeSenderEmail,
-  normalizeSenderDomain: folders.normalizeSenderDomain,
-  normalizeMailSenderRuleInput: folders.normalizeMailSenderRuleInput,
-  loadActiveMailSenderRules: folders.loadActiveMailSenderRules,
-  pickBestMailSenderRuleMatch: folders.pickBestMailSenderRuleMatch,
-  resolveMailSenderTargetFolder: folders.resolveMailSenderTargetFolder,
-  createMailRoutingContext: folders.createMailRoutingContext,
-  ensureDefaultMailFoldersForUser: folders.ensureDefaultMailFoldersForUser,
-  isKnownMailProviderHost: hostPolicy.isKnownMailProviderHost,
-  toBooleanFlag: hostPolicy.toBooleanFlag,
-  isSelfSignedTlsError: hostPolicy.isSelfSignedTlsError,
-  isTlsTrustError: hostPolicy.isTlsTrustError,
-  assessMailHost: hostPolicy.assessMailHost,
-  buildMailHostTrustResult: hostPolicy.buildMailHostTrustResult,
-  validateMailHostPolicy: hostPolicy.validateMailHostPolicy,
-  isAttachmentPathUnderUploads: serverDelete.isAttachmentPathUnderUploads,
-  deleteStoredAttachmentFiles: serverDelete.deleteStoredAttachmentFiles,
-  getMailRawStoragePath: serverDelete.getMailRawStoragePath,
-  isMailRawPathUnderRoot: serverDelete.isMailRawPathUnderRoot,
-  isUsableRawEmailArchive: serverDelete.isUsableRawEmailArchive,
-  imapListToFolders: folders.imapListToFolders,
-  listAvailableImapFolders: folders.listAvailableImapFolders,
-  registerCustomImapFoldersForUser: folders.registerCustomImapFoldersForUser,
-  pickImapSyncFolders: folders.pickImapSyncFolders,
-  createImapBox: folders.createImapBox,
-  ensureCustomImapFoldersForUser: folders.ensureCustomImapFoldersForUser,
-  createRemoteMailFolderForUserAccounts: folders.createRemoteMailFolderForUserAccounts,
-  getCurrentBoxUidValidity: serverDelete.getCurrentBoxUidValidity,
-  loadExistingImportedUidSet: serverDelete.loadExistingImportedUidSet,
-  recordMailServerMessageForDeletion: serverDelete.recordMailServerMessageForDeletion,
-  seedMailServerDeletionQueueForAccount: serverDelete.seedMailServerDeletionQueueForAccount,
-  markMailServerMessageDeleteStatus: serverDelete.markMailServerMessageDeleteStatus,
-  deleteImapUid: serverDelete.deleteImapUid,
-  processMailServerDeletionForAccount: serverDelete.processMailServerDeletionForAccount,
-  runMailServerDeletionPass: serverDelete.runMailServerDeletionPass,
-  testImapConnection: hostPolicy.testImapConnection,
-  syncMailAccount: syncControl.syncMailAccount,
-  startMailEngineScheduler: durableJobs.startMailEngineScheduler,
-  runDurableMailJob: durableJobs.runDurableMailJob,
-  runRecoveredReconcileJob: durableJobs.runRecoveredReconcileJob,
-  scheduleMailAccountSync: syncControl.scheduleMailAccountSync,
-  getMailSyncState: syncControl.getMailSyncState,
-  sendEmail,
-};
+export const buildImapConnectionConfig = hostPolicy.buildImapConnectionConfig;
+export const cancelMailAccountSync = syncControl.cancelMailAccountSync;
+export const stopMailAccountWork = syncControl.stopMailAccountWork;
+export const schedulePeriodicMailWork = syncControl.schedulePeriodicMailWork;
+export const MAIL_DISCOVERY_INTERVAL_SECONDS = syncControl.MAIL_DISCOVERY_INTERVAL_SECONDS;
+export const yieldMailReadWork = syncControl.yieldMailReadWork;
+export const runMailOperationsNow = syncControl.runMailOperationsNow;
+export const KNOWN_MAIL_HOST_SUFFIXES = hostPolicy.KNOWN_MAIL_HOST_SUFFIXES;
+export const DEFAULT_MAIL_SYNC_FETCH_LIMIT = syncControl.DEFAULT_MAIL_SYNC_FETCH_LIMIT;
+export const MAIL_SYNC_FETCH_LIMITS = syncControl.MAIL_SYNC_FETCH_LIMITS;
+export const MAIL_SERVER_DELETE_GRACE_MS = serverDelete.MAIL_SERVER_DELETE_GRACE_MS;
+export const MAIL_SERVER_DELETE_BATCH_SIZE = serverDelete.MAIL_SERVER_DELETE_BATCH_SIZE;
+export const MAIL_RAW_STORAGE_ROOT = serverDelete.MAIL_RAW_STORAGE_ROOT;
+export const MAIL_FOLDER_DEFINITIONS = folders.MAIL_FOLDER_DEFINITIONS;
+export const ALLOWED_MAIL_FOLDER_SET = folders.ALLOWED_MAIL_FOLDER_SET;
+export const SYSTEM_MAIL_FOLDER_SET = folders.SYSTEM_MAIL_FOLDER_SET;
+export const MAIL_SENDER_RULE_MATCH_TYPES = folders.MAIL_SENDER_RULE_MATCH_TYPES;
+export const normalizeMailFolderSlug = folders.normalizeMailFolderSlug;
+export const normalizeMailFolderDisplayName = folders.normalizeMailFolderDisplayName;
+export const allocateCollisionSafeMailFolderSlug = folders.allocateCollisionSafeMailFolderSlug;
+export const getSystemMailFolderDisplayName = folders.getSystemMailFolderDisplayName;
+export const loadMailFoldersForUser = folders.loadMailFoldersForUser;
+export const mailFolderExists = folders.mailFolderExists;
+export const normalizeHost = hostPolicy.normalizeHost;
+export const normalizeSyncFetchLimit = syncControl.normalizeSyncFetchLimit;
+export const normalizeMailAccountId = durableJobs.normalizeMailAccountId;
+export const isMailAccountSyncRunning = durableJobs.isMailAccountSyncRunning;
+export const isAnyMailAccountSyncRunning = durableJobs.isAnyMailAccountSyncRunning;
+export const getRunningMailSyncAccountIds = durableJobs.getRunningMailSyncAccountIds;
+export const isMailServerDeleteRunning = serverDelete.isMailServerDeleteRunning;
+export const isAnyMailServerDeleteRunning = serverDelete.isAnyMailServerDeleteRunning;
+export const getRunningMailServerDeleteAccountIds = serverDelete.getRunningMailServerDeleteAccountIds;
+export const normalizeSenderEmail = folders.normalizeSenderEmail;
+export const normalizeSenderDomain = folders.normalizeSenderDomain;
+export const normalizeMailSenderRuleInput = folders.normalizeMailSenderRuleInput;
+export const loadActiveMailSenderRules = folders.loadActiveMailSenderRules;
+export const pickBestMailSenderRuleMatch = folders.pickBestMailSenderRuleMatch;
+export const resolveMailSenderTargetFolder = folders.resolveMailSenderTargetFolder;
+export const createMailRoutingContext = folders.createMailRoutingContext;
+export const ensureDefaultMailFoldersForUser = folders.ensureDefaultMailFoldersForUser;
+export const isKnownMailProviderHost = hostPolicy.isKnownMailProviderHost;
+export const toBooleanFlag = hostPolicy.toBooleanFlag;
+export const isSelfSignedTlsError = hostPolicy.isSelfSignedTlsError;
+export const isTlsTrustError = hostPolicy.isTlsTrustError;
+export const assessMailHost = hostPolicy.assessMailHost;
+export const buildMailHostTrustResult = hostPolicy.buildMailHostTrustResult;
+export const validateMailHostPolicy = hostPolicy.validateMailHostPolicy;
+export const isAttachmentPathUnderUploads = serverDelete.isAttachmentPathUnderUploads;
+export const deleteStoredAttachmentFiles = serverDelete.deleteStoredAttachmentFiles;
+export const getMailRawStoragePath = serverDelete.getMailRawStoragePath;
+export const isMailRawPathUnderRoot = serverDelete.isMailRawPathUnderRoot;
+export const isUsableRawEmailArchive = serverDelete.isUsableRawEmailArchive;
+export const imapListToFolders = folders.imapListToFolders;
+export const listAvailableImapFolders = folders.listAvailableImapFolders;
+export const registerCustomImapFoldersForUser = folders.registerCustomImapFoldersForUser;
+export const pickImapSyncFolders = folders.pickImapSyncFolders;
+export const createImapBox = folders.createImapBox;
+export const ensureCustomImapFoldersForUser = folders.ensureCustomImapFoldersForUser;
+export const createRemoteMailFolderForUserAccounts = folders.createRemoteMailFolderForUserAccounts;
+export const getCurrentBoxUidValidity = serverDelete.getCurrentBoxUidValidity;
+export const loadExistingImportedUidSet = serverDelete.loadExistingImportedUidSet;
+export const recordMailServerMessageForDeletion = serverDelete.recordMailServerMessageForDeletion;
+export const seedMailServerDeletionQueueForAccount = serverDelete.seedMailServerDeletionQueueForAccount;
+export const markMailServerMessageDeleteStatus = serverDelete.markMailServerMessageDeleteStatus;
+export const deleteImapUid = serverDelete.deleteImapUid;
+export const processMailServerDeletionForAccount = serverDelete.processMailServerDeletionForAccount;
+export const runMailServerDeletionPass = serverDelete.runMailServerDeletionPass;
+export const testImapConnection = hostPolicy.testImapConnection;
+export const syncMailAccount = syncControl.syncMailAccount;
+export const startMailEngineScheduler = durableJobs.startMailEngineScheduler;
+export const runDurableMailJob = durableJobs.runDurableMailJob;
+export const runRecoveredReconcileJob = durableJobs.runRecoveredReconcileJob;
+export const scheduleMailAccountSync = syncControl.scheduleMailAccountSync;
+export const getMailSyncState = syncControl.getMailSyncState;
+export const withMailAccountLock = accountLock.withMailAccountLock;
+export const sendEmail = send.sendEmail;

@@ -1,26 +1,32 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { StoredFlag } from '../types';
-interface SmtpAccount { id: string; user_id: string; is_active: StoredFlag; disconnected_at: Date | null; encrypted_password: string | null; smtp_host: string; smtp_port: number | string; username: string | null; email_address: string; display_name: string | null; allow_self_signed: StoredFlag }
 
-import crypto = require('crypto');
-import nodemailer = require('nodemailer');
-import net = require('net');
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('util');
-const { promisify } = imported1;
-import imported2 = require('../state');
-const { db } = imported2;
-import imported3 = require('../security/encryption');
-const { decrypt } = imported3;
-import imported4 = require('../security/outbound-network');
-const { resolveMailConnectionTarget } = imported4;
-import imported5 = require('./module-settings');
-const { isModuleEnabled } = imported5;
-import imported6 = require('./mail-attachments');
-const { normalizeComposerAttachments } = imported6;
-import imported7 = require('./mail-host-policy');
-const { toBooleanFlag } = imported7;
+import crypto from 'crypto';
+import nodemailer from 'nodemailer';
+import net from 'net';
+import fs from 'fs';
+import path from 'path';
+import { promisify } from 'util';
+import { db } from '../state';
+import { decrypt } from '../security/encryption';
+import { resolveMailConnectionTarget } from '../security/outbound-network';
+import { isModuleEnabled } from './module-settings';
+import { normalizeComposerAttachments } from './mail-attachments';
+import { toBooleanFlag } from './mail-host-policy';
+
+interface SmtpAccount {
+  id: string;
+  user_id: string;
+  is_active: StoredFlag;
+  disconnected_at: Date | null;
+  encrypted_password: string | null;
+  smtp_host: string;
+  smtp_port: number | string;
+  username: string | null;
+  email_address: string;
+  display_name: string | null;
+  allow_self_signed: StoredFlag;
+}
 
 const writeFile = promisify(fs.writeFile);
 const mkdir = promisify(fs.mkdir);
@@ -151,6 +157,6 @@ async function sendEmail(accountId: string, { to, subject, body, isHtml = false,
   }
 }
 
-export = {
+export {
   sendEmail,
 };

@@ -1,28 +1,23 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-type Input = Record<string, unknown>;
-import imported1 = require('../state');
-const { db } = imported1;
-import fs = require('fs');
-import path = require('path');
-import imported2 = require('../auth');
-const { clearAuthCookie, clearCsrfCookie } = imported2;
-import imported3 = require('../services/calendar');
-const { ensureDefaultLocalCalendarForUser } = imported3;
-import imported4 = require('../services/mail');
-const {
+import { db } from '../state';
+import fs from 'fs';
+import path from 'path';
+import { clearAuthCookie, clearCsrfCookie } from '../auth';
+import { ensureDefaultLocalCalendarForUser } from '../services/calendar';
+import {
   deleteStoredAttachmentFiles,
   loadActiveMailSenderRules,
   pickBestMailSenderRuleMatch,
   normalizeSenderDomain,
-} = imported4;
-import imported5 = require('../services/recordings');
-const {
+} from '../services/mail';
+import {
   deleteRecordingFiles,
-} = imported5;
-import imported6 = require('../services/export-jobs');
-const { isBackupPathUnderRoot } = imported6;
+} from '../services/recordings';
+import { isBackupPathUnderRoot } from '../services/export-jobs';
+
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+type Input = Record<string, unknown>;
 
 const USER_SETTING_DEFAULTS: Record<string, string> = {
   email_link_behavior: 'mailto',
@@ -166,7 +161,7 @@ export = {
       // Linked calendars stay, unlinked: one connected from mail finds a mail
       // account with its address again (its sync waits until then), and its
       // running work, which read a deleted login, stops.
-      const { stopCalendarAccountWork, unlinkFromDeletedMail } = require('../services/calendar-sync');
+      const { stopCalendarAccountWork, unlinkFromDeletedMail } = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
       const connection = await db.getConnection();
       let result: ResultSetHeader;
       let linkedCalendars: (RowDataPacket & { id: string; provider: string; provider_config: unknown; mail_account_id: string })[];
@@ -181,7 +176,7 @@ export = {
         await connection.commit();
       } catch (error) { await connection.rollback(); throw error; }
       finally { connection.release(); }
-      const { publishCalendarChanged } = require('../services/server-events');
+      const { publishCalendarChanged } = require('../services/server-events') as typeof import('../services/server-events');
       for (const calendar of linkedCalendars) {
         if (calendar.provider === 'caldav') stopCalendarAccountWork(calendar.id, 'unlinked');
         publishCalendarChanged(userId, calendar.id, 'status');

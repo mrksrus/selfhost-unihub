@@ -1,19 +1,54 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface Input extends Record<string, unknown> { provider?: string; password?: unknown; username?: unknown; account_email?: string; display_name?: string; url?: unknown; time_zone?: unknown; is_active?: unknown; default_calendar_name?: string; default_calendar_color?: string; account_id?: string; name?: string; external_id?: string; color?: string; is_visible?: unknown; auto_todo_enabled?: unknown; is_primary?: unknown; title?: string; description?: string; start_time?: string | null; end_time?: string | null; all_day?: unknown; location?: string; recurrence?: string; reminder_minutes?: number | null; reminders?: unknown; is_todo_only?: unknown; calendar_id?: string | null; attendees?: unknown; todo_status?: string; response_status?: unknown; email?: unknown; position?: number; subtask_ids?: unknown; is_done?: unknown }
 import type { ExecuteValues } from 'mysql2/promise';
 import type { CalendarAccount, CalendarCalendar, CalendarEvent, CalendarAttendee, CalendarSubtask } from '../types/calendar';
+import crypto from 'crypto';
+import { db } from '../state';
+import {
+  CALENDAR_MULTI_ENABLED,
+} from '../config';
+
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+interface Input extends Record<string, unknown> {
+  provider?: string;
+  password?: unknown;
+  username?: unknown;
+  account_email?: string;
+  display_name?: string;
+  url?: unknown;
+  time_zone?: unknown;
+  is_active?: unknown;
+  default_calendar_name?: string;
+  default_calendar_color?: string;
+  account_id?: string;
+  name?: string;
+  external_id?: string;
+  color?: string;
+  is_visible?: unknown;
+  auto_todo_enabled?: unknown;
+  is_primary?: unknown;
+  title?: string;
+  description?: string;
+  start_time?: string | null;
+  end_time?: string | null;
+  all_day?: unknown;
+  location?: string;
+  recurrence?: string;
+  reminder_minutes?: number | null;
+  reminders?: unknown;
+  is_todo_only?: unknown;
+  calendar_id?: string | null;
+  attendees?: unknown;
+  todo_status?: string;
+  response_status?: unknown;
+  email?: unknown;
+  position?: number;
+  subtask_ids?: unknown;
+  is_done?: unknown;
+}
 type CalendarRow = RowDataPacket & CalendarAccount & CalendarCalendar & CalendarEvent & CalendarAttendee & CalendarSubtask;
 type PushResult = Record<string, unknown> & { error?: string; status?: number; scope?: string };
-import crypto = require('crypto');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../config');
-const {
-  CALENDAR_MULTI_ENABLED,
-} = imported2;
-import imported3 = require('../services/calendar');
+
 const {
   CALENDAR_PROVIDER_DEFAULT_CAPABILITIES,
   normalizeCalendarAccountProvider,
@@ -36,9 +71,9 @@ const {
   getCalendarSubtaskIdFromReq,
   serializeCalendarSubtask,
   MAIL_CONNECTED_SQL,
-} = require('../services/calendar');
-const calendarSync = require('../services/calendar-sync');
-const calendarAccounts = require('../services/calendar-accounts');
+} = require('../services/calendar') as typeof import('../services/calendar');
+const calendarSync = require('../services/calendar-sync') as typeof import('../services/calendar-sync');
+const calendarAccounts = require('../services/calendar-accounts') as typeof import('../services/calendar-accounts');
 
 const has = (body: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(body, key);
 
@@ -81,7 +116,6 @@ async function pushEventChanges(userId: string, event: CalendarEvent, body: Inpu
     return calendarSync.calendarErrorResponse(error, 'Could not save the change to the calendar server');
   }
 }
-
 
 export = {
   // Calendar accounts + calendars + events
@@ -193,7 +227,7 @@ export = {
         // A calendar connected from a mail account uses the mail password.
         if (account.mail_account_id) return { error: 'Change the password in the settings of the mail account.', status: 400 };
         updates.push('encrypted_password = ?');
-        params.push(require('../security/encryption').encrypt(String(body.password)));
+        params.push((require('../security/encryption') as typeof import('../security/encryption')).encrypt(String(body.password)));
         if (has(body, 'username') && String(body.username || '').trim()) {
           updates.push('username = ?');
           params.push(String(body.username).trim().slice(0, 255));
@@ -584,7 +618,7 @@ export = {
           await replaceEventAttendees(userId, eventId, body.attendees, connection);
         }
 
-        await require('../services/notifications').enqueueCalendarNotification({ userId, eventId }, connection);
+        await (require('../services/notifications') as typeof import('../services/notifications')).enqueueCalendarNotification({ userId, eventId }, connection);
         await connection.commit();
       } catch (error) {
         await connection.rollback();

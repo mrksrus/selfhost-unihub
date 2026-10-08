@@ -19,7 +19,7 @@ const membershipWhere = `o.email_id = emails.id AND o.user_id = emails.user_id
 // policy is confirmed. Until then a missing copy is not guessed back into its
 // old provider folder and appears only in All mail. On Gmail without a visible
 // All Mail, missing mail may only be archived: it is kept and filed in
-// 'archive' (mail-sync-policy.js), which this view honours. Explicit
+// 'archive' (mail-sync-policy.ts), which this view honours. Explicit
 // Legacy/import/local filing and pre-migration messages not observed by the
 // engine retain their local folders.
 const fallbackFolderSql = `(CASE WHEN ${localFilingSql} OR (COALESCE(emails.remote_missing, FALSE) = FALSE
@@ -55,4 +55,4 @@ function membershipCountQuery(effectiveReadSql: string, accountId: string | null
   ) mail_view WHERE folder IS NOT NULL${onlyUnread ? ' AND view_is_read = 0' : ''} GROUP BY folder${byAccount ? ', mail_account_id' : ''}`;
 }
 const unreadMembershipQuery = (effectiveReadSql: string, accountId: string | null | undefined) => membershipCountQuery(effectiveReadSql, accountId, { onlyUnread: true, byAccount: true });
-export = { folderMembershipSql, membershipCountQuery, unreadMembershipQuery, pendingMoveSql };
+export { folderMembershipSql, membershipCountQuery, unreadMembershipQuery, pendingMoveSql };

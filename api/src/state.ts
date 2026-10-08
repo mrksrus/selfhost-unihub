@@ -1,4 +1,5 @@
 import type { Pool } from 'mysql2/promise';
+
 let currentDb: Pool | null = null;
 
 const db = new Proxy({} as Pool, {
@@ -19,7 +20,7 @@ function getDb() {
   return currentDb;
 }
 
-export = {
+export {
   db,
   setDb,
   getDb,

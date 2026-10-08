@@ -1,9 +1,28 @@
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
-interface ExistingAttachment extends RowDataPacket { id: string; storage_path: string; filename: string; size_bytes: number }
-interface DraftMutation { db: Pick<Pool, 'getConnection'>; userId: string; emailId: string; isNew?: boolean; body: { attachments?: unknown; existing_attachment_ids?: unknown[] | null }; mutate: (connection: PoolConnection) => Promise<unknown>; deleteFiles: (paths: string[]) => Promise<unknown> }
 
-import imported1 = require('./mail-attachments');
-const { normalizeComposerAttachments, validateAttachmentTotals, stageAttachments, discardStagedAttachments, insertStagedAttachments } = imported1;
+import {
+  normalizeComposerAttachments,
+  validateAttachmentTotals,
+  stageAttachments,
+  discardStagedAttachments,
+  insertStagedAttachments,
+} from './mail-attachments';
+
+interface ExistingAttachment extends RowDataPacket {
+  id: string;
+  storage_path: string;
+  filename: string;
+  size_bytes: number;
+}
+interface DraftMutation {
+  db: Pick<Pool, 'getConnection'>;
+  userId: string;
+  emailId: string;
+  isNew?: boolean;
+  body: { attachments?: unknown; existing_attachment_ids?: unknown[] | null };
+  mutate: (connection: PoolConnection) => Promise<unknown>;
+  deleteFiles: (paths: string[]) => Promise<unknown>;
+}
 
 async function saveDraftMutation({ db, userId, emailId, isNew = false, body, mutate, deleteFiles }: DraftMutation) {
   const changesAttachments = Array.isArray(body?.existing_attachment_ids) || body?.attachments !== undefined;
@@ -51,4 +70,4 @@ async function saveDraftMutation({ db, userId, emailId, isNew = false, body, mut
   await deleteFiles(removable.map(row => row.storage_path));
 }
 
-export = { saveDraftMutation };
+export { saveDraftMutation };

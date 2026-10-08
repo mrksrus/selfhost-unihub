@@ -1,13 +1,9 @@
 import type { ServerResponse } from 'node:http';
 import type { AuthRequest } from '../types';
-import imported1 = require('../auth');
-const { verifyToken, getAuthTokenFromRequest } = imported1;
-import imported2 = require('../services/module-catalog');
-const { MODULE_CATALOG } = imported2;
-import imported3 = require('../services/module-settings');
-const { getUserModules } = imported3;
-import imported4 = require('../services/server-events');
-const { serverEvents } = imported4;
+import { verifyToken, getAuthTokenFromRequest } from '../auth';
+import { MODULE_CATALOG } from '../services/module-catalog';
+import { getUserModules } from '../services/module-settings';
+import { serverEvents } from '../services/server-events';
 
 // Modules whose events this user may receive. A disabled module's events are
 // filtered per stream, the same way its routes are refused at the boundary.
@@ -18,9 +14,9 @@ async function enabledModules(userId: string) {
 }
 
 export = {
-  // Reached only through request-handler.js, which has already authenticated
+  // Reached only through request-handler.ts, which has already authenticated
   // the session and applied the origin rules. The route takes over the
-  // response; request-handler.js leaves a __handled result alone.
+  // response; request-handler.ts leaves a __handled result alone.
   'GET /api/events': async (req: AuthRequest, userId: string | null, body: unknown, res: ServerResponse) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     const modules = await enabledModules(userId);

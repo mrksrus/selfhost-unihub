@@ -1,14 +1,29 @@
+
+import crypto from 'crypto';
+import fs from 'fs';
+import { promisify } from 'util';
+import { BACKUP_MASTER_KEY, ENCRYPTION_KEY } from '../config';
+
 interface WrappedKey { iv: string; tag: string; ciphertext: string }
 interface PasswordKdf { name: string; salt: string; N: number; r: number; p: number; key_length: number }
-interface ContainerHeader { format: string; version: number; backup_uuid: string; chunk_size: number; plaintext_size: number; chunk_count: number; nonce_prefix: string; kdf: PasswordKdf; password_key?: WrappedKey }
-interface EncryptionOptions { backupUuid?: string; dataKey?: Buffer; recoveryPassword?: string; onProgress?: ((processed: number, total: number) => unknown | Promise<unknown>) | null; checkCancelled?: (() => unknown | Promise<unknown>) | null }
-
-import crypto = require('crypto');
-import fs = require('fs');
-import imported1 = require('util');
-const { promisify } = imported1;
-import imported2 = require('../config');
-const { BACKUP_MASTER_KEY, ENCRYPTION_KEY } = imported2;
+interface ContainerHeader {
+  format: string;
+  version: number;
+  backup_uuid: string;
+  chunk_size: number;
+  plaintext_size: number;
+  chunk_count: number;
+  nonce_prefix: string;
+  kdf: PasswordKdf;
+  password_key?: WrappedKey;
+}
+interface EncryptionOptions {
+  backupUuid?: string;
+  dataKey?: Buffer;
+  recoveryPassword?: string;
+  onProgress?: ((processed: number, total: number) => unknown | Promise<unknown>) | null;
+  checkCancelled?: (() => unknown | Promise<unknown>) | null;
+}
 
 const scrypt = promisify(crypto.scrypt) as (password: string, salt: Buffer, keyLength: number, options: crypto.ScryptOptions) => Promise<Buffer>;
 const CONTAINER_MAGIC = Buffer.from('UNIHUBBK1', 'ascii');
@@ -199,7 +214,7 @@ async function encryptBackupFile(inputPath: string, outputPath: string, {
   const headerBytes = Buffer.from(JSON.stringify(header), 'utf8');
   if (headerBytes.length > MAX_HEADER_SIZE) throw new Error('Encrypted backup header is too large.');
 
-  await fs.promises.mkdir(require('path').dirname(outputPath), { recursive: true });
+  await fs.promises.mkdir((require('path') as typeof import('path')).dirname(outputPath), { recursive: true });
   const input = await fs.promises.open(inputPath, 'r');
   const output = await fs.promises.open(outputPath, 'wx', 0o600);
   let processed = 0;
@@ -317,7 +332,7 @@ async function decryptBackupFile(inputPath: string, outputPath: string, dataKey:
     throw new Error('Unable to unlock backup. The password is incorrect or the backup is damaged.');
   }
 
-  await fs.promises.mkdir(require('path').dirname(outputPath), { recursive: true });
+  await fs.promises.mkdir((require('path') as typeof import('path')).dirname(outputPath), { recursive: true });
   const input = await fs.promises.open(inputPath, 'r');
   const output = await fs.promises.open(outputPath, 'wx', 0o600);
   const inputStat = await input.stat();
@@ -369,7 +384,7 @@ async function decryptBackupFile(inputPath: string, outputPath: string, dataKey:
   return parsed.header;
 }
 
-export = {
+export {
   CONTAINER_MAGIC,
   CONTAINER_FORMAT,
   CONTAINER_VERSION,

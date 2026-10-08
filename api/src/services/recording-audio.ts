@@ -1,7 +1,12 @@
 import type { ApiError } from '../types';
-interface RecordingAudioFormat { contentType: string; extension: string; demuxer: 'wav' | 'flac' | 'ogg' | 'matroska' | 'aiff' | 'mov' | 'mp3' | 'aac' }
 
-import fs = require('fs');
+import fs from 'fs';
+
+interface RecordingAudioFormat {
+  contentType: string;
+  extension: string;
+  demuxer: 'wav' | 'flac' | 'ogg' | 'matroska' | 'aiff' | 'mov' | 'mp3' | 'aac';
+}
 
 // Read only a small prefix. The decoder still validates the full file when an
 // MP3 export is requested; these signatures prevent playlists/HTML from being
@@ -56,4 +61,4 @@ async function inspectRecordingAudio(filePath: string): Promise<RecordingAudioFo
   }
 }
 
-export = { AUDIO_HEADER_BYTES, identifyRecordingAudio, inspectRecordingAudio };
+export { AUDIO_HEADER_BYTES, identifyRecordingAudio, inspectRecordingAudio };

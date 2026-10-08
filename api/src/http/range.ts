@@ -55,7 +55,7 @@ function rangeAllowed(ifRange: unknown, validators: FileValidators | null | unde
   return value === validators.lastModified;
 }
 
-export = {
+export {
   parseSingleByteRange,
   fileValidators,
   rangeAllowed,

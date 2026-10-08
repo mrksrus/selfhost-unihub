@@ -1,30 +1,31 @@
-import routes0 = require('./system');
-import routes1 = require('./modules');
-import routes2 = require('./auth');
-import routes3 = require('./contacts');
-import routes4 = require('./settings');
-import routes5 = require('./backup');
-import routes6 = require('./search');
-import routes7 = require('./recordings');
-import routes8 = require('./calendar');
-import routes9 = require('./mail');
-import routes10 = require('./admin');
-import routes11 = require('./notifications');
-import routes12 = require('./offline');
-import routes13 = require('./events');
+import systemRoutes = require('./system');
+import modulesRoutes = require('./modules');
+import authRoutes = require('./auth');
+import contactsRoutes = require('./contacts');
+import settingsRoutes = require('./settings');
+import backupRoutes = require('./backup');
+import searchRoutes = require('./search');
+import recordingsRoutes = require('./recordings');
+import calendarRoutes = require('./calendar');
+import mailRoutes = require('./mail');
+import adminRoutes = require('./admin');
+import notificationsRoutes = require('./notifications');
+import offlineRoutes = require('./offline');
+import eventsRoutes = require('./events');
+
 export = {
-  ...routes0,
-  ...routes1,
-  ...routes2,
-  ...routes3,
-  ...routes4,
-  ...routes5,
-  ...routes6,
-  ...routes7,
-  ...routes8,
-  ...routes9,
-  ...routes10,
-  ...routes11,
-  ...routes12,
-  ...routes13,
+  ...systemRoutes,
+  ...modulesRoutes,
+  ...authRoutes,
+  ...contactsRoutes,
+  ...settingsRoutes,
+  ...backupRoutes,
+  ...searchRoutes,
+  ...recordingsRoutes,
+  ...calendarRoutes,
+  ...mailRoutes,
+  ...adminRoutes,
+  ...notificationsRoutes,
+  ...offlineRoutes,
+  ...eventsRoutes,
 };

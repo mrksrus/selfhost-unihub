@@ -15,7 +15,7 @@ function getCalendarSubtaskIdFromPath(rawUrl: string, host = 'localhost') {
   return parts[subtasksIndex + 1] || null;
 }
 
-export = {
+export {
   parseRoutePathParts,
   getCalendarEventIdFromPath,
   getCalendarSubtaskIdFromPath,

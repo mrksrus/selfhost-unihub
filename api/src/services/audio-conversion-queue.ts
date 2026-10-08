@@ -1,5 +1,12 @@
 import type { ApiError } from '../types';
-interface ConversionJob { userId: string; run: () => unknown; resolve: (value: unknown) => void; reject: (reason: unknown) => void; timer?: NodeJS.Timeout }
+
+interface ConversionJob {
+  userId: string;
+  run: () => unknown;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+  timer?: NodeJS.Timeout;
+}
 
 function createAudioConversionQueue({ maxWaiting = 4, maxPerUser = 2, maxWaitMs = 60000 } = {}) {
   const pending: ConversionJob[] = [];
@@ -50,4 +57,4 @@ function createAudioConversionQueue({ maxWaiting = 4, maxPerUser = 2, maxWaitMs 
   };
 }
 
-export = { createAudioConversionQueue };
+export { createAudioConversionQueue };

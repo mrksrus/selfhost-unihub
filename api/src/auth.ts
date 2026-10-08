@@ -1,24 +1,21 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
 import type { AuthRequest, StoredFlag } from './types';
-interface AuthSession extends RowDataPacket { user_id: string; expires_at: Date | string; is_active: StoredFlag }
 
-import crypto = require('crypto');
-import jwt = require('jsonwebtoken');
-import bcrypt = require('bcryptjs');
-import imported1 = require('./state');
-const { db } = imported1;
-import imported2 = require('./config');
-const {
+import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
+import bcrypt from 'bcryptjs';
+import { db } from './state';
+import {
   JWT_SECRET,
   TRUST_PROXY_HEADERS,
   TRUSTED_PROXY_CIDRS,
   AUTH_COOKIE_NAME,
-} = imported2;
-import imported3 = require('./security/client-ip');
-const { createClientIpResolver } = imported3;
-import imported4 = require('./security/login-limits');
-const { consumeAuthAttempt } = imported4;
+} from './config';
+import { createClientIpResolver } from './security/client-ip';
+import { consumeAuthAttempt } from './security/login-limits';
+
+interface AuthSession extends RowDataPacket { user_id: string; expires_at: Date | string; is_active: StoredFlag }
 
 // Password hashing
 async function hashPassword(password: string) {
@@ -261,7 +258,7 @@ async function getSignupMode() {
   }
 }
 
-export = {
+export {
   hashPassword,
   verifyPassword,
   generateCsrfToken,

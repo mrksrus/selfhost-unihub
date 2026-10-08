@@ -1,14 +1,18 @@
 import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
-interface SecondFactorUser extends RowDataPacket { id: string; two_factor_enabled: StoredFlag; encrypted_two_factor_secret?: string | null; two_factor_recovery_codes?: unknown }
 
-import crypto = require('crypto');
-import bcrypt = require('bcryptjs');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../security/encryption');
-const { encrypt, decrypt } = imported2;
+import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
+import { db } from '../state';
+import { encrypt, decrypt } from '../security/encryption';
+
+interface SecondFactorUser extends RowDataPacket {
+  id: string;
+  two_factor_enabled: StoredFlag;
+  encrypted_two_factor_secret?: string | null;
+  two_factor_recovery_codes?: unknown;
+}
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const TOTP_PERIOD_SECONDS = 30;
@@ -271,7 +275,7 @@ async function deleteTwoFactorLoginChallenge(token: string, connection: SqlExecu
   await connection.execute('DELETE FROM two_factor_challenges WHERE token_hash = ?', [hashChallengeToken(token)]);
 }
 
-export = {
+export {
   generateTwoFactorSecret,
   verifyTotp,
   getOtpAuthUri,

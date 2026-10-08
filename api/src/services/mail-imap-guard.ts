@@ -1,8 +1,15 @@
 import type { EventEmitter } from 'node:events';
+
 type MailTransportError = Error & { code?: string };
 interface GuardedConnection extends Pick<EventEmitter, 'on'> { close: () => void; usable?: boolean; isClosed?: boolean }
 interface GuardOptions { signal?: AbortSignal; timeoutMs?: number }
-interface ConnectionGuard { bind: (signal?: AbortSignal) => void; stop: (error?: MailTransportError | null) => void; run: <T>(start: () => T | PromiseLike<T>, deadlineMs?: number) => Promise<T>; readonly stopped: boolean; readonly pending: number }
+interface ConnectionGuard {
+  bind: (signal?: AbortSignal) => void;
+  stop: (error?: MailTransportError | null) => void;
+  run: <T>(start: () => T | PromiseLike<T>, deadlineMs?: number) => Promise<T>;
+  readonly stopped: boolean;
+  readonly pending: number;
+}
 
 // Bound individual network waits, not the whole import. Merely racing the
 // whole worker would release its account lock while its continuation can write.
@@ -97,4 +104,12 @@ function imapSessionUsable(connection: GuardedConnection) {
   return imapGuardIdle(connection) && connection.usable === true && !connection.isClosed;
 }
 
-export = { guardImapConnection, runGuardedImap, closeImapConnection, imapGuardIdle, imapSessionUsable, IMAP_COMMAND_TIMEOUT_MS, MAX_IMAP_COMMAND_TIMEOUT_MS };
+export {
+  guardImapConnection,
+  runGuardedImap,
+  closeImapConnection,
+  imapGuardIdle,
+  imapSessionUsable,
+  IMAP_COMMAND_TIMEOUT_MS,
+  MAX_IMAP_COMMAND_TIMEOUT_MS,
+};

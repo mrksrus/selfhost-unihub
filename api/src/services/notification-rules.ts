@@ -1,7 +1,15 @@
-interface ReminderEvent { id: string; start_time: unknown; reminders?: unknown; reminder_minutes?: unknown; todo_status?: string | null; is_visible?: boolean | number | null }
-interface SubscriptionInput { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } | null }
 
-import crypto = require('crypto');
+import crypto from 'crypto';
+
+interface ReminderEvent {
+  id: string;
+  start_time: unknown;
+  reminders?: unknown;
+  reminder_minutes?: unknown;
+  todo_status?: string | null;
+  is_visible?: boolean | number | null;
+}
+interface SubscriptionInput { endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } | null }
 
 const REMINDER_GRACE_MS = 2 * 60 * 60 * 1000;
 const EXCLUDED_MAIL_FOLDERS = new Set(['sent', 'drafts', 'trash', 'archive']);
@@ -51,4 +59,14 @@ function retryDisposition(error: { statusCode?: unknown } | null | undefined, at
   if ((status >= 400 && status < 500 && ![408, 429].includes(status)) || attempts >= 8) return { retry: false };
   return { retry: true, nextAttempt: new Date(now + Math.min(3600000, 30000 * 2 ** Math.max(0, attempts - 1))) };
 }
-export = { REMINDER_GRACE_MS, EXCLUDED_MAIL_FOLDERS, asUtcDate, reminderMinutes, reminderKey, reminderIsCurrent, hash, normalizeSubscription, retryDisposition };
+export {
+  REMINDER_GRACE_MS,
+  EXCLUDED_MAIL_FOLDERS,
+  asUtcDate,
+  reminderMinutes,
+  reminderKey,
+  reminderIsCurrent,
+  hash,
+  normalizeSubscription,
+  retryDisposition,
+};

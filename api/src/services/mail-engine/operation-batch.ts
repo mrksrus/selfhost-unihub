@@ -1,16 +1,20 @@
-import type { RowDataPacket } from 'mysql2/promise';
-import type { SqlExecutor } from '../../types';
-interface BatchAccount { id: string; user_id: string }
-interface BatchOptions { operationId?: string | null; signal?: AbortSignal; [key: string]: unknown }
-interface BatchDependencies<T> { process?: (account: BatchAccount, connection: T, options: BatchOptions & { operationId: string }) => Promise<{ needsSync?: boolean; connectionFailed?: boolean }>; limit?: number; executor?: SqlExecutor }
-
 // A claimed 'operation' job drains other due, undispatched operations of the
 // same account on its one transport. Every operation still goes through the
 // executor with its own fence check and attempt record; dispatched/uncertain
 // outcomes stay with their own reconcile jobs. Sibling jobs whose operation
 // was settled here find nothing due and finish without connecting.
-import imported1 = require('../../state');
-const { db } = imported1;
+import type { RowDataPacket } from 'mysql2/promise';
+import type { SqlExecutor } from '../../types';
+
+import { db } from '../../state';
+
+interface BatchAccount { id: string; user_id: string }
+interface BatchOptions { operationId?: string | null; signal?: AbortSignal; [key: string]: unknown }
+interface BatchDependencies<T> {
+  process?: (account: BatchAccount, connection: T, options: BatchOptions & { operationId: string }) => Promise<{ needsSync?: boolean; connectionFailed?: boolean }>;
+  limit?: number;
+  executor?: SqlExecutor;
+}
 const OPERATION_BATCH_LIMIT = 50;
 const DUE = `((is_current=TRUE AND state IN ('queued','retry_wait')) OR (action='move' AND dispatched=TRUE AND state IN ('executing','verifying','reconciling'))
   OR (action IN ('read','star') AND dispatched=TRUE AND state IN ('executing','verifying','reconciling'))) AND available_at<=UTC_TIMESTAMP()`;
@@ -39,4 +43,4 @@ async function processOperationBatch<T>(account: BatchAccount, connection: T, op
   }
   return { needsSync, connectionFailed, processed };
 }
-export = { operationDue, processOperationBatch, OPERATION_BATCH_LIMIT };
+export { operationDue, processOperationBatch, OPERATION_BATCH_LIMIT };

@@ -1,7 +1,7 @@
 import type { LookupFunction } from 'node:net';
-import dns = require('node:dns');
-import https = require('node:https');
-import net = require('node:net');
+import dns from 'node:dns';
+import https from 'node:https';
+import net from 'node:net';
 
 function isPublicAddress(address: string) {
   if (net.isIP(address) === 4) {
@@ -25,4 +25,4 @@ function safePushLookup(...[hostname, options, callback]: Parameters<LookupFunct
   });
 }
 const pushAgent = new https.Agent({ lookup: safePushLookup });
-export = { pushAgent, isPublicAddress, safePushLookup };
+export { pushAgent, isPublicAddress, safePushLookup };

@@ -1,6 +1,5 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import imported1 = require('../state');
-const { db } = imported1;
+import { db } from '../state';
 
 async function pruneArchiveKeyIfUnreferenced(userId: string | null | undefined, backupUuid: string | null | undefined) {
   if (!userId || !backupUuid) return false;
@@ -26,6 +25,6 @@ async function pruneArchiveKeyIfUnreferenced(userId: string | null | undefined, 
   return Number(result?.affectedRows) > 0;
 }
 
-export = {
+export {
   pruneArchiveKeyIfUnreferenced,
 };

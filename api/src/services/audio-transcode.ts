@@ -1,6 +1,5 @@
 import type { ApiError } from '../types';
-import imported1 = require('child_process');
-const { spawn } = imported1;
+import { spawn } from 'child_process';
 
 const MAX_CONVERSION_MILLISECONDS = 15 * 60 * 1000;
 const MAX_CONVERTED_BYTES = 500 * 1024 * 1024;
@@ -67,7 +66,7 @@ function runAudioConversion(inputPath: string, outputPath: string, demuxer: stri
   });
 }
 
-export = {
+export {
   MAX_CONVERSION_MILLISECONDS,
   MAX_CONVERTED_BYTES,
   buildAudioConversionArgs,

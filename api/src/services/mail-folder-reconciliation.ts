@@ -1,9 +1,9 @@
 import type { Pool, RowDataPacket, FieldPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
-interface FolderMapping { folder_id: string; mail_account_id: string; remote_name: string; slug: string }
 
-import imported1 = require('../state');
-const { db } = imported1;
+import { db } from '../state';
+
+interface FolderMapping { folder_id: string; mail_account_id: string; remote_name: string; slug: string }
 const PROTECTED_FOLDERS = new Set(['inbox', 'sent', 'drafts', 'trash']);
 const FILING_ACCOUNT_SQL = 'COALESCE(filing_account_id, mail_account_id)';
 
@@ -130,4 +130,10 @@ async function folderConnections(userId: string, connection: SqlExecutor = db) {
   return links;
 }
 
-export = { receivingAccount, prepareFolderReconciliation, reconcileAccountFolders, folderConnections, FILING_ACCOUNT_SQL };
+export {
+  receivingAccount,
+  prepareFolderReconciliation,
+  reconcileAccountFolders,
+  folderConnections,
+  FILING_ACCOUNT_SQL,
+};

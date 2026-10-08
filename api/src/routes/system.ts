@@ -1,12 +1,10 @@
 import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
+
+import { db, getDb } from '../state';
+import { getUserModules } from '../services/module-settings';
+
 interface CountRow { count: number }
-
-import imported1 = require('../state');
-const { db, getDb } = imported1;
-import imported2 = require('../services/module-settings');
-const { getUserModules } = imported2;
-
 
 export = {
   'GET /health': async () => {

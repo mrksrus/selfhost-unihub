@@ -13,4 +13,4 @@ function decimal(value: unknown, max = UINT64_MAX, allowZero = false) {
 function assertUid32(value: unknown) { return Number(decimal(value, UINT32_MAX)); }
 function assertDecimal64(value: unknown) { return decimal(value); }
 function bool(value: unknown) { return value === true || value === 1 || value === '1'; }
-export = { assertUid32, assertDecimal64, bool };
+export { assertUid32, assertDecimal64, bool };

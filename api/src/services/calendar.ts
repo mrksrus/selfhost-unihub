@@ -3,11 +3,9 @@ import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
 import type { CalendarAccount, CalendarCalendar, CalendarSubtask, CalendarAttendee, CalendarEvent } from '../types/calendar';
 
-import crypto = require('crypto');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../../calendar-route-utils');
-const { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } = imported2;
+import crypto from 'crypto';
+import { db } from '../state';
+import { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } from '../../calendar-route-utils';
 
 const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
   local: {
@@ -392,7 +390,7 @@ function formatProviderDateRange(value: unknown) {
   return new Date(parsed).toISOString();
 }
 
-export = {
+export {
   CALENDAR_PROVIDER_DEFAULT_CAPABILITIES,
   MAIL_DISCONNECTED_MESSAGE,
   MAIL_CONNECTED_SQL,

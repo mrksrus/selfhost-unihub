@@ -39,4 +39,4 @@ function consumeAuthAttempt(scope: AuthAttemptScope, identity: unknown) {
   return limiter.consume(scope, String(identity), ...budget);
 }
 
-export = { createLoginLimiter, consumeAuthAttempt };
+export { createLoginLimiter, consumeAuthAttempt };

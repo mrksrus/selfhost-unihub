@@ -1,9 +1,9 @@
 import type { RowDataPacket, ExecuteValues } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
-import crypto = require('node:crypto');
+import crypto from 'node:crypto';
 
-import imported1 = require('./backup-catalog');
-const { TABLE_POLICIES } = imported1;
+import { TABLE_POLICIES } from './backup-catalog';
+
 const TABLE_KEYS = Object.fromEntries(Object.entries(TABLE_POLICIES).filter(([, policy]) => policy.ownership === 'user_id').map(([table, policy]) => [table, policy.keyColumns]));
 
 function identifier(value: string) {
@@ -147,4 +147,4 @@ function validateRestoreRows(data: Record<string, unknown> | null | undefined): 
   return errors;
 }
 
-export = { chooseTargetId, writeOwnedRow, resolveOwnedReference, assertOwnedRelationship, validateRestoreRows };
+export { chooseTargetId, writeOwnedRow, resolveOwnedReference, assertOwnedRelationship, validateRestoreRows };

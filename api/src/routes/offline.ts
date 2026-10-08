@@ -1,7 +1,7 @@
 import type { IncomingMessage } from 'node:http';
 import type { ApiError } from '../types';
-import imported1 = require('../services/offline');
-const { createOfflineSnapshot } = imported1;
+import { createOfflineSnapshot } from '../services/offline';
+
 export = {
   'GET /api/offline/snapshot': async (_req: IncomingMessage, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };

@@ -1,10 +1,3 @@
-import type { RowDataPacket, ResultSetHeader, ExecuteValues } from 'mysql2/promise';
-import type { SqlExecutor, ApiError } from '../types';
-import type { EngineJob } from '../types/mail-engine';
-interface Account { id: string; user_id: string; sync_mode?: string | null; sync_window_days?: number | string | null; trash_window_days?: number | string | null; sync_policy_confirmed_at?: Date | string | null }
-interface Mailbox { special_use?: string | null; remote_name: string }
-interface Windows { sync: number | null; trash: number | null }
-type Fence = (cx: SqlExecutor) => Promise<unknown>;
 // Sync mode is a full mail client: the provider is the source of truth. This
 // module owns the *local* consequences of that rule, kept apart from Download
 // mode (which never removes local mail):
@@ -19,10 +12,24 @@ type Fence = (cx: SqlExecutor) => Promise<unknown>;
 // stays NULL for accounts upgraded from 0.12, so nothing is removed until the
 // user confirms per account. All work runs in bounded, fenced, resumable
 // 'prune' jobs (no provider connection), never in one large transaction.
-import fs = require('node:fs/promises');
-import path = require('node:path');
-import imported1 = require('../state');
-const { db } = imported1;
+import type { RowDataPacket, ResultSetHeader, ExecuteValues } from 'mysql2/promise';
+import type { SqlExecutor, ApiError } from '../types';
+import type { EngineJob } from '../types/mail-engine';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { db } from '../state';
+
+interface Account {
+  id: string;
+  user_id: string;
+  sync_mode?: string | null;
+  sync_window_days?: number | string | null;
+  trash_window_days?: number | string | null;
+  sync_policy_confirmed_at?: Date | string | null;
+}
+interface Mailbox { special_use?: string | null; remote_name: string }
+interface Windows { sync: number | null; trash: number | null }
+type Fence = (cx: SqlExecutor) => Promise<unknown>;
 
 const MAIL_WINDOW_DAYS = Object.freeze([14, 30, 90, 180, 365]);
 const DEFAULT_TRASH_WINDOW_DAYS = 30;
@@ -392,12 +399,25 @@ async function runPruneSlice({ account, job = null, signal = null, report = asyn
 }
 
 async function enqueuePrune({ userId, accountId }: { userId: string; accountId: string }, executor: SqlExecutor = db) {
-  return require('./mail-engine/runtime').enqueueJob({ userId, accountId, kind: 'prune', priority: PRUNE_PRIORITY }, executor);
+  return (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).enqueueJob({ userId, accountId, kind: 'prune', priority: PRUNE_PRIORITY }, executor);
 }
 
-export = {
-  MAIL_WINDOW_DAYS, DEFAULT_TRASH_WINDOW_DAYS, PRUNE_BATCH, PRUNE_PRIORITY, SYNC_WARNING_GMAIL_ALL_MAIL_HIDDEN,
-  parseWindowDays, storedWindows, isTrashMailbox, windowDaysFor, outsideWindow,
-  gmailAllMailHidden, syncWarnings, computeModeImpact, pendingRemovals,
-  runPruneSlice, enqueuePrune, removeUnreferencedFiles,
+export {
+  MAIL_WINDOW_DAYS,
+  DEFAULT_TRASH_WINDOW_DAYS,
+  PRUNE_BATCH,
+  PRUNE_PRIORITY,
+  SYNC_WARNING_GMAIL_ALL_MAIL_HIDDEN,
+  parseWindowDays,
+  storedWindows,
+  isTrashMailbox,
+  windowDaysFor,
+  outsideWindow,
+  gmailAllMailHidden,
+  syncWarnings,
+  computeModeImpact,
+  pendingRemovals,
+  runPruneSlice,
+  enqueuePrune,
+  removeUnreferencedFiles,
 };

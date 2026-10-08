@@ -1,25 +1,16 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface Input extends Record<string, unknown> { email_address?: string; display_name?: string; provider?: string; username?: string | null; imap_host?: string; imap_port?: number | string; smtp_host?: string; smtp_port?: number | string; encrypted_password?: string; sync_fetch_limit?: unknown; delete_emails_on_server?: unknown; accept_host_trust?: unknown; try_calendar_sync?: unknown; caldav_url?: string | null; time_zone?: unknown; is_active?: unknown; sync_window_days?: unknown; trash_window_days?: unknown; confirm_address?: unknown; encrypt?: unknown }
 import type { MailAccountIdentity, StoredFlag } from '../types';
-interface AccountRow extends RowDataPacket, MailAccountIdentity { id: string; user_id: string; email_address: string; imap_host: string; smtp_host: string; smtp_port: number | string; encrypted_password: string | null; is_active: StoredFlag; display_name: string | null; sync_policy_confirmed_at: string | Date | null; sync_window_days: number | null; trash_window_days: number | null; sync_fetch_limit: number | null }
-import mailWritebacks = require('../services/mail-writebacks');
-import mailAccountLifecycle = require('../services/mail-account-lifecycle');
-import imported1 = require('../services/mail-account-mode');
-const { mailAccountModeChange, sameProviderMailbox, addressConfirmed } = imported1;
-import mailSyncPolicy = require('../services/mail-sync-policy');
-import imported2 = require('../services/mail-account-lock');
-const { withMailAccountLock } = imported2;
-import imported3 = require('../services/mail-folder-reconciliation');
-const { FILING_ACCOUNT_SQL } = imported3;
-import crypto = require('crypto');
-import imported4 = require('../state');
-const { db } = imported4;
-import imported5 = require('../security/encryption');
-const { encrypt } = imported5;
-import imported6 = require('../services/mail');
-const {
+import * as mailWritebacks from '../services/mail-writebacks';
+import * as mailAccountLifecycle from '../services/mail-account-lifecycle';
+import { mailAccountModeChange, sameProviderMailbox, addressConfirmed } from '../services/mail-account-mode';
+import * as mailSyncPolicy from '../services/mail-sync-policy';
+import { withMailAccountLock } from '../services/mail-account-lock';
+import { FILING_ACCOUNT_SQL } from '../services/mail-folder-reconciliation';
+import crypto from 'crypto';
+import { db } from '../state';
+import { encrypt } from '../security/encryption';
+import {
   DEFAULT_MAIL_SYNC_FETCH_LIMIT,
   toBooleanFlag,
   ensureDefaultMailFoldersForUser,
@@ -30,10 +21,48 @@ const {
   testImapConnection,
   stopMailAccountWork,
   getRunningMailServerDeleteAccountIds,
-} = imported6;
-import calendarAccounts = require('../services/calendar-accounts');
-import imported7 = require('./mail-route-helpers');
-const { EFFECTIVE_READ_SQL, startMailSyncInBackground, extractMailRouteId } = imported7;
+} from '../services/mail';
+import * as calendarAccounts from '../services/calendar-accounts';
+import { EFFECTIVE_READ_SQL, startMailSyncInBackground, extractMailRouteId } from './mail-route-helpers';
+
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+interface Input extends Record<string, unknown> {
+  email_address?: string;
+  display_name?: string;
+  provider?: string;
+  username?: string | null;
+  imap_host?: string;
+  imap_port?: number | string;
+  smtp_host?: string;
+  smtp_port?: number | string;
+  encrypted_password?: string;
+  sync_fetch_limit?: unknown;
+  delete_emails_on_server?: unknown;
+  accept_host_trust?: unknown;
+  try_calendar_sync?: unknown;
+  caldav_url?: string | null;
+  time_zone?: unknown;
+  is_active?: unknown;
+  sync_window_days?: unknown;
+  trash_window_days?: unknown;
+  confirm_address?: unknown;
+  encrypt?: unknown;
+}
+interface AccountRow extends RowDataPacket, MailAccountIdentity {
+  id: string;
+  user_id: string;
+  email_address: string;
+  imap_host: string;
+  smtp_host: string;
+  smtp_port: number | string;
+  encrypted_password: string | null;
+  is_active: StoredFlag;
+  display_name: string | null;
+  sync_policy_confirmed_at: string | Date | null;
+  sync_window_days: number | null;
+  trash_window_days: number | null;
+  sync_fetch_limit: number | null;
+}
 
 async function buildHostTrustConfirmationResponse({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError }: Parameters<typeof buildMailHostTrustResult>[0]) {
   const mailHostTrust = await buildMailHostTrustResult({
@@ -524,7 +553,7 @@ export = {
 
       if (modeChange.changed) await mailWritebacks.cancelForAccount(db, id, userId);
       if (stopRequired && (body.is_active === true || toBooleanFlag(existingAccount.is_active)))
-        await require('../services/mail-engine/runtime').resumeAccount({ userId, accountId: id });
+        await (require('../services/mail-engine/runtime') as typeof import('../services/mail-engine/runtime')).resumeAccount({ userId, accountId: id });
 
       if (modeChange.changed) {
         await db.execute<(RowDataPacket & AccountRow)[]>("UPDATE mail_server_messages SET delete_status = 'skipped', delete_error = 'Cancelled by mail mode change' WHERE mail_account_id = ? AND user_id = ? AND delete_status IN ('pending', 'failed')", [id, userId]);
@@ -547,7 +576,7 @@ export = {
       // A linked calendar reads the mail login when it needs it; it only syncs
       // now instead of at its next turn.
       if (encrypted_password || username !== undefined || email_address || body.is_active === true) {
-        await require('../services/calendar-sync').syncLinkedCalendars(userId, id)
+        await (require('../services/calendar-sync') as typeof import('../services/calendar-sync')).syncLinkedCalendars(userId, id)
           .catch((error: Error) => console.warn('[CALENDAR] Could not start linked calendar sync:', error.message));
       }
       if (body.is_active === true) setImmediate(() => startMailSyncInBackground(id).catch(error => console.error('[SYNC] Reconnect scheduling failed:', (error as ApiError).message)));
@@ -590,7 +619,7 @@ export = {
       await db.execute<(RowDataPacket & AccountRow)[]>(`UPDATE mail_accounts SET sync_policy_confirmed_at = COALESCE(sync_policy_confirmed_at, UTC_TIMESTAMP())
         WHERE id = ? AND user_id = ? AND sync_mode = 'sync'`, [id, userId]);
       // Removal runs in the background as bounded durable jobs.
-      await require('../services/mail-durable-jobs').durableScheduler.enqueue({ userId, accountId: id,
+      await (require('../services/mail-durable-jobs') as typeof import('../services/mail-durable-jobs')).durableScheduler.enqueue({ userId, accountId: id,
         kind: 'prune', priority: mailSyncPolicy.PRUNE_PRIORITY });
       return { confirmed: true, queued: true };
     } catch (error) {
@@ -605,7 +634,7 @@ export = {
       const id = accountRouteId(req);
       const [[account]] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
       if (!account) return { error: 'Account not found', status: 404 };
-      const { startDataExportJob } = require('../services/export-jobs');
+      const { startDataExportJob } = require('../services/export-jobs') as typeof import('../services/export-jobs');
       const job = await startDataExportJob(userId, { sections: ['mail'], mailAccountId: id, encrypt: body?.encrypt !== false });
       return { job, status: 202 };
     } catch (error) {

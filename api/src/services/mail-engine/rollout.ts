@@ -1,7 +1,7 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../../types';
-import imported1 = require('./repository');
-const { withTransaction } = imported1;
+import { withTransaction } from './repository';
+
 const HOLD_REASON = 'Deployment canary hold';
 const USER_PAUSES = ['Mail module disabled', 'Mail background paused'];
 const uuid = (value: unknown) => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
@@ -45,7 +45,7 @@ async function releaseRollout(pool: Pick<Pool, 'getConnection'>, accountId: stri
     await cx.execute('UPDATE mail_engine_accounts SET paused_reason = NULL WHERE mail_account_id = ? AND paused_reason = ?', [accountId, HOLD_REASON]);
     // Read streams paused while held (settings/module stops absorbed by the
     // hold) would otherwise dedupe new syncs forever. Writes stay untouched.
-    await require('./runtime').resumeAccount({ userId: accounts[0].user_id, accountId, reasons: [HOLD_REASON] }, cx);
+    await (require('./runtime') as typeof import('./runtime')).resumeAccount({ userId: accounts[0].user_id, accountId, reasons: [HOLD_REASON] }, cx);
     return rolloutStatus(cx);
   }, pool);
 }
@@ -55,4 +55,4 @@ async function rolloutStatus(cx: SqlExecutor) {
     FROM mail_accounts a LEFT JOIN mail_engine_accounts e ON e.mail_account_id = a.id ORDER BY a.id`);
   return { accounts };
 }
-export = { HOLD_REASON, USER_PAUSES, requireAccountId, prepareRollout, releaseRollout, rolloutStatus };
+export { HOLD_REASON, USER_PAUSES, requireAccountId, prepareRollout, releaseRollout, rolloutStatus };

@@ -1,13 +1,8 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-type Contact = Parameters<typeof contactToVCard>[0] & { id: string };
-interface Input { first_name?: string; last_name?: string; email?: string; email2?: string; email3?: string; phone?: string; phone2?: string; phone3?: string; company?: string; job_title?: string; notes?: string; ids?: unknown; vcf_data?: unknown; is_favorite?: unknown }
-import crypto = require('crypto');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../services/contacts');
-const {
+import crypto from 'crypto';
+import { db } from '../state';
+import {
   contactToVCard,
   parseVCards,
   getContactIdentityKeys,
@@ -16,8 +11,26 @@ const {
   rankContactsForMerge,
   getPrimaryContactIdentityKey,
   getContactDisplayName,
-} = imported2;
+} from '../services/contacts';
 
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+type Contact = Parameters<typeof contactToVCard>[0] & { id: string };
+interface Input {
+  first_name?: string;
+  last_name?: string;
+  email?: string;
+  email2?: string;
+  email3?: string;
+  phone?: string;
+  phone2?: string;
+  phone3?: string;
+  company?: string;
+  job_title?: string;
+  notes?: string;
+  ids?: unknown;
+  vcf_data?: unknown;
+  is_favorite?: unknown;
+}
 
 export = {
   // Contacts endpoints

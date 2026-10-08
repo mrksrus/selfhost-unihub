@@ -1,21 +1,37 @@
 import type { RowDataPacket, ResultSetHeader, ExecuteValues } from 'mysql2/promise';
 import type { ApiError, SqlExecutor, StoredFlag } from '../types';
 import type { ProviderOperation } from '../types/mail-engine';
-interface EmailRow extends RowDataPacket { id: string; mail_account_id: string; folder: string; filing_account_id: string | null; sync_mode: string; is_active: StoredFlag; is_draft: StoredFlag; is_legacy: StoredFlag; remote_missing: StoredFlag; remote_folder: string | null; remote_uid: number | string | null; remote_uidvalidity: number | string | null }
+import crypto from 'node:crypto';
+import { db } from '../state';
+import { isSectionRestoreActive } from './restore-locks';
+import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
+import * as runtime from './mail-engine/runtime';
+import * as repository from './mail-engine/repository';
+import { publishMailChanged, publishMailOperation } from './server-events';
+
+interface EmailRow extends RowDataPacket {
+  id: string;
+  mail_account_id: string;
+  folder: string;
+  filing_account_id: string | null;
+  sync_mode: string;
+  is_active: StoredFlag;
+  is_draft: StoredFlag;
+  is_legacy: StoredFlag;
+  remote_missing: StoredFlag;
+  remote_folder: string | null;
+  remote_uid: number | string | null;
+  remote_uidvalidity: number | string | null;
+}
 interface OperationRow extends RowDataPacket, ProviderOperation { dispatched: StoredFlag; is_current: StoredFlag }
 interface MutationOptions { idempotencyKey?: string | null; operationIds?: string[]; revisions?: number[] }
-interface ReceiptResponse extends Record<string, unknown> { recovery_required?: boolean; operation_ids?: string[]; sync_pending?: boolean; message?: string; accepted_revision?: number | null }
-import crypto = require('node:crypto');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('./restore-locks');
-const { isSectionRestoreActive } = imported2;
-import imported3 = require('./module-settings');
-const { isModuleEnabled, isModuleBackgroundEnabled } = imported3;
-import runtime = require('./mail-engine/runtime');
-import repository = require('./mail-engine/repository');
-import imported4 = require('./server-events');
-const { publishMailChanged, publishMailOperation } = imported4;
+interface ReceiptResponse extends Record<string, unknown> {
+  recovery_required?: boolean;
+  operation_ids?: string[];
+  sync_pending?: boolean;
+  message?: string;
+  accepted_revision?: number | null;
+}
 let dueCursor = '';
 const fields: Readonly<Record<string, string>> = { read: 'is_read', star: 'is_starred', move: 'folder' };
 function fail(message: string, status = 409) { return Object.assign(new Error(message), { status }); }
@@ -251,7 +267,7 @@ async function acceptServerState(userId: string, id: string) {
   let syncQueued = false;
   if (account && Number(account.is_active) && !account.disconnected_at) {
     // Resolution is committed; a failed enqueue leaves the next sync to do this.
-    try { await require('./mail').scheduleMailAccountSync(op.mail_account_id); syncQueued = true; }
+    try { await (require('./mail') as typeof import('./mail')).scheduleMailAccountSync(op.mail_account_id); syncQueued = true; }
     catch (error) { console.error('[MAIL WRITEBACK] Sync after accepting server state failed:', (error as ApiError).code || 'unavailable'); }
   }
   return { message: syncQueued ? 'UniHub stopped tracking this move and is syncing from the server'
@@ -263,8 +279,9 @@ async function cancelForAccount(cx: SqlExecutor, accountId: string, userId: stri
     WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN ('executing','verifying','retry_wait')`, [accountId, userId]);
 }
 // Operation and reconcile jobs run on the durable mail scheduler
-// (mail.js runDurableMutationJob). This only starts them without waiting for
-// its next poll; the HTTP response never waits for a read job to yield.
+// (runDurableMutationJob in mail-durable-jobs.ts). This only starts them
+// without waiting for its next poll; the HTTP response never waits for a read
+// job to yield.
 function runOperationsSoon(accountId: string, options?: { foreground?: boolean }) {
   setImmediate(() => (require('./mail') as typeof import('./mail')).runMailOperationsNow(accountId, options)
     .catch(error => console.error('[MAIL WRITEBACK] Could not start provider changes:', (error as ApiError).code || 'unavailable')));
@@ -309,7 +326,7 @@ async function runDueWritebacks() {
       enqueuedAccounts.add(row.mail_account_id);
     } catch (error) {
       // One contended row must not abort the pass; the row is due again next second.
-      if (!require('./mail-engine/repository').isDeadlock(error)) throw error;
+      if (!(require('./mail-engine/repository') as typeof import('./mail-engine/repository')).isDeadlock(error)) throw error;
     }
   }
   for (const accountId of enqueuedAccounts) runOperationsSoon(accountId);
@@ -366,6 +383,19 @@ async function requeue(userId: string, op: OperationRow) {
   } catch (error) { await cx.rollback(); throw error; }
   finally { cx.release(); }
 }
-export = { mutateMessages, queueChanges, runDueWritebacks,
-  retryWriteback, acceptServerState, cancelForAccount, cancelWriteback, getOperationReceipt, listWritebacks,
-  remoteEligible, verifiedIdentity, unlinkedIdentity, keyCheck, canonicalRequest };
+export {
+  mutateMessages,
+  queueChanges,
+  runDueWritebacks,
+  retryWriteback,
+  acceptServerState,
+  cancelForAccount,
+  cancelWriteback,
+  getOperationReceipt,
+  listWritebacks,
+  remoteEligible,
+  verifiedIdentity,
+  unlinkedIdentity,
+  keyCheck,
+  canonicalRequest,
+};

@@ -1,49 +1,34 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ArchiveEnvelope, ApiError, BackupRow } from '../types';
 import type { ImportOptions, RestoreArchive, ImportResult, RestoredAccounts } from '../types/backup-restore';
-import imported16 = require('./mail-account-mode');
-const { sameProviderMailbox } = imported16;
-import imported17 = require('./mail-sync-policy');
-const { MAIL_WINDOW_DAYS, DEFAULT_TRASH_WINDOW_DAYS } = imported17;
-import fs = require('fs');
-import imported18 = require('../state');
-const { db } = imported18;
-import imported19 = require('./mail');
-const { DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } = imported19;
-import imported20 = require('../security/caldav-transport');
-const { resolveCalDavUrl } = imported20;
-import imported21 = require('./caldav');
-const { accountCredentialScope } = imported21;
-import imported22 = require('./backup-ownership');
-const { chooseTargetId, writeOwnedRow, resolveOwnedReference, assertOwnedRelationship } = imported22;
-import imported23 = require('./recording-audio');
-const { inspectRecordingAudio } = imported23;
-import imported24 = require('./backup-format');
-const { normalizeBackupPayload } = imported24;
-import imported25 = require('./backup-mail-recovery');
-const { restoreMailRecovery, validateRestoredMailDestinations } = imported25;
-import imported26 = require('./backup-mail-engine');
-const { pauseMailRestore, restoreMailEngineEvidence } = imported26;
-import imported27 = require('./module-settings');
-const { isModuleEnabled } = imported27;
-import imported12 = require('./backup-common');
-const {
+import { sameProviderMailbox } from './mail-account-mode';
+import { MAIL_WINDOW_DAYS, DEFAULT_TRASH_WINDOW_DAYS } from './mail-sync-policy';
+import fs from 'fs';
+import { db } from '../state';
+import { DEFAULT_MAIL_SYNC_FETCH_LIMIT, normalizeSyncFetchLimit } from './mail';
+import { resolveCalDavUrl } from '../security/caldav-transport';
+import { accountCredentialScope } from './caldav';
+import { chooseTargetId, writeOwnedRow, resolveOwnedReference, assertOwnedRelationship } from './backup-ownership';
+import { inspectRecordingAudio } from './recording-audio';
+import { normalizeBackupPayload } from './backup-format';
+import { restoreMailRecovery, validateRestoredMailDestinations } from './backup-mail-recovery';
+import { pauseMailRestore, restoreMailEngineEvidence } from './backup-mail-engine';
+import { isModuleEnabled } from './module-settings';
+import {
   isFileRangeSource,
   normalizeMysqlDateTime,
   normalizeConflictMode,
   normalizeCalendarMode,
   normalizeCredentialMode,
-} = imported12;
-import imported13 = require('./backup-validate');
-const {
+} from './backup-common';
+import {
   validateBackupPayload,
   validateBackupPayloadFromFileSources,
   countBackupRows,
   countRestoreConflicts,
   scopeBackupForImport,
-} = imported13;
-import imported14 = require('./backup-restore-mapping');
-const {
+} from './backup-validate';
+import {
   prepareCredentialsForRestore,
   restoredCalendarLacksLogin,
   overwriteUserId,
@@ -59,9 +44,8 @@ const {
   findExistingAttachmentForRestore,
   findExistingRecordingForRestore,
   writeRestoredFile,
-} = imported14;
-import imported15 = require('./backup-zip-reader');
-const { backupFromZipBuffer, backupFromZipFile } = imported15;
+} from './backup-restore-mapping';
+import { backupFromZipBuffer, backupFromZipFile } from './backup-zip-reader';
 
 const accountLabel = (row: BackupRow) => row.email_address || row.account_email || row.display_name || row.id;
 
@@ -73,12 +57,12 @@ const accountLabel = (row: BackupRow) => row.email_address || row.account_email 
 function startRestoredAccountSync(userId: string, { mailAccountIds, calendarAccountIds }: RestoredAccounts) {
   setImmediate(async () => {
     try {
-      const mail = require('./mail');
+      const mail = require('./mail') as typeof import('./mail');
       for (const accountId of mailAccountIds) await mail.scheduleMailAccountSync(accountId);
     } catch (error) {
       console.warn('[BACKUP RESTORE] Could not start mail sync for restored accounts:', (error as Error).message);
     }
-    const { syncCalendarAccountInBackground } = require('./calendar-sync');
+    const { syncCalendarAccountInBackground } = require('./calendar-sync') as typeof import('./calendar-sync');
     for (const accountId of calendarAccountIds) syncCalendarAccountInBackground(accountId, { userId, reason: 'restore' });
   });
 }
@@ -461,7 +445,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           // user initiated like a new account's, so it runs with background
           // sync off. With Mail disabled it waits, paused like the user's other
           // accounts, until Mail is turned on.
-          const runtime = require('./mail-engine/runtime');
+          const runtime = require('./mail-engine/runtime') as typeof import('./mail-engine/runtime');
           await runtime.enqueueJob({ userId, accountId: targetAccountId,
             kind: 'sync', priority: 5, manualRefresh: true }, connection);
           if (await isModuleEnabled(userId, 'mail', connection)) startMailAccountIds.push(targetAccountId);
@@ -837,7 +821,7 @@ async function importBackupZipFileForUser(userId: string, filePath: string, opti
   });
 }
 
-export = {
+export {
   importBackupForUser,
   importBackupZipBufferForUser,
   importBackupZipFileForUser,

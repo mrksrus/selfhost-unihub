@@ -1,32 +1,31 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
-type Request = RouteRequest & { url: string; params: Record<string, string> };
-interface Input { new_password?: string; current_password?: unknown; role?: unknown; is_active?: unknown; signup_mode: string }
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('../config');
-const { MIN_PASSWORD_LENGTH } = imported2;
-import imported3 = require('../services/mail');
-const { MAIL_RAW_STORAGE_ROOT } = imported3;
-import imported4 = require('../services/recordings');
-const { RECORDINGS_ROOT, deleteRecordingFiles } = imported4;
-import imported5 = require('../services/export-jobs');
-const { BACKUPS_ROOT } = imported5;
-import imported6 = require('../services/server-events');
-const { serverEvents } = imported6;
-import imported7 = require('../auth');
-const {
+import fs from 'fs';
+import path from 'path';
+import { db } from '../state';
+import { MIN_PASSWORD_LENGTH } from '../config';
+import { MAIL_RAW_STORAGE_ROOT } from '../services/mail';
+import { RECORDINGS_ROOT, deleteRecordingFiles } from '../services/recordings';
+import { BACKUPS_ROOT } from '../services/export-jobs';
+import { serverEvents } from '../services/server-events';
+import {
   isAdmin,
   hashPassword,
   verifyPassword,
   consumeAuthAttempt,
   getSignupMode,
   getAuthTokenFromRequest,
-} = imported7;
-import imported8 = require('../services/two-factor');
-const { disableTwoFactor } = imported8;
+} from '../auth';
+import { disableTwoFactor } from '../services/two-factor';
+
+type Request = RouteRequest & { url: string; params: Record<string, string> };
+interface Input {
+  new_password?: string;
+  current_password?: unknown;
+  role?: unknown;
+  is_active?: unknown;
+  signup_mode: string;
+}
 
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
 

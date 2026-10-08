@@ -1,21 +1,16 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
+import { FILING_ACCOUNT_SQL } from '../services/mail-folder-reconciliation';
+import { folderMembershipSql, pendingMoveSql } from '../services/mail-folder-view';
+import { presentMailFiling } from '../services/mail-filing';
+import fs from 'fs';
+import path from 'path';
+import { db } from '../state';
+import { toBooleanFlag } from '../services/mail';
+import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL, extractMailRouteId } from './mail-route-helpers';
+
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Input = unknown;
-import imported1 = require('../services/mail-folder-reconciliation');
-const { FILING_ACCOUNT_SQL } = imported1;
-import imported2 = require('../services/mail-folder-view');
-const { folderMembershipSql, pendingMoveSql } = imported2;
-import imported3 = require('../services/mail-filing');
-const { presentMailFiling } = imported3;
-import fs = require('fs');
-import path = require('path');
-import imported4 = require('../state');
-const { db } = imported4;
-import imported5 = require('../services/mail');
-const { toBooleanFlag } = imported5;
-import imported6 = require('./mail-route-helpers');
-const { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL, extractMailRouteId } = imported6;
 
 const MAIL_LIST_PREVIEW_LENGTH = 240;
 const MAIL_ATTACHMENT_UPLOAD_ROOT = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments';

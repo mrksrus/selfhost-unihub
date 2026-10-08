@@ -1,13 +1,12 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
+
+import { db } from '../state';
+import { MODULE_CATALOG, PAGE_CATALOG, RETIRED_MODULE_IDS } from './module-catalog';
+
 interface ModulePreferences { id: string; visible: boolean; enabled: boolean; background: boolean }
 type ModuleUpdates = Record<string, Partial<Pick<ModulePreferences, 'visible' | 'enabled' | 'background'>>>;
 type PageUpdates = Record<string, { visible?: boolean }>;
-
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('./module-catalog');
-const { MODULE_CATALOG, PAGE_CATALOG, RETIRED_MODULE_IDS } = imported2;
 const SETTING_KEY = 'module_preferences';
 const ORDER_KEY = 'module_order';
 const PAGE_SETTING_KEY = 'page_preferences';
@@ -174,4 +173,22 @@ async function getBackgroundPausedModulesByUser(connection: SqlExecutor = db) {
   const [rows] = await connection.execute<(RowDataPacket & { user_id: string; setting_value: unknown })[]>('SELECT user_id, setting_value FROM user_settings WHERE setting_key = ?', [SETTING_KEY]);
   return new Map(rows.map(row => [row.user_id, new Set(modulesFromValue(row.setting_value).filter(module => !module.enabled || !module.background).map(module => module.id))]));
 }
-export = { getBackgroundPausedModulesByUser, SETTING_KEY, ORDER_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY, modulesFromValue, orderFromValue, pageOrderFromValue, pagesFromValues, getUserPages, validateModuleUpdates, validateModuleRequest, getUserModules, getOrderedUserModules, isModuleEnabled, isModuleBackgroundEnabled, setUserModules };
+export {
+  getBackgroundPausedModulesByUser,
+  SETTING_KEY,
+  ORDER_KEY,
+  PAGE_SETTING_KEY,
+  PAGE_ORDER_KEY,
+  modulesFromValue,
+  orderFromValue,
+  pageOrderFromValue,
+  pagesFromValues,
+  getUserPages,
+  validateModuleUpdates,
+  validateModuleRequest,
+  getUserModules,
+  getOrderedUserModules,
+  isModuleEnabled,
+  isModuleBackgroundEnabled,
+  setUserModules,
+};

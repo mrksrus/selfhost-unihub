@@ -1,16 +1,17 @@
-import routes0 = require('./mail-folders');
-import routes1 = require('./mail-accounts');
-import routes2 = require('./mail-drafts');
-import routes3 = require('./mail-messages');
-import routes4 = require('./mail-operations');
-import routes5 = require('./mail-sync');
-// Mail routes, grouped by area. request-handler.js dispatches on the same
-// 'METHOD /path' keys; routes/index.js spreads this object.
+// Mail routes, grouped by area. request-handler.ts dispatches on the same
+// 'METHOD /path' keys; routes/index.ts spreads this object.
+import mailFoldersRoutes = require('./mail-folders');
+import mailAccountsRoutes = require('./mail-accounts');
+import mailDraftsRoutes = require('./mail-drafts');
+import mailMessagesRoutes = require('./mail-messages');
+import mailOperationsRoutes = require('./mail-operations');
+import mailSyncRoutes = require('./mail-sync');
+
 export = {
-  ...routes0,
-  ...routes1,
-  ...routes2,
-  ...routes3,
-  ...routes4,
-  ...routes5,
+  ...mailFoldersRoutes,
+  ...mailAccountsRoutes,
+  ...mailDraftsRoutes,
+  ...mailMessagesRoutes,
+  ...mailOperationsRoutes,
+  ...mailSyncRoutes,
 };

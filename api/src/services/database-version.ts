@@ -28,4 +28,4 @@ function unsupportedServerMessage(version: unknown) {
       + 'Since 0.16.0 UniHub no longer runs on MySQL; see docs/UPGRADING.md (0.16.0).';
 }
 
-export = { MINIMUM_MARIADB, parseServerVersion, supportedServer, unsupportedServerMessage };
+export { MINIMUM_MARIADB, parseServerVersion, supportedServer, unsupportedServerMessage };

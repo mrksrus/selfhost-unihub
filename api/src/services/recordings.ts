@@ -1,19 +1,39 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
-interface RecordingRow extends RowDataPacket { id: string; user_id: string; storage_path: string; content_type: string; title: string; description: string | null; original_filename: string; size_bytes: number | string; duration_seconds: number | string | null; source: string; category: string; recorded_at: Date | string | null; created_at: Date | string | null; updated_at: Date | string | null; metadata: unknown; tags: unknown }
-interface UploadRow extends RecordingRow { temp_path: string; expires_at: Date | string; bytes_received: number | string; total_bytes: number | string; is_expired: StoredFlag }
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { db } from '../state';
+import { inspectRecordingAudio } from './recording-audio';
+import { createAudioConversionQueue } from './audio-conversion-queue';
+import { MAX_CONVERTED_BYTES, runAudioConversion } from './audio-transcode';
+
+interface RecordingRow extends RowDataPacket {
+  id: string;
+  user_id: string;
+  storage_path: string;
+  content_type: string;
+  title: string;
+  description: string | null;
+  original_filename: string;
+  size_bytes: number | string;
+  duration_seconds: number | string | null;
+  source: string;
+  category: string;
+  recorded_at: Date | string | null;
+  created_at: Date | string | null;
+  updated_at: Date | string | null;
+  metadata: unknown;
+  tags: unknown;
+}
+interface UploadRow extends RecordingRow {
+  temp_path: string;
+  expires_at: Date | string;
+  bytes_received: number | string;
+  total_bytes: number | string;
+  is_expired: StoredFlag;
+}
 type UploadInput = Record<string, unknown>;
-import crypto = require('crypto');
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('./recording-audio');
-const { inspectRecordingAudio } = imported2;
-import imported3 = require('./audio-conversion-queue');
-const { createAudioConversionQueue } = imported3;
-import imported4 = require('./audio-transcode');
-const { MAX_CONVERTED_BYTES, runAudioConversion } = imported4;
 
 const RECORDINGS_ROOT = process.env.RECORDINGS_ROOT || '/app/uploads/recordings';
 const MAX_RECORDING_BYTES = 500 * 1024 * 1024;
@@ -716,7 +736,7 @@ async function cleanupExpiredRecordingUploads() {
   return rows.length;
 }
 
-export = {
+export {
   RECORDINGS_ROOT,
   MAX_CHUNK_BYTES,
   MAX_RECORDING_BYTES,

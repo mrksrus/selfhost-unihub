@@ -1,17 +1,33 @@
 import type { IncomingHttpHeaders, OutgoingHttpHeaders } from 'node:http';
 import type { ApiError } from '../types';
+
+import crypto from 'node:crypto';
+import https from 'node:https';
+import net from 'node:net';
+import { resolveMailConnectionTarget, networkPolicyError } from './outbound-network';
+
 type CredentialScope = string | { origin: string; hostSuffixes?: readonly string[] };
 interface DigestChallenge { realm: string; nonce: string; opaque?: string; algorithm: string; qop: string | null }
 interface ConnectionTarget { hostname: string; address: string; family: number }
-interface RequestOptions { method: string; username?: string; password?: string; authorization?: string; body?: string | Buffer; depth?: string | number | null; signal?: AbortSignal; headers?: OutgoingHttpHeaders; contentType?: string; accept?: string; anonymous?: boolean }
-interface DavOptions extends Partial<RequestOptions> { credentialOrigin?: CredentialScope; acceptStatuses?: readonly number[]; timeoutMs?: number }
+interface RequestOptions {
+  method: string;
+  username?: string;
+  password?: string;
+  authorization?: string;
+  body?: string | Buffer;
+  depth?: string | number | null;
+  signal?: AbortSignal;
+  headers?: OutgoingHttpHeaders;
+  contentType?: string;
+  accept?: string;
+  anonymous?: boolean;
+}
+interface DavOptions extends Partial<RequestOptions> {
+  credentialOrigin?: CredentialScope;
+  acceptStatuses?: readonly number[];
+  timeoutMs?: number;
+}
 interface DavResponse { status: number; location?: string; headers: IncomingHttpHeaders; text: string }
-
-import crypto = require('node:crypto');
-import https = require('node:https');
-import net = require('node:net');
-import imported1 = require('./outbound-network');
-const { resolveMailConnectionTarget, networkPolicyError } = imported1;
 
 const MAX_DAV_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_DAV_REDIRECTS = 5;
@@ -194,4 +210,12 @@ async function davRequest(urlString: string, {
   }
 }
 
-export = { parseDigestChallenge, digestAuthorization, parseCalDavUrl, resolveCalDavUrl, credentialScopeAllows, davRequest, MAX_DAV_RESPONSE_BYTES };
+export {
+  parseDigestChallenge,
+  digestAuthorization,
+  parseCalDavUrl,
+  resolveCalDavUrl,
+  credentialScopeAllows,
+  davRequest,
+  MAX_DAV_RESPONSE_BYTES,
+};

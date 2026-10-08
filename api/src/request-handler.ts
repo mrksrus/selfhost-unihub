@@ -1,38 +1,30 @@
 import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
 import type { ApiError, RouteRequest, RouteResponse } from './types';
-// Bodies are untrusted at dispatch. Each route retains its existing validation.
-type RouteTable = Record<string, (req: RouteRequest, userId: string | null | undefined, body: unknown, res: ServerResponse) => Promise<RouteResponse>>;
 
-import imported1 = require('./services/backup-availability');
-const { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } = imported1;
-import crypto = require('crypto');
-import fs = require('fs');
-import path = require('path');
+import { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import routes = require('./routes');
-import imported2 = require('./auth');
-const { verifyToken, validateCsrfToken, refreshSessionCookies } = imported2;
-import imported3 = require('./http/request');
-const {
+import { verifyToken, validateCsrfToken, refreshSessionCookies } from './auth';
+import {
   parseBody,
   parseRawBodyToFile,
   getAllowedOriginForRequest,
   isRequestBodyTooLarge,
-} = imported3;
-import imported4 = require('./http/range');
-const { parseSingleByteRange, fileValidators, rangeAllowed } = imported4;
-import imported5 = require('./services/module-catalog');
-const { getModuleForPath } = imported5;
-import imported6 = require('./services/module-settings');
-const { isModuleEnabled } = imported6;
-import imported7 = require('./services/restore-locks');
-const { getActiveRestoreSections } = imported7;
-import imported8 = require('./services/backup-catalog');
-const { getRestoreSectionForWrite } = imported8;
-import imported9 = require('./config');
-const {
+} from './http/request';
+import { parseSingleByteRange, fileValidators, rangeAllowed } from './http/range';
+import { getModuleForPath } from './services/module-catalog';
+import { isModuleEnabled } from './services/module-settings';
+import { getActiveRestoreSections } from './services/restore-locks';
+import { getRestoreSectionForWrite } from './services/backup-catalog';
+import {
   BACKUP_UPLOAD_MAX_SIZE,
   MAIL_COMPOSE_REQUEST_MAX_SIZE,
-} = imported9;
+} from './config';
+
+// Bodies are untrusted at dispatch. Each route retains its existing validation.
+type RouteTable = Record<string, (req: RouteRequest, userId: string | null | undefined, body: unknown, res: ServerResponse) => Promise<RouteResponse>>;
 
 const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
 const PUBLIC_ROUTE_KEYS = new Set([
@@ -59,7 +51,6 @@ function buildContentDisposition(dispositionType: unknown, filename: unknown) {
   const encodedFilename = encodeURIComponent(rawFilename);
   return `${safeDispositionType}; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`;
 }
-
 
 function requestUrl(req: RouteRequest) {
   const host = req.headers.host;
@@ -471,6 +462,6 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
 
 // Start server
 
-export = {
+export {
   handleRequest,
 };

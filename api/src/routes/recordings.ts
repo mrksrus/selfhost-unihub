@@ -1,9 +1,8 @@
 import type { IncomingMessage } from 'node:http';
 import type { ApiError } from '../types';
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('../services/recordings');
-const {
+import fs from 'fs';
+import path from 'path';
+import {
   isPathUnderRoot,
   replaceFilenameExtension,
   listRecordings,
@@ -16,7 +15,7 @@ const {
   abortRecordingUpload,
   updateRecording,
   deleteRecording,
-} = imported1;
+} from '../services/recordings';
 
 function getPathPart(req: IncomingMessage, marker: string) {
   const parts = new URL(req.url!, `http://${req.headers.host}`).pathname.split('/').filter(Boolean);

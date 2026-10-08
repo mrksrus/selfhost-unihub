@@ -1,5 +1,12 @@
 import type { StoredFlag } from '../types';
-interface MailFiling extends Record<string, unknown> { filing_account_id?: string | null; mail_account_id?: string | null; source_mail_account_id?: string | null; remote_missing?: StoredFlag; is_legacy?: StoredFlag }
+
+interface MailFiling extends Record<string, unknown> {
+  filing_account_id?: string | null;
+  mail_account_id?: string | null;
+  source_mail_account_id?: string | null;
+  remote_missing?: StoredFlag;
+  is_legacy?: StoredFlag;
+}
 interface FilingFolder { is_system?: StoredFlag; mail_account_id?: string | null; slug: string }
 
 // Provider identity remains on stored mail_account_id. Local views use filing_account_id.
@@ -25,4 +32,4 @@ function folderAcceptsAccount(folder: FilingFolder | null | undefined, accountId
   return folder.mail_account_id === accountId || (connections.get(folder.slug) || []).includes(accountId);
 }
 
-export = { filingAccountId, presentMailFiling, folderAcceptsAccount };
+export { filingAccountId, presentMailFiling, folderAcceptsAccount };

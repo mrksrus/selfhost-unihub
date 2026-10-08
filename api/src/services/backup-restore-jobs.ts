@@ -1,35 +1,59 @@
 import type { RowDataPacket, ResultSetHeader, ExecuteValues } from 'mysql2/promise';
 import type { ApiError, StoredFlag } from '../types';
 import type { ImportOptions } from '../types/backup-restore';
-interface RestoreJob extends RowDataPacket { id: string; user_id: string; status: string; source_type: string; source_export_job_id?: string | null; operation: string; phase: string; progress: number; cancel_requested: StoredFlag; requested_sections: unknown; conflict_mode: string; calendar_mode: string; credentials_mode: string; archive_path: string | null; archive_size: number | null; archive_sha256: string | null; backup_uuid: string | null; is_encrypted: StoredFlag; validation_result: unknown; result_counts: unknown; error: string | null; attempt_count: number; created_at: Date | string; updated_at: Date | string; started_at: Date | string | null; completed_at: Date | string | null; expires_at: Date | string | null }
-import crypto = require('crypto');
-import fs = require('fs');
-import path = require('path');
-import imported1 = require('../state');
-const { db } = imported1;
-import imported2 = require('./backup');
-const {
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { db } from '../state';
+import {
   backupFromZipFile,
   importBackupForUser,
   normalizeBackupImportSections,
   sha256File,
-} = imported2;
-import imported3 = require('./backup-container');
-const {
+} from './backup';
+import {
   decryptBackupFile,
   decryptPortableCredentialBundle,
   readContainerHeader,
   unlockContainerWithPassword,
   unwrapDataKeyFromServer,
   wrapDataKeyForServer,
-} = imported3;
-import imported4 = require('./backup-archive-keys');
-const { pruneArchiveKeyIfUnreferenced } = imported4;
-import imported5 = require('./mail');
-const {
+} from './backup-container';
+import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
+import {
   isAnyMailAccountSyncRunning,
   isAnyMailServerDeleteRunning,
-} = imported5;
+} from './mail';
+
+interface RestoreJob extends RowDataPacket {
+  id: string;
+  user_id: string;
+  status: string;
+  source_type: string;
+  source_export_job_id?: string | null;
+  operation: string;
+  phase: string;
+  progress: number;
+  cancel_requested: StoredFlag;
+  requested_sections: unknown;
+  conflict_mode: string;
+  calendar_mode: string;
+  credentials_mode: string;
+  archive_path: string | null;
+  archive_size: number | null;
+  archive_sha256: string | null;
+  backup_uuid: string | null;
+  is_encrypted: StoredFlag;
+  validation_result: unknown;
+  result_counts: unknown;
+  error: string | null;
+  attempt_count: number;
+  created_at: Date | string;
+  updated_at: Date | string;
+  started_at: Date | string | null;
+  completed_at: Date | string | null;
+  expires_at: Date | string | null;
+}
 const RESTORE_ROOT = '/app/uploads/backups/restores';
 const ATTACHMENTS_ROOT = '/app/uploads/attachments';
 const MAIL_RAW_STORAGE_ROOT = '/app/uploads/mail-raw';
@@ -739,7 +763,7 @@ async function isSectionRestoreActive(userId: string, section: string) {
   return sections.has(section);
 }
 
-export = {
+export {
   RESTORE_ROOT,
   ACTIVE_RESTORE_STATUSES,
   serializeRestoreJob,
