@@ -109,7 +109,9 @@ test('the baseline sets up only an empty database or its own unfinished setup', 
   const connection = (tables, counts = {}) => ({
     async query(sql) {
       if (sql.includes('information_schema.TABLES')) return [tables.map(name => ({ name }))];
-      return [[{ count: counts[/FROM (\w+)/.exec(sql)[1]] || 0 }]];
+      const table = /FROM (\w+)/.exec(sql)[1];
+      if (!tables.includes(table)) throw new Error(`Table ${table} doesn't exist`);
+      return [[{ count: counts[table] || 0 }]];
     },
     async execute(sql) { if (sql.startsWith('CREATE TABLE')) throw STOP; return [[]]; },
   });
@@ -119,4 +121,11 @@ test('the baseline sets up only an empty database or its own unfinished setup', 
     [['mail_accounts'], { mail_accounts: 1 }], [['calendar_events'], { calendar_events: 1 }], [['users', 'notification_config'], {}]]) {
     await assert.rejects(BASELINE.up(connection(tables, counts)), /no upgrade history/, JSON.stringify(tables));
   }
+});
+
+test('a failed baseline check keeps the inventory error and points to 0.18.2', async () => {
+  const columns = [{ table_name: 'users', column_name: 'id' }];
+  const error = await BASELINE.verify({ async execute() { return [columns]; } }).then(() => null, failure => failure);
+  assert.match(error.message, /^Database recovery inventory failed:[\s\S]*Missing declared field[\s\S]*start UniHub 0\.18\.2 once/);
+  assert.match(error.cause.message, /Missing declared field/);
 });

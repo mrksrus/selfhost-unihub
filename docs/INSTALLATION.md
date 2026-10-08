@@ -222,7 +222,7 @@ the published image. That image already uses its bundled `/api` proxy.
 | Compose says a variable is required | All six required `.env` fields are populated and `.env` is beside the Compose file. |
 | `UniHub needs MariaDB … but the database server reports …` | The app was pointed at a MySQL database. Since 0.16.0 UniHub needs MariaDB; see the [upgrade guide](UPGRADING.md#0160-mariadb). |
 | Repeated database connection failures | Matching DB password, correct existing volume, MariaDB logs and startup time. Editing initialization variables does not change an existing database password. |
-| `The database has tables or data but no upgrade history` | The database is not empty and was not set up by UniHub. Use an empty database. |
+| `The database has tables or data but no upgrade history` | The database is not empty and either was not set up by UniHub or has lost its `schema_migrations` table (restore it from a backup of that database). Otherwise use an empty database. |
 | Missing/placeholder secret or short bootstrap password | Supply real generated keys and a bootstrap password of at least 12 characters. |
 | Invalid `TRUSTED_PROXY_CIDRS` | Use IPs/CIDRs only, not hostnames or URLs. Keep the loopback entries. |
 | Page loads but API returns `Origin not allowed` | Exact HTTPS scheme, hostname and port in Compose's `ALLOWED_ORIGINS`; restart/recreate the app after changing its environment. |

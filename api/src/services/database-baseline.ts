@@ -932,7 +932,7 @@ async function refuseExistingData(connection: PoolConnection) {
 
 // Runs again after a crash before the steps are recorded. (A crash between the
 // two inserts of ensureDefaultLocalCalendarForUser leaves an empty local
-// account behind, as in every release since 0.11.)
+// account behind, as in earlier releases.)
 async function createBaseline(connection: PoolConnection) {
   await refuseExistingData(connection);
   for (const sql of BASELINE_TABLES) await connection.execute(sql);
