@@ -8,7 +8,7 @@ import { resolveMailConnectionTarget } from '../security/outbound-network';
 import { parseCalDavUrl, resolveCalDavUrl, credentialScopeAllows, davRequest } from '../security/caldav-transport';
 
 type CredentialScope = Parameters<typeof resolveCalDavUrl>[2];
-interface Login { username?: string | null; password?: string; credentialScope?: CredentialScope; signal?: AbortSignal }
+interface Login { username?: string | null; password?: string | null; credentialScope?: CredentialScope; signal?: AbortSignal }
 interface ProviderInput { emailAddress?: string | null; imapHost?: string | null }
 interface Provider {
   id: string;

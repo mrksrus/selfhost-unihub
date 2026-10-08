@@ -1,6 +1,6 @@
 // Service worker side of recording uploads. Built on its own into
 // recording-uploads-sw.js (see vite.config.ts) and loaded with importScripts
-// next to public/sw-custom.js.
+// next to /sw-custom.js (workers/sw-custom.ts).
 //
 // The page uploads while it is visible. When it is hidden it hands the queue
 // over: with Background Sync the browser wakes this worker when there is a
@@ -32,7 +32,7 @@ interface ExtendableMessageEvent extends ExtendableEvent {
 type SyncRegistration = ServiceWorkerRegistration & { sync?: { register(tag: string): Promise<void> } };
 interface WorkerScope {
   registration: ServiceWorkerRegistration;
-  // From public/sw-custom.js: runs task with whether userId is the bound account.
+  // From workers/sw-custom.ts: runs task with whether userId is the bound account.
   unihubWithBoundUser?: (userId: string, task: (bound: boolean) => Promise<void>) => Promise<unknown>;
   addEventListener(type: 'sync', listener: (event: SyncEvent) => void): void;
   addEventListener(type: 'message', listener: (event: ExtendableMessageEvent) => void): void;

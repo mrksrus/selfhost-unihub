@@ -206,7 +206,7 @@ async function connectCalDavAccount({ userId, emailAddress, displayName, usernam
   }
   let found;
   try {
-    found = await caldav.findCalDavServer({ emailAddress, imapHost, username: username as string | undefined, password: password as string | undefined, explicitUrl: caldavUrl || null });
+    found = await caldav.findCalDavServer({ emailAddress, imapHost, username, password, explicitUrl: caldavUrl || null });
   } catch (error) {
     // A pasted public calendar address that is not a CalDAV server.
     if (caldavUrl && ['CALDAV_NOT_FOUND', 'CALDAV_NO_CALENDAR_HOME'].includes((error as ApiError).code!)) {
