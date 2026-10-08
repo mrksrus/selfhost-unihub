@@ -89,7 +89,7 @@ export = {
 
     try {
       const contactId = crypto.randomUUID();
-      await db.execute<(RowDataPacket & Contact)[]>(
+      await db.execute(
         'INSERT INTO contacts (id, user_id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
           contactId,
@@ -124,7 +124,7 @@ export = {
     try {
       const id = req.url.split('/').pop()!;
 
-      await db.execute<(RowDataPacket & Contact)[]>(
+      await db.execute(
         'UPDATE contacts SET first_name = ?, last_name = ?, email = ?, email2 = ?, email3 = ?, phone = ?, phone2 = ?, phone3 = ?, company = ?, job_title = ?, notes = ? WHERE id = ? AND user_id = ?',
         [
           firstName,
@@ -155,7 +155,7 @@ export = {
 
     try {
       const id = req.url.split('/').pop()!;
-      await db.execute<(RowDataPacket & Contact)[]>('DELETE FROM contacts WHERE id = ? AND user_id = ?', [id, userId]);
+      await db.execute('DELETE FROM contacts WHERE id = ? AND user_id = ?', [id, userId]);
       return { message: 'Contact deleted' };
     } catch (error) {
       return { error: 'Failed to delete contact', status: 500 };
@@ -201,7 +201,7 @@ export = {
 
       for (const members of duplicateGroups) {
         const { primary, others, mergedContact } = buildMergedContact(members);
-        await db.execute<(RowDataPacket & Contact)[]>(
+        await db.execute(
           `UPDATE contacts
            SET first_name = ?, last_name = ?, email = ?, email2 = ?, email3 = ?, phone = ?, phone2 = ?, phone3 = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?
            WHERE id = ? AND user_id = ?`,
@@ -362,7 +362,7 @@ export = {
         if (keys.some((key) => existingKeys.has(key))) continue; // already in DB, skip
         try {
           const contactId = crypto.randomUUID();
-          await db.execute<(RowDataPacket & Contact)[]>(
+          await db.execute(
             'INSERT INTO contacts (id, user_id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
               contactId,
@@ -409,7 +409,7 @@ export = {
       const parts = req.url.split('?')[0].split('/');
       const id = parts[parts.length - 2];
       const { is_favorite } = body;
-      await db.execute<(RowDataPacket & Contact)[]>(
+      await db.execute(
         'UPDATE contacts SET is_favorite = ? WHERE id = ? AND user_id = ?',
         [is_favorite ? 1 : 0, id, userId]
       );

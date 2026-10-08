@@ -181,9 +181,9 @@ async function computeModeImpact(account: Account, { mode, syncWindowDays, trash
       GROUP BY o.gmail_msgid HAVING COUNT(DISTINCT o.email_id) > 1) duplicate_groups`, owner);
   const [[unlinked]] = await executor.execute<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM emails e WHERE ${ELIGIBLE_SQL}
     AND ${UNLINKED_DUPLICATE_SQL}`, owner);
-  const result = { total_removals: 0, mode, local_only: localOnly, outside_window: Number(outside.regular) || 0,
+  const result = { mode, local_only: localOnly, outside_window: Number(outside.regular) || 0,
     outside_trash_window: Number(outside.trash) || 0, gmail_duplicates: Number(duplicates.n) || 0,
-    local_duplicates: Number(unlinked.n) || 0 };
+    local_duplicates: Number(unlinked.n) || 0, total_removals: 0 };
   result.total_removals = result.local_only + result.outside_window + result.outside_trash_window + result.gmail_duplicates
     + result.local_duplicates;
   const notes = ['Only local copies are removed. Mail on the server is not changed by this.'];
@@ -242,7 +242,7 @@ async function deleteEmailRows(cx: SqlExecutor, { userId, accountId, ids }: { us
   const marks = ids.map(() => '?').join(',');
   const [attachments] = await cx.execute<RowDataPacket[]>(`SELECT storage_path FROM email_attachments WHERE user_id = ? AND email_id IN (${marks})`, [userId, ...ids]);
   const [raws] = await cx.execute<RowDataPacket[]>(`SELECT raw_storage_path FROM emails WHERE user_id = ? AND mail_account_id = ? AND id IN (${marks})`, [userId, accountId, ...ids]);
-  await cx.execute<RowDataPacket[]>(`DELETE FROM mail_engine_quarantine WHERE user_id = ? AND mail_account_id = ? AND source_table = 'emails' AND source_id IN (${marks})`,
+  await cx.execute(`DELETE FROM mail_engine_quarantine WHERE user_id = ? AND mail_account_id = ? AND source_table = 'emails' AND source_id IN (${marks})`,
     [userId, accountId, ...ids]);
   // Occurrences, Gmail ids, attachments, scores, settled operations and
   // recovery journal rows cascade with the item.
@@ -258,7 +258,7 @@ async function removeMatching({ account, fence, conditionSql, params, limit = PR
     ORDER BY e.id LIMIT ${Number(limit)}`, [...owner, ...params]);
   if (!candidates.length) return { removed: 0, candidates: 0 };
   const ids = candidates.map(row => row.id);
-  const { withTransaction }: typeof import('./mail-engine/repository') = require('./mail-engine/repository');
+  const { withTransaction } = require('./mail-engine/repository') as typeof import('./mail-engine/repository');
   const outcome = await withTransaction(async cx => {
     await fence(cx);
     const marks = ids.map(() => '?').join(',');
@@ -275,7 +275,7 @@ async function removeMatching({ account, fence, conditionSql, params, limit = PR
 // X-GM-MSGID is proof; Message-ID headers and bodies never join items.
 async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Account; fence: Fence; gmailMsgId: string }) {
   const userId = account.user_id, accountId = account.id;
-  const { withTransaction }: typeof import('./mail-engine/repository') = require('./mail-engine/repository');
+  const { withTransaction } = require('./mail-engine/repository') as typeof import('./mail-engine/repository');
   const outcome = await withTransaction(async cx => {
     await fence(cx);
     const [occurrences] = await cx.execute<RowDataPacket[]>(`SELECT id, email_id, presence FROM mail_remote_occurrences
@@ -301,24 +301,24 @@ async function mergeGmailGroup({ account, fence, gmailMsgId }: { account: Accoun
     })[0].id;
     const losers = ids.filter(id => id !== keeper);
     const loserMarks = losers.map(() => '?').join(',');
-    await cx.execute<RowDataPacket[]>(`UPDATE mail_remote_occurrences SET email_id = ? WHERE user_id = ? AND mail_account_id = ? AND email_id IN (${loserMarks})`,
+    await cx.execute(`UPDATE mail_remote_occurrences SET email_id = ? WHERE user_id = ? AND mail_account_id = ? AND email_id IN (${loserMarks})`,
       [keeper, userId, accountId, ...losers]);
-    await cx.execute<RowDataPacket[]>(`UPDATE mail_writebacks SET email_id = ? WHERE user_id = ? AND mail_account_id = ? AND email_id IN (${loserMarks})`,
+    await cx.execute(`UPDATE mail_writebacks SET email_id = ? WHERE user_id = ? AND mail_account_id = ? AND email_id IN (${loserMarks})`,
       [keeper, userId, accountId, ...losers]);
-    await cx.execute<RowDataPacket[]>(`UPDATE mail_gmail_messages SET email_id = ? WHERE mail_account_id = ? AND user_id = ? AND email_id IN (${loserMarks})`,
+    await cx.execute(`UPDATE mail_gmail_messages SET email_id = ? WHERE mail_account_id = ? AND user_id = ? AND email_id IN (${loserMarks})`,
       [keeper, accountId, userId, ...losers]);
-    await cx.execute<RowDataPacket[]>(`INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id) VALUES (?,?,?,?)
+    await cx.execute(`INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id) VALUES (?,?,?,?)
       ON DUPLICATE KEY UPDATE email_id = VALUES(email_id)`, [accountId, gmailMsgId, userId, keeper]);
     // Read/star follow the server's latest observation of the message.
     const [[latest]] = await cx.execute<RowDataPacket[]>(`SELECT observed_flags FROM mail_remote_occurrences WHERE user_id = ? AND mail_account_id = ?
       AND email_id = ? AND presence = 'present' ORDER BY observed_at DESC, id LIMIT 1`, [userId, accountId, keeper]);
     const flags = latest ? (typeof latest.observed_flags === 'string' ? JSON.parse(latest.observed_flags) : latest.observed_flags) || [] : null;
-    await cx.execute<RowDataPacket[]>(`UPDATE emails e SET e.is_read = COALESCE(?, e.is_read), e.is_starred = COALESCE(?, e.is_starred),
+    await cx.execute(`UPDATE emails e SET e.is_read = COALESCE(?, e.is_read), e.is_starred = COALESCE(?, e.is_starred),
         e.remote_missing = NOT EXISTS (SELECT 1 FROM ${LIVE_FROM} WHERE ${LIVE_WHERE}),
         e.observation_revision = e.observation_revision + 1
       WHERE e.id = ? AND e.user_id = ? AND e.mail_account_id = ?`,
     [flags ? Number(flags.includes('\\Seen')) : null, flags ? Number(flags.includes('\\Flagged')) : null, keeper, userId, accountId]);
-    await cx.execute<RowDataPacket[]>(`DELETE FROM mail_engine_quarantine WHERE user_id = ? AND mail_account_id = ? AND source_table = 'emails'
+    await cx.execute(`DELETE FROM mail_engine_quarantine WHERE user_id = ? AND mail_account_id = ? AND source_table = 'emails'
       AND source_id = ? AND reason = 'gmail_identity_conflict'`, [userId, accountId, keeper]);
     return deleteEmailRows(cx, { userId, accountId, ids: losers });
   }, db);
@@ -350,7 +350,7 @@ async function mergeGmailDuplicates({ account, fence, signal }: { account: Accou
 // Gmail without a visible All Mail: retained mail is filed as archived locally
 // (non-destructive, also before confirmation).
 async function fileRetainedAsArchived({ account, fence }: { account: Account; fence: Fence }) {
-  const { withTransaction }: typeof import('./mail-engine/repository') = require('./mail-engine/repository');
+  const { withTransaction } = require('./mail-engine/repository') as typeof import('./mail-engine/repository');
   return withTransaction(async cx => {
     await fence(cx);
     const [result] = await cx.execute<ResultSetHeader>(`UPDATE emails e SET e.folder = 'archive', e.remote_missing = TRUE
@@ -364,7 +364,7 @@ async function fileRetainedAsArchived({ account, fence }: { account: Account; fe
 // One bounded slice of a 'prune' job. Returns more:true while work remains.
 async function runPruneSlice({ account, job = null, signal = null, report = async () => {} }: { account: Account; job?: EngineJob | null; signal?: AbortSignal | null; report?: (progress: { phase: string; processed: number; total: null }) => Promise<unknown> }) {
   if (account?.sync_mode !== 'sync') return { processed: 0, removed: 0, more: false, skipped: 'download_mode' };
-  const runtime: typeof import('./mail-engine/runtime') = require('./mail-engine/runtime');
+  const runtime = require('./mail-engine/runtime') as typeof import('./mail-engine/runtime');
   const fence = async (cx: SqlExecutor) => {
     if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id, workerId: job.lease_owner!,
       generation: Number(job.worker_generation) }, cx);

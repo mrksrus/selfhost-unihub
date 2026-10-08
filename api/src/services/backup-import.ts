@@ -180,7 +180,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     const backupUser = data.user;
     await reportRestoreProgress('settings', 46);
     if (backupUser && typeof backupUser === 'object' && conflictMode === 'replace') {
-      await connection.execute<RowDataPacket[]>(
+      await connection.execute(
         `UPDATE users
          SET full_name = COALESCE(?, full_name),
              avatar_url = ?,
@@ -301,7 +301,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
             const scope = accountCredentialScope(account as Parameters<typeof accountCredentialScope>[0]);
             resolveCalDavUrl(row.external_id, account.base_url || account.discovery_url, scope);
           } catch (error) {
-            await connection.execute<RowDataPacket[]>('UPDATE calendar_accounts SET is_active = FALSE WHERE id = ? AND user_id = ?', [targetAccountId, userId]);
+            await connection.execute('UPDATE calendar_accounts SET is_active = FALSE WHERE id = ? AND user_id = ?', [targetAccountId, userId]);
             validation.warnings.push(`Restored calendar account ${targetAccountId} is inactive: ${(error as Error).message}`);
           }
         }
@@ -465,7 +465,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
 
       if (existingById.length) {
         if (conflictMode === 'keep_existing') {
-          await connection.execute<RowDataPacket[]>(
+          await connection.execute(
             `UPDATE mail_accounts
              SET delete_emails_on_server = FALSE,
                  server_delete_enabled_at = NULL,
@@ -477,7 +477,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           continue;
         }
         const shouldRestoreCredentials = credentialsMode === 'restore';
-        await connection.execute<RowDataPacket[]>(
+        await connection.execute(
           `UPDATE mail_accounts
            SET email_address = ?, display_name = ?, provider = ?, username = ?, imap_host = ?, imap_port = ?,
                smtp_host = ?, smtp_port = ?, encrypted_password = CASE WHEN ? THEN ? ELSE encrypted_password END,
@@ -489,7 +489,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           [row.email_address, row.display_name || null, row.provider || 'custom', row.username || row.email_address, row.imap_host || null, row.imap_port || 993, row.smtp_host || null, row.smtp_port || 587, shouldRestoreCredentials ? 1 : 0, row.encrypted_password || null, syncFetchLimit, row.allow_self_signed ? 1 : 0, row.trusted_imap_fingerprint256 || null, row.trusted_smtp_fingerprint256 || null, !policyAccepted ? 0 : shouldRestoreCredentials ? (row.is_active === false || row.is_active === 0 ? 0 : 1) : null, normalizeMysqlDateTime(row.last_synced_at), targetAccountId, userId]
         );
       } else {
-        await connection.execute<RowDataPacket[]>(
+        await connection.execute(
           `INSERT INTO mail_accounts
              (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
               smtp_host, smtp_port, encrypted_password, sync_fetch_limit, delete_emails_on_server,
@@ -504,7 +504,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       // copies must not be deleted until the user confirms again.
       const restoredWindow = (value: unknown, fallback: number | null) => value === undefined ? fallback
         : value === null ? null : MAIL_WINDOW_DAYS.includes(Number(value)) ? Number(value) : fallback;
-      await connection.execute<RowDataPacket[]>(
+      await connection.execute(
         `UPDATE mail_accounts SET sync_mode = ?, sync_status = ?, sync_window_days = ?, trash_window_days = ?,
            sync_policy_confirmed_at = NULL WHERE id = ? AND user_id = ?`,
         [row.sync_mode === 'sync' ? 'sync' : 'download', row.sync_mode === 'sync' ? 'pending' : 'idle',
@@ -616,7 +616,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     for (const [sourceEmailId, email] of writtenEmailHtml) {
       const html = remapRestoredInlineAttachments(email.html, attachmentIdsByEmail.get(sourceEmailId));
       if (html !== email.html) {
-        await connection.execute<RowDataPacket[]>('UPDATE emails SET body_html = ? WHERE id = ? AND user_id = ?', [html, email.targetEmailId, userId]);
+        await connection.execute('UPDATE emails SET body_html = ? WHERE id = ? AND user_id = ?', [html, email.targetEmailId, userId]);
       }
     }
 
@@ -777,7 +777,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     if (scopedBackup.import_sections.includes('calendar')) {
       // A long restore can commit event timestamps older than the reminder scan
       // cursor. Visibility-only restores also leave event timestamps unchanged.
-      await connection.execute<RowDataPacket[]>('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
+      await connection.execute('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
     }
     if (beforeCommit) await beforeCommit(connection, result);
     commitAttempted = true;

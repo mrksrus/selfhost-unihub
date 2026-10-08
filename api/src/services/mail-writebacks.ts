@@ -105,7 +105,7 @@ async function queueChanges(cx: SqlExecutor, userId: string, emails: EmailRow[],
     for (const [action, value] of Object.entries(changes)) {
       if (!fields[action]) throw fail('Unsupported mail change', 400);
       if (!remoteEligible(email) || Number(email.is_active) === 0 || local.has(email.id)) {
-        await cx.execute<RowDataPacket[]>(`UPDATE emails SET ${fields[action]}=? WHERE id=? AND user_id=?`, [value as ExecuteValues, email.id, userId]);
+        await cx.execute(`UPDATE emails SET ${fields[action]}=? WHERE id=? AND user_id=?`, [value as ExecuteValues, email.id, userId]);
         continue;
       }
       let target = action === 'move' ? String(value) : Number(Boolean(value)).toString(), targetFolder = null;
@@ -126,7 +126,7 @@ async function queueChanges(cx: SqlExecutor, userId: string, emails: EmailRow[],
       if (old && !Number.isSafeInteger(revision)) throw fail('Mail intent revision exhausted');
       if (old && Number(old.is_current)) {
         const pendingEffect = Number(old.dispatched) && old.state !== 'confirmed';
-        await cx.execute<RowDataPacket[]>(`UPDATE mail_writebacks SET is_current=FALSE,state=?,status=? WHERE id=? AND user_id=? AND mail_account_id=?`,
+        await cx.execute(`UPDATE mail_writebacks SET is_current=FALSE,state=?,status=? WHERE id=? AND user_id=? AND mail_account_id=?`,
           [pendingEffect ? 'reconciling' : old.state === 'confirmed' ? 'confirmed' : 'superseded',
             pendingEffect ? 'pending' : old.state === 'confirmed' ? 'done' : 'done', old.id, userId, email.mail_account_id]);
       }
@@ -136,7 +136,7 @@ async function queueChanges(cx: SqlExecutor, userId: string, emails: EmailRow[],
         [userId, email.mail_account_id, email.id, email.remote_folder, email.remote_uidvalidity, email.remote_uid]);
       const base = action === 'move' ? email.remote_folder : old && Number(old.dispatched) ? old.target_value : Number(Boolean(email[fields[action]])).toString();
       const id = crypto.randomUUID();
-      await cx.execute<RowDataPacket[]>(`INSERT INTO mail_writebacks
+      await cx.execute(`INSERT INTO mail_writebacks
         (id,user_id,mail_account_id,email_id,action,target_value,base_value,target_folder,remote_folder,remote_uid,remote_uidvalidity,
           status,state,is_current,intent_revision,client_key,source_occurrence_id)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,'pending','queued',TRUE,?,?,?)`,
@@ -275,7 +275,7 @@ async function acceptServerState(userId: string, id: string) {
 }
 async function cancelForAccount(cx: SqlExecutor, accountId: string, userId: string) {
   // Disconnect/settings pause does not erase an accepted or uncertain provider effect.
-  await cx.execute<RowDataPacket[]>(`UPDATE mail_writebacks SET state='reconciling',status='pending',error='Account paused; check provider after reconnect'
+  await cx.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',error='Account paused; check provider after reconnect'
     WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN ('executing','verifying','retry_wait')`, [accountId, userId]);
 }
 // Operation and reconcile jobs run on the durable mail scheduler
@@ -318,7 +318,7 @@ async function runDueWritebacks() {
         const [paused] = await db.execute<RowDataPacket[]>(`SELECT j.id FROM mail_engine_jobs j JOIN mail_engine_accounts a ON a.mail_account_id=j.mail_account_id
           WHERE j.operation_id=? AND j.user_id=? AND j.mail_account_id=? AND j.state='paused' AND a.user_id=? AND a.paused_reason IS NULL`,
         [row.id, row.user_id, row.mail_account_id, row.user_id]);
-        for (const job of paused) await db.execute<RowDataPacket[]>(`UPDATE mail_engine_jobs SET state='queued',due_at=UTC_TIMESTAMP()
+        for (const job of paused) await db.execute(`UPDATE mail_engine_jobs SET state='queued',due_at=UTC_TIMESTAMP()
           WHERE id=? AND user_id=? AND state='paused'`, [job.id, row.user_id]);
         await runtime.enqueueJob({ userId: row.user_id, accountId: row.mail_account_id,
           operationId: row.id, kind: 'operation', priority: 0 });
@@ -337,7 +337,7 @@ async function retryWriteback(userId: string, id: string) {
   if (!op) throw fail('Change not found', 404);
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore in progress');
   if (op.action === 'move' && Number(op.dispatched)) {
-    await db.execute<RowDataPacket[]>(`UPDATE mail_writebacks SET state='reconciling',status='pending',available_at=UTC_TIMESTAMP()
+    await db.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',available_at=UTC_TIMESTAMP()
       WHERE id=? AND user_id=? AND state IN ('needs_attention','reconciling','retry_wait')`, [id, userId]);
     await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id,
       kind: 'reconcile', priority: 0, foreground: true });
@@ -373,11 +373,11 @@ async function requeue(userId: string, op: OperationRow) {
         WHERE o.email_id=? AND o.user_id=? AND o.mail_account_id=? AND o.presence='present'
         AND BINARY m.remote_name=BINARY ? AND o.uid=? AND o.uidvalidity=? LIMIT 1`,
       [row.email_id, userId, row.mail_account_id, email.remote_folder, email.remote_uid, email.remote_uidvalidity]);
-      if (occ) await cx.execute<RowDataPacket[]>(`UPDATE mail_writebacks SET remote_folder=?,remote_uid=?,remote_uidvalidity=?,source_occurrence_id=?
+      if (occ) await cx.execute(`UPDATE mail_writebacks SET remote_folder=?,remote_uid=?,remote_uidvalidity=?,source_occurrence_id=?
         WHERE id=? AND user_id=? AND mail_account_id=?`,
       [email.remote_folder, email.remote_uid, email.remote_uidvalidity, occ.id, row.id, userId, row.mail_account_id]);
     }
-    await cx.execute<RowDataPacket[]>(`UPDATE mail_writebacks SET state='queued',status='pending',error=NULL,dispatched=FALSE,attempts=0,
+    await cx.execute(`UPDATE mail_writebacks SET state='queued',status='pending',error=NULL,dispatched=FALSE,attempts=0,
       available_at=UTC_TIMESTAMP() WHERE id=? AND user_id=? AND mail_account_id=?`, [row.id, userId, row.mail_account_id]);
     await cx.commit(); return true;
   } catch (error) { await cx.rollback(); throw error; }

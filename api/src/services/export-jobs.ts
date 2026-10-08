@@ -372,7 +372,7 @@ function serializeJob(row: ExportRow) {
 async function updateJob(jobId: string, fields: Record<string, ExecuteValues>) {
   const keys = Object.keys(fields);
   if (!keys.length) return;
-  await db.execute<ExportRow[]>(
+  await db.execute(
     `UPDATE data_export_jobs SET ${keys.map(key => `${key} = ?`).join(', ')} WHERE id = ?`,
     [...keys.map(key => fields[key]), jobId]
   );
@@ -450,7 +450,7 @@ async function runDataExportJob(jobId: string) {
       });
       await fs.promises.rm(temporaryZipPath, { force: true });
       temporaryZipPath = null;
-      await db.execute<ExportRow[]>(
+      await db.execute(
         `INSERT INTO backup_archive_keys
            (backup_uuid, user_id, export_job_id, server_wrapped_key, recovery_password_ciphertext)
          VALUES (?, ?, ?, ?, ?)
@@ -492,7 +492,7 @@ async function runDataExportJob(jobId: string) {
     if (temporaryZipPath) await fs.promises.rm(temporaryZipPath, { force: true }).catch(() => {});
     if (finalPath) await fs.promises.rm(finalPath, { force: true }).catch(() => {});
     if (backupUuid) {
-      await db.execute<ExportRow[]>(
+      await db.execute(
         'DELETE FROM backup_archive_keys WHERE backup_uuid = ? AND export_job_id = ?',
         [backupUuid, jobId]
       ).catch(() => {});
@@ -537,7 +537,7 @@ async function startDataExportJob(userId: string, { sections, scope, encrypt = t
     if (!owned.length) throw Object.assign(new Error('Mail account not found'), { status: 404 });
   }
   const jobId = crypto.randomUUID();
-  await db.execute<ExportRow[]>(
+  await db.execute(
     `INSERT INTO data_export_jobs
        (id, user_id, scope, status, phase, progress, requested_sections, encryption_enabled, mail_account_id)
      VALUES (?, ?, ?, 'queued', 'queued', 0, ?, ?, ?)`,
@@ -598,13 +598,13 @@ async function resumePendingDataExportJobs({ schedule = true } = {}) {
      FROM data_export_jobs
      WHERE status IN ('queued', 'running', 'cancelling')`
   );
-  await db.execute<ExportRow[]>(
+  await db.execute(
     `DELETE archive_keys
      FROM backup_archive_keys archive_keys
      INNER JOIN data_export_jobs jobs ON jobs.id = archive_keys.export_job_id
      WHERE jobs.status IN ('running', 'cancelling')`
   );
-  await db.execute<ExportRow[]>(
+  await db.execute(
     `UPDATE data_export_jobs
      SET status = 'cancelled',
          phase = 'cancelled',
@@ -614,7 +614,7 @@ async function resumePendingDataExportJobs({ schedule = true } = {}) {
      WHERE status IN ('queued', 'running', 'cancelling')
        AND (cancel_requested = TRUE OR status = 'cancelling')`
   );
-  await db.execute<ExportRow[]>(
+  await db.execute(
     `UPDATE data_export_jobs
      SET status = 'queued',
          phase = 'queued',
@@ -681,7 +681,7 @@ async function deleteDataExportJob(userId: string, jobId: string | null) {
   if (activeRestore.length) {
     return { error: 'This backup is currently used by a restore job', status: 409 };
   }
-  await db.execute<ExportRow[]>(
+  await db.execute(
     `UPDATE backup_restore_jobs
      SET source_export_job_id = NULL, archive_path = NULL
      WHERE source_export_job_id = ? AND user_id = ?`,
@@ -690,7 +690,7 @@ async function deleteDataExportJob(userId: string, jobId: string | null) {
   if (job.file_path && isBackupPathUnderRoot(job.file_path)) {
     await fs.promises.rm(path.resolve(job.file_path), { force: true }).catch(() => {});
   }
-  await db.execute<ExportRow[]>('DELETE FROM data_export_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
+  await db.execute('DELETE FROM data_export_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
   await pruneArchiveKeyIfUnreferenced(userId, job.backup_uuid);
   return { deleted: true };
 }

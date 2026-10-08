@@ -1,6 +1,5 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { RouteRequest, ApiError } from '../types';
-import type { SqlExecutor } from '../types';
+import type { RouteRequest, ApiError, SqlExecutor } from '../types';
 import { folderConnections } from '../services/mail-folder-reconciliation';
 import { membershipCountQuery, unreadMembershipQuery } from '../services/mail-folder-view';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
@@ -265,7 +264,7 @@ export = {
       }
       if (updates.length === 0) return { error: 'No fields to update', status: 400 };
       params.push(folder.id, userId);
-      await db.execute<RowDataPacket[]>(`UPDATE mail_folders SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      await db.execute(`UPDATE mail_folders SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
       const updatedFolders = await getMailFolderRowsWithCounts(userId);
       return { folder: updatedFolders.find(item => item.slug === slug) || null, folders: updatedFolders };
     } catch (error) {
@@ -349,7 +348,7 @@ export = {
       const priority = Number.isFinite(priorityNumber) ? priorityNumber : 100;
       const isActive = body?.is_active === undefined ? true : !!body.is_active;
       const ruleId = crypto.randomUUID();
-      await db.execute<RowDataPacket[]>(
+      await db.execute(
         `INSERT INTO mail_sender_rules (id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [ruleId, userId, accountId, parsed.matchType!, parsed.matchValue!, targetFolder, priority, isActive ? 1 : 0]
@@ -394,13 +393,13 @@ export = {
       const parsedPriority = Number.parseInt(String(priorityCandidate), 10);
       const priority = Number.isFinite(parsedPriority) ? parsedPriority : 100;
       const isActive = body?.is_active !== undefined ? !!body.is_active : toBooleanFlag(existing.is_active);
-      await db.execute<RowDataPacket[]>(
+      await db.execute(
         `UPDATE mail_sender_rules
          SET mail_account_id = ?, match_type = ?, match_value = ?, target_folder = ?, priority = ?, is_active = ?
          WHERE id = ? AND user_id = ?`,
         [accountId, parsed.matchType!, parsed.matchValue!, nextTargetFolder, priority, isActive ? 1 : 0, ruleId, userId]
       );
-      await db.execute<RowDataPacket[]>('DELETE FROM mail_folder_rule_overrides WHERE rule_id = ?', [ruleId]);
+      await db.execute('DELETE FROM mail_folder_rule_overrides WHERE rule_id = ?', [ruleId]);
       const [rows] = await db.execute<RowDataPacket[]>(
         'SELECT id, user_id, mail_account_id, match_type, match_value, target_folder, priority, is_active, created_at, updated_at FROM mail_sender_rules WHERE id = ? LIMIT 1',
         [ruleId]

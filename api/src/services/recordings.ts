@@ -275,10 +275,10 @@ async function deleteRecordingFiles(storagePath: string | null | undefined) {
 
 async function ensureRecordingTags(userId: string, recordingId: string, tagNames: unknown, connection: SqlExecutor = db) {
   const normalizedTags = normalizeTags(tagNames);
-  await connection.execute<RowDataPacket[]>('DELETE FROM recording_tag_links WHERE user_id = ? AND recording_id = ?', [userId, recordingId]);
+  await connection.execute('DELETE FROM recording_tag_links WHERE user_id = ? AND recording_id = ?', [userId, recordingId]);
   for (const tagName of normalizedTags) {
     const tagId = crypto.randomUUID();
-    await connection.execute<RowDataPacket[]>(
+    await connection.execute(
       `INSERT INTO recording_tags (id, user_id, name)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE name = VALUES(name)`,
@@ -289,7 +289,7 @@ async function ensureRecordingTags(userId: string, recordingId: string, tagNames
       [userId, tagName]
     );
     const existingTagId = rows[0]?.id || tagId;
-    await connection.execute<RowDataPacket[]>(
+    await connection.execute(
       `INSERT IGNORE INTO recording_tag_links (recording_id, tag_id, user_id)
        VALUES (?, ?, ?)`,
       [recordingId, existingTagId, userId]
@@ -464,7 +464,7 @@ async function createRecordingUpload(userId: string, uploadId: string, totalByte
   const expiresAt = new Date(Date.now() + UPLOAD_TTL_HOURS * 60 * 60 * 1000);
 
   try {
-    await db.execute<RowDataPacket[]>(
+    await db.execute(
       `INSERT INTO recording_uploads
         (id, user_id, title, description, original_filename, content_type, total_bytes, duration_seconds, source, category, recorded_at, metadata, tags, temp_path, expires_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -620,7 +620,7 @@ async function completeRecordingUpload(userId: string, uploadId: string, input: 
       const storedStat = await fs.promises.stat(finalPath);
       connection = await db.getConnection();
       await connection.beginTransaction();
-      await connection.execute<RowDataPacket[]>(
+      await connection.execute(
         `INSERT INTO recordings
           (id, user_id, title, description, original_filename, content_type, size_bytes, duration_seconds, storage_path, source, category, recorded_at, metadata)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -641,7 +641,7 @@ async function completeRecordingUpload(userId: string, uploadId: string, input: 
         ]
       );
       await ensureRecordingTags(userId, recordingId, parseTagsJson(upload.tags), connection);
-      await connection.execute<RowDataPacket[]>('DELETE FROM recording_uploads WHERE id = ? AND user_id = ?', [uploadId, userId]);
+      await connection.execute('DELETE FROM recording_uploads WHERE id = ? AND user_id = ?', [uploadId, userId]);
       await connection.commit();
     } catch (error) {
       if (connection) await connection.rollback().catch(() => {});
@@ -666,7 +666,7 @@ async function abortRecordingUpload(userId: string, uploadId: string) {
     if (upload.temp_path && isPathUnderRoot(upload.temp_path)) {
       await fs.promises.rm(path.resolve(upload.temp_path), { force: true });
     }
-    await db.execute<RowDataPacket[]>('DELETE FROM recording_uploads WHERE id = ? AND user_id = ?', [uploadId, userId]);
+    await db.execute('DELETE FROM recording_uploads WHERE id = ? AND user_id = ?', [uploadId, userId]);
     return { deleted: true };
   });
 }
@@ -698,7 +698,7 @@ async function updateRecording(userId: string, recordingId: string, input: Uploa
   }
   if (updates.length > 0) {
     params.push(recordingId, userId);
-    await db.execute<RowDataPacket[]>(`UPDATE recordings SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+    await db.execute(`UPDATE recordings SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
   }
   if (Object.prototype.hasOwnProperty.call(input, 'tags')) {
     await ensureRecordingTags(userId, recordingId, input.tags);
@@ -711,7 +711,7 @@ async function deleteRecording(userId: string, recordingId: string) {
   const recording = await getRecordingForUser(userId, recordingId);
   if (!recording) return { error: 'Recording not found', status: 404 };
   await deleteRecordingFiles(recording.storage_path);
-  await db.execute<RowDataPacket[]>('DELETE FROM recordings WHERE id = ? AND user_id = ?', [recordingId, userId]);
+  await db.execute('DELETE FROM recordings WHERE id = ? AND user_id = ?', [recordingId, userId]);
   return { deleted: true };
 }
 
@@ -730,7 +730,7 @@ async function cleanupExpiredRecordingUploads() {
       if (row.temp_path && isPathUnderRoot(row.temp_path)) {
         await fs.promises.rm(path.resolve(row.temp_path), { force: true }).catch(() => {});
       }
-      await db.execute<RowDataPacket[]>('DELETE FROM recording_uploads WHERE id = ?', [row.id]);
+      await db.execute('DELETE FROM recording_uploads WHERE id = ?', [row.id]);
     }).catch(() => {});
   }
   return rows.length;

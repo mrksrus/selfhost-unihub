@@ -1,4 +1,4 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -107,7 +107,7 @@ async function deleteDraftWithFiles(userId: string, draftId: string) {
     'SELECT storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?',
     [draftId, userId]
   );
-  await db.execute<RowDataPacket[]>('DELETE FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE', [draftId, userId]);
+  await db.execute('DELETE FROM emails WHERE id = ? AND user_id = ? AND is_draft = TRUE', [draftId, userId]);
   const fileResult = await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
   return {
     deleted: true,

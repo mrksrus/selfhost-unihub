@@ -1,7 +1,7 @@
 // Validated archive rows share the SQL table representation. Ownership IDs and
 // file/progress seams are explicit; per-table SQL column types can be tightened further.
 import type { RowDataPacket } from 'mysql2/promise';
-import type { ArchiveEnvelope, BackupPayload, BackupFileSource, SqlExecutor } from '../types';
+import type { ArchiveEnvelope, BackupPayload, BackupFileSource, SqlExecutor, StoredFlag } from '../types';
 
 export interface RestoreRow extends RowDataPacket {
   id: string;
@@ -57,4 +57,45 @@ export interface ImportResult extends Record<string, unknown> {
   counts: Record<string, number>;
   import_sections: string[];
   restored_files?: number;
+}
+
+// Mail engine rows of an archive (backup-mail-engine, backup-mail-recovery).
+export interface MailRestoreRow extends Record<string, unknown> {
+  id: string;
+  mail_account_id: string;
+  email_id: string;
+  rule_id: string;
+  action: string;
+  target_value: string;
+  base_value?: string | null;
+  target_folder: string | null;
+  remote_folder: string | null;
+  remote_uid: number | string | null;
+  remote_uidvalidity: number | string | null;
+  attempts?: number;
+  dispatched?: StoredFlag;
+  dispatch_modseq?: string | null;
+  source_occurrence_id?: string | null;
+  intent_revision?: number | string;
+  client_key: string;
+  request_hash: string;
+  state?: string;
+  status?: string;
+  raw_bytes?: number | null;
+  import_complete?: StoredFlag;
+  source_account_id: string;
+  original_filing_account_id?: string | null;
+  target_account_id?: string | null;
+  original_folder: string | null;
+  created_at?: string | Date;
+  completed_at?: string | Date;
+}
+export type MailRestoreData = Record<string, MailRestoreRow[] | undefined>;
+export interface MailRestoreContext {
+  accountIds: Map<string, string>;
+  emailIds: Map<string, string>;
+  writtenEmailIds: Set<string>;
+  restoredPaths: Map<string, string>;
+  checkCancelled: () => Promise<unknown>;
+  warnings: string[];
 }

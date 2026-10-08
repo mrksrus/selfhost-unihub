@@ -1,6 +1,6 @@
 // Durable provider operation executor. IMAP is never called inside a SQL transaction.
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { SqlExecutor, StoredFlag } from '../../types';
+import type { SqlExecutor } from '../../types';
 import type { OperationRow } from '../../types/mail-engine';
 import type { ProtocolConnection } from '../../types/imap-protocol';
 

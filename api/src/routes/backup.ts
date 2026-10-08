@@ -1,4 +1,4 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import fs from 'fs';
 import path from 'path';
@@ -151,7 +151,7 @@ const routes = {
       if (!isBackupPathUnderRoot(job.file_path)) return { error: 'Invalid backup path', status: 500 };
       const filePath = path.resolve(job.file_path);
       const stat = await fs.promises.stat(filePath);
-      await db.execute<RowDataPacket[]>(
+      await db.execute(
         'UPDATE data_export_jobs SET downloaded_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?',
         [jobId, userId]
       );
@@ -205,7 +205,7 @@ const routes = {
         row.recovery_password_ciphertext,
         row.backup_uuid
       );
-      await connection.execute<RowDataPacket[]>(
+      await connection.execute(
         `UPDATE backup_archive_keys
          SET recovery_password_ciphertext = NULL,
              recovery_password_revealed_at = UTC_TIMESTAMP()

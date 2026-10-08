@@ -96,7 +96,7 @@ async function saveCalDavAccount({ userId, emailAddress, displayName, username, 
     principalHref: found.discovery.principalHref || null,
     credentialScope: found.credentialScope,
     server: found.server,
-    hint: ('hint' in found ? found.hint : null) || null,
+    hint: found.hint || null,
     timeZone: cleanTimeZone(timeZone) || cleanTimeZone(previous.timeZone),
     ...(mailAccountId ? { mailLinked: true } : {}),
   };
@@ -175,7 +175,7 @@ async function probeIcsFeed(rawUrl: unknown) {
       ? 'The calendar address was not accepted. Copy the private or public iCal address again.'
       : `The calendar address could not be read: ${error.message}`, 422, 'ICS_UNREACHABLE');
   });
-  const name = (/^X-WR-CALNAME:(.*)$/im.exec(('text' in feed ? feed.text : ''))?.[1] || '').trim().slice(0, 255) || null;
+  const name = (/^X-WR-CALNAME:(.*)$/im.exec(feed.notModified ? '' : feed.text)?.[1] || '').trim().slice(0, 255) || null;
   return { url, name };
 }
 
@@ -190,7 +190,15 @@ async function connectIcsSubscription({ userId, url: rawUrl, displayName, mailAc
 
 // Find the calendar server for a login and connect it. caldavUrl is optional:
 // without it the server is found from the address and mail server.
-async function connectCalDavAccount({ userId, emailAddress, displayName, username, password, imapHost, caldavUrl, mailAccountId = null, timeZone }: ConnectInput) {
+// An iCalendar subscription has no calendars yet, and no server or hint.
+interface ConnectedCalendar {
+  account: ReturnType<typeof serializeCalendarAccount>;
+  calendars: Awaited<ReturnType<typeof saveCalDavAccount>>['calendars'];
+  server?: Awaited<ReturnType<typeof caldav.findCalDavServer>>['server'];
+  hint?: string | null;
+}
+
+async function connectCalDavAccount({ userId, emailAddress, displayName, username, password, imapHost, caldavUrl, mailAccountId = null, timeZone }: ConnectInput): Promise<ConnectedCalendar> {
   await assertCalendarAvailable(userId);
   const provider = caldav.matchCalendarProvider({ emailAddress, imapHost });
   if (caldavUrl && looksLikeIcsFeed(caldavUrl, provider)) {
@@ -226,7 +234,7 @@ async function connectCalDavAccount({ userId, emailAddress, displayName, usernam
   if (duplicate && !existing) await calendarSync.deleteCalendarAccount(userId, duplicate.id);
   const { account, calendars } = await saveCalDavAccount({ userId, emailAddress, displayName, username: login, password, mailAccountId, timeZone, found, existing });
   startFirstSync(account);
-  return { account: serializeCalendarAccount(account), calendars, server: found.server, hint: ('hint' in found ? found.hint : null) || null };
+  return { account: serializeCalendarAccount(account), calendars, server: found.server, hint: found.hint || null };
 }
 
 async function removeCalendarAccount(userId: string, accountId: string) {
@@ -396,7 +404,7 @@ async function setMailCalendar(userId: string, mailAccountId: string, { enabled,
     if (still.length) await removeCalendarAccount(userId, existing.id);
   }
   const [rows] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ?', [connected.account.id]);
-  return { ...await describeLink(userId, mail, rows[0]), server: ('server' in connected ? connected.server : null) || null, hint: ('hint' in connected ? connected.hint : null) || null };
+  return { ...await describeLink(userId, mail, rows[0]), server: connected.server || null, hint: connected.hint || null };
 }
 
 export {

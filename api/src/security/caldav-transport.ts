@@ -11,7 +11,7 @@ interface DigestChallenge { realm: string; nonce: string; opaque?: string; algor
 interface ConnectionTarget { hostname: string; address: string; family: number }
 interface RequestOptions {
   method: string;
-  username?: string;
+  username?: string | null;
   password?: string;
   authorization?: string;
   body?: string | Buffer;
@@ -80,7 +80,7 @@ function parseDigestChallenge(header: string | string[] | undefined): DigestChal
   return { realm: params.realm, nonce: params.nonce, opaque: params.opaque, algorithm, qop: qops ? 'auth' : null };
 }
 
-function digestAuthorization(challenge: DigestChallenge, { method, uri, username, password }: { method: string; uri: string; username?: string; password?: string }) {
+function digestAuthorization(challenge: DigestChallenge, { method, uri, username, password }: { method: string; uri: string; username?: string | null; password?: string }) {
   const hash = (value: string) => crypto.createHash(challenge.algorithm === 'SHA-256' ? 'sha256' : 'md5').update(value).digest('hex');
   const quote = (value: unknown) => `"${String(value).replace(/(["\\])/g, '\\$1')}"`;
   const cnonce = crypto.randomBytes(12).toString('hex');

@@ -1,5 +1,5 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { RouteRequest, ApiError } from '../types';
+import type { RouteRequest } from '../types';
 import { db } from '../state';
 import fs from 'fs';
 import path from 'path';
@@ -57,7 +57,7 @@ async function setUserPreferences(userId: string, input: Input = {}) {
     updates[key] = normalizedValue;
   }
   for (const [key, value] of Object.entries(updates)) {
-    await db.execute<RowDataPacket[]>(
+    await db.execute(
       `INSERT INTO user_settings (user_id, setting_key, setting_value)
        VALUES (?, ?, ?)
        ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
@@ -113,7 +113,7 @@ export = {
           await fs.promises.rm(rawPath, { force: true }).catch(() => {});
         }
       }
-      await db.execute<RowDataPacket[]>('DELETE FROM users WHERE id = ?', [userId]);
+      await db.execute('DELETE FROM users WHERE id = ?', [userId]);
       clearAuthCookie(res);
       clearCsrfCookie(res);
       return { deleted: true };
@@ -140,8 +140,8 @@ export = {
     try {
       const [subtasksResult] = await db.execute<ResultSetHeader>('DELETE FROM calendar_event_subtasks WHERE user_id = ?', [userId]);
       const [eventsResult] = await db.execute<ResultSetHeader>('DELETE FROM calendar_events WHERE user_id = ?', [userId]);
-      await db.execute<RowDataPacket[]>('DELETE FROM calendar_calendars WHERE user_id = ?', [userId]);
-      await db.execute<RowDataPacket[]>('DELETE FROM calendar_accounts WHERE user_id = ?', [userId]);
+      await db.execute('DELETE FROM calendar_calendars WHERE user_id = ?', [userId]);
+      await db.execute('DELETE FROM calendar_accounts WHERE user_id = ?', [userId]);
       await ensureDefaultLocalCalendarForUser(userId);
       const deletedSubtasks = subtasksResult.affectedRows || 0;
       const deletedEvents = eventsResult.affectedRows || 0;

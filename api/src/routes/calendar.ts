@@ -1,6 +1,5 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { RouteRequest, ApiError } from '../types';
-import type { ExecuteValues } from 'mysql2/promise';
+import type { ExecuteValues, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import type { RouteRequest, ApiError, StoredFlag } from '../types';
 import type { CalendarAccount, CalendarCalendar, CalendarEvent, CalendarAttendee, CalendarSubtask } from '../types/calendar';
 import crypto from 'crypto';
 import { db } from '../state';
@@ -46,7 +45,11 @@ interface Input extends Record<string, unknown> {
   subtask_ids?: unknown;
   is_done?: unknown;
 }
-type CalendarRow = RowDataPacket & CalendarAccount & CalendarCalendar & CalendarEvent & CalendarAttendee & CalendarSubtask;
+type AccountRow = RowDataPacket & CalendarAccount;
+type CalendarRecordRow = RowDataPacket & CalendarCalendar;
+type EventRow = RowDataPacket & CalendarEvent;
+type SubtaskRow = RowDataPacket & CalendarSubtask;
+type CountRow = RowDataPacket & { count: number };
 type PushResult = Record<string, unknown> & { error?: string; status?: number; scope?: string };
 
 const {
@@ -78,7 +81,7 @@ const calendarAccounts = require('../services/calendar-accounts') as typeof impo
 const has = (body: Record<string, unknown>, key: string) => Object.prototype.hasOwnProperty.call(body, key);
 
 async function loadCalendarAccountRow(userId: string, calendarId: string) {
-  const [rows] = await db.execute<CalendarRow[]>(
+  const [rows] = await db.execute<(CalendarRecordRow & { provider: string; is_active: StoredFlag })[]>(
     `SELECT c.id, c.read_only, a.provider, a.is_active FROM calendar_calendars c
      JOIN calendar_accounts a ON a.id = c.account_id WHERE c.id = ? AND c.user_id = ? LIMIT 1`,
     [calendarId, userId]
@@ -125,7 +128,7 @@ export = {
     try {
       await ensureDefaultLocalCalendarForUser(userId);
       // With the state of a linked mail account, whose login a calendar uses.
-      const [rows] = await db.execute<CalendarRow[]>(
+      const [rows] = await db.execute<(AccountRow & { mail_connected: number })[]>(
         `SELECT ca.*, (${MAIL_CONNECTED_SQL}) AS mail_connected FROM calendar_accounts ca
          LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id
          WHERE ca.user_id = ? ORDER BY ca.created_at ASC`,
@@ -163,7 +166,7 @@ export = {
       const accountId = crypto.randomUUID();
       const capabilities = CALENDAR_PROVIDER_DEFAULT_CAPABILITIES.local;
 
-      await db.execute<CalendarRow[]>(
+      await db.execute(
         `INSERT INTO calendar_accounts
           (id, user_id, provider, account_email, display_name, capabilities, is_active)
          VALUES (?, ?, 'local', ?, ?, ?, ?)`,
@@ -177,7 +180,7 @@ export = {
         ]
       );
 
-      await db.execute<CalendarRow[]>(
+      await db.execute(
         `INSERT INTO calendar_calendars
           (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
          VALUES (?, ?, ?, ?, ?, ?, TRUE, TRUE, FALSE, TRUE)`,
@@ -191,7 +194,7 @@ export = {
         ]
       );
 
-      const [rows] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
+      const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
       const created = rows[0];
       const account = serializeCalendarAccount(created);
       return { account };
@@ -206,7 +209,7 @@ export = {
     try {
       const id = getCalendarAccountIdFromReq(req)!;
       if (!id) return { error: 'Invalid account id', status: 400 };
-      const [existing] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      const [existing] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
       if (existing.length === 0) return { error: 'Calendar account not found', status: 404 };
 
       const updates = [];
@@ -252,9 +255,9 @@ export = {
       if (updates.length === 0) return { error: 'No fields to update', status: 400 };
 
       params.push(id, userId);
-      await db.execute<CalendarRow[]>(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      await db.execute(`UPDATE calendar_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
       if (resume) calendarSync.syncCalendarAccountInBackground(id, { userId, reason: 'manual' });
-      const [rows] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
+      const [rows] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
       return { account: serializeCalendarAccount(rows[0]) };
     } catch (error) {
       console.error('Update calendar account error:', error);
@@ -268,12 +271,12 @@ export = {
     try {
       const id = getCalendarAccountIdFromReq(req)!;
       if (!id) return { error: 'Invalid account id', status: 400 };
-      const [accounts] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      const [accounts] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
       if (accounts.length === 0) return { error: 'Calendar account not found', status: 404 };
 
       const account = accounts[0];
       if (account.provider === 'local') {
-        const [localCountRows] = await db.execute<CalendarRow[]>(
+        const [localCountRows] = await db.execute<CountRow[]>(
           `SELECT COUNT(*) AS count FROM calendar_accounts WHERE user_id = ? AND provider = 'local'`,
           [userId]
         );
@@ -296,7 +299,7 @@ export = {
     try {
       const id = getCalendarAccountIdFromReq(req)!;
       if (!id) return { error: 'Invalid account id', status: 400 };
-      const [rows] = await db.execute<CalendarRow[]>('SELECT provider, is_active FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      const [rows] = await db.execute<AccountRow[]>('SELECT provider, is_active FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
       if (!rows.length) return { error: 'Calendar account not found', status: 404 };
       if (!isRemoteProvider(rows[0].provider)) return { error: 'Local calendars do not sync', status: 400 };
       if (!rows[0].is_active) return { error: 'Sync is paused for this account.', status: 409, code: 'CALENDAR_SYNC_PAUSED' };
@@ -308,7 +311,7 @@ export = {
         result = { ok: false, ...calendarSync.calendarErrorResponse(error, 'Calendar sync failed') };
         delete result.status;
       }
-      const [account] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
+      const [account] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [id, userId]);
       return { result, account: account[0] ? serializeCalendarAccount(account[0]) : null };
     } catch (error) {
       return calendarSync.calendarErrorResponse(error, 'Calendar sync failed');
@@ -320,7 +323,7 @@ export = {
     if (!CALENDAR_MULTI_ENABLED) return { error: 'Calendar multi-account feature disabled', status: 503 };
     try {
       await ensureDefaultLocalCalendarForUser(userId);
-      const [rows] = await db.execute<CalendarRow[]>(
+      const [rows] = await db.execute<CalendarRecordRow[]>(
         `SELECT c.*, a.provider, a.display_name AS account_display_name, a.account_email
          FROM calendar_calendars c
          INNER JOIN calendar_accounts a ON a.id = c.account_id
@@ -348,7 +351,7 @@ export = {
       const accountId = body.account_id;
       if (!accountId) return { error: 'account_id is required', status: 400 };
       if (!body.name?.trim()) return { error: 'name is required', status: 400 };
-      const [accounts] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+      const [accounts] = await db.execute<AccountRow[]>('SELECT * FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
       if (accounts.length === 0) return { error: 'Calendar account not found', status: 404 };
       const account = accounts[0];
       if (isRemoteProvider(account.provider)) {
@@ -356,7 +359,7 @@ export = {
       }
 
       const calendarId = crypto.randomUUID();
-      await db.execute<CalendarRow[]>(
+      await db.execute(
         `INSERT INTO calendar_calendars
           (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -373,7 +376,7 @@ export = {
           !!body.is_primary,
         ]
       );
-      const [rows] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1', [calendarId, userId]);
+      const [rows] = await db.execute<CalendarRecordRow[]>('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1', [calendarId, userId]);
       return { calendar: serializeCalendarCalendar(rows[0]) };
     } catch (error) {
       console.error('Create calendar error:', error);
@@ -387,10 +390,10 @@ export = {
     try {
       const id = getCalendarCalendarIdFromReq(req)!;
       if (!id) return { error: 'Invalid calendar id', status: 400 };
-      const [existingRows] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
+      const [existingRows] = await db.execute<CalendarRecordRow[]>('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
       if (existingRows.length === 0) return { error: 'Calendar not found', status: 404 };
       const existing = existingRows[0];
-      const [[owner]] = await db.execute<CalendarRow[]>('SELECT provider FROM calendar_accounts WHERE id = ?', [existing.account_id]);
+      const [[owner]] = await db.execute<AccountRow[]>('SELECT provider FROM calendar_accounts WHERE id = ?', [existing.account_id]);
       const remote = isRemoteProvider(owner?.provider);
       if (remote && has(body, 'name') && body.name?.trim() !== existing.name) {
         return { error: 'Rename this calendar on its server; the new name appears after the next sync.', status: 400 };
@@ -423,19 +426,19 @@ export = {
 
       // Keep only one primary calendar per account when requested.
       if (body.is_primary === true) {
-        await db.execute<CalendarRow[]>('UPDATE calendar_calendars SET is_primary = FALSE WHERE account_id = ? AND user_id = ?', [existing.account_id, userId]);
+        await db.execute('UPDATE calendar_calendars SET is_primary = FALSE WHERE account_id = ? AND user_id = ?', [existing.account_id, userId]);
       }
 
       params.push(id, userId);
-      await db.execute<CalendarRow[]>(`UPDATE calendar_calendars SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+      await db.execute(`UPDATE calendar_calendars SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
       if (Object.prototype.hasOwnProperty.call(body, 'is_visible')) {
-        await db.execute<CalendarRow[]>('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
+        await db.execute('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
       }
       // Synced events take their calendar's color.
       if (remote && has(body, 'color')) {
-        await db.execute<CalendarRow[]>('UPDATE calendar_events SET color = ? WHERE calendar_id = ? AND user_id = ?', [body.color || '#2563eb', id, userId]);
+        await db.execute('UPDATE calendar_events SET color = ? WHERE calendar_id = ? AND user_id = ?', [body.color || '#2563eb', id, userId]);
       }
-      const [rows] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
+      const [rows] = await db.execute<CalendarRecordRow[]>('SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
       return { calendar: serializeCalendarCalendar(rows[0]) };
     } catch (error) {
       console.error('Update calendar error:', error);
@@ -450,18 +453,18 @@ export = {
       const id = getCalendarCalendarIdFromReq(req)!;
       if (!id) return { error: 'Invalid calendar id', status: 400 };
 
-      const [rows] = await db.execute<CalendarRow[]>(
+      const [rows] = await db.execute<CalendarRecordRow[]>(
         'SELECT * FROM calendar_calendars WHERE id = ? AND user_id = ? LIMIT 1',
         [id, userId]
       );
       if (rows.length === 0) return { error: 'Calendar not found', status: 404 };
       const calendar = rows[0];
-      const [[owner]] = await db.execute<CalendarRow[]>('SELECT provider FROM calendar_accounts WHERE id = ?', [calendar.account_id]);
+      const [[owner]] = await db.execute<AccountRow[]>('SELECT provider FROM calendar_accounts WHERE id = ?', [calendar.account_id]);
       if (isRemoteProvider(owner?.provider)) {
         return { error: 'Calendars of this account come from its server. Delete the calendar there, or remove the whole account here.', status: 400 };
       }
 
-      const [accountCalendarCountRows] = await db.execute<CalendarRow[]>(
+      const [accountCalendarCountRows] = await db.execute<CountRow[]>(
         'SELECT COUNT(*) AS count FROM calendar_calendars WHERE account_id = ? AND user_id = ?',
         [calendar.account_id, userId]
       );
@@ -470,14 +473,14 @@ export = {
         return { error: 'Cannot delete the last calendar in this account. Delete the account instead.', status: 400 };
       }
 
-      const [eventsCountRows] = await db.execute<CalendarRow[]>(
+      const [eventsCountRows] = await db.execute<CountRow[]>(
         'SELECT COUNT(*) AS count FROM calendar_events WHERE user_id = ? AND calendar_id = ?',
         [userId, id]
       );
       const eventsCount = Number(eventsCountRows[0]?.count || 0);
       // Events reference their calendar with ON DELETE SET NULL; remove them first.
-      await db.execute<CalendarRow[]>('DELETE FROM calendar_events WHERE calendar_id = ? AND user_id = ?', [id, userId]);
-      await db.execute<CalendarRow[]>('DELETE FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
+      await db.execute('DELETE FROM calendar_events WHERE calendar_id = ? AND user_id = ?', [id, userId]);
+      await db.execute('DELETE FROM calendar_calendars WHERE id = ? AND user_id = ?', [id, userId]);
 
       return {
         message: `Calendar deleted. ${eventsCount} linked event(s) were removed.`,
@@ -540,7 +543,7 @@ export = {
       }
       query += ' ORDER BY e.start_time ASC';
 
-      const [rows] = await db.execute<CalendarRow[]>(query, params);
+      const [rows] = await db.execute<EventRow[]>(query, params);
       const eventIds = rows.map((row) => row.id);
       const subtasksByEventId = await getCalendarSubtasksForEvents(userId, eventIds);
       const attendeesByEventId = await getCalendarAttendeesForEvents(userId, eventIds);
@@ -593,7 +596,7 @@ export = {
       const connection = await db.getConnection();
       try {
         await connection.beginTransaction();
-        await connection.execute<RowDataPacket[]>(
+        await connection.execute(
           `INSERT INTO calendar_events
             (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -627,12 +630,12 @@ export = {
         connection.release();
       }
       if (remoteTarget) {
-        const [created] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+        const [created] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
         try {
           await calendarSync.pushCreatedEvent({ userId, event: created[0] });
         } catch (error) {
           // Nothing is kept that the server did not accept.
-          await db.execute<CalendarRow[]>('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+          await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
           return calendarSync.calendarErrorResponse(error, 'Could not save the event to the calendar server');
         }
       }
@@ -664,7 +667,7 @@ export = {
       const id = getCalendarEventIdFromReq(req)!;
       if (!id) return { error: 'Invalid event id', status: 400 };
 
-      const [events] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+      const [events] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       if (events.length === 0) return { error: 'Event not found', status: 404 };
       const currentEvent = events[0];
       const currentCalendar = currentEvent.calendar_id ? await loadCalendarAccountRow(userId, currentEvent.calendar_id) : null;
@@ -736,7 +739,7 @@ export = {
         if (!body.calendar_id) {
           updates.push('calendar_id = NULL');
         } else {
-          const [calRows] = await db.execute<CalendarRow[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ?', [body.calendar_id, userId]);
+          const [calRows] = await db.execute<CalendarRecordRow[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ?', [body.calendar_id, userId]);
           if (calRows.length === 0) return { error: 'Invalid calendar_id', status: 400 };
           updates.push('calendar_id = ?');
           params.push(body.calendar_id);
@@ -757,7 +760,7 @@ export = {
 
       if (updates.length > 0) {
         params.push(id, userId);
-        await db.execute<CalendarRow[]>(`UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
+        await db.execute(`UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
       }
       if (Array.isArray(body.attendees)) {
         await replaceEventAttendees(userId, id, body.attendees);
@@ -788,7 +791,7 @@ export = {
         return { error: 'Invalid todo_status', status: 400 };
       }
 
-      const [currentEvents] = await db.execute<CalendarRow[]>(
+      const [currentEvents] = await db.execute<EventRow[]>(
         'SELECT start_time, end_time FROM calendar_events WHERE id = ? AND user_id = ?',
         [id, userId]
       );
@@ -829,7 +832,7 @@ export = {
         }
 
         if (movedStart && movedEnd) {
-          const [[current]] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+          const [[current]] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
           const writeback = await pushEventChanges(userId, current, { start_time: movedStart, end_time: movedEnd },
             { start_time: movedStart, end_time: movedEnd });
           if (writeback.error) return writeback;
@@ -840,7 +843,7 @@ export = {
 
       const updateQuery = `UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`;
       params.push(id, userId);
-      await db.execute<CalendarRow[]>(updateQuery, params);
+      await db.execute(updateQuery, params);
 
       const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
       return { event: updatedEvent };
@@ -900,10 +903,10 @@ export = {
       const eventId = getCalendarEventIdFromReq(req)!;
       if (!eventId) return { error: 'Invalid event id', status: 400 };
 
-      const [events] = await db.execute<CalendarRow[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+      const [events] = await db.execute<EventRow[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
       if (events.length === 0) return { error: 'Event not found', status: 404 };
 
-      const [subtasks] = await db.execute<CalendarRow[]>(
+      const [subtasks] = await db.execute<SubtaskRow[]>(
         'SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position ASC, created_at ASC',
         [eventId, userId]
       );
@@ -922,30 +925,30 @@ export = {
       const eventId = getCalendarEventIdFromReq(req)!;
       if (!eventId) return { error: 'Invalid event id', status: 400 };
 
-      const [events] = await db.execute<CalendarRow[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+      const [events] = await db.execute<EventRow[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
       if (events.length === 0) return { error: 'Event not found', status: 404 };
 
       let position = Number.isInteger(body.position) && body.position! >= 0 ? body.position! : null;
       if (position === null) {
-        const [maxRows] = await db.execute<CalendarRow[]>(
+        const [maxRows] = await db.execute<(RowDataPacket & { max_position: number })[]>(
           'SELECT COALESCE(MAX(position), -1) AS max_position FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ?',
           [eventId, userId]
         );
         position = Number(maxRows[0]?.max_position ?? -1) + 1;
       } else {
-        await db.execute<CalendarRow[]>(
+        await db.execute(
           'UPDATE calendar_event_subtasks SET position = position + 1 WHERE event_id = ? AND user_id = ? AND position >= ?',
           [eventId, userId, position]
         );
       }
 
       const subtaskId = crypto.randomUUID();
-      await db.execute<CalendarRow[]>(
+      await db.execute(
         'INSERT INTO calendar_event_subtasks (id, event_id, user_id, title, is_done, position) VALUES (?, ?, ?, ?, ?, ?)',
         [subtaskId, eventId, userId, body.title.trim(), !!body.is_done, position]
       );
 
-      const [subtasks] = await db.execute<CalendarRow[]>(
+      const [subtasks] = await db.execute<SubtaskRow[]>(
         'SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
         [subtaskId, eventId, userId]
       );
@@ -964,7 +967,7 @@ export = {
       const subtaskId = getCalendarSubtaskIdFromReq(req)!;
       if (!eventId || !subtaskId) return { error: 'Invalid subtask route', status: 400 };
 
-      const [existing] = await db.execute<CalendarRow[]>(
+      const [existing] = await db.execute<SubtaskRow[]>(
         'SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
         [subtaskId, eventId, userId]
       );
@@ -994,13 +997,13 @@ export = {
 
       if (updates.length > 0) {
         params.push(subtaskId, eventId, userId);
-        await db.execute<CalendarRow[]>(
+        await db.execute(
           `UPDATE calendar_event_subtasks SET ${updates.join(', ')} WHERE id = ? AND event_id = ? AND user_id = ?`,
           params
         );
       }
 
-      const [subtasks] = await db.execute<CalendarRow[]>(
+      const [subtasks] = await db.execute<SubtaskRow[]>(
         'SELECT * FROM calendar_event_subtasks WHERE id = ? AND event_id = ? AND user_id = ?',
         [subtaskId, eventId, userId]
       );
@@ -1044,7 +1047,7 @@ export = {
         return { error: 'subtask_ids must be a non-empty array', status: 400 };
       }
 
-      const [existingRows] = await db.execute<CalendarRow[]>(
+      const [existingRows] = await db.execute<SubtaskRow[]>(
         'SELECT id FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ?',
         [eventId, userId]
       );
@@ -1054,13 +1057,13 @@ export = {
       }
 
       for (let index = 0; index < subtaskIds.length; index += 1) {
-        await db.execute<CalendarRow[]>(
+        await db.execute(
           'UPDATE calendar_event_subtasks SET position = ? WHERE id = ? AND event_id = ? AND user_id = ?',
           [index, subtaskIds[index], eventId, userId]
         );
       }
 
-      const [subtasks] = await db.execute<CalendarRow[]>(
+      const [subtasks] = await db.execute<SubtaskRow[]>(
         'SELECT * FROM calendar_event_subtasks WHERE event_id = ? AND user_id = ? ORDER BY position ASC, created_at ASC',
         [eventId, userId]
       );
@@ -1077,7 +1080,7 @@ export = {
     try {
       const id = getCalendarEventIdFromReq(req)!;
       if (!id) return { error: 'Invalid event id', status: 400 };
-      const [events] = await db.execute<CalendarRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+      const [events] = await db.execute<EventRow[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       if (!events.length) return { message: 'Event deleted' };
       const scope = new URL(req.url, 'http://localhost').searchParams.get('scope');
       try {
@@ -1085,7 +1088,7 @@ export = {
       } catch (error) {
         return calendarSync.calendarErrorResponse(error, 'Could not delete the event on the calendar server');
       }
-      await db.execute<CalendarRow[]>('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
+      await db.execute('DELETE FROM calendar_events WHERE id = ? AND user_id = ?', [id, userId]);
       return { message: 'Event deleted' };
     } catch (error) {
       console.error('Delete event error:', error);

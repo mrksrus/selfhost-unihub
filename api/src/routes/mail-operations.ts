@@ -1,4 +1,4 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import * as mailWritebacks from '../services/mail-writebacks';
 import * as mailRepository from '../services/mail-engine/repository';
@@ -165,16 +165,16 @@ export = {
           }
           if (requestedAccount) {
             for (const email of selected) {
-              await connection.execute<RowDataPacket[]>(`INSERT INTO mail_folder_recovery_items
+              await connection.execute(`INSERT INTO mail_folder_recovery_items
                 (email_id, user_id, source_account_id, original_folder, original_filing_account_id, target_folder, target_account_id, action)
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'manual') ON DUPLICATE KEY UPDATE
                 target_folder = VALUES(target_folder), target_account_id = VALUES(target_account_id), action = 'manual'`,
               [email.id, userId, email.mail_account_id, email.folder, email.filing_account_id, folderValidation.folder!, requestedAccount]);
             }
-            await connection.execute<RowDataPacket[]>(`UPDATE emails SET folder = ?, filing_account_id = ?, is_legacy = FALSE
+            await connection.execute(`UPDATE emails SET folder = ?, filing_account_id = ?, is_legacy = FALSE
               WHERE id IN (${placeholders}) AND user_id = ?`, [folderValidation.folder!, requestedAccount, ...email_ids, userId]);
           } else {
-            await connection.execute<RowDataPacket[]>(`UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
+            await connection.execute(`UPDATE emails SET folder = ? WHERE id IN (${placeholders}) AND user_id = ?`,
               [folderValidation.folder!, ...email_ids, userId]);
           }
           return response;

@@ -1,7 +1,6 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { RouteRequest, ApiError } from '../types';
+import type { RowDataPacket } from 'mysql2/promise';
+import type { RouteRequest, SqlExecutor, StoredFlag } from '../types';
 import type { ServerResponse } from 'node:http';
-import type { SqlExecutor, StoredFlag } from '../types';
 import crypto from 'crypto';
 import { db } from '../state';
 import { MIN_PASSWORD_LENGTH } from '../config';
@@ -67,7 +66,7 @@ async function createSessionResponse(user: Pick<UserRow, 'id' | 'email' | 'full_
   const token = generateToken(user.id);
   const csrfToken = generateCsrfToken();
   const expiresAt = getSessionExpiry();
-  await connection.execute<UserRow[]>(
+  await connection.execute(
     'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
     [user.id, token, expiresAt]
   );
@@ -150,7 +149,7 @@ export = {
       const isActive = signupMode === 'open';
       const passwordHash = await hashPassword(password);
       const newUserId = crypto.randomUUID();
-      await db.execute<UserRow[]>(
+      await db.execute(
         'INSERT INTO users (id, email, password_hash, full_name, email_verified, is_active) VALUES (?, ?, ?, ?, TRUE, ?)',
         [newUserId, email, passwordHash, full_name || null, isActive]
       );
@@ -168,7 +167,7 @@ export = {
 
       // Create session
       const expiresAt = getSessionExpiry();
-      await db.execute<UserRow[]>(
+      await db.execute(
         'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
         [newUserId, token, expiresAt]
       );
@@ -385,7 +384,7 @@ export = {
       if (current.length === 0) { await connection.rollback(); return { error: 'Unauthorized', status: 401 }; }
       await enableTwoFactor(userId, secret, recovery.hashes, connection);
       // Sessions on other devices were opened with the password alone.
-      await connection.execute<UserRow[]>('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, currentToken]);
+      await connection.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, currentToken]);
       await connection.commit();
       serverEvents.closeUser(userId, { exceptToken: currentToken });
       return {
@@ -422,7 +421,7 @@ export = {
       const verification = await verifyUserSecondFactor(users[0], code);
       if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
       await disableTwoFactor(userId);
-      await db.execute<UserRow[]>('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, getAuthTokenFromRequest(req) || '']);
+      await db.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, getAuthTokenFromRequest(req) || '']);
       serverEvents.closeUser(userId, { exceptToken: getAuthTokenFromRequest(req) });
       return { enabled: false };
     } catch (error) {
@@ -469,7 +468,7 @@ export = {
     try {
       const token = getAuthTokenFromRequest(req);
       if (token) {
-        await db.execute<UserRow[]>('DELETE FROM sessions WHERE token = ?', [token]);
+        await db.execute('DELETE FROM sessions WHERE token = ?', [token]);
         serverEvents.closeToken(token, { reason: 'signed_out' });
       }
       clearAuthCookie(res);
@@ -535,8 +534,8 @@ export = {
       }
 
       const newHash = await hashPassword(new_password);
-      await db.execute<UserRow[]>('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId]);
-      await db.execute<UserRow[]>('DELETE FROM sessions WHERE user_id = ?', [userId]);
+      await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId]);
+      await db.execute('DELETE FROM sessions WHERE user_id = ?', [userId]);
       serverEvents.closeUser(userId);
       clearAuthCookie(res);
       clearCsrfCookie(res);
@@ -563,7 +562,7 @@ export = {
     }
 
     try {
-      await db.execute<UserRow[]>('UPDATE users SET full_name = ?, timezone = ? WHERE id = ?', [full_name.trim() || null, tzValue, userId]);
+      await db.execute('UPDATE users SET full_name = ?, timezone = ? WHERE id = ?', [full_name.trim() || null, tzValue, userId]);
       const [users] = await db.execute<UserRow[]>(
         'SELECT id, email, full_name, avatar_url, role, timezone, two_factor_enabled FROM users WHERE id = ?',
         [userId]

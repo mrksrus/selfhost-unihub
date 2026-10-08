@@ -2,10 +2,10 @@ import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ApiError, StoredFlag } from '../types';
 
+import { getOrderedUserModules, getUserPages, setUserModules } from '../services/module-settings';
+
 interface ModuleRequest { modules?: { mail?: unknown }; [key: string]: unknown }
 
-const imported1: typeof import('../services/module-settings') = require('../services/module-settings');
-const { getOrderedUserModules, getUserPages, setUserModules } = imported1;
 export = {
   'GET /api/modules': async (_req: IncomingMessage, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
@@ -18,11 +18,9 @@ export = {
       (require('../services/server-events') as typeof import('../services/server-events')).serverEvents.setUserModules(userId,
         modules.filter(module => module.enabled).map(module => module.id));
       if (body.modules?.mail) {
-        const { db }: typeof import('../state') = require('../state');
-        const imported2: typeof import('../services/mail') = require('../services/mail');
-const { stopMailAccountWork, cancelMailAccountSync } = imported2;
-        const imported3: typeof import('../services/mail-engine/rollout') = require('../services/mail-engine/rollout');
-const { USER_PAUSES } = imported3;
+        const { db } = require('../state') as typeof import('../state');
+        const { stopMailAccountWork, cancelMailAccountSync } = require('../services/mail') as typeof import('../services/mail');
+        const { USER_PAUSES } = require('../services/mail-engine/rollout') as typeof import('../services/mail-engine/rollout');
         const mail = modules.find(module => module.id === 'mail')!;
         const [accounts] = await db.execute<(RowDataPacket & { id: string; is_active: StoredFlag; disconnected_at: Date | null })[]>('SELECT id, is_active, disconnected_at FROM mail_accounts WHERE user_id = ?', [userId]);
         if (!mail.enabled) {
@@ -41,8 +39,7 @@ const { USER_PAUSES } = imported3;
           }
           // The IDLE session is background work: close it now, or start it
           // without waiting for the supervisor's next eligibility pass.
-          const imported4: typeof import('../services/mail-idle') = require('../services/mail-idle');
-const { idleSupervisor } = imported4;
+          const { idleSupervisor } = require('../services/mail-idle') as typeof import('../services/mail-idle');
           if (!mail.background) for (const account of accounts) idleSupervisor.stopAccount(account.id);
           else void idleSupervisor.refresh();
         }

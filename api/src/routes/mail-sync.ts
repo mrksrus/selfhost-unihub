@@ -1,4 +1,4 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import { db } from '../state';
 import {
@@ -105,7 +105,7 @@ export = {
 
       const job = await scheduleMailAccountSync(account_id);
       job.promise.then(result => {
-        if (result?.success === false && 'error' in result) console.error(`[SYNC] Account ${account_id} failed:`, result.error);
+        if (result?.success === false) console.error(`[SYNC] Account ${account_id} failed:`, 'error' in result ? result.error : undefined);
       });
       return { success: true, started: job.started, alreadyRunning: job.alreadyRunning,
         account_id, message: job.started ? 'Sync queued; check status for progress.' : 'This account is already queued or syncing.',

@@ -172,7 +172,7 @@ async function recordMailServerMessageForDeletion({
   if (!await verifyArchive({ raw_storage_path: rawStoragePath, raw_sha256: rawSha256,
     raw_bytes: rawBytes, raw_format: rawFormat, raw_verified: rawVerified }, { root: MAIL_RAW_STORAGE_ROOT })) return false;
 
-  await connection.execute<RowDataPacket[]>(
+  await connection.execute(
     `INSERT INTO mail_server_messages
        (id, user_id, mail_account_id, email_id, source_folder, imap_uid, imap_uidvalidity)
      VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -221,7 +221,7 @@ async function seedMailServerDeletionQueueForAccount({ userId, accountId, connec
 async function markMailServerMessageDeleteStatus({ connection = db, id, status, error = null }: { connection?: SqlExecutor; id: string; status: string; error?: unknown }) {
   const allowedStatuses = new Set(['pending', 'deleted', 'missing', 'failed', 'skipped']);
   if (!id || !allowedStatuses.has(status)) return;
-  await connection.execute<RowDataPacket[]>(
+  await connection.execute(
     `UPDATE mail_server_messages
      SET delete_status = ?,
          delete_attempts = delete_attempts + 1,
@@ -351,7 +351,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
     );
 
     if (!messages.length) {
-      await db.execute<RowDataPacket[]>('UPDATE mail_accounts SET server_delete_last_run_at = UTC_TIMESTAMP() WHERE id = ?', [normalizedAccountId]);
+      await db.execute('UPDATE mail_accounts SET server_delete_last_run_at = UTC_TIMESTAMP() WHERE id = ?', [normalizedAccountId]);
       return { accountId: normalizedAccountId, success: true, processed: 0, deleted: 0, missing: 0, failed: 0, stopped: false };
     }
 
@@ -447,7 +447,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
       }
     }
 
-    await db.execute<RowDataPacket[]>('UPDATE mail_accounts SET server_delete_last_run_at = UTC_TIMESTAMP() WHERE id = ?', [normalizedAccountId]);
+    await db.execute('UPDATE mail_accounts SET server_delete_last_run_at = UTC_TIMESTAMP() WHERE id = ?', [normalizedAccountId]);
     console.log(`[SERVER DELETE] ${account.email_address}: deleted=${deleted}, missing=${missing}, failed=${failed}, skipped=${skipped}, stopped=${stopped}`);
     return { accountId: normalizedAccountId, success: failed === 0, processed, deleted, missing, failed, skipped, stopped };
   } catch (error) {

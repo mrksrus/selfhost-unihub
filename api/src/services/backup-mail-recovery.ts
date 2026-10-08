@@ -1,48 +1,9 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { SqlExecutor, StoredFlag } from '../types';
+import type { SqlExecutor } from '../types';
+import type { MailRestoreContext, MailRestoreData } from '../types/backup-restore';
 import { writeOwnedRow, resolveOwnedReference } from './backup-ownership';
 import { folderAcceptsAccount, filingAccountId } from './mail-filing';
 import { folderConnections } from './mail-folder-reconciliation';
-
-interface RestoreRow extends Record<string, unknown> {
-  id: string;
-  mail_account_id: string;
-  email_id: string;
-  rule_id: string;
-  action: string;
-  target_value: string;
-  base_value?: string | null;
-  target_folder: string | null;
-  remote_folder: string | null;
-  remote_uid: number | string | null;
-  remote_uidvalidity: number | string | null;
-  attempts?: number;
-  dispatched?: StoredFlag;
-  dispatch_modseq?: string | null;
-  source_occurrence_id?: string | null;
-  intent_revision?: number | string;
-  client_key: string;
-  request_hash: string;
-  state?: string;
-  status?: string;
-  raw_bytes?: number | null;
-  import_complete?: StoredFlag;
-  source_account_id: string;
-  original_filing_account_id?: string | null;
-  target_account_id?: string | null;
-  original_folder: string | null;
-  created_at?: string | Date;
-  completed_at?: string | Date;
-}
-type RestoreData = Record<string, RestoreRow[] | undefined>;
-interface RestoreContext {
-  accountIds: Map<string, string>;
-  emailIds: Map<string, string>;
-  writtenEmailIds: Set<string>;
-  restoredPaths: Map<string, string>;
-  checkCancelled: () => Promise<unknown>;
-  warnings: string[];
-}
 
 function jsonArray(value: unknown, field: string): Record<string, unknown>[] {
   let result = Buffer.isBuffer(value) ? value.toString('utf8') : value;
@@ -53,9 +14,9 @@ function jsonArray(value: unknown, field: string): Record<string, unknown>[] {
   return result;
 }
 
-async function restoreMailRecovery(connection: SqlExecutor, userId: string, data: RestoreData, {
+async function restoreMailRecovery(connection: SqlExecutor, userId: string, data: MailRestoreData, {
   accountIds, folderIds, emailIds, ruleIds, writtenEmailIds, conflictMode, checkCancelled, normalizeDate, warnings,
-}: Omit<RestoreContext, 'restoredPaths'> & { folderIds: Map<string, string>; ruleIds: Map<string, string>; conflictMode: string; normalizeDate: typeof import('./backup-common').normalizeMysqlDateTime }) {
+}: Omit<MailRestoreContext, 'restoredPaths'> & { folderIds: Map<string, string>; ruleIds: Map<string, string>; conflictMode: string; normalizeDate: typeof import('./backup-common').normalizeMysqlDateTime }) {
   const account = (id: string | null | undefined, nullable = false) => resolveOwnedReference(connection, userId, 'mail_accounts', id, accountIds, { nullable });
   const historicalAccount = async (id: unknown, field: string) => {
     try { return await account(id as string | null | undefined, true); }
@@ -74,9 +35,9 @@ async function restoreMailRecovery(connection: SqlExecutor, userId: string, data
       'SELECT target_folder FROM mail_folder_rule_overrides WHERE rule_id = ? AND mail_account_id = ? FOR UPDATE', [ruleId, accountId]);
     if (existing.length && conflictMode !== 'replace') continue;
     if (existing.length) {
-      await connection.execute<RowDataPacket[]>('UPDATE mail_folder_rule_overrides SET target_folder = ? WHERE rule_id = ? AND mail_account_id = ?', [row.target_folder, ruleId, accountId]);
+      await connection.execute('UPDATE mail_folder_rule_overrides SET target_folder = ? WHERE rule_id = ? AND mail_account_id = ?', [row.target_folder, ruleId, accountId]);
     } else {
-      await connection.execute<RowDataPacket[]>('INSERT INTO mail_folder_rule_overrides (rule_id, mail_account_id, target_folder) VALUES (?, ?, ?)', [ruleId, accountId, row.target_folder]);
+      await connection.execute('INSERT INTO mail_folder_rule_overrides (rule_id, mail_account_id, target_folder) VALUES (?, ?, ?)', [ruleId, accountId, row.target_folder]);
     }
   }
 

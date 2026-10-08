@@ -1,3 +1,4 @@
+import type { LookupAddress, LookupOptions } from 'node:dns';
 import type { LookupFunction } from 'node:net';
 import dns from 'node:dns';
 import https from 'node:https';
@@ -15,14 +16,18 @@ function isPublicAddress(address: string) {
   if (net.isIP(address) === 6) return /^[23]/i.test(address) && !/^2001:(0*:|db8:|10:|20:)|^2002:/i.test(address);
   return false;
 }
-function safePushLookup(...[hostname, options, callback]: Parameters<LookupFunction>) {
+// An error reply carries no address, as with dns.lookup itself; Node's
+// LookupFunction type still requires one, hence the cast on the agent below.
+type LookupCallback = (error: NodeJS.ErrnoException | null, address?: string | LookupAddress[], family?: number) => void;
+
+function safePushLookup(hostname: string, options: LookupOptions, callback: LookupCallback) {
   dns.lookup(hostname, { all: true, verbatim: true }, (error, addresses) => {
-    if (error) return (callback as (error: NodeJS.ErrnoException) => void)(error);
-    if (!addresses.length || addresses.some(item => !isPublicAddress(item.address))) return (callback as (error: NodeJS.ErrnoException) => void)(new Error('Push service resolved to a non-public address'));
+    if (error) return callback(error);
+    if (!addresses.length || addresses.some(item => !isPublicAddress(item.address))) return callback(new Error('Push service resolved to a non-public address'));
     if (options?.all) return callback(null, addresses);
     const candidate = addresses.find(item => !options?.family || item.family === options.family) || addresses[0];
     callback(null, candidate.address, candidate.family);
   });
 }
-const pushAgent = new https.Agent({ lookup: safePushLookup });
+const pushAgent = new https.Agent({ lookup: safePushLookup as LookupFunction });
 export { pushAgent, isPublicAddress, safePushLookup };

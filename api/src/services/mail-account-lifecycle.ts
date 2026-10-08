@@ -191,8 +191,7 @@ async function disconnectAndPurgeAccount(userId: string, accountId: string, conf
   await disconnectAccount(userId, accountId);
   try { return await purgeAccount(userId, accountId, confirmation); }
   catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw Object.assign(error instanceof Error ? error : new Error(message), { message: `The account was disconnected and its local mail kept: ${message}`, disconnected: true });
+    throw Object.assign(error as Error, { message: `The account was disconnected and its local mail kept: ${(error as Error).message}`, disconnected: true });
   }
 }
 

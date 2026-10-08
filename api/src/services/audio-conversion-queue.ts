@@ -37,7 +37,7 @@ function createAudioConversionQueue({ maxWaiting = 4, maxPerUser = 2, maxWaitMs 
       }
       perUser.set(userId, count + 1);
       return new Promise<T>((resolve, reject) => {
-        const job: ConversionJob = { userId, run, resolve: value => resolve(value as T), reject };
+        const job: ConversionJob = { userId, run, resolve: resolve as (value: unknown) => void, reject };
         job.timer = setTimeout(() => {
           const index = pending.indexOf(job);
           if (index === -1) return;

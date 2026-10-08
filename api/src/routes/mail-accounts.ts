@@ -1,6 +1,5 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { RouteRequest, ApiError } from '../types';
-import type { MailAccountIdentity, StoredFlag } from '../types';
+import type { RowDataPacket } from 'mysql2/promise';
+import type { RouteRequest, ApiError, MailAccountIdentity, StoredFlag } from '../types';
 import * as mailWritebacks from '../services/mail-writebacks';
 import * as mailAccountLifecycle from '../services/mail-account-lifecycle';
 import { mailAccountModeChange, sameProviderMailbox, addressConfirmed } from '../services/mail-account-mode';
@@ -275,7 +274,7 @@ export = {
       // Auth successful - save account immediately
       const accountId = crypto.randomUUID();
       const actualUsername = username || email_address;
-      await db.execute<(RowDataPacket & AccountRow)[]>(
+      await db.execute(
         `INSERT INTO mail_accounts
            (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
             smtp_host, smtp_port, encrypted_password, sync_fetch_limit, sync_mode, sync_status, delete_emails_on_server,
@@ -334,8 +333,8 @@ export = {
             success: true,
             account: connected.account,
             calendars: connected.calendars.length,
-            server: ('server' in connected ? connected.server : null) || null,
-            hint: ('hint' in connected ? connected.hint : null) || null,
+            server: connected.server || null,
+            hint: connected.hint || null,
           };
         } catch (calendarError) {
           console.warn(`[CALDAV] Calendar setup failed for ${email_address}:`, (calendarError as ApiError).message);
@@ -545,7 +544,7 @@ export = {
 
       if (updates.length > 0) {
         params.push(id, userId);
-        await db.execute<(RowDataPacket & AccountRow)[]>(
+        await db.execute(
           `UPDATE mail_accounts SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`,
           params
         );
@@ -556,7 +555,7 @@ export = {
         await (require('../services/mail-engine/runtime') as typeof import('../services/mail-engine/runtime')).resumeAccount({ userId, accountId: id });
 
       if (modeChange.changed) {
-        await db.execute<(RowDataPacket & AccountRow)[]>("UPDATE mail_server_messages SET delete_status = 'skipped', delete_error = 'Cancelled by mail mode change' WHERE mail_account_id = ? AND user_id = ? AND delete_status IN ('pending', 'failed')", [id, userId]);
+        await db.execute("UPDATE mail_server_messages SET delete_status = 'skipped', delete_error = 'Cancelled by mail mode change' WHERE mail_account_id = ? AND user_id = ? AND delete_status IN ('pending', 'failed')", [id, userId]);
       }
       if (shouldSeedServerDeleteQueue) {
         await seedMailServerDeletionQueueForAccount({ userId, accountId: id });
@@ -564,7 +563,7 @@ export = {
       if (modeChange.mode === 'sync' && (modeChange.changed || windowsChanged)) {
         try {
           // Wider windows: older history becomes eligible again, rescan it.
-          if (windowsWidened) await db.execute<(RowDataPacket & AccountRow)[]>("DELETE FROM mail_engine_cursors WHERE mail_account_id = ? AND user_id = ? AND stream = 'history'", [id, userId]);
+          if (windowsWidened) await db.execute("DELETE FROM mail_engine_cursors WHERE mail_account_id = ? AND user_id = ? AND stream = 'history'", [id, userId]);
           await mailSyncPolicy.enqueuePrune({ userId, accountId: id });
         } catch (error) {
           // The next discovery pass queues the same policy job.
@@ -616,7 +615,7 @@ export = {
       if (!account) return { error: 'Account not found', status: 404 };
       if (account.sync_mode !== 'sync') return { error: 'Only a Sync account has a Sync policy to confirm.', status: 409 };
       if (!addressConfirmed(account, body?.confirm_address)) return { error: 'Type the account email address to confirm.', status: 400 };
-      await db.execute<(RowDataPacket & AccountRow)[]>(`UPDATE mail_accounts SET sync_policy_confirmed_at = COALESCE(sync_policy_confirmed_at, UTC_TIMESTAMP())
+      await db.execute(`UPDATE mail_accounts SET sync_policy_confirmed_at = COALESCE(sync_policy_confirmed_at, UTC_TIMESTAMP())
         WHERE id = ? AND user_id = ? AND sync_mode = 'sync'`, [id, userId]);
       // Removal runs in the background as bounded durable jobs.
       await (require('../services/mail-durable-jobs') as typeof import('../services/mail-durable-jobs')).durableScheduler.enqueue({ userId, accountId: id,

@@ -13,9 +13,9 @@ async function main(argv = process.argv.slice(2)) {
   if (command === 'prepare' && process.env.UNIHUB_MAIL_ROLLOUT_MAINTENANCE !== '1') {
     throw new Error('Prepare requires stopped API/provider writers and UNIHUB_MAIL_ROLLOUT_MAINTENANCE=1');
   }
-  const mysql: typeof import('mysql2/promise') = require('mysql2/promise');
-  const { getDatabaseConfig }: typeof import('./src/services/database-config') = require('./src/services/database-config');
-  const state: typeof import('./src/state') = require('./src/state');
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+  const { getDatabaseConfig } = require('./src/services/database-config') as typeof import('./src/services/database-config');
+  const state = require('./src/state') as typeof import('./src/state');
   const config = getDatabaseConfig();
   if (!config) throw new Error('Deployment database configuration is required');
   const pool = mysql.createPool({ ...config, timezone: '+00:00', connectionLimit: 2 });

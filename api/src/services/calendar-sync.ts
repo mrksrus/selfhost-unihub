@@ -267,8 +267,8 @@ async function loadAccount(accountId: string, userId?: string | null) {
 async function deleteCalendarsWithEvents(connection: SqlExecutor, userId: string, calendarIds: string[]) {
   if (!calendarIds.length) return;
   const placeholders = calendarIds.map(() => '?').join(', ');
-  await connection.execute<RowDataPacket[]>(`DELETE FROM calendar_events WHERE user_id = ? AND calendar_id IN (${placeholders})`, [userId, ...calendarIds]);
-  await connection.execute<RowDataPacket[]>(`DELETE FROM calendar_calendars WHERE user_id = ? AND id IN (${placeholders})`, [userId, ...calendarIds]);
+  await connection.execute(`DELETE FROM calendar_events WHERE user_id = ? AND calendar_id IN (${placeholders})`, [userId, ...calendarIds]);
+  await connection.execute(`DELETE FROM calendar_calendars WHERE user_id = ? AND id IN (${placeholders})`, [userId, ...calendarIds]);
 }
 
 async function deleteCalendarAccount(userId: string, accountId: string) {
@@ -277,7 +277,7 @@ async function deleteCalendarAccount(userId: string, accountId: string) {
     await connection.beginTransaction();
     const [calendars] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_calendars WHERE account_id = ? AND user_id = ?', [accountId, userId]);
     await deleteCalendarsWithEvents(connection, userId, calendars.map(row => row.id));
-    await connection.execute<RowDataPacket[]>('DELETE FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
+    await connection.execute('DELETE FROM calendar_accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
     await connection.commit();
   } catch (error) {
     await connection.rollback();
@@ -303,7 +303,7 @@ async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<
     const existing = byHref.get(remote.href);
     if (existing) {
       matched.add(existing.id);
-      await db.execute<RowDataPacket[]>('UPDATE calendar_calendars SET name = ?, read_only = ?, external_id = ? WHERE id = ?',
+      await db.execute('UPDATE calendar_calendars SET name = ?, read_only = ?, external_id = ? WHERE id = ?',
         [remote.displayName, remote.readOnly ? 1 : 0, remote.href, existing.id]);
       result.push({ calendar: { ...existing, name: remote.displayName, read_only: remote.readOnly ? 1 : 0, external_id: remote.href }, remote, isNew: false });
       continue;
@@ -312,7 +312,7 @@ async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<
     const isPrimary = rows.length === 0 && index === 0;
     const color = remote.color || CALENDAR_COLORS[(rows.length + index) % CALENDAR_COLORS.length];
     // New server calendars do not create ToDos until the user opts in.
-    await db.execute<RowDataPacket[]>(
+    await db.execute(
       `INSERT INTO calendar_calendars
         (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
        VALUES (?, ?, ?, ?, ?, ?, TRUE, FALSE, ?, ?)`,
@@ -392,12 +392,12 @@ async function applyObject(ctx: Context, calendar: Calendar, object: ObjectRecor
       ];
       const eventId = existing.get(key);
       if (eventId) {
-        await connection.execute<RowDataPacket[]>(
+        await connection.execute(
           `UPDATE calendar_events SET calendar_id = ?, title = ?, description = ?, start_time = ?, end_time = ?, all_day = ?,
              location = ?, color = ?, reminders = ?, recurrence = ? WHERE id = ? AND user_id = ?`,
           [...values, eventId, ctx.account.user_id]
         );
-        await connection.execute<RowDataPacket[]>(
+        await connection.execute(
           `UPDATE calendar_event_external_refs SET calendar_id = ?, external_etag = ?, recurrence_id = ?, last_synced_at = UTC_TIMESTAMP()
            WHERE account_id = ? AND external_event_id = ?`,
           [calendar.id, object.etag || null, occurrence.recurrenceId || null, ctx.account.id, key]
@@ -405,12 +405,12 @@ async function applyObject(ctx: Context, calendar: Calendar, object: ObjectRecor
         continue;
       }
       const id = crypto.randomUUID();
-      await connection.execute<RowDataPacket[]>(
+      await connection.execute(
         `INSERT INTO calendar_events (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, reminders, recurrence)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [id, ctx.account.user_id, ...values]
       );
-      await connection.execute<RowDataPacket[]>(
+      await connection.execute(
         `INSERT INTO calendar_event_external_refs
           (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
@@ -420,7 +420,7 @@ async function applyObject(ctx: Context, calendar: Calendar, object: ObjectRecor
     }
     const stale = refs.filter(ref => !keep.has(ref.external_event_id)).map(ref => ref.event_id);
     if (stale.length) {
-      await connection.execute<RowDataPacket[]>(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${stale.map(() => '?').join(', ')})`, [ctx.account.user_id, ...stale]);
+      await connection.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${stale.map(() => '?').join(', ')})`, [ctx.account.user_id, ...stale]);
     }
     await connection.commit();
     ctx.stats.events += expanded.occurrences.length;
@@ -448,9 +448,9 @@ async function removeObjects(ctx: Context, objectIds: string[]) {
       );
       const eventIds = refs.map(ref => ref.event_id);
       if (eventIds.length) {
-        await connection.execute<RowDataPacket[]>(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${eventIds.map(() => '?').join(', ')})`, [ctx.account.user_id, ...eventIds]);
+        await connection.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${eventIds.map(() => '?').join(', ')})`, [ctx.account.user_id, ...eventIds]);
       }
-      await connection.execute<RowDataPacket[]>(`DELETE FROM calendar_remote_objects WHERE account_id = ? AND id IN (${placeholders})`, [ctx.account.id, ...chunk]);
+      await connection.execute(`DELETE FROM calendar_remote_objects WHERE account_id = ? AND id IN (${placeholders})`, [ctx.account.id, ...chunk]);
       ctx.stats.removedEvents += eventIds.length;
     }
     await connection.commit();
@@ -465,7 +465,7 @@ async function removeObjects(ctx: Context, objectIds: string[]) {
 async function storeObject(account: Account, calendar: Calendar, { id, href, etag, ics }: { id?: string; href: string; etag?: string | null; ics: string }): Promise<ObjectRecord> {
   const objectId = id || crypto.randomUUID();
   const uid = (ical.objectUid(ics) || '').slice(0, 500) || null;
-  await db.execute<RowDataPacket[]>(
+  await db.execute(
     `INSERT INTO calendar_remote_objects (id, user_id, account_id, calendar_id, href, href_hash, etag, uid, ics)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE etag = VALUES(etag), uid = VALUES(uid), ics = VALUES(ics), href = VALUES(href)`,
@@ -509,7 +509,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     applied.add(object.id);
     const created = await applyObject(ctx, calendar, object, expanded).catch(async error => {
       // Without its ETag the object is downloaded and applied again next time.
-      await db.execute<RowDataPacket[]>('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ?', [object.id]).catch(() => {});
+      await db.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ?', [object.id]).catch(() => {});
       throw error;
     });
     ctx.stats.changedObjects += 1;
@@ -529,7 +529,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
         const expanded = expandObject(ctx, object.ics);
         // 0.17.0 stored copies before reading them. Without its ETag an
         // unreadable one is downloaded again on the next sync.
-        if (!expanded) await db.execute<RowDataPacket[]>('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ?', [object.id]);
+        if (!expanded) await db.execute('UPDATE calendar_remote_objects SET etag = NULL WHERE id = ?', [object.id]);
         await applyObject(ctx, calendar, object, expanded);
       }
     }
@@ -548,7 +548,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       const ids = orphans.map(row => row.event_id);
       for (let index = 0; index < ids.length; index += 200) {
         const chunk = ids.slice(index, index + 200);
-        await db.execute<RowDataPacket[]>(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${chunk.map(() => '?').join(', ')})`, [ctx.account.user_id, ...chunk]);
+        await db.execute(`DELETE FROM calendar_events WHERE user_id = ? AND id IN (${chunk.map(() => '?').join(', ')})`, [ctx.account.user_id, ...chunk]);
       }
       ctx.stats.removedEvents += ids.length;
     }
@@ -574,7 +574,7 @@ async function syncCalDavAccount(ctx: Context, { full }: { full?: boolean }) {
     ctx.newEvents = calendarCtx.newEvents;
     // Without the ctag the next sync lists the calendar again and retries
     // the objects it could not read.
-    await db.execute<RowDataPacket[]>('UPDATE calendar_calendars SET remote_ctag = ?, remote_expanded_on = ? WHERE id = ?',
+    await db.execute('UPDATE calendar_calendars SET remote_ctag = ?, remote_expanded_on = ? WHERE id = ?',
       [unreadable ? null : remote.ctag || null, today, calendar.id]);
     ctx.stats.calendars += 1;
   }
@@ -587,7 +587,7 @@ async function ensureIcsCalendar(account: Account) {
     id: crypto.randomUUID(), user_id: account.user_id, account_id: account.id, name: account.display_name || 'Subscription',
     external_id: 'ics', color: CALENDAR_COLORS[3], read_only: 1, remote_ctag: null, remote_expanded_on: null,
   };
-  await db.execute<RowDataPacket[]>(
+  await db.execute(
     `INSERT INTO calendar_calendars (id, user_id, account_id, name, external_id, color, is_visible, auto_todo_enabled, read_only, is_primary)
      VALUES (?, ?, ?, ?, 'ics', ?, TRUE, FALSE, TRUE, TRUE)`,
     [calendar.id, account.user_id, account.id, calendar.name, calendar.color]
@@ -609,7 +609,7 @@ async function syncIcsAccount(ctx: Context, { full }: { full?: boolean }) {
   const calendarCtx = { ...ctx, notify: ctx.notify && !isNew && !!calendar.remote_expanded_on };
   const unreadable = await syncCalendarObjects(calendarCtx, calendar, listing, async changed => changed as FetchedObject[], { expandAll });
   ctx.newEvents = calendarCtx.newEvents;
-  await db.execute<RowDataPacket[]>('UPDATE calendar_calendars SET remote_ctag = ?, remote_expanded_on = ? WHERE id = ?', [unreadable ? null : feed.etag, today, calendar.id]);
+  await db.execute('UPDATE calendar_calendars SET remote_ctag = ?, remote_expanded_on = ? WHERE id = ?', [unreadable ? null : feed.etag, today, calendar.id]);
   ctx.stats.calendars += 1;
 }
 
@@ -1005,12 +1005,12 @@ async function pushEventMove({ userId, event, targetCalendarId, changes }: Event
     // Create the copy before unlinking the old one so a failure leaves it as it was.
     const moved = { ...event, ...changes, calendar_id: targetCalendarId };
     const sourceLink = source.link;
-    if (sourceLink) await db.execute<RowDataPacket[]>('DELETE FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ?', [event.id, userId]);
+    if (sourceLink) await db.execute('DELETE FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ?', [event.id, userId]);
     try {
       await pushCreatedEvent({ userId, event: moved, calendarId: targetCalendarId });
     } catch (error) {
       if (sourceLink) {
-        await db.execute<RowDataPacket[]>(
+        await db.execute(
           `INSERT INTO calendar_event_external_refs
             (id, user_id, event_id, calendar_id, account_id, provider, external_event_id, external_etag, remote_object_id, recurrence_id, last_synced_at)
            VALUES (?, ?, ?, ?, ?, 'caldav', ?, ?, ?, NULL, UTC_TIMESTAMP())`,
@@ -1023,7 +1023,7 @@ async function pushEventMove({ userId, event, targetCalendarId, changes }: Event
     return { moved: true };
   }
   if (source.link) {
-    await db.execute<RowDataPacket[]>('DELETE FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ?', [event.id, userId]);
+    await db.execute('DELETE FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ?', [event.id, userId]);
     await removeSourceObject(userId, source, source.link);
   }
   return { moved: true };

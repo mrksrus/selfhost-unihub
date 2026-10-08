@@ -116,7 +116,7 @@ function serializeRestoreJob(row: RestoreJob) {
 async function updateRestoreJob(jobId: string, fields: Record<string, ExecuteValues>) {
   const keys = Object.keys(fields);
   if (!keys.length) return;
-  await db.execute<RestoreJob[]>(
+  await db.execute(
     `UPDATE backup_restore_jobs
      SET ${keys.map(key => `${key} = ?`).join(', ')}
      WHERE id = ?`,
@@ -322,7 +322,7 @@ async function restoreValidatedJob(job: RestoreJob) {
         // Publishing phase=commit prevents new cancellation requests. Honor a
         // request accepted just before that boundary before marking completion.
         await checkRestoreCancelled(job.id);
-        await connection.execute<RowDataPacket[]>(
+        await connection.execute(
           `UPDATE backup_restore_jobs
            SET status = 'completed',
                phase = 'completed',
@@ -494,7 +494,7 @@ async function createUploadedRestoreJob(userId: string, sourcePath: string, opti
   }
 
   try {
-    await db.execute<RestoreJob[]>(
+    await db.execute(
       `INSERT INTO backup_restore_jobs
          (id, user_id, source_type, status, operation, phase, progress, requested_sections,
           conflict_mode, calendar_mode, credentials_mode, archive_path, archive_size,
@@ -546,7 +546,7 @@ async function createRestoreFromExport(userId: string, exportJobId: string | nul
   );
   if (active.length) return { error: 'Another restore is already running', status: 409 };
   const jobId = crypto.randomUUID();
-  await db.execute<RestoreJob[]>(
+  await db.execute(
     `INSERT INTO backup_restore_jobs
        (id, user_id, source_type, source_export_job_id, status, operation, phase, progress,
         requested_sections, conflict_mode, calendar_mode, credentials_mode, archive_path,
@@ -582,7 +582,7 @@ async function unlockRestoreJob(userId: string, jobId: string | null, password?:
   if (unlocked.header.backup_uuid !== job.backup_uuid!) {
     return { error: 'Unable to unlock backup. The password is incorrect or the backup is damaged.', status: 400 };
   }
-  await db.execute<RestoreJob[]>(
+  await db.execute(
     `INSERT INTO backup_archive_keys
        (backup_uuid, user_id, server_wrapped_key, expires_at)
      VALUES (?, ?, ?, ?)
@@ -684,7 +684,7 @@ async function deleteRestoreJob(userId: string, jobId: string | null) {
   if (job.source_type === 'upload' && job.archive_path) {
     await fs.promises.rm(job.archive_path!, { force: true }).catch(() => {});
   }
-  await db.execute<RestoreJob[]>('DELETE FROM backup_restore_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
+  await db.execute('DELETE FROM backup_restore_jobs WHERE id = ? AND user_id = ?', [jobId, userId]);
   await pruneArchiveKeyIfUnreferenced(userId, job.backup_uuid!);
   return { deleted: true };
 }

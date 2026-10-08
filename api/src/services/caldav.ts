@@ -8,7 +8,7 @@ import { resolveMailConnectionTarget } from '../security/outbound-network';
 import { parseCalDavUrl, resolveCalDavUrl, credentialScopeAllows, davRequest } from '../security/caldav-transport';
 
 type CredentialScope = Parameters<typeof resolveCalDavUrl>[2];
-interface Login { username?: string; password?: string; credentialScope?: CredentialScope; signal?: AbortSignal }
+interface Login { username?: string | null; password?: string; credentialScope?: CredentialScope; signal?: AbortSignal }
 interface ProviderInput { emailAddress?: string | null; imapHost?: string | null }
 interface Provider {
   id: string;
@@ -24,6 +24,12 @@ interface CalendarObject { href: string; url: string; etag: string | null }
 interface ReceivedObject { href: string; etag: string | null; ics: string }
 interface Failure { url: string; error: ApiError }
 type Resolvers = { resolveSrv?: typeof dns.resolveSrv; resolveTxt?: typeof dns.resolveTxt };
+interface FoundServer {
+  server: { url: string; source: string; label: string };
+  credentialScope: CredentialScope;
+  discovery: Awaited<ReturnType<typeof discoverCalDavCalendars>>;
+  hint?: string | null;
+}
 
 const PROBE_TIMEOUT_MS = 6000;
 const MULTIGET_BATCH = 50;
@@ -288,11 +294,11 @@ function wellKnownCandidates({ emailAddress, imapHost }: ProviderInput) {
 //   explicit URL → known provider → DNS SRV (RFC 6764) → /.well-known/caldav
 //   on the mail domain and the IMAP server.
 // Returns what was found and where, so the UI can show it.
-async function findCalDavServer({ emailAddress, imapHost, username, password, explicitUrl }: Login & ProviderInput & { explicitUrl?: string | null }, resolvers: Resolvers = {}) {
-  const login = { username: (username || emailAddress) || undefined, password };
+async function findCalDavServer({ emailAddress, imapHost, username, password, explicitUrl }: Login & ProviderInput & { explicitUrl?: string | null }, resolvers: Resolvers = {}): Promise<FoundServer> {
+  const login = { username: username || emailAddress, password };
   if (!login.password) throw davError('A password is needed to connect the calendar.', { code: 'CALDAV_NO_PASSWORD' });
   const failures: Failure[] = [];
-  const attempt = async (url: string, source: string, label?: string, credentialScope?: CredentialScope) => {
+  const attempt = async (url: string, source: string, label?: string, credentialScope?: CredentialScope): Promise<FoundServer | null> => {
     try {
       const discovery = await discoverCalDavCalendars({ discoveryUrl: url, ...login, credentialScope });
       return { server: { url, source, label: label || new URL(url).host }, credentialScope: credentialScope || new URL(url).origin, discovery };

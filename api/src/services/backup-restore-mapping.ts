@@ -358,7 +358,7 @@ async function restoreMailFolderRemoteBox(connection: SqlExecutor, userId: strin
     return;
   }
   if (existing.length) {
-    await connection.execute<(RowDataPacket & { id: string })[]>(
+    await connection.execute(
       `UPDATE mail_folder_remote_boxes b
        JOIN mail_folders f ON f.id = b.folder_id
        JOIN mail_accounts a ON a.id = b.mail_account_id
@@ -369,7 +369,7 @@ async function restoreMailFolderRemoteBox(connection: SqlExecutor, userId: strin
   } else {
     // Both parent IDs were remapped or locked with ownership checks above.
     // A unique-key collision fails the restore; it never updates another mapping.
-    await connection.execute<(RowDataPacket & { id: string })[]>(
+    await connection.execute(
       'INSERT INTO mail_folder_remote_boxes (folder_id, mail_account_id, remote_name) VALUES (?, ?, ?)',
       [folderId, accountId, row.remote_name]
     );

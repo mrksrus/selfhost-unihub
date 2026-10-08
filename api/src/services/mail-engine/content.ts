@@ -161,9 +161,9 @@ async function processBodySlice({ maxMessages = BODY_SLICE_MESSAGES, maxMs = BOD
   return { processed, deferred, emailId, more: true };
 }
 async function processBodyItem({ db, connection, account, folder, mailboxId, signal, job = null }: BodyInput) {
-  const { simpleParser }: typeof import('mailparser') = require('mailparser');
-  const transport: typeof import('./transport') = require('./transport');
-  const runtime: typeof import('./runtime') = require('./runtime');
+  const { simpleParser } = require('mailparser') as typeof import('mailparser');
+  const transport = require('./transport') as typeof import('./transport');
+  const runtime = require('./runtime') as typeof import('./runtime');
   const markDeferred = async (emailId: string, state = 'deferred') => (require('./repository') as typeof import('./repository')).withTransaction(async cx => {
     if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id,
       workerId: job.lease_owner, generation: job.worker_generation }, cx);
@@ -226,7 +226,7 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
     return { processed: 0, deferred: true, reason: 'parse_failure', more: true };
   }
   const address = parsed.from?.value?.[0];
-  const { persistImportedMessage }: typeof import('../mail-import') = require('../mail-import');
+  const { persistImportedMessage } = require('../mail-import') as typeof import('../mail-import');
   const result = await persistImportedMessage({ db, account, accountId: account.id, folderName: folder.folderName,
     uid: row.uid, uidValidity: row.uidvalidity, existingEmail: { id: row.email_id, raw_storage_path: row.raw_storage_path },
     messageId: parsed.messageId || null, fullEmail: raw, parsed, fromAddress: address?.address || 'unknown',

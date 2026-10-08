@@ -1,4 +1,4 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import { FILING_ACCOUNT_SQL } from '../services/mail-folder-reconciliation';
 import { folderMembershipSql, pendingMoveSql } from '../services/mail-folder-view';

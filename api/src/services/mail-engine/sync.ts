@@ -6,7 +6,7 @@ import crypto from 'node:crypto';
 import * as repository from './repository';
 import * as runtime from './runtime';
 import * as transport from './transport';
-import { uint32, DEFAULT_MAX_BYTES } from './content';
+import { uint32 } from './content';
 import { outsideWindow } from '../mail-sync-policy';
 
 type Selection = Awaited<ReturnType<typeof transport.selectMailbox>>;
@@ -148,7 +148,7 @@ async function mappedMoveFor(executor: SqlExecutor, { userId, accountId, folderN
   try { proof = typeof op.evidence_json === 'string' ? JSON.parse(op.evidence_json) : op.evidence_json; }
   catch { return null; }
   const mapping = proof?.mapping;
-  const { validMapping }: typeof import('./reconciliation') = require('./reconciliation');
+  const { validMapping } = require('./reconciliation') as typeof import('./reconciliation');
   if (proof?.kind !== 'move_outcome' || proof.completion !== 'ok' || proof.mappingStatus !== 'valid' ||
     !validMapping(mapping, op, { uidvalidity: epoch, uid }) || !mailboxId) return null;
   return { operationId: op.id, emailId: op.email_id, mapping };
@@ -165,7 +165,7 @@ async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId,
   }
   if (mapped) {
     if (gmail && item.gmailMsgId && /^[0-9]+$/.test(String(item.gmailMsgId))) {
-      await executor.execute<RowDataPacket[]>(`INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id)
+      await executor.execute(`INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id)
         VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE email_id = email_id`,
       [accountId, String(item.gmailMsgId), userId, mapped.emailId]);
       const [[bound]] = await executor.execute<RowDataPacket[]>(`SELECT email_id FROM mail_gmail_messages
@@ -176,7 +176,7 @@ async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId,
     return mapped.emailId;
   }
   const id = crypto.randomUUID();
-  await executor.execute<RowDataPacket[]>(`INSERT INTO emails (id,user_id,mail_account_id,message_id,subject,from_address,to_addresses,folder,
+  await executor.execute(`INSERT INTO emails (id,user_id,mail_account_id,message_id,subject,from_address,to_addresses,folder,
     source_folder,imap_uid,imap_uidvalidity,remote_folder,remote_uid,remote_uidvalidity,
     is_read,is_starred,import_complete,content_state)
     VALUES (?,?,?,NULL,'(Loading message)','unknown','[]',?,?,?,?,?,?,?,?,?,FALSE,'queued')`,
@@ -186,11 +186,11 @@ async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId,
   if (gmail && item.gmailMsgId && /^[0-9]+$/.test(String(item.gmailMsgId))) {
     // A concurrently discovered Gmail label may have won the account-scoped
     // identity. Resolve under the unique key without ever merging generic copies.
-    await executor.execute<RowDataPacket[]>(`INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id)
+    await executor.execute(`INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id)
       VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE email_id = email_id`, [accountId, String(item.gmailMsgId), userId, id]);
     const [mapped] = await executor.execute<RowDataPacket[]>('SELECT email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ? AND gmail_msgid = ? LIMIT 1', [accountId, userId, String(item.gmailMsgId)]);
     if (mapped[0].email_id !== id) {
-      await executor.execute<RowDataPacket[]>('DELETE FROM emails WHERE id = ? AND user_id = ? AND mail_account_id = ?', [id, userId, accountId]);
+      await executor.execute('DELETE FROM emails WHERE id = ? AND user_id = ? AND mail_account_id = ?', [id, userId, accountId]);
       return mapped[0].email_id;
     }
   }
@@ -227,9 +227,9 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       // A fetch that started before a confirmed mutation cannot repaint it.
       // The occurrence repository also protects MODSEQ and its own revision.
       if (!current || String(occurrence?.observation_revision) === String(revision)) {
-        await executor.execute<RowDataPacket[]>(`UPDATE emails SET remote_missing = FALSE
+        await executor.execute(`UPDATE emails SET remote_missing = FALSE
           WHERE id = ? AND user_id = ? AND mail_account_id = ?`, [emailId, userId, accountId]);
-        await executor.execute<RowDataPacket[]>(`UPDATE emails SET is_read = ?, is_starred = ?, observed_modseq = ?,
+        await executor.execute(`UPDATE emails SET is_read = ?, is_starred = ?, observed_modseq = ?,
           observation_revision = observation_revision + 1, remote_missing = FALSE
           WHERE id = ? AND user_id = ? AND mail_account_id = ? AND observation_revision = ?`,
         [item.flags.includes('\\Seen') ? 1 : 0, item.flags.includes('\\Flagged') ? 1 : 0,
@@ -266,7 +266,7 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       // Only this confirmed same-epoch absence may mark an item missing.
       // Gmail's other active labels (All Mail included) keep it present;
       // old/quarantined epochs and partial windows can never prove absence.
-      await executor.execute<RowDataPacket[]>(`UPDATE emails e SET e.remote_missing = NOT EXISTS (
+      await executor.execute(`UPDATE emails e SET e.remote_missing = NOT EXISTS (
           SELECT 1 FROM mail_remote_occurrences live
           JOIN mail_remote_mailboxes active_box ON active_box.id = live.mailbox_id
             AND active_box.user_id = live.user_id AND active_box.mail_account_id = live.mail_account_id
@@ -371,7 +371,7 @@ async function scanMailboxSlice({ db, connection, account, folder, stream = 'rec
 // A manual sync also queues again the messages set aside as 'slow' after their
 // download did not finish within the deadline.
 async function enqueuePendingBodies({ userId, accountId, retrySlow = false }: { userId: string; accountId: string; retrySlow?: boolean }, executor: SqlExecutor) {
-  if (retrySlow) await executor.execute<RowDataPacket[]>(`UPDATE emails SET content_state = 'queued'
+  if (retrySlow) await executor.execute(`UPDATE emails SET content_state = 'queued'
     WHERE user_id = ? AND mail_account_id = ? AND content_state = 'slow' AND import_complete = FALSE`, [userId, accountId]);
   const [boxes] = await executor.execute<RowDataPacket[]>(`SELECT DISTINCT o.mailbox_id FROM emails e
     JOIN mail_remote_occurrences o ON o.email_id = e.id AND o.user_id = e.user_id
@@ -379,7 +379,7 @@ async function enqueuePendingBodies({ userId, accountId, retrySlow = false }: { 
     JOIN mail_remote_mailboxes m ON m.id = o.mailbox_id AND m.uidvalidity = o.uidvalidity AND m.state = 'active'
     WHERE e.user_id = ? AND e.mail_account_id = ? AND e.content_state = 'queued' AND e.import_complete = FALSE`,
   [userId, accountId]);
-  await executor.execute<RowDataPacket[]>(`UPDATE mail_engine_jobs SET priority = ? WHERE user_id = ? AND mail_account_id = ?
+  await executor.execute(`UPDATE mail_engine_jobs SET priority = ? WHERE user_id = ? AND mail_account_id = ?
     AND kind = 'body' AND state IN ('queued','paused') AND priority > ?`, [BODY_PRIORITY, userId, accountId, BODY_PRIORITY]);
   for (const { mailbox_id: mailboxId } of boxes)
     await runtime.enqueueJob({ userId, accountId, mailboxId, kind: 'body', priority: BODY_PRIORITY }, executor);

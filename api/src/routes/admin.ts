@@ -1,4 +1,4 @@
-import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { RowDataPacket } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import fs from 'fs';
 import path from 'path';
@@ -289,9 +289,9 @@ export = {
 
     try {
       const newHash = await hashPassword(new_password);
-      await db.execute<RowDataPacket[]>('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, targetId]);
+      await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, targetId]);
       // Invalidate all sessions so the user must re-login
-      await db.execute<RowDataPacket[]>('DELETE FROM sessions WHERE user_id = ?', [targetId]);
+      await db.execute('DELETE FROM sessions WHERE user_id = ?', [targetId]);
       serverEvents.closeUser(targetId);
       return { message: 'Password updated successfully' };
     } catch (error) {
@@ -352,9 +352,9 @@ export = {
         return { error: 'Two-factor authentication is not enabled for this user', status: 400 };
       }
       await disableTwoFactor(targetId, connection);
-      await connection.execute<RowDataPacket[]>('DELETE FROM two_factor_challenges WHERE user_id = ?', [targetId]);
+      await connection.execute('DELETE FROM two_factor_challenges WHERE user_id = ?', [targetId]);
       // Sessions may be on the lost device.
-      await connection.execute<RowDataPacket[]>('DELETE FROM sessions WHERE user_id = ?', [targetId]);
+      await connection.execute('DELETE FROM sessions WHERE user_id = ?', [targetId]);
       await connection.commit();
       serverEvents.closeUser(targetId);
       return { message: 'Two-factor authentication reset' };
@@ -390,7 +390,7 @@ export = {
       for (const recording of recordings || []) {
         await deleteRecordingFiles(recording.storage_path);
       }
-      await db.execute<RowDataPacket[]>('DELETE FROM users WHERE id = ?', [id]);
+      await db.execute('DELETE FROM users WHERE id = ?', [id]);
       serverEvents.closeUser(id);
       return { message: 'User deleted' };
     } catch (error) {
@@ -415,7 +415,7 @@ export = {
       if (targetUser.role === 'admin' && nextRole === 'user' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
         return { error: 'Cannot demote the last active admin', status: 400 };
       }
-      await db.execute<RowDataPacket[]>('UPDATE users SET role = ? WHERE id = ?', [nextRole, id]);
+      await db.execute('UPDATE users SET role = ? WHERE id = ?', [nextRole, id]);
       return { message: `User role set to ${nextRole}` };
     } catch (error) {
       console.error('Update user role error:', error);
@@ -437,9 +437,9 @@ export = {
       if (!is_active && targetUser.role === 'admin' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
         return { error: 'Cannot deactivate the last active admin', status: 400 };
       }
-      await db.execute<RowDataPacket[]>('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
+      await db.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
       if (!is_active) {
-        await db.execute<RowDataPacket[]>('DELETE FROM sessions WHERE user_id = ?', [id]);
+        await db.execute('DELETE FROM sessions WHERE user_id = ?', [id]);
         serverEvents.closeUser(id);
       }
       return { message: is_active ? 'User activated' : 'User deactivated' };
@@ -470,7 +470,7 @@ export = {
     }
 
     try {
-      await db.execute<RowDataPacket[]>(
+      await db.execute(
         'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
         ['signup_mode', signup_mode, signup_mode]
       );

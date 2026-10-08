@@ -322,7 +322,7 @@ function createIdleSupervisor(overrides: Overrides = {}) {
 // (module, settings, recovery, canary hold), a mapped INBOX, mail module and
 // background sync on, no mail restore running. Both modes import new INBOX mail.
 async function defaultListEligible() {
-  const { db }: typeof import('../state') = require('../state');
+  const { db } = require('../state') as typeof import('../state');
   const { getBackgroundPausedModulesByUser } = require('./module-settings') as typeof import('./module-settings');
   const { getActiveRestoreSectionsByUser } = require('./restore-locks') as typeof import('./restore-locks');
   const [rows] = await db.execute<RowDataPacket[]>(`SELECT a.id, a.user_id, a.sync_mode, a.imap_host, a.imap_port, a.username,
@@ -347,7 +347,7 @@ async function defaultListEligible() {
 // Same host policy, pinned address and TLS trust decision as every job; the
 // account row is re-read so a reconnect never uses stale credentials.
 async function defaultConnect(entry: Eligible) {
-  const { db }: typeof import('../state') = require('../state');
+  const { db } = require('../state') as typeof import('../state');
   const [[account]] = await db.execute<RowDataPacket[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE AND disconnected_at IS NULL',
     [entry.accountId, entry.userId]);
   if (!account) throw new Error('Mail account no longer active');

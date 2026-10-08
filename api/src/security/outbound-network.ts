@@ -55,10 +55,7 @@ function isTrustedMailHost(host: unknown, trustedHosts: readonly string[] = TRUS
 }
 
 function networkPolicyError(message: string) {
-  const error = Object.assign(new Error(message), { code: 'OUTBOUND_HOST_BLOCKED', status: 400 });
-  error.code = 'OUTBOUND_HOST_BLOCKED';
-  error.status = 400;
-  return error;
+  return Object.assign(new Error(message), { code: 'OUTBOUND_HOST_BLOCKED', status: 400 });
 }
 
 async function resolveNetworkHost(host: unknown, { lookup = dns.lookup.bind(dns), timeoutMs = 10000 }: ResolveOptions = {}) {
