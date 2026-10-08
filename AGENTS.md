@@ -21,7 +21,7 @@ The standard deployment is one app container and one MariaDB container. Nginx se
 | Authentication and outbound connections | api/src/auth.ts, api/src/routes/auth.ts, api/src/services/two-factor.ts, api/src/security/ |
 | Calendar accounts, sync and recurrence | src/lib/calendar-api.ts, api/src/routes/calendar.ts, api/src/services/calendar*.ts, api/src/services/caldav.ts; docs/CALENDAR.md |
 | Durable mail sync and operations | api/src/services/mail-engine/, api/src/services/mail-account-lock.ts, api/src/services/mail-sync-control.ts; docs/MAIL_MODES.md, docs/MAIL_SYNC.md |
-| Domain logic and persistence | api/src/services/, api/src/security/, api/src/services/database.js; services/mail.ts and services/backup.ts are facades over the mail-* and backup-* modules |
+| Domain logic and persistence | api/src/services/, api/src/security/, api/src/services/database.ts; services/mail.ts and services/backup.ts are facades over the mail-* and backup-* modules |
 | Recovery and schema contracts | api/src/services/backup-catalog.ts, api/src/services/data-inventory.ts, api/src/services/mail-engine/recovery-policy.ts, api/src/services/restore-locks.ts, api/src/services/database-migrations.ts; docker/mariadb/schema.sql |
 | Tests and deployment | src/test/, api/tests/, Dockerfile, docker-compose.yml, .github/workflows/ |
 
@@ -49,11 +49,11 @@ For feature details, follow the corresponding file in docs/ rather than treating
 
 ## Code style and change shape
 
-- Frontend code is TypeScript with React components and hooks; backend source is strict TypeScript compiled to CommonJS, with the frozen database baseline retained as JavaScript. Classic browser workers are authored in workers/ and emitted as JavaScript. Match the surrounding file's naming and formatting instead of reformatting unrelated code. Use the existing API helpers, query keys, hooks, and UI components before adding parallel ones.
+- Frontend code is TypeScript with React components and hooks; backend source is strict TypeScript compiled to CommonJS. Classic browser workers are authored in workers/ and emitted as JavaScript. Match the surrounding file's naming and formatting instead of reformatting unrelated code. Use the existing API helpers, query keys, hooks, and UI components before adding parallel ones.
 - Keep route handlers focused on HTTP concerns and put reusable domain behavior in api/src/services/. Validate external input at the boundary. Use parameterized SQL and explicit ownership checks. Preserve the existing mail/CalDAV outbound-network and TLS checks.
 - Account for pending, failure, retry, cancellation, and stale responses in asynchronous UI work. In particular, do not let a late response show data from the previous account or an earlier mail selection.
 - Change only the needed layers, but follow a behavior through all affected layers: UI, API, database, workers, offline snapshot, backup/restore, and documentation. Avoid dependencies and abstractions that solve no current requirement. Comments should explain a constraint or reason that the code alone does not show.
-- Database schema: `ensureLegacySchema` in database.js is a frozen 0.11.1 baseline, never edit it; every schema change is a new numbered migration, then regenerate `docker/mariadb/schema.sql` with `scripts/local-db.sh schema-dump`.
+- Database schema: database-baseline.ts is the frozen 0.16.0 starting schema of new databases (upgrade steps 1 to 11), never change it; every schema change is a new numbered migration in database.ts, then regenerate `docker/mariadb/schema.sql` with `scripts/local-db.sh schema-dump`.
 - Tests should prove observable behavior and important failure paths with synthetic data. Do not copy a real mailbox, database, contact list, or server volume into a test fixture.
 
 ## Code Review Rules

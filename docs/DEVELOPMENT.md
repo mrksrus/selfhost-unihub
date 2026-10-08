@@ -49,13 +49,9 @@ npm --prefix api ci
 npm --prefix api start
 ```
 
-The 0.19.0 API source is TypeScript except for the frozen legacy database
-baseline. `npm --prefix api start` compiles first, then starts
+The API source is TypeScript. `npm --prefix api start` compiles first, then starts
 `api/dist/server.js`. `npm --prefix api run build` creates the CommonJS runtime
 and `npm --prefix api run typecheck` checks source without emitting code.
-`allowJs` compiles the frozen `database.js` into the runtime tree with the
-TypeScript files; `checkJs` is off, so it is not type-checked. Do not edit its
-`ensureLegacySchema` baseline.
 
 The notification service worker and audio worklet are authored in `workers/`.
 `npm run build:workers` emits classic scripts into ignored `.worker-dist/`.
@@ -140,9 +136,10 @@ scripts/local-db.sh migrate-check d.sql  # run the startup upgrades on a dump, c
 scripts/local-db.sh schema-dump          # regenerate docker/mariadb/schema.sql
 ```
 
-The app creates and upgrades its own schema at startup. `ensureLegacySchema` in
-`api/src/services/database.js` is a frozen baseline; every schema change is a new
-numbered migration in `ensureSchema`. `docker/mariadb/schema.sql` is
+The app creates and upgrades its own schema at startup. A new database starts
+from the frozen 0.16.0 baseline in `api/src/services/database-baseline.ts`;
+every schema change is a new numbered migration in `ensureSchema`
+(`api/src/services/database.ts`). `docker/mariadb/schema.sql` is
 generated, never edited: `schema-dump` runs the startup schema code
 (`api/scripts/dump-schema.cts`) on an empty database and writes a sorted
 `SHOW CREATE TABLE` dump. Commit the regenerated file with the migration;

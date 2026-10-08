@@ -152,13 +152,11 @@ Important fields:
 | `calendar_events` | `reminders` | JSON array of reminder offsets in minutes |
 | `calendar_event_external_refs` | `remote_object_id`, `recurrence_id` | Links each local occurrence to its server object; `recurrence_id` is UTC `YYYYMMDDTHHMMSSZ` |
 
-## Startup Backfill
+## Default Calendar
 
-On startup, `backfillCalendarOwnership` ensures every user has:
-
-1. one local calendar account
-2. one default local calendar
-3. all legacy events assigned to that default calendar when `calendar_id` is null
+Every user has one local calendar account with one default local calendar
+(`ensureDefaultLocalCalendarForUser`). The bootstrap admin gets them when the
+database is created; other users when the calendar routes first need them.
 
 ## Date and Time Handling
 

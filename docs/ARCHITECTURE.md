@@ -229,7 +229,7 @@ Old imported messages are revalidated once; subsequent progress is recorded per
 account and exact provider folder, with UIDVALIDITY resets and failed-UID retries.
 No container configuration change is needed for these application migrations.
 
-The historical create/additive steps form a verified baseline. Later upgrades have ordered IDs and completion records; completed repairs do not repeat. Required migration errors stop startup. A declared field inventory is checked against the actual schema. See [Recovery contracts](DATA_RECOVERY.md).
+A new database is created from the 0.16.0 baseline, which stands for upgrade steps 1 to 11. Later upgrades have ordered IDs and completion records; completed repairs do not repeat. Required migration errors stop startup. A declared field inventory is checked against the actual schema. See [Recovery contracts](DATA_RECOVERY.md).
 
 ## Persistent Storage
 

@@ -174,17 +174,6 @@ async function ensureDefaultLocalCalendarForUser(userId: string, connection: Sql
   return { accountId, calendarId };
 }
 
-async function backfillCalendarOwnership(connection: SqlExecutor = db) {
-  const [users] = await connection.execute<(RowDataPacket & { id: string })[]>('SELECT id FROM users');
-  for (const user of users) {
-    const { calendarId } = await ensureDefaultLocalCalendarForUser(user.id, connection);
-    await connection.execute(
-      'UPDATE calendar_events SET calendar_id = ? WHERE user_id = ? AND calendar_id IS NULL',
-      [calendarId, user.id]
-    );
-  }
-}
-
 function getCalendarEventIdFromReq(req: IncomingMessage) {
   return getCalendarEventIdFromPath(req.url!, req.headers.host);
 }
@@ -402,7 +391,6 @@ export {
   serializeCalendarAccount,
   serializeCalendarCalendar,
   ensureDefaultLocalCalendarForUser,
-  backfillCalendarOwnership,
   getCalendarEventIdFromReq,
   getCalendarSubtaskIdFromReq,
   getCalendarAccountIdFromReq,

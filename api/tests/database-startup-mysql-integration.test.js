@@ -1,11 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const fs = require('node:fs/promises');
-const path = require('node:path');
-
-// Migration 11 deletes this folder; never point it at real uploads.
-process.env.NOTES_UPLOAD_ROOT = path.join(require('node:os').tmpdir(), `unihub-notes-${process.pid}`);
 
 function quoteIdentifier(value) {
   assert.match(value, /^[A-Za-z0-9_]+$/);
@@ -124,27 +119,13 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   assert.equal(deliveries.total, 0);
   await db.execute('DELETE FROM notification_events WHERE user_id = ? AND kind = ?', [user.id, 'test']);
 
-  // Replay migration 11 over leftovers from an older release: Notes tables,
-  // saved Notes choices and attachment files are all gone afterwards. Later
-  // steps replay with it and must detect their completed work.
-  await db.execute('DELETE FROM schema_migrations WHERE id >= 11');
-  await db.execute('CREATE TABLE notes (id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, title VARCHAR(255)) ENGINE=InnoDB');
-  await db.execute('CREATE TABLE note_links (note_id CHAR(36) NOT NULL, FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE) ENGINE=InnoDB');
-  await db.execute("INSERT INTO notes (id, user_id, title) VALUES (?, ?, 'Example note')", [crypto.randomUUID(), user.id]);
-  await db.execute(`INSERT INTO user_settings (user_id, setting_key, setting_value) VALUES (?, 'module_preferences', ?), (?, 'default_start_page', 'notes')
-    ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`, [user.id, JSON.stringify({ notes: { enabled: false }, mail: { visible: false } }), user.id]);
-  await fs.mkdir(path.join(process.env.NOTES_UPLOAD_ROOT, user.id), { recursive: true });
-  await fs.writeFile(path.join(process.env.NOTES_UPLOAD_ROOT, user.id, 'attachment.txt'), 'Example attachment');
+  // Replay the steps after the 0.16.0 baseline, as after a crash before they
+  // were recorded: each must detect its completed work.
+  await db.execute('DELETE FROM schema_migrations WHERE id >= 12');
   await getDb().end();
   await initDatabase();
-  const [noteTables] = await db.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE 'note%'");
-  assert.deepEqual(noteTables, []);
-  const [settings] = await db.execute("SELECT setting_key, setting_value FROM user_settings WHERE user_id = ? AND setting_key IN ('module_preferences', 'default_start_page')", [user.id]);
-  assert.deepEqual(settings.map(row => [row.setting_key, typeof row.setting_value === 'string' ? JSON.parse(row.setting_value) : row.setting_value]),
-    [['module_preferences', { mail: { visible: false } }]]);
-  await assert.rejects(fs.access(process.env.NOTES_UPLOAD_ROOT), { code: 'ENOENT' });
-  const [[replayed]] = await db.execute('SELECT name FROM schema_migrations WHERE id = 11');
-  assert.equal(replayed.name, 'remove-notes-module');
+  const [history] = await db.execute('SELECT id FROM schema_migrations ORDER BY id');
+  assert.deepEqual(history.map(row => row.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   const [[calendarSync]] = await db.execute('SELECT name FROM schema_migrations WHERE id = 12');
   assert.equal(calendarSync.name, 'calendar-sync');
 

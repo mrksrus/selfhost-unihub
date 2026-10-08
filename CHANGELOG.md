@@ -18,9 +18,14 @@ routes, database and backup format. No database upgrade runs at startup.
   and the `mail-rollout` operator command are checked in strict mode and
   compiled to the same CommonJS layout as before. The image holds only the
   compiled code and the production dependencies. `/app/api/server.js` and
-  `/app/api/mail-rollout.js` are where they were. The frozen database
-  baseline (`database.js`) stays JavaScript. The development scripts in
-  `api/scripts/` are type-checked TypeScript that Node runs directly.
+  `/app/api/mail-rollout.js` are where they were. The development scripts
+  in `api/scripts/` are type-checked TypeScript that Node runs directly.
+- **New databases start from the 0.16.0 schema.** Every installation since
+  0.16.0 began with an empty MariaDB database, so the upgrade steps for
+  databases from 0.9.x to 0.15.x never ran on existing data. They are
+  replaced by one step that creates the same tables and records the same
+  upgrade history. A new database is the same as one created by 0.18.2, and
+  existing databases are not changed.
 - **The browser workers are compiled too.** The notification service worker
   and the recording worklet keep their URLs (`/sw-custom.js`,
   `/audio-recorder-worklet.js`). Installed apps and push subscriptions keep

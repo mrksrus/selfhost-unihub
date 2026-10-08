@@ -48,7 +48,6 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
   ownsSchema = true;
   state.setDb(pool);
   const { ensureSchema } = require('../dist/src/services/database');
-  const schema = require('../dist/src/services/mail-engine/schema');
   const repo = require('../dist/src/services/mail-engine/repository');
   const runtime = require('../dist/src/services/mail-engine/runtime');
   await ensureSchema();
@@ -74,65 +73,9 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
   const occurrence = (mailbox, emailId, opts = {}) => txn(cx => repo.upsertOccurrence({userId:owner,accountId:account,
     mailboxId:mailbox.id,epoch:7,uid:11,emailId, ...opts},cx));
 
-  await t.test('interrupted legacy backfill checkpoints transactionally; repeat startup preserves IDs, flags, raw provenance and uncertainty', async () => {
-    // These rows represent an installation where migration 6 committed its DDL but
-    // migration 7 had not yet classified the pre-existing records.
-    const rawPath = '/synthetic/archive/legacy.eml', rawHash = hash('legacy normalized bytes');
-    await insertEmail(uuid(1),owner,account,{message_id:'<duplicate@example.test>',remote_folder:'INBOX',remote_uid:11,remote_uidvalidity:7,
-      source_folder:'Old/Source',imap_uid:99,imap_uidvalidity:5,raw_storage_path:rawPath,raw_sha256:rawHash,is_read:1,is_starred:1,is_draft:1});
-    await insertEmail(uuid(2),owner,account,{message_id:'<duplicate@example.test>',remote_folder:'Archive',remote_uid:20,remote_uidvalidity:7});
-    await insertEmail(uuid(3),owner,account,{remote_folder:'INBOX',remote_uid:11,remote_uidvalidity:7}); // duplicate tuple
-    await insertEmail(uuid(4),owner,account,{remote_folder:'INBOX',remote_uid:0,remote_uidvalidity:7}); // invalid
-    await insertEmail(uuid(5),owner,account,{remote_folder:'INBOX',remote_uid:30,remote_uidvalidity:7,remote_missing:1});
-    await insertEmail(uuid(6),owner,account,{remote_folder:'INBOX',remote_uid:31,remote_uidvalidity:7,is_legacy:1});
-    await insertEmail(uuid(7),owner,account,{remote_folder:'Epoch',remote_uid:40,remote_uidvalidity:7});
-    await insertEmail(uuid(8),owner,account,{remote_folder:'Epoch',remote_uid:41,remote_uidvalidity:8});
-    const operations = [
-      {id:uuid(101),emailId:uuid(1),status:'pending',dispatched:1},
-      {id:uuid(102),emailId:uuid(1),status:'failed',dispatched:0},
-      {id:uuid(103),emailId:uuid(1),status:'conflict',dispatched:0},
-      {id:uuid(104),emailId:uuid(1),status:'done',dispatched:1},
-    ];
-    for (const op of operations) await insertOp(op);
-    await pool.execute('DELETE FROM mail_engine_migration_progress');
-    // Exercise an actual server-side failure without requiring SUPER or
-    // changing binary-log policy for the normal non-root test database user.
-    await pool.query(`ALTER TABLE mail_remote_occurrences ADD CONSTRAINT recovery_interrupt CHECK (email_id <> '${uuid(2)}')`);
-    try {
-      await assert.rejects(schema.backfillMailEngine(pool,{batchSize:1}), /recovery_interrupt/);
-      assert.deepEqual(await one(pool,"SELECT last_id,processed FROM mail_engine_migration_progress WHERE source_table='emails'"),{last_id:uuid(1),processed:1});
-      assert.equal((await rows(pool,'SELECT id FROM mail_remote_occurrences')).length,1,'Failed batch rolled back its occurrence and checkpoint');
-    } finally { await pool.query('ALTER TABLE mail_remote_occurrences DROP CONSTRAINT recovery_interrupt'); }
-    await schema.backfillMailEngine(pool,{batchSize:1});
-    const before = await rows(pool,'SELECT id,email_id,mailbox_id,uidvalidity,uid,presence,observed_flags FROM mail_remote_occurrences ORDER BY email_id');
-    assert.equal(before.length,3,'Only valid, nonmissing and nonlegacy distinct tuples survived; duplicate was quarantined');
-    assert.deepEqual(json(before.find(row => row.email_id === uuid(1)).observed_flags),['\\Seen','\\Flagged','\\Draft']);
-    assert.equal(before.find(row => row.email_id === uuid(1)).presence,'quarantined','Ambiguous duplicate cannot remain current');
-    assert.equal(before.find(row => row.email_id === uuid(7)).presence,'quarantined','Mixed epochs cannot remain current');
-    assert.deepEqual(await rows(pool,'SELECT source_id,reason FROM mail_engine_quarantine WHERE source_table="emails" ORDER BY source_id,reason'),[
-      {source_id:uuid(1),reason:'duplicate_remote_tuple'}, {source_id:uuid(3),reason:'duplicate_remote_tuple'},
-      {source_id:uuid(4),reason:'invalid_remote_tuple'}, {source_id:uuid(8),reason:'stale_epoch'},
-    ]);
-    assert.deepEqual((await rows(pool,'SELECT id,state,status,dispatched FROM mail_writebacks ORDER BY id')).map(({id,state,status,dispatched}) => ({id,state,status,dispatched})),[
-      {id:uuid(101),state:'reconciling',status:'pending',dispatched:1},
-      {id:uuid(102),state:'needs_attention',status:'failed',dispatched:0},
-      {id:uuid(103),state:'needs_attention',status:'conflict',dispatched:0},
-      {id:uuid(104),state:'confirmed',status:'done',dispatched:1},
-    ]);
-    assert.deepEqual(await one(pool,'SELECT source_folder,imap_uid,imap_uidvalidity,raw_storage_path,raw_sha256,raw_format,raw_bytes,raw_verified,content_state FROM emails WHERE id=?',[uuid(1)]),
-      {source_folder:'Old/Source',imap_uid:99,imap_uidvalidity:5,raw_storage_path:rawPath,raw_sha256:rawHash,
-        raw_format:'legacy_normalized',raw_bytes:null,raw_verified:0,content_state:'legacy'});
-    // A process died before marking migration 7 complete, after its final batch.
-    await pool.execute('DELETE FROM schema_migrations WHERE id>=7');
-    await ensureSchema();
-    await schema.backfillMailEngine(pool,{batchSize:1});
-    assert.deepEqual(await rows(pool,'SELECT id,email_id,mailbox_id,uidvalidity,uid,presence,observed_flags FROM mail_remote_occurrences ORDER BY email_id'),before);
-    assert.equal((await rows(pool,'SELECT * FROM mail_engine_quarantine WHERE source_table="emails"')).length,4);
-    assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_writebacks WHERE state IS NULL')).n,0);
-    assert.deepEqual((await rows(pool,'SELECT id,state FROM mail_writebacks ORDER BY id')).map(r => r.state),
-      ['reconciling','needs_attention','needs_attention','confirmed']);
-    assert.deepEqual((await rows(pool,'SELECT id FROM schema_migrations WHERE id IN (6,7,8) ORDER BY id')).map(r => r.id),[6,7,8]);
-  });
+  // The later steps share an archived message with a current server copy.
+  await insertEmail(uuid(2),owner,account,{message_id:'<duplicate@example.test>',remote_folder:'Archive',remote_uid:20,remote_uidvalidity:7});
+  await occurrence(await box('Archive'),uuid(2),{uid:20});
 
   await t.test('exact binary mailbox paths, owner-scoped occurrences, independent copies and account-scoped Gmail identity', async () => {
     const names = ['Projects','projects','Projects ','Projekte/Grüße','[Gmail]/Papierkorb'];

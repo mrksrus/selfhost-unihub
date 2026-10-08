@@ -9,7 +9,10 @@ function database(history = []) {
       if (sql.includes('GET_LOCK')) { state.locked = true; return [[{ acquired: 1 }]]; }
       if (sql.includes('RELEASE_LOCK')) { state.locked = false; return [[{}]]; }
       if (sql.startsWith('SELECT id, name')) return [state.history.map(row => ({ ...row }))];
-      if (sql.startsWith('INSERT INTO schema_migrations')) { state.writes++; state.history.push({ id: params[0], name: params[1] }); }
+      if (sql.startsWith('INSERT INTO schema_migrations')) {
+        state.writes++;
+        for (let index = 0; index < params.length; index += 2) state.history.push({ id: params[index], name: params[index + 1] });
+      }
       return [[]];
     },
     release() { state.releases++; },
@@ -64,4 +67,38 @@ test('invalid order and unknown database history stop before any migration', asy
   await assert.rejects(runMigrations(database(), [step(2), step(1)]), /increasing IDs/);
   await assert.rejects(runMigrations(database([{ id: 2, name: 'step-2' }]), [step(1), step(2)]), /unknown or out of order/);
   await assert.rejects(runMigrations(database([{ id: 1, name: 'different-history' }]), [step(1)]), /unknown or out of order/);
+});
+
+test('a new database runs the baseline once and records the history it replaces', async () => {
+  const db = database();
+  const calls = [];
+  const baseline = { history: [{ id: 1, name: 'old-1' }, { id: 2, name: 'old-2' }],
+    up: async () => calls.push('baseline'), verify: async () => calls.push('verify-baseline') };
+  const step = { id: 3, name: 'step-3', up: async () => calls.push('up-3'), verify: async () => calls.push('verify-3') };
+  await runMigrations(db, [step], baseline);
+  await runMigrations(db, [step], baseline);
+  assert.deepEqual(calls, ['baseline', 'verify-baseline', 'up-3', 'verify-3']);
+  assert.deepEqual(db.state.history, [{ id: 1, name: 'old-1' }, { id: 2, name: 'old-2' }, { id: 3, name: 'step-3' }]);
+});
+
+test('a database with the replaced history skips the baseline and continues', async () => {
+  const db = database([{ id: 1, name: 'old-1' }, { id: 2, name: 'old-2' }]);
+  const calls = [];
+  const baseline = { history: [{ id: 1, name: 'old-1' }, { id: 2, name: 'old-2' }],
+    up: async () => { throw new Error('must not run'); }, verify: async () => {} };
+  await runMigrations(db, [{ id: 3, name: 'step-3', up: async () => calls.push('up-3'), verify: async () => {} }], baseline);
+  assert.deepEqual(calls, ['up-3']);
+  assert.equal(db.state.history.length, 3);
+});
+
+test('the baseline records nothing when it fails, and refuses a half-finished older setup', async () => {
+  const baseline = { history: [{ id: 1, name: 'old-1' }, { id: 2, name: 'old-2' }],
+    up: async () => {}, verify: async () => { throw new Error('Missing declared field users.id'); } };
+  const db = database();
+  await assert.rejects(runMigrations(db, [], baseline), /Database setup failed: Missing declared field/);
+  assert.deepEqual(db.state.history, []);
+  assert.equal(db.state.locked, false);
+  await assert.rejects(runMigrations(database([{ id: 1, name: 'old-1' }]), [], { ...baseline, verify: async () => {} }), /did not finish/);
+  await assert.rejects(runMigrations(database([{ id: 1, name: 'other' }]), [], baseline), /unknown or out of order/);
+  await assert.rejects(runMigrations(database(), [{ id: 2, name: 'step-2', up: async () => {}, verify: async () => {} }], baseline), /increasing IDs/);
 });

@@ -1,27 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-test('additive refresh migration upgrades preexisting engine jobs without losing accepted work', async () => {
-  const { migrateManualMailRefresh } = require('../dist/src/services/mail-engine/schema');
-  const fields = new Set(['id', 'kind', 'state']), existingJobs = [{ id: 'accepted', state: 'paused' }];
-  const sql = [];
-  const db = { async execute(statement) {
-    sql.push(statement);
-    if (statement === 'SHOW COLUMNS FROM `mail_engine_jobs`')
-      return [[...fields].map(Field => ({ Field }))];
-    if (statement.includes('ADD COLUMN manual_refresh')) {
-      fields.add('manual_refresh');
-      existingJobs.forEach(row => { row.manual_refresh = 0; });
-      return [{ affectedRows: 0 }];
-    }
-    assert.fail(statement);
-  } };
-  await migrateManualMailRefresh(db);
-  await migrateManualMailRefresh(db);
-  assert.equal(sql.filter(statement => statement.includes('ALTER TABLE')).length, 1);
-  assert.deepEqual(existingJobs, [{ id: 'accepted', state: 'paused', manual_refresh: 0 }]);
-});
-
 // Exercise the real durable enqueue path, not an in-memory scheduler shim.
 test('manual requests promote queued work and retain one successor behind a running scan', async t => {
   const repoPath = require.resolve('../dist/src/services/mail-engine/repository');

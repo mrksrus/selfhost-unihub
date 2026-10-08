@@ -33,9 +33,12 @@ verify that each worker observes restore locks and respects in-flight operations
 ## Database upgrades
 
 `database-migrations.ts` serializes upgrades with a database advisory lock and
-records completed IDs/names in `schema_migrations`. `database.js` defines step 1,
-the verified historical baseline, and step 2, the one-time Sent/Draft read repair.
-Completed steps are skipped. Unknown/out-of-order history and required failures
+records completed IDs/names in `schema_migrations`. `database.ts` lists the
+steps. Every installation since 0.16.0 started with an empty MariaDB database,
+so steps 1 to 11 never upgrade existing data: `database-baseline.ts` creates
+their result in one step and records the same eleven IDs/names, the history of
+every database created earlier. Never change the baseline. Completed steps are
+skipped. Unknown/out-of-order history and required failures
 stop startup. MariaDB DDL can commit independently; each new step must tolerate
 partial completion and verify its result before recording success.
 
@@ -129,8 +132,9 @@ modules separately.
 Removing a module must not break older archives or databases. Notes (0.14.0) is
 the reference:
 
-- A new migration drops the tables and files. Earlier migrations stay frozen, so
-  a database upgraded from any version replays the creation and then the removal.
+- A new migration drops the tables and files. Earlier migrations stay frozen.
+  (Notes was created in step 4 and removed in step 11; since 0.19.0 both are
+  part of the 0.16.0 baseline, which never creates the Notes tables.)
 - The data inventory keeps the removed tables with `removedIn` set to that
   migration and marks them `deliberately_excluded`.
 - `RETIRED_MODULE_IDS`, `RETIRED_SECTIONS` and `RETIRED_FILE_KINDS` make the

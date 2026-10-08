@@ -2,7 +2,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { assertUid32, assertDecimal64 } = require('../dist/src/services/mail-engine/repository-identity');
-const schema = require('../dist/src/services/mail-engine/schema');
 const repo = require('../dist/src/services/mail-engine/repository');
 const runtime = require('../dist/src/services/mail-engine/runtime');
 const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler');
@@ -15,89 +14,6 @@ test('protocol IDs, decimal precision and boolean wire values are strict', () =>
     assert.throws(() => assertUid32(value));
   }
   assert.throws(() => assertDecimal64(18446744073709551615n + 1n));
-});
-
-test('DDL groups expensive email/account ALTERs and drops unique writeback index', async () => {
-  const calls = [];
-  let legacyCollation = 'utf8mb4_bin';
-  const db = { async execute(sql, params) {
-    calls.push(sql);
-    if (sql.startsWith('SHOW FULL COLUMNS')) return [[{ Field: 'remote_name', Collation: legacyCollation }]];
-    if (sql.startsWith('ALTER TABLE mail_folder_remote_boxes')) legacyCollation = 'utf8mb4_nopad_bin';
-    if (sql.startsWith('SHOW COLUMNS')) return [[]];
-    if (sql.startsWith('SHOW INDEX')) return [params[0] === 'uq_mail_writeback' ? [{ Key_name: 'uq_mail_writeback' }] : []];
-    return [{ affectedRows: 0 }];
-  } };
-  await schema.migrateMailEngineSchema(db);
-  const alters = calls.filter(sql => sql.startsWith('ALTER TABLE `emails`'));
-  assert.equal(alters.length, 1);
-  for (const field of ['observation_revision','observed_modseq','raw_format','raw_bytes','raw_verified','content_state']) assert.match(alters[0], new RegExp(field));
-  assert(calls.some(sql => sql.includes('DROP INDEX uq_mail_writeback')));
-  assert(calls.some(sql => sql.includes('utf8mb4_nopad_bin')));
-  assert.equal(calls.filter(sql => sql.startsWith('ALTER TABLE mail_folder_remote_boxes')).length, 1);
-  await schema.migrateMailEngineSchema(db);
-  assert.equal(calls.filter(sql => sql.startsWith('ALTER TABLE mail_folder_remote_boxes')).length, 1,
-    'legacy mailbox collation upgrade is resumable and runs only when required');
-  for (const table of ['mail_remote_mailboxes','mail_remote_occurrences','mail_engine_cursors','mail_engine_jobs','mail_engine_accounts','mail_operation_attempts','mail_command_receipts','mail_engine_quarantine','mail_engine_migration_progress']) {
-    assert(calls.some(sql => sql.includes(`CREATE TABLE IF NOT EXISTS ${table} (`)), `missing ${table}`);
-  }
-  assert(!calls.some(sql => /^DROP TABLE|^DELETE FROM emails|^DELETE FROM mail_writebacks/.test(sql)));
-});
-
-test('legacy backfill is restart-safe and quarantines duplicate and changed epochs without altering original emails', async () => {
-  const email = (id, uid, extra = {}) => ({ id, user_id: 'u', mail_account_id: 'a', remote_folder: 'INBOX', remote_uid: uid,
-    remote_uidvalidity: 9, source_folder: 'INBOX', imap_uid: uid, imap_uidvalidity: 9,
-    remote_missing: 0, is_draft: 0, is_legacy: 0, is_read: 1, is_starred: 1, sync_mode: 'sync', ...extra });
-  const emails = [email('a1', 10), email('a2', 10), email('a3', 11, { remote_uidvalidity: 10 }),
-    email('a4', 12, { remote_missing: 1 }), email('a5', null, { remote_folder: null, remote_uidvalidity: null, source_folder: 'INBOX', imap_uid: 13 }),
-    email('a6', 14, { remote_uidvalidity: 0 })];
-  const writes = [
-    { id: 'w1', user_id: 'u', mail_account_id: 'a', email_id: 'a1', action: 'read', status: 'done', dispatched: 1, remote_folder: 'INBOX', remote_uid: 10, remote_uidvalidity: 9, state: null },
-    { id: 'w2', user_id: 'u', mail_account_id: 'a', email_id: 'a1', action: 'move', status: 'conflict', dispatched: 1, remote_folder: 'INBOX', remote_uid: 10, remote_uidvalidity: 9, state: null },
-    { id: 'w3', user_id: 'u', mail_account_id: 'a', email_id: 'a1', action: 'star', status: 'failed', dispatched: 0, remote_folder: 'INBOX', remote_uid: 10, remote_uidvalidity: 9, state: null },
-    { id: 'w4', user_id: 'u', mail_account_id: 'a', email_id: 'a1', action: 'read', status: 'pending', dispatched: 0, remote_folder: 'INBOX', remote_uid: 10, remote_uidvalidity: 9, state: null },
-    { id: 'w5', user_id: 'u', mail_account_id: 'a', email_id: 'a1', action: 'move', status: 'pending', dispatched: 0, remote_folder: 'INBOX', remote_uid: 10, remote_uidvalidity: 0, state: null },
-  ];
-  const progress = new Map(), occurrences = new Map(), quarantine = new Map(), queries = [];
-  let box = null, commits = 0;
-  const db = { async beginTransaction() {}, async commit() { commits++; }, async rollback() { throw new Error('unexpected rollback'); },
-    async execute(sql, args = []) {
-      queries.push({ sql, args });
-      if (sql.startsWith('INSERT IGNORE INTO mail_engine_migration_progress')) { if (!progress.has(args[0])) progress.set(args[0], ''); return [{ affectedRows: 1 }]; }
-      if (sql.startsWith('SELECT last_id FROM mail_engine_migration_progress')) return [[{ last_id: progress.get(args[0]) }]];
-      if (sql.includes('FROM emails e JOIN mail_accounts')) return [emails.filter(row => row.id > args[0]).slice(0, args[1])];
-      if (sql.includes('FROM mail_writebacks WHERE id >')) return [writes.filter(row => row.id > args[0]).slice(0, args[1])];
-      if (sql.startsWith('UPDATE mail_engine_migration_progress')) { progress.set(args[2], args[0]); return [{ affectedRows: 1 }]; }
-      if (sql.includes('SELECT id FROM mail_accounts WHERE')) return [[{ id: 'a' }]];
-      if (sql.includes('SELECT * FROM mail_remote_mailboxes WHERE mail_account_id')) return [box ? [{ ...box }] : []];
-      if (sql.startsWith('INSERT INTO mail_remote_mailboxes')) { box = { id: args[0], user_id: args[1], mail_account_id: args[2], remote_name: args[3], uidvalidity: args[4], state: 'active' }; return [{ affectedRows: 1 }]; }
-      if (sql.includes('SELECT * FROM mail_remote_mailboxes WHERE id')) return [[{ ...box }]];
-      if (sql.startsWith('SELECT id,email_id FROM mail_remote_occurrences')) {
-        const occ = occurrences.get(`${args[1]}:${args[2]}`); return [occ ? [{ ...occ }] : []];
-      }
-      if (sql.startsWith('INSERT INTO mail_remote_occurrences')) { occurrences.set(`${args[4]}:${args[5]}`, { id: args[0], email_id: args[6], flags: JSON.parse(args[7]), presence: 'present' }); return [{ affectedRows: 1 }]; }
-      if (sql.includes('UPDATE mail_remote_occurrences SET presence')) {
-        for (const item of occurrences.values()) item.presence = 'quarantined'; return [{ affectedRows: 1 }];
-      }
-      if (sql.includes("UPDATE mail_remote_mailboxes SET state = 'quarantined'")) { box.state = 'quarantined'; return [{ affectedRows: 1 }]; }
-      if (sql.startsWith('INSERT INTO mail_engine_quarantine')) { quarantine.set(`${args[0]}:${args[1]}:${args[4]}`, args); return [{ affectedRows: 1 }]; }
-      if (sql.startsWith('UPDATE mail_writebacks SET state')) { const row = writes.find(row => row.id === args.at(-1)); row.state = args[0]; row.is_current = args[1]; return [{ affectedRows: 1 }]; }
-      throw new Error(`Unexpected SQL: ${sql}`);
-    } };
-  await schema.backfillMailEngine(db, { batchSize: 2 });
-  assert.equal(progress.get('emails'), 'a6'); assert.equal(progress.get('mail_writebacks'), 'w5');
-  assert.deepEqual(writes.map(({ id,state,is_current }) => [id,state,is_current]), [
-    ['w1','confirmed',0], ['w2','reconciling',1], ['w3','needs_attention',1], ['w4','queued',1], ['w5','needs_attention',1] ]);
-  assert.deepEqual(occurrences.get('9:10').flags, ['\\Seen','\\Flagged']);
-  assert.equal(occurrences.get('9:10').presence, 'quarantined');
-  assert.equal(box.state, 'quarantined');
-  assert(quarantine.has('emails:a1:duplicate_remote_tuple') && quarantine.has('emails:a2:duplicate_remote_tuple'));
-  assert(quarantine.has('emails:a3:stale_epoch') && quarantine.has('emails:a6:invalid_remote_tuple'));
-  assert(quarantine.has('mail_writebacks:w5:invalid_source_tuple'));
-  assert(!queries.some(({ sql }) => sql.startsWith('UPDATE emails') || sql.startsWith('DELETE FROM mail_writebacks')));
-  const count = commits;
-  await schema.backfillMailEngine(db, { batchSize: 2 });
-  assert.equal(commits, count + 2, 'rerun only checks empty batches; IDs unchanged');
 });
 
 test('repository refuses incomplete coverage, stale epoch and unrelated-owner occurrence', async () => {
