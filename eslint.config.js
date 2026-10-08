@@ -40,4 +40,15 @@ export default tseslint.config(
       "@typescript-eslint/no-require-imports": "off",
     },
   },
+  {
+    // Node strips types from these scripts but does not turn ES imports into
+    // require(), so a value import fails at run time even though tsc accepts it.
+    files: ["api/scripts/*.cts"],
+    rules: {
+      "no-restricted-syntax": ["error", {
+        selector: "ImportDeclaration[importKind!='type']",
+        message: "Scripts run as CommonJS: use `require('x') as typeof import('x')` or `import type`.",
+      }],
+    },
+  },
 );
