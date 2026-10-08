@@ -7,7 +7,7 @@ const {
   publishMailJob,
   publishMailOperation,
   publishMailChanged,
-} = require('../src/services/server-events');
+} = require('../dist/src/services/server-events');
 
 function fakeTimers() {
   let now = 0, seq = 0;

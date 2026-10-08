@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "None",
+    "lib": [
+      "ES2022",
+      "WebWorker"
+    ],
+    "types": [],
+    "rootDir": "workers",
+    "outDir": ".worker-dist",
+    "strict": true,
+    "useDefineForClassFields": false,
+    "skipLibCheck": true,
+    "noEmitOnError": true
+  },
+  "include": [
+    "workers/**/*.ts"
+  ]
+}

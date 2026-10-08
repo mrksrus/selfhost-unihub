@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createDurableMailScheduler } = require('../src/services/mail-sync-scheduler');
+const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler');
 
 test('a bounded slice and its continuation commit together before reporting idle', async () => {
   const id = 'mailbox', account = 'account', user = 'owner';

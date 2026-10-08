@@ -9,7 +9,7 @@ const Module = require('node:module');
 function createBackupRuntime(uploadsRoot, encryptionKey, pool) {
   assert.ok(path.isAbsolute(uploadsRoot));
   assert.ok(!/[\n\r'\\]/.test(uploadsRoot));
-  const sourceRoot = path.resolve(__dirname, '../../src');
+  const sourceRoot = path.resolve(__dirname, '../../dist/src');
   const cache = new Map();
   function load(filename) {
     if (cache.has(filename)) return cache.get(filename).exports;

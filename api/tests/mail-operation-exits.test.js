@@ -1,11 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getDb, setDb } = require('../src/state');
-const ops = require('../src/services/mail-engine/operations');
-const writes = require('../src/services/mail-writebacks');
-const repository = require('../src/services/mail-engine/repository');
-const runtime = require('../src/services/mail-engine/runtime');
-const transport = require('../src/services/mail-engine/transport');
+const { getDb, setDb } = require('../dist/src/state');
+const ops = require('../dist/src/services/mail-engine/operations');
+const writes = require('../dist/src/services/mail-writebacks');
+const repository = require('../dist/src/services/mail-engine/repository');
+const runtime = require('../dist/src/services/mail-engine/runtime');
+const transport = require('../dist/src/services/mail-engine/transport');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // Synthetic single-operation store with a controllable clock (seconds).
@@ -62,7 +62,7 @@ test('a stuck operation is not re-dispatched every second by the due scan', asyn
   const enqueued = [];
   t.mock.method(runtime, 'enqueueJob', async job => { enqueued.push({ ...job, at: clock.now }); });
   // Each enqueue nudges the durable scheduler; this test runs the job itself.
-  t.mock.method(require('../src/services/mail'), 'runMailOperationsNow', async () => true);
+  t.mock.method(require('../dist/src/services/mail'), 'runMailOperationsNow', async () => true);
   for (clock.now = 0; clock.now < 120; clock.now++) {
     const before = enqueued.length;
     await writes.runDueWritebacks(); await tick();
@@ -82,7 +82,7 @@ test('a stuck operation is not re-dispatched every second by the due scan', asyn
 test('a flag already at the provider but not yet locally settled backs off instead of spinning', async t => {
   const op = moveOp({ action: 'read', target_value: '1', dispatched: 1, state: 'reconciling', attempts: 1 });
   const { clock } = store(t, op);
-  const settle = require('../src/services/mail-engine/reconciliation');
+  const settle = require('../dist/src/services/mail-engine/reconciliation');
   t.mock.method(settle, 'settleFlagObservation', async () => ({ settled: false, reason: 'stale_observation' }));
   t.mock.method(transport, 'selectMailbox', async () => ({ uidvalidity: 9, capabilities: {} }));
   t.mock.method(transport, 'fetchMetadataWindow', async () => ({ items: [{ uid: 12, flags: ['\\Seen'], modseq: null }] }));
@@ -210,7 +210,7 @@ function acceptStore(t, op, { account = { is_active: 1, disconnected_at: null, s
   };
   const cx = { execute, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {} };
   setDb({ execute, getConnection: async () => cx });
-  t.mock.method(require('../src/services/mail'), 'scheduleMailAccountSync', async (accountId, options) => {
+  t.mock.method(require('../dist/src/services/mail'), 'scheduleMailAccountSync', async (accountId, options) => {
     syncs.push({ accountId, options }); return { started: true };
   });
   for (const name of ['selectMailbox', 'fetchMetadataWindow', 'nativeMove', 'setFlag'])

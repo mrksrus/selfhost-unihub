@@ -49,16 +49,16 @@ test('MySQL restores colliding backup IDs without changing another user in every
   const mysql = require('mysql2/promise');
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE || 'unihub_test', user: process.env.MYSQL_TEST_USER || 'unihub_test', password: process.env.MYSQL_TEST_PASSWORD || 'test-db-password', timezone: '+00:00' });
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-ownership-'));
-  const { setDb, getDb } = require('../src/state');
+  const { setDb, getDb } = require('../dist/src/state');
   const previousDb = getDb();
-  const recordingsPath = require.resolve('../src/services/recordings');
+  const recordingsPath = require.resolve('../dist/src/services/recordings');
   const originalRecordings = require(recordingsPath);
-  const backupPath = require.resolve('../src/services/backup');
+  const backupPath = require.resolve('../dist/src/services/backup');
   const originalBackup = require.cache[backupPath];
   require.cache[recordingsPath].exports = { ...originalRecordings, RECORDINGS_ROOT: directory };
   t.after(require('./helpers/backup-service-modules').evictBackupServiceModules());
   const { importBackupForUser } = require(backupPath);
-  const { encrypt } = require('../src/security/encryption');
+  const { encrypt } = require('../dist/src/security/encryption');
   setDb({ execute: (...args) => connection.execute(...args), getConnection: async () => ({ execute: (...args) => connection.execute(...args), beginTransaction: () => connection.beginTransaction(), commit: () => connection.commit(), rollback: () => connection.rollback(), release() {} }) });
   t.after(async () => {
     setDb(previousDb);

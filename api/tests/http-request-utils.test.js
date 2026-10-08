@@ -9,7 +9,7 @@ const {
   parseBody,
   parseRawBody,
   parseRawBodyToFile,
-} = require('../src/http/request');
+} = require('../dist/src/http/request');
 
 test('isRequestBodyTooLarge rejects oversized content-length before body parsing', () => {
   assert.equal(

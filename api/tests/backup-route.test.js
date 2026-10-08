@@ -4,8 +4,8 @@ const assert = require('node:assert/strict');
 process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'test-encryption-key-for-backup-route';
 process.env.BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || 'test-backup-master-key-for-backup-route';
 
-const routes = require('../src/routes/backup');
-const { setDb } = require('../src/state');
+const routes = require('../dist/src/routes/backup');
+const { setDb } = require('../dist/src/state');
 
 function requestFor(pathname) {
   return {
@@ -114,6 +114,6 @@ test('backup capabilities expose the shared recoverable sections without authori
   const capabilities = await handler({}, 'owner');
   assert.equal(capabilities.enabled, true);
   assert.equal(capabilities.version, 4);
-  assert.deepEqual(capabilities.sections.map(section => section.id), Object.keys(require('../src/services/backup-catalog').SECTION_POLICIES));
+  assert.deepEqual(capabilities.sections.map(section => section.id), Object.keys(require('../dist/src/services/backup-catalog').SECTION_POLICIES));
   assert.ok(capabilities.exclusions.some(value => /Other users/.test(value)));
 });

@@ -7,8 +7,8 @@ const path = require('node:path');
 // A real HTTP server around the central request handler, with only the
 // session lookup and module settings replaced by synthetic data.
 async function eventsServer(t, { sessions = new Map(), modules = () => ['mail'] } = {}) {
-  const names = ['../src/request-handler', '../src/auth', '../src/routes', '../src/routes/events',
-    '../src/services/module-settings', '../src/services/restore-locks', '../src/services/server-events'].map(require.resolve);
+  const names = ['../dist/src/request-handler', '../dist/src/auth', '../dist/src/routes', '../dist/src/routes/events',
+    '../dist/src/services/module-settings', '../dist/src/services/restore-locks', '../dist/src/services/server-events'].map(require.resolve);
   const previous = names.map(name => require.cache[name]);
   const stub = (name, exports) => { require.cache[name] = { id: name, filename: name, loaded: true, exports }; };
   const [handlerPath, authPath, routesPath, eventsPath, modulesPath, locksPath, busPath] = names;
@@ -175,5 +175,5 @@ test('nginx and the service worker pass the event stream through unbuffered and 
   assert.ok(nginx.indexOf('location = /api/events') < nginx.indexOf('location /api/ {'));
   const vite = fs.readFileSync(path.join(root, 'vite.config.ts'), 'utf8');
   assert.match(vite, /url\.pathname\.startsWith\('\/api\/'\) && url\.pathname !== '\/api\/events'/);
-  assert.doesNotMatch(fs.readFileSync(path.join(root, 'public/sw-custom.js'), 'utf8'), /addEventListener\(['"]fetch/);
+  assert.doesNotMatch(fs.readFileSync(path.join(root, '.worker-dist/sw-custom.js'), 'utf8'), /addEventListener\(['"]fetch/);
 });

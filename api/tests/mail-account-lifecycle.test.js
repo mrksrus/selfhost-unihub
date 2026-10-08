@@ -1,12 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getDb, setDb } = require('../src/state');
+const { getDb, setDb } = require('../dist/src/state');
 
 function fixture(t, settings = {}) {
   const savedDb = getDb();
-  const servicePath = require.resolve('../src/services/mail');
-  const lifecyclePath = require.resolve('../src/services/mail-account-lifecycle');
-  const modulesPath = require.resolve('../src/services/module-settings');
+  const servicePath = require.resolve('../dist/src/services/mail');
+  const lifecyclePath = require.resolve('../dist/src/services/mail-account-lifecycle');
+  const modulesPath = require.resolve('../dist/src/services/module-settings');
   const savedService = require.cache[servicePath], savedLifecycle = require.cache[lifecyclePath], savedModules = require.cache[modulesPath];
   const calls = [], cancellations = [];
   const state = { owned: true, active: false, unresolved: 0, recovered: 0, calendars: 0, calendarEnabled: true, restoring: [], unresolvedAfterDisconnect: 0, ...settings };
@@ -42,7 +42,7 @@ function fixture(t, settings = {}) {
     isModuleEnabled: async (_userId, id) => id !== 'calendar' || state.calendarEnabled,
   } };
   delete require.cache[lifecyclePath];
-  const api = require('../src/services/mail-account-lifecycle');
+  const api = require('../dist/src/services/mail-account-lifecycle');
   t.after(() => {
     setDb(savedDb);
     if (savedService) require.cache[servicePath] = savedService; else delete require.cache[servicePath];
@@ -172,7 +172,7 @@ test('purge removes the linked calendar in the same transaction as the account',
 
 test('disconnect reads linked calendars in its transaction and stops their work after the commit', async t => {
   const { api, calls } = fixture(t, { active: true, calendars: 1 });
-  const calendarSync = require('../src/services/calendar-sync');
+  const calendarSync = require('../dist/src/services/calendar-sync');
   const { stopCalendarAccountWork, stopLinkedCalendarWork } = calendarSync;
   t.after(() => Object.assign(calendarSync, { stopCalendarAccountWork, stopLinkedCalendarWork }));
   calendarSync.stopCalendarAccountWork = id => calls.push({ sql: `STOP ${id}` });

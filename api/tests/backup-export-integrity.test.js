@@ -4,8 +4,8 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { writeZip } = require('../src/services/export-jobs');
-const { readZipEntries } = require('../src/services/backup');
+const { writeZip } = require('../dist/src/services/export-jobs');
+const { readZipEntries } = require('../dist/src/services/backup');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
 async function fixture(t) {

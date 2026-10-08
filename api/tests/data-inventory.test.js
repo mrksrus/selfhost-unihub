@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { assertInventoryCoverage, verifyDatabaseInventory } = require('../src/services/data-inventory');
+const { assertInventoryCoverage, verifyDatabaseInventory } = require('../dist/src/services/data-inventory');
 
 // Independent input: actual production DDL declarations, never a snapshot made
 // from the policy catalog. MySQL startup tests below cover executed/dynamic DDL.
@@ -24,7 +24,10 @@ function sourceColumns(source) {
 // Migration 11 drops the Notes tables that migration 4 created.
 const NOTES_TABLES = new Set(['notes', 'note_revisions', 'note_attachments', 'note_links']);
 function productionColumns({ everCreated = false } = {}) {
-  const columns = sourceColumns(['database.js', 'database-migrations.js', 'notifications.js', 'mail-engine/schema.js'].map(file => fs.readFileSync(path.join(__dirname, '../src/services', file), 'utf8')).join('\n'));
+  const columns = sourceColumns(['database', 'database-migrations', 'notifications', 'mail-engine/schema'].map(name => {
+    const source = path.join(__dirname, '../src/services', name);
+    return fs.readFileSync(source + (fs.existsSync(source + '.ts') ? '.ts' : '.js'), 'utf8');
+  }).join('\n'));
   return everCreated ? columns : columns.filter(row => !NOTES_TABLES.has(row.table_name));
 }
 

@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { superviseServices, apiIdentity } = require('../src/service-supervisor');
+const { superviseServices, apiIdentity } = require('../dist/src/service-supervisor');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function harness(options = {}) {

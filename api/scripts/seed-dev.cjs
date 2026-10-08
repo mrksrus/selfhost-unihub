@@ -67,7 +67,7 @@ const TOPICS = ['Quarterly report draft', 'Lunch on Thursday?', 'Your order has 
 
 // ── Database setup ────────────────────────────────────────────────
 async function dropAllTables() {
-  const config = require('../src/services/database-config').getDatabaseConfig();
+  const config = require('../dist/src/services/database-config').getDatabaseConfig();
   const cx = await mysql.createConnection({ ...config, multipleStatements: false });
   try {
     const [tables] = await cx.query('SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE()');
@@ -87,14 +87,14 @@ async function insert(db, table, row) {
 
 // ── Users ─────────────────────────────────────────────────────────
 async function seedUsers(db) {
-  const { hashPassword } = require('../src/auth');
+  const { hashPassword } = require('../dist/src/auth');
   const [[admin]] = await db.execute("SELECT id FROM users WHERE email = 'admin@example.com'");
   if (!admin) die('bootstrap admin missing; was the database already populated with other users?');
   await db.execute("UPDATE users SET full_name = 'Avery Admin', timezone = 'Europe/Berlin' WHERE id = ?", [admin.id]);
   const alexId = uuid();
   await db.execute(`INSERT INTO users (id, email, password_hash, full_name, email_verified, role, timezone)
     VALUES (?, 'alex@example.com', ?, 'Alex Example', TRUE, 'user', 'Europe/Berlin')`, [alexId, await hashPassword(PASSWORD)]);
-  await require('../src/services/calendar').ensureDefaultLocalCalendarForUser(alexId, db);
+  await require('../dist/src/services/calendar').ensureDefaultLocalCalendarForUser(alexId, db);
   return { admin: admin.id, alex: alexId };
 }
 
@@ -118,7 +118,7 @@ async function seedContacts(db, userId, n) {
 }
 
 async function seedCalendar(db, userId, eventCount, todoCount) {
-  const { calendarId, accountId } = await require('../src/services/calendar').ensureDefaultLocalCalendarForUser(userId, db);
+  const { calendarId, accountId } = await require('../dist/src/services/calendar').ensureDefaultLocalCalendarForUser(userId, db);
   const workId = uuid();
   await insert(db, 'calendar_calendars', { id: workId, user_id: userId, account_id: accountId, name: 'Work',
     external_id: `local-seed-work-${workId}`, color: '#16a34a', is_visible: true, auto_todo_enabled: true, read_only: false, is_primary: false });
@@ -155,8 +155,8 @@ async function seedCalendar(db, userId, eventCount, todoCount) {
 // ── Mail ──────────────────────────────────────────────────────────
 const REMOTE = { inbox: 'INBOX', sent: 'Sent', archive: 'Archive', trash: 'Trash' };
 async function createAccount(db, userId, { email, display, mode, disconnected = false, custom = [] }) {
-  const { encrypt } = require('../src/security/encryption');
-  const { registerCustomImapFoldersForUser, ensureDefaultMailFoldersForUser } = require('../src/services/mail');
+  const { encrypt } = require('../dist/src/security/encryption');
+  const { registerCustomImapFoldersForUser, ensureDefaultMailFoldersForUser } = require('../dist/src/services/mail');
   const id = uuid();
   // Same columns and encryption as POST /api/mail/accounts; disconnect mirrors disconnectAccount().
   await db.execute(`INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
@@ -181,7 +181,7 @@ function htmlBody(subject, name, paragraphs) {
 }
 
 async function seedMailbox(db, account, people, total) {
-  const repository = require('../src/services/mail-engine/repository');
+  const repository = require('../dist/src/services/mail-engine/repository');
   const weights = [['inbox', 0.5], ['archive', 0.2], ['sent', 0.12], ['trash', 0.06], ['custom', 0.12]];
   const epochs = new Map(), boxes = new Map(), nextUid = new Map();
   for (const [index, folder] of account.folders.entries()) {
@@ -240,7 +240,7 @@ async function seedMailbox(db, account, people, total) {
 // Writebacks in every state the sync UI distinguishes, queued through the real
 // queueChanges() and then advanced the way the worker's setState() would.
 async function seedWritebacks(db, account, emails) {
-  const { queueChanges } = require('../src/services/mail-writebacks');
+  const { queueChanges } = require('../dist/src/services/mail-writebacks');
   const inbox = emails.filter(email => email.folder === 'inbox');
   const plans = [
     { change: { read: true }, email: inbox.find(e => !e.is_read) },
@@ -277,7 +277,7 @@ async function seedWritebacks(db, account, emails) {
 }
 
 async function seedJobs(db, account, boxes) {
-  const runtime = require('../src/services/mail-engine/runtime');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
   await runtime.enqueueJob({ userId: account.userId, accountId: account.id, kind: 'sync', priority: 50 });
   const job = (fields) => insert(db, 'mail_engine_jobs', { id: uuid(), user_id: account.userId, mail_account_id: account.id, priority: 50, ...fields });
   await job({ kind: 'recent', mailbox_id: boxes.get('inbox').id, state: 'running', phase: 'fetch_headers', lease_owner: 'seed-dev-worker',
@@ -308,9 +308,9 @@ async function tableCounts(db) {
 async function main() {
   const started = Date.now();
   if (RESET) await dropAllTables();
-  await require('../src/services/database').initDatabase();
+  await require('../dist/src/services/database').initDatabase();
   const schemaSeconds = ((Date.now() - started) / 1000).toFixed(1);
-  const { db } = require('../src/state');
+  const { db } = require('../dist/src/state');
   try {
     const [[marker]] = await db.execute('SELECT setting_value FROM system_settings WHERE setting_key = ?', [MARKER]);
     if (marker) {
@@ -334,7 +334,7 @@ async function main() {
       await inTransaction(db, cx => seedMailbox(cx, oldMail, alexPeople, 25));
       await seedWritebacks(db, work, workMail.emails);
       await seedJobs(db, work, workMail.boxes);
-      await require('../src/services/mail-engine/runtime').enqueueJob({ userId: users.alex, accountId: alexMail.id, kind: 'presence',
+      await require('../dist/src/services/mail-engine/runtime').enqueueJob({ userId: users.alex, accountId: alexMail.id, kind: 'presence',
         mailboxId: alexBoxes.boxes.get('inbox').id });
       await db.execute('INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)', [MARKER, SEED_VERSION]);
       console.log(`seed-dev: done (schema ${schemaSeconds}s, data ${((Date.now() - started) / 1000 - schemaSeconds).toFixed(1)}s)`);

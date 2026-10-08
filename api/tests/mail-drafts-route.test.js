@@ -14,11 +14,11 @@ function setRequireStub(modulePath, exports) {
 }
 
 async function createDraftRouteHarness(t, options = {}) {
-  const routePath = require.resolve('../src/routes/mail');
-  const mailServicePath = require.resolve('../src/services/mail');
-  const statePath = require.resolve('../src/state');
-  const encryptionPath = require.resolve('../src/security/encryption');
-  const caldavPath = require.resolve('../src/services/caldav');
+  const routePath = require.resolve('../dist/src/routes/mail');
+  const mailServicePath = require.resolve('../dist/src/services/mail');
+  const statePath = require.resolve('../dist/src/state');
+  const encryptionPath = require.resolve('../dist/src/security/encryption');
+  const caldavPath = require.resolve('../dist/src/services/caldav');
   const originalRoute = require.cache[routePath];
   const originalMailService = require.cache[mailServicePath];
   const originalState = require.cache[statePath];
@@ -255,7 +255,7 @@ async function createDraftRouteHarness(t, options = {}) {
     },
   });
 
-  return { routes: require('../src/routes/mail'), state, uploadRoot };
+  return { routes: require('../dist/src/routes/mail'), state, uploadRoot };
 }
 
 test('draft routes create, update, and delete draft attachments', async (t) => {

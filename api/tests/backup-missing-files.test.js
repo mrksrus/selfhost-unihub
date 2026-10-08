@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { setDb } = require('../src/state');
-const { importBackupForUser } = require('../src/services/backup');
+const { setDb } = require('../dist/src/state');
+const { importBackupForUser } = require('../dist/src/services/backup');
 
 function installConnection(t, selectRows) {
   const writes = [];

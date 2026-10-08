@@ -9,7 +9,7 @@ process.env.ENCRYPTION_KEY ||= 'mail-account-purge-mysql-test-key';
 
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
-const { getDb, setDb } = require('../src/state');
+const { getDb, setDb } = require('../dist/src/state');
 
 test('disconnect and delete removes the mail account, its mail and its linked calendar, and nothing of another user',
   { skip: !process.env.MYSQL_TEST_HOST }, async (t) => {
@@ -41,12 +41,12 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     assert.equal(existing.length, 0, 'Refusing to change a nonempty database');
     ownsDatabase = true;
     setDb(pool);
-    await require('../src/services/database').ensureSchema();
+    await require('../dist/src/services/database').ensureSchema();
 
-    const { encrypt } = require('../src/security/encryption');
-    const lifecycle = require('../src/services/mail-account-lifecycle');
-    const { setUserModules } = require('../src/services/module-settings');
-    const calendarSync = require('../src/services/calendar-sync');
+    const { encrypt } = require('../dist/src/security/encryption');
+    const lifecycle = require('../dist/src/services/mail-account-lifecycle');
+    const { setUserModules } = require('../dist/src/services/module-settings');
+    const calendarSync = require('../dist/src/services/calendar-sync');
 
     // Each user has a connected mail account with two messages and a linked
     // calendar account holding one calendar with two events.
@@ -143,7 +143,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     assert.deepEqual([Number(waiting.is_active), waiting.encrypted_password, waiting.sync_status, waiting.sync_error],
       [1, null, 'paused', calendarSync.MAIL_DISCONNECTED_MESSAGE]);
     const listed = async userId => {
-      const routes = require('../src/routes/calendar');
+      const routes = require('../dist/src/routes/calendar');
       const { accounts } = await routes['GET /api/calendar/accounts']({ url: '/api/calendar/accounts' }, userId);
       return accounts.filter(account => account.provider === 'caldav').map(account => [account.sync_status, account.sync_error]);
     };
@@ -186,13 +186,13 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
       VALUES (?, ?, 'ics', 'paused@example.test', '{"mailLinked":true}', TRUE, ?)`, [subscription, paused.user, paused.mail]);
     const stopped = [], stopWork = calendarSync.stopCalendarAccountWork;
     calendarSync.stopCalendarAccountWork = (id, reason) => stopped.push([id, reason]);
-    try { await require('../src/services/calendar-accounts').keepMailCalendar(paused.user, paused.mail, connectedNow); }
+    try { await require('../dist/src/services/calendar-accounts').keepMailCalendar(paused.user, paused.mail, connectedNow); }
     finally { calendarSync.stopCalendarAccountWork = stopWork; }
     assert.deepEqual(stopped, [[paused.calendarAccount, 'replaced']], 'Its running work, which read the mail login, stops');
     assert.equal((await calendarRow(subscription)).mail_account_id, null);
     await connection.execute('DELETE FROM calendar_accounts WHERE id = ?', [subscription]);
     const [[mailRow]] = await connection.execute('SELECT id, email_address FROM mail_accounts WHERE id = ?', [paused.mail]);
-    assert.equal((await require('../src/services/calendar-accounts').linkedCalendarAccount(paused.user, mailRow)).id, connectedNow);
+    assert.equal((await require('../dist/src/services/calendar-accounts').linkedCalendarAccount(paused.user, mailRow)).id, connectedNow);
     const [[orphan]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.equal(orphan.mail_account_id, null);
     await assert.rejects(calendarSync.resolveLogin(orphan), { code: 'MAIL_CALENDAR_UNLINKED' });
@@ -205,7 +205,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     // a copy of the mail password.
     await connection.execute(`UPDATE calendar_accounts SET mail_account_id = ?, provider_config = '{"server":{"url":"https://dav.example.test"}}',
       encrypted_password = ? WHERE id = ?`, [paused.mail, encrypt('old-copy'), paused.calendarAccount]);
-    const settingsRoutes = require('../src/routes/settings');
+    const settingsRoutes = require('../dist/src/routes/settings');
     await settingsRoutes['POST /api/settings/clear-mail-accounts']({}, paused.user);
     const [[cleared]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.equal(cleared.mail_account_id, null);

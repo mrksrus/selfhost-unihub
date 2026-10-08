@@ -1,0 +1,476 @@
+import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
+import type { ApiError, RouteRequest, RouteResponse } from './types';
+// Bodies are untrusted at dispatch. Each route retains its existing validation.
+type RouteTable = Record<string, (req: RouteRequest, userId: string | null | undefined, body: unknown, res: ServerResponse) => Promise<RouteResponse>>;
+
+import imported1 = require('./services/backup-availability');
+const { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } = imported1;
+import crypto = require('crypto');
+import fs = require('fs');
+import path = require('path');
+import routes = require('./routes');
+import imported2 = require('./auth');
+const { verifyToken, validateCsrfToken, refreshSessionCookies } = imported2;
+import imported3 = require('./http/request');
+const {
+  parseBody,
+  parseRawBodyToFile,
+  getAllowedOriginForRequest,
+  isRequestBodyTooLarge,
+} = imported3;
+import imported4 = require('./http/range');
+const { parseSingleByteRange, fileValidators, rangeAllowed } = imported4;
+import imported5 = require('./services/module-catalog');
+const { getModuleForPath } = imported5;
+import imported6 = require('./services/module-settings');
+const { isModuleEnabled } = imported6;
+import imported7 = require('./services/restore-locks');
+const { getActiveRestoreSections } = imported7;
+import imported8 = require('./services/backup-catalog');
+const { getRestoreSectionForWrite } = imported8;
+import imported9 = require('./config');
+const {
+  BACKUP_UPLOAD_MAX_SIZE,
+  MAIL_COMPOSE_REQUEST_MAX_SIZE,
+} = imported9;
+
+const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
+const PUBLIC_ROUTE_KEYS = new Set([
+  'GET /health',
+  'GET /api/auth/signup-mode',
+  'POST /api/auth/signup',
+  'POST /api/auth/signin',
+  'POST /api/auth/2fa/login',
+  'GET /api/backup/export',
+]);
+
+function sanitizeHeaderFilename(filename: unknown) {
+  const sanitized = String(filename || 'download')
+    .replace(/[\r\n"\\]/g, '_')
+    .replace(/[^\x20-\x7E]/g, '_')
+    .trim();
+  return sanitized || 'download';
+}
+
+function buildContentDisposition(dispositionType: unknown, filename: unknown) {
+  const safeDispositionType = dispositionType === 'inline' ? 'inline' : 'attachment';
+  const rawFilename = String(filename || 'download').replace(/[\r\n]/g, ' ').trim() || 'download';
+  const safeFilename = sanitizeHeaderFilename(rawFilename);
+  const encodedFilename = encodeURIComponent(rawFilename);
+  return `${safeDispositionType}; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`;
+}
+
+
+function requestUrl(req: RouteRequest) {
+  const host = req.headers.host;
+  try {
+    if (typeof host !== 'string' || !host || /[\s/\\?#@]/.test(host)) throw new Error();
+    new URL(`http://${host}`);
+    if (typeof req.url !== 'string' || !req.url.startsWith('/') || req.url.startsWith('//') || req.url.includes('\\')) throw new Error();
+    // Routing does not depend on the client's Host value.
+    return new URL(req.url, 'http://unihub.invalid');
+  } catch {
+    throw Object.assign(new Error('Invalid request address'), { status: 400 });
+  }
+}
+
+// Enclose parsing, routing and headers as well as the asynchronous route body.
+// A malformed request must never become an unhandled rejected HTTP callback.
+async function handleRequest(req: RouteRequest, res: ServerResponse) {
+  try {
+    await dispatchRequest(req, res);
+  } catch (error) {
+    const status = (error as ApiError)?.status === 400 ? 400 : 500;
+    if (status === 500) console.error('Request dispatch error:', (error as ApiError).message);
+    if (res.destroyed || res.writableEnded) return;
+    if (res.headersSent) { res.destroy(); return; }
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify({ error: status === 400 ? 'Invalid request address' : 'Internal Server Error' }));
+  }
+}
+
+async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
+  res.setHeader('Cache-Control', 'no-store');
+  const url = requestUrl(req);
+  let routeKey = `${req.method} ${url.pathname}`;
+  req.params = {};
+
+  // Handle parameterized routes
+  if (routeKey.includes('/api/contacts/') && req.method !== 'GET' && req.method !== 'POST') {
+    routeKey = `${req.method} /api/contacts/:id`;
+    if (url.pathname.includes('/favorite')) {
+      routeKey = `${req.method} /api/contacts/:id/favorite`;
+    }
+  } else if (routeKey.includes('/api/calendar/accounts/')) {
+    routeKey = /^\/api\/calendar\/accounts\/[^/]+\/sync$/.test(url.pathname)
+      ? `${req.method} /api/calendar/accounts/:id/sync`
+      : `${req.method} /api/calendar/accounts/:id`;
+  } else if (routeKey.includes('/api/calendar/calendars/')) {
+    routeKey = `${req.method} /api/calendar/calendars/:id`;
+  } else if (routeKey.includes('/api/calendar/events/')) {
+    if (url.pathname.includes('/todo-status')) {
+      routeKey = `${req.method} /api/calendar/events/:id/todo-status`;
+    } else if (url.pathname.includes('/rsvp')) {
+      routeKey = `${req.method} /api/calendar/events/:id/rsvp`;
+    } else if (url.pathname.includes('/subtasks/reorder')) {
+      routeKey = `${req.method} /api/calendar/events/:id/subtasks/reorder`;
+    } else if (url.pathname.endsWith('/subtasks')) {
+      routeKey = `${req.method} /api/calendar/events/:id/subtasks`;
+    } else if (url.pathname.includes('/subtasks/')) {
+      routeKey = `${req.method} /api/calendar/events/:id/subtasks/:subtaskId`;
+    } else {
+      routeKey = `${req.method} /api/calendar/events/:id`;
+    }
+  } else if (routeKey.includes('/api/mail/sender-rules/') && !url.pathname.endsWith('/backfill')) {
+    const parts = url.pathname.split('/').filter(Boolean);
+    req.params.id = parts[parts.length - 1] || null;
+    routeKey = `${req.method} /api/mail/sender-rules/:id`;
+  } else if (routeKey.includes('/api/mail/folders/')) {
+    const parts = url.pathname.split('/').filter(Boolean);
+    req.params.slug = parts[parts.length - 1] || null;
+    routeKey = `${req.method} /api/mail/folders/:slug`;
+  } else if (routeKey.includes('/api/mail/drafts/')) {
+    if (url.pathname.endsWith('/send')) {
+      routeKey = `${req.method} /api/mail/drafts/:id/send`;
+    } else {
+      routeKey = `${req.method} /api/mail/drafts/:id`;
+    }
+  } else if (routeKey.includes('/api/mail/accounts/')) {
+    const match = /^\/api\/mail\/accounts\/([^/]+)(\/purge-preview|\/mode-impact|\/confirm-sync-policy|\/backup-export|\/calendar)?$/.exec(url.pathname);
+    if (match) {
+      req.params.id = match[1];
+      routeKey = `${req.method} /api/mail/accounts/:id${match[2] || ''}`;
+    }
+  } else if (routeKey.includes('/api/mail/attachments/')) {
+    routeKey = `${req.method} /api/mail/attachments/:id`;
+  } else if (url.pathname.startsWith('/api/mail/writebacks/')) {
+    const match = /^\/api\/mail\/writebacks\/([^/]+)\/(retry|cancel|accept-server-state)$/.exec(url.pathname);
+    if (match) {
+      req.params.id = match[1];
+      routeKey = `${req.method} /api/mail/writebacks/:id/${match[2]}`;
+    }
+  } else if (routeKey.includes('/api/mail/emails/')) {
+    if (url.pathname.includes('/bulk-delete')) {
+      routeKey = `${req.method} /api/mail/emails/bulk-delete`;
+    } else if (url.pathname.includes('/bulk-move')) {
+      routeKey = `${req.method} /api/mail/emails/bulk-move`;
+    } else if (url.pathname.includes('/bulk-update')) {
+      routeKey = `${req.method} /api/mail/emails/bulk-update`;
+    } else if (url.pathname.includes('/read')) {
+      routeKey = `${req.method} /api/mail/emails/:id/read`;
+    } else if (url.pathname.includes('/star')) {
+      routeKey = `${req.method} /api/mail/emails/:id/star`;
+    } else {
+      // Handle GET /api/mail/emails/:id
+      routeKey = `${req.method} /api/mail/emails/:id`;
+    }
+  } else if (routeKey.includes('/api/recordings/uploads/')) {
+    if (url.pathname.endsWith('/chunk')) {
+      routeKey = `${req.method} /api/recordings/uploads/:id/chunk`;
+    } else if (url.pathname.endsWith('/complete')) {
+      routeKey = `${req.method} /api/recordings/uploads/:id/complete`;
+    } else if (req.method === 'GET' || req.method === 'DELETE') {
+      routeKey = `${req.method} /api/recordings/uploads/:id`;
+    }
+  } else if (routeKey.includes('/api/recordings/') && url.pathname.endsWith('/file')) {
+    routeKey = `${req.method} /api/recordings/:id/file`;
+  } else if (routeKey.includes('/api/recordings/')) {
+    routeKey = `${req.method} /api/recordings/:id`;
+  } else if (routeKey.includes('/api/backup/restore-jobs/')) {
+    if (url.pathname.endsWith('/unlock')) {
+      routeKey = `${req.method} /api/backup/restore-jobs/:id/unlock`;
+    } else if (url.pathname.endsWith('/start')) {
+      routeKey = `${req.method} /api/backup/restore-jobs/:id/start`;
+    } else if (url.pathname.endsWith('/cancel')) {
+      routeKey = `${req.method} /api/backup/restore-jobs/:id/cancel`;
+    } else {
+      routeKey = `${req.method} /api/backup/restore-jobs/:id`;
+    }
+  } else if (routeKey.includes('/api/backup/jobs/')) {
+    if (url.pathname.endsWith('/download')) {
+      routeKey = `${req.method} /api/backup/jobs/:id/download`;
+    } else if (url.pathname.endsWith('/recovery-password/reveal')) {
+      routeKey = `${req.method} /api/backup/jobs/:id/recovery-password/reveal`;
+    } else if (url.pathname.endsWith('/restore')) {
+      routeKey = `${req.method} /api/backup/jobs/:id/restore`;
+    } else if (url.pathname.endsWith('/cancel')) {
+      routeKey = `${req.method} /api/backup/jobs/:id/cancel`;
+    } else {
+      routeKey = `${req.method} /api/backup/jobs/:id`;
+    }
+  } else if (routeKey.includes('/api/admin/users/')) {
+    if (url.pathname.includes('/password')) {
+      routeKey = `${req.method} /api/admin/users/:id/password`;
+    } else if (url.pathname.includes('/role')) {
+      routeKey = `${req.method} /api/admin/users/:id/role`;
+    } else if (url.pathname.includes('/activate')) {
+      routeKey = `${req.method} /api/admin/users/:id/activate`;
+    } else if (url.pathname.endsWith('/2fa/reset')) {
+      routeKey = `${req.method} /api/admin/users/:id/2fa/reset`;
+    } else {
+      routeKey = `${req.method} /api/admin/users/:id`;
+    }
+  }
+
+  // CORS headers
+  const allowedOrigin = getAllowedOriginForRequest(req);
+  if (allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
+
+  if (req.method === 'OPTIONS') {
+    if (req.headers.origin && !allowedOrigin) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Origin not allowed' }));
+      return;
+    }
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  if (req.headers.origin && !allowedOrigin) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Origin not allowed' }));
+    return;
+  }
+
+  const handler = (routes as unknown as RouteTable)[routeKey];
+  if (!handler) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not Found' }));
+    return;
+  }
+
+  let temporaryUploadPath: string | null = null;
+  try {
+    const userId = await verifyToken(req, { renew: true });
+    if (userId) refreshSessionCookies(req, res);
+    if (!userId && !PUBLIC_ROUTE_KEYS.has(routeKey)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized', status: 401 }));
+      return;
+    }
+
+    // Validate CSRF token for authenticated state-changing requests
+    if (userId && !validateCsrfToken(req, res)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'CSRF token validation failed', status: 403 }));
+      return;
+    }
+
+    const moduleId = getModuleForPath(url.pathname);
+    if (userId && moduleId && !await isModuleEnabled(userId, moduleId)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'This module is disabled. Enable it in Settings.', code: 'MODULE_DISABLED', module: moduleId }));
+      return;
+    }
+
+    // Reject before parsing or spooling a potentially huge backup upload.
+    if (DISABLED_BACKUP_ROUTES.has(routeKey)) {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: BACKUP_DISABLED_MESSAGE, status: 503 }));
+      return;
+    }
+
+    if (userId && ['POST', 'PUT', 'DELETE'].includes(req.method!)) {
+      const section = url.pathname === '/api/modules' ? 'settings' : getRestoreSectionForWrite(url.pathname);
+      if (section) {
+        const activeSections = await getActiveRestoreSections(userId);
+        if ((section === '*' && activeSections.size > 0) || activeSections.has(section)) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: `Restore in progress for ${section}. This section is temporarily read-only.`,
+            code: 'RESTORE_IN_PROGRESS',
+            status: 409,
+          }));
+          return;
+        }
+      }
+    }
+
+    // Allow larger bodies for vCard import and bulk operations
+    let maxBodySize = 1000; // Default for most endpoints
+    if (url.pathname === '/api/modules') {
+      maxBodySize = 16384;
+    } else if (url.pathname.startsWith('/api/notifications/')) {
+      maxBodySize = 16384;
+    } else if (routeKey === 'POST /api/contacts/import') {
+      maxBodySize = 500000; // vCard import can be large
+    } else if (routeKey === 'POST /api/recordings/uploads/:id/chunk') {
+      maxBodySize = 1200 * 1024; // Recording chunks are base64 encoded JSON.
+    } else if (routeKey === 'POST /api/recordings/uploads/start') {
+      maxBodySize = 50000;
+    } else if (routeKey === 'POST /api/backup/import') {
+      maxBodySize = BACKUP_UPLOAD_MAX_SIZE;
+    } else if (
+      routeKey === 'POST /api/mail/send' ||
+      routeKey === 'POST /api/mail/drafts' ||
+      routeKey === 'PUT /api/mail/drafts/:id'
+    ) {
+      maxBodySize = MAIL_COMPOSE_REQUEST_MAX_SIZE;
+    } else if (
+      routeKey === 'POST /api/calendar/accounts' ||
+      routeKey === 'PUT /api/calendar/accounts/:id' ||
+      routeKey === 'PUT /api/mail/accounts/:id/calendar'
+    ) {
+      maxBodySize = 50000; // Calendar account metadata payloads
+    } else if (
+      routeKey === 'POST /api/calendar/events' ||
+      routeKey === 'PUT /api/calendar/events/:id'
+    ) {
+      maxBodySize = 100000; // Synced events can carry long descriptions
+    } else if (
+      routeKey === 'POST /api/mail/accounts' ||
+      routeKey === 'PUT /api/mail/accounts/:id'
+    ) {
+      maxBodySize = 50000; // Mail account credentials and custom host metadata
+    } else if (
+      routeKey === 'POST /api/mail/emails/bulk-update' ||
+      routeKey === 'POST /api/mail/emails/bulk-delete' ||
+      routeKey === 'POST /api/mail/emails/bulk-move' ||
+      routeKey === 'POST /api/mail/sync'
+    ) {
+      maxBodySize = 50000; // Bulk operations and sync need more space (100 emails * ~36 chars UUID + JSON overhead)
+    }
+    if (isRequestBodyTooLarge(req, maxBodySize)) {
+      res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
+      res.end(JSON.stringify({ error: `Request body too large (max ${maxBodySize} bytes)` }));
+      return;
+    }
+
+    const contentType = String(req.headers['content-type'] || '').toLowerCase();
+    const expectsBackupUpload = routeKey === 'POST /api/backup/import'
+      && (
+        contentType.includes('application/zip')
+        || contentType.includes('application/octet-stream')
+        || contentType.includes('application/vnd.unihub.backup')
+      );
+    let body;
+    if (expectsBackupUpload) {
+      temporaryUploadPath = path.join(BACKUP_UPLOAD_ROOT, `${crypto.randomUUID()}.zip`);
+      body = await parseRawBodyToFile(req, temporaryUploadPath, maxBodySize);
+    } else {
+      body = await parseBody(req, maxBodySize);
+    }
+
+    if (body === null) {
+      res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
+      res.end(JSON.stringify({ error: `Request body too large (max ${maxBodySize} bytes)` }), () => {
+        req.destroy();
+      });
+      return;
+    }
+
+    const result = await handler(req, userId, body, res);
+
+    // A streaming route (GET /api/events) has written and owns the response.
+    if (result?.__handled === true) return;
+
+    if (result.__redirect) {
+      res.writeHead(302, { Location: result.__redirect });
+      res.end();
+      return;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(result, '__html')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(result.__html);
+      return;
+    }
+
+    // Raw response (used by vCard export and attachments)
+    if (result.__raw) {
+      const filename = result.__filename || 'download';
+      const dispositionType = result.__disposition === 'inline' ? 'inline' : 'attachment';
+      const contentDisposition = buildContentDisposition(dispositionType, filename);
+
+      res.writeHead(200, {
+        'Content-Type': result.__contentType || 'application/octet-stream',
+        'Content-Disposition': contentDisposition,
+        'Cache-Control': 'no-cache',
+      });
+      res.end(result.__raw);
+      return;
+    }
+
+    if (result.__streamPath) {
+      const filename = result.__filename || 'download';
+      const dispositionType = result.__disposition === 'inline' ? 'inline' : 'attachment';
+      const contentDisposition = buildContentDisposition(dispositionType, filename);
+      const contentLength = result.__contentLength === undefined || result.__contentLength === null
+        ? null
+        : Number(result.__contentLength);
+      const headers: OutgoingHttpHeaders = {
+        'Content-Type': result.__contentType || 'application/octet-stream',
+        'Content-Disposition': contentDisposition,
+        'Cache-Control': 'no-cache',
+        'Accept-Ranges': 'bytes',
+      };
+      const validators = fileValidators(await fs.promises.stat(result.__streamPath).catch(() => null));
+      if (validators) {
+        headers.ETag = validators.etag;
+        headers['Last-Modified'] = validators.lastModified;
+      }
+
+      let status = 200;
+      let streamOptions: { start: number; end: number } | undefined;
+      if (req.headers.range && Number.isSafeInteger(contentLength) && contentLength! > 0
+        && rangeAllowed(req.headers['if-range'], validators)) {
+        const range = parseSingleByteRange(req.headers.range, contentLength!);
+        if (!range) {
+          res.writeHead(416, {
+            ...headers,
+            'Content-Range': `bytes */${contentLength}`,
+            'Content-Length': '0',
+          });
+          res.end();
+          return;
+        }
+        status = 206;
+        streamOptions = range;
+        headers['Content-Range'] = `bytes ${range.start}-${range.end}/${contentLength}`;
+        headers['Content-Length'] = String(range.end - range.start + 1);
+      } else if (Number.isSafeInteger(contentLength) && contentLength! >= 0) {
+        headers['Content-Length'] = String(contentLength);
+      }
+      res.writeHead(status, headers);
+      const stream = fs.createReadStream(result.__streamPath, streamOptions);
+      stream.on('error', (error) => {
+        console.error('Stream response error:', error);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+        }
+        res.end();
+      });
+      res.once('close', () => stream.destroy());
+      stream.pipe(res);
+      return;
+    }
+
+    const status = result.status || 200;
+    delete result.status;
+
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  } catch (error) {
+    console.error('Request error:', error);
+    const status = (error as ApiError)?.status === 400 ? 400 : 500;
+    if (!res.headersSent) res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: status === 400 ? (error as ApiError).message : 'Internal Server Error' }));
+  } finally {
+    if (temporaryUploadPath) {
+      await fs.promises.rm(temporaryUploadPath, { force: true }).catch(() => {});
+    }
+  }
+}
+
+// Start server
+
+export = {
+  handleRequest,
+};

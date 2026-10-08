@@ -18,7 +18,7 @@ const {
   revealProtectedRecoveryPassword,
   encryptPortableCredentialBundle,
   decryptPortableCredentialBundle,
-} = require('../src/services/backup-container');
+} = require('../dist/src/services/backup-container');
 
 test('encrypted UniHub backup is portable with its password and detects damage', async (t) => {
   const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'unihub-container-'));

@@ -7,14 +7,14 @@ const path = require('path');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'unihub-recordings-'));
 process.env.RECORDINGS_ROOT = root;
-const { setDb } = require('../src/state');
+const { setDb } = require('../dist/src/state');
 const {
   startRecordingUpload,
   getRecordingUploadStatus,
   appendRecordingUploadChunk,
   completeRecordingUpload,
   abortRecordingUpload,
-} = require('../src/services/recordings');
+} = require('../dist/src/services/recordings');
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 

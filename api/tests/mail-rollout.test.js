@@ -1,8 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { requireAccountId } = require('../src/services/mail-engine/rollout');
-const { main } = require('../mail-rollout');
+const { requireAccountId } = require('../dist/src/services/mail-engine/rollout');
+const { main } = require('../dist/mail-rollout');
 test('rollout account identifiers are validated exactly, never repaired', () => {
   assert.doesNotThrow(() => requireAccountId('10000000-0000-4000-8000-000000000001'));
   for (const value of [null, '', 'all', '10000000-0000-4000-8000-000000000001 ', '10000000-0000-4000-8000-000000000001,other']) {
@@ -34,8 +34,8 @@ function fakePool(handler) {
   return { calls, cx, getConnection: async () => cx };
 }
 test('no account pause or reconnect overwrites/clears an operator canary hold', async () => {
-  const runtime = require('../src/services/mail-engine/runtime');
-  const { HOLD_REASON } = require('../src/services/mail-engine/rollout');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const { HOLD_REASON } = require('../dist/src/services/mail-engine/rollout');
   const pool = fakePool(sql => {
     if (sql.includes('FROM mail_accounts WHERE id = ? AND user_id = ? FOR UPDATE')) return [[{ id: 'A' }]];
     if (sql.includes('SELECT is_active')) return [[{ is_active: 1, disconnected_at: null }]];
@@ -53,7 +53,7 @@ test('no account pause or reconnect overwrites/clears an operator canary hold', 
   assert.deepEqual(resume.params, [HOLD_REASON, 'A', 'owner']);
 });
 test('prepare replaces only user-liftable module pauses; release re-queues held read streams, never writes', async () => {
-  const { HOLD_REASON, USER_PAUSES, prepareRollout, releaseRollout } = require('../src/services/mail-engine/rollout');
+  const { HOLD_REASON, USER_PAUSES, prepareRollout, releaseRollout } = require('../dist/src/services/mail-engine/rollout');
   const canary = '10000000-0000-4000-8000-000000000001', other = '10000000-0000-4000-8000-000000000002';
   let reason = null;
   const pool = fakePool(sql => {

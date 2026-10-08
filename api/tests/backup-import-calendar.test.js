@@ -11,9 +11,9 @@ function setRequireStub(modulePath, exports) {
 }
 
 test('backup import preserves calendar event field order and MySQL values', async (t) => {
-  const backupPath = require.resolve('../src/services/backup');
-  const statePath = require.resolve('../src/state');
-  const mailPath = require.resolve('../src/services/mail');
+  const backupPath = require.resolve('../dist/src/services/backup');
+  const statePath = require.resolve('../dist/src/state');
+  const mailPath = require.resolve('../dist/src/services/mail');
   const originalBackup = require.cache[backupPath];
   const originalState = require.cache[statePath];
   const originalMail = require.cache[mailPath];
@@ -77,7 +77,7 @@ test('backup import preserves calendar event field order and MySQL values', asyn
     },
   });
 
-  const { importBackupForUser } = require('../src/services/backup');
+  const { importBackupForUser } = require('../dist/src/services/backup');
   const backup = {
     app: 'unihub',
     version: 1,

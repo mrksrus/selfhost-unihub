@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const apiRoot = process.env.UNIHUB_API_ROOT || path.resolve(__dirname, '../..');
+const apiRoot = process.env.UNIHUB_API_ROOT || path.resolve(__dirname, '../../dist');
 const { inspectRecordingAudio } = require(path.join(apiRoot, 'src/services/recording-audio'));
 const { runAudioConversion } = require(path.join(apiRoot, 'src/services/audio-transcode'));
 

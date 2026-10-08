@@ -6,7 +6,7 @@ Download and Sync are two distinct modes; see [Download and Sync](MAIL_MODES.md)
 for the user-facing rules. Technically, Sync adds one local job kind and one
 module:
 
-- `api/src/services/mail-sync-policy.js` owns retention windows, proven-absence
+- `api/src/services/mail-sync-policy.ts` owns retention windows, proven-absence
   removal, Gmail X-GM-MSGID merging, the per-account confirmation gate
   (`mail_accounts.sync_policy_confirmed_at`), mode-impact counts and the
   `gmail_all_mail_hidden` warning. Download accounts are never touched by it.
@@ -89,15 +89,15 @@ outbound mail through SMTP. The mail system includes:
 
 | Component | Module/library | Role |
 | --- | --- | --- |
-| IMAP client | `imapflow` (pinned 2.1.2) via `api/src/services/mail-imap-client.js` | Connect, list, select, fetch, flag, move |
+| IMAP client | `imapflow` (pinned 2.1.2) via `api/src/services/mail-imap-client.ts` | Connect, list, select, fetch, flag, move |
 | Parser | `mailparser` | Parse RFC 822 messages |
 | SMTP sender | `nodemailer` | Send composed mail |
-| Encryption | `api/src/security/encryption.js` | AES-256-GCM encryption for stored credentials |
-| Host policy | `api/src/services/mail-host-policy.js` | DNS/private-IP checks and known-provider classification |
-| Import persistence | `api/src/services/mail-import.js` | Stage files and commit complete message metadata atomically |
-| Attachment handling | `api/src/services/mail-attachments.js` | Shared validation, file staging and inline CID rewriting |
-| Draft persistence | `api/src/services/mail-drafts.js` | Transactional draft and attachment replacement |
-| Folder checkpoints | `api/src/services/mail-sync-state.js` | Durable per-folder UID progress |
+| Encryption | `api/src/security/encryption.ts` | AES-256-GCM encryption for stored credentials |
+| Host policy | `api/src/services/mail-host-policy.ts` | DNS/private-IP checks and known-provider classification |
+| Import persistence | `api/src/services/mail-import.ts` | Stage files and commit complete message metadata atomically |
+| Attachment handling | `api/src/services/mail-attachments.ts` | Shared validation, file staging and inline CID rewriting |
+| Draft persistence | `api/src/services/mail-drafts.ts` | Transactional draft and attachment replacement |
+| Folder checkpoints | `api/src/services/mail-sync-state.ts` | Durable per-folder UID progress |
 | Raw archive | filesystem | Stores imported `.eml` source below `/app/uploads/mail-raw` |
 | Attachments | filesystem + DB | Stores regular and inline attachments below `/app/uploads/attachments` |
 
@@ -164,8 +164,8 @@ this policy remain inactive with a warning.
 | Trigger | Endpoint/process | Behavior |
 | --- | --- | --- |
 | Initial account add | account creation route | starts non-blocking sync when no other sync is running |
-| INBOX push (IMAP IDLE) | `api/src/services/mail-idle.js` | a change announced on the account's INBOX: `recent` (plus throttled `flags`/`presence` in Sync mode) about 2 seconds later; see [IMAP IDLE](#imap-idle-for-inbox) |
-| Periodic INBOX follow-up | `api/src/app.js` interval | every 30 seconds: one `recent` job for the account's INBOX; every 5 minutes while the account's IDLE session is healthy |
+| INBOX push (IMAP IDLE) | `api/src/services/mail-idle.ts` | a change announced on the account's INBOX: `recent` (plus throttled `flags`/`presence` in Sync mode) about 2 seconds later; see [IMAP IDLE](#imap-idle-for-inbox) |
+| Periodic INBOX follow-up | `api/src/app.ts` interval | every 30 seconds: one `recent` job for the account's INBOX; every 5 minutes while the account's IDLE session is healthy |
 | Periodic folder discovery | same interval | at most every 5 minutes (or after a failed pass): folder LIST plus per-folder `recent`/`flags`/`history`/`presence` jobs |
 | Manual sync | `POST /api/mail/sync` | immediate, complete folder discovery and fan-out |
 | Service worker sync | `POST /api/mail/sync/background` | starts at most one sync if data is stale |
@@ -184,7 +184,7 @@ result or skips starting a new sync.
 
 Durable jobs of one account are serialized by the account lease. After a job
 completes successfully and unaborted, its authenticated IMAP session is parked
-per account (`api/src/services/mail-engine/connection-pool.js`) for up to 90
+per account (`api/src/services/mail-engine/connection-pool.ts`) for up to 90
 seconds (30-minute maximum age) and handed to the account's next job after a
 NOOP health check, rebound to that job's cancellation signal. A session is
 never shared by two running jobs and is destroyed, not reused, after an error,
@@ -206,7 +206,7 @@ sessions. Providers commonly allow 10 or more simultaneous sessions per account.
 ### IMAP transport
 
 All IMAP traffic uses [ImapFlow](https://imapflow.com/). Only
-`api/src/services/mail-imap-client.js` constructs clients: it translates the
+`api/src/services/mail-imap-client.ts` constructs clients: it translates the
 host-policy config (pinned address, TLS `servername`, `rejectUnauthorized` from
 the account's trust decision) unchanged, so TLS verifies the account hostname
 and only an explicit, confirmed trust decision accepts an unverified
@@ -217,7 +217,7 @@ IDLE explicitly on its own session. Setup (TCP, TLS, greeting,
 login, capability negotiation) is bounded by the connect plus authentication
 timeouts; literals above 50 MiB are refused before they are read.
 
-`api/src/services/mail-imap-guard.js` gives every command its own deadline
+`api/src/services/mail-imap-guard.ts` gives every command its own deadline
 (120 s; a message body FETCH 5 minutes). A deadline, abort signal, socket error or close stops the session for
 good: the client is hard-closed (`close()`: socket and parser destroyed, no
 LOGOUT queued behind a stalled command), every waiting command is rejected, and
@@ -225,7 +225,7 @@ nothing is dispatched on it again. A pooled session is rebound to each job's
 signal; the pool probes it with `NOOP` and reuses it only while it is usable
 and no command is outstanding.
 
-`api/src/services/mail-engine/transport.js` selects with SELECT/EXAMINE
+`api/src/services/mail-engine/transport.ts` selects with SELECT/EXAMINE
 (UIDVALIDITY, UIDNEXT, HIGHESTMODSEQ; CONDSTORE counts only when the server
 enabled it via ENABLE and reports a valid mod-sequence, so iCloud-style `0`
 degrades to no CONDSTORE) and fetches metadata (`UID FLAGS INTERNALDATE`,
@@ -241,7 +241,7 @@ to a mailbox-wide EXPUNGE) are never used. Server deletion likewise issues
 
 ### IMAP IDLE for INBOX
 
-`api/src/services/mail-idle.js` keeps at most one dedicated IDLE session
+`api/src/services/mail-idle.ts` keeps at most one dedicated IDLE session
 (RFC 2177) per eligible account, separate from the job connection pool, so new
 INBOX mail is imported within seconds instead of at the next 30-second tick.
 
@@ -295,8 +295,8 @@ INBOX mail is imported within seconds instead of at the next 30-second tick.
 
 Every mail job, including accepted provider changes (`operation`) and their
 outcome checks (`reconcile`), runs on the one durable scheduler
-(`api/src/services/mail-sync-scheduler.js`, executor `runDurableMailJob` in
-`api/src/services/mail-durable-jobs.js`). It runs at most three jobs at once, of which at
+(`api/src/services/mail-sync-scheduler.ts`, executor `runDurableMailJob` in
+`api/src/services/mail-durable-jobs.ts`). It runs at most three jobs at once, of which at
 most two may be read-only (`sync`, `recent`, `flags`, `history`, `presence`,
 `body`, and the local `prune`); the third slot only ever takes operation/reconcile work, so a click is
 never queued behind other accounts' long scans. After a read/star/move is
@@ -625,7 +625,7 @@ SMTP port behavior:
 
 ## Password Encryption
 
-Stored mail passwords use AES-256-GCM through `api/src/security/encryption.js`.
+Stored mail passwords use AES-256-GCM through `api/src/security/encryption.ts`.
 The encryption key is derived from `ENCRYPTION_KEY` with SHA-256. Stored format:
 
 ```text

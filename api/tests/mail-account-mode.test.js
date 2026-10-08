@@ -1,8 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { mailAccountModeChange: change } = require('../src/services/mail-account-mode');
-const { readV3 } = require('../src/services/backup-formats/v3');
-const { validateRestoreRows } = require('../src/services/backup-ownership');
+const { mailAccountModeChange: change } = require('../dist/src/services/mail-account-mode');
+const { readV3 } = require('../dist/src/services/backup-formats/v3');
+const { validateRestoreRows } = require('../dist/src/services/backup-ownership');
 
 test('mode switches require confirmation and never carry deletion across modes', () => {
   const download = { sync_mode: 'download', delete_emails_on_server: 1, email_address: 'Owner@Example.test' };
@@ -39,7 +39,7 @@ test('old archives default to Download; current archives retain identity and res
 
 
 test('provider mailbox comparisons allow credential rotation but separate UID namespaces', () => {
-  const { sameProviderMailbox } = require('../src/services/mail-account-mode');
+  const { sameProviderMailbox } = require('../dist/src/services/mail-account-mode');
   const account = { email_address: 'a@example.test', username: 'Login', imap_host: 'MAIL.EXAMPLE.TEST', imap_port: 993 };
   assert.equal(sameProviderMailbox(account, { ...account, imap_host: 'mail.example.test', encrypted_password: 'rotated', smtp_host: 'elsewhere' }), true);
   for (const changed of [{ username: 'login' }, { imap_host: 'other.test' }, { imap_port: 143 }, { email_address: 'b@example.test' }]) assert.equal(sameProviderMailbox(account, { ...account, ...changed }), false);

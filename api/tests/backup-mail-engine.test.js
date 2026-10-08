@@ -1,8 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { pauseMailRestore, restoreMailEngineEvidence } = require('../src/services/backup-mail-engine');
-const { TABLE_POLICIES, SECTION_POLICIES } = require('../src/services/backup-catalog');
-const { normalizeBackupPayload, BACKUP_VERSION } = require('../src/services/backup-format');
+const { pauseMailRestore, restoreMailEngineEvidence } = require('../dist/src/services/backup-mail-engine');
+const { TABLE_POLICIES, SECTION_POLICIES } = require('../dist/src/services/backup-catalog');
+const { normalizeBackupPayload, BACKUP_VERSION } = require('../dist/src/services/backup-format');
 
 function executor() {
   const calls = [];

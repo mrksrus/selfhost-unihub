@@ -272,7 +272,7 @@ event.
 
 ## Sync
 
-`api/src/services/calendar-sync.js` keeps the server copy of each calendar
+`api/src/services/calendar-sync.ts` keeps the server copy of each calendar
 object in `calendar_remote_objects` and derives the local `calendar_events`
 rows from it: one row per occurrence within 365 days back and 730 days ahead.
 

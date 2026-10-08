@@ -58,3 +58,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Classic browser workers are emitted from workers/*.ts.
+/.worker-dist/

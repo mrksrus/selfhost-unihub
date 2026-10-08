@@ -7,9 +7,9 @@ const { fork } = require('node:child_process');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const mysql = require('mysql2/promise');
-const { connectImap } = require('../src/services/mail-imap-client');
-const { guardImapConnection, closeImapConnection } = require('../src/services/mail-imap-guard');
-const { selectMailbox } = require('../src/services/mail-engine/transport');
+const { connectImap } = require('../dist/src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
+const { selectMailbox } = require('../dist/src/services/mail-engine/transport');
 
 const rows = async (db, sql, params = []) => (await db.execute(sql, params))[0];
 const one = async (db, sql, params = []) => (await rows(db, sql, params))[0];
@@ -106,7 +106,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 8 });
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'wire-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-wire-bootstrap-password';
-  const state = require('../src/state');
+  const state = require('../dist/src/state');
   const originalDb = state.getDb();
   let ownsSchema = false;
   t.after(async () => {
@@ -129,12 +129,12 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
   assert.match((await one(pool, 'SELECT VERSION() AS version')).version, /MariaDB/);
   assert.equal((await rows(pool, 'SHOW TABLES')).length, 0, 'Refuse populated database');
   ownsSchema = true; state.setDb(pool);
-  await require('../src/services/database').ensureSchema();
-  const repo = require('../src/services/mail-engine/repository');
-  const runtime = require('../src/services/mail-engine/runtime');
-  const operations = require('../src/services/mail-engine/operations');
-  const { scanMailboxSlice } = require('../src/services/mail-engine/sync');
-  const { runRecoveredReconcileJob } = require('../src/services/mail');
+  await require('../dist/src/services/database').ensureSchema();
+  const repo = require('../dist/src/services/mail-engine/repository');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const operations = require('../dist/src/services/mail-engine/operations');
+  const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync');
+  const { runRecoveredReconcileJob } = require('../dist/src/services/mail');
 
   async function setup(label, options) {
     const userId = randomUUID(), accountId = randomUUID(), emailId = randomUUID();

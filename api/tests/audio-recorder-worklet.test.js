@@ -14,7 +14,7 @@ function createRecorder() {
       } };
     }
   }
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../public/audio-recorder-worklet.js'), 'utf8'), {
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../../.worker-dist/audio-recorder-worklet.js'), 'utf8'), {
     AudioWorkletProcessor,
     registerProcessor: (_name, Class) => { Recorder = Class; },
     ArrayBuffer,

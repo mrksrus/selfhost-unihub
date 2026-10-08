@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { collectOfflineSnapshot, createOfflineSnapshot, OFFLINE_MAX_BYTES } = require('../src/services/offline');
-const routes = require('../src/routes/offline');
-const { getDb, setDb } = require('../src/state');
-const { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES } = require('../src/services/calendar');
+const { collectOfflineSnapshot, createOfflineSnapshot, OFFLINE_MAX_BYTES } = require('../dist/src/services/offline');
+const routes = require('../dist/src/routes/offline');
+const { getDb, setDb } = require('../dist/src/state');
+const { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES } = require('../dist/src/services/calendar');
 
 function fixture({ oversizeTable, failTable, modules = {} } = {}) {
   const contact = index => ({ id: `contact-${String(index).padStart(5, '0')}`, user_id: 'user-1', first_name: 'Person', last_name: String(index), is_favorite: 0, notes: 'Full contact note' });

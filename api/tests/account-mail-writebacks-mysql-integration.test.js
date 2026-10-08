@@ -16,9 +16,9 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
   const [tables] = await pool.query('SHOW TABLES'); assert.equal(tables.length, 0, 'Requires empty disposable schema'); owned = true;
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'writeback-admin@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-writeback-admin-password';
-  const { setDb } = require('../src/state'); setDb(pool);
-  await require('../src/services/database').ensureSchema();
-  const service = require('../src/services/mail-writebacks');
+  const { setDb } = require('../dist/src/state'); setDb(pool);
+  await require('../dist/src/services/database').ensureSchema();
+  const service = require('../dist/src/services/mail-writebacks');
   const user = crypto.randomUUID(), stranger = crypto.randomUUID(), accountId = crypto.randomUUID(), emailId = crypto.randomUUID();
   await pool.execute("INSERT INTO users (id,email,password_hash) VALUES (?, 'sync-owner@example.test', 'test'), (?, 'sync-other@example.test', 'test')", [user, stranger]);
   await pool.execute("INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active) VALUES (?,?,'mail@example.test','custom','sync',TRUE)", [accountId, user]);
@@ -32,7 +32,7 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
   };
   const op = async () => (await pool.execute('SELECT * FROM mail_writebacks WHERE email_id=?', [emailId]))[0][0];
   await assert.rejects(service.mutateMessages(stranger, [emailId], { read: 1 }), { status: 404 });
-  const mailRoutes = require('../src/routes/mail');
+  const mailRoutes = require('../dist/src/routes/mail');
   const list = async query => mailRoutes['GET /api/mail/emails']({ url: `/api/mail/emails${query}`, headers: { host: 'localhost' } }, user);
   const detail = async () => mailRoutes['GET /api/mail/emails/:id']({ url: `/api/mail/emails/${emailId}` }, user);
   const assertSnapshot = async (read, star, readPending, starPending) => {
@@ -105,10 +105,10 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
   const pendingInbox = (await mailRoutes['GET /api/mail/folders']({ url: '/api/mail/folders' }, user)).folders.find(row => row.slug === 'inbox');
   assert.equal(pendingInbox.unread_count, 0, 'Folder badge follows pending read intent');
   // Reloading module simulates process restart with the same persisted intent.
-  delete require.cache[require.resolve('../src/services/mail-writebacks')];
-  const restarted = require('../src/services/mail-writebacks');
-  const reconcile = require('../src/services/mail-engine/reconciliation');
-  const repository = require('../src/services/mail-engine/repository');
+  delete require.cache[require.resolve('../dist/src/services/mail-writebacks')];
+  const restarted = require('../dist/src/services/mail-writebacks');
+  const reconcile = require('../dist/src/services/mail-engine/reconciliation');
+  const repository = require('../dist/src/services/mail-engine/repository');
   const readOp = await op();
   assert.equal(readOp.state, 'queued', 'Restart preserved accepted operation');
   const settledRead = await reconcile.settleFlagObservation({ operationId: readOp.id, userId: user, accountId,
@@ -121,9 +121,9 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
   assert.equal((await list('')).emails[0].read_sync_pending, false);
   await queue({ star:1 });
   assert.equal((await list('?is_starred=true')).emails[0].is_starred, true, 'Pending star also appears immediately');
-  await require('../src/services/mail-engine/operations').deferAccountOffline(accountId,user,new Error('offline'));
+  await require('../dist/src/services/mail-engine/operations').deferAccountOffline(accountId,user,new Error('offline'));
   await pool.execute("UPDATE mail_writebacks SET available_at=UTC_TIMESTAMP() WHERE action='star'");
-  await require('../src/services/mail-engine/operations').deferAccountOffline(accountId,user,new Error('offline'));
+  await require('../dist/src/services/mail-engine/operations').deferAccountOffline(accountId,user,new Error('offline'));
   const star=(await pool.execute("SELECT * FROM mail_writebacks WHERE action='star'"))[0][0];
   assert.equal(star.status,'pending'); assert.equal(star.state,'retry_wait'); assert.equal(star.attempts,2);
   assert.equal((await list('?is_starred=true')).emails.length,1,'Transient offline requests retain effective overlay');
@@ -144,7 +144,7 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
   const [[email]]=await pool.execute('SELECT folder,remote_uid,remote_uidvalidity,remote_folder FROM emails WHERE id=?',[emailId]);
   assert.deepEqual(email,{folder:'filed',remote_uid:77,remote_uidvalidity:10,remote_folder:'Filed'});
   assert.equal((await pool.execute('SELECT state FROM mail_writebacks WHERE id=?',[move.id]))[0][0].state,'confirmed');
-  const route=require('../src/routes/mail')['GET /api/mail/writebacks'];
+  const route=require('../dist/src/routes/mail')['GET /api/mail/writebacks'];
   const statusRequest = {url:'/api/mail/writebacks',headers:{host:'localhost'}};
   const strangers = await route(statusRequest,stranger);
   assert.equal(strangers.error,undefined, JSON.stringify(strangers));
@@ -195,7 +195,7 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
     assert.equal((await pool.execute('SELECT COUNT(*) AS n FROM mail_writebacks WHERE email_id=?', [itemId]))[0][0].n, 2);
     // Accepted commands start their durable operation jobs; this account has no
     // credentials, so they defer. Let them finish before the pool closes.
-    const mail = require('../src/services/mail');
+    const mail = require('../dist/src/services/mail');
     for (let i = 0; i < 100; i++) {
       await new Promise(resolve => setTimeout(resolve, 50));
       const [[open]] = await pool.execute(`SELECT COUNT(*) AS n FROM mail_engine_jobs WHERE mail_account_id=?

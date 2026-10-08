@@ -1,11 +1,11 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { assertUid32, assertDecimal64 } = require('../src/services/mail-engine/repository-identity');
-const schema = require('../src/services/mail-engine/schema');
-const repo = require('../src/services/mail-engine/repository');
-const runtime = require('../src/services/mail-engine/runtime');
-const { createDurableMailScheduler } = require('../src/services/mail-sync-scheduler');
+const { assertUid32, assertDecimal64 } = require('../dist/src/services/mail-engine/repository-identity');
+const schema = require('../dist/src/services/mail-engine/schema');
+const repo = require('../dist/src/services/mail-engine/repository');
+const runtime = require('../dist/src/services/mail-engine/runtime');
+const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('protocol IDs, decimal precision and boolean wire values are strict', () => {

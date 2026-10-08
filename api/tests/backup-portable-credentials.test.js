@@ -7,15 +7,15 @@ const path = require('path');
 
 process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'destination-server-encryption-key';
 
-const { decrypt, encrypt } = require('../src/security/encryption');
-const { encryptPortableCredentialBundle } = require('../src/services/backup-container');
+const { decrypt, encrypt } = require('../dist/src/security/encryption');
+const { encryptPortableCredentialBundle } = require('../dist/src/services/backup-container');
 const {
   backupFromZipFile,
   buildBackupArchiveEntriesForUser,
   prepareCredentialsForRestore,
-} = require('../src/services/backup');
-const { writeZip } = require('../src/services/export-jobs');
-const { setDb } = require('../src/state');
+} = require('../dist/src/services/backup');
+const { writeZip } = require('../dist/src/services/export-jobs');
+const { setDb } = require('../dist/src/state');
 
 test('portable backup credentials are re-encrypted for the destination server', () => {
   const dataKey = crypto.randomBytes(32);

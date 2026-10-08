@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseSingleByteRange, fileValidators, rangeAllowed } = require('../src/http/range');
+const { parseSingleByteRange, fileValidators, rangeAllowed } = require('../dist/src/http/range');
 
 test('parseSingleByteRange parses bounded, open, and suffix ranges', () => {
   assert.deepEqual(parseSingleByteRange('bytes=10-19', 100), { start: 10, end: 19 });

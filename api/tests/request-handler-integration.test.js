@@ -4,7 +4,7 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 
 function handlerHarness(t, { userId = 'u1', route, moduleEnabled = true, restoring = [] } = {}) {
-  const paths = ['../src/request-handler', '../src/auth', '../src/routes', '../src/services/module-settings', '../src/services/restore-locks'].map(require.resolve);
+  const paths = ['../dist/src/request-handler', '../dist/src/auth', '../dist/src/routes', '../dist/src/services/module-settings', '../dist/src/services/restore-locks'].map(require.resolve);
   const previous = paths.map(name => require.cache[name]);
   t.after(() => paths.forEach((name, i) => { if (previous[i]) require.cache[name] = previous[i]; else delete require.cache[name]; }));
   const stub = (name, exports) => { require.cache[name] = { id: name, filename: name, loaded: true, exports }; };

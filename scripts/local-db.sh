@@ -131,6 +131,7 @@ app_env() {
 }
 
 run_tests() {
+  npm --prefix "$REPO/api" run --silent build
   fresh_db unihub_test
   local env=(MYSQL_TEST_HOST=127.0.0.1 MYSQL_TEST_PORT="$PORT" MYSQL_TEST_DATABASE=unihub_test
     MYSQL_TEST_USER=unihub MYSQL_TEST_PASSWORD="$APP_PW" MYSQL_TEST_SCHEMA_SMOKE=1
@@ -140,6 +141,7 @@ run_tests() {
   else (cd "$REPO/api" && env "${env[@]}" TMPDIR="$RUN/tmp" npm run --silent test:ci); fi
 }
 migrate() {
+  npm --prefix "$REPO/api" run --silent build
   local source=${1:-}
   [ -n "$source" ] || die "usage: migrate-check dump.sql (a MariaDB dump of an existing install)"
   [ -f "$source" ] || die "no such dump: $source"
@@ -160,6 +162,7 @@ migrate() {
   esac
 }
 schema_dump() {
+  npm --prefix "$REPO/api" run --silent build
   fresh_db unihub_schema_test
   app_env unihub_schema_test
   local status=0
@@ -168,6 +171,7 @@ schema_dump() {
   return $status
 }
 dev() {
+  npm --prefix "$REPO/api" run --silent build
   start; load_env
   rootsql -e 'CREATE DATABASE IF NOT EXISTS unihub_dev CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
   app_env unihub_dev

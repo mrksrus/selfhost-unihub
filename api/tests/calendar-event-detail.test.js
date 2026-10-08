@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getDb, setDb } = require('../src/state');
-const routes = require('../src/routes/calendar');
+const { getDb, setDb } = require('../dist/src/state');
+const routes = require('../dist/src/routes/calendar');
 
 test('calendar detail resolves one owned event with its children and hides other accounts', async (t) => {
   const original = getDb();

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } = require('../calendar-route-utils');
+const { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } = require('../dist/calendar-route-utils');
 
 test('extracts event id from todo-status route', () => {
   const eventId = getCalendarEventIdFromPath('/api/calendar/events/evt-123/todo-status');

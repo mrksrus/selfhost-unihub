@@ -2,12 +2,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 function mailFixture(t, { active = 1, disconnected = null, failCopy = false } = {}) {
-  const state = require.resolve('../src/state');
+  const state = require.resolve('../dist/src/state');
   const nodemailer = require.resolve('nodemailer');
-  const encryption = require.resolve('../src/security/encryption');
-  const network = require.resolve('../src/security/outbound-network');
-  const settings = require.resolve('../src/services/module-settings');
-  const mailPath = require.resolve('../src/services/mail');
+  const encryption = require.resolve('../dist/src/security/encryption');
+  const network = require.resolve('../dist/src/security/outbound-network');
+  const settings = require.resolve('../dist/src/services/module-settings');
+  const mailPath = require.resolve('../dist/src/services/mail');
   const paths = [state, nodemailer, encryption, network, settings, mailPath];
   const original = new Map(paths.map(p => [p, require.cache[p]]));
   let sends = 0, inserts = 0;

@@ -4,17 +4,17 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { setDb } = require('../src/state');
+const { setDb } = require('../dist/src/state');
 
 async function fixture(t, failure) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-transaction-'));
-  const recordingsPath = require.resolve('../src/services/recordings');
-  const backupPath = require.resolve('../src/services/backup');
+  const recordingsPath = require.resolve('../dist/src/services/recordings');
+  const backupPath = require.resolve('../dist/src/services/backup');
   const originalRecordings = require.cache[recordingsPath];
   const originalBackup = require.cache[backupPath];
   require.cache[recordingsPath] = { id: recordingsPath, filename: recordingsPath, loaded: true, exports: { RECORDINGS_ROOT: directory } };
   t.after(require('./helpers/backup-service-modules').evictBackupServiceModules());
-  const { importBackupForUser, buildBackupArchiveEntriesForUser } = require('../src/services/backup');
+  const { importBackupForUser, buildBackupArchiveEntriesForUser } = require('../dist/src/services/backup');
   t.after(async () => {
     setDb(null);
     if (originalRecordings) require.cache[recordingsPath] = originalRecordings;

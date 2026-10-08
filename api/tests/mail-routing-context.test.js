@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createMailRoutingContext, resolveMailSenderTargetFolder, loadMailFoldersForUser } = require('../src/services/mail');
+const { createMailRoutingContext, resolveMailSenderTargetFolder, loadMailFoldersForUser } = require('../dist/src/services/mail');
 
 function fixture() {
   const rows = new Map([['inbox', { id: 'inbox', user_id: 'u1', slug: 'inbox', display_name: 'My Inbox', position: 777, is_system: true }]]);

@@ -13,7 +13,7 @@ function worker() {
       clients: { async matchAll() { return []; } },
     },
   });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../public/sw-custom.js'), 'utf8'), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../../.worker-dist/sw-custom.js'), 'utf8'), context);
   context.readStore = async (store, key) => store === 'meta' ? userId : delivered.get(key);
   context.markDelivered = async key => delivered.set(key, true);
   return { context, shown, delivered, listeners, setUser(value) { userId = value; }, fail() { fail = true; } };

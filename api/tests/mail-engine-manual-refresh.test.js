@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 test('additive refresh migration upgrades preexisting engine jobs without losing accepted work', async () => {
-  const { migrateManualMailRefresh } = require('../src/services/mail-engine/schema');
+  const { migrateManualMailRefresh } = require('../dist/src/services/mail-engine/schema');
   const fields = new Set(['id', 'kind', 'state']), existingJobs = [{ id: 'accepted', state: 'paused' }];
   const sql = [];
   const db = { async execute(statement) {
@@ -24,8 +24,8 @@ test('additive refresh migration upgrades preexisting engine jobs without losing
 
 // Exercise the real durable enqueue path, not an in-memory scheduler shim.
 test('manual requests promote queued work and retain one successor behind a running scan', async t => {
-  const repoPath = require.resolve('../src/services/mail-engine/repository');
-  const runtimePath = require.resolve('../src/services/mail-engine/runtime');
+  const repoPath = require.resolve('../dist/src/services/mail-engine/repository');
+  const runtimePath = require.resolve('../dist/src/services/mail-engine/runtime');
   const oldRepo = require.cache[repoPath], oldRuntime = require.cache[runtimePath];
   require.cache[repoPath] = { id: repoPath, filename: repoPath, loaded: true, exports: {
     ownAccount: async () => ({ id: 'account' }), withTransaction: fn => fn(),

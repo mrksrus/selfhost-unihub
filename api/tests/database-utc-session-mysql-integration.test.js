@@ -11,7 +11,7 @@ test('CURRENT_TIMESTAMP rows compare correctly with UTC_TIMESTAMP() on a non-UTC
   process.env.JWT_SECRET = process.env.JWT_SECRET || 'ci-test-jwt-secret-for-utc-sessions';
   process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'ci-test-encryption-key';
   const mysql = require('mysql2/promise');
-  const { useUtcSessions } = require('../src/services/database');
+  const { useUtcSessions } = require('../dist/src/services/database');
   const config = {
     host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER,

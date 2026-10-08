@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 process.env.ENCRYPTION_KEY = 'mail-background-setting-test-only-key';
-const mail = require('../src/services/mail');
-const runtime = require('../src/services/mail-engine/runtime');
-const { getDb, setDb } = require('../src/state');
+const mail = require('../dist/src/services/mail');
+const runtime = require('../dist/src/services/mail-engine/runtime');
+const { getDb, setDb } = require('../dist/src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const REASONS = ['Mail module disabled', 'Mail background paused'];
 
@@ -55,9 +55,9 @@ test('background on: periodic sync is admitted as non-manual and never resumes',
 // mocked so the job is claimed exactly once.
 function operationJob(t, accountId, { prefs = {}, needsSync = true } = {}) {
   const { EventEmitter } = require('node:events');
-  const imapClient = require('../src/services/mail-imap-client');
-  const engine = require('../src/services/mail-engine/operations');
-  const repository = require('../src/services/mail-engine/repository');
+  const imapClient = require('../dist/src/services/mail-imap-client');
+  const engine = require('../dist/src/services/mail-engine/operations');
+  const repository = require('../dist/src/services/mail-engine/repository');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const followUps = [], completions = [], processed = [];
   let claimed = false, connects = 0;
@@ -123,8 +123,8 @@ test('background off: a due-scan operation job pauses without connecting; a clic
 });
 
 test('service-worker background trigger uses background admission and reports a disabled setting as skipped', async t => {
-  const routePath = require.resolve('../src/routes/mail');
-  const servicePath = require.resolve('../src/services/mail');
+  const routePath = require.resolve('../dist/src/routes/mail');
+  const servicePath = require.resolve('../dist/src/services/mail');
   const oldRoute = require.cache[routePath], oldService = require.cache[servicePath], oldDb = getDb();
   t.after(() => { setDb(oldDb); if (oldRoute) require.cache[routePath] = oldRoute; else delete require.cache[routePath];
     if (oldService) require.cache[servicePath] = oldService; else delete require.cache[servicePath]; });
@@ -141,14 +141,14 @@ test('service-worker background trigger uses background admission and reports a 
     if (sql.includes('FROM mail_accounts')) return [[{ id: 'off', last_synced_at: null }, { id: 'on', last_synced_at: null }]];
     assert.fail(sql);
   } });
-  const routes = require('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail');
   const result = await routes['POST /api/mail/sync/background']({ url: '/api/mail/sync/background' }, 'owner', {});
   assert.deepEqual(calls, [['off', { background: true }], ['on', { background: true }]]);
   assert.deepEqual([result.started, result.skipped, result.alreadyRunning], [['on'], ['off'], []]);
 });
 
 test('module toggle: background off drops read work without fencing; disable still stops; enable never lifts other pauses', async t => {
-  const routePath = require.resolve('../src/routes/modules');
+  const routePath = require.resolve('../dist/src/routes/modules');
   const oldRoute = require.cache[routePath], oldDb = getDb();
   t.after(() => { setDb(oldDb); if (oldRoute) require.cache[routePath] = oldRoute; else delete require.cache[routePath]; });
   delete require.cache[routePath];
@@ -167,7 +167,7 @@ test('module toggle: background off drops read work without fencing; disable sti
   t.mock.method(mail, 'stopMailAccountWork', async (id, reason) => { stops.push([id, reason]); return true; });
   t.mock.method(mail, 'cancelMailAccountSync', async id => { cancels.push(id); return true; });
   t.mock.method(runtime, 'resumeAccount', async input => { resumes.push(input); return { resumed: 0, retired: 0 }; });
-  const route = require('../src/routes/modules')['PUT /api/modules'];
+  const route = require('../dist/src/routes/modules')['PUT /api/modules'];
   await route({}, 'owner', { modules: { mail: { background: false } } });
   assert.deepEqual(stops, [], 'background off is a scheduling preference, not an account fence');
   assert.deepEqual(cancels, ['A', 'B']);

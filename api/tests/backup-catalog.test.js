@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { SECTION_POLICIES, TABLE_POLICIES, REFERENCES, FILE_POLICIES, WRITE_PATHS, assertRecoveryCatalog, getRestoreSectionForWrite } = require('../src/services/backup-catalog');
-const { assertArchiveRelationships } = require('../src/services/data-inventory');
+const { SECTION_POLICIES, TABLE_POLICIES, REFERENCES, FILE_POLICIES, WRITE_PATHS, assertRecoveryCatalog, getRestoreSectionForWrite } = require('../dist/src/services/backup-catalog');
+const { assertArchiveRelationships } = require('../dist/src/services/data-inventory');
 
 test('adding declared data still fails if its export section, parent or file handling is missing', () => {
   assert.doesNotThrow(() => assertRecoveryCatalog());
@@ -36,7 +36,7 @@ test('restore write routing covers section endpoints and specific destructive se
 });
 
 test('account settings are a request-only section that exports accounts without content', () => {
-  const { normalizeBackupRequest, normalizeBackupSections } = require('../src/services/backup-catalog');
+  const { normalizeBackupRequest, normalizeBackupSections } = require('../dist/src/services/backup-catalog');
   assert.deepEqual(normalizeBackupRequest(['accounts']), { requested: ['accounts'], sections: ['calendar', 'mail'], accountOnlySections: ['calendar', 'mail'] });
   assert.deepEqual(normalizeBackupRequest(['accounts', 'settings']), { requested: ['settings', 'accounts'], sections: ['settings', 'calendar', 'mail'], accountOnlySections: ['calendar', 'mail'] });
   // A complete section already carries its accounts.
@@ -50,8 +50,8 @@ test('account settings are a request-only section that exports accounts without 
 });
 
 test('an account settings archive may carry only remote account rows', () => {
-  const { validateBackupPayload } = require('../src/services/backup-validate');
-  const { BACKUP_VERSION } = require('../src/services/backup-format');
+  const { validateBackupPayload } = require('../dist/src/services/backup-validate');
+  const { BACKUP_VERSION } = require('../dist/src/services/backup-format');
   const mailAccount = { id: 'm1', user_id: 'u1', email_address: 'mail@example.test', imap_host: '8.8.8.8', sync_mode: 'sync', sync_window_days: 90 };
   const calendarAccount = { id: 'c1', user_id: 'u1', provider: 'caldav', base_url: 'https://8.8.8.8/dav/' };
   const archive = extra => ({ app: 'unihub', version: BACKUP_VERSION, files: [], account_only_sections: ['calendar', 'mail'],

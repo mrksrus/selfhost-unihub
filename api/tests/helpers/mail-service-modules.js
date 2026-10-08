@@ -4,10 +4,10 @@
 // the previous stubs. Each evict function returns a restore function for t.after.
 const MAIL_SERVICE_MODULES = ['mail', 'mail-host-policy', 'mail-folders', 'mail-durable-jobs',
   'mail-server-delete', 'mail-sync-control', 'mail-send']
-  .map(name => require.resolve(`../../src/services/${name}`));
+  .map(name => require.resolve(`../../dist/src/services/${name}`));
 const MAIL_ROUTE_MODULES = ['mail', 'mail-route-helpers', 'mail-folders', 'mail-accounts', 'mail-drafts',
   'mail-messages', 'mail-operations', 'mail-sync']
-  .map(name => require.resolve(`../../src/routes/${name}`));
+  .map(name => require.resolve(`../../dist/src/routes/${name}`));
 
 function evict(paths) {
   const saved = new Map(paths.map(p => [p, require.cache[p]]));

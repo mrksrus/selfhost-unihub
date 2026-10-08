@@ -1,0 +1,174 @@
+import type { IncomingMessage } from 'node:http';
+import type { ApiError } from '../types';
+import fs = require('fs');
+import path = require('path');
+import imported1 = require('../services/recordings');
+const {
+  isPathUnderRoot,
+  replaceFilenameExtension,
+  listRecordings,
+  getRecordingForUser,
+  ensureRecordingMp3,
+  startRecordingUpload,
+  getRecordingUploadStatus,
+  appendRecordingUploadChunk,
+  completeRecordingUpload,
+  abortRecordingUpload,
+  updateRecording,
+  deleteRecording,
+} = imported1;
+
+function getPathPart(req: IncomingMessage, marker: string) {
+  const parts = new URL(req.url!, `http://${req.headers.host}`).pathname.split('/').filter(Boolean);
+  const index = parts.indexOf(marker);
+  return index === -1 ? null : parts[index + 1] || null;
+}
+
+function getUploadId(req: IncomingMessage) {
+  return getPathPart(req, 'uploads');
+}
+
+function getRecordingId(req: IncomingMessage) {
+  return getPathPart(req, 'recordings');
+}
+
+export = {
+  'GET /api/recordings': async (req: IncomingMessage, userId: string | null) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const url = new URL(req.url!, `http://${req.headers.host}`);
+      const recordings = await listRecordings(userId, {
+        search: url.searchParams.get('search') || '',
+        tag: url.searchParams.get('tag') || '',
+        category: url.searchParams.get('category') || '',
+        musicMissingChords: url.searchParams.get('music_missing_chords') === 'true',
+      });
+      return { recordings };
+    } catch (error) {
+      console.error('List recordings error:', error);
+      return { error: 'Failed to load recordings', status: 500 };
+    }
+  },
+
+  'POST /api/recordings/uploads/start': async (req: IncomingMessage, userId: string | null, body: Record<string, unknown>) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      return await startRecordingUpload(userId, body || {});
+    } catch (error) {
+      console.error('Start recording upload error:', error);
+      return { error: (error as ApiError).message || 'Failed to start recording upload', status: 500 };
+    }
+  },
+
+  'GET /api/recordings/uploads/:id': async (req: IncomingMessage, userId: string | null) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const uploadId = getUploadId(req);
+      if (!uploadId) return { error: 'Invalid upload id', status: 400 };
+      return await getRecordingUploadStatus(userId, uploadId);
+    } catch (error) {
+      console.error('Recording upload status error:', error);
+      return { error: 'Failed to load recording upload', status: 500 };
+    }
+  },
+
+  'DELETE /api/recordings/uploads/:id': async (req: IncomingMessage, userId: string | null) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const uploadId = getUploadId(req);
+      if (!uploadId) return { error: 'Invalid upload id', status: 400 };
+      return await abortRecordingUpload(userId, uploadId);
+    } catch (error) {
+      console.error('Abort recording upload error:', error);
+      return { error: 'Failed to cancel recording upload', status: 500 };
+    }
+  },
+
+  'POST /api/recordings/uploads/:id/chunk': async (req: IncomingMessage, userId: string | null, body: Record<string, unknown>) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const uploadId = getUploadId(req);
+      if (!uploadId) return { error: 'Invalid upload id', status: 400 };
+      return await appendRecordingUploadChunk(userId, uploadId, body || {});
+    } catch (error) {
+      console.error('Append recording upload chunk error:', error);
+      return { error: (error as ApiError).message || 'Failed to upload recording chunk', status: 500 };
+    }
+  },
+
+  'POST /api/recordings/uploads/:id/complete': async (req: IncomingMessage, userId: string | null, body: Record<string, unknown>) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const uploadId = getUploadId(req);
+      if (!uploadId) return { error: 'Invalid upload id', status: 400 };
+      return await completeRecordingUpload(userId, uploadId, body || {});
+    } catch (error) {
+      console.error('Complete recording upload error:', error);
+      return { error: (error as ApiError).message || 'Failed to complete recording upload', status: (error as ApiError).status || 500 };
+    }
+  },
+
+  'GET /api/recordings/:id/file': async (req: IncomingMessage, userId: string | null) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const recordingId = getRecordingId(req);
+      if (!recordingId) return { error: 'Invalid recording id', status: 400 };
+      const recording = await getRecordingForUser(userId, recordingId);
+      if (!recording) return { error: 'Recording not found', status: 404 };
+      if (!isPathUnderRoot(recording.storage_path)) return { error: 'Invalid recording path', status: 500 };
+      const url = new URL(req.url!, `http://${req.headers.host}`);
+      const download = url.searchParams.get('download') === '1';
+      const format = url.searchParams.get('format');
+      let filePath = path.resolve(recording.storage_path);
+      let contentType = recording.content_type || 'application/octet-stream';
+      let filename = recording.original_filename || `${recording.title || 'recording'}`;
+      let contentLength;
+
+      if (format === 'mp3') {
+        const converted = await ensureRecordingMp3(recording);
+        filePath = converted.path;
+        contentLength = converted.size;
+        contentType = 'audio/mpeg';
+        filename = replaceFilenameExtension(filename, '.mp3');
+      } else {
+        const stat = await fs.promises.stat(filePath);
+        contentLength = stat.size;
+      }
+
+      return {
+        __streamPath: filePath,
+        __contentType: contentType,
+        __contentLength: contentLength,
+        __filename: filename,
+        __disposition: download ? 'attachment' : 'inline',
+      };
+    } catch (error) {
+      console.error('Download recording error:', error);
+      return { error: (error as ApiError).status ? (error as ApiError).message : 'Failed to load recording file', status: (error as ApiError).status || 500 };
+    }
+  },
+
+  'PUT /api/recordings/:id': async (req: IncomingMessage, userId: string | null, body: Record<string, unknown>) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const recordingId = getRecordingId(req);
+      if (!recordingId) return { error: 'Invalid recording id', status: 400 };
+      return await updateRecording(userId, recordingId, body || {});
+    } catch (error) {
+      console.error('Update recording error:', error);
+      return { error: (error as ApiError).message || 'Failed to update recording', status: 500 };
+    }
+  },
+
+  'DELETE /api/recordings/:id': async (req: IncomingMessage, userId: string | null) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+    try {
+      const recordingId = getRecordingId(req);
+      if (!recordingId) return { error: 'Invalid recording id', status: 400 };
+      return await deleteRecording(userId, recordingId);
+    } catch (error) {
+      console.error('Delete recording error:', error);
+      return { error: (error as ApiError).message || 'Failed to delete recording', status: 500 };
+    }
+  },
+};

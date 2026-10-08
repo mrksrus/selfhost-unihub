@@ -9,7 +9,7 @@ const {
   updateEventIcs,
   removeOccurrenceIcs,
   objectUid,
-} = require('../src/services/calendar-ical');
+} = require('../dist/src/services/calendar-ical');
 
 const BERLIN_TZ = [
   'BEGIN:VTIMEZONE', 'TZID:Europe/Berlin',

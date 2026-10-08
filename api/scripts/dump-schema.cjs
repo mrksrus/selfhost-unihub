@@ -42,11 +42,11 @@ async function dumpSchema(connection) {
 
 // Everything the API runs against the schema at startup (api/src/app.js).
 async function migrateCurrentSchema() {
-  const { initDatabase, ensurePerformanceIndexes } = require('../src/services/database');
+  const { initDatabase, ensurePerformanceIndexes } = require('../dist/src/services/database');
   await initDatabase();
-  await require('../src/services/notifications').ensureNotificationSchema();
+  await require('../dist/src/services/notifications').ensureNotificationSchema();
   await ensurePerformanceIndexes();
-  return require('../src/state').getDb();
+  return require('../dist/src/state').getDb();
 }
 
 // Line diff (LCS) for review output, each change labelled with its table.
@@ -83,7 +83,7 @@ async function main(args) {
   const existing = args.includes('--existing');
   const unknown = args.filter(arg => !['--check', '--existing'].includes(arg));
   if (unknown.length) throw new Error(`Unknown argument: ${unknown.join(' ')}`);
-  const { getDatabaseConfig } = require('../src/services/database-config');
+  const { getDatabaseConfig } = require('../dist/src/services/database-config');
   const config = getDatabaseConfig();
   if (!config) throw new Error('Missing database configuration (MYSQL_* or DATABASE_URL)');
   if (!existing) {

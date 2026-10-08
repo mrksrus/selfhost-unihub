@@ -1,11 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
-const { guardImapConnection, runGuardedImap, closeImapConnection } = require('../src/services/mail-imap-guard');
-const { withMailAccountLock } = require('../src/services/mail-account-lock');
-const operations = require('../src/services/mail-engine/operations');
-const transport = require('../src/services/mail-engine/transport');
-const { getDb, setDb } = require('../src/state');
+const { guardImapConnection, runGuardedImap, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
+const { withMailAccountLock } = require('../dist/src/services/mail-account-lock');
+const operations = require('../dist/src/services/mail-engine/operations');
+const transport = require('../dist/src/services/mail-engine/transport');
+const { getDb, setDb } = require('../dist/src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // Stands in for an ImapFlow client: close() is its synchronous hard close

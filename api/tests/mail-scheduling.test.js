@@ -1,12 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { queueChanges, runDueWritebacks, mutateMessages } = require('../src/services/mail-writebacks');
-const { getDb, setDb } = require('../src/state');
+const { queueChanges, runDueWritebacks, mutateMessages } = require('../dist/src/services/mail-writebacks');
+const { getDb, setDb } = require('../dist/src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('HTTP sync acknowledgement is prompt and status never includes another owner', async t => {
-  const routePath = require.resolve('../src/routes/mail');
-  const servicePath = require.resolve('../src/services/mail');
+  const routePath = require.resolve('../dist/src/routes/mail');
+  const servicePath = require.resolve('../dist/src/services/mail');
   const oldRoute = require.cache[routePath], oldService = require.cache[servicePath], oldDb = getDb();
   t.after(() => { setDb(oldDb); if (oldRoute) require.cache[routePath] = oldRoute; else delete require.cache[routePath];
     if (oldService) require.cache[servicePath] = oldService; else delete require.cache[servicePath]; });
@@ -33,7 +33,7 @@ test('HTTP sync acknowledgement is prompt and status never includes another owne
     }
     assert.fail(sql);
   } });
-  const routes = require('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail');
   const req = url => ({ url });
   assert.equal((await routes['POST /api/mail/sync'](req('/api/mail/sync'), 'alice', { account_id: 'bob-mail' })).status, 404);
   const accepted = await routes['POST /api/mail/sync'](req('/api/mail/sync'), 'alice', { account_id: 'alice-mail' });
@@ -85,7 +85,7 @@ test('opposite intent accepted after dispatch uses prior target, not stale store
 });
 
 test('stale flag completion cannot erase a newer opposite request', async t => {
-  const settle = require('../src/services/mail-engine/reconciliation');
+  const settle = require('../dist/src/services/mail-engine/reconciliation');
   const email = { id: 'email', user_id: 'owner', mail_account_id: 'account', observation_revision: 0, is_read: 0 };
   const old = { id: 'old', user_id: 'owner', mail_account_id: 'account', email_id: 'email', action: 'read',
     remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9, target_value: '1', is_current: 0,
@@ -115,10 +115,10 @@ test('stale flag completion cannot erase a newer opposite request', async t => {
 test('startup/due pass schedules uncertain MOVE observation, never another mutation', async t => {
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const calls = [], enqueued = [];
-  const runtime = require('../src/services/mail-engine/runtime');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
   t.mock.method(runtime, 'enqueueJob', async job => { enqueued.push(job); });
   const nudged = [];
-  t.mock.method(require('../src/services/mail'), 'runMailOperationsNow', async id => { nudged.push(id); return true; });
+  t.mock.method(require('../dist/src/services/mail'), 'runMailOperationsNow', async id => { nudged.push(id); return true; });
   setDb({ execute: async (sql, params) => {
     calls.push({ sql, params });
     if (sql.includes('FROM user_settings')) return [[]];
@@ -138,8 +138,8 @@ test('startup/due pass schedules uncertain MOVE observation, never another mutat
 // Drives the module's own durable scheduler with a mocked runtime: the job is
 // claimed once, then runDurableMailJob executes it like any other durable job.
 function durableOperation(t, job) {
-  const runtime = require('../src/services/mail-engine/runtime');
-  const repository = require('../src/services/mail-engine/repository');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const repository = require('../dist/src/services/mail-engine/repository');
   let claimed = false;
   const completions = [];
   t.mock.method(runtime, 'recoverExpiredJobs', async () => ({}));
@@ -161,8 +161,8 @@ function durableOperation(t, job) {
 }
 
 test('accepted changes nudge the durable scheduler as foreground work; the due scan as background', async t => {
-  const mail = require('../src/services/mail');
-  const runtime = require('../src/services/mail-engine/runtime');
+  const mail = require('../dist/src/services/mail');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const nudges = [];
   t.mock.method(mail, 'runMailOperationsNow', async (id, options) => { nudges.push([id, options]); return true; });
@@ -196,8 +196,8 @@ test('accepted changes nudge the durable scheduler as foreground work; the due s
 });
 
 test('the mail scheduler reserves a slot for provider changes and a nudge yields same-account reads first', async t => {
-  const service = require.resolve('../src/services/mail');
-  const schedulerPath = require.resolve('../src/services/mail-sync-scheduler');
+  const service = require.resolve('../dist/src/services/mail');
+  const schedulerPath = require.resolve('../dist/src/services/mail-sync-scheduler');
   const old = new Map([service, schedulerPath].map(p => [p, require.cache[p]]));
   const real = require(schedulerPath);
   const calls = [];
@@ -219,9 +219,9 @@ test('the mail scheduler reserves a slot for provider changes and a nudge yields
 
 test('a durable operation job sees cancellation before connecting and retains the accepted operation', async t => {
   const oldDb = getDb(); t.after(() => setDb(oldDb));
-  const mail = require('../src/services/mail');
-  const imapClient = require('../src/services/mail-imap-client');
-  const runtime = require('../src/services/mail-engine/runtime');
+  const mail = require('../dist/src/services/mail');
+  const imapClient = require('../dist/src/services/mail-imap-client');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
   let connects = 0, fences = 0;
   const harness = durableOperation(t, { id: 'cancel-job', mail_account_id: 'cancel-account' });
   t.mock.method(runtime, 'assertFence', async () => { fences++; return { cancellationRequested: true }; });
@@ -235,10 +235,10 @@ test('a durable operation job sees cancellation before connecting and retains th
 test('lease lost after connect destroys transport before any provider operation', async t => {
   const { EventEmitter } = require('node:events');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
-  const mail = require('../src/services/mail');
-  const imapClient = require('../src/services/mail-imap-client');
-  const runtime = require('../src/services/mail-engine/runtime');
-  const engine = require('../src/services/mail-engine/operations');
+  const mail = require('../dist/src/services/mail');
+  const imapClient = require('../dist/src/services/mail-imap-client');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const engine = require('../dist/src/services/mail-engine/operations');
   let fences = 0, destroys = 0;
   const connection = new EventEmitter();
   connection.close = () => { destroys++; };
@@ -267,10 +267,10 @@ test('lease lost after connect destroys transport before any provider operation'
 test('account stop aborts a running operation job and destroys its guarded socket', async t => {
   const { EventEmitter } = require('node:events');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
-  const mail = require('../src/services/mail');
-  const imapClient = require('../src/services/mail-imap-client');
-  const runtime = require('../src/services/mail-engine/runtime');
-  const engine = require('../src/services/mail-engine/operations');
+  const mail = require('../dist/src/services/mail');
+  const imapClient = require('../dist/src/services/mail-imap-client');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const engine = require('../dist/src/services/mail-engine/operations');
   const connection = new EventEmitter();
   let socketDestroyed = 0, entered = false, remoteCommands = 0;
   const paused = [];

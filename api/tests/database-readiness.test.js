@@ -5,8 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
-const { getDatabaseConfig } = require('../src/services/database-config');
-const { probeDatabase, waitForDatabase, seconds } = require('../src/database-readiness');
+const { getDatabaseConfig } = require('../dist/src/services/database-config');
+const { probeDatabase, waitForDatabase, seconds } = require('../dist/src/database-readiness');
 
 const config = { host: 'database', port: 3306, user: 'unihub', password: 'test-password', database: 'unihub' };
 

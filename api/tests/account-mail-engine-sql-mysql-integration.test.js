@@ -19,7 +19,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD,
     database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 6 });
-  const state = require('../src/state'), previous = state.getDb();
+  const state = require('../dist/src/state'), previous = state.getDb();
   let ownsSchema = false;
   const rows = async (sql, params = []) => (await pool.execute(sql, params))[0];
   const one = async (sql, params = []) => (await rows(sql, params))[0];
@@ -42,11 +42,11 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
   ownsSchema = true; state.setDb(pool);
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'engine-sql-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-engine-sql-bootstrap-password';
-  await require('../src/services/database').ensureSchema();
-  const runtime = require('../src/services/mail-engine/runtime');
-  const repo = require('../src/services/mail-engine/repository');
-  const writebacks = require('../src/services/mail-writebacks');
-  const mail = require('../src/services/mail');
+  await require('../dist/src/services/database').ensureSchema();
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const repo = require('../dist/src/services/mail-engine/repository');
+  const writebacks = require('../dist/src/services/mail-writebacks');
+  const mail = require('../dist/src/services/mail');
 
   async function seedAccount(label) {
     const userId = uuid(), accountId = uuid();
@@ -315,7 +315,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
   });
 
   await t.test('enqueuePendingBodies queues one body job per mailbox with queued content and promotes old body jobs', async t => {
-    const { enqueuePendingBodies, BODY_PRIORITY } = require('../src/services/mail-engine/sync');
+    const { enqueuePendingBodies, BODY_PRIORITY } = require('../dist/src/services/mail-engine/sync');
     const owner = await seedAccount('bodies'), sibling = await seedAccount('bodies-sibling');
     t.after(() => retire(owner, sibling));
     const box = async (who, folderName) => repo.ensureMailbox({ userId: who.userId, accountId: who.accountId, folderName, epoch: 9 }, pool);

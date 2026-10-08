@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getDb, setDb } = require('../src/state');
+const { getDb, setDb } = require('../dist/src/state');
 
 test('global search queries only enabled domains and keeps results owner-scoped', async t => {
   const previous = getDb(); t.after(() => setDb(previous));
@@ -15,7 +15,7 @@ test('global search queries only enabled domains and keeps results owner-scoped'
     }
     throw new Error('Unexpected domain query: ' + sql);
   } });
-  const routes = require('../src/routes/search');
+  const routes = require('../dist/src/routes/search');
   const result = await routes['GET /api/search']({ url: '/api/search?q=research', headers: { host: 'localhost' } }, 'owner');
   assert.equal(result.error, undefined);
   assert.equal(result.results.length, 1);
@@ -29,6 +29,6 @@ test('dashboard statistics omit disabled modules without reading their rows', as
     assert.match(sql, /FROM user_settings/);
     return [[{ setting_value: JSON.stringify({ mail: { enabled: false }, contacts: { enabled: false }, calendar: { enabled: false } }) }]];
   } });
-  const result = await require('../src/routes/system')['GET /api/stats']({}, 'owner');
+  const result = await require('../dist/src/routes/system')['GET /api/stats']({}, 'owner');
   assert.deepEqual(result, { contacts: 0, upcomingEvents: 0, unreadEmails: 0 });
 });

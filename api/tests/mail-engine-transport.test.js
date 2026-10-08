@@ -2,9 +2,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
-const { connectImap } = require('../src/services/mail-imap-client');
-const { guardImapConnection, closeImapConnection } = require('../src/services/mail-imap-guard');
-const { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove } = require('../src/services/mail-engine/transport');
+const { connectImap } = require('../dist/src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
+const { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove } = require('../dist/src/services/mail-engine/transport');
 
 async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidity = 9, raw = Buffer.from([0, 255, 128, 13, 10, 0x3d, 0x20, 0x0a]), stall = false, metadata = 'normal', highest = '9007199254740993123', itemModseq = '9007199254740993123' } = {}) {
   const commands = [], sockets = new Set();

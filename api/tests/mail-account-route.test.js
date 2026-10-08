@@ -11,10 +11,10 @@ function setRequireStub(modulePath, exports) {
 }
 
 test('add mail account maps strict IMAP TLS failures to host trust confirmation', async (t) => {
-  const routePath = require.resolve('../src/routes/mail');
-  const mailServicePath = require.resolve('../src/services/mail');
-  const statePath = require.resolve('../src/state');
-  const encryptionPath = require.resolve('../src/security/encryption');
+  const routePath = require.resolve('../dist/src/routes/mail');
+  const mailServicePath = require.resolve('../dist/src/services/mail');
+  const statePath = require.resolve('../dist/src/state');
+  const encryptionPath = require.resolve('../dist/src/security/encryption');
   const originalRoute = require.cache[routePath];
   const originalMailService = require.cache[mailServicePath];
   const originalState = require.cache[statePath];
@@ -81,7 +81,7 @@ test('add mail account maps strict IMAP TLS failures to host trust confirmation'
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   });
 
-  const routes = require('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail');
   const result = await routes['POST /api/mail/accounts'](
     { headers: { host: 'localhost' }, url: '/api/mail/accounts' },
     'user-1',
@@ -106,10 +106,10 @@ test('add mail account maps strict IMAP TLS failures to host trust confirmation'
 });
 
 test('add mail account keeps server deletion off by default and can enable grace period', async (t) => {
-  const routePath = require.resolve('../src/routes/mail');
-  const mailServicePath = require.resolve('../src/services/mail');
-  const statePath = require.resolve('../src/state');
-  const encryptionPath = require.resolve('../src/security/encryption');
+  const routePath = require.resolve('../dist/src/routes/mail');
+  const mailServicePath = require.resolve('../dist/src/services/mail');
+  const statePath = require.resolve('../dist/src/state');
+  const encryptionPath = require.resolve('../dist/src/security/encryption');
   const originalRoute = require.cache[routePath];
   const originalMailService = require.cache[mailServicePath];
   const originalState = require.cache[statePath];
@@ -187,7 +187,7 @@ test('add mail account keeps server deletion off by default and can enable grace
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   });
 
-  const routes = require('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail');
   const baseBody = {
     email_address: 'user@example.test',
     provider: 'custom',
@@ -214,10 +214,10 @@ test('add mail account keeps server deletion off by default and can enable grace
 });
 
 test('update mail account can disable server deletion without password changes', async (t) => {
-  const routePath = require.resolve('../src/routes/mail');
-  const mailServicePath = require.resolve('../src/services/mail');
-  const statePath = require.resolve('../src/state');
-  const encryptionPath = require.resolve('../src/security/encryption');
+  const routePath = require.resolve('../dist/src/routes/mail');
+  const mailServicePath = require.resolve('../dist/src/services/mail');
+  const statePath = require.resolve('../dist/src/state');
+  const encryptionPath = require.resolve('../dist/src/security/encryption');
   const originalRoute = require.cache[routePath];
   const originalMailService = require.cache[mailServicePath];
   const originalState = require.cache[statePath];
@@ -227,7 +227,7 @@ test('update mail account can disable server deletion without password changes',
   let cancellations = 0;
   const queueUpdates = [];
   const resumes = [];
-  t.mock.method(require('../src/services/mail-engine/runtime'), 'resumeAccount', async input => {
+  t.mock.method(require('../dist/src/services/mail-engine/runtime'), 'resumeAccount', async input => {
     resumes.push(input); return { resumed: 0, retired: 0 };
   });
 
@@ -316,7 +316,7 @@ test('update mail account can disable server deletion without password changes',
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   });
 
-  const routes = require('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail');
   const result = await routes['PUT /api/mail/accounts/:id'](
     { headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' },
     'user-1',
@@ -336,7 +336,7 @@ test('update mail account can disable server deletion without password changes',
   assert.equal((await put({ sync_mode: 'sync', confirm_address: 'someone-else@example.test' })).status, 400);
   assert.equal((await put({ sync_window_days: 7 })).status, 400, 'Only the offered windows are accepted');
   assert.equal(updates.length, 1, 'Unconfirmed switch cannot write');
-  const { withMailAccountLock } = require('../src/services/mail-account-lock');
+  const { withMailAccountLock } = require('../dist/src/services/mail-account-lock');
   let release;
   const holding = withMailAccountLock('account-1', () => new Promise(resolve => { release = resolve; }));
   await new Promise(resolve => setImmediate(resolve));
@@ -361,17 +361,17 @@ test('update mail account can disable server deletion without password changes',
 });
 
 test('reconnect uses the saved password of an account a restore paused, never of a disconnected one', async (t) => {
-  const routePath = require.resolve('../src/routes/mail');
-  const mailServicePath = require.resolve('../src/services/mail');
-  const statePath = require.resolve('../src/state');
-  const encryptionPath = require.resolve('../src/security/encryption');
+  const routePath = require.resolve('../dist/src/routes/mail');
+  const mailServicePath = require.resolve('../dist/src/services/mail');
+  const statePath = require.resolve('../dist/src/state');
+  const encryptionPath = require.resolve('../dist/src/security/encryption');
   const saved = Object.fromEntries([routePath, mailServicePath, statePath, encryptionPath].map(path => [path, require.cache[path]]));
   t.after(() => {
     for (const [path, entry] of Object.entries(saved)) { if (entry) require.cache[path] = entry; else delete require.cache[path]; }
   });
   t.after(require('./helpers/mail-service-modules').evictMailRouteModules());
   const resumes = [], updates = [], loginTests = [];
-  t.mock.method(require('../src/services/mail-engine/runtime'), 'resumeAccount', async input => { resumes.push(input); return { resumed: 0, retired: 0 }; });
+  t.mock.method(require('../dist/src/services/mail-engine/runtime'), 'resumeAccount', async input => { resumes.push(input); return { resumed: 0, retired: 0 }; });
   let row;
   setRequireStub(statePath, { db: { execute: async (sql, params = []) => {
     if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: 'account-1', user_id: 'user-1', email_address: 'user@example.test', username: 'user@example.test',
@@ -394,7 +394,7 @@ test('reconnect uses the saved password of an account a restore paused, never of
     syncMailAccount: async () => ({ success: true }),
     isAnyMailAccountSyncRunning: () => false, getRunningMailSyncAccountIds: () => [], getRunningMailServerDeleteAccountIds: () => [],
   });
-  const routes = require('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail');
   const put = body => routes['PUT /api/mail/accounts/:id']({ headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' }, 'user-1', body);
 
   row = { is_active: 0, disconnected_at: null, encrypted_password: 'encrypted:restored' };

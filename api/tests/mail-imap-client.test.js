@@ -9,10 +9,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { connectImap, imapFlowOptions, MAX_LITERAL_BYTES } = require('../src/services/mail-imap-client');
-const { closeImapConnection } = require('../src/services/mail-imap-guard');
-const pool = require('../src/services/mail-engine/connection-pool');
-const { isTlsTrustError } = require('../src/services/mail-host-policy');
+const { connectImap, imapFlowOptions, MAX_LITERAL_BYTES } = require('../dist/src/services/mail-imap-client');
+const { closeImapConnection } = require('../dist/src/services/mail-imap-guard');
+const pool = require('../dist/src/services/mail-engine/connection-pool');
+const { isTlsTrustError } = require('../dist/src/services/mail-host-policy');
 
 function session(socket, commands) {
   socket.write('* OK synthetic peer\r\n');

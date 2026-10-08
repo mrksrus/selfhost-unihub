@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const { persistImportedMessage } = require('../src/services/mail-import');
+const { persistImportedMessage } = require('../dist/src/services/mail-import');
 
 async function fixture(t, { failAttachment = false, failCommit = false, existingEmail = null } = {}) {
   const root = await fs.mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'mail-import-'));

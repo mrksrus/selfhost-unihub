@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { MODULE_CATALOG, getModuleForPath } = require('../src/services/module-catalog');
-const { ORDER_KEY, SETTING_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY, getUserPages, pageOrderFromValue, pagesFromValues, modulesFromValue, orderFromValue, validateModuleUpdates, validateModuleRequest, getUserModules, getOrderedUserModules, setUserModules, isModuleEnabled, isModuleBackgroundEnabled } = require('../src/services/module-settings');
-const { SECTION_POLICIES } = require('../src/services/backup-catalog');
-const { validateBackupPayload } = require('../src/services/backup-validate');
+const { MODULE_CATALOG, getModuleForPath } = require('../dist/src/services/module-catalog');
+const { ORDER_KEY, SETTING_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY, getUserPages, pageOrderFromValue, pagesFromValues, modulesFromValue, orderFromValue, validateModuleUpdates, validateModuleRequest, getUserModules, getOrderedUserModules, setUserModules, isModuleEnabled, isModuleBackgroundEnabled } = require('../dist/src/services/module-settings');
+const { SECTION_POLICIES } = require('../dist/src/services/backup-catalog');
+const { validateBackupPayload } = require('../dist/src/services/backup-validate');
 
 test('all built-in modules default on and reference recoverable data', () => {
   const modules = modulesFromValue(null);

@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getDb, setDb } = require('../src/state');
-const routes = require('../src/routes/mail');
-const { withMailAccountLock } = require('../src/services/mail-account-lock');
-const { mutateMessages, retryWriteback } = require('../src/services/mail-writebacks');
+const { getDb, setDb } = require('../dist/src/state');
+const routes = require('../dist/src/routes/mail');
+const { withMailAccountLock } = require('../dist/src/services/mail-account-lock');
+const { mutateMessages, retryWriteback } = require('../dist/src/services/mail-writebacks');
 const request = url => ({ url, headers: { host: 'localhost' } });
 function installDb(t, db) { const old = getDb(); setDb(db); t.after(() => setDb(old)); }
 const tick = () => new Promise(resolve => setImmediate(resolve));

@@ -6,11 +6,11 @@ const account = { id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', user_id: 'bbbbbbbb
 const folder = { folderName: 'INBOX', dbFolderName: 'inbox' };
 const mailboxId = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 function fixture(t, { uids = [1], epoch = 123, gmail = false } = {}) {
-  const repoPath = require.resolve('../src/services/mail-engine/repository');
-  const runtimePath = require.resolve('../src/services/mail-engine/runtime');
-  const transportPath = require.resolve('../src/services/mail-engine/transport');
-  const reconcilePath = require.resolve('../src/services/mail-engine/reconciliation');
-  const syncPath = require.resolve('../src/services/mail-engine/sync');
+  const repoPath = require.resolve('../dist/src/services/mail-engine/repository');
+  const runtimePath = require.resolve('../dist/src/services/mail-engine/runtime');
+  const transportPath = require.resolve('../dist/src/services/mail-engine/transport');
+  const reconcilePath = require.resolve('../dist/src/services/mail-engine/reconciliation');
+  const syncPath = require.resolve('../dist/src/services/mail-engine/sync');
   const original = new Map([repoPath, runtimePath, transportPath, reconcilePath, syncPath].map(p => [p, require.cache[p]]));
   const remotes = new Map(uids.map(uid => [uid, { uid, flags: [], modseq: null, gmailMsgId: gmail ? '999' : null }]));
   const occurrences = new Map(), emails = new Map(), cursors = new Map(), gmailIds = new Map();

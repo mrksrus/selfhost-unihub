@@ -25,8 +25,8 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   process.env.ENCRYPTION_KEY = 'ci-test-encryption-key';
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'ci-admin@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'ci-bootstrap-password-2026';
-  const { initDatabase } = require('../src/services/database');
-  const { db, getDb, setDb } = require('../src/state');
+  const { initDatabase } = require('../dist/src/services/database');
+  const { db, getDb, setDb } = require('../dist/src/state');
   const mysql = require('mysql2/promise');
   const cleanupConnection = await mysql.createConnection({
     host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
@@ -52,12 +52,12 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   assert.equal(existingTables.length, 0, 'Fresh-install fixture requires an empty dedicated test database');
   ownsDatabase = true;
   await initDatabase();
-  let notifications = require('../src/services/notifications');
+  let notifications = require('../dist/src/services/notifications');
   await notifications.ensureNotificationSchema();
-  await require('../src/services/data-inventory').verifyDatabaseInventory(db);
+  await require('../dist/src/services/data-inventory').verifyDatabaseInventory(db);
   await db.execute('ALTER TABLE emails ADD COLUMN recovery_inventory_probe TEXT NULL');
   try {
-    await assert.rejects(require('../src/services/data-inventory').verifyDatabaseInventory(db), /Unclassified field emails.recovery_inventory_probe/);
+    await assert.rejects(require('../dist/src/services/data-inventory').verifyDatabaseInventory(db), /Unclassified field emails.recovery_inventory_probe/);
   } finally {
     await db.execute('ALTER TABLE emails DROP COLUMN recovery_inventory_probe');
   }
@@ -94,11 +94,11 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   // Close the pool and discard the module's key cache to exercise database-backed recovery.
   await getDb().end();
   await initDatabase();
-  delete require.cache[require.resolve('../src/services/notifications')];
-  notifications = require('../src/services/notifications');
+  delete require.cache[require.resolve('../dist/src/services/notifications')];
+  notifications = require('../dist/src/services/notifications');
   await notifications.ensureNotificationSchema();
   assert.deepEqual(await notifications.getVapidKeys(), before);
-  await require('../src/services/data-inventory').verifyDatabaseInventory(db);
+  await require('../dist/src/services/data-inventory').verifyDatabaseInventory(db);
   const [restartedHistory] = await db.execute('SELECT id, name, completed_at FROM schema_migrations ORDER BY id');
   assert.deepEqual(restartedHistory, upgradeHistory, 'Completed migrations are unchanged after restart');
   const [[sent]] = await db.execute('SELECT is_read FROM emails WHERE id = ?', [sentId]);
@@ -154,13 +154,13 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     const readyId = crypto.randomUUID();
     await db.execute(`INSERT INTO data_export_jobs (id, user_id, status, file_path) VALUES (?, ?, 'ready', '/retained/archive.zip')`, [readyId, userId]);
     await db.execute(`INSERT INTO backup_restore_jobs (id, user_id, status, archive_path, requested_sections) VALUES (?, ?, 'running', '/retained/import.zip', '["mail"]')`, [pendingId, userId]);
-    const { suspendPendingBackupJobs } = require('../src/services/backup-availability');
+    const { suspendPendingBackupJobs } = require('../dist/src/services/backup-availability');
     await suspendPendingBackupJobs(db);
     await suspendPendingBackupJobs(db);
     const [[pending]] = await db.execute('SELECT status, archive_path FROM backup_restore_jobs WHERE id = ?', [pendingId]);
     assert.deepEqual(pending, { status: 'failed', archive_path: '/retained/import.zip' });
     const [[ready]] = await db.execute('SELECT status, file_path FROM data_export_jobs WHERE id = ?', [readyId]);
     assert.deepEqual(ready, { status: 'ready', file_path: '/retained/archive.zip' });
-    assert.equal((await require('../src/services/restore-locks').getActiveRestoreSections(userId)).size, 0);
+    assert.equal((await require('../dist/src/services/restore-locks').getActiveRestoreSections(userId)).size, 0);
   });
 });

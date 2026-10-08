@@ -1,21 +1,25 @@
 {
   "name": "selfhost-unihub",
   "private": true,
-  "version": "0.18.2",
+  "version": "0.19.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "npm run typecheck && vite build",
-    "build:dev": "vite build --mode development",
+    "dev": "npm run build:workers && vite",
+    "build": "npm run typecheck && npm run build:workers && vite build",
+    "build:dev": "npm run build:workers && vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "typecheck": "npm run typecheck:frontend && npm --prefix api run typecheck",
     "db:start": "scripts/local-db.sh start",
     "db:stop": "scripts/local-db.sh stop",
     "db:dev": "scripts/local-db.sh dev",
-    "test:db": "scripts/local-db.sh test"
+    "test:db": "scripts/local-db.sh test",
+    "typecheck:frontend": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && npm run typecheck:workers",
+    "build:frontend": "npm run typecheck:frontend && npm run build:workers && vite build",
+    "build:workers": "tsc -p tsconfig.workers.json",
+    "typecheck:workers": "tsc --noEmit -p tsconfig.workers.json"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.14",

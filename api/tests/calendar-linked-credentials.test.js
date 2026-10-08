@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getDb, setDb } = require('../src/state');
+const { getDb, setDb } = require('../dist/src/state');
 
 function stub(path, exports) { require.cache[path] = { id: path, filename: path, loaded: true, exports }; }
 
@@ -9,8 +9,8 @@ const MAIL_LOGIN = { username: 'owner@example.test', encrypted_password: 'mail-l
 // calendar-sync with a database fake. account: the calendar_accounts row;
 // mail: the connected mail login, or null while it is disconnected.
 function calendarFixture(t, { account = {}, mail = MAIL_LOGIN, caldav = {} } = {}) {
-  const paths = ['../src/services/module-settings', '../src/services/restore-locks', '../src/services/caldav', '../src/services/calendar-sync',
-    '../src/security/encryption', '../src/services/calendar-accounts', '../src/services/server-events'].map(path => require.resolve(path));
+  const paths = ['../dist/src/services/module-settings', '../dist/src/services/restore-locks', '../dist/src/services/caldav', '../dist/src/services/calendar-sync',
+    '../dist/src/security/encryption', '../dist/src/services/calendar-accounts', '../dist/src/services/server-events'].map(path => require.resolve(path));
   const saved = paths.map(path => require.cache[path]);
   const savedDb = getDb();
   t.after(() => {
@@ -56,7 +56,7 @@ function calendarFixture(t, { account = {}, mail = MAIL_LOGIN, caldav = {} } = {
     return [[]];
   };
   setDb({ execute, getConnection: async () => ({ execute, release() {} }) });
-  return { sync: require('../src/services/calendar-sync'), writes, state, row };
+  return { sync: require('../dist/src/services/calendar-sync'), writes, state, row };
 }
 
 const event = { id: 'event', calendar_id: 'calendar', title: 'Meeting', start_time: '2026-10-05 10:00:00', end_time: '2026-10-05 11:00:00' };
@@ -336,7 +336,7 @@ test('a mail disconnect after the last server response keeps the sync from repor
 });
 
 test('a linked calendar is listed as paused while its mail account is disconnected', () => {
-  const { serializeCalendarAccount, MAIL_DISCONNECTED_MESSAGE } = require('../src/services/calendar');
+  const { serializeCalendarAccount, MAIL_DISCONNECTED_MESSAGE } = require('../dist/src/services/calendar');
   const row = { id: 'linked', provider: 'caldav', mail_account_id: 'mail', is_active: 1, sync_status: 'ok', sync_error: null };
   const view = extra => { const { sync_status: status, sync_error: error } = serializeCalendarAccount({ ...row, ...extra }); return [status, error]; };
   assert.deepEqual(view({ mail_connected: 0 }), ['paused', MAIL_DISCONNECTED_MESSAGE]);

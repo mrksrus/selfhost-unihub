@@ -14,7 +14,7 @@ const folder = { folderName: 'INBOX', dbFolderName: 'inbox' };
 // durable engine has independent recent/history and body work instead.
 function scanFixture(t, { uids = [1, 2, 3], epoch = 100 } = {}) {
   const names = ['repository', 'runtime', 'transport', 'sync'];
-  const paths = names.map(n => require.resolve(`../src/services/mail-engine/${n}`));
+  const paths = names.map(n => require.resolve(`../dist/src/services/mail-engine/${n}`));
   const prior = paths.map(p => require.cache[p]);
   const remotes = new Set(uids), occurrences = new Map(), cursors = new Map();
   const reads = [], writes = [], bodyJobs = [];
@@ -98,11 +98,11 @@ test('UIDVALIDITY changes reset the folder baseline without reusing an old occur
 });
 
 function bodyFixture(t, { missing = false, tamper = false, uidStillPresent = false } = {}) {
-  const paths = ['repository', 'runtime', 'transport', 'content'].map(n => require.resolve(`../src/services/mail-engine/${n}`));
-  const importPath = require.resolve('../src/services/mail-import');
-  const mailPath = require.resolve('../src/services/mail');
+  const paths = ['repository', 'runtime', 'transport', 'content'].map(n => require.resolve(`../dist/src/services/mail-engine/${n}`));
+  const importPath = require.resolve('../dist/src/services/mail-import');
+  const mailPath = require.resolve('../dist/src/services/mail');
   const prior = [...paths, importPath, mailPath].map(p => require.cache[p]);
-  const root = path.join(process.env.TMPDIR || '/opt/data/cache/scratch', `mail-checkpoints-${crypto.randomUUID()}`);
+  const root = path.join(process.env.TMPDIR || require('node:os').tmpdir(), `mail-checkpoints-${crypto.randomUUID()}`);
   const raw = Buffer.from('From: sender@example.test\r\nTo: receiver@example.test\r\nMessage-ID: <legacy@example.test>\r\nSubject: Archived\r\n\r\nRecovered from raw archive');
   const row = { occurrence_id: 'occurrence', uid: 1, uidvalidity: 100, email_id: emailId,
     raw_storage_path: path.join(root, userId, 'legacy.eml'), raw_sha256: crypto.createHash('sha256').update(raw).digest('hex'),

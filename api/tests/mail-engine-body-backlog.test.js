@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 // a body chain stops.
 const userId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const accountId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
-const engine = name => require.resolve(`../src/services/mail-engine/${name}`);
+const engine = name => require.resolve(`../dist/src/services/mail-engine/${name}`);
 
 function stub(t, entries, target) {
   const paths = [...entries.map(([p]) => p), target];
@@ -38,9 +38,9 @@ function backlog(t, count, { fetchRawMessage } = {}) {
         fetches.push({ uid: address.uid, maxBytes: address.maxBytes, timeoutMs: options.timeoutMs });
         if (fetchRawMessage) return fetchRawMessage(address, options);
         return { raw: Buffer.from('From: a@example.test\r\nSubject: Hi\r\n\r\nBody') }; } }],
-    [require.resolve('../src/services/mail-import'), { async persistImportedMessage(input) {
+    [require.resolve('../dist/src/services/mail-import'), { async persistImportedMessage(input) {
       persisted.push(input.uid); queued.shift(); return { emailId: input.existingEmail.id }; } }],
-    [require.resolve('../src/services/mail'), { MAIL_RAW_STORAGE_ROOT: '/nonexistent', recordMailServerMessageForDeletion: async () => {} }],
+    [require.resolve('../dist/src/services/mail'), { MAIL_RAW_STORAGE_ROOT: '/nonexistent', recordMailServerMessageForDeletion: async () => {} }],
   ], engine('content'));
   const run = (options = {}) => content.processBodySlice({ db, connection: {}, account: { id: accountId, user_id: userId },
     folder: { folderName: 'INBOX', dbFolderName: 'inbox' }, mailboxId: 'box',
@@ -85,7 +85,7 @@ test('a large message gets five minutes and up to 50 MiB, and the FETCH itself t
   assert.equal(h.content.DEFAULT_TIMEOUT_MS, 5 * 60 * 1000);
   assert.equal(h.content.DEFAULT_MAX_BYTES, 50 * 1024 * 1024);
   assert.deepEqual(h.fetches, [{ uid: 1, maxBytes: 50 * 1024 * 1024, timeoutMs: 5 * 60 * 1000 }]);
-  assert.equal(require('../src/services/mail-imap-client').MAX_LITERAL_BYTES, 50 * 1024 * 1024);
+  assert.equal(require('../dist/src/services/mail-imap-client').MAX_LITERAL_BYTES, 50 * 1024 * 1024);
 });
 
 for (const code of ['MAIL_BODY_TIMEOUT', 'MAIL_IMAP_TIMEOUT']) {

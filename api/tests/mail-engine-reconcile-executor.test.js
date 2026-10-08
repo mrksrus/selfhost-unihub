@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getDb, setDb } = require('../src/state');
+const { getDb, setDb } = require('../dist/src/state');
 const account = { id: 'account', user_id: 'owner', sync_mode: 'sync' };
 const job = { id: 'job', operation_id: 'op', mail_account_id: 'account', user_id: 'owner',
   lease_owner: 'worker', worker_generation: 9, kind: 'reconcile' };
@@ -20,16 +20,16 @@ test('recovered MOVE delegates fenced outcome check without a second mutation', 
     if (sql.includes('SELECT state FROM mail_writebacks')) return [[{ state: op.state }]];
     assert.fail(sql);
   } });
-  const runtime = require('../src/services/mail-engine/runtime');
-  const operations = require('../src/services/mail-engine/operations');
-  const transport = require('../src/services/mail-engine/transport');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const operations = require('../dist/src/services/mail-engine/operations');
+  const transport = require('../dist/src/services/mail-engine/transport');
   const checked = [], queued = [];
   t.mock.method(runtime, 'assertFence', async () => {});
   t.mock.method(runtime, 'enqueueJob', async input => { queued.push(input); });
   t.mock.method(transport, 'nativeMove', async () => assert.fail('recovery must never MOVE'));
   t.mock.method(transport, 'setFlag', async () => assert.fail('recovery must never STORE'));
   t.mock.method(operations, 'applyMove', async (...args) => { checked.push(args); op.state = 'confirmed'; });
-  const { runRecoveredReconcileJob } = require('../src/services/mail');
+  const { runRecoveredReconcileJob } = require('../dist/src/services/mail');
   const result = await runRecoveredReconcileJob({ job, account, connection: {}, signal: new AbortController().signal,
     report() {} });
   assert.equal(result.success, true);
@@ -49,13 +49,13 @@ test('missing COPYUID delegates bounded attention transition without guessed des
     if (sql.includes('SELECT state FROM mail_writebacks')) return [[{ state: 'reconciling' }]];
     assert.fail(sql);
   } });
-  const runtime = require('../src/services/mail-engine/runtime');
-  const operations = require('../src/services/mail-engine/operations');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const operations = require('../dist/src/services/mail-engine/operations');
   const checked = [], queued = [];
   t.mock.method(runtime, 'assertFence', async () => {});
   t.mock.method(runtime, 'enqueueJob', async input => { queued.push(input); });
   t.mock.method(operations, 'applyMove', async (...args) => { checked.push(args); op.state = 'needs_attention'; });
-  const { runRecoveredReconcileJob } = require('../src/services/mail');
+  const { runRecoveredReconcileJob } = require('../dist/src/services/mail');
   const result = await runRecoveredReconcileJob({ job, account, connection: {}, signal: new AbortController().signal,
     report() {} });
   assert.equal(checked.length, 1);
@@ -72,9 +72,9 @@ test('recovered flag readback settles only exact converged desired bit without S
     if (sql.includes('SELECT observation_revision')) return [[{ observation_revision: 5 }]];
     assert.fail(sql);
   } });
-  const runtime = require('../src/services/mail-engine/runtime');
-  const transport = require('../src/services/mail-engine/transport');
-  const reconciliation = require('../src/services/mail-engine/reconciliation');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const transport = require('../dist/src/services/mail-engine/transport');
+  const reconciliation = require('../dist/src/services/mail-engine/reconciliation');
   const settled = [];
   t.mock.method(runtime, 'assertFence', async () => {});
   t.mock.method(transport, 'selectMailbox', async (_cx, opts) => {
@@ -85,7 +85,7 @@ test('recovered flag readback settles only exact converged desired bit without S
     items: [{ uid: 8, flags: ['\\Flagged'], modseq: '9007199254740993' }] }));
   t.mock.method(transport, 'setFlag', async () => assert.fail('no flag mutation in recovered readback'));
   t.mock.method(reconciliation, 'settleFlagObservation', async input => (settled.push(input), { settled: true }));
-  const { runRecoveredReconcileJob } = require('../src/services/mail');
+  const { runRecoveredReconcileJob } = require('../dist/src/services/mail');
   const result = await runRecoveredReconcileJob({ job, account, connection: {}, signal: new AbortController().signal,
     report() {} });
   assert.equal(result.success, true); assert.equal(result.more, undefined);

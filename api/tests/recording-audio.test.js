@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { identifyRecordingAudio, inspectRecordingAudio } = require('../src/services/recording-audio');
+const { identifyRecordingAudio, inspectRecordingAudio } = require('../dist/src/services/recording-audio');
 
 const signatures = [
   [Buffer.from('RIFF\x00\x00\x00\x00WAVE', 'binary'), 'audio/wav', 'wav'],

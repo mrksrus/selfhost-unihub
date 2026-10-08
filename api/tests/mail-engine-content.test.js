@@ -4,7 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const { publishRaw, verifyArchive, eligibleForProviderErasure, fetchRawBounded } = require('../src/services/mail-engine/content');
+const { publishRaw, verifyArchive, eligibleForProviderErasure, fetchRawBounded } = require('../dist/src/services/mail-engine/content');
 const owner = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const item = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 async function root(t) {

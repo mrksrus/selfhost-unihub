@@ -35,3 +35,6 @@ dumps
 *.pem
 *.p12
 *.pfx
+
+.worker-dist
+api/dist

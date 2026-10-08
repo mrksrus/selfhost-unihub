@@ -15,7 +15,7 @@ function fakeConnection({ fail = false } = {}) {
 }
 
 test('every new pooled connection is switched to a UTC session', async () => {
-  const { useUtcSessions } = require('../src/services/database');
+  const { useUtcSessions } = require('../dist/src/services/database');
   const promisePool = { pool: new EventEmitter() };
   assert.equal(useUtcSessions(promisePool), promisePool);
   const first = fakeConnection();
@@ -29,7 +29,7 @@ test('every new pooled connection is switched to a UTC session', async () => {
 });
 
 test('a connection whose session time zone cannot be set is discarded', async (t) => {
-  const { useUtcSessions } = require('../src/services/database');
+  const { useUtcSessions } = require('../dist/src/services/database');
   t.mock.method(console, 'error', () => {});
   const promisePool = useUtcSessions({ pool: new EventEmitter() });
   const connection = fakeConnection({ fail: true });
@@ -39,7 +39,7 @@ test('a connection whose session time zone cannot be set is discarded', async (t
 });
 
 test('a server without snapshot isolation keeps the connection', async () => {
-  const { useUtcSessions } = require('../src/services/database');
+  const { useUtcSessions } = require('../dist/src/services/database');
   const promisePool = useUtcSessions({ pool: new EventEmitter() });
   const unknown = Object.assign(new Error('Unknown system variable'), { errno: 1193 });
   const connection = fakeConnection({ fail: sql => (sql.includes('snapshot') ? unknown : null) });
@@ -66,8 +66,8 @@ test('initDatabase installs the UTC session hook on the app pool', async (t) => 
     return promisePool;
   });
   t.mock.method(console, 'log', () => {});
-  const { initDatabase } = require('../src/services/database');
-  const { setDb } = require('../src/state');
+  const { initDatabase } = require('../dist/src/services/database');
+  const { setDb } = require('../dist/src/state');
   t.after(() => setDb(null));
   await assert.rejects(initDatabase(), stopped);
   assert.equal(corePool.listenerCount('connection'), 1);

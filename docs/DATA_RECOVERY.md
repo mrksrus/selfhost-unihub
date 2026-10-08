@@ -4,7 +4,7 @@
 
 ## Adding or changing saved data
 
-`api/src/services/backup-catalog.js` declares recovery sections, explicit archive
+`api/src/services/backup-catalog.ts` declares recovery sections, explicit archive
 columns, key ownership and field treatment. `data-inventory.js` declares remaining
 security-only, temporary, rebuilt or deliberately excluded fields with reasons.
 Every database column must be accounted for. Do not rely on `SELECT *` or add a

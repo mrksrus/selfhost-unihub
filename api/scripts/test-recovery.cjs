@@ -2,7 +2,7 @@
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
-const { MINIMUM_MARIADB, supportedServer } = require('../src/services/database-version');
+const { MINIMUM_MARIADB, supportedServer } = require('../dist/src/services/database-version');
 
 async function main() {
   if (!process.env.MYSQL_TEST_HOST || !process.env.MYSQL_TEST_USER || !/^[a-zA-Z0-9_]+_test$/.test(process.env.MYSQL_TEST_DATABASE || '')) {

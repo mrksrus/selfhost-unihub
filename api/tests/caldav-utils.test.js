@@ -9,14 +9,14 @@ const {
   accountCredentialScope,
   canonicalHref,
   normalizeIcsFeedUrl,
-} = require('../src/services/caldav');
+} = require('../dist/src/services/caldav');
 const {
   parseDigestChallenge,
   digestAuthorization,
   resolveCalDavUrl,
   davRequest,
-} = require('../src/security/caldav-transport');
-const { calendarErrorResponse } = require('../src/services/calendar-sync');
+} = require('../dist/src/security/caldav-transport');
+const { calendarErrorResponse } = require('../dist/src/services/calendar-sync');
 
 test('known providers are matched by IMAP host before mail domain', () => {
   assert.equal(matchCalendarProvider({ emailAddress: 'user@icloud.com' }).id, 'icloud');

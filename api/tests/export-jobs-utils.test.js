@@ -11,8 +11,8 @@ const {
   ZIP32_MAX_ENTRIES,
   ZIP32_MAX_FILENAME_BYTES,
   writeZip,
-} = require('../src/services/export-jobs');
-const { setDb } = require('../src/state');
+} = require('../dist/src/services/export-jobs');
+const { setDb } = require('../dist/src/state');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -51,7 +51,7 @@ test('crc32Buffer matches known CRC32 value', () => {
 });
 
 test('writeZip preserves long backup filenames including extensions', async () => {
-  const { readZipEntries } = require('../src/services/backup');
+  const { readZipEntries } = require('../dist/src/services/backup');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-zip-name-'));
   const zipPath = path.join(dir, 'backup.zip');
   const longName = 'files/mail-attachments/0a6fbcc5-351e-47cf-92a4-7b7193dbd401-8d2608f7-8d3e-4078-912d-5ea7198aa2d8-0a6fbcc5-351e-47cf-92a4-7b7193dbd401-logo-gray.png';
@@ -63,7 +63,7 @@ test('writeZip preserves long backup filenames including extensions', async () =
 });
 
 test('writeZip streams file-backed entries into the archive', async () => {
-  const { readZipEntries } = require('../src/services/backup');
+  const { readZipEntries } = require('../dist/src/services/backup');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-zip-file-'));
   const sourcePath = path.join(dir, 'source.eml');
   const zipPath = path.join(dir, 'backup.zip');

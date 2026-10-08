@@ -7,10 +7,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
 process.env.ENCRYPTION_KEY = 'mail-idle-protocol-test-only-key';
-const { createIdleSupervisor } = require('../src/services/mail-idle');
-const { connectImap } = require('../src/services/mail-imap-client');
-const control = require('../src/services/mail-sync-control');
-const { getDb, setDb } = require('../src/state');
+const { createIdleSupervisor } = require('../dist/src/services/mail-idle');
+const { connectImap } = require('../dist/src/services/mail-imap-client');
+const control = require('../dist/src/services/mail-sync-control');
+const { getDb, setDb } = require('../dist/src/state');
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, ms = 3000) {

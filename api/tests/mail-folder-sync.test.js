@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const {
   pickImapSyncFolders,
   ensureCustomImapFoldersForUser,
-} = require('../src/services/mail');
+} = require('../dist/src/services/mail');
 
 test('mail sync includes standard and custom IMAP folders while ignoring provider namespaces', () => {
   const plan = pickImapSyncFolders([
@@ -27,7 +27,7 @@ test('mail sync includes standard and custom IMAP folders while ignoring provide
 test('mail sync creates missing local custom folders on a newly connected IMAP account', async () => {
   const added = [];
   // A guarded stand-in for an ImapFlow client.
-  const connection = require('../src/services/mail-imap-guard').guardImapConnection(Object.assign(new (require('node:events'))(), {
+  const connection = require('../dist/src/services/mail-imap-guard').guardImapConnection(Object.assign(new (require('node:events'))(), {
     close() {},
     async mailboxCreate(name) { added.push(name); return { path: name, created: true }; },
   }));
@@ -45,7 +45,7 @@ test('mail sync creates missing local custom folders on a newly connected IMAP a
 });
 
 test('provider special-use attributes survive nesting and existing folder mappings win', () => {
-  const { imapListToFolders } = require('../src/services/mail');
+  const { imapListToFolders } = require('../dist/src/services/mail');
   const roles = new Map();
   const entry = (path, flags) => ({ path, delimiter: '/', flags: new Set(flags) });
   // ImapFlow LIST entries; a name-based specialUse guess must not assign a role.

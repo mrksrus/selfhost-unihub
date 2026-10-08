@@ -4,8 +4,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { chooseTargetId, writeOwnedRow, resolveOwnedReference, validateRestoreRows } = require('../src/services/backup-ownership');
-const { validateBackupPayload, importBackupForUser } = require('../src/services/backup');
+const { chooseTargetId, writeOwnedRow, resolveOwnedReference, validateRestoreRows } = require('../dist/src/services/backup-ownership');
+const { validateBackupPayload, importBackupForUser } = require('../dist/src/services/backup');
 
 test('restore allocates fresh IDs unless deliberately matching a same-owner row', () => {
   for (const mode of ['keep_existing', 'replace', 'keep_both']) {

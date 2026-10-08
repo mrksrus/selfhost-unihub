@@ -4,7 +4,7 @@
 // function for t.after.
 const BACKUP_SERVICE_MODULES = ['backup', 'backup-common', 'backup-export', 'backup-validate',
   'backup-restore-mapping', 'backup-zip-reader', 'backup-import']
-  .map(name => require.resolve(`../../src/services/${name}`));
+  .map(name => require.resolve(`../../dist/src/services/${name}`));
 
 function evictBackupServiceModules() {
   const saved = new Map(BACKUP_SERVICE_MODULES.map(p => [p, require.cache[p]]));

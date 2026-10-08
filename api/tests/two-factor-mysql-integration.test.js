@@ -10,7 +10,7 @@ process.env.JWT_SECRET ||= 'two-factor-mysql-test-jwt-key';
 
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
-const { getDb, setDb } = require('../src/state');
+const { getDb, setDb } = require('../dist/src/state');
 
 // Independent of the service's implementation: RFC 6238 with SHA-1, 6 digits, 30 s.
 function otp(secret) {
@@ -59,12 +59,12 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     assert.equal(existing.length, 0, 'Refusing to change a nonempty database');
     ownsDatabase = true;
     setDb(pool);
-    await require('../src/services/database').ensureSchema();
+    await require('../dist/src/services/database').ensureSchema();
 
-    const { hashPassword } = require('../src/auth');
-    const authRoutes = require('../src/routes/auth');
-    const adminRoutes = require('../src/routes/admin');
-    const { createTwoFactorLoginChallenge, replaceRecoveryCodes } = require('../src/services/two-factor');
+    const { hashPassword } = require('../dist/src/auth');
+    const authRoutes = require('../dist/src/routes/auth');
+    const adminRoutes = require('../dist/src/routes/admin');
+    const { createTwoFactorLoginChallenge, replaceRecoveryCodes } = require('../dist/src/services/two-factor');
 
     const admin = crypto.randomUUID();
     const person = crypto.randomUUID();

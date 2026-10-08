@@ -1,8 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('events');
-const { createAudioConversionQueue } = require('../src/services/audio-conversion-queue');
-const { buildAudioConversionArgs, runAudioConversion, MAX_CONVERTED_BYTES } = require('../src/services/audio-transcode');
+const { createAudioConversionQueue } = require('../dist/src/services/audio-conversion-queue');
+const { buildAudioConversionArgs, runAudioConversion, MAX_CONVERTED_BYTES } = require('../dist/src/services/audio-transcode');
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function gate() {

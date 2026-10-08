@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
-const { connectImap } = require('../src/services/mail-imap-client');
-const { guardImapConnection, closeImapConnection } = require('../src/services/mail-imap-guard');
-const { selectMailbox, fetchMetadataWindow, setFlag, nativeMove } = require('../src/services/mail-engine/transport');
+const { connectImap } = require('../dist/src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
+const { selectMailbox, fetchMetadataWindow, setFlag, nativeMove } = require('../dist/src/services/mail-engine/transport');
 
 // Loopback protocol peer, not a mocked imap object: ImapFlow parser/queue ->
 // socket -> tagged replies -> the production guard/transport.

@@ -4,8 +4,8 @@ const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const https = require('node:https');
 const dns = require('node:dns').promises;
-const { davRequest, MAX_DAV_RESPONSE_BYTES } = require('../src/security/caldav-transport');
-const { discoverCalDavCalendars, validateDavUrlPolicy } = require('../src/services/caldav');
+const { davRequest, MAX_DAV_RESPONSE_BYTES } = require('../dist/src/security/caldav-transport');
+const { discoverCalDavCalendars, validateDavUrlPolicy } = require('../dist/src/services/caldav');
 
 const origin = 'https://calendar.example';
 const credentials = { username: 'fixture-user', password: 'fixture-secret' };

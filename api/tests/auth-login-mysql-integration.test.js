@@ -21,10 +21,10 @@ test('MySQL login isolation, valid 2FA sessions, recovery reuse, replay and tran
   assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/);
   const mysql = require('mysql2/promise');
   const bcrypt = require('bcryptjs');
-  const { setDb } = require('../src/state');
-  const { encrypt } = require('../src/security/encryption');
-  const { verifyToken } = require('../src/auth');
-  const routes = require('../src/routes/auth');
+  const { setDb } = require('../dist/src/state');
+  const { encrypt } = require('../dist/src/security/encryption');
+  const { verifyToken } = require('../dist/src/auth');
+  const routes = require('../dist/src/routes/auth');
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE, connectionLimit: 4 });
   const created = [];

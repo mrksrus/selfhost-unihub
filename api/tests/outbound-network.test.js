@@ -5,12 +5,12 @@ process.env.ENCRYPTION_KEY = 'outbound-network-test-only-key';
 process.env.TRUSTED_MAIL_HOSTS = 'mail.internal.example';
 const {
   isPublicNetworkAddress, resolveMailConnectionTarget, isTrustedMailHost,
-} = require('../src/security/outbound-network');
-const { encrypt } = require('../src/security/encryption');
-const mail = require('../src/services/mail');
-const imapClient = require('../src/services/mail-imap-client');
+} = require('../dist/src/security/outbound-network');
+const { encrypt } = require('../dist/src/security/encryption');
+const mail = require('../dist/src/services/mail');
+const imapClient = require('../dist/src/services/mail-imap-client');
 const nodemailer = require('nodemailer');
-const { setDb } = require('../src/state');
+const { setDb } = require('../dist/src/state');
 
 const publicAddress = '93.184.216.34';
 
@@ -81,7 +81,7 @@ function installMailFixture(t, host) {
 }
 
 async function exerciseMailConnectionPaths(t, account) {
-  const runtime = require('../src/services/mail-engine/runtime');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
   t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
   await mail.testImapConnection(account);
   await mail.createRemoteMailFolderForUserAccounts(account.user_id, 'Folder', account.id);

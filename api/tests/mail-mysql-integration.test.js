@@ -5,9 +5,9 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
-const { loadMailFoldersForUser, loadExistingImportedUidSet } = require('../src/services/mail');
-const { loadFolderSyncState, saveFolderSyncState } = require('../src/services/mail-sync-state');
-const { persistImportedMessage } = require('../src/services/mail-import');
+const { loadMailFoldersForUser, loadExistingImportedUidSet } = require('../dist/src/services/mail');
+const { loadFolderSyncState, saveFolderSyncState } = require('../dist/src/services/mail-sync-state');
+const { persistImportedMessage } = require('../dist/src/services/mail-import');
 
 test('MySQL mail defaults, folder checkpoints and atomic import rollback', { skip: !process.env.MYSQL_TEST_HOST }, async (t) => {
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),

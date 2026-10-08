@@ -2,9 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 process.env.ENCRYPTION_KEY ||= 'backup-account-policy-test-key';
-const { encrypt } = require('../src/security/encryption');
-const { setDb, getDb } = require('../src/state');
-const { importBackupForUser } = require('../src/services/backup');
+const { encrypt } = require('../dist/src/security/encryption');
+const { setDb, getDb } = require('../dist/src/state');
+const { importBackupForUser } = require('../dist/src/services/backup');
 
 test('restore applies connection policy before activating account settings', async (t) => {
   const previousDb = getDb();

@@ -11,7 +11,7 @@ const {
   normalizeTags,
   replaceFilenameExtension,
   serializeRecording,
-} = require('../src/services/recordings');
+} = require('../dist/src/services/recordings');
 
 test('normalizeTags trims, deduplicates case-insensitively, and caps tag count', () => {
   const tags = normalizeTags([' Meeting ', 'meeting', 'Client', '', '  idea  ', ...Array.from({ length: 30 }, (_, index) => `tag-${index}`)]);

@@ -4,8 +4,8 @@ const crypto = require('node:crypto');
 
 process.env.ENCRYPTION_KEY ||= 'cancellation-test-encryption-key';
 process.env.BACKUP_MASTER_KEY ||= 'cancellation-test-backup-master-key';
-const { setDb } = require('../src/state');
-const { cancelRestoreJob } = require('../src/services/backup-restore-jobs');
+const { setDb } = require('../dist/src/state');
+const { cancelRestoreJob } = require('../dist/src/services/backup-restore-jobs');
 
 test('MySQL cancellation cannot overwrite a restore that commits while the request is waiting', {
   skip: !process.env.MYSQL_TEST_HOST,

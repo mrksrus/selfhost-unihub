@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const runtime = require('../src/services/mail-engine/runtime');
+const runtime = require('../dist/src/services/mail-engine/runtime');
 
 const DAY = 86400;
 // Synthetic job table. The fake evaluates the statement's documented predicate

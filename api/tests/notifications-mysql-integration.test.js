@@ -13,7 +13,7 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER || 'unihub_test', password: process.env.MYSQL_TEST_PASSWORD || 'test-db-password',
     database: process.env.MYSQL_TEST_DATABASE || 'unihub_test', timezone: 'Z' });
-  const { setDb } = require('../src/state');
+  const { setDb } = require('../dist/src/state');
   const executor = {
     async execute(sql, params) {
       // MySQL does not support foreign keys on temporary tables. Production FK constraints
@@ -43,7 +43,7 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   const userId = crypto.randomUUID(); const sessionId = crypto.randomUUID();
   await connection.execute("INSERT INTO users (id, email, role) VALUES (?, 'admin@example.com', 'admin')", [userId]);
   await connection.execute('INSERT INTO sessions VALUES (?, ?, ?, ?)', [sessionId, userId, 'test-session', new Date(Date.now() + 10 * 86400000)]);
-  const service = require('../src/services/notifications');
+  const service = require('../dist/src/services/notifications');
   await service.ensureNotificationSchema();
   const keys = await service.getVapidKeys();
   const keyBytes = Buffer.alloc(65, 1); keyBytes[0] = 4;
@@ -125,7 +125,7 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   const quietWarnings = () => sent.filter(item => item.tag === `recording-upload:${quietId}`).length;
   await connection.execute("INSERT INTO recording_uploads VALUES (?, ?, 'Quiet take', 1000, 500, ?, UTC_TIMESTAMP() - INTERVAL 11 MINUTE)",
     [quietId, userId, new Date(Date.now() + 86400000)]);
-  const { SETTING_KEY } = require('../src/services/module-settings');
+  const { SETTING_KEY } = require('../dist/src/services/module-settings');
   await connection.execute('INSERT INTO user_settings VALUES (?, ?, ?)', [userId, SETTING_KEY, JSON.stringify({ recordings: { enabled: false } })]);
   await service.processNotificationJobs();
   const [[offEvents]] = await connection.execute("SELECT COUNT(*) AS total FROM notification_events WHERE source_id = ?", [quietId]);

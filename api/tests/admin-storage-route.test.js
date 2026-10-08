@@ -11,12 +11,12 @@ function setRequireStub(modulePath, exports) {
 }
 
 test('admin storage route returns aggregate storage metadata only', async (t) => {
-  const routePath = require.resolve('../src/routes/admin');
-  const statePath = require.resolve('../src/state');
-  const authPath = require.resolve('../src/auth');
-  const mailPath = require.resolve('../src/services/mail');
-  const recordingsPath = require.resolve('../src/services/recordings');
-  const exportJobsPath = require.resolve('../src/services/export-jobs');
+  const routePath = require.resolve('../dist/src/routes/admin');
+  const statePath = require.resolve('../dist/src/state');
+  const authPath = require.resolve('../dist/src/auth');
+  const mailPath = require.resolve('../dist/src/services/mail');
+  const recordingsPath = require.resolve('../dist/src/services/recordings');
+  const exportJobsPath = require.resolve('../dist/src/services/export-jobs');
   const originalRoute = require.cache[routePath];
   const originalState = require.cache[statePath];
   const originalAuth = require.cache[authPath];
@@ -67,7 +67,7 @@ test('admin storage route returns aggregate storage metadata only', async (t) =>
     },
   });
 
-  const routes = require('../src/routes/admin');
+  const routes = require('../dist/src/routes/admin');
   const result = await routes['GET /api/admin/storage']({}, 'admin-user');
 
   assert.equal(result.storage.totals.users, 2);

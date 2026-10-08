@@ -7,10 +7,22 @@ COPY package*.json ./
 RUN npm ci
 
 COPY . .
-RUN npm run build
+RUN npm run build:frontend
 RUN node scripts/collect-frontend-notices.mjs /build/frontend-dependency-notices.txt
 
-# ── Stage 2: Production image (Nginx + Node.js API) ───────────────
+# Build the API with development-only compiler dependencies. Runtime modules
+# keep their CommonJS layout; production installs only runtime dependencies.
+FROM node:24-alpine AS api-builder
+WORKDIR /build/api
+COPY api/package*.json ./
+RUN npm ci
+COPY api/tsconfig.json ./
+COPY api/scripts/build.cjs ./scripts/build.cjs
+COPY api/*.ts ./
+COPY api/src ./src
+RUN npm run build
+
+# ── Stage 3: Production image (Nginx + Node.js API) ───────────────
 FROM node:24-alpine
 
 # Install runtime services plus ffmpeg for recording conversion and temporary build deps for native node modules
@@ -30,8 +42,7 @@ COPY api/package*.json ./api/
 RUN cd api && npm ci --omit=dev \
     && apk del .build-deps
 
-COPY api/*.js ./api/
-COPY api/src ./api/src
+COPY --from=api-builder /build/api/dist/ ./api/
 
 RUN apk info -v > /app/licenses/alpine-packages.txt \
     && ffmpeg -L > /app/licenses/ffmpeg-license.txt 2>&1

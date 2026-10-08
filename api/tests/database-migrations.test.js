@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { runMigrations } = require('../src/services/database-migrations');
+const { runMigrations } = require('../dist/src/services/database-migrations');
 
 function database(history = []) {
   const state = { history, locked: false, releases: 0, writes: 0 };

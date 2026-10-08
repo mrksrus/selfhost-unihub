@@ -8,9 +8,9 @@ process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-offline-fixture-admin-2026';
 
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
-const { createOfflineSnapshot } = require('../src/services/offline');
-const { getDb, setDb } = require('../src/state');
-const mailRoutes = require('../src/routes/mail');
+const { createOfflineSnapshot } = require('../dist/src/services/offline');
+const { getDb, setDb } = require('../dist/src/state');
+const mailRoutes = require('../dist/src/routes/mail');
 
 test('MySQL offline queries match application schema, include every contact and refresh deletions', { skip: !process.env.MYSQL_TEST_HOST }, async (t) => {
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
@@ -45,7 +45,7 @@ test('MySQL offline queries match application schema, include every contact and 
   // MySQL cannot reopen a TEMPORARY table in those nested reads, so use the
   // actual numbered schema migrations in this empty, serial, disposable DB.
   setDb(pool);
-  await require('../src/services/database').ensureSchema();
+  await require('../dist/src/services/database').ensureSchema();
   const userId = crypto.randomUUID(), otherUser = crypto.randomUUID(), accountId = crypto.randomUUID();
   await connection.execute("INSERT INTO users (id, email, password_hash) VALUES (?, 'offline@example.test', 'synthetic-hash'), (?, 'offline-other@example.test', 'synthetic-hash')", [userId, otherUser]);
   const contactIds = Array.from({ length: 2105 }, () => crypto.randomUUID());

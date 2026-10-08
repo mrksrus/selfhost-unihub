@@ -7,12 +7,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 process.env.ENCRYPTION_KEY = 'mail-idle-test-only-key';
-const { createIdleSupervisor, defaultListEligible, kindsFor, idleSupervisor } = require('../src/services/mail-idle');
-const control = require('../src/services/mail-sync-control');
-const runtime = require('../src/services/mail-engine/runtime');
-const { imapFlowOptions } = require('../src/services/mail-imap-client');
-const { installShutdownHandler } = require('../src/services/server-events');
-const { getDb, setDb } = require('../src/state');
+const { createIdleSupervisor, defaultListEligible, kindsFor, idleSupervisor } = require('../dist/src/services/mail-idle');
+const control = require('../dist/src/services/mail-sync-control');
+const runtime = require('../dist/src/services/mail-engine/runtime');
+const { imapFlowOptions } = require('../dist/src/services/mail-imap-client');
+const { installShutdownHandler } = require('../dist/src/services/server-events');
+const { getDb, setDb } = require('../dist/src/state');
 
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate, ms = 2000) {
@@ -269,7 +269,7 @@ test('background sync off in module settings stops IDLE sessions', async t => {
   t.mock.method(runtime, 'resumeAccount', async () => ({ resumed: 0 }));
   const stopped = [];
   t.mock.method(idleSupervisor, 'stopAccount', key => { stopped.push(key); return true; });
-  const routes = require('../src/routes/modules');
+  const routes = require('../dist/src/routes/modules');
   const result = await routes['PUT /api/modules']({}, 'owner', { modules: { mail: { background: false } } });
   assert.ok(result.modules);
   assert.deepEqual(stopped, ['acct-1']);

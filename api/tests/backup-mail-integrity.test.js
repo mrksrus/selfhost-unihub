@@ -1,11 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { setDb } = require('../src/state');
-const { validateRestoreRows } = require('../src/services/backup-ownership');
+const { setDb } = require('../dist/src/state');
+const { validateRestoreRows } = require('../dist/src/services/backup-ownership');
 const { buildBackupForUser, remapRestoredInlineAttachments, restoreMailFolderRemoteBox,
   findExistingEmailForRestore, assertBackupMetadataSize, assertBackupFilesComplete,
-  scopeBackupForImport, findExistingAttachmentForRestore, findExistingRecordingForRestore } = require('../src/services/backup');
-const { BACKUP_METADATA_LIMITS } = require('../src/services/backup-format');
+  scopeBackupForImport, findExistingAttachmentForRestore, findExistingRecordingForRestore } = require('../dist/src/services/backup');
+const { BACKUP_METADATA_LIMITS } = require('../dist/src/services/backup-format');
 
 test('new backup metadata must fit the same limits enforced by restore readers', () => {
   for (const [name, maximum] of Object.entries(BACKUP_METADATA_LIMITS)) {

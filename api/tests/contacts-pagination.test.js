@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { setDb, getDb } = require('../src/state');
-const routes = require('../src/routes/contacts');
+const { setDb, getDb } = require('../dist/src/state');
+const routes = require('../dist/src/routes/contacts');
 
 test('contacts pagination returns more than 2,000 contacts without truncation and has a stable tie-breaker', async (t) => {
   const previous = getDb(); t.after(() => setDb(previous));

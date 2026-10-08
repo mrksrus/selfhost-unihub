@@ -6,6 +6,25 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.19.0 (unreleased)
+
+### Changed
+
+- API routes, services, security helpers and operator entrypoints are now
+  authored in strict TypeScript and compile to CommonJS. The frozen legacy
+  database baseline remains JavaScript. Local tests and container builds use
+  emitted API code.
+- Notification delivery and PCM recording workers are authored in TypeScript
+  and retain their existing browser script URLs.
+- Local API startup and database development commands build the API first.
+  Source deployments need development dependencies to compile; the container
+  includes compiled code and production dependencies only.
+
+This release is being prepared locally for review. The conversion checkpoint in
+[docs/TYPESCRIPT_MIGRATION.md](docs/TYPESCRIPT_MIGRATION.md) records coverage,
+validation, and the next steps. Database migrations and backup format versions
+are unchanged by the language conversion.
+
 ## 0.18.2
 
 A calendar connected from a mail account no longer keeps its own copy of the

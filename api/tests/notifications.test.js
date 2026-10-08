@@ -5,11 +5,11 @@ const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const {
   reminderMinutes, reminderKey, reminderIsCurrent, normalizeSubscription, retryDisposition,
-} = require('../src/services/notification-rules');
-const { isPublicAddress } = require('../src/services/push-transport');
+} = require('../dist/src/services/notification-rules');
+const { isPublicAddress } = require('../dist/src/services/push-transport');
 
 function loadService(db, sender = {}) {
-  const filename = require.resolve('../src/services/notifications');
+  const filename = require.resolve('../dist/src/services/notifications');
   const nativeRequire = createRequire(filename);
   const module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\nmodule.exports.testInternals = { enqueueDueReminders, deliverPending, reconcileReminders, enqueueSessionExpiryWarnings };', {
@@ -221,7 +221,7 @@ test('reminder scans preserve skipped changes through restore cancellation and r
 });
 
 test('restore sections retain todo aliases, merge active jobs, and scope notification query exclusions', async () => {
-  const { getActiveRestoreSectionsByUser } = require('../src/services/restore-locks');
+  const { getActiveRestoreSectionsByUser } = require('../dist/src/services/restore-locks');
   const active = await getActiveRestoreSectionsByUser({ async execute() {
     return [[{ user_id: 'u1', requested_sections: '["todo"]' }, { user_id: 'u1', requested_sections: '["mail"]' }, { user_id: 'u2', requested_sections: '["contacts"]' }]];
   } });

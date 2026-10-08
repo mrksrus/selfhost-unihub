@@ -19,7 +19,7 @@ Nginx :80
   /api/*, /health              -> Node.js API :4000
 
 Node.js API
-  api/server.js -> api/src/app.js -> api/src/request-handler.js -> api/src/routes/*
+  api/server.ts -> api/src/app.ts -> api/src/request-handler.ts -> api/src/routes/*
 ```
 
 The entrypoint waits up to 300 seconds for an authenticated MariaDB connection,
@@ -37,30 +37,35 @@ background jobs and do not depend on the proxy connection after job creation.
 
 | Path | Purpose |
 | --- | --- |
-| `api/server.js` | Starts the API |
-| `api/src/service-supervisor.js` | Supervises API/nginx and essential-service failure |
-| `api/src/app.js` | Initializes DB, starts HTTP server, schedules background jobs |
-| `api/src/request-handler.js` | CORS, auth, CSRF, body parsing, route dispatch |
-| `api/src/routes/` | Route handlers grouped by feature; `routes/mail.js` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync` |
+| `api/server.ts` | Starts the API |
+| `api/src/service-supervisor.ts` | Supervises API/nginx and essential-service failure |
+| `api/src/app.ts` | Initializes DB, starts HTTP server, schedules background jobs |
+| `api/src/request-handler.ts` | CORS, auth, CSRF, body parsing, route dispatch |
+| `api/src/routes/` | Route handlers grouped by feature; `routes/mail.ts` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync` |
 | `api/src/services/` | Database, mail, calendar, backup creation/encryption/restore workers, recordings, 2FA logic |
-| `api/src/services/mail.js` | Facade re-exporting `mail-host-policy` (host checks, IMAP config), `mail-folders` (folders, sender rules), `mail-durable-jobs` (job executor, scheduler), `mail-sync-control` (sync admission, cancel/stop), `mail-server-delete` and `mail-send` |
-| `api/src/services/backup.js` | Facade re-exporting `backup-common`, `backup-export`, `backup-validate`, `backup-restore-mapping`, `backup-zip-reader` and `backup-import` |
-| `api/src/services/mail-attachments.js` | Attachment validation, staging and inline references |
-| `api/src/services/mail-drafts.js` | Atomic draft replacements |
-| `api/src/services/mail-import.js` | Complete-message transactions and durable queue insertion |
-| `api/src/services/mail-sync-state.js` | Per-folder UID progress and resets |
-| `api/src/services/mail-idle.js` | IMAP IDLE supervisor: one read-only INBOX session per eligible account; changes become ordinary durable jobs |
-| `api/src/services/offline.js` | Owner-scoped, size-bounded offline snapshots |
-| `api/src/services/caldav.js`, `calendar-sync.js`, `calendar-ical.js`, `calendar-accounts.js` | CalDAV discovery and requests, the sync engine and writeback, iCalendar parsing and recurrence expansion, calendars of mail accounts |
-| `api/src/services/notifications.js` | Durable notification events, delivery state and reminder worker |
-| `api/src/security/encryption.js` | AES-256-GCM helpers |
-| `api/src/security/client-ip.js`, `login-limits.js` | Explicit proxy trust and separate IP/account attempt budgets |
-| `api/src/security/outbound-network.js`, `caldav-transport.js` | Checked-address connections and same-origin CalDAV credentials |
+| `api/src/services/mail.ts` | Facade re-exporting `mail-host-policy` (host checks, IMAP config), `mail-folders` (folders, sender rules), `mail-durable-jobs` (job executor, scheduler), `mail-sync-control` (sync admission, cancel/stop), `mail-server-delete` and `mail-send` |
+| `api/src/services/backup.ts` | Facade re-exporting `backup-common`, `backup-export`, `backup-validate`, `backup-restore-mapping`, `backup-zip-reader` and `backup-import` |
+| `api/src/services/mail-attachments.ts` | Attachment validation, staging and inline references |
+| `api/src/services/mail-drafts.ts` | Atomic draft replacements |
+| `api/src/services/mail-import.ts` | Complete-message transactions and durable queue insertion |
+| `api/src/services/mail-sync-state.ts` | Per-folder UID progress and resets |
+| `api/src/services/mail-idle.ts` | IMAP IDLE supervisor: one read-only INBOX session per eligible account; changes become ordinary durable jobs |
+| `api/src/services/offline.ts` | Owner-scoped, size-bounded offline snapshots |
+| `api/src/services/caldav.ts`, `calendar-sync.ts`, `calendar-ical.ts`, `calendar-accounts.ts` | CalDAV discovery and requests, the sync engine and writeback, iCalendar parsing and recurrence expansion, calendars of mail accounts |
+| `api/src/services/notifications.ts` | Durable notification events, delivery state and reminder worker |
+| `api/src/security/encryption.ts` | AES-256-GCM helpers |
+| `api/src/security/client-ip.ts`, `login-limits.ts` | Explicit proxy trust and separate IP/account attempt budgets |
+| `api/src/security/outbound-network.ts`, `caldav-transport.ts` | Checked-address connections and same-origin CalDAV credentials |
 | `api/tests/` | Backend `node:test` coverage |
+
+Authored API source compiles to `api/dist/` for local use. The Docker builder
+copies that tree into `/app/api/`, retaining the supervisor, readiness and
+server entrypoint paths. Browser workers compile from `workers/` into classic
+scripts at their existing URLs. See [development](DEVELOPMENT.md) for commands.
 
 The API is a vanilla Node.js HTTP server. There is no Express router; routes are
 mapped by exact keys such as `GET /api/contacts`, with parameterized paths
-normalized in `request-handler.js`.
+normalized in `request-handler.ts`.
 
 ## Frontend Structure
 
@@ -133,7 +138,7 @@ boundary: the session must be valid (401 otherwise), a foreign `Origin` is
 refused (403), and as a GET it needs no CSRF token. The stream belongs to one
 user and one session.
 
-- **Bus.** `api/src/services/server-events.js` holds an in-process bus. UniHub
+- **Bus.** `api/src/services/server-events.ts` holds an in-process bus. UniHub
   runs exactly one API process, so every event published by the mail workers
   reaches every stream. A second API replica would not share events (or the
   existing in-process mail and backup locks); see Operational Notes.
@@ -213,7 +218,7 @@ Startup behavior:
 1. Refuse missing or placeholder `JWT_SECRET`, `ENCRYPTION_KEY`, and DB password.
 2. Create a MariaDB pool with UTC datetime behavior.
 3. Retry DB connection while MariaDB starts.
-3a. Refuse any server that is not MariaDB 10.11 or later (`database-version.js`),
+3a. Refuse any server that is not MariaDB 10.11 or later (`database-version.ts`),
     before any schema change. UniHub 0.16.0 and later do not run on MySQL.
 4. Apply missing ordered upgrades through `schema_migrations`, verifying each before recording completion.
 5. Create the first admin from bootstrap env vars when no users exist.
@@ -242,13 +247,13 @@ The Docker Compose file mounts `/app/uploads` as `uploads_data`.
 
 ## Scheduled Jobs
 
-`api/src/app.js` starts these intervals:
+`api/src/app.ts` starts these intervals:
 
 | Interval | Job |
 | --- | --- |
 | 30 seconds | Reconcile due reminders and process durable notification deliveries |
 | 30 seconds | Mail INBOX follow-up per active account (every 5 minutes while its IMAP IDLE session is healthy); folder discovery at most every 5 minutes |
-| 60 seconds | Mail IDLE supervisor eligibility pass (`mail-idle.js`): opens/closes one read-only INBOX IDLE session per eligible account |
+| 60 seconds | Mail IDLE supervisor eligibility pass (`mail-idle.ts`): opens/closes one read-only INBOX IDLE session per eligible account |
 | 1 minute | Process eligible mail-server deletion queue rows |
 | 1 hour | Delete expired sessions |
 | 1 hour | Delete expired recording upload temp files |
@@ -305,11 +310,11 @@ that page limit so users with more than 2,000 contacts receive their entire list
 **ALPHA: account backup, import and restore are experimental. Do not rely on them as your only copy of important data. Keep an independent, consistent backup of the database, uploads, deployment configuration and secrets, especially before deleting mail from your email provider.**
 
 The canonical backup data remains an uncompressed, stored-entry ZIP built by
-`api/src/services/export-jobs.js` from data assembled in
-`api/src/services/backup-export.js` (through the `backup.js` facade).
+`api/src/services/export-jobs.ts` from data assembled in
+`api/src/services/backup-export.ts` (through the `backup.ts` facade).
 
 Encrypted backups add a streaming container implemented by
-`api/src/services/backup-container.js`:
+`api/src/services/backup-container.ts`:
 
 - random per-backup data key
 - 4 MiB AES-256-GCM chunks
@@ -393,8 +398,8 @@ Important boundaries in the current code:
 
 ## Mail modes and display privacy
 
-`mail-account-mode.js` validates switches and provider identity. The per-account
-queue in `mail-account-lock.js` serializes settings with sync/deletion workers.
+`mail-account-mode.ts` validates switches and provider identity. The per-account
+queue in `mail-account-lock.ts` serializes settings with sync/deletion workers.
 The durable engine in `mail-engine/` scans each mapped provider mailbox in bounded
 UID windows, reconciles verified current locations and retains absent copies. Original provider identity remains
 separate from current bindings and local filing. This assumes the standard single
@@ -414,8 +419,8 @@ intercepts image responses and uses no provider account.
 
 ## Built-in module boundaries
 
-`module-catalog.js` lists built-in modules and their corresponding recovery sections.
-`module-settings.js` owns per-user visibility/access/background preferences. The
+`module-catalog.ts` lists built-in modules and their corresponding recovery sections.
+`module-settings.ts` owns per-user visibility/access/background preferences. The
 request handler checks module access before reading a body or serving an attachment;
 search, statistics, offline reads and provider workers apply their own relevant
 checks. Settings/auth/recovery remain core functions. This is an internal catalog,

@@ -13,7 +13,7 @@ const {
   sha256Buffer,
   validateBackupPayload,
   writeBackupJsonFile,
-} = require('../src/services/backup');
+} = require('../dist/src/services/backup');
 
 test('canonicalJson orders object keys deterministically', () => {
   assert.equal(canonicalJson({ b: 1, a: 2 }), '{"a":2,"b":1}');
@@ -113,7 +113,7 @@ test('writeBackupJsonFile writes large backup metadata incrementally', async () 
 });
 
 test('backupFromZipBuffer accepts restorable backup ZIP with file checksums', async () => {
-  const { writeZip } = require('../src/services/export-jobs');
+  const { writeZip } = require('../dist/src/services/export-jobs');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-'));
   const zipPath = path.join(dir, 'backup.zip');
   const fileBuffer = Buffer.from('attachment bytes', 'utf8');
@@ -163,7 +163,7 @@ test('backupFromZipBuffer accepts restorable backup ZIP with file checksums', as
 });
 
 test('backupFromZipFile preserves section backup metadata', async () => {
-  const { writeZip } = require('../src/services/export-jobs');
+  const { writeZip } = require('../dist/src/services/export-jobs');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-section-'));
   const zipPath = path.join(dir, 'mail-backup.zip');
   const backup = {
@@ -199,7 +199,7 @@ test('backupFromZipFile preserves section backup metadata', async () => {
 });
 
 test('backupFromZipBuffer accepts archives written with legacy truncated filenames', async () => {
-  const { writeZip } = require('../src/services/export-jobs');
+  const { writeZip } = require('../dist/src/services/export-jobs');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-legacy-'));
   const zipPath = path.join(dir, 'backup.zip');
   const fileBuffer = Buffer.from('png bytes', 'utf8');

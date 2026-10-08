@@ -2,12 +2,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const dns = require('node:dns').promises;
-const imapClient = require('../src/services/mail-imap-client');
+const imapClient = require('../dist/src/services/mail-imap-client');
 process.env.ENCRYPTION_KEY = 'mail-sync-cancellation-test-only-key';
-const mail = require('../src/services/mail');
-const runtime = require('../src/services/mail-engine/runtime');
-const { encrypt } = require('../src/security/encryption');
-const { getDb, setDb } = require('../src/state');
+const mail = require('../dist/src/services/mail');
+const runtime = require('../dist/src/services/mail-engine/runtime');
+const { encrypt } = require('../dist/src/security/encryption');
+const { getDb, setDb } = require('../dist/src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 for (const failure of ['cancel', 'socket', 'deadline']) test(`stalled durable sync LIST: ${failure} destroys transport and ignores late reply`, { timeout: 2000 }, async t => {

@@ -10,7 +10,7 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
   let owned = false;
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'folder-gate-admin@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-folder-gate-password';
-  const state = require('../src/state'), old = state.getDb();
+  const state = require('../dist/src/state'), old = state.getDb();
   t.after(async () => {
     if (owned) {
       const cx = await pool.getConnection();
@@ -24,14 +24,14 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
   });
   const [tables] = await pool.query('SHOW TABLES');
   assert.equal(tables.length, 0, 'Requires an empty disposable test schema'); owned = true;
-  state.setDb(pool); await require('../src/services/database').ensureSchema();
+  state.setDb(pool); await require('../dist/src/services/database').ensureSchema();
   const owner = randomUUID(), stranger = randomUUID(), account = randomUUID(), item = randomUUID(), copy = randomUUID();
   await pool.execute("INSERT INTO users (id,email,password_hash) VALUES (?,'labels@example.test','test'),(?,'stranger@example.test','test')", [owner,stranger]);
   await pool.execute("INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active) VALUES (?,?,'mail@example.test','custom','sync',FALSE)", [account,owner]);
   for (const id of [item,copy]) await pool.execute(`INSERT INTO emails
     (id,user_id,mail_account_id,from_address,to_addresses,folder,message_id,is_read,is_starred)
     VALUES (?,?,?,'fixture@example.test','[]','inbox','duplicate-message-id@example.test',FALSE,FALSE)`, [id,owner,account]);
-  const repository = require('../src/services/mail-engine/repository');
+  const repository = require('../dist/src/services/mail-engine/repository');
   const boxes = new Map();
   for (const [slug,name] of [['inbox','INBOX'],['all-mail','[Gmail]/All Mail'],['label','Projects/Grüße']]) {
     const folder = randomUUID();
@@ -45,7 +45,7 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
   }
   await repository.withTransaction(cx => repository.upsertOccurrence({userId:owner,accountId:account,mailboxId:boxes.get('inbox').id,
     epoch:17,uid:12,emailId:copy},cx),pool);
-  const routes = require('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail');
   const list = async (folder, user = owner) => {
     const result = await routes['GET /api/mail/emails']({url:`/api/mail/emails?folder=${encodeURIComponent(folder)}`,headers:{host:'localhost'}},user);
     assert.equal(result.error,undefined); return result;
@@ -125,9 +125,9 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
     assert.deepEqual(again,result, 'A retried accepted local filing must not be rejected as no longer Legacy');
     const [[message]] = await pool.execute('SELECT mail_account_id,filing_account_id,folder,is_legacy FROM emails WHERE id=?',[item]);
     assert.deepEqual(message,{mail_account_id:account,filing_account_id:receiving,folder:'inbox',is_legacy:0});
-    const receipt = await require('../src/services/mail-writebacks').getOperationReceipt(owner,'legacy-recovery-fixture');
+    const receipt = await require('../dist/src/services/mail-writebacks').getOperationReceipt(owner,'legacy-recovery-fixture');
     assert.equal(receipt.found,true); assert.deepEqual(receipt.response,result); assert.deepEqual(receipt.operations,[]);
-    assert.equal((await require('../src/services/mail-writebacks').getOperationReceipt(stranger,'legacy-recovery-fixture')).found,false);
+    assert.equal((await require('../dist/src/services/mail-writebacks').getOperationReceipt(stranger,'legacy-recovery-fixture')).found,false);
     const conflict = await routes['POST /api/mail/emails/bulk-move'](request,owner,{...body,folder:'label'});
     assert.equal(conflict.status,409); assert.equal(conflict.error,'Idempotency-Key already used for a different request');
     const [[unchanged]] = await pool.execute('SELECT folder FROM emails WHERE id=?',[item]);

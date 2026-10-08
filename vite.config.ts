@@ -2,6 +2,7 @@ import { build, defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
+import fs from "node:fs";
 
 const alias = { "@": path.resolve(__dirname, "./src") };
 const RECORDING_UPLOADS_WORKER = "recording-uploads-sw.js";
@@ -36,6 +37,31 @@ function recordingUploadsWorker(): Plugin {
   };
 }
 
+// Keep classic worker URLs stable while authoring their source in TypeScript.
+function classicWorkers(): Plugin {
+  const files = ["sw-custom.js", "audio-recorder-worklet.js"];
+  return {
+    name: "unihub-classic-workers",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const name = req.url?.split("?")[0]?.slice(1);
+        if (!name || !files.includes(name)) return next();
+        fs.readFile(path.resolve(__dirname, ".worker-dist", name), (error, source) => {
+          if (error) return next(error);
+          res.setHeader("Content-Type", "application/javascript");
+          res.end(source);
+        });
+      });
+    },
+    generateBundle() {
+      for (const fileName of files) this.emitFile({
+        type: "asset", fileName,
+        source: fs.readFileSync(path.resolve(__dirname, ".worker-dist", fileName)),
+      });
+    },
+  };
+}
+
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
   server: {
@@ -48,6 +74,7 @@ export default defineConfig(() => ({
   plugins: [
     react(),
     recordingUploadsWorker(),
+    classicWorkers(),
     VitePWA({
       registerType: "prompt",
       includeAssets: ["favicon.ico", "favicon.svg", "robots.txt"],

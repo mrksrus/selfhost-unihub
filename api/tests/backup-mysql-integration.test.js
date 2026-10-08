@@ -7,16 +7,16 @@ process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'mysql-integration-en
 process.env.BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || 'mysql-integration-backup-master-key';
 
 const mysql = require('mysql2/promise');
-const { protectRecoveryPassword } = require('../src/services/backup-container');
+const { protectRecoveryPassword } = require('../dist/src/services/backup-container');
 const {
   getDataExportJob,
   listDataExportJobs,
   resumePendingDataExportJobs,
   serializeJob,
-} = require('../src/services/export-jobs');
-const { pruneArchiveKeyIfUnreferenced } = require('../src/services/backup-archive-keys');
-const routes = require('../src/routes/backup');
-const { setDb } = require('../src/state');
+} = require('../dist/src/services/export-jobs');
+const { pruneArchiveKeyIfUnreferenced } = require('../dist/src/services/backup-archive-keys');
+const routes = require('../dist/src/routes/backup');
+const { setDb } = require('../dist/src/state');
 
 test('MySQL 8 backup metadata queries and one-time password reveal', {
   skip: !mysqlHost,

@@ -5,12 +5,12 @@ const assert = require('node:assert/strict');
 const net = require('node:net');
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
-const { connectImap } = require('../src/services/mail-imap-client');
-const { guardImapConnection, closeImapConnection } = require('../src/services/mail-imap-guard');
-const transport = require('../src/services/mail-engine/transport');
-const { createDurableMailScheduler } = require('../src/services/mail-sync-scheduler');
-const { scanMailboxSlice } = require('../src/services/mail-engine/sync');
-const { fetchRawBounded } = require('../src/services/mail-engine/content');
+const { connectImap } = require('../dist/src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
+const transport = require('../dist/src/services/mail-engine/transport');
+const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler');
+const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync');
+const { fetchRawBounded } = require('../dist/src/services/mail-engine/content');
 
 const now = () => performance.now();
 const waitFor = async (predicate, label, ms = 12000) => {
@@ -136,7 +136,7 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
     const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
       user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD,
       database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 12 });
-    const state = require('../src/state'), priorDb = state.getDb();
+    const state = require('../dist/src/state'), priorDb = state.getDb();
     let ownsSchema = false, peer, scheduler, arrivals;
     t.after(async () => {
       clearInterval(arrivals); await scheduler?.stop();
@@ -159,12 +159,12 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
     assert.match((await queryOne(pool, 'SELECT VERSION() AS version')).version, /MariaDB/);
     assert.equal((await pool.query('SHOW TABLES'))[0].length, 0);
     ownsSchema = true; state.setDb(pool);
-    await require('../src/services/database').ensureSchema();
+    await require('../dist/src/services/database').ensureSchema();
     peer = await startPeer();
-    const runtime = require('../src/services/mail-engine/runtime');
-    const repo = require('../src/services/mail-engine/repository');
-    const admission = require('../src/services/mail-writebacks');
-    const operations = require('../src/services/mail-engine/operations');
+    const runtime = require('../dist/src/services/mail-engine/runtime');
+    const repo = require('../dist/src/services/mail-engine/repository');
+    const admission = require('../dist/src/services/mail-writebacks');
+    const operations = require('../dist/src/services/mail-engine/operations');
     const identities = {};
     for (const label of ['A', 'B', 'C']) {
       const userId = crypto.randomUUID(), accountId = crypto.randomUUID();

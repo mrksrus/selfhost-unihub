@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 
 test('auth maintenance does not keep a process alive after its server stops', () => {
-  const result = spawnSync(process.execPath, ['-e', 'require(process.argv[1])', require.resolve('../src/auth')], {
+  const result = spawnSync(process.execPath, ['-e', 'require(process.argv[1])', require.resolve('../dist/src/auth')], {
     encoding: 'utf8', timeout: 5000,
   });
   assert.equal(result.error, undefined, 'auth maintenance kept the process alive');
@@ -20,10 +20,10 @@ function setRequireStub(modulePath, exports) {
 }
 
 test('password change invalidates all sessions and clears auth cookies', async (t) => {
-  const routePath = require.resolve('../src/routes/auth');
-  const authPath = require.resolve('../src/auth');
-  const statePath = require.resolve('../src/state');
-  const twoFactorPath = require.resolve('../src/services/two-factor');
+  const routePath = require.resolve('../dist/src/routes/auth');
+  const authPath = require.resolve('../dist/src/auth');
+  const statePath = require.resolve('../dist/src/state');
+  const twoFactorPath = require.resolve('../dist/src/services/two-factor');
   const originalRoute = require.cache[routePath];
   const originalAuth = require.cache[authPath];
   const originalState = require.cache[statePath];
@@ -81,7 +81,7 @@ test('password change invalidates all sessions and clears auth cookies', async (
     deleteTwoFactorLoginChallenge: async () => {},
   });
 
-  const routes = require('../src/routes/auth');
+  const routes = require('../dist/src/routes/auth');
   const res = { cleared: [] };
   const result = await routes['PUT /api/auth/password'](
     { headers: {}, url: '/api/auth/password' },
@@ -97,10 +97,10 @@ test('password change invalidates all sessions and clears auth cookies', async (
 });
 
 test('public signup mode endpoint defaults to disabled', async (t) => {
-  const routePath = require.resolve('../src/routes/auth');
-  const authPath = require.resolve('../src/auth');
-  const statePath = require.resolve('../src/state');
-  const twoFactorPath = require.resolve('../src/services/two-factor');
+  const routePath = require.resolve('../dist/src/routes/auth');
+  const authPath = require.resolve('../dist/src/auth');
+  const statePath = require.resolve('../dist/src/state');
+  const twoFactorPath = require.resolve('../dist/src/services/two-factor');
   const originalRoute = require.cache[routePath];
   const originalAuth = require.cache[authPath];
   const originalState = require.cache[statePath];
@@ -147,6 +147,6 @@ test('public signup mode endpoint defaults to disabled', async (t) => {
     deleteTwoFactorLoginChallenge: async () => {},
   });
 
-  const routes = require('../src/routes/auth');
+  const routes = require('../dist/src/routes/auth');
   assert.deepEqual(await routes['GET /api/auth/signup-mode'](), { signup_mode: 'disabled' });
 });

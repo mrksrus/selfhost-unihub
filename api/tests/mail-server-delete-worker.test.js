@@ -30,11 +30,11 @@ test(`server deletion worker: ${scenario}`, async (t) => {
   t.after(async () => { if (oldRoot === undefined) delete process.env.MAIL_RAW_STORAGE_ROOT;
     else process.env.MAIL_RAW_STORAGE_ROOT = oldRoot;
     await fs.rm(root, { recursive: true, force: true }); });
-  const mailPath = require.resolve('../src/services/mail');
-  const statePath = require.resolve('../src/state');
-  const encryptionPath = require.resolve('../src/security/encryption');
-  const imapClientPath = require.resolve('../src/services/mail-imap-client');
-  const modulesPath = require.resolve('../src/services/module-settings');
+  const mailPath = require.resolve('../dist/src/services/mail');
+  const statePath = require.resolve('../dist/src/state');
+  const encryptionPath = require.resolve('../dist/src/security/encryption');
+  const imapClientPath = require.resolve('../dist/src/services/mail-imap-client');
+  const modulesPath = require.resolve('../dist/src/services/module-settings');
   const originalModules = require.cache[modulesPath];
   delete require.cache[modulesPath];
   const originalMail = require.cache[mailPath];
@@ -120,9 +120,9 @@ test(`server deletion worker: ${scenario}`, async (t) => {
       search: async query => {
         if (scenario === 'module-paused-during-search') modulePaused = true;
         if (scenario === 'lifecycle-stop-during-search') {
-          const runtime = require('../src/services/mail-engine/runtime');
+          const runtime = require('../dist/src/services/mail-engine/runtime');
           t.mock.method(runtime, 'pauseAccount', async () => {});
-          await require('../src/services/mail').stopMailAccountWork('account-1', 'Disconnected');
+          await require('../dist/src/services/mail').stopMailAccountWork('account-1', 'Disconnected');
         }
         return [Number(query.uid)];
       },
@@ -133,7 +133,7 @@ test(`server deletion worker: ${scenario}`, async (t) => {
     }),
   });
 
-  const { processMailServerDeletionForAccount } = require('../src/services/mail');
+  const { processMailServerDeletionForAccount } = require('../dist/src/services/mail');
   const result = await processMailServerDeletionForAccount('account-1');
 
   if (['already-sync', 'module-paused'].includes(scenario)) {

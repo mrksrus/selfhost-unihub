@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createDurableMailScheduler } = require('../src/services/mail-sync-scheduler');
+const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await tick(); }
@@ -206,9 +206,9 @@ test('an explicit sync cancel wins over a simultaneous interactive yield', async
 });
 
 test('sync cancellation selects only read-only jobs, not accepted mutation or outcome checks', async t => {
-  const service = require.resolve('../src/services/mail');
-  const schedulerPath = require.resolve('../src/services/mail-sync-scheduler');
-  const statePath = require.resolve('../src/state');
+  const service = require.resolve('../dist/src/services/mail');
+  const schedulerPath = require.resolve('../dist/src/services/mail-sync-scheduler');
+  const statePath = require.resolve('../dist/src/state');
   const old = new Map([service, schedulerPath, statePath].map(p => [p, require.cache[p]]));
   const kinds = ['sync', 'recent', 'flags', 'history', 'presence', 'body', 'operation', 'reconcile'];
   const cancelled = [], selected = [], interrupted = [], paused = [];
@@ -230,7 +230,7 @@ test('sync cancellation selects only read-only jobs, not accepted mutation or ou
   t.after(require('./helpers/mail-service-modules').evictMailServiceModules());
   t.after(() => { for (const [p, entry] of old) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
   const mail = require(service);
-  const runtime = require('../src/services/mail-engine/runtime');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
   t.mock.method(runtime, 'pauseAccount', async input => { paused.push(input); });
   assert.equal(await mail.cancelMailAccountSync('A'), true);
   assert.equal(cancelled.length, 6);
@@ -282,7 +282,7 @@ test('a failed recovery pass is retried on the next drain before any claim', asy
 });
 
 test('a claim skips an account whose expired lease has not been recovered yet', async () => {
-  const runtime = require('../src/services/mail-engine/runtime');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
   const account = { generation: 4, lease_owner: 'crashed-worker', lease_until: new Date(Date.now() - 60000), paused_reason: null };
   const calls = [];
   const cx = { async execute(sql) {

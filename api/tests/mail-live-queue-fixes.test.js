@@ -4,13 +4,13 @@
 // operation that blocked every other change of its account.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { getDb, setDb } = require('../src/state');
-const repository = require('../src/services/mail-engine/repository');
-const runtime = require('../src/services/mail-engine/runtime');
-const operations = require('../src/services/mail-engine/operations');
-const transport = require('../src/services/mail-engine/transport');
-const writebacks = require('../src/services/mail-writebacks');
-const mail = require('../src/services/mail');
+const { getDb, setDb } = require('../dist/src/state');
+const repository = require('../dist/src/services/mail-engine/repository');
+const runtime = require('../dist/src/services/mail-engine/runtime');
+const operations = require('../dist/src/services/mail-engine/operations');
+const transport = require('../dist/src/services/mail-engine/transport');
+const writebacks = require('../dist/src/services/mail-writebacks');
+const mail = require('../dist/src/services/mail');
 
 const deadlock = () => Object.assign(new Error('Deadlock found when trying to get lock'), { code: 'ER_LOCK_DEADLOCK', errno: 1213 });
 function pool(onExecute) {
@@ -114,7 +114,7 @@ test('a failing operation is counted, backs off, and does not block the next cha
   const errors = t.mock.method(console, 'error', () => {});
   // A session that survived the refusal: guard idle and authenticated.
   const guarded = Object.assign(new (require('node:events'))(), { usable: true, isClosed: false, close() {} });
-  require('../src/services/mail-imap-guard').guardImapConnection(guarded, {});
+  require('../dist/src/services/mail-imap-guard').guardImapConnection(guarded, {});
   const result = await operations.processDueOperations({ id: 'acct', user_id: 'u' }, guarded,
     { workerGeneration: 1, workerId: 'w', jobId: 'j' });
   assert.deepEqual(applied, ['bad', 'good'], 'the second change still ran on the same session');

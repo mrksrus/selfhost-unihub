@@ -9,7 +9,7 @@ process.env.ENCRYPTION_KEY ||= 'calendar-sync-mysql-test-key';
 
 const crypto = require('node:crypto');
 const mysql = require('mysql2/promise');
-const { getDb, setDb } = require('../src/state');
+const { getDb, setDb } = require('../dist/src/state');
 
 const BASE = 'https://dav.example.test';
 const CALENDAR_HREF = '/dav/calendars/person/work/';
@@ -31,7 +31,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
     const connection = await mysql.createConnection(options);
     const pool = mysql.createPool({ ...options, connectionLimit: 4 });
     const previous = getDb();
-    const caldav = require('../src/services/caldav');
+    const caldav = require('../dist/src/services/caldav');
     const stubbed = ['listCalendars', 'listCalendarObjects', 'fetchCalendarObjects', 'putCalendarObject', 'deleteCalendarObject', 'findCalDavServer'];
     const originals = Object.fromEntries(stubbed.map(name => [name, caldav[name]]));
     let ownsDatabase = false;
@@ -57,12 +57,12 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
     assert.equal(existing.length, 0, 'Refusing to change a nonempty database');
     ownsDatabase = true;
     setDb(pool);
-    await require('../src/services/database').ensureSchema();
+    await require('../dist/src/services/database').ensureSchema();
 
-    const { encrypt } = require('../src/security/encryption');
-    const calendarSync = require('../src/services/calendar-sync');
-    const calendarAccounts = require('../src/services/calendar-accounts');
-    const { setUserModules } = require('../src/services/module-settings');
+    const { encrypt } = require('../dist/src/security/encryption');
+    const calendarSync = require('../dist/src/services/calendar-sync');
+    const calendarAccounts = require('../dist/src/services/calendar-accounts');
+    const { setUserModules } = require('../dist/src/services/module-settings');
 
     // One CalDAV server with one calendar; tests change its objects directly.
     const remote = { ctag: '1', objects: new Map() };
@@ -318,7 +318,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       const priorCopy = await insertCalDav(userId, 'prior@example.test', legacy, null, 'copied-mail-password');
       const priorAlone = await insertCalDav(userId, 'alone@example.test', legacy, null, 'own-password');
       await connection.execute('DELETE FROM schema_migrations WHERE id >= 13');
-      await require('../src/services/database').ensureSchema();
+      await require('../dist/src/services/database').ensureSchema();
       const password = async id => (await connection.execute('SELECT encrypted_password FROM calendar_accounts WHERE id = ?', [id]))[0][0].encrypted_password;
       assert.equal(await password(priorCopy), null);
       assert.notEqual(await password(priorAlone), null);
@@ -327,7 +327,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       // over it while linked) and with a copy of the mail password.
       const staleLink = await insertCalDav(userId, 'cleared@example.test', current, crypto.randomUUID(), 'copied-mail-password');
       await connection.execute('DELETE FROM schema_migrations WHERE id >= 14');
-      await require('../src/services/database').ensureSchema();
+      await require('../dist/src/services/database').ensureSchema();
       const unlinkedStale = await mailLink(staleLink);
       assert.deepEqual([unlinkedStale.mail_account_id, unlinkedStale.encrypted_password, config(unlinkedStale.provider_config).mailLinked], [null, null, true]);
       assert.deepEqual(config((await mailLink(unmarked)).provider_config), { ...current, mailLinked: true });

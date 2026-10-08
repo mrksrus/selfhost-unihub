@@ -49,6 +49,26 @@ npm --prefix api ci
 npm --prefix api start
 ```
 
+The 0.19.0 API source is TypeScript except for the frozen legacy database
+baseline. `npm --prefix api start` compiles first, then starts
+`api/dist/server.js`. `npm --prefix api run build` creates the CommonJS runtime
+and `npm --prefix api run typecheck` checks source without emitting code.
+`allowJs` copies the frozen `database.js` into the runtime tree with `checkJs`
+disabled for that file. Do not edit its `ensureLegacySchema` baseline.
+
+The notification service worker and audio worklet are authored in `workers/`.
+`npm run build:workers` emits classic scripts into ignored `.worker-dist/`.
+Vite serves those files during development and includes them in production
+under the existing `/sw-custom.js` and `/audio-recorder-worklet.js` URLs.
+Rebuild workers after editing their source during a running development session.
+
+API tests import `api/dist/` and worker tests read `.worker-dist/`, so run
+`npm --prefix api run build` before a direct `node --test` invocation. Npm API
+test commands and `scripts/local-db.sh` build automatically. API-only Docker
+build stages compile the API; the frontend stage compiles browser workers.
+See [the conversion checkpoint](TYPESCRIPT_MIGRATION.md) for coverage and
+remaining typing work.
+
 The backend requires MariaDB configuration through either `DATABASE_URL` or
 `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and
 `MYSQL_PASSWORD`. Supply `JWT_SECRET`, `ENCRYPTION_KEY`, and the bootstrap admin

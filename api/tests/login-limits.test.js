@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createLoginLimiter } = require('../src/security/login-limits');
-const { createClientIpResolver, normalizeIp } = require('../src/security/client-ip');
+const { createLoginLimiter } = require('../dist/src/security/login-limits');
+const { createClientIpResolver, normalizeIp } = require('../dist/src/security/client-ip');
 
 test('account budgets remain separate on shared IPs and survive other account successes', () => {
   let now = 0;

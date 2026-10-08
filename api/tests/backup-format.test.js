@@ -6,9 +6,9 @@ const path = require('node:path');
 const {
   BACKUP_VERSION, ZIP_BACKUP_FORMAT, ZIP_BACKUP_FORMAT_VERSION,
   normalizeBackupPayload, validateBackupVersionFields, validateArchiveVersionFields,
-} = require('../src/services/backup-format');
-const { backupFromZipBuffer, backupFromZipFile, sha256Buffer, validateBackupPayload } = require('../src/services/backup');
-const { writeZip } = require('../src/services/export-jobs');
+} = require('../dist/src/services/backup-format');
+const { backupFromZipBuffer, backupFromZipFile, sha256Buffer, validateBackupPayload } = require('../dist/src/services/backup');
+const { writeZip } = require('../dist/src/services/export-jobs');
 
 test('v1 backups migrate automatically without fabricating mappings or mutating input', () => {
   const original = { app: 'unihub', version: 1, manifest_sha256: 'old hash',

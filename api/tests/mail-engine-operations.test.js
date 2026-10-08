@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { setDb } = require('../src/state');
-const writes = require('../src/services/mail-writebacks');
-const settle = require('../src/services/mail-engine/reconciliation');
-const ops = require('../src/services/mail-engine/operations');
+const { setDb } = require('../dist/src/state');
+const writes = require('../dist/src/services/mail-writebacks');
+const settle = require('../dist/src/services/mail-engine/reconciliation');
+const ops = require('../dist/src/services/mail-engine/operations');
 
 function model() {
   const userId = 'owner', accountId = 'account';
@@ -145,9 +145,9 @@ test('acknowledgment-first verified COPYUID settles a destination that scanner i
   f.cx.rollback = async () => {}; f.cx.release = () => {};
   f.op.state = 'queued'; f.op.is_current = 1; f.op.dispatched = 0;
   f.email.remote_uidvalidity = 9;
-  const transport = require('../src/services/mail-engine/transport');
-  const runtime = require('../src/services/mail-engine/runtime');
-  const repository = require('../src/services/mail-engine/repository');
+  const transport = require('../dist/src/services/mail-engine/transport');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const repository = require('../dist/src/services/mail-engine/repository');
   const history = [];
   const original = f.cx.execute;
   f.cx.execute = async (sql, args = []) => {
@@ -231,7 +231,7 @@ test('restored receipt warns instead of promising provider acceptance; default l
 });
 test('admission commits receipt, intent and job together; exact replay never appends', async t => {
   const receipts = new Map(), admitted = [], jobs = [], history = [], nudged = [];
-  t.mock.method(require('../src/services/mail'), 'runMailOperationsNow', async (id, options) => { nudged.push([id, options]); return true; });
+  t.mock.method(require('../dist/src/services/mail'), 'runMailOperationsNow', async (id, options) => { nudged.push([id, options]); return true; });
   const email = { id: 'item', user_id: 'owner', mail_account_id: 'account', sync_mode: 'sync', is_active: 1,
     remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9, is_read: 0 };
   const cx = {
@@ -308,7 +308,7 @@ test('dispatch attempt is committed before mutation and stale lease cannot fence
   assert.equal(steps.filter(s => s.startsWith('INSERT INTO mail_operation_attempts')).length, 1);
 });
 test('no-COPYUID after crash performs only bounded reads, records ambiguity and never repeats MOVE', async t => {
-  const transport = require('../src/services/mail-engine/transport');
+  const transport = require('../dist/src/services/mail-engine/transport');
   const calls = [];
   t.mock.method(transport, 'nativeMove', () => { assert.fail('second MOVE must not run'); });
   t.mock.method(transport, 'selectMailbox', async (_, { folder, readOnly }) => {
@@ -351,8 +351,8 @@ test('no-COPYUID after crash performs only bounded reads, records ambiguity and 
     ['select', 'Filed', true], ['fetch', 'Filed', 272, 399]]);
 });
 test('cancellation or lease loss between SELECT and FETCH prevents every subsequent provider command', async t => {
-  const transport = require('../src/services/mail-engine/transport');
-  const runtime = require('../src/services/mail-engine/runtime');
+  const transport = require('../dist/src/services/mail-engine/transport');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
   const op = { id: 'flag', user_id: 'owner', mail_account_id: 'account', email_id: 'item',
     action: 'read', remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9 };
   let fence = 'valid', commands = 0;

@@ -23,7 +23,7 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
   // never inherit a real installation's bootstrap credentials in this fixture.
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'recovery-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-recovery-bootstrap-password';
-  const state = require('../src/state');
+  const state = require('../dist/src/state');
   const originalDb = state.getDb();
   let ownsSchema = false;
   t.after(async () => {
@@ -47,10 +47,10 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
   assert.equal((await rows(pool, 'SHOW TABLES')).length, 0, 'Refuse to touch a populated schema');
   ownsSchema = true;
   state.setDb(pool);
-  const { ensureSchema } = require('../src/services/database');
-  const schema = require('../src/services/mail-engine/schema');
-  const repo = require('../src/services/mail-engine/repository');
-  const runtime = require('../src/services/mail-engine/runtime');
+  const { ensureSchema } = require('../dist/src/services/database');
+  const schema = require('../dist/src/services/mail-engine/schema');
+  const repo = require('../dist/src/services/mail-engine/repository');
+  const runtime = require('../dist/src/services/mail-engine/runtime');
   await ensureSchema();
   const owner = randomUUID(), other = randomUUID();
   const account = randomUUID(), secondAccount = randomUUID(), otherAccount = randomUUID();
@@ -275,7 +275,7 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
   });
 
   await t.test('restore retains accepted journal, remaps receipt and quarantines provider evidence without executable mappings', async () => {
-    const { restoreMailEngineEvidence } = require('../src/services/backup-mail-engine');
+    const { restoreMailEngineEvidence } = require('../dist/src/services/backup-mail-engine');
     const prior = await insertOp({emailId:uuid(2),state:'executing',dispatched:1,uid:20,folder:'Archive'});
     const pendingSync = await runtime.enqueueJob({userId:owner,accountId:account,kind:'sync'},pool);
     const sourceId = randomUUID(), receiptKey = 'restore-unknown';

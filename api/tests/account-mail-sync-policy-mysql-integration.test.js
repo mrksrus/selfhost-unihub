@@ -28,7 +28,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD,
     database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 8 });
-  const state = require('../src/state'), previousDb = state.getDb();
+  const state = require('../dist/src/state'), previousDb = state.getDb();
   const rows = async (sql, params = []) => (await pool.execute(sql, params))[0];
   const one = async (sql, params = []) => (await rows(sql, params))[0];
   let ownsSchema = false, server = null, isolated = null;
@@ -59,11 +59,11 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
   ownsSchema = true; state.setDb(pool);
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'sync-policy-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-sync-policy-bootstrap-password';
-  await require('../src/services/database').ensureSchema();
-  const repo = require('../src/services/mail-engine/repository');
-  const transport = require('../src/services/mail-engine/transport');
-  const { scanMailboxSlice } = require('../src/services/mail-engine/sync');
-  const policy = require('../src/services/mail-sync-policy');
+  await require('../dist/src/services/database').ensureSchema();
+  const repo = require('../dist/src/services/mail-engine/repository');
+  const transport = require('../dist/src/services/mail-engine/transport');
+  const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync');
+  const policy = require('../dist/src/services/mail-sync-policy');
 
   // Synthetic provider: folder -> { epoch, next, gmail, items: uid -> message }.
   const provider = new Map();
@@ -291,7 +291,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     const impact = await policy.computeModeImpact(await load(accountId), { mode: 'sync' });
     assert.equal(impact.local_only, 0);
     assert.ok(impact.notes.some(note => /Show in IMAP/.test(note)));
-    const { membershipCountQuery } = require('../src/services/mail-folder-view');
+    const { membershipCountQuery } = require('../dist/src/services/mail-folder-view');
     const counts = await rows(membershipCountQuery('emails.is_read', accountId), [userId, accountId]);
     assert.deepEqual(counts.map(row => [row.folder, Number(row.total_count)]), [['archive', 1]], 'Shown in the local Archive view');
     // Once All Mail is visible, absence from every mailbox proves deletion.

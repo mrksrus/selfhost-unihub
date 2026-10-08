@@ -1,10 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { setDb } = require('../src/state');
-const { buildBackupForUser, importBackupForUser, validateBackupPayload } = require('../src/services/backup');
-const { normalizeBackupPayload } = require('../src/services/backup-format');
-const { BACKUP_VERSION } = require('../src/services/backup-format');
-const { SECTION_POLICIES, TABLE_POLICIES } = require('../src/services/backup-catalog');
+const { setDb } = require('../dist/src/state');
+const { buildBackupForUser, importBackupForUser, validateBackupPayload } = require('../dist/src/services/backup');
+const { normalizeBackupPayload } = require('../dist/src/services/backup-format');
+const { BACKUP_VERSION } = require('../dist/src/services/backup-format');
+const { SECTION_POLICIES, TABLE_POLICIES } = require('../dist/src/services/backup-catalog');
 
 function database(t, execute = async () => [[]]) {
   const calls = [];

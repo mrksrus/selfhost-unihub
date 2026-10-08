@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const policy = require('../src/services/mail-sync-policy');
-const { imapListToFolders } = require('../src/services/mail-folders');
+const policy = require('../dist/src/services/mail-sync-policy');
+const { imapListToFolders } = require('../dist/src/services/mail-folders');
 
 test('retention windows accept only the offered choices; empty means all mail', () => {
   for (const days of [14, 30, 90, 180, 365]) {

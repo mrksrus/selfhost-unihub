@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { queueChanges, remoteEligible } = require('../src/services/mail-writebacks');
+const { queueChanges, remoteEligible } = require('../dist/src/services/mail-writebacks');
 test('Download, drafts, Legacy and retained missing mail remain local', async () => {
   const email = { id: 'e', user_id: 'u', mail_account_id: 'a', filing_account_id: 'a', sync_mode: 'sync', remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9 };
   for (const override of [{ sync_mode: 'download' }, { is_draft: 1 }, { is_legacy: 1 }, { remote_missing: 1 }, { filing_account_id: 'other' }]) {

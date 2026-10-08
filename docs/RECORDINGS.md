@@ -286,7 +286,7 @@ File route query parameters:
 
 ## Cleanup
 
-`cleanupExpiredRecordingUploads` runs hourly from `api/src/app.js`.
+`cleanupExpiredRecordingUploads` runs hourly from `api/src/app.ts`.
 
 It deletes up to 100 expired upload temp files per run and removes the matching
 `recording_uploads` rows.

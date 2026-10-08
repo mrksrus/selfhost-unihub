@@ -8,7 +8,7 @@ const {
   normalizeSyncFetchLimit,
   recordMailServerMessageForDeletion,
   validateMailHostPolicy,
-} = require('../src/services/mail');
+} = require('../dist/src/services/mail');
 
 test('normalizes legacy initial sync limits to all', () => {
   assert.equal(normalizeSyncFetchLimit(undefined), 'all');
@@ -82,7 +82,7 @@ test('loads existing imported UIDs before message download', async () => {
 function deleteClient(capabilities, reject = null) {
   const calls = [];
   const flat = node => Array.isArray(node) ? node.flatMap(flat) : [node.value];
-  const connection = require('../src/services/mail-imap-guard').guardImapConnection(Object.assign(new (require('node:events'))(), {
+  const connection = require('../dist/src/services/mail-imap-guard').guardImapConnection(Object.assign(new (require('node:events'))(), {
     capabilities: new Map(capabilities.map(name => [name, true])), close() {},
     exec: async (command, attributes) => {
       calls.push([command, ...attributes.flatMap(flat)]);

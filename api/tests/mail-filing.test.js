@@ -1,9 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const routes = require('../src/routes/mail');
-const { getDb, setDb } = require('../src/state');
-const { presentMailFiling, folderAcceptsAccount } = require('../src/services/mail-filing');
-const mailWritebacks = require('../src/services/mail-writebacks');
+const routes = require('../dist/src/routes/mail');
+const { getDb, setDb } = require('../dist/src/state');
+const { presentMailFiling, folderAcceptsAccount } = require('../dist/src/services/mail-filing');
+const mailWritebacks = require('../dist/src/services/mail-writebacks');
 
 const request = url => ({ url, headers: { host: 'localhost' } });
 const recovered = () => ({ id: 'message', user_id: 'user', mail_account_id: 'source', filing_account_id: 'receiving',

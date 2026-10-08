@@ -11,7 +11,7 @@ test('MySQL staged rollout retains intent and credentials, fences other accounts
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD,
     database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 3 });
-  const state = require('../src/state'), previous = state.getDb();
+  const state = require('../dist/src/state'), previous = state.getDb();
   let ownsSchema = false;
   const rows = async (sql, params = []) => (await pool.execute(sql, params))[0];
   t.after(async () => {
@@ -32,9 +32,9 @@ test('MySQL staged rollout retains intent and credentials, fences other accounts
   ownsSchema = true; state.setDb(pool);
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'rollout-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-rollout-bootstrap-password';
-  await require('../src/services/database').ensureSchema();
-  const runtime = require('../src/services/mail-engine/runtime');
-  const { HOLD_REASON, prepareRollout, releaseRollout, rolloutStatus } = require('../src/services/mail-engine/rollout');
+  await require('../dist/src/services/database').ensureSchema();
+  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const { HOLD_REASON, prepareRollout, releaseRollout, rolloutStatus } = require('../dist/src/services/mail-engine/rollout');
   const owner = randomUUID(), accounts = Array.from({ length: 40 }, () => randomUUID());
   await pool.execute("INSERT INTO users (id,email,password_hash) VALUES (?,'rollout-owner@example.test','test')", [owner]);
   for (const [i, id] of accounts.entries()) {
