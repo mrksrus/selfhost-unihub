@@ -10,7 +10,7 @@ module:
   removal, Gmail X-GM-MSGID merging, the per-account confirmation gate
   (`mail_accounts.sync_policy_confirmed_at`), mode-impact counts and the
   `gmail_all_mail_hidden` warning. Download accounts are never touched by it.
-- `commitWindow` (`mail-engine/sync.js`) skips a provider message whose
+- `commitWindow` (`mail-engine/sync.ts`) skips a provider message whose
   INTERNALDATE is older than its mailbox's window (Trash/Junk use
   `trash_window_days`, everything else `sync_window_days`) unless it is already
   known, is the mapped destination of an accepted MOVE, or is another Gmail label
@@ -35,7 +35,7 @@ module:
 - An item with no provider identity (`remote_folder`, `remote_uid` and
   `remote_uidvalidity` all NULL) and no occurrence is local-only mail: UniHub's
   own Sent copy, or mail kept from before the account used Sync. Since 0.13.3
-  `queueChanges` (`mail-writebacks.js`) applies read/star/move to it locally
+  `queueChanges` (`mail-writebacks.ts`) applies read/star/move to it locally
   without a provider operation, also inside a bulk request with linked items.
   An item with a partial identity, or an empty one while an occurrence still
   links it, refuses the whole request ("damaged link", with a count). `prune`
@@ -262,7 +262,7 @@ INBOX mail is imported within seconds instead of at the next 30-second tick.
   job and `EXPUNGE`/`VANISHED` a `presence` job. Both are the normal
   background sweeps with their 15-minute throttle (a throttled one finishes
   without connecting), never a manual resweep. Events are coalesced for 2
-  seconds into one admission (`enqueueIdleRefresh` in `mail-sync-control.js`),
+  seconds into one admission (`enqueueIdleRefresh` in `mail-sync-control.ts`),
   which rechecks the account, pause, background setting and restore state,
   persists the jobs and nudges the scheduler. Fencing, leases and imports all
   stay in the durable jobs; the browser hears about the result through the
@@ -352,9 +352,9 @@ The browser learns about job and provider-change progress from the live event
 stream (`GET /api/events`, see [Architecture](ARCHITECTURE.md#live-status-events)).
 Producers are small hooks:
 
-- the durable scheduler's state callback (`mail-durable-jobs.js`) publishes
+- the durable scheduler's state callback (`mail-durable-jobs.ts`) publishes
   `mail.job` for every job start, progress report and completion; admission of a
-  sync (`mail-sync-control.js`) publishes `queued`, and `/sync/cancel` publishes
+  sync (`mail-sync-control.ts`) publishes `queued`, and `/sync/cancel` publishes
   `cancelled` for queued jobs it stopped;
 - a finished job publishes `mail.changed` when it imported or changed rows
   (`recent`/`history` imports, `flags`/`presence` changes, a fetched body, folder

@@ -6,24 +6,33 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.19.0 (unreleased)
+## 0.19.0
+
+The API and the two browser workers are now written in TypeScript and
+compiled before they run. UniHub works the same as before: the same pages,
+routes, database and backup format. No database upgrade runs at startup.
 
 ### Changed
 
-- API routes, services, security helpers and operator entrypoints are now
-  authored in strict TypeScript and compile to CommonJS. The frozen legacy
-  database baseline remains JavaScript. Local tests and container builds use
-  emitted API code.
-- Notification delivery and PCM recording workers are authored in TypeScript
-  and retain their existing browser script URLs.
-- Local API startup and database development commands build the API first.
-  Source deployments need development dependencies to compile; the container
-  includes compiled code and production dependencies only.
+- **The API is compiled from TypeScript.** Routes, services, security helpers
+  and the `mail-rollout` operator command are checked in strict mode and
+  compiled to the same CommonJS layout as before. The image holds only the
+  compiled code and the production dependencies. `/app/api/server.js` and
+  `/app/api/mail-rollout.js` are where they were. The frozen database
+  baseline (`database.js`) stays JavaScript.
+- **The browser workers are compiled too.** The notification service worker
+  and the recording worklet keep their URLs (`/sw-custom.js`,
+  `/audio-recorder-worklet.js`). Installed apps and push subscriptions keep
+  working.
 
-This release is being prepared locally for review. The conversion checkpoint in
-[docs/TYPESCRIPT_MIGRATION.md](docs/TYPESCRIPT_MIGRATION.md) records coverage,
-validation, and the next steps. Database migrations and backup format versions
-are unchanged by the language conversion.
+### Upgrade
+
+- With the container image there is nothing to do: pull and restart. The
+  database is not changed, and backups from earlier versions restore as
+  before.
+- Running the API from source (not the image) now needs its development
+  dependencies to compile it: `npm --prefix api ci`, then
+  `npm --prefix api start`, which builds `api/dist/` first.
 
 ## 0.18.2
 

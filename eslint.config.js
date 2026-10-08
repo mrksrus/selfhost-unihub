@@ -35,7 +35,8 @@ export default tseslint.config(
     languageOptions: { ecmaVersion: 2022, globals: globals.node },
     rules: {
       "@typescript-eslint/no-unused-vars": "off",
-      // CommonJS lazy loading and module objects preserve worker/test isolation.
+      // Modules loaded on first use (import cycles, require.cache swaps in tests)
+      // and the `import x = require()` of `export =` route tables.
       "@typescript-eslint/no-require-imports": "off",
     },
   },

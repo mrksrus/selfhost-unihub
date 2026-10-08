@@ -52,7 +52,7 @@ once), or both. When reading a saved order, unknown or removed IDs and duplicate
 are dropped and missing modules are appended in catalog order, so an order saved
 by an older or newer version never hides a module.
 
-Pages (0.17.4) are listed in `PAGE_CATALOG` in `module-catalog.js`, each with
+Pages (0.17.4) are listed in `PAGE_CATALOG` in `module-catalog.ts`, each with
 the module it belongs to (`null` for Today). Their choices are kept apart from
 the module choices, in `user_settings.page_preferences` (`{"todo": {"visible":
 false}}`, merged like module preferences) and `user_settings.page_order` (every
@@ -74,6 +74,6 @@ Removed modules:
   folder and clears `notes` from saved module preferences and the start page.
 
 Saved preferences, saved orders and older backups may still name a removed module.
-It is ignored when read (`RETIRED_MODULE_IDS` in `module-catalog.js`) and rejected
+It is ignored when read (`RETIRED_MODULE_IDS` in `module-catalog.ts`) and rejected
 in new updates. Older archives that contain removed data or request a removed
 section import everything else with a warning.

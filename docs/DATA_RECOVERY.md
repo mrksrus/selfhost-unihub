@@ -5,7 +5,7 @@
 ## Adding or changing saved data
 
 `api/src/services/backup-catalog.ts` declares recovery sections, explicit archive
-columns, key ownership and field treatment. `data-inventory.js` declares remaining
+columns, key ownership and field treatment. `data-inventory.ts` declares remaining
 security-only, temporary, rebuilt or deliberately excluded fields with reasons.
 Every database column must be accounted for. Do not rely on `SELECT *` or add a
 new field without deciding its import, ownership and file behavior.
@@ -32,7 +32,7 @@ verify that each worker observes restore locks and respects in-flight operations
 
 ## Database upgrades
 
-`database-migrations.js` serializes upgrades with a database advisory lock and
+`database-migrations.ts` serializes upgrades with a database advisory lock and
 records completed IDs/names in `schema_migrations`. `database.js` defines step 1,
 the verified historical baseline, and step 2, the one-time Sent/Draft read repair.
 Completed steps are skipped. Unknown/out-of-order history and required failures
@@ -118,8 +118,8 @@ Never regenerate a historical fixture merely to make a changed reader pass.
 
 ## Built-in modules
 
-`module-catalog.js` binds optional modules to their recovery sections and request
-paths; `module-settings.js` reads archived per-user preferences and module order.
+`module-catalog.ts` binds optional modules to their recovery sections and request
+paths; `module-settings.ts` reads archived per-user preferences and module order.
 Visibility and feature/background pause do not narrow full exports.
 Settings/recovery remain available. Search and offline snapshots filter disabled
 modules separately.

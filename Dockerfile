@@ -10,8 +10,9 @@ COPY . .
 RUN npm run build:frontend
 RUN node scripts/collect-frontend-notices.mjs /build/frontend-dependency-notices.txt
 
-# Build the API with development-only compiler dependencies. Runtime modules
-# keep their CommonJS layout; production installs only runtime dependencies.
+# ── Stage 2: Compile the API ───────────────────────────────────────
+# The compiler is a development dependency; the production image below installs
+# only runtime dependencies and copies the compiled CommonJS tree.
 FROM node:24-alpine AS api-builder
 WORKDIR /build/api
 COPY api/package*.json ./

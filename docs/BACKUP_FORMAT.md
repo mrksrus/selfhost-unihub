@@ -42,7 +42,7 @@ archives made before 0.14.0 is skipped on import with a warning. Old archives de
 Automatic deletion is always reset off. Different provider mailbox identities
 cannot be merged.
 
-The reader registry is `api/src/services/backup-format.js`, with dedicated readers
+The reader registry is `api/src/services/backup-format.ts`, with dedicated readers
 in `backup-formats/`. Original archive checksums are validated before converting
 historical metadata into the current restore model. Stored files remain
 file-backed. Old archives cannot supply data they never contained; defaults and

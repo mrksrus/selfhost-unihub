@@ -66,8 +66,20 @@ API tests import `api/dist/` and worker tests read `.worker-dist/`, so run
 `npm --prefix api run build` before a direct `node --test` invocation. Npm API
 test commands and `scripts/local-db.sh` build automatically. API-only Docker
 build stages compile the API; the frontend stage compiles browser workers.
-See [the conversion checkpoint](TYPESCRIPT_MIGRATION.md) for coverage and
-remaining typing work.
+
+API modules use ES module syntax and compile to CommonJS. A few conventions
+keep the compiled modules testable:
+
+- Tests replace functions with `t.mock.method(module, name)`. A call through a
+  named import (`import { fn } from './x'`) looks `fn` up on the module at
+  call time, so such a mock reaches it. A facade such as `services/mail.ts`
+  exports plain values (`export const fn = impl.fn`), not re-exports, because
+  `export { fn } from` compiles to a read-only getter that cannot be mocked.
+- A module that must load on first use, to break an import cycle or because
+  tests swap it in `require.cache`, is required in place and typed:
+  `(require('./x') as typeof import('./x')).fn()`. Keep these where they are.
+- Route modules export one table of `'METHOD /path'` handlers with
+  `export =`; `routes/index.ts` spreads them.
 
 The backend requires MariaDB configuration through either `DATABASE_URL` or
 `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and

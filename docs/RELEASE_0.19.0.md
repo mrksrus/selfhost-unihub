@@ -1,40 +1,27 @@
-# 0.19.0 review draft
+# 0.19.0: The API is written in TypeScript
 
-0.19.0 prepares UniHub's API and classic browser workers in TypeScript. API
-routes and services compile to the same CommonJS runtime layout. Source
-startup/test commands compile first, and the image contains emitted code with
-runtime dependencies. Notification and audio worker URLs stay the same.
+The API and the two browser workers are now written in TypeScript and
+compiled before they run. UniHub works the same as before: the same pages,
+routes, database and backup format. No database upgrade runs at startup.
 
-The frozen database baseline remains JavaScript. Numbered migrations, SQL
-schema and backup format versions are unchanged. Keep the usual consistent
-pre-upgrade backup of the database, uploads, configuration and keys.
+### Changed
 
-## Review status
+- **The API is compiled from TypeScript.** Routes, services, security helpers
+  and the `mail-rollout` operator command are checked in strict mode and
+  compiled to the same CommonJS layout as before. The image holds only the
+  compiled code and the production dependencies. `/app/api/server.js` and
+  `/app/api/mail-rollout.js` are where they were. The frozen database
+  baseline (`database.js`) stays JavaScript.
+- **The browser workers are compiled too.** The notification service worker
+  and the recording worklet keep their URLs (`/sw-custom.js`,
+  `/audio-recorder-worklet.js`). Installed apps and push subscriptions keep
+  working.
 
-Local branch: `conversion/typescript-20261008`.
-Base: `283ed82071375d47bcb41201df4e92862443b5ec`.
-Root and API manifests/locks are prepared as 0.19.0. No commit, push, tag,
-image publication or deployment has occurred. 0.19.0 is not a published image.
-The maintainer must inspect the full diff, including new untracked TypeScript
-files, before authorizing publication.
+### Upgrade
 
-Local validation passed: 669 API/MariaDB tests with zero skips, 231 frontend
-tests, compiler/lint checks, frontend production build and a disposable
-flattened API runtime install. Final whitespace cleanup left emitted runtime
-bytes unchanged. These checks ran on local Node 26.7.0.
-
-See [the migration checkpoint](TYPESCRIPT_MIGRATION.md) for exact coverage,
-validation, remaining typing seams and resumption commands.
-
-## Checks still needed before publication
-
-- Build the image with Node 24 and run the existing container smoke workflow
-  once Docker access is available. Local Node 26 tests and a flattened runtime
-  install do not establish an Alpine image or managed-install result.
-- Review emitted-worker behavior in a browser: recording capture, offline
-  handover, sign-out/account-switch notification privacy and notification clicks.
-- Review version/release notes, then authorize any commit, push or release step.
-
-Published installation examples still refer to existing releases. Do not change
-running deployments or use a 0.19.0 image tag until an image has actually been
-reviewed, built, tested and published.
+- With the container image there is nothing to do: pull and restart. The
+  database is not changed, and backups from earlier versions restore as
+  before.
+- Running the API from source (not the image) now needs its development
+  dependencies to compile it: `npm --prefix api ci`, then
+  `npm --prefix api start`, which builds `api/dist/` first.
