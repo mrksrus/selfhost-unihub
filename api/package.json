@@ -5,12 +5,12 @@
   "description": "UniHub API Server",
   "main": "dist/server.js",
   "scripts": {
-    "build": "node scripts/build.cjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build": "node scripts/build.cts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc -p tsconfig.scripts.json",
     "start": "npm run build && node dist/server.js",
     "test": "npm run build && node --test --test-concurrency=1 tests/*.test.js",
-    "test:recovery": "npm run build && node scripts/test-recovery.cjs",
-    "test:ci": "npm run build && node scripts/test-recovery.cjs --all"
+    "test:recovery": "npm run build && node scripts/test-recovery.cts",
+    "test:ci": "npm run build && node scripts/test-recovery.cts --all"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

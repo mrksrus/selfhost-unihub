@@ -53,8 +53,9 @@ The 0.19.0 API source is TypeScript except for the frozen legacy database
 baseline. `npm --prefix api start` compiles first, then starts
 `api/dist/server.js`. `npm --prefix api run build` creates the CommonJS runtime
 and `npm --prefix api run typecheck` checks source without emitting code.
-`allowJs` copies the frozen `database.js` into the runtime tree with `checkJs`
-disabled for that file. Do not edit its `ensureLegacySchema` baseline.
+`allowJs` compiles the frozen `database.js` into the runtime tree with the
+TypeScript files; `checkJs` is off, so it is not type-checked. Do not edit its
+`ensureLegacySchema` baseline.
 
 The notification service worker and audio worklet are authored in `workers/`.
 `npm run build:workers` emits classic scripts into ignored `.worker-dist/`.
@@ -80,6 +81,13 @@ keep the compiled modules testable:
   `(require('./x') as typeof import('./x')).fn()`. Keep these where they are.
 - Route modules export one table of `'METHOD /path'` handlers with
   `export =`; `routes/index.ts` spreads them.
+
+The maintenance scripts in `api/scripts/` (build, recovery gate, schema dump,
+dev seed, local SQL) are `.cts` files that Node runs directly by stripping
+their types, so they are not compiled. They use only erasable TypeScript: load
+modules with `require('x') as typeof import('x')`, and API code from
+`../dist/src/` typed against `../src/`. `npm --prefix api run typecheck` also
+checks them through `api/tsconfig.scripts.json`.
 
 The backend requires MariaDB configuration through either `DATABASE_URL` or
 `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and
@@ -136,13 +144,13 @@ The app creates and upgrades its own schema at startup. `ensureLegacySchema` in
 `api/src/services/database.js` is a frozen baseline; every schema change is a new
 numbered migration in `ensureSchema`. `docker/mariadb/schema.sql` is
 generated, never edited: `schema-dump` runs the startup schema code
-(`api/scripts/dump-schema.cjs`) on an empty database and writes a sorted
+(`api/scripts/dump-schema.cts`) on an empty database and writes a sorted
 `SHOW CREATE TABLE` dump. Commit the regenerated file with the migration;
 `database-schema-file-mysql-integration.test.js` fails in CI when it is stale.
 `migrate-check` warns and prints a diff when an upgraded old database ends up
 different from a fresh install.
 
-`db:dev` runs `api/scripts/seed-dev.cjs`, which refuses any database not ending
+`db:dev` runs `api/scripts/seed-dev.cts`, which refuses any database not ending
 in `_dev`, builds the schema with the app's own startup code and inserts
 deterministic synthetic data: contacts, calendars with events and todos,
 four mail accounts (two Sync, one Download, one disconnected) with a few hundred

@@ -20,7 +20,7 @@ test('committed 01-schema.sql equals a freshly migrated database', {
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'ci-bootstrap-password-2026';
   const mysql = require('mysql2/promise');
   const { getDb, setDb } = require('../dist/src/state');
-  const { SCHEMA_FILE, dumpSchema, migrateCurrentSchema, describeDifference } = require('../scripts/dump-schema.cjs');
+  const { SCHEMA_FILE, dumpSchema, migrateCurrentSchema, describeDifference } = require('../scripts/dump-schema.cts');
   const connection = await mysql.createConnection({
     host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER,

@@ -7,7 +7,7 @@ test('the recovery release gate fails rather than skipping unavailable database 
   const env = { ...process.env };
   delete env.NODE_TEST_CONTEXT;
   for (const key of Object.keys(env)) if (key.startsWith('MYSQL_TEST_')) delete env[key];
-  const result = spawnSync(process.execPath, [path.join(__dirname, '../scripts/test-recovery.cjs')], { env, encoding: 'utf8' });
+  const result = spawnSync(process.execPath, [path.join(__dirname, '../scripts/test-recovery.cts')], { env, encoding: 'utf8' });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /requires MYSQL_TEST_HOST/);
   assert.match(result.stderr, /No tests ran/);
@@ -25,7 +25,7 @@ test('recovery gate refuses populated test databases without modifying their dat
     owned = true;
     await connection.query('INSERT INTO recovery_gate_sentinel VALUES (42)');
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
-    const result = spawnSync(process.execPath, [path.join(__dirname, '../scripts/test-recovery.cjs')], { env, encoding: 'utf8' });
+    const result = spawnSync(process.execPath, [path.join(__dirname, '../scripts/test-recovery.cts')], { env, encoding: 'utf8' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /refuses a non-empty database/);
     const [rows] = await connection.query('SELECT value FROM recovery_gate_sentinel');

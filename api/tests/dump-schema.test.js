@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { dumpSchema, describeDifference } = require('../scripts/dump-schema.cjs');
+const { dumpSchema, describeDifference } = require('../scripts/dump-schema.cts');
 
 test('schema dump is sorted and strips AUTO_INCREMENT counters', async () => {
   const created = {

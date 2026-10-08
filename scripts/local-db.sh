@@ -69,7 +69,7 @@ running() { [ -S "$SOCKET" ] && "$DB_HOME/bin/mariadb-admin" --defaults-file="$C
 rootsql() {
   local db=() sql=()
   while [ $# -gt 0 ]; do case "$1" in -e) sql=(-e "$2"); shift 2 ;; *) db=(--database "$1"); shift ;; esac; done
-  LOCAL_MYSQL_SOCKET=$SOCKET LOCAL_MYSQL_PASSWORD=${ROOT_PW:-} node "$REPO/api/scripts/local-sql.cjs" "${db[@]}" "${sql[@]}"
+  LOCAL_MYSQL_SOCKET=$SOCKET LOCAL_MYSQL_PASSWORD=${ROOT_PW:-} node "$REPO/api/scripts/local-sql.cts" "${db[@]}" "${sql[@]}"
 }
 
 wait_up() {
@@ -153,7 +153,7 @@ migrate() {
   # with the generated fresh-install schema. Old installs may legitimately keep
   # small differences, so a mismatch is reported but not fatal.
   local status=0
-  (cd "$REPO/api" && node scripts/dump-schema.cjs --existing --check) || status=$?
+  (cd "$REPO/api" && node scripts/dump-schema.cts --existing --check) || status=$?
   rootsql -e 'DROP DATABASE unihub_migrate_test' >/dev/null
   case $status in
     0) echo 'local-db: upgrades completed and verified; schema matches a fresh install' ;;
@@ -166,7 +166,7 @@ schema_dump() {
   fresh_db unihub_schema_test
   app_env unihub_schema_test
   local status=0
-  (cd "$REPO/api" && node scripts/dump-schema.cjs) || status=$?
+  (cd "$REPO/api" && node scripts/dump-schema.cts) || status=$?
   rootsql -e 'DROP DATABASE unihub_schema_test' >/dev/null
   return $status
 }
@@ -175,7 +175,7 @@ dev() {
   start; load_env
   rootsql -e 'CREATE DATABASE IF NOT EXISTS unihub_dev CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
   app_env unihub_dev
-  (cd "$REPO/api" && node scripts/seed-dev.cjs "$@")
+  (cd "$REPO/api" && node scripts/seed-dev.cts "$@")
   cat <<EOF
 
 Local MariaDB keeps running for this session. Start the app with:

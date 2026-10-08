@@ -1,7 +1,7 @@
 // Emit the API into one isolated runtime tree, including unconverted JS.
-const fs = require('node:fs');
-const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const fs = require('node:fs') as typeof import('node:fs');
+const path = require('node:path') as typeof import('node:path');
+const { spawnSync } = require('node:child_process') as typeof import('node:child_process');
 const apiRoot = path.resolve(__dirname, '..');
 fs.rmSync(path.join(apiRoot, 'dist'), { recursive: true, force: true });
 const result = spawnSync(process.execPath, [require.resolve('typescript/bin/tsc'), '-p', path.join(apiRoot, 'tsconfig.json')], { stdio: 'inherit' });

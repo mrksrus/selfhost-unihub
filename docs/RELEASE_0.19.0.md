@@ -11,7 +11,8 @@ routes, database and backup format. No database upgrade runs at startup.
   compiled to the same CommonJS layout as before. The image holds only the
   compiled code and the production dependencies. `/app/api/server.js` and
   `/app/api/mail-rollout.js` are where they were. The frozen database
-  baseline (`database.js`) stays JavaScript.
+  baseline (`database.js`) stays JavaScript. The development scripts in
+  `api/scripts/` are type-checked TypeScript that Node runs directly.
 - **The browser workers are compiled too.** The notification service worker
   and the recording worklet keep their URLs (`/sw-custom.js`,
   `/audio-recorder-worklet.js`). Installed apps and push subscriptions keep

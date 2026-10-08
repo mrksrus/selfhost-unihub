@@ -18,7 +18,7 @@ WORKDIR /build/api
 COPY api/package*.json ./
 RUN npm ci
 COPY api/tsconfig.json ./
-COPY api/scripts/build.cjs ./scripts/build.cjs
+COPY api/scripts/build.cts ./scripts/build.cts
 COPY api/*.ts ./
 COPY api/src ./src
 RUN npm run build

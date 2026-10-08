@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Synthetic sample data for local development (scripts/local-db.sh dev).
-//   node scripts/seed-dev.cjs [--reset]
+//   node scripts/seed-dev.cts [--reset]
 // Only runs against a database whose name ends in _dev. The schema is built by
 // the app's own startup code; rows are written through service functions where
 // practical, otherwise with parameterized SQL matching the real schema.
@@ -11,8 +11,17 @@
 // .test name fails DNS, so any sync attempt fails fast and never leaves the host.
 'use strict';
 
-const crypto = require('node:crypto');
-const mysql = require('mysql2/promise');
+import type { ExecuteValues, Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
+import type { SqlExecutor } from '../src/types';
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+type Repository = typeof import('../src/services/mail-engine/repository');
+type Mailbox = Awaited<ReturnType<Repository['ensureMailbox']>>;
+type WritebackEmail = Parameters<typeof import('../src/services/mail-writebacks')['queueChanges']>[2][number];
+type Row = Record<string, ExecuteValues>;
+interface Person { name: string; email: string }
+interface Folder { slug: string; remote: string; custom?: boolean }
+interface Account { id: string; userId: string; email: string; display: string; mode: 'sync' | 'download'; disconnected: boolean; folders: Folder[] }
+interface SeedEmail extends Row { id: string; folder: string; is_read: boolean; is_starred: boolean; has_attachments: boolean }
 
 const RESET = process.argv.includes('--reset');
 const SEED_VERSION = '1';
@@ -20,7 +29,7 @@ const MARKER = 'dev_seed_version';
 const PASSWORD = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
 const MAIL_HOST = { imap: 'imap.unihub-dev.test', smtp: 'smtp.unihub-dev.test', port: 1 };
 
-function die(message) { console.error(`seed-dev: ${message}`); process.exit(1); }
+function die(message: string): never { console.error(`seed-dev: ${message}`); process.exit(1); }
 const database = process.env.MYSQL_DATABASE || '';
 if (!/_dev$/.test(database)) die(`refusing to run: MYSQL_DATABASE must end with _dev (got "${database}")`);
 if (process.env.BOOTSTRAP_ADMIN_EMAIL !== 'admin@example.com' || PASSWORD.length < 12) {
@@ -35,9 +44,9 @@ function rand() { // mulberry32
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
-const pick = list => list[Math.floor(rand() * list.length)];
-const chance = p => rand() < p;
-const int = (min, max) => min + Math.floor(rand() * (max - min + 1));
+const pick = <T,>(list: readonly T[]): T => list[Math.floor(rand() * list.length)];
+const chance = (p: number) => rand() < p;
+const int = (min: number, max: number) => min + Math.floor(rand() * (max - min + 1));
 function uuid() {
   const hex = Array.from({ length: 32 }, () => Math.floor(rand() * 16).toString(16));
   hex[12] = '4'; hex[16] = '89ab'[Math.floor(rand() * 4)];
@@ -45,8 +54,8 @@ function uuid() {
   return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
 }
 const TODAY = new Date(); TODAY.setUTCHours(0, 0, 0, 0);
-const at = (days, hours = 0, minutes = 0) => new Date(TODAY.getTime() + ((days * 24 + hours) * 60 + minutes) * 60000);
-const sqlDate = date => date.toISOString().slice(0, 19).replace('T', ' ');
+const at = (days: number, hours = 0, minutes = 0) => new Date(TODAY.getTime() + ((days * 24 + hours) * 60 + minutes) * 60000);
+const sqlDate = (date: Date) => date.toISOString().slice(0, 19).replace('T', ' ');
 
 const FIRST = ['Ada', 'Ben', 'Clara', 'Dmitri', 'Elif', 'Farah', 'Gustav', 'Hana', 'Ivo', 'Jonas', 'Kira', 'Lena', 'Mateo', 'Nina',
   'Oskar', 'Priya', 'Quinn', 'Rosa', 'Sami', 'Tariq', 'Uma', 'Vera', 'Wim', 'Xenia', 'Yusuf', 'Zoe'];
@@ -54,7 +63,7 @@ const LAST = ['Example', 'Sample', 'Testmann', 'Placeholder', 'Demo', 'Fictive',
   'Specimen', 'Trialson'];
 const COMPANIES = ['Example Corp', 'Sample Labs', 'Placeholder GmbH', 'Demo Logistics', 'Test Kitchen Co.', null, null];
 const DOMAINS = ['example.com', 'example.org', 'mail.example.com', 'team.example.org', 'lists.example.test'];
-const ORG_SENDERS = [
+const ORG_SENDERS: [string, string][] = [
   ['Example Bank', 'no-reply@bank.example.com'], ['Sample Shop', 'orders@shop.example.org'],
   ['Demo Airlines', 'bookings@air.example.com'], ['Placeholder News', 'digest@news.example.test'],
   ['Example Cloud', 'billing@cloud.example.com'], ['Sample Community Forum', 'notify@forum.example.org'],
@@ -67,10 +76,10 @@ const TOPICS = ['Quarterly report draft', 'Lunch on Thursday?', 'Your order has 
 
 // ── Database setup ────────────────────────────────────────────────
 async function dropAllTables() {
-  const config = require('../dist/src/services/database-config').getDatabaseConfig();
+  const config = (require('../dist/src/services/database-config') as typeof import('../src/services/database-config')).getDatabaseConfig();
   const cx = await mysql.createConnection({ ...config, multipleStatements: false });
   try {
-    const [tables] = await cx.query('SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE()');
+    const [tables] = await cx.query<RowDataPacket[]>('SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE()');
     await cx.query('SET FOREIGN_KEY_CHECKS = 0');
     for (const { name } of tables) await cx.query(`DROP TABLE IF EXISTS \`${name.replace(/`/g, '')}\``);
     await cx.query('SET FOREIGN_KEY_CHECKS = 1');
@@ -78,29 +87,29 @@ async function dropAllTables() {
   } finally { await cx.end(); }
 }
 
-const counts = {};
-async function insert(db, table, row) {
+const counts: Record<string, number> = {};
+async function insert(db: SqlExecutor, table: string, row: Row) {
   const keys = Object.keys(row);
   await db.execute(`INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`,
     keys.map(key => row[key] !== null && typeof row[key] === 'object' && !(row[key] instanceof Date) ? JSON.stringify(row[key]) : row[key]));
 }
 
 // ── Users ─────────────────────────────────────────────────────────
-async function seedUsers(db) {
-  const { hashPassword } = require('../dist/src/auth');
-  const [[admin]] = await db.execute("SELECT id FROM users WHERE email = 'admin@example.com'");
+async function seedUsers(db: Pool) {
+  const { hashPassword } = require('../dist/src/auth') as typeof import('../src/auth');
+  const [[admin]] = await db.execute<RowDataPacket[]>("SELECT id FROM users WHERE email = 'admin@example.com'");
   if (!admin) die('bootstrap admin missing; was the database already populated with other users?');
   await db.execute("UPDATE users SET full_name = 'Avery Admin', timezone = 'Europe/Berlin' WHERE id = ?", [admin.id]);
   const alexId = uuid();
   await db.execute(`INSERT INTO users (id, email, password_hash, full_name, email_verified, role, timezone)
     VALUES (?, 'alex@example.com', ?, 'Alex Example', TRUE, 'user', 'Europe/Berlin')`, [alexId, await hashPassword(PASSWORD)]);
-  await require('../dist/src/services/calendar').ensureDefaultLocalCalendarForUser(alexId, db);
+  await (require('../dist/src/services/calendar') as typeof import('../src/services/calendar')).ensureDefaultLocalCalendarForUser(alexId, db);
   return { admin: admin.id, alex: alexId };
 }
 
 // ── Contacts, calendar, todos ──────────────────────────────
-async function seedContacts(db, userId, n) {
-  const people = [];
+async function seedContacts(db: SqlExecutor, userId: string, n: number) {
+  const people: Person[] = [];
   for (let i = 0; i < n; i++) {
     const first = FIRST[i % FIRST.length], last = pick(LAST);
     const email = `${first}.${last}`.toLowerCase() + '@' + pick(DOMAINS);
@@ -117,15 +126,15 @@ async function seedContacts(db, userId, n) {
   return people;
 }
 
-async function seedCalendar(db, userId, eventCount, todoCount) {
-  const { calendarId, accountId } = await require('../dist/src/services/calendar').ensureDefaultLocalCalendarForUser(userId, db);
+async function seedCalendar(db: SqlExecutor, userId: string, eventCount: number, todoCount: number) {
+  const { calendarId, accountId } = await (require('../dist/src/services/calendar') as typeof import('../src/services/calendar')).ensureDefaultLocalCalendarForUser(userId, db);
   const workId = uuid();
   await insert(db, 'calendar_calendars', { id: workId, user_id: userId, account_id: accountId, name: 'Work',
     external_id: `local-seed-work-${workId}`, color: '#16a34a', is_visible: true, auto_todo_enabled: true, read_only: false, is_primary: false });
   counts.calendar_calendars = (counts.calendar_calendars || 0) + 1;
   const titles = ['Team standup', 'Design review', 'Dentist', 'Yoga class', '1:1 with Kira', 'Lunch with Ben', 'Sprint planning',
     'Parent-teacher meeting', 'Car service', 'Birthday dinner', 'Budget review', 'Hackathon kickoff', 'Piano lesson'];
-  const event = (fields) => insert(db, 'calendar_events', { id: uuid(), user_id: userId, description: null, location: null,
+  const event = (fields: Row) => insert(db, 'calendar_events', { id: uuid(), user_id: userId, description: null, location: null,
     color: '#2563eb', recurrence: null, reminders: null, todo_status: null, is_todo_only: false, done_at: null, ...fields });
   for (let i = 0; i < eventCount; i++) {
     const day = int(-14, 21), allDay = i % 9 === 0, work = chance(0.5);
@@ -154,9 +163,9 @@ async function seedCalendar(db, userId, eventCount, todoCount) {
 
 // ── Mail ──────────────────────────────────────────────────────────
 const REMOTE = { inbox: 'INBOX', sent: 'Sent', archive: 'Archive', trash: 'Trash' };
-async function createAccount(db, userId, { email, display, mode, disconnected = false, custom = [] }) {
-  const { encrypt } = require('../dist/src/security/encryption');
-  const { registerCustomImapFoldersForUser, ensureDefaultMailFoldersForUser } = require('../dist/src/services/mail');
+async function createAccount(db: Pool, userId: string, { email, display, mode, disconnected = false, custom = [] }: { email: string; display: string; mode: Account['mode']; disconnected?: boolean; custom?: string[] }): Promise<Account> {
+  const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+  const { registerCustomImapFoldersForUser, ensureDefaultMailFoldersForUser } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
   const id = uuid();
   // Same columns and encryption as POST /api/mail/accounts; disconnect mirrors disconnectAccount().
   await db.execute(`INSERT INTO mail_accounts (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
@@ -169,21 +178,21 @@ async function createAccount(db, userId, { email, display, mode, disconnected = 
   await ensureDefaultMailFoldersForUser(userId, db);
   const specialUses = new Map(Object.entries(REMOTE).map(([slug, name]) => [name, slug]));
   const registered = disconnected ? [] : await registerCustomImapFoldersForUser(userId, id, [...Object.values(REMOTE), ...custom], db, specialUses);
-  const folders = Object.entries(REMOTE).map(([slug, remote]) => ({ slug, remote }));
-  for (const name of custom) folders.push({ slug: registered.find(item => item.remoteName === name).slug, remote: name, custom: true });
+  const folders: Folder[] = Object.entries(REMOTE).map(([slug, remote]) => ({ slug, remote }));
+  for (const name of custom) folders.push({ slug: registered.find(item => item.remoteName === name)!.slug, remote: name, custom: true });
   counts.mail_accounts = (counts.mail_accounts || 0) + 1;
   return { id, userId, email, display, mode, disconnected, folders };
 }
 
-function htmlBody(subject, name, paragraphs) {
+function htmlBody(subject: string, name: string, paragraphs: string[]) {
   return `<html><body style="font-family:sans-serif"><h2 style="color:#2563eb">${subject}</h2><p>Hello ${name},</p>`
     + paragraphs.map(p => `<p>${p}</p>`).join('') + '<p style="color:#666;font-size:12px">This is synthetic sample mail for UniHub development.</p></body></html>';
 }
 
-async function seedMailbox(db, account, people, total) {
-  const repository = require('../dist/src/services/mail-engine/repository');
-  const weights = [['inbox', 0.5], ['archive', 0.2], ['sent', 0.12], ['trash', 0.06], ['custom', 0.12]];
-  const epochs = new Map(), boxes = new Map(), nextUid = new Map();
+async function seedMailbox(db: PoolConnection, account: Account, people: Person[], total: number) {
+  const repository = require('../dist/src/services/mail-engine/repository') as Repository;
+  const weights: [string, number][] = [['inbox', 0.5], ['archive', 0.2], ['sent', 0.12], ['trash', 0.06], ['custom', 0.12]];
+  const epochs = new Map<string, number>(), boxes = new Map<string, Mailbox>(), nextUid = new Map<string, number>();
   for (const [index, folder] of account.folders.entries()) {
     epochs.set(folder.slug, 1700000000 + index * 7 + account.email.length);
     nextUid.set(folder.slug, 100);
@@ -193,12 +202,12 @@ async function seedMailbox(db, account, people, total) {
     }
   }
   const customs = account.folders.filter(folder => folder.custom);
-  const emails = [];
+  const emails: SeedEmail[] = [];
   for (let i = 0; i < total; i++) {
     let r = rand(), kind = 'inbox';
     for (const [name, weight] of weights) { if ((r -= weight) < 0) { kind = name; break; } }
     if (kind === 'custom' && !customs.length) kind = 'inbox';
-    const folder = kind === 'custom' ? pick(customs) : account.folders.find(item => item.slug === kind);
+    const folder = kind === 'custom' ? pick(customs) : account.folders.find(item => item.slug === kind)!;
     const person = pick(people), org = chance(0.35) ? pick(ORG_SENDERS) : null;
     const sent = folder.slug === 'sent';
     const [fromName, fromAddress] = sent ? [account.display, account.email] : org || [person.name, person.email];
@@ -207,9 +216,9 @@ async function seedMailbox(db, account, people, total) {
     const html = chance(0.4);
     const text = `Hello ${sent ? person.name : account.display},\n\n${pick(['Quick update on this.', 'Please see the details below.',
       'Thanks for getting back to me.', 'Just a friendly reminder.'])}\n\nBest,\n${fromName}`;
-    const uid = nextUid.get(folder.slug) + int(1, 3); nextUid.set(folder.slug, uid);
-    const epoch = epochs.get(folder.slug), synced = account.mode === 'sync';
-    const row = {
+    const uid = nextUid.get(folder.slug)! + int(1, 3); nextUid.set(folder.slug, uid);
+    const epoch = epochs.get(folder.slug)!, synced = account.mode === 'sync';
+    const row: SeedEmail = {
       id: uuid(), user_id: account.userId, mail_account_id: account.id, message_id: `<seed-${i}-${account.id.slice(0, 8)}@unihub-dev.test>`,
       subject, from_address: fromAddress, from_name: fromName, to_addresses: sent ? [person.email] : [account.email],
       cc_addresses: chance(0.1) ? [pick(people).email] : null, body_text: text,
@@ -228,7 +237,7 @@ async function seedMailbox(db, account, people, total) {
     }
     if (synced) {
       const flags = [...(row.is_read ? ['\\Seen'] : []), ...(row.is_starred ? ['\\Flagged'] : [])];
-      await repository.upsertOccurrence({ userId: account.userId, accountId: account.id, mailboxId: boxes.get(folder.slug).id,
+      await repository.upsertOccurrence({ userId: account.userId, accountId: account.id, mailboxId: boxes.get(folder.slug)!.id,
         epoch, uid, emailId: row.id, flags, modseq: String(1000 + i) }, db);
     }
     emails.push(row);
@@ -239,10 +248,10 @@ async function seedMailbox(db, account, people, total) {
 
 // Writebacks in every state the sync UI distinguishes, queued through the real
 // queueChanges() and then advanced the way the worker's setState() would.
-async function seedWritebacks(db, account, emails) {
-  const { queueChanges } = require('../dist/src/services/mail-writebacks');
+async function seedWritebacks(db: Pool, account: Account, emails: SeedEmail[]) {
+  const { queueChanges } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
   const inbox = emails.filter(email => email.folder === 'inbox');
-  const plans = [
+  const plans: { change: Row; email: SeedEmail | undefined; update?: { state: string; status: string; attempts: number; error?: string; availableIn?: number; dispatched?: boolean; evidence?: Row } }[] = [
     { change: { read: true }, email: inbox.find(e => !e.is_read) },
     { change: { star: true }, email: inbox.filter(e => !e.is_starred)[1],
       update: { state: 'retry_wait', status: 'pending', attempts: 2, error: 'Mail/calendar hostname could not be resolved (ENOTFOUND).', availableIn: 25 } },
@@ -255,11 +264,11 @@ async function seedWritebacks(db, account, emails) {
     { change: { star: true }, email: inbox.filter(e => !e.is_starred)[5], update: { state: 'confirmed', status: 'done', attempts: 1, dispatched: true } },
   ];
   for (const plan of plans) {
-    const cx = await db.getConnection(), operationIds = [];
+    const cx = await db.getConnection(), operationIds: string[] = [];
     try {
       await cx.beginTransaction();
-      const [[email]] = await cx.execute(`SELECT e.*, a.sync_mode, a.is_active FROM emails e JOIN mail_accounts a ON a.id = e.mail_account_id
-        WHERE e.id = ?`, [plan.email.id]);
+      const [[email]] = await cx.execute<WritebackEmail[]>(`SELECT e.*, a.sync_mode, a.is_active FROM emails e JOIN mail_accounts a ON a.id = e.mail_account_id
+        WHERE e.id = ?`, [plan.email!.id]);
       await queueChanges(cx, account.userId, [email], plan.change, { operationIds });
       const u = plan.update;
       if (u) {
@@ -276,31 +285,31 @@ async function seedWritebacks(db, account, emails) {
   }
 }
 
-async function seedJobs(db, account, boxes) {
-  const runtime = require('../dist/src/services/mail-engine/runtime');
+async function seedJobs(db: Pool, account: Account, boxes: Map<string, Mailbox>) {
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
   await runtime.enqueueJob({ userId: account.userId, accountId: account.id, kind: 'sync', priority: 50 });
-  const job = (fields) => insert(db, 'mail_engine_jobs', { id: uuid(), user_id: account.userId, mail_account_id: account.id, priority: 50, ...fields });
-  await job({ kind: 'recent', mailbox_id: boxes.get('inbox').id, state: 'running', phase: 'fetch_headers', lease_owner: 'seed-dev-worker',
+  const job = (fields: Row) => insert(db, 'mail_engine_jobs', { id: uuid(), user_id: account.userId, mail_account_id: account.id, priority: 50, ...fields });
+  await job({ kind: 'recent', mailbox_id: boxes.get('inbox')!.id, state: 'running', phase: 'fetch_headers', lease_owner: 'seed-dev-worker',
     lease_until: sqlDate(at(0, -1)), worker_generation: 1, processed: 42, total: 120, started_at: sqlDate(at(0, -1, -5)),
     heartbeat_at: sqlDate(at(0, -1, -1)) });
-  await job({ kind: 'flags', mailbox_id: boxes.get('archive').id, state: 'error', phase: null, processed: 0,
+  await job({ kind: 'flags', mailbox_id: boxes.get('archive')!.id, state: 'error', phase: null, processed: 0,
     error: 'Mail/calendar hostname could not be resolved (ENOTFOUND).', started_at: sqlDate(at(0, -2)), completed_at: sqlDate(at(0, -2, 1)) });
 }
 
 // ── Main ──────────────────────────────────────────────────────────
 // Bulk rows go through one transaction (repository helpers accept a connection).
-async function inTransaction(db, callback) {
+async function inTransaction<T>(db: Pool, callback: (cx: PoolConnection) => Promise<T>) {
   const cx = await db.getConnection();
   try { await cx.beginTransaction(); const result = await callback(cx); await cx.commit(); return result; }
   catch (error) { await cx.rollback(); throw error; } finally { cx.release(); }
 }
-async function tableCounts(db) {
+async function tableCounts(db: Pool) {
   const tables = ['users', 'contacts', 'calendar_calendars', 'calendar_events', 'mail_accounts', 'mail_folders',
     'mail_folder_remote_boxes', 'emails', 'email_attachments', 'mail_remote_mailboxes', 'mail_remote_occurrences', 'mail_writebacks', 'mail_engine_jobs'];
-  const out = {};
-  for (const table of tables) { const [[row]] = await db.query(`SELECT COUNT(*) AS n FROM \`${table}\``); out[table] = Number(row.n); }
-  const [states] = await db.query("SELECT CONCAT('mail_writebacks.', state) AS k, COUNT(*) AS n FROM mail_writebacks GROUP BY state ORDER BY state");
-  const [jobs] = await db.query("SELECT CONCAT('mail_engine_jobs.', state) AS k, COUNT(*) AS n FROM mail_engine_jobs GROUP BY state ORDER BY state");
+  const out: Record<string, number> = {};
+  for (const table of tables) { const [[row]] = await db.query<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM \`${table}\``); out[table] = Number(row.n); }
+  const [states] = await db.query<RowDataPacket[]>("SELECT CONCAT('mail_writebacks.', state) AS k, COUNT(*) AS n FROM mail_writebacks GROUP BY state ORDER BY state");
+  const [jobs] = await db.query<RowDataPacket[]>("SELECT CONCAT('mail_engine_jobs.', state) AS k, COUNT(*) AS n FROM mail_engine_jobs GROUP BY state ORDER BY state");
   for (const row of [...states, ...jobs]) out[`  ${row.k}`] = Number(row.n);
   return out;
 }
@@ -308,15 +317,15 @@ async function tableCounts(db) {
 async function main() {
   const started = Date.now();
   if (RESET) await dropAllTables();
-  await require('../dist/src/services/database').initDatabase();
+  await (require('../dist/src/services/database') as typeof import('../src/services/database')).initDatabase();
   const schemaSeconds = ((Date.now() - started) / 1000).toFixed(1);
-  const { db } = require('../dist/src/state');
+  const { db } = require('../dist/src/state') as typeof import('../src/state');
   try {
-    const [[marker]] = await db.execute('SELECT setting_value FROM system_settings WHERE setting_key = ?', [MARKER]);
+    const [[marker]] = await db.execute<RowDataPacket[]>('SELECT setting_value FROM system_settings WHERE setting_key = ?', [MARKER]);
     if (marker) {
       console.log(`seed-dev: ${database} already has sample data (version ${marker.setting_value}); nothing to do. Use --reset to rebuild.`);
     } else {
-      const [[existing]] = await db.execute("SELECT COUNT(*) AS n FROM users WHERE email <> 'admin@example.com'");
+      const [[existing]] = await db.execute<RowDataPacket[]>("SELECT COUNT(*) AS n FROM users WHERE email <> 'admin@example.com'");
       if (Number(existing.n)) die(`${database} already contains other users; run with --reset to rebuild it`);
       console.log('seed-dev: inserting sample data…');
       const users = await seedUsers(db);
@@ -334,13 +343,13 @@ async function main() {
       await inTransaction(db, cx => seedMailbox(cx, oldMail, alexPeople, 25));
       await seedWritebacks(db, work, workMail.emails);
       await seedJobs(db, work, workMail.boxes);
-      await require('../dist/src/services/mail-engine/runtime').enqueueJob({ userId: users.alex, accountId: alexMail.id, kind: 'presence',
-        mailboxId: alexBoxes.boxes.get('inbox').id });
+      await (require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime')).enqueueJob({ userId: users.alex, accountId: alexMail.id, kind: 'presence',
+        mailboxId: alexBoxes.boxes.get('inbox')!.id });
       await db.execute('INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?)', [MARKER, SEED_VERSION]);
-      console.log(`seed-dev: done (schema ${schemaSeconds}s, data ${((Date.now() - started) / 1000 - schemaSeconds).toFixed(1)}s)`);
+      console.log(`seed-dev: done (schema ${schemaSeconds}s, data ${((Date.now() - started) / 1000 - Number(schemaSeconds)).toFixed(1)}s)`);
     }
     console.table(await tableCounts(db));
   } finally { await db.end(); }
 }
 
-main().then(() => process.exit(0), error => { console.error('seed-dev: failed:', error); process.exit(1); });
+main().then(() => process.exit(0), (error: unknown) => { console.error('seed-dev: failed:', error); process.exit(1); });

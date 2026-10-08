@@ -31,7 +31,7 @@ export default tseslint.config(
   },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
-    files: ["api/**/*.ts"],
+    files: ["api/**/*.{ts,cts}"],
     languageOptions: { ecmaVersion: 2022, globals: globals.node },
     rules: {
       "@typescript-eslint/no-unused-vars": "off",

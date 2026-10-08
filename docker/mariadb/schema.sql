@@ -1,5 +1,5 @@
 -- UniHub MariaDB schema after all startup upgrades. GENERATED, do not edit.
--- Regenerate with: scripts/local-db.sh schema-dump (api/scripts/dump-schema.cjs).
+-- Regenerate with: scripts/local-db.sh schema-dump (api/scripts/dump-schema.cts).
 -- Schema changes are numbered migrations in api/src/services/database.js; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
