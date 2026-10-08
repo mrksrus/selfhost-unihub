@@ -16,12 +16,14 @@ routes, database and backup format. No database upgrade runs at startup.
   and the recording worklet keep their URLs (`/sw-custom.js`,
   `/audio-recorder-worklet.js`). Installed apps and push subscriptions keep
   working.
+- **The image runs on Node.js 26.** The container, CI and the package
+  manifests move from Node 24 to Node 26.
 
 ### Upgrade
 
 - With the container image there is nothing to do: pull and restart. The
   database is not changed, and backups from earlier versions restore as
   before.
-- Running the API from source (not the image) now needs its development
-  dependencies to compile it: `npm --prefix api ci`, then
+- Running the API from source (not the image) now needs Node.js 26 and its
+  development dependencies to compile it: `npm --prefix api ci`, then
   `npm --prefix api start`, which builds `api/dist/` first.

@@ -25,7 +25,7 @@ const BACKUP_IMPORT_SECTION_TABLES = Object.fromEntries(Object.entries(SECTION_P
 
 const BACKUP_IMPORT_SECTION_FILE_KINDS = Object.fromEntries(Object.entries(SECTION_POLICIES).map(([section, policy]) => [section, new Set(policy.fileKinds)]));
 
-function sha256Buffer(buffer: crypto.BinaryLike) {
+function sha256Buffer(buffer: string | NodeJS.ArrayBufferView) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
 
@@ -69,7 +69,7 @@ async function sha256FileSource(source: unknown): Promise<string> {
   const stream = createFileRangeStream(source);
   if (!stream) return hash.digest('hex');
   return new Promise<string>((resolve, reject) => {
-    stream.on('data', chunk => hash.update(chunk as crypto.BinaryLike));
+    stream.on('data', chunk => hash.update(chunk as Buffer));
     stream.on('error', reject);
     stream.on('end', () => resolve(hash.digest('hex')));
   });

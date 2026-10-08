@@ -272,7 +272,7 @@ async function readZipTextEntry(source: FileRangeSource | null | undefined, name
   if (stream) {
     await new Promise<void>((resolve, reject) => {
       stream.on('data', chunk => {
-        hash.update(chunk as crypto.BinaryLike);
+        hash.update(chunk as Buffer);
         text += decoder.write(chunk as Buffer);
       });
       stream.on('error', reject);

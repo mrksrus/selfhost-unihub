@@ -28,7 +28,7 @@ Docker volume by default.
 
 ## Local development
 
-Use Node.js 24 LTS, the container and CI runtime. Package manifests require Node 24 or newer.
+Use Node.js 26, the container and CI runtime. Package manifests require Node 26 or newer.
 
 Install frontend dependencies:
 

@@ -26,13 +26,13 @@
     "semver": "^7.6.0"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=26"
   },
   "license": "PolyForm-Noncommercial-1.0.0",
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.10",
     "@types/mailparser": "^3.9.0",
-    "@types/node": "^24.19.1",
+    "@types/node": "^26.6.4",
     "@types/nodemailer": "^8.0.2",
     "@types/web-push": "^3.6.4",
     "typescript": "^5.9.3"

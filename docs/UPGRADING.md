@@ -5,6 +5,13 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.19.0 The API is written in TypeScript
+
+No database upgrade or configuration change. The image now runs on Node.js 26;
+pull and restart. When you run the API from source instead of the image, use
+Node.js 26 and install the API's development dependencies
+(`npm --prefix api ci`), because `npm --prefix api start` compiles it first.
+
 ## 0.18.2 Linked calendars use the mail login directly
 
 Database upgrade 14 runs at startup; no configuration change. It removes the

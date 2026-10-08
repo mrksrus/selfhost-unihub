@@ -10,7 +10,7 @@ when an application action fails.
 
 - Use a dedicated, regular (non-admin) UniHub test user with one connected test
   mailbox in **two-way sync** mode. Never point this at someone else's mailbox.
-- Install the API dependencies with `npm ci --prefix api`. Use Node 24 or newer (the API's declared engine).
+- Install the API dependencies with `npm ci --prefix api`. Use Node 26 or newer (the API's declared engine).
 - The script sends one uniquely identified message **to the same test address**,
   requires it to arrive unread and unstarred, changes only that message, and
   creates/reuses the `UniHub Live Smoke` folder.

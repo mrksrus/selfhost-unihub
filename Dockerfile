@@ -1,5 +1,5 @@
 # ── Stage 1: Build the React frontend ──────────────────────────────
-FROM node:24-alpine AS frontend-builder
+FROM node:26-alpine AS frontend-builder
 
 WORKDIR /build
 
@@ -13,7 +13,7 @@ RUN node scripts/collect-frontend-notices.mjs /build/frontend-dependency-notices
 # ── Stage 2: Compile the API ───────────────────────────────────────
 # The compiler is a development dependency; the production image below installs
 # only runtime dependencies and copies the compiled CommonJS tree.
-FROM node:24-alpine AS api-builder
+FROM node:26-alpine AS api-builder
 WORKDIR /build/api
 COPY api/package*.json ./
 RUN npm ci
@@ -24,7 +24,7 @@ COPY api/src ./src
 RUN npm run build
 
 # ── Stage 3: Production image (Nginx + Node.js API) ───────────────
-FROM node:24-alpine
+FROM node:26-alpine
 
 # Install runtime services plus ffmpeg for recording conversion and temporary build deps for native node modules
 RUN apk add --no-cache nginx wget netcat-openbsd mariadb-client ffmpeg \
