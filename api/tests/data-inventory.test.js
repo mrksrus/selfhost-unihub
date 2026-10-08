@@ -41,6 +41,8 @@ test('the 0.16.0 baseline creates the fields declared through migration 11', () 
   assert.doesNotThrow(() => assertInventoryCoverage(baseline, { includeNotifications: false, throughMigration: 11 }));
   assert.throws(() => assertInventoryCoverage(baseline, { includeNotifications: false, throughMigration: 12 }), /Missing declared field calendar_accounts.mail_account_id/);
   assert.ok(!baseline.some(row => row.table_name === 'notes'), 'Notes tables were removed in step 11');
+  assert.throws(() => assertInventoryCoverage([...baseline, { table_name: 'notes', column_name: 'title' }], { includeNotifications: false, throughMigration: 11 }),
+    /Removed field still present notes.title/);
 });
 
 test('new tables and columns fail coverage until classified', () => {

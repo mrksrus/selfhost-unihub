@@ -46,7 +46,20 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   const [existingTables] = await cleanupConnection.query('SHOW TABLES');
   assert.equal(existingTables.length, 0, 'Fresh-install fixture requires an empty dedicated test database');
   ownsDatabase = true;
+  // A first setup that crashed after creating the tables, before recording its
+  // history, is finished by the next start without duplicating anything.
+  const { BASELINE } = require('../dist/src/services/database-baseline');
+  await BASELINE.up(cleanupConnection);
+  await BASELINE.up(cleanupConnection);
   await initDatabase();
+  const [[setup]] = await db.query(`SELECT (SELECT COUNT(*) FROM users) AS users,
+      (SELECT COUNT(*) FROM calendar_accounts WHERE provider = 'local') AS local_accounts,
+      (SELECT COUNT(*) FROM calendar_calendars) AS calendars`);
+  assert.deepEqual([setup.users, setup.local_accounts, setup.calendars].map(Number), [1, 1, 1]);
+  const [settings] = await db.query('SELECT setting_key, setting_value FROM system_settings ORDER BY setting_key');
+  assert.deepEqual(settings.map(row => [row.setting_key, row.setting_value]), [['signup_mode', 'disabled'], ['signup_secure_default_applied', 'true']]);
+  const [progress] = await db.query('SELECT source_table, last_id, processed FROM mail_engine_migration_progress ORDER BY source_table');
+  assert.deepEqual(progress.map(row => [row.source_table, row.last_id, Number(row.processed)]), [['emails', '', 0], ['mail_writebacks', '', 0]]);
   let notifications = require('../dist/src/services/notifications');
   await notifications.ensureNotificationSchema();
   await require('../dist/src/services/data-inventory').verifyDatabaseInventory(db);
@@ -128,6 +141,15 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   assert.deepEqual(history.map(row => row.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
   const [[calendarSync]] = await db.execute('SELECT name FROM schema_migrations WHERE id = 12');
   assert.equal(calendarSync.name, 'calendar-sync');
+
+  // A database with data whose history is gone is never set up again.
+  const [recorded] = await db.execute('SELECT id, name FROM schema_migrations ORDER BY id');
+  await db.execute('DELETE FROM schema_migrations');
+  await getDb().end();
+  await assert.rejects(initDatabase(), /no upgrade history/);
+  for (const row of recorded) await db.execute('INSERT INTO schema_migrations (id, name) VALUES (?, ?)', [row.id, row.name]);
+  await getDb().end();
+  await initDatabase();
 
   await t.test('backup suspension releases stale restore locks without deleting archives', async () => {
     const [[{ id: userId }]] = await db.execute('SELECT id FROM users LIMIT 1');

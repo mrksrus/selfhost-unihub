@@ -1,4 +1,4 @@
-// Emit the API into one isolated runtime tree, including unconverted JS.
+// Emit the API into one isolated runtime tree.
 const fs = require('node:fs') as typeof import('node:fs');
 const path = require('node:path') as typeof import('node:path');
 const { spawnSync } = require('node:child_process') as typeof import('node:child_process');

@@ -908,8 +908,31 @@ const BASELINE_TABLES = [
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 ];
 
+const BASELINE_TABLE_NAMES = BASELINE_TABLES.map(sql => /^CREATE TABLE IF NOT EXISTS (\w+) \(/.exec(sql)![1]);
+
+// The baseline sets up an empty database, or finishes its own setup after a
+// crash: then the database holds only its tables, at most the bootstrap admin
+// and no mail, contacts or events. Anything else has lost its upgrade history
+// or was not created by UniHub, and must not be marked as set up.
+async function refuseExistingData(connection: PoolConnection) {
+  const known = new Set([...BASELINE_TABLE_NAMES, 'schema_migrations']);
+  const [tables] = await connection.query<(RowDataPacket & { name: string })[]>(
+    'SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()');
+  const present = new Set(tables.map(row => String(row.name)));
+  let populated = [...present].some(name => !known.has(name));
+  for (const [table, limit] of [['users', 1], ['mail_accounts', 0], ['emails', 0], ['contacts', 0], ['calendar_events', 0]] as const) {
+    if (populated || !present.has(table)) continue;
+    const [[{ count }]] = await connection.query<(RowDataPacket & { count: number })[]>(`SELECT COUNT(*) AS count FROM ${table}`);
+    populated = Number(count) > limit;
+  }
+  if (populated) {
+    throw new Error('The database has tables or data but no upgrade history, so it is not set up again; use an empty database');
+  }
+}
+
 // Every statement can run again after a crash before the steps are recorded.
 async function createBaseline(connection: PoolConnection) {
+  await refuseExistingData(connection);
   for (const sql of BASELINE_TABLES) await connection.execute(sql);
   await connection.execute(`INSERT IGNORE INTO system_settings (setting_key, setting_value)
     VALUES ('signup_mode', 'disabled'), ('signup_secure_default_applied', 'true')`);
@@ -944,4 +967,4 @@ async function verifyBaseline(connection: PoolConnection) {
 
 const BASELINE = { history: BASELINE_HISTORY, up: createBaseline, verify: verifyBaseline };
 
-export { BASELINE, BASELINE_TABLES };
+export { BASELINE };

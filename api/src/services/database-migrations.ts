@@ -52,7 +52,7 @@ async function runMigrations(pool: Pick<Pool, 'getConnection'>, migrations: read
     }
     if (completed.length < baseline.history.length) {
       if (completed.length) {
-        throw new Error('The first setup of this database by an earlier release did not finish; start with an empty database');
+        throw new Error('The first setup of this database by an earlier release did not finish; start UniHub 0.18.2 once to finish it, or start with an empty database');
       }
       try {
         await baseline.up(connection);

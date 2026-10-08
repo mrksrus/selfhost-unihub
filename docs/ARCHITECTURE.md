@@ -221,12 +221,10 @@ Startup behavior:
 3a. Refuse any server that is not MariaDB 10.11 or later (`database-version.ts`),
     before any schema change. UniHub 0.16.0 and later do not run on MySQL.
 4. Apply missing ordered upgrades through `schema_migrations`, verifying each before recording completion.
-5. Create the first admin from bootstrap env vars when no users exist.
-6. Backfill local calendar account/calendar ownership.
+   An empty database is first set up from the 0.16.0 baseline, which also
+   creates the first admin from the bootstrap env vars and its default local
+   calendar.
 
-Additive mail migrations create `emails.import_complete` and `mail_sync_state`.
-Old imported messages are revalidated once; subsequent progress is recorded per
-account and exact provider folder, with UIDVALIDITY resets and failed-UID retries.
 No container configuration change is needed for these application migrations.
 
 A new database is created from the 0.16.0 baseline, which stands for upgrade steps 1 to 11. Later upgrades have ordered IDs and completion records; completed repairs do not repeat. Required migration errors stop startup. A declared field inventory is checked against the actual schema. See [Recovery contracts](DATA_RECOVERY.md).

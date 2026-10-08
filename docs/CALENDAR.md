@@ -22,7 +22,7 @@ Current capabilities:
 
 | Provider | How it is created | Behavior |
 | --- | --- | --- |
-| `local` | Calendar account API or startup backfill | Fully local to UniHub |
+| `local` | Calendar account API, or as each user's default calendar | Fully local to UniHub |
 | `caldav` | Mail account setup or edit page, or **Add account → CalDAV server** on the Calendar page | Two-way sync with the calendar server |
 | `ics` | Subscription address in the mail account settings, or **Add account → Subscription** | Read-only; the feed is downloaded again on every sync |
 
