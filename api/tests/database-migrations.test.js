@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { runMigrations } = require('../dist/src/services/database-migrations');
+const { BASELINE } = require('../dist/src/services/database-baseline');
 
 function database(history = []) {
   const state = { history, locked: false, releases: 0, writes: 0 };
@@ -101,4 +102,21 @@ test('the baseline records nothing when it fails, and refuses a half-finished ol
   await assert.rejects(runMigrations(database([{ id: 1, name: 'old-1' }]), [], { ...baseline, verify: async () => {} }), /did not finish/);
   await assert.rejects(runMigrations(database([{ id: 1, name: 'other' }]), [], baseline), /unknown or out of order/);
   await assert.rejects(runMigrations(database(), [{ id: 2, name: 'step-2', up: async () => {}, verify: async () => {} }], baseline), /increasing IDs/);
+});
+
+test('the baseline sets up only an empty database or its own unfinished setup', async () => {
+  const STOP = new Error('creating tables');
+  const connection = (tables, counts = {}) => ({
+    async query(sql) {
+      if (sql.includes('information_schema.TABLES')) return [tables.map(name => ({ name }))];
+      return [[{ count: counts[/FROM (\w+)/.exec(sql)[1]] || 0 }]];
+    },
+    async execute(sql) { if (sql.startsWith('CREATE TABLE')) throw STOP; return [[]]; },
+  });
+  await assert.rejects(BASELINE.up(connection([])), STOP);
+  await assert.rejects(BASELINE.up(connection(['schema_migrations', 'users', 'contacts'], { users: 1 })), STOP);
+  for (const [tables, counts] of [[['users'], { users: 2 }], [['users', 'contacts'], { contacts: 1 }], [['emails'], { emails: 3 }],
+    [['mail_accounts'], { mail_accounts: 1 }], [['calendar_events'], { calendar_events: 1 }], [['users', 'notification_config'], {}]]) {
+    await assert.rejects(BASELINE.up(connection(tables, counts)), /no upgrade history/, JSON.stringify(tables));
+  }
 });

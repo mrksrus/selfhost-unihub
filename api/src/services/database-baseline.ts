@@ -930,7 +930,9 @@ async function refuseExistingData(connection: PoolConnection) {
   }
 }
 
-// Every statement can run again after a crash before the steps are recorded.
+// Runs again after a crash before the steps are recorded. (A crash between the
+// two inserts of ensureDefaultLocalCalendarForUser leaves an empty local
+// account behind, as in every release since 0.11.)
 async function createBaseline(connection: PoolConnection) {
   await refuseExistingData(connection);
   for (const sql of BASELINE_TABLES) await connection.execute(sql);
@@ -960,9 +962,14 @@ async function createBaseline(connection: PoolConnection) {
   for (const user of users) await ensureDefaultLocalCalendarForUser(user.id, connection);
 }
 
-// Notification tables are created by their service after core startup.
+// Notification tables are created by their service after core startup. Tables
+// of an interrupted first setup by an earlier release have an older shape.
 async function verifyBaseline(connection: PoolConnection) {
-  await verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 11 });
+  try {
+    await verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 11 });
+  } catch (error) {
+    throw new Error(`${(error as Error).message}\nIf an earlier release began setting up this database, start UniHub 0.18.2 once to finish it.`, { cause: error });
+  }
 }
 
 const BASELINE = { history: BASELINE_HISTORY, up: createBaseline, verify: verifyBaseline };

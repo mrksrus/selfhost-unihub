@@ -41,6 +41,10 @@ routes, database and backup format. No database upgrade runs at startup.
 - Running the API from source (not the image) now needs Node.js 26 and its
   development dependencies to compile it: `npm --prefix api ci`, then
   `npm --prefix api start`, which builds `api/dist/` first.
+- A new installation needs an empty database. UniHub no longer adds its
+  tables to a database that already holds other tables or data without an
+  upgrade history. A first setup by an earlier release that stopped partway
+  is refused too: start 0.18.2 once to finish it.
 
 ## 0.18.2
 
