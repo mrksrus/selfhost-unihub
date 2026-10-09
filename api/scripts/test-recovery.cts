@@ -18,8 +18,8 @@ async function main() {
     if (tables.length) throw new Error('Recovery gate refuses a non-empty database. Use a disposable empty *_test schema.');
   } finally { await connection.end(); }
   const api = path.resolve(__dirname, '..');
-  const tests = fs.readdirSync(path.join(api, 'tests')).filter(name => name.endsWith('.test.js') &&
-    (process.argv.includes('--all') || name.startsWith('backup-') || ['data-inventory.test.js', 'database-migrations.test.js', 'database-startup-mysql-integration.test.js'].includes(name))).sort();
+  const tests = fs.readdirSync(path.join(api, 'tests')).filter(name => name.endsWith('.test.cts') &&
+    (process.argv.includes('--all') || name.startsWith('backup-') || ['data-inventory.test.cts', 'database-migrations.test.cts', 'database-startup-mysql-integration.test.cts'].includes(name))).sort();
   const child = spawn(process.execPath, ['--test', '--test-concurrency=1', '--test-reporter=tap', ...tests.map(name => 'tests/' + name)], {
     cwd: api, env: { ...process.env, MYSQL_TEST_SCHEMA_SMOKE: '1' }, stdio: ['ignore', 'pipe', 'inherit'],
   });

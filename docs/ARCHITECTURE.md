@@ -411,7 +411,7 @@ provider UIDs and credentials. See [mail modes](MAIL_MODES.md).
 `email-privacy.ts` builds a display-only sanitized document from inert HTML.
 `SafeEmailContent` owns transient consent and a restricted iframe. A synthetic
 Chromium request check is available through
-`node scripts/email-privacy-browser-check.mjs` when Chromium is installed. It
+`node scripts/email-privacy-browser-check.mts` when Chromium is installed. It
 intercepts image responses and uses no provider account.
 
 

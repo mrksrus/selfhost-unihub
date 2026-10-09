@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    "erasableSyntaxOnly": true,
+    "paths": {
+      "imapflow": [
+        "./api/node_modules/imapflow"
+      ],
+      "mailparser": [
+        "./api/node_modules/@types/mailparser"
+      ]
+    }
+  },
+  "include": [
+    "scripts/*.mts"
+  ]
+}

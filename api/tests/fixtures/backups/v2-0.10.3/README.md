@@ -7,7 +7,7 @@ its provider mapping, and a message. No live data, credentials or files were use
 `expected.json` records original source hashes, archive hash and expected content.
 
 Normal tests consume this frozen archive. Do not regenerate it to make a reader
-change pass. `generate.cjs` is an explicit maintenance tool requiring an untouched
+change pass. `generate.cts` is an explicit maintenance tool requiring an untouched
 `git archive v0.10.3 api` extraction, that version's dependencies, and an empty
 `MYSQL_TEST_DATABASE` ending in `_test`. Set the MYSQL_TEST connection variables
 and synthetic BOOTSTRAP_ADMIN_EMAIL/BOOTSTRAP_ADMIN_PASSWORD, then pass the

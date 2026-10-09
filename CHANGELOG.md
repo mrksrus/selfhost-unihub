@@ -6,6 +6,22 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.19.1
+
+The remaining tests, fixture generators, development tools and JavaScript
+configuration files are now authored in TypeScript. The application runtime,
+database schema and backup format are unchanged from 0.19.0.
+
+- API tests and helpers use `.cts` and run directly on Node.js 26. The release
+  gate still requires every database test to run without skips. Historical
+  backup archives and fixture data are unchanged.
+- Root development scripts and ESLint/PostCSS configuration use `.mts`.
+  `npm run typecheck` now also checks API tests, root scripts, Tailwind and
+  Vitest configuration. ESLint loads its configuration through Node's native
+  TypeScript support.
+- Existing 0.18.2 and 0.19.0 installations use the same database migration
+  history and need no additional configuration or schema migration.
+
 ## 0.19.0
 
 The API and the two browser workers are now written in TypeScript and

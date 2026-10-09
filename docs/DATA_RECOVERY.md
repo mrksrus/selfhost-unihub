@@ -10,7 +10,7 @@ security-only, temporary, rebuilt or deliberately excluded fields with reasons.
 Every database column must be accounted for. Do not rely on `SELECT *` or add a
 new field without deciding its import, ownership and file behavior.
 
-`api/tests/data-inventory.test.js` compares these declarations with production
+`api/tests/data-inventory.test.cts` compares these declarations with production
 DDL. Startup checks the actual MariaDB inventory after notification schema setup.
 An undeclared column fails instead of being silently omitted. Catalog coverage
 proves accounting, not correct behavior: extend representative restore assertions
@@ -102,16 +102,16 @@ Use an empty disposable MariaDB database whose name ends in `_test`. Set
 `MYSQL_TEST_HOST`, `MYSQL_TEST_PORT`, `MYSQL_TEST_DATABASE`, `MYSQL_TEST_USER` and
 `MYSQL_TEST_PASSWORD`. Use separate databases for parallel test processes.
 
-- `data-inventory.test.js`, `database-migrations.test.js`: missing policies,
+- `data-inventory.test.cts`, `database-migrations.test.cts`: missing policies,
   ordered completion, interrupted DDL and invalid history.
-- `database-startup-mysql-integration.test.js`, with `MYSQL_TEST_SCHEMA_SMOKE=1`:
+- `database-startup-mysql-integration.test.cts`, with `MYSQL_TEST_SCHEMA_SMOKE=1`:
   fresh-install inventory and repeated startup.
-- `backup-roundtrip-mysql-integration.test.js`: real export/encryption/restore,
+- `backup-roundtrip-mysql-integration.test.cts`: real export/encryption/restore,
   module relationships/files, conflicts and migration replay protection.
-- `backup-v2-mysql-integration.test.js`: frozen actual 0.10.3 exporter archive.
+- `backup-v2-mysql-integration.test.cts`: frozen actual 0.10.3 exporter archive.
   The existing round-trip also imports frozen plain/encrypted 0.9.23 fixtures.
-- `backup-restore-cancellation-mysql-integration.test.js` and
-  `backup-ownership-mysql-integration.test.js`: interruption and cross-user safety.
+- `backup-restore-cancellation-mysql-integration.test.cts` and
+  `backup-ownership-mysql-integration.test.cts`: interruption and cross-user safety.
 - Mail filing/offline tests when identity or destination behavior changes.
 
 Normal CI already discovers these test files. The restored container smoke test
@@ -141,7 +141,7 @@ the reference:
   readers skip the removed data with a warning and import everything else.
 - Saved preferences, saved module order and the start page ignore the removed ID.
 
-`module-settings.test.js`, `module-search.test.js`, `backup-schema3.test.js`
+`module-settings.test.cts`, `module-search.test.cts`, `backup-schema3.test.cts`
 (older archives that contain Notes) and the HTTP/full roundtrip and startup MariaDB
 tests cover these contracts. Updating module preference validation also requires
 checking archived settings and legacy offline defaults.

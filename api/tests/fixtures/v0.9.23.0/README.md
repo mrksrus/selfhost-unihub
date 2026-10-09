@@ -45,5 +45,5 @@ tag above with that test key. Login hashes use bcrypt with the release's cost of
 silently switch to the current writer's format.
 
 Since 0.16.0 (MariaDB, fresh installations only) there is no upgrade test.
-`backup-ownership-mysql-integration.test.js` uses `schema.sql` to create its
+`backup-ownership-mysql-integration.test.cts` uses `schema.sql` to create its
 connection-local tables.

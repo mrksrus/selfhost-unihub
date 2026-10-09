@@ -5,7 +5,7 @@
 # unless it was already running when they started.
 #
 #   scripts/local-db.sh start|stop|status|sql [args]
-#   scripts/local-db.sh test [api/tests/file.test.js ...]   full database suite (like CI) or given files
+#   scripts/local-db.sh test [api/tests/file.test.cts ...]   full database suite (like CI) or given files
 #   scripts/local-db.sh migrate-check [dump.sql]            run startup upgrades on a dump
 #   scripts/local-db.sh schema-dump                         regenerate docker/mariadb/schema.sql
 #   scripts/local-db.sh dev                                 start, seed unihub_dev, print API env

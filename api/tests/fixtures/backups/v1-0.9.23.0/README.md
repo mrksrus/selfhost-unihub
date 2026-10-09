@@ -9,7 +9,7 @@ and merely changing its version number.
 - Historical tag: `v0.9.23.0`
 - Immutable source commit: `e8813669c75ada5bad870d0f9c380083934ed291`
 - Source: [v0.9.23.0 on GitHub](https://github.com/mrksrus/selfhost-unihub/tree/e8813669c75ada5bad870d0f9c380083934ed291)
-- Generator: [generate.cjs](generate.cjs)
+- Generator: [generate.cts](generate.cts)
 - Full source-file SHA-256 digests, generator digest, generated timestamp, Node
   version, artifact digests, row counts, and expected contents: [expected.json](expected.json)
 
@@ -75,7 +75,7 @@ run this generator. To intentionally refresh the fixtures from the repository
 root, with the historical tag available:
 
 ```sh
-node api/tests/fixtures/backups/v1-0.9.23.0/generate.cjs --write
+node api/tests/fixtures/backups/v1-0.9.23.0/generate.cts --write
 ```
 
 The generator checks the tag's immutable commit, writes only its named fixture

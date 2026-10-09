@@ -8,7 +8,7 @@ RUN npm ci
 
 COPY . .
 RUN npm run build:frontend
-RUN node scripts/collect-frontend-notices.mjs /build/frontend-dependency-notices.txt
+RUN node scripts/collect-frontend-notices.mts /build/frontend-dependency-notices.txt
 
 # ── Stage 2: Compile the API ───────────────────────────────────────
 # The compiler is a development dependency; the production image below installs

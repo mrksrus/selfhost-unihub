@@ -5,6 +5,14 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.19.1 Tests and tools are written in TypeScript
+
+The application code, database schema, backup format and deployment
+configuration are unchanged from 0.19.0. A completed 0.18.2 installation can
+upgrade directly to 0.19.1; no intermediate installation or new database step
+is needed. Keep the same database, uploads volume and encryption keys.
+Development and test commands require Node.js 26, as in 0.19.0.
+
 ## 0.19.0 The API is written in TypeScript
 
 No database upgrade or configuration change. The image now runs on Node.js 26;

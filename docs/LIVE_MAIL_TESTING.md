@@ -1,7 +1,7 @@
 # Live mail acceptance testing
 
 Unit tests and healthy containers do not establish that a real mailbox works.
-The opt-in `scripts/live-mail-smoke.mjs` exercises the **public application API**
+The opt-in `scripts/live-mail-smoke.mts` exercises the **public application API**
 and independently reads the actual IMAP server. It does not import application
 services, update the database, clear queues, or send replacement IMAP commands
 when an application action fails.
@@ -44,7 +44,7 @@ latency), `UNIHUB_SMOKE_TIMEOUT_MS` (180000 ms per convergence check), and
 Run after supplying those variables securely:
 
 ```sh
-node scripts/live-mail-smoke.mjs
+node scripts/live-mail-smoke.mts
 ```
 
 To inspect/reuse a message from an interrupted run without sending another,

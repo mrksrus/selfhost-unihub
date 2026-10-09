@@ -85,6 +85,21 @@ modules with `require('x') as typeof import('x')`, and API code from
 `../dist/src/` typed against `../src/`. `npm --prefix api run typecheck` also
 checks them through `api/tsconfig.scripts.json`.
 
+API tests, test helpers and historical fixture generators also use `.cts` and
+run directly on Node.js 26. `api/tsconfig.tests.json` checks them in strict mode.
+The shared `FixtureValue` type is restricted to tests: malformed inputs,
+partial database rows and provider doubles intentionally have open shapes.
+Production API types remain separate. Fixture generators are explicit
+maintenance tools; ordinary tests never regenerate the frozen backup archives.
+
+The root tools in `scripts/` and ESLint/PostCSS configuration use `.mts`.
+`npm run typecheck` checks frontend code, browser workers, root configuration,
+root tools, API source, API scripts and API tests. Install dependencies for both
+packages first; the root mail smoke tool resolves its provider types from the
+API's dependencies. `npm run typecheck:frontend` remains usable in the separate
+frontend Docker build stage. The lint command uses Node's native TypeScript
+configuration loader and requires Node.js 26.
+
 The backend requires MariaDB configuration through either `DATABASE_URL` or
 `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and
 `MYSQL_PASSWORD`. Supply `JWT_SECRET`, `ENCRYPTION_KEY`, and the bootstrap admin
@@ -143,7 +158,7 @@ every schema change is a new numbered migration in `ensureSchema`
 generated, never edited: `schema-dump` runs the startup schema code
 (`api/scripts/dump-schema.cts`) on an empty database and writes a sorted
 `SHOW CREATE TABLE` dump. Commit the regenerated file with the migration;
-`database-schema-file-mysql-integration.test.js` fails in CI when it is stale.
+`database-schema-file-mysql-integration.test.cts` fails in CI when it is stale.
 `migrate-check` warns and prints a diff when an upgraded old database ends up
 different from a fresh install.
 
