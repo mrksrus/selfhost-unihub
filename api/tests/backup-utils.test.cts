@@ -14,7 +14,7 @@ const {
   sha256Buffer,
   validateBackupPayload,
   writeBackupJsonFile,
-} = require('../dist/src/services/backup');
+} = require('../dist/src/services/backup') as typeof import('../src/services/backup');
 
 test('canonicalJson orders object keys deterministically', () => {
   assert.equal(canonicalJson({ b: 1, a: 2 }), '{"a":2,"b":1}');
@@ -85,10 +85,10 @@ test('readBackupFileEntry keeps archive files file-backed when requested', async
     includeData: false,
   });
 
-  assert.equal(entry.source_path, filePath);
-  assert.equal(entry.size_bytes, contents.length);
-  assert.equal(entry.sha256, sha256Buffer(contents));
-  assert.equal(Object.hasOwn(entry, 'data_base64'), false);
+  assert.equal(entry!.source_path, filePath);
+  assert.equal(entry!.size_bytes, contents.length);
+  assert.equal(entry!.sha256, sha256Buffer(contents));
+  assert.equal(Object.hasOwn(entry!, 'data_base64'), false);
 });
 
 test('writeBackupJsonFile writes large backup metadata incrementally', async () => {
@@ -114,7 +114,7 @@ test('writeBackupJsonFile writes large backup metadata incrementally', async () 
 });
 
 test('backupFromZipBuffer accepts restorable backup ZIP with file checksums', async () => {
-  const { writeZip } = require('../dist/src/services/export-jobs');
+  const { writeZip } = require('../dist/src/services/export-jobs') as typeof import('../src/services/export-jobs');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-'));
   const zipPath = path.join(dir, 'backup.zip');
   const fileBuffer = Buffer.from('attachment bytes', 'utf8');
@@ -152,19 +152,19 @@ test('backupFromZipBuffer accepts restorable backup ZIP with file checksums', as
 
   const parsed = backupFromZipBuffer(await fs.readFile(zipPath));
   assert.equal(parsed.backup.app, 'unihub');
-  assert.equal(parsed.fileBuffersByPath.get('files/mail-attachments/attachment-1-invoice.pdf').toString('utf8'), 'attachment bytes');
+  assert.equal(parsed.fileBuffersByPath.get('files/mail-attachments/attachment-1-invoice.pdf')!.toString('utf8'), 'attachment bytes');
 
   const fileBacked = await backupFromZipFile(zipPath);
   assert.equal(fileBacked.backup.app, 'unihub');
   assert.deepEqual(fileBacked.manifest.sections, undefined);
   assert.equal(
-    fileBacked.fileSourcesByPath.get('files/mail-attachments/attachment-1-invoice.pdf').size,
+    fileBacked.fileSourcesByPath.get('files/mail-attachments/attachment-1-invoice.pdf')!.size,
     fileBuffer.length
   );
 });
 
 test('backupFromZipFile preserves section backup metadata', async () => {
-  const { writeZip } = require('../dist/src/services/export-jobs');
+  const { writeZip } = require('../dist/src/services/export-jobs') as typeof import('../src/services/export-jobs');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-section-'));
   const zipPath = path.join(dir, 'mail-backup.zip');
   const backup = {
@@ -200,7 +200,7 @@ test('backupFromZipFile preserves section backup metadata', async () => {
 });
 
 test('backupFromZipBuffer accepts archives written with legacy truncated filenames', async () => {
-  const { writeZip } = require('../dist/src/services/export-jobs');
+  const { writeZip } = require('../dist/src/services/export-jobs') as typeof import('../src/services/export-jobs');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-legacy-'));
   const zipPath = path.join(dir, 'backup.zip');
   const fileBuffer = Buffer.from('png bytes', 'utf8');
@@ -239,5 +239,5 @@ test('backupFromZipBuffer accepts archives written with legacy truncated filenam
   ], zipPath);
 
   const parsed = backupFromZipBuffer(await fs.readFile(zipPath));
-  assert.equal(parsed.fileBuffersByPath.get(archivePath).toString('utf8'), 'png bytes');
+  assert.equal(parsed.fileBuffersByPath.get(archivePath)!.toString('utf8'), 'png bytes');
 });

@@ -1,7 +1,7 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { getDb, setDb } = require('../dist/src/state');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}) {
   const savedDb = getDb();
@@ -34,7 +34,7 @@ function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}
   };
   const connection = { execute, beginTransaction: async () => calls.push({ sql: 'BEGIN' }), commit: async () => calls.push({ sql: 'COMMIT' }),
     rollback: async () => calls.push({ sql: 'ROLLBACK' }), release() {} };
-  setDb({ execute, getConnection: async () => connection });
+  setDb({ execute, getConnection: async () => connection } as FixtureValue);
   require.cache[servicePath] = { id: servicePath, filename: servicePath, loaded: true, exports: {
     stopMailAccountWork: async (id: FixtureValue) => cancellations.push(id),
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
@@ -43,7 +43,7 @@ function fixture(t: import('node:test').TestContext, settings: FixtureValue = {}
     isModuleEnabled: async (_userId: FixtureValue, id: FixtureValue) => id !== 'calendar' || state.calendarEnabled,
   } } as NodeJS.Module;
   delete require.cache[lifecyclePath];
-  const api = require('../dist/src/services/mail-account-lifecycle');
+  const api = require('../dist/src/services/mail-account-lifecycle') as typeof import('../src/services/mail-account-lifecycle');
   t.after(() => {
     setDb(savedDb);
     if (savedService) require.cache[servicePath] = savedService; else delete require.cache[servicePath];
@@ -84,7 +84,7 @@ test('purge needs explicit matching confirmation before any cancellation or dele
 test('purge is blocked for a still connected account', async t => {
   const { api, calls } = fixture(t, { active: true });
   const preview = await api.purgePreview('owner', 'account');
-  assert.equal(preview.blocked, true); assert.match(preview.reason, /Disconnect/);
+  assert.equal(preview.blocked, true); assert.match(preview.reason!, /Disconnect/);
   await assert.rejects(api.purgeAccount('owner', 'account', 'Owner@Example.test '), error => (error as FixtureValue).status === 409);
   assert.ok(calls.every(call => !call.sql.startsWith('DELETE FROM')));
 });
@@ -119,7 +119,7 @@ test('preview counts the linked calendar that a purge removes', async t => {
 
 test('purge waits for a calendar restore only when a linked calendar would be removed', async t => {
   const { api, calls, state } = fixture(t, { calendars: 1, restoring: ['calendar'] });
-  assert.match((await api.purgePreview('owner', 'account')).reason, /Calendar restore/);
+  assert.match((await api.purgePreview('owner', 'account')).reason!, /Calendar restore/);
   await assert.rejects(api.purgeAccount('owner', 'account', 'Owner@Example.test '), /Calendar restore/);
   assert.ok(calls.every(call => !call.sql.startsWith('DELETE FROM')));
   state.calendars = 0;
@@ -156,7 +156,7 @@ test('disconnect and delete reports a disconnected account when the final purge 
 
 test('purge refuses to remove a linked calendar while Calendar is turned off', async t => {
   const { api, calls, cancellations } = fixture(t, { active: true, calendars: 1, calendarEnabled: false });
-  assert.match((await api.purgePreview('owner', 'account', undefined, { disconnecting: true })).reason, /Calendar is turned off/);
+  assert.match((await api.purgePreview('owner', 'account', undefined, { disconnecting: true })).reason!, /Calendar is turned off/);
   await assert.rejects(api.disconnectAndPurgeAccount('owner', 'account', 'Owner@Example.test '), /Calendar is turned off/);
   assert.deepEqual(cancellations, []);
   assert.ok(calls.every(call => !/^(UPDATE|DELETE)/.test(call.sql)));
@@ -173,10 +173,10 @@ test('purge removes the linked calendar in the same transaction as the account',
 
 test('disconnect reads linked calendars in its transaction and stops their work after the commit', async t => {
   const { api, calls } = fixture(t, { active: true, calendars: 1 });
-  const calendarSync = require('../dist/src/services/calendar-sync');
+  const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
   const { stopCalendarAccountWork, stopLinkedCalendarWork } = calendarSync;
   t.after(() => Object.assign(calendarSync, { stopCalendarAccountWork, stopLinkedCalendarWork }));
-  calendarSync.stopCalendarAccountWork = (id: FixtureValue) => calls.push({ sql: `STOP ${id}` });
+  calendarSync.stopCalendarAccountWork = (id) => calls.push({ sql: `STOP ${id}` });
   calendarSync.stopLinkedCalendarWork = async (...args: FixtureValue[]) => { calls.push({ sql: `STOP LINKED ${args.join(' ')}` }); throw new Error('database gone'); };
   const result = await api.disconnectAccount('owner', 'account');
   assert.equal(result.disconnected, true, 'The committed disconnect is reported even when the second read fails');

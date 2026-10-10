@@ -1,11 +1,12 @@
 'use strict';
 import type { FixtureValue } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 // Requires an initially empty, disposable MySQL 8 database ending in _test.
 // Run before database-startup-mysql-integration, which leaves its schema populated.
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { randomUUID, createHash } = (require('node:crypto') as typeof import('node:crypto'));
-const mysql = require('mysql2/promise');
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 
 const uuid = (suffix: string | number) => `10000000-0000-4000-8000-${String(suffix).padStart(12, '0')}`;
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -24,7 +25,7 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
   // never inherit a real installation's bootstrap credentials in this fixture.
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'recovery-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-recovery-bootstrap-password';
-  const state = require('../dist/src/state');
+  const state = require('../dist/src/state') as typeof import('../src/state');
   const originalDb = state.getDb();
   let ownsSchema = false;
   t.after(async () => {
@@ -48,30 +49,30 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
   assert.equal((await rows(pool, 'SHOW TABLES')).length, 0, 'Refuse to touch a populated schema');
   ownsSchema = true;
   state.setDb(pool);
-  const { ensureSchema } = require('../dist/src/services/database');
-  const repo = require('../dist/src/services/mail-engine/repository');
-  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const { ensureSchema } = require('../dist/src/services/database') as typeof import('../src/services/database');
+  const repo = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
   await ensureSchema();
   const owner = randomUUID(), other = randomUUID();
   const account = randomUUID(), secondAccount = randomUUID(), otherAccount = randomUUID();
-  await pool.execute("INSERT INTO users (id,email,password_hash) VALUES (?,'recovery-owner@example.test','test'),(?,'recovery-other@example.test','test')", [owner, other]);
+  await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash) VALUES (?,'recovery-owner@example.test','test'),(?,'recovery-other@example.test','test')", [owner, other]);
   for (const [id, user, address] of [[account,owner,'primary@example.test'],[secondAccount,owner,'second@example.test'],[otherAccount,other,'other@example.test']] as const) {
-    await pool.execute("INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active) VALUES (?,?,?,'custom','sync',TRUE)", [id,user,address]);
+    await pool.execute<ResultSetHeader>("INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active) VALUES (?,?,?,'custom','sync',TRUE)", [id,user,address]);
   }
-  const insertEmail = async (id: FixtureValue, user = owner, accountId = account, extra: FixtureValue = {}) => {
+  const insertEmail = async (id: FixtureValue, user = owner, accountId = account, extra = {}) => {
     const fields = { id, user_id:user, mail_account_id:accountId, from_address:'synthetic@example.test', to_addresses:'[]', folder:'inbox', ...extra };
     const names = Object.keys(fields);
-    await pool.execute(`INSERT INTO emails (${names.map(name => `\`${name}\``).join(',')}) VALUES (${names.map(() => '?').join(',')})`, Object.values(fields));
+    await pool.execute<ResultSetHeader>(`INSERT INTO emails (${names.map(name => `\`${name}\``).join(',')}) VALUES (${names.map(() => '?').join(',')})`, Object.values(fields));
   };
   const insertOp = async ({ id = randomUUID(), user = owner, accountId = account, emailId, action = 'move', status = 'pending', state = null, dispatched = 0, uid = 11, epoch = 7, folder = 'INBOX' }: FixtureValue, executor = pool) => {
-    await executor.execute(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,target_folder,
+    await executor.execute<ResultSetHeader>(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,target_folder,
       remote_folder,remote_uid,remote_uidvalidity,status,state,dispatched) VALUES (?,?,?,?,?,'Archive','INBOX','archive',?,?,?,?,?,?)`,
     [id,user,accountId,emailId,action,folder,uid,epoch,status,state,dispatched]);
     return id;
   };
-  const txn = (callback: FixtureValue) => repo.withTransaction(callback,pool);
-  const box = (name: FixtureValue, epoch = 7, accountId = account, user = owner) => txn((cx: FixtureValue) => repo.ensureMailbox({userId:user,accountId,folderName:name,epoch},cx));
-  const occurrence = (mailbox: FixtureValue, emailId: string, opts: FixtureValue = {}) => txn((cx: FixtureValue) => repo.upsertOccurrence({userId:owner,accountId:account,
+  const txn = <T,>(callback: (cx: FixtureValue) => T | PromiseLike<T>) => repo.withTransaction(callback,pool);
+  const box = (name: FixtureValue, epoch = 7, accountId = account, user = owner) => txn((cx) => repo.ensureMailbox({userId:user,accountId,folderName:name,epoch},cx));
+  const occurrence = (mailbox: FixtureValue, emailId: string, opts = {}) => txn((cx) => repo.upsertOccurrence({userId:owner,accountId:account,
     mailboxId:mailbox.id,epoch:7,uid:11,emailId, ...opts},cx));
 
   // The later steps share an archived message with a current server copy.
@@ -87,13 +88,13 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
     assert.equal((await box('inbox')).id,(await box('INBOX')).id);
     assert.notEqual(boxes[0].id,boxes[1].id);
     assert.notEqual(boxes[0].id,boxes[2].id);
-    const [[column]] = await pool.execute("SHOW FULL COLUMNS FROM mail_folder_remote_boxes WHERE Field='remote_name'");
+    const [[column]] = await pool.execute<RowDataPacket[]>("SHOW FULL COLUMNS FROM mail_folder_remote_boxes WHERE Field='remote_name'");
     assert.equal(column.Collation,'utf8mb4_nopad_bin','Old mapping unique index must also be NO PAD');
     const folderIds = [randomUUID(),randomUUID()];
     for (const [index,name] of ['Projects','Projects '].entries()) {
-      await pool.execute('INSERT INTO mail_folders (id,user_id,slug,display_name,mail_account_id) VALUES (?,?,?,?,?)',
+      await pool.execute<ResultSetHeader>('INSERT INTO mail_folders (id,user_id,slug,display_name,mail_account_id) VALUES (?,?,?,?,?)',
         [folderIds[index],owner,`mapped-${index}`,name,account]);
-      await pool.execute('INSERT INTO mail_folder_remote_boxes (folder_id,mail_account_id,remote_name) VALUES (?,?,?)',[folderIds[index],account,name]);
+      await pool.execute<ResultSetHeader>('INSERT INTO mail_folder_remote_boxes (folder_id,mail_account_id,remote_name) VALUES (?,?,?)',[folderIds[index],account,name]);
     }
     const copy = randomUUID(), rival = randomUUID(), foreign = randomUUID(), cross = randomUUID();
     await insertEmail(copy,owner,account,{message_id:'<duplicate@example.test>',raw_sha256:hash('same bytes')});
@@ -102,32 +103,32 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
     await insertEmail(cross,owner,secondAccount);
     const first = await occurrence(boxes[0],copy,{uid:100,modseq:'9007199254740993123'});
     const duplicate = await occurrence(boxes[0],rival,{uid:101,modseq:'9007199254740993124'});
-    assert.notEqual(first.email_id,duplicate.email_id);
-    assert.notEqual(first.id,duplicate.id);
+    assert.notEqual(first!.email_id,duplicate!.email_id);
+    assert.notEqual(first!.id,duplicate!.id);
     await assert.rejects(occurrence(boxes[0],rival,{uid:100}),{code:'MAIL_TUPLE_CONFLICT'});
-    await assert.rejects(pool.execute(`INSERT INTO mail_remote_occurrences
+    await assert.rejects(pool.execute<ResultSetHeader>(`INSERT INTO mail_remote_occurrences
       (id,user_id,mail_account_id,mailbox_id,uidvalidity,uid,email_id) VALUES (?,?,?,?,?,?,?)`,
     [randomUUID(),owner,account,boxes[0].id,7,100,rival]),{code:'ER_DUP_ENTRY'});
     await assert.rejects(occurrence(boxes[0],foreign,{uid:102}),{code:'MAIL_ITEM_NOT_OWNED'});
     await assert.rejects(occurrence(boxes[0],cross,{uid:102}),{code:'MAIL_ITEM_NOT_OWNED'});
-    await assert.rejects(txn((cx: FixtureValue) => repo.upsertOccurrence({userId:other,accountId:account,mailboxId:boxes[0].id,epoch:7,uid:102,emailId:foreign},cx)),{code:'MAILBOX_NOT_OWNED'});
+    await assert.rejects(txn((cx) => repo.upsertOccurrence({userId:other,accountId:account,mailboxId:boxes[0].id,epoch:7,uid:102,emailId:foreign},cx)),{code:'MAILBOX_NOT_OWNED'});
     assert.equal(await repo.getOccurrence({userId:other,accountId:account,mailboxId:boxes[0].id,epoch:7,uid:100},pool),null);
     assert.equal((await repo.getOccurrence({userId:owner,accountId:account,mailboxId:boxes[0].id,epoch:7,uid:100},pool)).email_id,copy);
     await occurrence(boxes[0],copy,{uid:100,modseq:'9007199254740993122',flags:['\\Seen']});
-    assert.equal((await one(pool,'SELECT observed_modseq FROM mail_remote_occurrences WHERE id=?',[first.id])).observed_modseq,'9007199254740993123');
+    assert.equal((await one(pool,'SELECT observed_modseq FROM mail_remote_occurrences WHERE id=?',[first!.id])).observed_modseq,'9007199254740993123');
     const gmail = '9007199254740993123';
     await occurrence(boxes[1],copy,{uid:201,gmailMsgId:gmail});
     await occurrence(boxes[2],copy,{uid:202,gmailMsgId:gmail});
     // A legacy per-label copy keeps its own occurrence; the conflict is quarantined for review.
     await occurrence(boxes[3],rival,{uid:203,gmailMsgId:gmail});
     assert.equal((await one(pool,"SELECT COUNT(*) AS n FROM mail_engine_quarantine WHERE source_id=? AND reason='gmail_identity_conflict'",[rival])).n,1);
-    await assert.rejects(pool.execute('INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id) VALUES (?,?,?,?)',
+    await assert.rejects(pool.execute<ResultSetHeader>('INSERT INTO mail_gmail_messages (mail_account_id,gmail_msgid,user_id,email_id) VALUES (?,?,?,?)',
       [account,gmail,owner,rival]),{code:'ER_DUP_ENTRY'});
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_gmail_messages WHERE mail_account_id=? AND gmail_msgid=?',[account,gmail])).n,1);
     assert.equal((await one(pool,'SELECT email_id FROM mail_remote_occurrences WHERE mailbox_id=? AND uid=203',[boxes[3].id])).email_id,rival);
     assert.equal((await one(pool,'SELECT email_id FROM mail_gmail_messages WHERE mail_account_id=? AND gmail_msgid=?',[account,gmail])).email_id,copy);
     const otherBox = await box('Projects',7,secondAccount,owner);
-    await txn((cx: FixtureValue) => repo.upsertOccurrence({userId:owner,accountId:secondAccount,mailboxId:otherBox.id,epoch:7,uid:201,emailId:cross,gmailMsgId:gmail},cx));
+    await txn((cx) => repo.upsertOccurrence({userId:owner,accountId:secondAccount,mailboxId:otherBox.id,epoch:7,uid:201,emailId:cross,gmailMsgId:gmail},cx));
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_gmail_messages WHERE gmail_msgid=?',[gmail])).n,2);
     const otherOwnersBox = await box('Projects',7,otherAccount,other);
     assert.notEqual(otherOwnersBox.id,boxes[0].id);
@@ -141,19 +142,19 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
     for (const [index,item] of items.entries()) await occurrence(mailbox,item,{uid:100+index});
     const cursor = {userId:owner,accountId:account,mailboxId:mailbox.id,stream:'presence',epoch:7,
       windowStart:100,windowEnd:101,coveredThrough:101,checkpoint:'9007199254740993123'};
-    await assert.rejects(txn((cx: FixtureValue) => repo.saveCursor({...cursor,complete:false},cx)),{code:'INCOMPLETE_COVERAGE'});
+    await assert.rejects(txn((cx) => repo.saveCursor({...cursor,complete:false},cx)),{code:'INCOMPLETE_COVERAGE'});
     assert.equal(await repo.loadCursor({userId:owner,accountId:account,mailboxId:mailbox.id,stream:'presence',epoch:7},pool),null);
-    await txn((cx: FixtureValue) => repo.saveCursor({...cursor,complete:true},cx));
-    await assert.rejects(txn((cx: FixtureValue) => repo.saveCursor({...cursor,windowEnd:102,coveredThrough:100},cx)),{code:'CURSOR_REGRESSION'});
-    await assert.rejects(txn((cx: FixtureValue) => repo.markAbsentInWindow({userId:owner,accountId:account,mailboxId:mailbox.id,
+    await txn((cx) => repo.saveCursor({...cursor,complete:true},cx));
+    await assert.rejects(txn((cx) => repo.saveCursor({...cursor,windowEnd:102,coveredThrough:100},cx)),{code:'CURSOR_REGRESSION'});
+    await assert.rejects(txn((cx) => repo.markAbsentInWindow({userId:owner,accountId:account,mailboxId:mailbox.id,
       epoch:7,windowStart:100,windowEnd:101,presentUids:[100],complete:false},cx)),{code:'INCOMPLETE_COVERAGE'});
-    assert.equal(await txn((cx: FixtureValue) => repo.markAbsentInWindow({userId:owner,accountId:account,mailboxId:mailbox.id,
+    assert.equal(await txn((cx) => repo.markAbsentInWindow({userId:owner,accountId:account,mailboxId:mailbox.id,
       epoch:7,windowStart:100,windowEnd:101,presentUids:[100],complete:true},cx)),1);
     assert.deepEqual((await rows(pool,'SELECT uid,presence FROM mail_remote_occurrences WHERE mailbox_id=? ORDER BY uid',[mailbox.id])).map((r: FixtureValue) => r.presence),
       ['present','absent','present'],'Uncovered UID 102 is not called absent');
     await box('Coverage',8);
     assert.equal(await repo.loadCursor({userId:owner,accountId:account,mailboxId:mailbox.id,stream:'presence',epoch:7},pool),null);
-    await assert.rejects(txn((cx: FixtureValue) => repo.markAbsentInWindow({userId:owner,accountId:account,mailboxId:mailbox.id,
+    await assert.rejects(txn((cx) => repo.markAbsentInWindow({userId:owner,accountId:account,mailboxId:mailbox.id,
       epoch:7,windowStart:100,windowEnd:102,presentUids:[],complete:true},cx)),{code:'MAIL_EPOCH_STALE'});
     assert.deepEqual((await rows(pool,'SELECT uid,presence FROM mail_remote_occurrences WHERE mailbox_id=? ORDER BY uid',[mailbox.id])).map((r: FixtureValue) => r.presence),
       ['quarantined','absent','quarantined'],'Epoch reset preserves historical absence and quarantines only formerly present addresses');
@@ -162,64 +163,64 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
   await t.test('receipt rollback, persisted replay and hash collision never admit another command', async () => {
     const key = 'synthetic-collision', requestHash = hash('move once'), differentHash = hash('move somewhere else');
     const operation = randomUUID(), accepted = {operation_ids:[operation],sync_pending:true,accepted_revision:1};
-    await assert.rejects(txn(async (cx: FixtureValue) => {
+    await assert.rejects(txn(async (cx) => {
       await repo.recordReceipt({userId:owner,clientKey:key,requestHash,response:accepted},cx);
       throw new Error('synthetic admission failure');
     }), /synthetic admission failure/);
     assert.equal(await repo.getReceipt({userId:owner,clientKey:key},pool),null);
-    const result = await txn(async (cx: FixtureValue) => {
+    const result = await txn(async (cx) => {
       const receipt = await repo.recordReceipt({userId:owner,clientKey:key,requestHash,response:accepted},cx);
       await insertOp({id:operation,emailId:uuid(2),state:'queued',uid:20,folder:'Archive'},cx);
       return receipt;
     });
     assert.equal(result.replayed,false);
-    assert.deepEqual(await txn((cx: FixtureValue) => repo.recordReceipt({userId:owner,clientKey:key,requestHash,response:{operation_ids:['different']}},cx)),{response:accepted,replayed:true});
-    await assert.rejects(txn((cx: FixtureValue) => repo.recordReceipt({userId:owner,clientKey:key,requestHash:differentHash,response:{operation_ids:['different']}},cx)),{code:'IDEMPOTENCY_KEY_REUSED'});
+    assert.deepEqual(await txn((cx) => repo.recordReceipt({userId:owner,clientKey:key,requestHash,response:{operation_ids:['different']}},cx)),{response:accepted,replayed:true});
+    await assert.rejects(txn((cx) => repo.recordReceipt({userId:owner,clientKey:key,requestHash:differentHash,response:{operation_ids:['different']}},cx)),{code:'IDEMPOTENCY_KEY_REUSED'});
     assert.deepEqual(json((await repo.getReceipt({userId:owner,clientKey:key},pool)).response_json),accepted);
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_writebacks WHERE id=?',[operation])).n,1);
     assert.equal(await repo.getReceipt({userId:other,clientKey:key},pool),null);
-    assert.equal((await txn((cx: FixtureValue) => repo.recordReceipt({userId:other,clientKey:key,requestHash:differentHash,response:{operation_ids:[]}},cx))).replayed,false);
+    assert.equal((await txn((cx) => repo.recordReceipt({userId:other,clientKey:key,requestHash:differentHash,response:{operation_ids:[]}},cx))).replayed,false);
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_command_receipts WHERE client_key=?',[key])).n,2);
   });
 
   await t.test('expired lease fences old worker; crash after dispatch fence becomes reconciliation, never a blind retry', async () => {
     const mailbox = await box('Recovery',9);
     const item = randomUUID(); await insertEmail(item);
-    const observed = await txn((cx: FixtureValue) => repo.upsertOccurrence({userId:owner,accountId:account,mailboxId:mailbox.id,epoch:9,uid:50,emailId:item},cx));
+    const observed = await txn((cx) => repo.upsertOccurrence({userId:owner,accountId:account,mailboxId:mailbox.id,epoch:9,uid:50,emailId:item},cx));
     const op = await insertOp({emailId:item,state:'queued',uid:50,epoch:9,folder:'Recovery'});
     const job = await runtime.enqueueJob({userId:owner,accountId:account,operationId:op,kind:'operation'},pool);
     const claimed = await runtime.claimDueJob({workerId:'old-worker',kinds:['operation']},pool);
-    assert.equal(claimed.id,job.id);
-    assert.equal((await runtime.beginOperationAttempt({operationId:op,userId:owner,accountId:account,workerId:'old-worker',generation:Number(claimed.worker_generation)},pool)).operation_id,op);
-    assert.equal((await one(pool,'SELECT source_occurrence_id FROM mail_writebacks WHERE id=?',[op])).source_occurrence_id,observed.id);
-    await assert.rejects(runtime.beginOperationAttempt({operationId:op,userId:owner,accountId:account,workerId:'old-worker',generation:Number(claimed.worker_generation)},pool),
+    assert.equal(claimed!.id,job.id);
+    assert.equal((await runtime.beginOperationAttempt({operationId:op,userId:owner,accountId:account,workerId:'old-worker',generation:Number(claimed!.worker_generation)},pool)).operation_id,op);
+    assert.equal((await one(pool,'SELECT source_occurrence_id FROM mail_writebacks WHERE id=?',[op])).source_occurrence_id,observed!.id);
+    await assert.rejects(runtime.beginOperationAttempt({operationId:op,userId:owner,accountId:account,workerId:'old-worker',generation:Number(claimed!.worker_generation)},pool),
       {code:'MAIL_OPERATION_UNCERTAIN'});
-    await pool.execute('UPDATE mail_engine_accounts SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE mail_account_id=?',[account]);
-    await pool.execute('UPDATE mail_engine_jobs SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE id=?',[job.id]);
-    await assert.rejects(runtime.updateJob({jobId:job.id,accountId:account,workerId:'old-worker',generation:Number(claimed.worker_generation),phase:'unsafe'},pool),{code:'MAIL_WORKER_FENCED'});
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_accounts SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE mail_account_id=?',[account]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_jobs SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE id=?',[job.id]);
+    await assert.rejects(runtime.updateJob({jobId:job.id,accountId:account,workerId:'old-worker',generation:Number(claimed!.worker_generation),phase:'unsafe'},pool),{code:'MAIL_WORKER_FENCED'});
     const recovery = await runtime.recoverExpiredJobs(pool);
     assert.ok(recovery.jobs >= 1 && recovery.operations >= 1);
     assert.deepEqual(await one(pool,'SELECT state,status,dispatched FROM mail_writebacks WHERE id=?',[op]),{state:'reconciling',status:'pending',dispatched:1});
     assert.deepEqual(await one(pool,'SELECT kind,state FROM mail_engine_jobs WHERE id=?',[job.id]),{kind:'reconcile',state:'queued'});
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_operation_attempts WHERE operation_id=?',[op])).n,1);
     assert.equal((await one(pool,'SELECT outcome FROM mail_operation_attempts WHERE operation_id=?',[op])).outcome,'prepared');
-    await assert.rejects(runtime.completeJob({jobId:job.id,accountId:account,workerId:'old-worker',generation:Number(claimed.worker_generation)},pool),{code:'MAIL_WORKER_FENCED'});
+    await assert.rejects(runtime.completeJob({jobId:job.id,accountId:account,workerId:'old-worker',generation:Number(claimed!.worker_generation)},pool),{code:'MAIL_WORKER_FENCED'});
     const resumed = await runtime.claimDueJob({workerId:'new-worker',kinds:['reconcile']},pool);
-    assert.equal(resumed.id,job.id);
-    await assert.rejects(runtime.beginOperationAttempt({operationId:op,userId:owner,accountId:account,workerId:'new-worker',generation:Number(resumed.worker_generation)},pool),
+    assert.equal(resumed!.id,job.id);
+    await assert.rejects(runtime.beginOperationAttempt({operationId:op,userId:owner,accountId:account,workerId:'new-worker',generation:Number(resumed!.worker_generation)},pool),
       {code:'MAIL_OPERATION_UNCERTAIN'});
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_operation_attempts WHERE operation_id=?',[op])).n,1);
-    await runtime.completeJob({jobId:job.id,accountId:account,workerId:'new-worker',generation:Number(resumed.worker_generation)},pool);
+    await runtime.completeJob({jobId:job.id,accountId:account,workerId:'new-worker',generation:Number(resumed!.worker_generation)},pool);
     const stale = await insertOp({emailId:item,state:'queued',uid:50,epoch:9,folder:'Recovery'});
     await box('Recovery',10);
     assert.deepEqual(await one(pool,'SELECT state,status FROM mail_writebacks WHERE id=?',[stale]),
       {state:'needs_attention',status:'conflict'},'Undispatched intent on a reset epoch waits for user retry or discard');
-    assert.equal((await one(pool,'SELECT presence FROM mail_remote_occurrences WHERE id=?',[observed.id])).presence,'quarantined');
+    assert.equal((await one(pool,'SELECT presence FROM mail_remote_occurrences WHERE id=?',[observed!.id])).presence,'quarantined');
     assert.equal((await one(pool,'SELECT state FROM mail_writebacks WHERE id=?',[op])).state,'reconciling');
   });
 
   await t.test('restore retains accepted journal, remaps receipt and quarantines provider evidence without executable mappings', async () => {
-    const { restoreMailEngineEvidence } = require('../dist/src/services/backup-mail-engine');
+    const { restoreMailEngineEvidence } = require('../dist/src/services/backup-mail-engine') as typeof import('../src/services/backup-mail-engine');
     const prior = await insertOp({emailId:uuid(2),state:'executing',dispatched:1,uid:20,folder:'Archive'});
     const pendingSync = await runtime.enqueueJob({userId:owner,accountId:account,kind:'sync'},pool);
     const sourceId = randomUUID(), receiptKey = 'restore-unknown';
@@ -236,7 +237,7 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
       mail_operation_attempts:[{id:randomUUID(),user_id:other,mail_account_id:account,operation_id:sourceId,
         worker_generation:1,outcome:'uncertain',transmission:'unknown'}]};
     const opts = options();
-    await txn((cx: FixtureValue) => restoreMailEngineEvidence(cx,owner,data,opts));
+    await txn((cx) => restoreMailEngineEvidence(cx,owner,data as FixtureValue,opts));
     const restored = await one(pool,'SELECT * FROM mail_writebacks WHERE user_id=? AND id<>? AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json,"$.archive_operation_id"))=?',
       [owner,prior,sourceId]);
     assert.ok(restored); assert.notEqual(restored.id,sourceId);
@@ -254,16 +255,16 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_operation_attempts WHERE operation_id=?',[restored.id])).n,0);
     assert.equal((await one(pool,'SELECT is_active,delete_emails_on_server FROM mail_accounts WHERE id=?',[account])).is_active,0);
     assert.ok(opts.warnings.some(w => /never blindly replayed/.test(w)));
-    await assert.rejects(txn((cx: FixtureValue) => restoreMailEngineEvidence(cx,owner,{mail_command_receipts:[{
+    await assert.rejects(txn((cx) => restoreMailEngineEvidence(cx,owner,{mail_command_receipts:[({
       client_key:receiptKey,request_hash:hash('conflicting request'),response_json:{operation_ids:[]},
-    }]},options())),/conflicts with an existing accepted request/);
+    } as FixtureValue)]},options())),/conflicts with an existing accepted request/);
     assert.equal((await repo.getReceipt({userId:owner,clientKey:receiptKey},pool)).request_hash,hash('restored request'));
     assert.equal((await one(pool,'SELECT COUNT(*) AS n FROM mail_engine_jobs WHERE operation_id=?',[restored.id])).n,0);
     assert.equal((await one(pool,'SELECT state FROM mail_engine_jobs WHERE id=?',[pendingSync.id])).state,'paused');
     // Reconnection's DB transition alone cannot leave a coalesced paused job
     // permanently blocking fresh sync work; no provider call is needed here.
     await assert.rejects(runtime.resumeAccount({userId:owner,accountId:account},pool),/Reconnect and verify/);
-    await pool.execute('UPDATE mail_accounts SET is_active=TRUE, disconnected_at=NULL WHERE id=? AND user_id=?',[account,owner]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET is_active=TRUE, disconnected_at=NULL WHERE id=? AND user_id=?',[account,owner]);
     await runtime.resumeAccount({userId:owner,accountId:account},pool);
     assert.equal((await one(pool,'SELECT state FROM mail_writebacks WHERE id=?',[restored.id])).state,'needs_attention','Reconnection must not replay archived provider effects');
     const resumedSync = await runtime.enqueueJob({userId:owner,accountId:account,kind:'sync'},pool);

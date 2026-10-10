@@ -9,18 +9,18 @@
     "build:dev": "npm run build:workers && vite build --mode development",
     "build:frontend": "npm run typecheck:frontend && npm run build:workers && vite build",
     "build:workers": "tsc -p tsconfig.workers.json",
-    "lint": "eslint --flag unstable_native_nodejs_ts_config .",
+    "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "npm run typecheck:frontend && npm run typecheck:scripts && npm --prefix api run typecheck",
     "typecheck:frontend": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json && npm run typecheck:workers",
     "typecheck:workers": "tsc --noEmit -p tsconfig.workers.json",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json",
     "db:start": "scripts/local-db.sh start",
     "db:stop": "scripts/local-db.sh stop",
     "db:dev": "scripts/local-db.sh dev",
-    "test:db": "scripts/local-db.sh test",
-    "typecheck:scripts": "tsc -p tsconfig.scripts.json"
+    "test:db": "scripts/local-db.sh test"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.14",

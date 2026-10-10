@@ -18,15 +18,15 @@ function handlerHarness(t: import('node:test').TestContext, { userId = 'u1', rou
     'POST /api/admin/users/:id/2fa/reset': route,
     'GET /api/modules': route, 'GET /api/contacts/export': route, 'GET /api/offline/snapshot': route || (async (_req: FixtureValue, user: FixtureValue) => ({ snapshot: { userId: user } })),
     'POST /api/parse-test': route || (async () => ({ success: true })) });
-  const { handleRequest } = require(paths[0]);
-  return async function run(method: string, url: string, body = '', overrides: FixtureValue = {}) {
+  const { handleRequest } = require(paths[0]) as typeof import('../src/request-handler');
+  return async function run(method: string, url: string, body = '', overrides = {}) {
     const req = new PassThrough(); Object.assign(req, { method, url, headers: { host: 'localhost', ...overrides } });
     const res: FixtureValue = new EventEmitter(); const headers = new Map();
     res.setHeader = (key: FixtureValue, value: FixtureValue) => headers.set(key.toLowerCase(), value);
     res.getHeader = (key: FixtureValue) => headers.get(key.toLowerCase());
-    res.writeHead = (status: FixtureValue, values: FixtureValue = {}) => { res.status = status; res.headersSent = true; Object.entries(values).forEach(([key, value]) => res.setHeader(key, value)); };
+    res.writeHead = (status: FixtureValue, values = {}) => { res.status = status; res.headersSent = true; Object.entries(values).forEach(([key, value]) => res.setHeader(key, value)); };
     res.end = (value: FixtureValue) => { res.body = JSON.parse(String(value)); };
-    const running = handleRequest(req, res); setImmediate(() => req.end(body)); await running;
+    const running = handleRequest(req as FixtureValue, res); setImmediate(() => req.end(body)); await running;
     return { status: res.status, body: res.body, headers };
   };
 }
@@ -41,7 +41,7 @@ test('offline snapshot is authenticated by the central handler and its response 
 
 test('malformed authorities and request targets return 400 and later requests still work', async (t) => {
   let called = 0;
-  const run = handlerHarness(t, ({ route: async () => { called++; return { success: true }; } } as FixtureValue));
+  const run = handlerHarness(t, ({ route: async () => { called++; return { success: true }; } }));
   for (const host of ['%', 'localhost/path', 'user@localhost', '[invalid]', 'localhost:999999']) {
     assert.equal((await run('GET', '/api/offline/snapshot', '', { host })).status, 400);
   }
@@ -62,7 +62,7 @@ test('unauthenticated offline requests never reach the snapshot service', async 
 
 test('malformed JSON returns 400 without invoking its mutation route', async (t) => {
   let called = false;
-  const run = handlerHarness(t, ({ route: async () => { called = true; return {}; } } as FixtureValue));
+  const run = handlerHarness(t, ({ route: async () => { called = true; return {}; } }));
   const result = await run('POST', '/api/parse-test', '{"unfinished":');
   assert.equal(result.status, 400);
   assert.equal(called, false);
@@ -70,7 +70,7 @@ test('malformed JSON returns 400 without invoking its mutation route', async (t)
 });
 
 test('mail provider change retry reaches its parameterized route', async (t) => {
-  const run = handlerHarness(t, ({ route: async (req: FixtureValue, userId: string) => ({ id: req.params.id, userId }) } as FixtureValue));
+  const run = handlerHarness(t, ({ route: async (req: FixtureValue, userId: string) => ({ id: req.params.id, userId }) }));
   const result = await run('POST', '/api/mail/writebacks/change-1/retry', '{}');
   assert.equal(result.status, 200);
   assert.deepEqual(result.body, { id: 'change-1', userId: 'u1' });
@@ -81,7 +81,7 @@ test('mail provider change retry reaches its parameterized route', async (t) => 
 
 
 test('admin 2FA reset reaches its parameterized route with the body', async (t) => {
-  const run = handlerHarness(t, ({ route: async (req: FixtureValue, userId: string, body: FixtureValue) => ({ url: req.url, userId, body }) } as FixtureValue));
+  const run = handlerHarness(t, ({ route: async (req: FixtureValue, userId: string, body: FixtureValue) => ({ url: req.url, userId, body }) }));
   const result = await run('POST', '/api/admin/users/user-2/2fa/reset', '{"current_password":"synthetic"}');
   assert.equal(result.status, 200);
   assert.deepEqual(result.body, { url: '/api/admin/users/user-2/2fa/reset', userId: 'u1', body: { current_password: 'synthetic' } });
@@ -89,7 +89,7 @@ test('admin 2FA reset reaches its parameterized route with the body', async (t) 
 
 test('disabled module reads, attachments and writes are rejected before reaching a handler', async (t) => {
   let calls = 0;
-  const run = handlerHarness(t, ({ moduleEnabled: false, route: async () => { calls++; return { ok: true }; } } as FixtureValue));
+  const run = handlerHarness(t, ({ moduleEnabled: false, route: async () => { calls++; return { ok: true }; } }));
   for (const [method, path] of [['GET', '/api/mail/attachments/file'], ['PUT', '/api/mail/emails/email'], ['GET', '/api/contacts/export']] as const) {
     const result = await run(method, path, method === 'PUT' ? '{}' : '');
     assert.equal(result.status, 403);

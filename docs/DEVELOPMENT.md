@@ -86,19 +86,33 @@ modules with `require('x') as typeof import('x')`, and API code from
 checks them through `api/tsconfig.scripts.json`.
 
 API tests, test helpers and historical fixture generators also use `.cts` and
-run directly on Node.js 26. `api/tsconfig.tests.json` checks them in strict mode.
-The shared `FixtureValue` type is restricted to tests: malformed inputs,
-partial database rows and provider doubles intentionally have open shapes.
-Production API types remain separate. Fixture generators are explicit
-maintenance tools; ordinary tests never regenerate the frozen backup archives.
+run directly on Node.js 26, the same way. API modules they load directly from
+`../dist/src/` are typed against `../src/`, and `mysql2/promise` uses its own
+types, so `api/tsconfig.tests.json` checks those calls against the current API
+signatures. Shared test helpers export through `module.exports`, which tsc does
+not type in `.cts` files; modules loaded through a helper such as
+`createBackupRuntime` are therefore unchecked.
+Give typed query results a row type, for example
+`pool.execute<RowDataPacket[]>('SELECT ...')`. Where a test deliberately
+passes something outside the declared type (a partial database row, a provider
+or database double, a malformed request), mark that value with `FixtureValue`
+from `api/tests/helpers/test-types.cts`; it is an intentional `any`, so use it
+only there. To read one known outcome of a call that returns a union, narrow
+with `With<typeof result, 'property'>` instead. Because tsc compiles the API
+source in the test check, ESLint rather than tsc rejects TypeScript that Node
+cannot strip (enums, namespaces, parameter properties, `import =`, `export =`)
+in tests; `api/tsconfig.scripts.json` still enforces it for the scripts. ESLint
+also rejects value imports and exports in both. Fixture generators are explicit maintenance
+tools; ordinary tests never regenerate the frozen backup archives.
 
-The root tools in `scripts/` and ESLint/PostCSS configuration use `.mts`.
-`npm run typecheck` checks frontend code, browser workers, root configuration,
-root tools, API source, API scripts and API tests. Install dependencies for both
-packages first; the root mail smoke tool resolves its provider types from the
-API's dependencies. `npm run typecheck:frontend` remains usable in the separate
-frontend Docker build stage. The lint command uses Node's native TypeScript
-configuration loader and requires Node.js 26.
+The root tools in `scripts/` and the PostCSS configuration use `.mts`; the
+ESLint configuration stays `eslint.config.js`, so editors and a plain
+`npx eslint` load it without extra flags. `npm run typecheck` checks frontend
+code, browser workers, root configuration, root tools, API source, API scripts
+and API tests; CI runs it as part of `npm run build`. Install dependencies for
+both packages first; the root mail smoke tool resolves its provider types from
+the API's dependencies. `npm run typecheck:frontend` remains usable in the
+separate frontend Docker build stage.
 
 The backend requires MariaDB configuration through either `DATABASE_URL` or
 `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, and

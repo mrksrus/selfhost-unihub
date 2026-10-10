@@ -1,7 +1,7 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler');
+const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler') as typeof import('../src/services/mail-sync-scheduler');
 
 test('a bounded slice and its continuation commit together before reporting idle', async () => {
   const id = 'mailbox', account = 'account', user = 'owner';
@@ -34,9 +34,9 @@ test('a bounded slice and its continuation commit together before reporting idle
     async getJobStatus() { return null; },
     async updateJob() { return { cancellationRequested: false }; },
   };
-  const scheduler = createDurableMailScheduler(async (job: FixtureValue) => ({ success: true, more: job.id === 'first' }),
-    { repository, workerId: 'worker', concurrency: 1, pollMs: 100000,
-      onState: (status: FixtureValue) => { if (status.id === 'second' && status.state === 'idle') completeSecond(); } });
+  const scheduler = createDurableMailScheduler(async (job) => ({ success: true, more: job.id === 'first' }),
+    { repository: repository as FixtureValue, workerId: 'worker', concurrency: 1, pollMs: 100000,
+      onState: (status) => { if (status.id === 'second' && status.state === 'idle') completeSecond(); } });
   let deadline;
   try {
     await scheduler.start();
@@ -70,14 +70,14 @@ test('manual sweep intent survives finite continuations and is consumed exactly 
     },
     async updateJob() { return { cancellationRequested: false }; },
   };
-  const scheduler = createDurableMailScheduler(async (job: FixtureValue) => {
+  const scheduler = createDurableMailScheduler(async (job) => {
     seen.push(job);
     // Finish the old sweep, then make one fresh bounded pass; no loop.
     const count = seen.length;
     if (count === 5) return { success: true, more: false, refreshPending: false };
     return { success: true, more: true, refreshPending: count < 3 };
-  }, { repository, concurrency: 1, pollMs: 60000,
-    onState: (status: FixtureValue) => { if (status.id === 'next-4' && status.state === 'idle') finished(); } });
+  }, { repository: repository as FixtureValue, concurrency: 1, pollMs: 60000,
+    onState: (status) => { if (status.id === 'next-4' && status.state === 'idle') finished(); } });
   let deadline;
   try {
     await scheduler.start();

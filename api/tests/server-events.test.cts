@@ -8,7 +8,7 @@ const {
   publishMailJob,
   publishMailOperation,
   publishMailChanged,
-} = require('../dist/src/services/server-events');
+} = require('../dist/src/services/server-events') as typeof import('../src/services/server-events');
 
 function fakeTimers() {
   let now = 0, seq = 0;
@@ -202,7 +202,7 @@ test('the shutdown handler closes streams before the stop signal ends the proces
   const killed: FixtureValue[] = [];
   let serverClosed = false;
   installShutdownHandler({ bus, signals, server: { close: () => { serverClosed = true; } },
-    kill: (signal: FixtureValue) => killed.push(signal), timers, graceMs: 200 });
+    kill: (signal) => killed.push(signal), timers: timers as FixtureValue, graceMs: 200 });
   signals.emit('SIGTERM');
   assert.equal(res.ended, true);
   assert.equal(serverClosed, true);
@@ -218,14 +218,14 @@ test('mail job events carry ids, states and counters only', () => {
   const { res } = open('u1');
   publishMailJob({ id: 'job-1', user_id: 'u1', mail_account_id: 'acc-1', kind: 'recent', state: 'running',
     phase: 'recent', processed: 4, total: null, error: 'LOGIN failed for person@example.com',
-    folder: 'Private/Bank', subject: 'Secret' }, bus);
+    folder: 'Private/Bank', subject: 'Secret' } as FixtureValue, bus);
   const [job] = events(res).filter((e: FixtureValue) => e.type === 'mail.job');
   assert.deepEqual(job.data, { accountId: 'acc-1', jobId: 'job-1', kind: 'recent', state: 'running',
     phase: 'recent', processed: 4, total: null });
   assert.doesNotMatch(res.chunks.join(''), /example\.com|Bank|Secret|LOGIN/);
   timers.advance(1000);
   publishMailJob({ id: 'job-1', user_id: 'u1', mail_account_id: 'acc-1', kind: 'recent', state: 'idle',
-    result: { success: true, inserted: 3, updated: 0 } }, bus);
+    result: { success: true, inserted: 3, updated: 0 } as FixtureValue }, bus);
   timers.advance(1000);
   const types = events(res).map((e: FixtureValue) => `${e.type}:${e.data.state ?? e.data.reason ?? ''}`);
   assert.ok(types.includes('mail.job:idle'));
@@ -237,7 +237,7 @@ test('a quiet job does not announce a list change', () => {
   const { bus, open } = hub();
   const { res } = open('u1');
   publishMailJob({ id: 'job-2', user_id: 'u1', mail_account_id: 'acc-1', kind: 'recent', state: 'idle',
-    result: { success: true, inserted: 0, updated: 0 } }, bus);
+    result: { success: true, inserted: 0, updated: 0 } as FixtureValue }, bus);
   assert.deepEqual(events(res).map((e: FixtureValue) => e.type), ['ready', 'mail.job']);
 });
 

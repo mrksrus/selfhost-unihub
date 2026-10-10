@@ -1,7 +1,7 @@
 import type {} from 'node:module';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } = require('../dist/calendar-route-utils');
+const { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } = require('../dist/calendar-route-utils') as typeof import('../calendar-route-utils');
 
 test('extracts event id from todo-status route', () => {
   const eventId = getCalendarEventIdFromPath('/api/calendar/events/evt-123/todo-status');

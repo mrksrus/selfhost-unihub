@@ -1,7 +1,7 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler');
+const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler') as typeof import('../src/services/mail-sync-scheduler');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 async function until(predicate: FixtureValue) {
   for (let i = 0; i < 100; i++) { if (predicate()) return; await tick(); }
@@ -37,7 +37,7 @@ test('interactive wake yields a slow same-account body, preserves it, and never 
       leased.delete(accountId); finished.push({ jobId, state });
     },
   };
-  const scheduler = createDurableMailScheduler((job: FixtureValue, signal: FixtureValue) => {
+  const scheduler = createDurableMailScheduler(((job: FixtureValue, signal: FixtureValue) => {
     started.push(job.id);
     if (job.kind === 'operation') return { success: true };
     if (job.id.startsWith('continued-')) return { success: true, more: false };
@@ -45,14 +45,14 @@ test('interactive wake yields a slow same-account body, preserves it, and never 
       releases.set(job.id, resolve);
       signal.addEventListener('abort', () => resolve({ success: false, cancelled: true }), { once: true });
     });
-  }, { repository: repo, concurrency: 2, pollMs: 60000 });
+  }) as FixtureValue, { repository: repo as FixtureValue, concurrency: 2, pollMs: 60000 });
   try {
     await scheduler.start();
     await until(() => started.length === 2);
     assert.deepEqual(started, ['body-a', 'body-b']);
     // The accepted operation is durable before the read-only wake.
     jobs.push(({ id: 'op-a', user_id: 'owner', mail_account_id: 'A', operation_id: 'accepted',
-      kind: 'operation', priority: 0, state: 'queued' } as FixtureValue));
+      kind: 'operation', priority: 0, state: 'queued' }));
     assert.equal(await scheduler.yieldReadWork('A'), true);
     assert.deepEqual(finished[0], { jobId: 'body-a', state: 'idle' }, 'yield is not user cancellation');
     await until(() => started.includes('op-a'));
@@ -91,14 +91,14 @@ test('a foreground change starts at once while both read slots hold other accoun
     async updateJob() { return { cancellationRequested: false }; },
     async completeJob({ jobId, accountId, state }: FixtureValue) { jobs.find((j: FixtureValue) => j.id === jobId).state = state; leased.delete(accountId); },
   };
-  const scheduler = createDurableMailScheduler((job: FixtureValue, signal: FixtureValue) => {
+  const scheduler = createDurableMailScheduler(((job: FixtureValue, signal: FixtureValue) => {
     started.push(job.id);
     if (job.kind === 'operation') return { success: true };
     return new Promise(resolve => {
       releases.set(job.id, resolve);
       signal.addEventListener('abort', () => resolve({ success: false, cancelled: true }), { once: true });
     });
-  }, { repository: repo, concurrency: 3, readConcurrency: 2, pollMs: 60000 });
+  }) as FixtureValue, { repository: repo as FixtureValue, concurrency: 3, readConcurrency: 2, pollMs: 60000 });
   try {
     await scheduler.start();
     await until(() => started.length === 2);
@@ -106,7 +106,7 @@ test('a foreground change starts at once while both read slots hold other accoun
     assert.deepEqual(claims.at(-1), ['operation', 'reconcile'], 'the third slot is never offered to read-only work');
     assert.equal(jobs.find((j: FixtureValue) => j.id === 'history-d').state, 'queued');
     // Accepted change on an idle account A; the nudge drains without any yield.
-    jobs.push(({ id: 'op-a', user_id: 'owner', mail_account_id: 'A', operation_id: 'accepted', kind: 'operation', priority: 0, state: 'queued' } as FixtureValue));
+    jobs.push(({ id: 'op-a', user_id: 'owner', mail_account_id: 'A', operation_id: 'accepted', kind: 'operation', priority: 0, state: 'queued' }));
     assert.equal(await scheduler.yieldReadWork('A'), false, 'no read job of A to yield');
     await scheduler.drain();
     await until(() => jobs.find((j: FixtureValue) => j.id === 'op-a').state === 'idle' && scheduler.ids().length === 2);
@@ -134,8 +134,8 @@ test('a drain requested during a claim repeats the pass instead of waiting for t
     async updateJob() { return { cancellationRequested: false }; },
     async completeJob() {},
   };
-  const scheduler = createDurableMailScheduler((job: FixtureValue) => { started.push(job.id); return { success: true }; },
-    { repository: repo, concurrency: 3, readConcurrency: 2, pollMs: 60000 });
+  const scheduler = createDurableMailScheduler(((job: FixtureValue) => { started.push(job.id); return { success: true }; }) as FixtureValue,
+    { repository: repo as FixtureValue, concurrency: 3, readConcurrency: 2, pollMs: 60000 });
   try {
     const first = scheduler.drain();
     await until(() => !!releaseClaim);
@@ -150,7 +150,7 @@ test('a drain requested during a claim repeats the pass instead of waiting for t
 
 test('read concurrency must leave the total within bounds', () => {
   for (const readConcurrency of [0, 4, 1.5]) {
-    assert.throws(() => createDurableMailScheduler(() => {}, { concurrency: 3, readConcurrency }), TypeError);
+    assert.throws(() => createDurableMailScheduler((() => {}) as FixtureValue, { concurrency: 3, readConcurrency }), TypeError);
   }
 });
 
@@ -166,8 +166,8 @@ test('stop during an outstanding claim returns unstarted work without invoking i
     },
     async releaseUnstartedJob(input: FixtureValue) { released = input; },
   };
-  const scheduler = createDurableMailScheduler(() => { executed++; },
-    { repository, workerId: 'stopping-worker', pollMs: 60000 });
+  const scheduler = createDurableMailScheduler((() => { executed++; }) as FixtureValue,
+    { repository: repository as FixtureValue, workerId: 'stopping-worker', pollMs: 60000 });
   const starting = scheduler.start();
   await until(() => claiming);
   const stopping = scheduler.stop();
@@ -190,11 +190,11 @@ test('an explicit sync cancel wins over a simultaneous interactive yield', async
     async completeJob(input: FixtureValue) { finished = input.state; job.state = input.state; },
     async enqueueJob() { enqueued++; },
   };
-  const scheduler = createDurableMailScheduler((_job: FixtureValue, signal: FixtureValue) => {
+  const scheduler = createDurableMailScheduler((_job, signal) => {
     started = true;
     signal.addEventListener('abort', () => {}, { once: true });
     return new Promise(resolve => { resume = resolve; });
-  }, { repository: repo, concurrency: 1, pollMs: 60000 });
+  }, { repository: repo as FixtureValue, concurrency: 1, pollMs: 60000 });
   try {
     await scheduler.start(); await until(() => started);
     const yielded = scheduler.yieldReadWork('A');
@@ -230,8 +230,8 @@ test('sync cancellation selects only read-only jobs, not accepted mutation or ou
   } } as NodeJS.Module;
   t.after(require('./helpers/mail-service-modules.cts').evictMailServiceModules());
   t.after(() => { for (const [p, entry] of old) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
-  const mail = require(service);
-  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const mail = require(service) as typeof import('../src/services/mail');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
   t.mock.method(runtime, 'pauseAccount', async (input: FixtureValue) => { paused.push(input); });
   assert.equal(await mail.cancelMailAccountSync('A'), true);
   assert.equal(cancelled.length, 6);
@@ -251,8 +251,8 @@ test('expired-lease recovery runs at start and then at most once per interval', 
     async claimDueJob() { calls.push('claim'); return null; },
     async enqueueJob(input: FixtureValue) { return { id: 'j', ...input }; },
   };
-  const scheduler = createDurableMailScheduler(() => ({ success: true }),
-    { repository, pollMs: 60000, recoveryMs: 15000, now: () => clock.now });
+  const scheduler = createDurableMailScheduler(() => ({ success: true }) as FixtureValue,
+    { repository: repository as FixtureValue, pollMs: 60000, recoveryMs: 15000, now: () => clock.now });
   try {
     await scheduler.start();
     assert.deepEqual(calls, ['recover', 'claim'], 'startup recovery precedes the first claim');
@@ -272,7 +272,7 @@ test('a failed recovery pass is retried on the next drain before any claim', asy
     recoverExpiredJobs: async () => { calls.push('recover'); if (fail) throw new Error('lock wait timeout'); },
     async claimDueJob() { calls.push('claim'); return null; },
   };
-  const scheduler = createDurableMailScheduler(() => ({ success: true }), { repository, pollMs: 60000, now: () => 0 });
+  const scheduler = createDurableMailScheduler(() => ({ success: true }) as FixtureValue, { repository: repository as FixtureValue, pollMs: 60000, now: () => 0 });
   try {
     await assert.rejects(scheduler.start(), /lock wait timeout/);
     assert.deepEqual(calls, ['recover']);
@@ -283,7 +283,7 @@ test('a failed recovery pass is retried on the next drain before any claim', asy
 });
 
 test('a claim skips an account whose expired lease has not been recovered yet', async () => {
-  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
   const account = { generation: 4, lease_owner: 'crashed-worker', lease_until: new Date(Date.now() - 60000), paused_reason: null };
   const calls: FixtureValue[] = [];
   const cx = { async execute(sql: string) {
@@ -295,10 +295,10 @@ test('a claim skips an account whose expired lease has not been recovered yet', 
     if (sql.startsWith('UPDATE')) return [{ affectedRows: 1 }];
     throw new Error(sql);
   } };
-  assert.equal(await runtime.claimDueJob({ workerId: 'successor' }, cx), null);
+  assert.equal(await runtime.claimDueJob({ workerId: 'successor' }, cx as FixtureValue), null);
   assert(!calls.some(sql => sql.startsWith('UPDATE')), 'no takeover of an unrecovered lease');
   // Recovery bumps the generation and clears the owner; only then may a successor claim.
   Object.assign(account, { generation: 5, lease_owner: null, lease_until: null });
-  const claimed = await runtime.claimDueJob({ workerId: 'successor' }, cx);
-  assert.equal(claimed.id, 'next'); assert.equal(claimed.worker_generation, 6);
+  const claimed = await runtime.claimDueJob({ workerId: 'successor' }, cx as FixtureValue);
+  assert.equal(claimed!.id, 'next'); assert.equal(claimed!.worker_generation, 6);
 });

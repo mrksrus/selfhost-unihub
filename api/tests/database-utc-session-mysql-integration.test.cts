@@ -11,8 +11,8 @@ test('CURRENT_TIMESTAMP rows compare correctly with UTC_TIMESTAMP() on a non-UTC
   assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/, 'Use a dedicated database ending in _test');
   process.env.JWT_SECRET = process.env.JWT_SECRET || 'ci-test-jwt-secret-for-utc-sessions';
   process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'ci-test-encryption-key';
-  const mysql = require('mysql2/promise');
-  const { useUtcSessions } = require('../dist/src/services/database');
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+  const { useUtcSessions } = require('../dist/src/services/database') as typeof import('../src/services/database');
   const config = {
     host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER,
@@ -20,7 +20,7 @@ test('CURRENT_TIMESTAMP rows compare correctly with UTC_TIMESTAMP() on a non-UTC
   };
   function nonUtcServerPool() {
     const pool = mysql.createPool(config);
-    pool.pool.on('connection', (connection: FixtureValue) => connection.query("SET time_zone = '+02:00'", () => {}));
+    pool.pool.on('connection', (connection) => connection.query("SET time_zone = '+02:00'", () => {}));
     return pool;
   }
   // One pool connection, because the probe uses a per-connection temporary table.

@@ -1,4 +1,5 @@
 import type {} from 'node:module';
+import type { RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const fs = (require('node:fs') as typeof import('node:fs'));
@@ -19,8 +20,8 @@ test('committed 01-schema.sql equals a freshly migrated database', {
   process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'ci-test-encryption-key';
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'ci-admin@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'ci-bootstrap-password-2026';
-  const mysql = require('mysql2/promise');
-  const { getDb, setDb } = require('../dist/src/state');
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+  const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
   const { SCHEMA_FILE, dumpSchema, migrateCurrentSchema, describeDifference } = require('../scripts/dump-schema.cts');
   const connection = await mysql.createConnection({
     host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
@@ -30,17 +31,17 @@ test('committed 01-schema.sql equals a freshly migrated database', {
   let ownsDatabase = false;
   t.after(async () => {
     try {
-      if (getDb()) { await getDb().end(); setDb(null); }
+      if (getDb()) { await getDb()!.end(); setDb(null); }
       if (ownsDatabase) {
         await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
         try {
-          const [tables] = await connection.query('SHOW TABLES');
+          const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES');
           for (const row of tables) await connection.execute('DROP TABLE `' + Object.values(row)[0] + '`');
         } finally { await connection.execute('SET FOREIGN_KEY_CHECKS = 1'); }
       }
     } finally { await connection.end(); }
   });
-  const [existing] = await connection.query('SHOW TABLES');
+  const [existing] = await connection.query<RowDataPacket[]>('SHOW TABLES');
   assert.equal(existing.length, 0, 'The schema comparison requires an empty dedicated test database');
   ownsDatabase = true;
 

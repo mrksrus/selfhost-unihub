@@ -1,3 +1,4 @@
+import type { FixtureValue } from './helpers/test-types.cts';
 import type {} from 'node:module';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
@@ -5,7 +6,7 @@ const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const path = (require('node:path') as typeof import('node:path'));
 const os = (require('node:os') as typeof import('node:os'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const { publishRaw, verifyArchive, eligibleForProviderErasure, fetchRawBounded } = require('../dist/src/services/mail-engine/content');
+const { publishRaw, verifyArchive, eligibleForProviderErasure, fetchRawBounded } = require('../dist/src/services/mail-engine/content') as typeof import('../src/services/mail-engine/content');
 const owner = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const item = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 async function root(t: import('node:test').TestContext) {
@@ -43,8 +44,8 @@ test('legacy raw, missing epoch, wrong tuple or modified archive cannot authoriz
 test('raw fetch refuses decoded text and aborts slow reads at deadline', async () => {
   const connection = { ended: false, close() { this.ended = true; } };
   const address = { folder: 'INBOX', uidvalidity: 40, uid: 7 };
-  await assert.rejects(fetchRawBounded({ fetchRawMessage: async () => ({ raw: 'decoded' }) }, connection, address), /octets/);
-  await assert.rejects(fetchRawBounded({ fetchRawMessage: async () => new Promise(() => {}) }, connection, address,
+  await assert.rejects(fetchRawBounded({ fetchRawMessage: async () => ({ raw: 'decoded' }) } as FixtureValue, connection as FixtureValue, address), /octets/);
+  await assert.rejects(fetchRawBounded({ fetchRawMessage: async () => new Promise(() => {}) } as FixtureValue, connection as FixtureValue, address,
     { timeoutMs: 5 }), { code: 'MAIL_BODY_TIMEOUT' });
   assert.equal(connection.ended, true);
 });

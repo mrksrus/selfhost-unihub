@@ -1,5 +1,6 @@
 'use strict';
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, With } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 // Disposable MySQL 8 schema ending _test. Sync mode follows the server:
 // proven absence, Gmail label merging, retention windows, the per-account
 // confirmation gate and its HTTP API, against real SQL and real files.
@@ -11,7 +12,7 @@ const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const mysql = require('mysql2/promise');
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts');
 
 const uuid = () => crypto.randomUUID();
@@ -29,8 +30,8 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD,
     database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 8 });
-  const state = require('../dist/src/state'), previousDb = state.getDb();
-  const rows = async (sql: string, params: FixtureValue[] = []) => (await pool.execute(sql, params))[0];
+  const state = require('../dist/src/state') as typeof import('../src/state'), previousDb = state.getDb();
+  const rows = async (sql: string, params: FixtureValue[] = []) => (await pool.execute<RowDataPacket[]>(sql, params))[0];
   const one = async (sql: string, params: FixtureValue[] = []) => (await rows(sql, params))[0];
   let ownsSchema = false, server: FixtureValue = null, isolated: FixtureValue = null;
   t.after(async () => {
@@ -41,7 +42,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
         const cx = await pool.getConnection();
         try {
           await cx.query('SET FOREIGN_KEY_CHECKS = 0');
-          for (const row of (await cx.query('SHOW TABLES'))[0]) {
+          for (const row of (await cx.query<RowDataPacket[]>('SHOW TABLES'))[0]) {
             const name = Object.values(row)[0]; assert.match((name as string), /^[a-z_]+$/);
             await cx.query(`DROP TABLE \`${name}\``);
           }
@@ -56,19 +57,19 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     }
   });
   assert.match((await one('SELECT VERSION() AS version')).version, /MariaDB/);
-  assert.equal((await rows('SHOW TABLES')).length, 0, 'Refuse a populated schema');
+  assert.equal(((await rows('SHOW TABLES'))).length, 0, 'Refuse a populated schema');
   ownsSchema = true; state.setDb(pool);
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'sync-policy-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-sync-policy-bootstrap-password';
-  await require('../dist/src/services/database').ensureSchema();
-  const repo = require('../dist/src/services/mail-engine/repository');
-  const transport = require('../dist/src/services/mail-engine/transport');
-  const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync');
-  const policy = require('../dist/src/services/mail-sync-policy');
+  await (require('../dist/src/services/database') as typeof import('../src/services/database')).ensureSchema();
+  const repo = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+  const transport = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
+  const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync') as typeof import('../src/services/mail-engine/sync');
+  const policy = require('../dist/src/services/mail-sync-policy') as typeof import('../src/services/mail-sync-policy');
 
   // Synthetic provider: folder -> { epoch, next, gmail, items: uid -> message }.
   const provider = new Map();
-  const box = (name: FixtureValue, { gmail = false, epoch = 9 }: FixtureValue = {}) => {
+  const box = (name: FixtureValue, { gmail = false, epoch = 9 } = {}) => {
     if (!provider.has(name)) provider.set(name, { epoch, next: 1, gmail, items: new Map() });
     return provider.get(name);
   };
@@ -91,22 +92,22 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
   });
 
   const userId = uuid();
-  await pool.execute('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'sync-policy-owner@example.test', 'synthetic']);
+  await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'sync-policy-owner@example.test', 'synthetic']);
   async function createAccount(label: string, { mode = 'sync', confirmed = true, syncWindow = null, trashWindow = 30, host = 'imap.example.test' }: FixtureValue = {}) {
     const id = uuid();
-    await pool.execute(`INSERT INTO mail_accounts (id,user_id,email_address,provider,imap_host,sync_mode,is_active,
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id,user_id,email_address,provider,imap_host,sync_mode,is_active,
         sync_window_days,trash_window_days,sync_policy_confirmed_at)
       VALUES (?,?,?,'custom',?,?,TRUE,?,?,${confirmed ? 'UTC_TIMESTAMP()' : 'NULL'})`,
     [id, userId, `${label}@example.test`, host, mode, syncWindow, trashWindow]);
     return id;
   }
-  const load = (id: FixtureValue) => one('SELECT * FROM mail_accounts WHERE id = ?', [id]);
+  const load = (id: FixtureValue) => one('SELECT * FROM mail_accounts WHERE id = ?', [id]) as Promise<Parameters<typeof policy.computeModeImpact>[0]>;
   const specialUses: FixtureValue = { 'Trash': 'trash', '[Gmail]/All Mail': 'all', '[Gmail]/Trash': 'trash' };
   async function scan(accountId: string, folderName: FixtureValue, stream: FixtureValue, { fresh = true }: FixtureValue = {}) {
-    if (fresh) await pool.execute('DELETE FROM mail_engine_cursors WHERE mail_account_id = ?', [accountId]);
+    if (fresh) await pool.execute<ResultSetHeader>('DELETE FROM mail_engine_cursors WHERE mail_account_id = ?', [accountId]);
     let result;
     do {
-      result = await scanMailboxSlice({ db: pool, connection: {}, account: await load(accountId),
+      result = await scanMailboxSlice({ db: pool, connection: {} as FixtureValue, account: await load(accountId) as Parameters<typeof scanMailboxSlice>[0]['account'],
         folder: { folderName, dbFolderName: 'inbox', specialUse: specialUses[folderName] }, stream });
     } while (result.more);
     return result;
@@ -120,7 +121,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     let result;
     do {
       result = await policy.runPruneSlice({ account: await load(accountId) });
-      for (const key of Object.keys(total)) total[key] += Number(result[key] || 0);
+      for (const key of Object.keys(total)) total[key] += Number(result[key as keyof typeof result] || 0);
     } while (result.more);
     return { ...result, ...total };
   };
@@ -128,8 +129,8 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     const raw = path.join((process.env.MAIL_RAW_STORAGE_ROOT as string), userId, `${emailId}.eml`);
     const attachment = path.join((process.env.MAIL_ATTACHMENT_UPLOAD_ROOT as string), userId, `${emailId}-note.txt`);
     for (const file of [raw, attachment]) { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, 'synthetic'); }
-    await pool.execute('UPDATE emails SET raw_storage_path = ? WHERE id = ?', [raw, emailId]);
-    await pool.execute(`INSERT INTO email_attachments (id,email_id,user_id,filename,content_type,size_bytes,storage_path)
+    await pool.execute<ResultSetHeader>('UPDATE emails SET raw_storage_path = ? WHERE id = ?', [raw, emailId]);
+    await pool.execute<ResultSetHeader>(`INSERT INTO email_attachments (id,email_id,user_id,filename,content_type,size_bytes,storage_path)
       VALUES (?,?,?,'note.txt','text/plain',9,?)`, [uuid(), emailId, userId, attachment]);
     return { raw, attachment };
   }
@@ -144,7 +145,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     await scan(accountId, 'INBOX', 'presence');
     assert.equal((await itemAt(accountId, 'INBOX', 2)).presence, 'absent');
     assert.equal((await one('SELECT remote_missing FROM emails WHERE id = ?', [gone])).remote_missing, 1);
-    assert.equal((await rows("SELECT id FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'prune' AND state = 'queued'", [accountId])).length, 1,
+    assert.equal(((await rows("SELECT id FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'prune' AND state = 'queued'", [accountId]))).length, 1,
       'Proven absence queues the local prune job');
     const impact = await policy.computeModeImpact(await load(accountId), { mode: 'sync' });
     assert.equal(impact.local_only, 1);
@@ -159,20 +160,20 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
 
   await t.test('Download mode and an unconfirmed Sync account keep mail the server no longer has', async () => {
     const download = await createAccount('download', { mode: 'download', confirmed: false });
-    const mailbox = await repo.withTransaction((cx: FixtureValue) => repo.ensureMailbox({ userId, accountId: download, folderName: 'INBOX', epoch: 9 }, cx), pool);
+    const mailbox = await repo.withTransaction((cx) => repo.ensureMailbox({ userId, accountId: download, folderName: 'INBOX', epoch: 9 }, cx), pool);
     const archived = uuid(), serverDeleted = uuid();
     for (const [id, uid] of [[archived, 1], [serverDeleted, 2]] as const) {
-      await pool.execute("INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder) VALUES (?,?,?,'a@example.test','[]','inbox')", [id, userId, download]);
-      await repo.withTransaction((cx: FixtureValue) => repo.upsertOccurrence({ userId, accountId: download, mailboxId: mailbox.id, epoch: 9, uid, emailId: id }, cx), pool);
+      await pool.execute<ResultSetHeader>("INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder) VALUES (?,?,?,'a@example.test','[]','inbox')", [id, userId, download]);
+      await repo.withTransaction((cx) => repo.upsertOccurrence({ userId, accountId: download, mailboxId: mailbox.id, epoch: 9, uid, emailId: id }, cx), pool);
     }
-    await pool.execute("UPDATE mail_remote_occurrences SET presence = 'absent' WHERE email_id = ?", [archived]);
-    await pool.execute("INSERT INTO mail_server_messages (user_id,mail_account_id,email_id,source_folder,imap_uid,delete_status) VALUES (?,?,?,'INBOX',2,'deleted')",
+    await pool.execute<ResultSetHeader>("UPDATE mail_remote_occurrences SET presence = 'absent' WHERE email_id = ?", [archived]);
+    await pool.execute<ResultSetHeader>("INSERT INTO mail_server_messages (user_id,mail_account_id,email_id,source_folder,imap_uid,delete_status) VALUES (?,?,?,'INBOX',2,'deleted')",
       [userId, download, serverDeleted]);
     assert.equal((await prune(download)).skipped, 'download_mode');
     assert.equal(await emailCount(download), 2, 'Download mode never removes local mail');
     const toSync = await policy.computeModeImpact(await load(download), { mode: 'sync' });
     assert.equal(toSync.local_only, 2, 'Switching would remove mail missing on the server, including mail UniHub deleted there');
-    assert.ok(toSync.notes.some((note: FixtureValue) => /not counted yet/.test(note)));
+    assert.ok(toSync.notes.some((note) => /not counted yet/.test(note)));
     const stay = await policy.computeModeImpact(await load(download), { mode: 'download' });
     assert.equal(stay.total_removals, 0);
     assert.match(stay.notes[0], /deletes nothing/);
@@ -188,7 +189,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.equal(held.removed, 0);
     assert.ok(await one('SELECT id FROM emails WHERE id = ? AND remote_missing = TRUE', [item]), 'Kept until the policy is confirmed');
     assert.equal(await policy.pendingRemovals(await load(upgraded)), 1);
-    await pool.execute('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [upgraded]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [upgraded]);
     assert.equal(await policy.pendingRemovals(await load(upgraded)), null);
     assert.equal((await prune(upgraded)).removed, 1);
     provider.delete('INBOX');
@@ -200,37 +201,37 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     for (const [folder, uid] of [['INBOX', 5], ['Work', 7], ['[Gmail]/All Mail', 50]] as const) deliver(folder, uid, { gmailMsgId: '9001', flags: ['\\Seen'] }, gmail);
     // Copies imported per label before 0.12 read X-GM-MSGID.
     const keeper = uuid(), copy = uuid();
-    await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,import_complete,content_state,is_read,created_at)
+    await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,import_complete,content_state,is_read,created_at)
       VALUES (?,?,?,'g@example.test','[]','inbox',TRUE,'complete',FALSE,UTC_TIMESTAMP() - INTERVAL 1 DAY),
              (?,?,?,'g@example.test','[]','work',FALSE,'queued',FALSE,UTC_TIMESTAMP())`, [keeper, userId, accountId, copy, userId, accountId]);
     for (const [folder, uid, emailId] of [['INBOX', 5, keeper], ['Work', 7, copy]] as const) {
-      const mailbox = await repo.withTransaction((cx: FixtureValue) => repo.ensureMailbox({ userId, accountId, folderName: folder, epoch: 9 }, cx), pool);
-      await repo.withTransaction((cx: FixtureValue) => repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 9, uid, emailId,
+      const mailbox = await repo.withTransaction((cx) => repo.ensureMailbox({ userId, accountId, folderName: folder, epoch: 9 }, cx), pool);
+      await repo.withTransaction((cx) => repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 9, uid, emailId,
         gmailMsgId: '9001', flags: ['\\Seen'] }, cx), pool);
     }
     const operation = uuid();
-    await pool.execute(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,remote_folder,remote_uid,remote_uidvalidity,status,state)
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,remote_folder,remote_uid,remote_uidvalidity,status,state)
       VALUES (?,?,?,?,'read','1','0','Work',7,9,'done','confirmed')`, [operation, userId, accountId, copy]);
     const files = await storeFiles(copy);
-    assert.equal((await rows("SELECT source_id FROM mail_engine_quarantine WHERE mail_account_id = ? AND reason = 'gmail_identity_conflict'", [accountId])).length, 1);
+    assert.equal(((await rows("SELECT source_id FROM mail_engine_quarantine WHERE mail_account_id = ? AND reason = 'gmail_identity_conflict'", [accountId]))).length, 1);
     await scan(accountId, '[Gmail]/All Mail', 'recent');
     assert.equal(await emailCount(accountId), 2, 'An All Mail occurrence joins the known item, never a new one');
     assert.equal((await itemAt(accountId, '[Gmail]/All Mail', 50)).email_id, keeper);
     assert.deepEqual(await policy.syncWarnings(await load(accountId)), []);
     assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).gmail_duplicates, 1);
-    await pool.execute('UPDATE emails SET is_read = FALSE WHERE id = ?', [keeper]);
+    await pool.execute<ResultSetHeader>('UPDATE emails SET is_read = FALSE WHERE id = ?', [keeper]);
     assert.equal((await prune(accountId)).merged, 0, 'Merging is destructive and waits for confirmation');
     assert.equal(await emailCount(accountId), 2);
 
-    await pool.execute('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
     const merged = await prune(accountId);
     assert.equal(merged.merged, 1);
     assert.equal(await emailCount(accountId), 1);
-    assert.deepEqual((await rows('SELECT DISTINCT email_id FROM mail_remote_occurrences WHERE mail_account_id = ?', [accountId])).map((row: FixtureValue) => row.email_id), [keeper]);
+    assert.deepEqual(((await rows('SELECT DISTINCT email_id FROM mail_remote_occurrences WHERE mail_account_id = ?', [accountId]))).map((row) => row.email_id), [keeper]);
     assert.equal((await one('SELECT email_id FROM mail_writebacks WHERE id = ?', [operation])).email_id, keeper, 'Operation history re-pointed');
     assert.equal((await one("SELECT email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND gmail_msgid = '9001'", [accountId])).email_id, keeper);
     assert.equal((await one('SELECT is_read FROM emails WHERE id = ?', [keeper])).is_read, 1, 'Read state from the server');
-    assert.equal((await rows("SELECT source_id FROM mail_engine_quarantine WHERE mail_account_id = ? AND reason = 'gmail_identity_conflict'", [accountId])).length, 0);
+    assert.equal(((await rows("SELECT source_id FROM mail_engine_quarantine WHERE mail_account_id = ? AND reason = 'gmail_identity_conflict'", [accountId]))).length, 0);
     assert.equal(await exists(files.raw), false);
     assert.equal(await exists(files.attachment), false);
 
@@ -248,12 +249,12 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
 
   await t.test('Copies without a server link: removed only as a strict duplicate of a linked item, after confirmation', async () => {
     const accountId = await createAccount('unlinked', { confirmed: false });
-    const mailbox = await repo.withTransaction((cx: FixtureValue) => repo.ensureMailbox({ userId, accountId, folderName: 'INBOX', epoch: 9 }, cx), pool);
+    const mailbox = await repo.withTransaction((cx) => repo.ensureMailbox({ userId, accountId, folderName: 'INBOX', epoch: 9 }, cx), pool);
     const add = async ({ messageId, from = 'a@example.test', subject = 'Hello', hoursAgo = 2, folder = 'inbox', complete = true, uid = null }: FixtureValue) => {
       const id = uuid();
-      await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,message_id,from_address,to_addresses,subject,folder,import_complete,received_at)
+      await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,message_id,from_address,to_addresses,subject,folder,import_complete,received_at)
         VALUES (?,?,?,?,?,'[]',?,?,?,UTC_TIMESTAMP() - INTERVAL ? HOUR)`, [id, userId, accountId, messageId, from, subject, folder, complete, hoursAgo]);
-      if (uid) await repo.withTransaction((cx: FixtureValue) => repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 9, uid, emailId: id }, cx), pool);
+      if (uid) await repo.withTransaction((cx) => repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 9, uid, emailId: id }, cx), pool);
       return id;
     };
     const linked = await add({ messageId: '<one@example.test>', uid: 1 });
@@ -263,18 +264,18 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     await add({ messageId: '<three@example.test>', uid: 2, complete: false });
     const incompleteTwin = await add({ messageId: '<three@example.test>' });
     const files = await storeFiles(duplicate);
-    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).local_duplicates, 1);
+    assert.equal(((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })) as FixtureValue).local_duplicates, 1);
     assert.equal((await prune(accountId)).unconfirmed, true);
     assert.equal(await emailCount(accountId), 6, 'Removal waits for confirmation');
 
-    await pool.execute('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
     assert.equal((await prune(accountId)).removed, 1);
     assert.equal(await one('SELECT id FROM emails WHERE id = ?', [duplicate]), undefined);
     for (const id of [linked, otherSubject, lone, incompleteTwin]) assert.ok(await one('SELECT id FROM emails WHERE id = ?', [id]), 'Kept');
     assert.equal(await exists(files.raw), false);
     assert.equal(await exists(files.attachment), false);
     assert.equal((await prune(accountId)).removed, 0, 'Nothing more to remove on a second run');
-    assert.equal((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })).local_duplicates, 0);
+    assert.equal(((await policy.computeModeImpact(await load(accountId), { mode: 'sync' })) as FixtureValue).local_duplicates, 0);
   });
 
   await t.test('Gmail without a visible All Mail keeps missing mail as archived and warns', async () => {
@@ -291,10 +292,10 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     assert.deepEqual(await one('SELECT folder, remote_missing FROM emails WHERE id = ?', [item]), { folder: 'archive', remote_missing: 1 });
     const impact = await policy.computeModeImpact(await load(accountId), { mode: 'sync' });
     assert.equal(impact.local_only, 0);
-    assert.ok(impact.notes.some((note: FixtureValue) => /Show in IMAP/.test(note)));
-    const { membershipCountQuery } = require('../dist/src/services/mail-folder-view');
+    assert.ok(impact.notes.some((note) => /Show in IMAP/.test(note)));
+    const { membershipCountQuery } = require('../dist/src/services/mail-folder-view') as typeof import('../src/services/mail-folder-view');
     const counts = await rows(membershipCountQuery('emails.is_read', accountId), [userId, accountId]);
-    assert.deepEqual(counts.map((row: FixtureValue) => [row.folder, Number(row.total_count)]), [['archive', 1]], 'Shown in the local Archive view');
+    assert.deepEqual(counts.map((row) => [row.folder, Number(row.total_count)]), [['archive', 1]], 'Shown in the local Archive view');
     // Once All Mail is visible, absence from every mailbox proves deletion.
     box('[Gmail]/All Mail', { gmail: true });
     await scan(accountId, '[Gmail]/All Mail', 'recent');
@@ -308,25 +309,25 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     deliver('INBOX', 1, { internalDate: daysAgo(5) }); deliver('INBOX', 2, { internalDate: daysAgo(100) });
     deliver('Trash', 1, { internalDate: daysAgo(20) }); deliver('Trash', 2, { internalDate: daysAgo(3) });
     const inbox = await scan(accountId, 'INBOX', 'recent');
-    assert.deepEqual([inbox.inserted, inbox.skipped], [1, 1]);
+    assert.deepEqual([inbox.inserted, (inbox as With<typeof inbox, 'skipped'>).skipped], [1, 1]);
     const trash = await scan(accountId, 'Trash', 'recent');
-    assert.deepEqual([trash.inserted, trash.skipped], [1, 1], 'Trash uses its own, shorter window');
+    assert.deepEqual([trash.inserted, (trash as With<typeof trash, 'skipped'>).skipped], [1, 1], 'Trash uses its own, shorter window');
     assert.equal(await itemAt(accountId, 'INBOX', 2), null, 'Outside the window: not imported, no body queued');
     assert.equal(await emailCount(accountId), 2);
     // Copies imported before the window was chosen.
     const oldInbox = uuid(), oldTrash = uuid();
     for (const [id, folder, uid, age] of [[oldInbox, 'INBOX', 3, 200], [oldTrash, 'Trash', 4, 20]] as const) {
       deliver(folder, uid, { internalDate: daysAgo(age) });
-      await pool.execute("INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder) VALUES (?,?,?,'r@example.test','[]','inbox')", [id, userId, accountId]);
-      const mailbox = await repo.withTransaction((cx: FixtureValue) => repo.ensureMailbox({ userId, accountId, folderName: folder, epoch: 9 }, cx), pool);
-      await repo.withTransaction((cx: FixtureValue) => repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 9, uid, emailId: id, internalDate: daysAgo(age) }, cx), pool);
+      await pool.execute<ResultSetHeader>("INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder) VALUES (?,?,?,'r@example.test','[]','inbox')", [id, userId, accountId]);
+      const mailbox = await repo.withTransaction((cx) => repo.ensureMailbox({ userId, accountId, folderName: folder, epoch: 9 }, cx), pool);
+      await repo.withTransaction((cx) => repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 9, uid, emailId: id, internalDate: daysAgo(age) }, cx), pool);
     }
     const impact = await policy.computeModeImpact(await load(accountId), { mode: 'sync' });
     assert.deepEqual([impact.outside_window, impact.outside_trash_window, impact.total_removals], [1, 1, 2]);
     const wider = await policy.computeModeImpact(await load(accountId), { mode: 'sync', syncWindowDays: null, trashWindowDays: null });
     assert.equal(wider.total_removals, 0, 'All mail keeps everything');
     assert.equal((await prune(accountId)).removed, 0, 'Unconfirmed: nothing removed');
-    await pool.execute('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET sync_policy_confirmed_at = UTC_TIMESTAMP() WHERE id = ?', [accountId]);
     assert.equal((await prune(accountId)).removed, 2);
     assert.equal(await one('SELECT id FROM emails WHERE id IN (?,?)', [oldInbox, oldTrash]), undefined);
     assert.equal(await emailCount(accountId), 2);
@@ -336,22 +337,22 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
 
     const download = await createAccount('retention-download', { mode: 'download', confirmed: false, syncWindow: 14, trashWindow: 14 });
     const imported = await scan(download, 'INBOX', 'recent');
-    assert.deepEqual([imported.inserted, imported.skipped], [3, 0], 'Download mode ignores windows');
+    assert.deepEqual([imported.inserted, (imported as With<typeof imported, 'skipped'>).skipped], [3, 0], 'Download mode ignores windows');
     for (const name of ['INBOX', 'Trash']) provider.delete(name);
   });
 
   await t.test('HTTP: account fields, mode impact, typed-address switch, confirmation and account backup', async () => {
     // Jobs queued by the engine subtests above belong to accounts without credentials.
-    await pool.execute("UPDATE mail_engine_jobs SET state = 'cancelled', completed_at = UTC_TIMESTAMP() WHERE state = 'queued'");
+    await pool.execute<ResultSetHeader>("UPDATE mail_engine_jobs SET state = 'cancelled', completed_at = UTC_TIMESTAMP() WHERE state = 'queued'");
     isolated = createBackupRuntime(directory, 'sync-policy-synthetic-key', pool);
     await isolated('services/database').ensureSchema();
     const password = 'sync-policy-fixture-password-2026';
     const hash = await require('bcryptjs').hash(password, 10);
     const ownerId = uuid();
-    await pool.execute('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [ownerId, 'http-owner@example.test', hash, 'Owner']);
+    await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [ownerId, 'http-owner@example.test', hash, 'Owner']);
     const seed = async (address: FixtureValue, mode: FixtureValue, confirmed: FixtureValue) => {
       const id = uuid();
-      await pool.execute(`INSERT INTO mail_accounts (id,user_id,email_address,provider,imap_host,sync_mode,is_active,sync_policy_confirmed_at)
+      await pool.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id,user_id,email_address,provider,imap_host,sync_mode,is_active,sync_policy_confirmed_at)
         VALUES (?,?,?,'custom','imap.example.test',?,TRUE,${confirmed ? 'UTC_TIMESTAMP()' : 'NULL'})`, [id, ownerId, address, mode]);
       return id;
     };
@@ -360,7 +361,7 @@ test('MySQL Sync policy: proven absence, Gmail merge, retention, confirmation ga
     const upgraded = await seed('upgraded@example.test', 'sync', false);
     const mail = async (accountId: string, extra = '') => {
       const id = uuid();
-      await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder${extra ? ',remote_missing' : ''})
+      await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder${extra ? ',remote_missing' : ''})
         VALUES (?,?,?,'h@example.test','[]','inbox'${extra ? ',TRUE' : ''})`, [id, ownerId, accountId]);
       return id;
     };

@@ -5,8 +5,8 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'test-encryption-key-for-backup-route';
 process.env.BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || 'test-backup-master-key-for-backup-route';
 
-const routes = require('../dist/src/routes/backup');
-const { setDb } = require('../dist/src/state');
+const routes = require('../dist/src/routes/backup') as typeof import('../src/routes/backup');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 function requestFor(pathname: FixtureValue) {
   return {
@@ -32,11 +32,11 @@ test('encrypted download requires recovery-password metadata', async (t) => {
         server_unlock_available: 1,
       }]];
     },
-  });
+  } as FixtureValue);
   t.after(() => setDb(null));
 
   const result = await routes['GET /api/backup/jobs/:id/download'](
-    requestFor('/api/backup/jobs/job-1/download'),
+    requestFor('/api/backup/jobs/job-1/download') as FixtureValue,
     'user-1'
   );
 
@@ -60,11 +60,11 @@ test('encrypted download is gated while the recovery password can still be revea
         server_unlock_available: 1,
       }]];
     },
-  });
+  } as FixtureValue);
   t.after(() => setDb(null));
 
   const result = await routes['GET /api/backup/jobs/:id/download'](
-    requestFor('/api/backup/jobs/job-1/download'),
+    requestFor('/api/backup/jobs/job-1/download') as FixtureValue,
     'user-1'
   );
 
@@ -95,11 +95,11 @@ test('password reveal reports missing recovery metadata for an existing job', as
     async getConnection() {
       return connection;
     },
-  });
+  } as FixtureValue);
   t.after(() => setDb(null));
 
   const result = await routes['POST /api/backup/jobs/:id/recovery-password/reveal'](
-    requestFor('/api/backup/jobs/job-1/recovery-password/reveal'),
+    requestFor('/api/backup/jobs/job-1/recovery-password/reveal') as FixtureValue,
     'user-1'
   );
 
@@ -111,10 +111,10 @@ test('password reveal reports missing recovery metadata for an existing job', as
 
 test('backup capabilities expose the shared recoverable sections without authorizing anonymous callers', async () => {
   const handler = routes['GET /api/backup/capabilities'];
-  assert.equal((await handler({}, null)).status, 401);
-  const capabilities = await handler({}, 'owner');
+  assert.equal((await handler({} as FixtureValue, null)).status, 401);
+  const capabilities = await handler({} as FixtureValue, 'owner');
   assert.equal(capabilities.enabled, true);
   assert.equal(capabilities.version, 4);
-  assert.deepEqual(capabilities.sections.map((section: FixtureValue) => section.id), Object.keys(require('../dist/src/services/backup-catalog').SECTION_POLICIES));
-  assert.ok(capabilities.exclusions.some((value: FixtureValue) => /Other users/.test(value)));
+  assert.deepEqual(capabilities.sections.map((section) => section.id), Object.keys((require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog')).SECTION_POLICIES));
+  assert.ok(capabilities.exclusions.some((value) => /Other users/.test(value)));
 });

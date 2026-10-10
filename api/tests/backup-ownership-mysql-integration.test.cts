@@ -1,4 +1,5 @@
 import type { FixtureValue } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
@@ -47,20 +48,20 @@ function restoreFixture(encrypt: FixtureValue) {
 
 test('MySQL restores colliding backup IDs without changing another user in every conflict mode', { skip: !process.env.MYSQL_TEST_HOST, timeout: 120000 }, async (t) => {
   process.env.ENCRYPTION_KEY ||= 'backup-ownership-test-key';
-  const mysql = require('mysql2/promise');
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE || 'unihub_test', user: process.env.MYSQL_TEST_USER || 'unihub_test', password: process.env.MYSQL_TEST_PASSWORD || 'test-db-password', timezone: '+00:00' });
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-ownership-'));
-  const { setDb, getDb } = require('../dist/src/state');
+  const { setDb, getDb } = require('../dist/src/state') as typeof import('../src/state');
   const previousDb = getDb();
   const recordingsPath = require.resolve('../dist/src/services/recordings');
-  const originalRecordings = require(recordingsPath);
+  const originalRecordings = require(recordingsPath) as typeof import('../src/services/recordings');
   const backupPath = require.resolve('../dist/src/services/backup');
   const originalBackup = require.cache[backupPath];
-  (require.cache as FixtureValue)[recordingsPath].exports = { ...originalRecordings, RECORDINGS_ROOT: directory } as NodeJS.Module;
+  require.cache[recordingsPath]!.exports = { ...originalRecordings, RECORDINGS_ROOT: directory };
   t.after(require('./helpers/backup-service-modules.cts').evictBackupServiceModules());
-  const { importBackupForUser } = require(backupPath);
-  const { encrypt } = require('../dist/src/security/encryption');
-  setDb({ execute: (...args: FixtureValue[]) => connection.execute(...args), getConnection: async () => ({ execute: (...args: FixtureValue[]) => connection.execute(...args), beginTransaction: () => connection.beginTransaction(), commit: () => connection.commit(), rollback: () => connection.rollback(), release() {} }) });
+  const { importBackupForUser } = require(backupPath) as typeof import('../src/services/backup');
+  const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+  setDb({ execute: (...args: FixtureValue[]) => connection.execute(...args as [string, FixtureValue]), getConnection: async () => ({ execute: (...args: FixtureValue[]) => connection.execute(...args as [string, FixtureValue]), beginTransaction: () => connection.beginTransaction(), commit: () => connection.commit(), rollback: () => connection.rollback(), release() {} }) } as FixtureValue);
   t.after(async () => {
     setDb(previousDb);
     (require.cache as FixtureValue)[recordingsPath].exports = originalRecordings;
@@ -100,21 +101,21 @@ test('MySQL restores colliding backup IDs without changing another user in every
   await connection.execute('ALTER TABLE emails ADD COLUMN remote_folder VARCHAR(255) NULL, ADD COLUMN remote_uid BIGINT NULL, ADD COLUMN remote_uidvalidity BIGINT NULL, ADD COLUMN remote_missing BOOLEAN NOT NULL DEFAULT FALSE');
   await connection.execute("ALTER TABLE emails ADD COLUMN observation_revision BIGINT NOT NULL DEFAULT 0, ADD COLUMN observed_modseq VARCHAR(32) NULL, ADD COLUMN raw_format VARCHAR(24) NOT NULL DEFAULT 'legacy_normalized', ADD COLUMN raw_bytes BIGINT NULL, ADD COLUMN raw_verified BOOLEAN NOT NULL DEFAULT FALSE, ADD COLUMN content_state VARCHAR(24) NOT NULL DEFAULT 'legacy'");
   await connection.execute('CREATE TEMPORARY TABLE notification_config (id INT PRIMARY KEY, reminder_revision BIGINT DEFAULT 0)');
-  await connection.execute('INSERT INTO notification_config (id) VALUES (1)');
+  await connection.execute<ResultSetHeader>('INSERT INTO notification_config (id) VALUES (1)');
   const victim = crypto.randomUUID();
-  await connection.execute("INSERT INTO users (id,email,password_hash,full_name) VALUES (?, 'victim@example.test', 'synthetic-hash', 'Victim')", [victim]);
+  await connection.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,full_name) VALUES (?, 'victim@example.test', 'synthetic-hash', 'Victim')", [victim]);
   const backup: FixtureValue = restoreFixture(encrypt);
   const tables = Object.entries(backup.data).filter(([, rows]) => Array.isArray(rows)).map(([table]) => table);
   for (const table of tables) {
     for (const source of backup.data[table]) {
       const row = { ...source, user_id: victim };
       const columns = Object.keys(row);
-      await connection.execute(`INSERT INTO ${table} (${columns.map(column => '`' + column + '`').join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`, Object.values(row));
+      await connection.execute<ResultSetHeader>(`INSERT INTO ${table} (${columns.map(column => '`' + column + '`').join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`, Object.values(row));
     }
   }
   async function rowsFor(table: string, userId: string) {
-    const [rows] = await connection.execute(`SELECT * FROM ${table} WHERE ${table === 'users' ? 'id' : 'user_id'} = ?`, [userId]);
-    return rows.map((row: FixtureValue) => ({ ...row })).sort((a: FixtureValue, b: FixtureValue) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const [rows] = await connection.execute<RowDataPacket[]>(`SELECT * FROM ${table} WHERE ${table === 'users' ? 'id' : 'user_id'} = ?`, [userId]);
+    return rows.map((row: FixtureValue) => ({ ...row })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   }
   const victimBefore = Object.fromEntries(await Promise.all(['users', ...tables].map(async table => [table, await rowsFor(table, victim)])));
   async function assertVictimUnchanged() {
@@ -123,7 +124,7 @@ test('MySQL restores colliding backup IDs without changing another user in every
   for (const conflictMode of ['keep_existing', 'replace', 'keep_both']) {
     await t.test(conflictMode, async () => {
       const userId = crypto.randomUUID();
-      await connection.execute('INSERT INTO users (id,email,password_hash) VALUES (?, ?, ?)', [userId, userId + '@example.test', 'synthetic-hash']);
+      await connection.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash) VALUES (?, ?, ?)', [userId, userId + '@example.test', 'synthetic-hash']);
       const result = await importBackupForUser(userId, structuredClone(backup), { mode: 'apply', conflict_mode: conflictMode });
       assert.equal(result.valid, true);
       await assertVictimUnchanged();
@@ -171,14 +172,14 @@ test('MySQL restores colliding backup IDs without changing another user in every
       assert.equal(emails.length, expectedCount);
       assert.equal(recordings.length, expectedCount);
       const expectedNote = conflictMode === 'replace' ? 'Changed note' : 'Original note';
-      assert.equal(contacts.find((item: FixtureValue) => item.id === row('contacts').id).notes, expectedNote);
-      assert.equal(emails.find((item: FixtureValue) => item.id === row('emails').id).body_text, conflictMode === 'replace' ? 'Changed body' : 'Original body');
+      assert.equal(contacts.find((item) => item.id === row('contacts').id).notes, expectedNote);
+      assert.equal(emails.find((item) => item.id === row('emails').id).body_text, conflictMode === 'replace' ? 'Changed body' : 'Original body');
       if (conflictMode === 'keep_both') {
-        const copiedEmail = emails.find((item: FixtureValue) => item.id !== row('emails').id);
+        const copiedEmail = emails.find((item) => item.id !== row('emails').id);
         const attachments = await rowsFor('email_attachments', userId);
-        assert.ok(attachments.some((item: FixtureValue) => item.email_id === copiedEmail.id));
-        const copiedRecording = recordings.find((item: FixtureValue) => item.id !== row('recordings').id);
-        assert.ok((await rowsFor('recording_tag_links', userId)).some((item: FixtureValue) => item.recording_id === copiedRecording.id && item.tag_id === row('recording_tags').id));
+        assert.ok(attachments.some((item) => item.email_id === copiedEmail.id));
+        const copiedRecording = recordings.find((item) => item.id !== row('recordings').id);
+        assert.ok((await rowsFor('recording_tag_links', userId)).some((item) => item.recording_id === copiedRecording.id && item.tag_id === row('recording_tags').id));
       }
 
       // Foreign references without an imported parent must be rejected and roll

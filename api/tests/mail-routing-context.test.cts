@@ -1,7 +1,7 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { createMailRoutingContext, resolveMailSenderTargetFolder, loadMailFoldersForUser } = require('../dist/src/services/mail');
+const { createMailRoutingContext, resolveMailSenderTargetFolder, loadMailFoldersForUser } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 
 function fixture() {
   const rows = new Map([['inbox', { id: 'inbox', user_id: 'u1', slug: 'inbox', display_name: 'My Inbox', position: 777, is_system: true }]]);
@@ -27,23 +27,23 @@ function fixture() {
 
 test('default folder seeding batches missing inserts and preserves customization', async () => {
   const db = fixture();
-  const result = await loadMailFoldersForUser('u1', db);
+  const result = await loadMailFoldersForUser('u1', db as FixtureValue);
   assert.equal(db.calls.length, 2);
   assert.equal(result.length, 10);
-  assert.equal(result.find((row: FixtureValue) => row.slug === 'inbox').display_name, 'My Inbox');
-  assert.equal(result.find((row: FixtureValue) => row.slug === 'inbox').position, 777);
+  assert.equal(result.find((row) => row.slug === 'inbox')!.display_name, 'My Inbox');
+  assert.equal((result.find((row) => row.slug === 'inbox')! as FixtureValue).position, 777);
 });
 
 test('1,000 rule resolutions use one operation context without per-message SQL', async () => {
   const db = fixture();
-  const context = await createMailRoutingContext('u1', 'a1', db);
+  const context = await createMailRoutingContext('u1', 'a1', db as FixtureValue);
   assert.equal(db.calls.length, 3);
   for (let i = 0; i < 1000; i += 1) {
-    const resolved = await resolveMailSenderTargetFolder({ userId: 'u1', mailAccountId: 'a1', fromAddress: 'sender@example.test', routingContext: context, connection: db });
+    const resolved = await resolveMailSenderTargetFolder({ userId: 'u1', mailAccountId: 'a1', fromAddress: 'sender@example.test', routingContext: context, connection: db as FixtureValue });
     assert.equal(resolved.folder, 'important');
   }
   assert.equal(db.calls.length, 3);
   context.folders.delete('important');
-  const missing = await resolveMailSenderTargetFolder({ userId: 'u1', mailAccountId: 'a1', fromAddress: 'sender@example.test', routingContext: context, connection: db });
+  const missing = await resolveMailSenderTargetFolder({ userId: 'u1', mailAccountId: 'a1', fromAddress: 'sender@example.test', routingContext: context, connection: db as FixtureValue });
   assert.equal(missing.folder, 'inbox');
 });

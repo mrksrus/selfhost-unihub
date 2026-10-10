@@ -57,11 +57,11 @@ function scanFixture(t: import('node:test').TestContext, { uids = [1, 2, 3], epo
   for (const [p, exports] of [[paths[0], repository], [paths[1], runtime], [paths[2], transport]] as const)
     require.cache[p] = { id: p, filename: p, loaded: true, exports } as NodeJS.Module;
   delete require.cache[paths[3]];
-  const { scanMailboxSlice } = require(paths[3]);
+  const { scanMailboxSlice } = require(paths[3]) as typeof import('../src/services/mail-engine/sync');
   t.after(() => paths.forEach((p, i) => { if (prior[i]) require.cache[p] = prior[i]; else delete require.cache[p]; }));
   return { reads, writes, occurrences, cursors, bodyJobs,
     setEpoch(n: FixtureValue) { selectedEpoch = n; }, setUpper(n: FixtureValue) { upper = n; }, fail(value: FixtureValue) { failWindow = value; },
-    scan(stream = 'history') { return scanMailboxSlice({ db, connection: {}, account: { id: accountId, user_id: userId }, folder, stream }); } };
+    scan(stream = 'history') { return scanMailboxSlice({ db: db as FixtureValue, connection: {} as FixtureValue, account: { id: accountId, user_id: userId }, folder, stream }); } };
 }
 
 test('new folder scans historical UIDs despite recent account timestamp; bodies remain independently queued', async t => {
@@ -109,7 +109,8 @@ function bodyFixture(t: import('node:test').TestContext, { missing = false, tamp
     raw_storage_path: path.join(root, userId, 'legacy.eml'), raw_sha256: crypto.createHash('sha256').update(raw).digest('hex'),
     raw_bytes: raw.length, raw_format: 'exact_octets', raw_verified: 1, import_complete: 0, is_read: 0 };
   if (tamper) row.raw_sha256 = '0'.repeat(64);
-  let failPersist = false, complete = false, persisted: FixtureValue[] = [], fetched: FixtureValue[] = [];
+  let failPersist = false, complete = false;
+  const persisted: FixtureValue[] = [], fetched: FixtureValue[] = [];
   const db = { async execute(sql: string) {
     if (sql.includes('SELECT o.id AS occurrence_id')) return [complete ? [] : [row]];
     if (sql.includes('SELECT o.email_id FROM mail_remote_occurrences')) return [[{ email_id: emailId }]];
@@ -134,15 +135,15 @@ function bodyFixture(t: import('node:test').TestContext, { missing = false, tamp
     } }], [mailPath, { MAIL_RAW_STORAGE_ROOT: root, recordMailServerMessageForDeletion: async () => {} }]] as const)
     require.cache[p] = { id: p, filename: p, loaded: true, exports } as NodeJS.Module;
   delete require.cache[paths[3]];
-  const { processBodySlice } = require(paths[3]);
+  const { processBodySlice } = require(paths[3]) as typeof import('../src/services/mail-engine/content');
   t.after(async () => {
     [...paths, importPath, mailPath].forEach((p, i) => { if (prior[i]) require.cache[p] = prior[i]; else delete require.cache[p]; });
     await fs.rm(root, { recursive: true, force: true });
   });
   return { row, raw, root, fetched, get persisted() { return persisted; }, fail(value: FixtureValue) { failPersist = value; },
     async archive() { await fs.mkdir(path.dirname(row.raw_storage_path), { recursive: true }); await fs.writeFile(row.raw_storage_path, raw); },
-    run() { return processBodySlice({ db, connection: {}, account: { id: accountId, user_id: userId }, folder, mailboxId: 'box',
-      job: { id: 'job', lease_owner: 'worker', worker_generation: 1 } }); } };
+    run() { return processBodySlice({ db: db as FixtureValue, connection: {} as FixtureValue, account: { id: accountId, user_id: userId }, folder, mailboxId: 'box',
+      job: { id: 'job', lease_owner: 'worker', worker_generation: 1 } as FixtureValue }); } };
 }
 
 test('independent body job retries incomplete old UID below its recent metadata checkpoint', async t => {

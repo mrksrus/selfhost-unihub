@@ -10,19 +10,19 @@ const {
   parseBody,
   parseRawBody,
   parseRawBodyToFile,
-} = require('../dist/src/http/request');
+} = require('../dist/src/http/request') as typeof import('../src/http/request');
 
 test('isRequestBodyTooLarge rejects oversized content-length before body parsing', () => {
   assert.equal(
-    isRequestBodyTooLarge({ headers: { 'content-length': '1001' } }, 1000),
+    isRequestBodyTooLarge({ headers: { 'content-length': '1001' } } as FixtureValue, 1000),
     true
   );
   assert.equal(
-    isRequestBodyTooLarge({ headers: { 'content-length': '1000' } }, 1000),
+    isRequestBodyTooLarge({ headers: { 'content-length': '1000' } } as FixtureValue, 1000),
     false
   );
   assert.equal(
-    isRequestBodyTooLarge({ headers: {} }, 1000),
+    isRequestBodyTooLarge({ headers: {} } as FixtureValue, 1000),
     false
   );
 });
@@ -42,7 +42,7 @@ test('parseBody preserves Unicode at every byte boundary', async () => {
   const bytes = Buffer.from(JSON.stringify(expected));
   for (let split = 1; split < bytes.length; split += 1) {
     const req = new PassThrough();
-    const parsed = parseBody(req);
+    const parsed = parseBody(req as FixtureValue);
     req.write(bytes.subarray(0, split));
     req.end(bytes.subarray(split));
     assert.deepEqual(await parsed, expected);
@@ -51,7 +51,7 @@ test('parseBody preserves Unicode at every byte boundary', async () => {
 
 test('parseBody rejects malformed JSON with a distinct 400 error', async () => {
   const req = new PassThrough();
-  const parsed = parseBody(req);
+  const parsed = parseBody(req as FixtureValue);
   req.end('{"title":');
   await assert.rejects(parsed, { status: 400, message: 'Invalid JSON request body' });
 });

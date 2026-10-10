@@ -78,7 +78,7 @@ test('backup import preserves calendar event field order and MySQL values', asyn
     },
   });
 
-  const { importBackupForUser } = require('../dist/src/services/backup');
+  const { importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
   const backup = {
     app: 'unihub',
     version: 1,

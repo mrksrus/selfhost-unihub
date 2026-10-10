@@ -5,13 +5,13 @@ import type { FixtureValue } from './helpers/test-types.cts';
 // operation that blocked every other change of its account.
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { getDb, setDb } = require('../dist/src/state');
-const repository = require('../dist/src/services/mail-engine/repository');
-const runtime = require('../dist/src/services/mail-engine/runtime');
-const operations = require('../dist/src/services/mail-engine/operations');
-const transport = require('../dist/src/services/mail-engine/transport');
-const writebacks = require('../dist/src/services/mail-writebacks');
-const mail = require('../dist/src/services/mail');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
+const repository = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+const operations = require('../dist/src/services/mail-engine/operations') as typeof import('../src/services/mail-engine/operations');
+const transport = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
+const writebacks = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+const mail = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 
 const deadlock = () => Object.assign(new Error('Deadlock found when trying to get lock'), { code: 'ER_LOCK_DEADLOCK', errno: 1213 });
 function pool(onExecute: FixtureValue) {
@@ -24,14 +24,14 @@ function pool(onExecute: FixtureValue) {
 test('a deadlocked transaction is rolled back and run again; other errors are not retried', async () => {
   let runs = 0;
   const { calls, pool: p } = pool(async () => [[]]);
-  const result = await repository.withTransaction(async () => { if (++runs < 3) throw deadlock(); return 'done'; }, p);
+  const result = await repository.withTransaction(async () => { if (++runs < 3) throw deadlock(); return 'done'; }, p as FixtureValue);
   assert.equal(result, 'done');
   assert.deepEqual([runs, calls.rollback, calls.commit, calls.release], [3, 2, 1, 3]);
   let other = 0;
-  await assert.rejects(repository.withTransaction(async () => { other++; throw new Error('boom'); }, p), /boom/);
+  await assert.rejects(repository.withTransaction(async () => { other++; throw new Error('boom'); }, p as FixtureValue), /boom/);
   assert.equal(other, 1);
   let always = 0;
-  await assert.rejects(repository.withTransaction(async () => { always++; throw deadlock(); }, p), { code: 'ER_LOCK_DEADLOCK' });
+  await assert.rejects(repository.withTransaction(async () => { always++; throw deadlock(); }, p as FixtureValue), { code: 'ER_LOCK_DEADLOCK' });
   assert.equal(always, 4, 'bounded retries');
 });
 
@@ -41,7 +41,7 @@ test('claim candidates exclude accounts that are leased or awaiting recovery', a
     if (sql.includes('FROM mail_engine_jobs j JOIN mail_accounts a')) { candidateSql = sql; return [[]]; }
     return [[]];
   });
-  assert.equal(await runtime.claimDueJob({ workerId: 'w' }, p), null);
+  assert.equal(await runtime.claimDueJob({ workerId: 'w' }, p as FixtureValue), null);
   assert.match(candidateSql, /held\.lease_owner IS NULL/);
   assert.match(candidateSql, /held\.lease_until IS NULL OR held\.lease_until <= UTC_TIMESTAMP\(\)/);
   assert.ok(candidateSql.indexOf('held.lease_owner') < candidateSql.indexOf('LIMIT 32'), 'filtered before the candidate window');
@@ -51,11 +51,11 @@ test('a deadlock on one due operation does not abort the rest of the due pass', 
   const old = getDb(); t.after(() => setDb(old));
   const rows = [{ id: 'op1', user_id: 'u', mail_account_id: 'a1', state: 'queued', action: 'read' },
     { id: 'op2', user_id: 'u', mail_account_id: 'a2', state: 'queued', action: 'read' }];
-  setDb({ execute: async (sql: string) => {
+  setDb({ execute: (async (sql: string) => {
     if (sql.includes('SELECT w.id,w.user_id,w.mail_account_id')) return [rows];
     if (sql.includes('FROM user_settings')) return [[]];
     return [[]];
-  } });
+  }) } as FixtureValue);
   const enqueued: FixtureValue[] = [];
   t.mock.method(runtime, 'enqueueJob', async (job: FixtureValue) => { if (job.operationId === 'op1') throw deadlock(); enqueued.push(job.operationId); });
   const nudged: FixtureValue[] = [];
@@ -78,7 +78,7 @@ test('a second remote mailbox for an already mapped system folder becomes its ow
     if (sql.startsWith('INSERT INTO mail_folders ')) inserts.push(args);
     return [{ affectedRows: 1 }];
   } };
-  const registered = await mail.registerCustomImapFoldersForUser('u', 'acct', ['Sent'], executor, new Map([['Sent', 'sent']]), true);
+  const registered = await mail.registerCustomImapFoldersForUser('u', 'acct', ['Sent'], executor as FixtureValue, new Map([['Sent', 'sent']]), true);
   assert.equal(registered.length, 1);
   assert.equal(registered[0].remoteName, 'Sent');
   assert.notEqual(registered[0].slug, 'sent');
@@ -106,7 +106,7 @@ test('a failing operation is counted, backs off, and does not block the next cha
     return [[]];
   };
   const cx = { execute, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {} };
-  setDb({ execute, getConnection: async () => cx });
+  setDb({ execute, getConnection: async () => cx } as FixtureValue);
   t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
   const applied: FixtureValue[] = [];
   t.mock.method(transport, 'selectMailbox', async (_c: FixtureValue, { folder }: FixtureValue) => { if (applied.length === 0) { applied.push('bad'); throw new Error('[NONEXISTENT] Unknown Mailbox: ' + folder); }
@@ -115,8 +115,8 @@ test('a failing operation is counted, backs off, and does not block the next cha
   const errors = t.mock.method(console, 'error', () => {});
   // A session that survived the refusal: guard idle and authenticated.
   const guarded = Object.assign(new ((require('node:events') as typeof import('node:events')))(), { usable: true, isClosed: false, close() {} });
-  require('../dist/src/services/mail-imap-guard').guardImapConnection(guarded, {});
-  const result = await operations.processDueOperations({ id: 'acct', user_id: 'u' }, guarded,
+  (require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard')).guardImapConnection(guarded, {});
+  const result = await operations.processDueOperations({ id: 'acct', user_id: 'u' }, guarded as FixtureValue,
     { workerGeneration: 1, workerId: 'w', jobId: 'j' });
   assert.deepEqual(applied, ['bad', 'good'], 'the second change still ran on the same session');
   assert.equal(result.connectionFailed, false);

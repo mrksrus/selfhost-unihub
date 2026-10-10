@@ -15,7 +15,7 @@ test('manual requests promote queued work and retain one successor behind a runn
     if (oldRepo) require.cache[repoPath] = oldRepo; else delete require.cache[repoPath];
     if (oldRuntime) require.cache[runtimePath] = oldRuntime; else delete require.cache[runtimePath];
   });
-  const runtime = require(runtimePath);
+  const runtime = require(runtimePath) as typeof import('../src/services/mail-engine/runtime');
   const jobs: FixtureValue[] = [], writes: FixtureValue[] = [];
   const cx = { async execute(sql: string, params: FixtureValue[] = []) {
     writes.push({ sql, params });
@@ -43,29 +43,29 @@ test('manual requests promote queued work and retain one successor behind a runn
     assert.fail(`Unexpected query: ${sql}`);
   } };
   const input = { userId: 'owner', accountId: 'account', kind: 'sync', priority: 5 };
-  const queued = await runtime.enqueueJob(input, cx);
-  const promoted = await runtime.enqueueJob({ ...input, manualRefresh: true }, cx);
+  const queued = await runtime.enqueueJob(input, cx as FixtureValue);
+  const promoted = await runtime.enqueueJob({ ...input, manualRefresh: true }, cx as FixtureValue);
   assert.equal(queued.id, promoted.id);
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].manual_refresh, 1);
   jobs[0].state = 'running';
-  const successor = await runtime.enqueueJob({ ...input, manualRefresh: true }, cx);
+  const successor = await runtime.enqueueJob({ ...input, manualRefresh: true }, cx as FixtureValue);
   assert.notEqual(successor.id, queued.id, 'in-flight scan cannot consume a newer request');
   assert.equal(successor.manual_refresh, 1);
-  assert.equal((await runtime.enqueueJob({ ...input, manualRefresh: true }, cx)).id, successor.id);
+  assert.equal((await runtime.enqueueJob({ ...input, manualRefresh: true }, cx as FixtureValue)).id, successor.id);
   assert.equal(jobs.length, 2, 'repeat clicks are bounded to one queued successor');
   jobs[1].state = 'paused';
-  assert.equal((await runtime.enqueueJob(input, cx)).id, successor.id, 'background cannot drop paused manual intent');
+  assert.equal((await runtime.enqueueJob(input, cx as FixtureValue)).id, successor.id, 'background cannot drop paused manual intent');
   assert.equal(jobs.length, 2);
   assert.equal(jobs[0].manual_refresh, 1, 'running job is never altered');
 
   const stream = { ...input, mailboxId: 'box', kind: 'flags' };
-  const active = await runtime.enqueueJob(stream, cx);
+  const active = await runtime.enqueueJob(stream, cx as FixtureValue);
   active.state = 'running';
-  const later = await runtime.enqueueJob({ ...stream, manualRefresh: true }, cx);
-  await runtime.enqueueJob({ ...stream, manualRefresh: true }, cx);
+  const later = await runtime.enqueueJob({ ...stream, manualRefresh: true }, cx as FixtureValue);
+  await runtime.enqueueJob({ ...stream, manualRefresh: true }, cx as FixtureValue);
   assert.equal(later.manual_refresh, 1);
   assert.equal(jobs.filter(j => j.kind === 'flags').length, 2);
   assert(!writes.some(w => w.sql.includes('DELETE FROM mail_engine_jobs')));
-  await assert.rejects(runtime.enqueueJob({ ...input, kind: 'body', manualRefresh: true }, cx), /Manual refresh/);
+  await assert.rejects(runtime.enqueueJob({ ...input, kind: 'body', manualRefresh: true }, cx as FixtureValue), /Manual refresh/);
 });

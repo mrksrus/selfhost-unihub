@@ -29,7 +29,7 @@ function mailFixture(t: import('node:test').TestContext, { active = 1, disconnec
   ];
   for (const [p, exports] of stubs) require.cache[(p as FixtureValue)] = { id: p, filename: p, loaded: true, exports } as NodeJS.Module;
   t.after(require('./helpers/mail-service-modules.cts').evictMailServiceModules());
-  const { sendEmail } = require(mailPath);
+  const { sendEmail } = require(mailPath) as typeof import('../src/services/mail');
   t.after(() => { for (const [p, entry] of original) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
   return { send: () => sendEmail(account.id, { to: 'receiver@example.test', subject: 'Fixture', body: 'hello' }),
     get sends() { return sends; }, get inserts() { return inserts; } };
@@ -49,12 +49,12 @@ test('SMTP success plus local Sent-copy failure is not reported as overall send 
   assert.equal(result.success, true);
   assert.equal(result.sent_copy_state, 'failed');
   assert.equal(result.messageId, '<delivered@example.test>');
-  assert.match(result.message, /Do not resend/);
+  assert.match(result.message!, /Do not resend/);
 });
 test('successful local Sent copy is separately confirmed', async t => {
   const h = mailFixture(t);
   const result = await h.send();
   assert.equal(h.sends, 1);
   assert.equal(result.sent_copy_state, 'confirmed');
-  assert.match(result.sent_copy_id, /^[0-9a-f-]{36}$/i);
+  assert.match(result.sent_copy_id!, /^[0-9a-f-]{36}$/i);
 });

@@ -10,15 +10,15 @@ function fakeConnection({ fail = false }: FixtureValue = {}) {
   return {
     queries: [] as string[],
     destroyed: false,
-    query(sql: string, callback: FixtureValue) { this.queries.push((sql as FixtureValue)); process.nextTick(() => callback(typeof fail === 'function' ? fail(sql) : fail ? new Error('denied') : null)); },
+    query(sql: string, callback: FixtureValue) { this.queries.push((sql)); process.nextTick(() => callback(typeof fail === 'function' ? fail(sql) : fail ? new Error('denied') : null)); },
     destroy() { this.destroyed = true; },
   };
 }
 
 test('every new pooled connection is switched to a UTC session', async () => {
-  const { useUtcSessions } = require('../dist/src/services/database');
+  const { useUtcSessions } = require('../dist/src/services/database') as typeof import('../src/services/database');
   const promisePool = { pool: new EventEmitter() };
-  assert.equal(useUtcSessions(promisePool), promisePool);
+  assert.equal(useUtcSessions(promisePool as FixtureValue), promisePool);
   const first = fakeConnection();
   const second = fakeConnection();
   promisePool.pool.emit('connection', first);
@@ -30,9 +30,9 @@ test('every new pooled connection is switched to a UTC session', async () => {
 });
 
 test('a connection whose session time zone cannot be set is discarded', async (t) => {
-  const { useUtcSessions } = require('../dist/src/services/database');
+  const { useUtcSessions } = require('../dist/src/services/database') as typeof import('../src/services/database');
   t.mock.method(console, 'error', () => {});
-  const promisePool = useUtcSessions({ pool: new EventEmitter() });
+  const promisePool = useUtcSessions({ pool: new EventEmitter() } as FixtureValue);
   const connection = fakeConnection({ fail: true });
   promisePool.pool.emit('connection', connection);
   await new Promise(resolve => setImmediate(resolve));
@@ -40,8 +40,8 @@ test('a connection whose session time zone cannot be set is discarded', async (t
 });
 
 test('a server without snapshot isolation keeps the connection', async () => {
-  const { useUtcSessions } = require('../dist/src/services/database');
-  const promisePool = useUtcSessions({ pool: new EventEmitter() });
+  const { useUtcSessions } = require('../dist/src/services/database') as typeof import('../src/services/database');
+  const promisePool = useUtcSessions({ pool: new EventEmitter() } as FixtureValue);
   const unknown = Object.assign(new Error('Unknown system variable'), { errno: 1193 });
   const connection = fakeConnection({ fail: (sql: string) => (sql.includes('snapshot') ? unknown : null) });
   promisePool.pool.emit('connection', connection);
@@ -52,7 +52,7 @@ test('a server without snapshot isolation keeps the connection', async () => {
 test('initDatabase installs the UTC session hook on the app pool', async (t) => {
   delete process.env.DATABASE_URL;
   Object.assign(process.env, { MYSQL_HOST: 'db.example.test', MYSQL_DATABASE: 'unihub_unit', MYSQL_USER: 'unihub', MYSQL_PASSWORD: 'unit-test-password' });
-  const mysql = require('mysql2/promise');
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   const corePool = new EventEmitter();
   const stopped = new Error('stop after pool setup');
   const promisePool = {
@@ -67,8 +67,8 @@ test('initDatabase installs the UTC session hook on the app pool', async (t) => 
     return promisePool;
   });
   t.mock.method(console, 'log', () => {});
-  const { initDatabase } = require('../dist/src/services/database');
-  const { setDb } = require('../dist/src/state');
+  const { initDatabase } = require('../dist/src/services/database') as typeof import('../src/services/database');
+  const { setDb } = require('../dist/src/state') as typeof import('../src/state');
   t.after(() => setDb(null));
   await assert.rejects(initDatabase(), stopped);
   assert.equal(corePool.listenerCount('connection'), 1);

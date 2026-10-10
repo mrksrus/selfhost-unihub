@@ -1,4 +1,4 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, With } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
@@ -99,7 +99,7 @@ function fixture(t: import('node:test').TestContext, { uids = [1], epoch = 123, 
     async fetchMetadataWindow(_connection: FixtureValue, input: FixtureValue) {
       started = input;
       if (duringFetch) await duringFetch();
-      const items = [...remotes.values()].filter(r => (r as FixtureValue).uid >= input.startUid && (r as FixtureValue).uid <= input.endUid);
+      const items = [...remotes.values()].filter(r => r.uid >= input.startUid && r.uid <= input.endUid);
       return { uidvalidity: currentEpoch, startUid: input.startUid, endUid: input.endUid,
         items, complete: !incomplete };
     },
@@ -114,14 +114,14 @@ function fixture(t: import('node:test').TestContext, { uids = [1], epoch = 123, 
   for (const [p, exports] of [[repoPath, repository], [runtimePath, runtime], [transportPath, transport], [reconcilePath, reconciliation]] as const)
     require.cache[p] = { id: p, filename: p, loaded: true, exports } as NodeJS.Module;
   delete require.cache[syncPath];
-  const sync = require(syncPath);
+  const sync = require(syncPath) as typeof import('../src/services/mail-engine/sync');
   t.after(() => { for (const [p, entry] of original) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
   return { sync, db, remotes, occurrences, emails, cursors, saves, absences, bodyJobs, reconciled, queries,
     get started() { return started; }, setIncomplete(value: FixtureValue) { incomplete = value; }, onFetch(fn: FixtureValue) { duringFetch = fn; },
     setEpoch(next: FixtureValue) { currentEpoch = next; }, setMappedMove(value: FixtureValue) { mappedOperation = value; },
     async scan(stream = 'recent', selectedFolder = folder, manualRefresh = false) {
-      return sync.scanMailboxSlice({ db, connection: {}, account, folder: selectedFolder, stream,
-        manualRefresh, job: manualRefresh ? { id: 'job', lease_owner: 'worker', worker_generation: 1 } : null });
+      return sync.scanMailboxSlice({ db: db as FixtureValue, connection: {} as FixtureValue, account, folder: selectedFolder, stream,
+        manualRefresh, job: (manualRefresh ? { id: 'job', lease_owner: 'worker', worker_generation: 1 } : null) as FixtureValue });
     } };
 }
 
@@ -182,7 +182,7 @@ test('finite history pass keeps its captured boundary despite continuous arrival
   h.remotes.set(900, { uid: 900, flags: [], modseq: null });
   const third = await h.scan('history');
   assert.equal(third.more, false);
-  assert.equal(third.through, 300);
+  assert.equal((third as With<typeof third, 'through'>).through, 300);
   assert.equal(third.currentUpper, 900);
   const fourth = await h.scan('history');
   assert.equal(fourth.upper, 900);
@@ -261,15 +261,15 @@ test('targeted reconciliation observes one UID without claiming a skipped covera
   const h = fixture(t, { uids: [1, 300] });
   await h.scan('history');
   const prior = h.saves.length;
-  const result = await h.sync.scanMailboxSlice({ db: h.db, connection: {}, account,
+  const result = await h.sync.scanMailboxSlice({ db: h.db as FixtureValue, connection: {} as FixtureValue, account,
     folder, stream: 'presence', targetUid: 300, expectedEpoch: 123,
-    job: { id: 'job', lease_owner: 'worker', worker_generation: 1 } });
+    job: { id: 'job', lease_owner: 'worker', worker_generation: 1 } as FixtureValue });
   assert.equal(result.covered, true);
   assert.equal(h.started.startUid, 300);
   assert.equal(h.saves.length, prior, 'a targeted check is not full-stream coverage');
-  await assert.rejects(h.sync.scanMailboxSlice({ db: h.db, connection: {}, account,
+  await assert.rejects(h.sync.scanMailboxSlice({ db: h.db as FixtureValue, connection: {} as FixtureValue, account,
     folder, stream: 'presence', targetUid: 300, expectedEpoch: 124,
-    job: { id: 'job', lease_owner: 'worker', worker_generation: 1 } }), { code: 'MAIL_EPOCH_STALE' });
+    job: { id: 'job', lease_owner: 'worker', worker_generation: 1 } as FixtureValue }), { code: 'MAIL_EPOCH_STALE' });
 });
 
 test('slow scan cannot overwrite newer observed flags after its fetch began', async t => {
@@ -336,6 +336,6 @@ test('manual first observation has no redundant replay when there is no covered 
   const result = await h.scan('flags', folder, true);
   assert.equal(result.covered, true);
   assert.equal(result.more, false);
-  assert.equal(result.refreshPending, false);
+  assert.equal((result as With<typeof result, 'refreshPending'>).refreshPending, false);
   assert.equal(h.cursors.get('flags').sweep_generation, 0);
 });

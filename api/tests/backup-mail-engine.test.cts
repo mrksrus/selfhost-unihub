@@ -1,9 +1,9 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { pauseMailRestore, restoreMailEngineEvidence } = require('../dist/src/services/backup-mail-engine');
-const { TABLE_POLICIES, SECTION_POLICIES } = require('../dist/src/services/backup-catalog');
-const { normalizeBackupPayload, BACKUP_VERSION } = require('../dist/src/services/backup-format');
+const { pauseMailRestore, restoreMailEngineEvidence } = require('../dist/src/services/backup-mail-engine') as typeof import('../src/services/backup-mail-engine');
+const { TABLE_POLICIES, SECTION_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+const { normalizeBackupPayload, BACKUP_VERSION } = require('../dist/src/services/backup-format') as typeof import('../src/services/backup-format');
 
 function executor() {
   const calls: FixtureValue[] = [];
@@ -34,7 +34,7 @@ test('v4 explicitly exports operations, attempts, receipts and remote evidence i
 });
 
 test('restore pauses dispatch and preserves installation intent journal instead of deleting it', async () => {
-  const db = executor(); await pauseMailRestore(db, 'owner');
+  const db = executor(); await pauseMailRestore(db as FixtureValue, 'owner');
   assert.ok(db.calls.every(call => !/DELETE\s+FROM/i.test(call.sql)));
   assert.ok(db.calls.every(call => call.params.at(-1) === 'owner'));
   assert.match(db.calls[0].sql, /is_active = FALSE/);
@@ -50,7 +50,7 @@ test('restore pauses dispatch and preserves installation intent journal instead 
 
 test('unknown MOVE is restored as review evidence, never executable work or a confirmed success', async () => {
   const db: FixtureValue = executor(), opts = options();
-  await restoreMailEngineEvidence(db, 'owner', { mail_writebacks: [operation] }, opts);
+  await restoreMailEngineEvidence(db, 'owner', { mail_writebacks: [(operation as FixtureValue)] }, opts);
   const write = db.calls.find((call: FixtureValue) => call.sql.startsWith('INSERT INTO mail_writebacks'));
   assert.ok(write); assert.notEqual(write.params[0], operation.id);
   assert.equal(write.params[1], 'owner'); assert.equal(write.params[2], 'target-account');
@@ -63,7 +63,7 @@ test('unknown MOVE is restored as review evidence, never executable work or a co
 
 test('confirmed operations preserve completion and original provenance', async () => {
   const db = executor();
-  await restoreMailEngineEvidence(db, 'owner', { mail_writebacks: [{ ...operation, status: 'done', state: 'confirmed' }] }, options());
+  await restoreMailEngineEvidence(db as FixtureValue, 'owner', { mail_writebacks: [({ ...operation, status: 'done', state: 'confirmed' } as FixtureValue)] }, options());
   const write = db.calls.find(call => call.sql.startsWith('INSERT INTO mail_writebacks'));
   assert.equal(write.params[11], 'done'); assert.equal(write.params[16], 'confirmed');
   assert.equal(JSON.parse(write.params.at(-1)).archive_operation_id, operation.id);
@@ -72,7 +72,7 @@ test('confirmed operations preserve completion and original provenance', async (
 test('restored mapping and attempt IDs cannot collide across owners or authorize live occurrences', async () => {
   const db = executor();
   const row = { id: 'same-old-id', user_id: 'another-owner', mail_account_id: 'source-account', email_id: 'source-email', uid: 42, uidvalidity: 7, presence: 'present' };
-  await restoreMailEngineEvidence(db, 'owner', { mail_remote_occurrences: [row] }, options());
+  await restoreMailEngineEvidence(db as FixtureValue, 'owner', { mail_remote_occurrences: [(row as FixtureValue)] }, options());
   const write = db.calls.find(call => call.sql.startsWith('INSERT INTO mail_engine_quarantine'));
   assert.notEqual(write.params[1], row.id); assert.equal(write.params[2], 'owner');
   const evidence = JSON.parse(write.params[4]);
@@ -82,9 +82,9 @@ test('restored mapping and attempt IDs cannot collide across owners or authorize
 
 test('idempotency receipt is retained and remapped; no restored request silently becomes replayable', async () => {
   const db = executor();
-  await restoreMailEngineEvidence(db, 'owner', { mail_writebacks: [operation], mail_command_receipts: [{
+  await restoreMailEngineEvidence(db as FixtureValue, 'owner', { mail_writebacks: [(operation as FixtureValue)], mail_command_receipts: [({
     client_key: 'client-request', request_hash: 'a'.repeat(64), response_json: { sync_pending: true, operation_ids: [operation.id] },
-  }] }, options());
+  } as FixtureValue)] }, options());
   const write = db.calls.find(call => call.sql.startsWith('INSERT INTO mail_writebacks'));
   const receipt = db.calls.find(call => call.sql.startsWith('INSERT INTO mail_command_receipts'));
   const response = JSON.parse(receipt.params[3]);
@@ -94,7 +94,7 @@ test('idempotency receipt is retained and remapped; no restored request silently
 test('restore fails on a conflicting existing idempotency key instead of overwriting it', async () => {
   const db: FixtureValue = executor(), original = db.execute.bind(db);
   db.execute = async (sql: string, params: FixtureValue) => sql.startsWith('SELECT request_hash') ? [[{ request_hash: 'b'.repeat(64) }]] : original(sql, params);
-  await assert.rejects(restoreMailEngineEvidence(db, 'owner', { mail_command_receipts: [{
+  await assert.rejects(restoreMailEngineEvidence(db, 'owner', { mail_command_receipts: [({
     client_key: 'same-key', request_hash: 'a'.repeat(64), response_json: { operation_ids: [] },
-  }] }, options()), /conflicts with an existing/);
+  } as FixtureValue)] }, options()), /conflicts with an existing/);
 });

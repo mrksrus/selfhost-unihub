@@ -3,12 +3,12 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { EventEmitter } = (require('node:events') as typeof import('node:events'));
 const dns = (require('node:dns') as typeof import('node:dns')).promises;
-const imapClient = require('../dist/src/services/mail-imap-client');
+const imapClient = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
 process.env.ENCRYPTION_KEY = 'mail-sync-cancellation-test-only-key';
-const mail = require('../dist/src/services/mail');
-const runtime = require('../dist/src/services/mail-engine/runtime');
-const { encrypt } = require('../dist/src/security/encryption');
-const { getDb, setDb } = require('../dist/src/state');
+const mail = require('../dist/src/services/mail') as typeof import('../src/services/mail');
+const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 for (const failure of ['cancel', 'socket', 'deadline']) test(`stalled durable sync LIST: ${failure} destroys transport and ignores late reply`, { timeout: 2000 }, async t => {
@@ -28,15 +28,15 @@ for (const failure of ['cancel', 'socket', 'deadline']) test(`stalled durable sy
     return connection;
   });
   if (failure === 'deadline') t.mock.timers.enable({ apis: ['setTimeout'] });
-  setDb({ execute: async (sql: string) => {
+  setDb({ execute: (async (sql: string) => {
     queries.push(sql);
     if (sql.includes('SELECT * FROM mail_accounts')) return [[account]];
     if (sql.includes('FROM user_settings') || sql.includes('FROM backup_restore_jobs')) return [[]];
     assert.fail(`No mail/folder mutations expected: ${sql}`);
-  } });
+  }) } as FixtureValue);
   const controller = new AbortController();
   const worker = mail.runDurableMailJob({ id: 'job', user_id: account.user_id, mail_account_id: account.id,
-    lease_owner: 'worker', worker_generation: 1, kind: 'sync' }, controller.signal, async () => {});
+    lease_owner: 'worker', worker_generation: 1, kind: 'sync' } as FixtureValue, controller.signal, async () => {});
   for (let i = 0; i < 40 && !inList; i++) await tick();
   assert.equal(inList, true, 'durable worker reaches guarded LIST');
   if (failure === 'cancel') controller.abort();
@@ -54,12 +54,12 @@ test('manual sync admission resumes only eligible module/background pauses; sche
   const old = getDb(); t.after(() => setDb(old));
   const resumes: FixtureValue[] = [], enqueued = [];
   let enabled = true, restoring = false;
-  setDb({ execute: async (sql: string) => {
+  setDb({ execute: (async (sql: string) => {
     if (sql.includes('SELECT user_id FROM mail_accounts')) return [[{ user_id: 'owner' }]];
     if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { enabled } }) }]];
     if (sql.includes('FROM backup_restore_jobs')) return [restoring ? [{ requested_sections: '["mail"]' }] : []];
     assert.fail(`Unexpected SQL: ${sql}`);
-  } });
+  }) } as FixtureValue);
   t.mock.method(runtime, 'resumeAccount', async (input: FixtureValue) => { resumes.push(input); return { resumed: 0 }; });
   t.mock.method(runtime, 'recoverExpiredJobs', async () => ({}));
   t.mock.method(runtime, 'claimDueJob', async () => null);

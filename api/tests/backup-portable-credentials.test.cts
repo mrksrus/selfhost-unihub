@@ -8,15 +8,15 @@ const path = require('path');
 
 process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'destination-server-encryption-key';
 
-const { decrypt, encrypt } = require('../dist/src/security/encryption');
-const { encryptPortableCredentialBundle } = require('../dist/src/services/backup-container');
+const { decrypt, encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+const { encryptPortableCredentialBundle } = require('../dist/src/services/backup-container') as typeof import('../src/services/backup-container');
 const {
   backupFromZipFile,
   buildBackupArchiveEntriesForUser,
   prepareCredentialsForRestore,
-} = require('../dist/src/services/backup');
-const { writeZip } = require('../dist/src/services/export-jobs');
-const { setDb } = require('../dist/src/state');
+} = require('../dist/src/services/backup') as typeof import('../src/services/backup');
+const { writeZip } = require('../dist/src/services/export-jobs') as typeof import('../src/services/export-jobs');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 test('portable backup credentials are re-encrypted for the destination server', () => {
   const dataKey = crypto.randomBytes(32);
@@ -43,12 +43,12 @@ test('portable backup credentials are re-encrypted for the destination server', 
     },
   };
 
-  prepareCredentialsForRestore(backup, dataKey, []);
+  prepareCredentialsForRestore(backup as FixtureValue, dataKey, []);
 
-  assert.equal(decrypt(backup.data.mail_accounts[0].encrypted_password), 'mail-password');
-  assert.equal(decrypt(backup.data.calendar_accounts[0].encrypted_password), 'calendar-password');
-  assert.equal(decrypt(backup.data.calendar_accounts[0].encrypted_access_token), 'access-token');
-  assert.equal(decrypt(backup.data.calendar_accounts[0].encrypted_refresh_token), 'refresh-token');
+  assert.equal(decrypt(backup.data.mail_accounts[0].encrypted_password!), 'mail-password');
+  assert.equal(decrypt(backup.data.calendar_accounts[0].encrypted_password!), 'calendar-password');
+  assert.equal(decrypt(backup.data.calendar_accounts[0].encrypted_access_token!), 'access-token');
+  assert.equal(decrypt(backup.data.calendar_accounts[0].encrypted_refresh_token!), 'refresh-token');
 });
 
 test('a restored mail calendar without a password stays on; another calendar account without one is paused', () => {
@@ -59,8 +59,8 @@ test('a restored mail calendar without a password stays on; another calendar acc
   const portable = { portable_credentials: encryptPortableCredentialBundle({ mail_accounts: [], calendar_accounts: [] }, dataKey),
     data: { mail_accounts: [], calendar_accounts: accounts() } };
   const legacy = { data: { mail_accounts: [], calendar_accounts: accounts() } };
-  prepareCredentialsForRestore(portable, dataKey, []);
-  prepareCredentialsForRestore(legacy, null, []);
+  prepareCredentialsForRestore(portable as FixtureValue, dataKey, []);
+  prepareCredentialsForRestore(legacy as FixtureValue, null, []);
   for (const backup of [portable, legacy]) {
     assert.deepEqual(backup.data.calendar_accounts.map(account => [account.id, account.is_active]),
       [['mail-calendar', true], ['own-login', false], ['unmarked', false]]);
@@ -79,8 +79,8 @@ test('a mail calendar from an older backup comes back without the copied passwor
     data: { mail_accounts: [], calendar_accounts: accounts(null) } };
   const legacy = { data: { mail_accounts: [], calendar_accounts: accounts(encrypt('copied')) } };
   const warnings: FixtureValue[] = [];
-  prepareCredentialsForRestore(portable, dataKey, warnings);
-  prepareCredentialsForRestore(legacy, null, warnings);
+  prepareCredentialsForRestore(portable as FixtureValue, dataKey, warnings);
+  prepareCredentialsForRestore(legacy as FixtureValue, null, warnings);
   for (const backup of [portable, legacy]) {
     const [byMail, byUser, own] = backup.data.calendar_accounts;
     assert.deepEqual([byMail.encrypted_password, byMail.is_active, byMail.sync_status, byMail.sync_error], [null, true, 'pending', null]);
@@ -134,7 +134,7 @@ test('encrypted archive payload retains the filtered portable credential bundle'
       return [[]];
     },
   };
-  setDb({ getConnection: async () => connection });
+  setDb({ getConnection: async () => connection } as FixtureValue);
   t.after(async () => {
     setDb(null);
     await fs.promises.rm(dir, { recursive: true, force: true });
@@ -145,19 +145,19 @@ test('encrypted archive payload retains the filtered portable credential bundle'
   });
   t.after(async () => {
     await Promise.all(entries
-      .filter((entry: FixtureValue) => entry.cleanupAfterWrite && entry.filePath)
-      .map((entry: FixtureValue) => fs.promises.rm(entry.filePath, { force: true })));
+      .filter((entry) => entry.cleanupAfterWrite && entry.filePath)
+      .map((entry) => fs.promises.rm(entry.filePath, { force: true })));
   });
   await writeZip(entries, zipPath);
   const parsed = await backupFromZipFile(zipPath);
   const restored = parsed.backup;
 
   assert.ok(restored.portable_credentials);
-  assert.equal(restored.data.mail_accounts[0].encrypted_password, null);
-  assert.equal(restored.data.calendar_accounts[0].encrypted_password, null);
-  prepareCredentialsForRestore(restored, dataKey, []);
-  assert.equal(decrypt(restored.data.mail_accounts[0].encrypted_password), 'mail-password');
-  assert.equal(decrypt(restored.data.calendar_accounts[0].encrypted_password), 'calendar-password');
-  assert.equal(decrypt(restored.data.calendar_accounts[0].encrypted_access_token), 'access-token');
-  assert.equal(decrypt(restored.data.calendar_accounts[0].encrypted_refresh_token), 'refresh-token');
+  assert.equal(restored.data.mail_accounts![0].encrypted_password, null);
+  assert.equal((restored.data.calendar_accounts as FixtureValue[])[0].encrypted_password, null);
+  prepareCredentialsForRestore(restored as FixtureValue, dataKey, []);
+  assert.equal(decrypt(restored.data.mail_accounts![0].encrypted_password! as FixtureValue), 'mail-password');
+  assert.equal(decrypt((restored.data.calendar_accounts as FixtureValue[])[0].encrypted_password), 'calendar-password');
+  assert.equal(decrypt((restored.data.calendar_accounts as FixtureValue[])[0].encrypted_access_token), 'access-token');
+  assert.equal(decrypt((restored.data.calendar_accounts as FixtureValue[])[0].encrypted_refresh_token), 'refresh-token');
 });

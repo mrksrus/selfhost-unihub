@@ -68,13 +68,13 @@ test('admin storage route returns aggregate storage metadata only', async (t) =>
     },
   });
 
-  const routes = require('../dist/src/routes/admin');
-  const result = await routes['GET /api/admin/storage']({}, 'admin-user');
+  const routes = require('../dist/src/routes/admin') as typeof import('../src/routes/admin');
+  const result = await routes['GET /api/admin/storage']({} as FixtureValue, 'admin-user');
 
-  assert.equal(result.storage.totals.users, 2);
-  assert.equal(result.storage.totals.emails, 3);
-  assert.equal(result.storage.totals.contacts, 5);
-  assert.equal(result.storage.sections.some((section: FixtureValue) => section.label === 'Mail attachments'), true);
-  assert.equal(result.storage.users[0].email, 'user@example.com');
-  assert.equal(result.storage.users[0].bytes, 0);
+  assert.equal(result.storage!.totals.users, 2);
+  assert.equal(result.storage!.totals.emails, 3);
+  assert.equal(result.storage!.totals.contacts, 5);
+  assert.equal(result.storage!.sections.some((section) => section.label === 'Mail attachments'), true);
+  assert.equal(result.storage!.users[0].email, 'user@example.com');
+  assert.equal(result.storage!.users[0].bytes, 0);
 });

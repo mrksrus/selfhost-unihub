@@ -5,7 +5,7 @@ const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const path = (require('node:path') as typeof import('node:path'));
 const os = (require('node:os') as typeof import('node:os'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const { persistImportedMessage } = require('../dist/src/services/mail-import');
+const { persistImportedMessage } = require('../dist/src/services/mail-import') as typeof import('../src/services/mail-import');
 
 async function fixture(t: import('node:test').TestContext, { failAttachment = false, failCommit = false, existingEmail = null }: FixtureValue = {}) {
   const root = await fs.mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'mail-import-'));
@@ -57,7 +57,7 @@ async function fixture(t: import('node:test').TestContext, { failAttachment = fa
 
 test('complete imported message, attachments and deletion queue commit together', async (t) => {
   const h = await fixture(t);
-  const result = await persistImportedMessage(h.args);
+  const result = await persistImportedMessage(h.args as FixtureValue);
   assert.equal(result.isNew, true);
   assert.equal(h.committed, true);
   assert.equal(h.rolledBack, false);
@@ -71,7 +71,7 @@ test('complete imported message, attachments and deletion queue commit together'
 
 test('attachment persistence failure rolls back metadata and removes staged raw and attachment files', async (t) => {
   const h = await fixture(t, { failAttachment: true });
-  await assert.rejects(persistImportedMessage(h.args), /Injected attachment/);
+  await assert.rejects(persistImportedMessage(h.args as FixtureValue), /Injected attachment/);
   assert.equal(h.committed, false);
   assert.equal(h.rolledBack, true);
   assert.equal(h.calls.includes('queue deletion'), false);
@@ -82,7 +82,7 @@ test('attachment persistence failure rolls back metadata and removes staged raw 
 
 test('repair updates completeness and content while preserving local folder and read/star choices', async (t) => {
   const h = await fixture(t, { existingEmail: { id: 'existing', import_complete: false } });
-  const result = await persistImportedMessage(h.args);
+  const result = await persistImportedMessage(h.args as FixtureValue);
   assert.equal(result.isNew, false);
   const update = h.calls.find(sql => sql.includes('UPDATE emails SET'));
   assert.match(update, /import_complete = TRUE/);
@@ -91,7 +91,7 @@ test('repair updates completeness and content while preserving local folder and 
 
 test('uncertain COMMIT retains staged files that committed metadata may reference', async (t) => {
   const h = await fixture(t, { failCommit: true });
-  await assert.rejects(persistImportedMessage(h.args), /Connection lost after COMMIT/);
+  await assert.rejects(persistImportedMessage(h.args as FixtureValue), /Connection lost after COMMIT/);
   assert.equal(h.committed, true);
   assert.equal((await fs.readdir(path.join(h.root, 'u1'))).length, 1);
   assert.equal((await fs.readdir(h.root)).filter(name => name.endsWith('.eml')).length, 1);

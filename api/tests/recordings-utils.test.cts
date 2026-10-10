@@ -1,3 +1,4 @@
+import type { FixtureValue } from './helpers/test-types.cts';
 import type {} from 'node:module';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
@@ -12,7 +13,7 @@ const {
   normalizeTags,
   replaceFilenameExtension,
   serializeRecording,
-} = require('../dist/src/services/recordings');
+} = require('../dist/src/services/recordings') as typeof import('../src/services/recordings');
 
 test('normalizeTags trims, deduplicates case-insensitively, and caps tag count', () => {
   const tags = normalizeTags([' Meeting ', 'meeting', 'Client', '', '  idea  ', ...Array.from({ length: 30 }, (_, index) => `tag-${index}`)]);
@@ -49,7 +50,7 @@ test('serializeRecording defaults category and recorded_at for legacy rows', () 
     tags: 'music',
     created_at: createdAt,
     updated_at: createdAt,
-  });
+  } as FixtureValue);
 
   assert.equal(recording.category, 'none');
   assert.equal(recording.recorded_at, createdAt.toISOString());

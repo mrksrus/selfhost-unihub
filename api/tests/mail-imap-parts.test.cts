@@ -9,7 +9,7 @@ const {
   normalizeSyncFetchLimit,
   recordMailServerMessageForDeletion,
   validateMailHostPolicy,
-} = require('../dist/src/services/mail');
+} = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 
 test('normalizes legacy initial sync limits to all', () => {
   assert.equal(normalizeSyncFetchLimit(undefined), 'all');
@@ -45,8 +45,8 @@ test('IMAP TLS verification failures produce host trust confirmation details', a
   assert.equal(result.blocked, false);
   assert.equal(result.requiresConfirmation, true);
   assert.equal(result.requiresInsecureTls, true);
-  assert.equal(result.certificates.imap.authorized, false);
-  assert.equal(result.certificates.imap.error, 'self-signed certificate');
+  assert.equal(result.certificates.imap!.authorized, false);
+  assert.equal(result.certificates.imap!.error, 'self-signed certificate');
   assert.equal(result.certificates.smtp, undefined);
   assert.match(result.warnings.join('\n'), /IMAP certificate/);
 });
@@ -69,10 +69,10 @@ test('loads existing imported UIDs before message download', async () => {
         calls.push({ query, params });
         return [[{ imap_uid: 2 }, { imap_uid: 3 }]];
       },
-    },
+    } as FixtureValue,
   });
 
-  assert.deepEqual(Array.from(existingUids).sort((a, b) => (a as FixtureValue) - (b as FixtureValue)), [2, 3]);
+  assert.deepEqual(Array.from(existingUids).sort((a, b) => (a) - (b)), [2, 3]);
   assert.equal(calls.length, 1);
   assert.match(calls[0].query, /source_folder = \?/);
   assert.match(calls[0].query, /imap_uid IN \(\?,\?,\?\)/);
@@ -83,7 +83,7 @@ test('loads existing imported UIDs before message download', async () => {
 function deleteClient(capabilities: FixtureValue, reject: FixtureValue = null): FixtureValue {
   const calls: FixtureValue[] = [];
   const flat = (node: FixtureValue): FixtureValue[] => Array.isArray(node) ? node.flatMap(flat) : [node.value];
-  const connection = require('../dist/src/services/mail-imap-guard').guardImapConnection(Object.assign(new ((require('node:events') as typeof import('node:events')))(), {
+  const connection = (require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard')).guardImapConnection(Object.assign(new ((require('node:events') as typeof import('node:events')))(), {
     capabilities: new Map(capabilities.map((name: FixtureValue) => [name, true])), close() {},
     exec: async (command: FixtureValue, attributes: FixtureValue) => {
       calls.push([command, ...attributes.flatMap(flat)]);
@@ -120,11 +120,11 @@ test('server deletion queue skips messages without a usable raw archive', async 
     imapUidValidity: 123,
     rawStoragePath: '/tmp/not-under-mail-raw/email.eml',
     connection: {
-      execute: async () => {
+      execute: (async () => {
         writes++;
         return [{ affectedRows: 1 }];
-      },
-    },
+      }),
+    } as FixtureValue,
   });
 
   assert.equal(queued, false);

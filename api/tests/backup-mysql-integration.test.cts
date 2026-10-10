@@ -1,3 +1,5 @@
+import type { FixtureValue } from './helpers/test-types.cts';
+import type { ResultSetHeader } from 'mysql2/promise';
 import type {} from 'node:module';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
@@ -7,17 +9,17 @@ const mysqlHost = process.env.MYSQL_TEST_HOST;
 process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'mysql-integration-encryption-key';
 process.env.BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || 'mysql-integration-backup-master-key';
 
-const mysql = require('mysql2/promise');
-const { protectRecoveryPassword } = require('../dist/src/services/backup-container');
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+const { protectRecoveryPassword } = require('../dist/src/services/backup-container') as typeof import('../src/services/backup-container');
 const {
   getDataExportJob,
   listDataExportJobs,
   resumePendingDataExportJobs,
   serializeJob,
-} = require('../dist/src/services/export-jobs');
-const { pruneArchiveKeyIfUnreferenced } = require('../dist/src/services/backup-archive-keys');
-const routes = require('../dist/src/routes/backup');
-const { setDb } = require('../dist/src/state');
+} = require('../dist/src/services/export-jobs') as typeof import('../src/services/export-jobs');
+const { pruneArchiveKeyIfUnreferenced } = require('../dist/src/services/backup-archive-keys') as typeof import('../src/services/backup-archive-keys');
+const routes = require('../dist/src/routes/backup') as typeof import('../src/routes/backup');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 test('MySQL 8 backup metadata queries and one-time password reveal', {
   skip: !mysqlHost,
@@ -88,14 +90,14 @@ test('MySQL 8 backup metadata queries and one-time password reveal', {
   const jobId = '22222222-2222-4222-8222-222222222222';
   const backupUuid = '33333333-3333-4333-8333-333333333333';
   const recoveryPassword = 'mysql-integration-recovery-password';
-  await pool.execute(
+  await pool.execute<ResultSetHeader>(
     `INSERT INTO data_export_jobs
        (id, user_id, scope, status, phase, progress, requested_sections,
         file_path, encryption_enabled, backup_uuid)
      VALUES (?, ?, 'full', 'ready', 'ready', 100, ?, ?, TRUE, ?)`,
     [jobId, userId, JSON.stringify(['settings']), '/app/uploads/backups/test.unihub-backup', backupUuid]
   );
-  await pool.execute(
+  await pool.execute<ResultSetHeader>(
     `INSERT INTO backup_archive_keys
        (backup_uuid, user_id, export_job_id, server_wrapped_key, recovery_password_ciphertext)
      VALUES (?, ?, ?, ?, ?)`,
@@ -118,7 +120,7 @@ test('MySQL 8 backup metadata queries and one-time password reveal', {
   assert.equal(serializeJob(rawJob).recovery_password_available, true);
 
   const reveal = await routes['POST /api/backup/jobs/:id/recovery-password/reveal'](
-    { headers: { host: 'localhost' }, url: `/api/backup/jobs/${jobId}/recovery-password/reveal` },
+    { headers: { host: 'localhost' }, url: `/api/backup/jobs/${jobId}/recovery-password/reveal` } as FixtureValue,
     userId
   );
   assert.equal(reveal.recovery_password, recoveryPassword);
@@ -129,7 +131,7 @@ test('MySQL 8 backup metadata queries and one-time password reveal', {
   assert.equal(revealedJob.server_unlock_available, true);
 
   const secondReveal = await routes['POST /api/backup/jobs/:id/recovery-password/reveal'](
-    { headers: { host: 'localhost' }, url: `/api/backup/jobs/${jobId}/recovery-password/reveal` },
+    { headers: { host: 'localhost' }, url: `/api/backup/jobs/${jobId}/recovery-password/reveal` } as FixtureValue,
     userId
   );
   assert.equal(secondReveal.status, 410);
@@ -137,13 +139,13 @@ test('MySQL 8 backup metadata queries and one-time password reveal', {
   assert.equal(await resumePendingDataExportJobs({ schedule: false }), 0);
 
   const uploadedBackupUuid = '44444444-4444-4444-8444-444444444444';
-  await pool.execute(
+  await pool.execute<ResultSetHeader>(
     `INSERT INTO backup_archive_keys
        (backup_uuid, user_id, server_wrapped_key)
      VALUES (?, ?, ?)`,
     [uploadedBackupUuid, userId, 'shared-upload-key']
   );
-  await pool.execute(
+  await pool.execute<ResultSetHeader>(
     `INSERT INTO backup_restore_jobs (id, user_id, backup_uuid, archive_path)
      VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
     [
@@ -158,12 +160,12 @@ test('MySQL 8 backup metadata queries and one-time password reveal', {
     ]
   );
   assert.equal(await pruneArchiveKeyIfUnreferenced(userId, uploadedBackupUuid), false);
-  await pool.execute(
+  await pool.execute<ResultSetHeader>(
     'UPDATE backup_restore_jobs SET archive_path = NULL WHERE id = ?',
     ['55555555-5555-4555-8555-555555555555']
   );
   assert.equal(await pruneArchiveKeyIfUnreferenced(userId, uploadedBackupUuid), false);
-  await pool.execute(
+  await pool.execute<ResultSetHeader>(
     'UPDATE backup_restore_jobs SET archive_path = NULL WHERE id = ?',
     ['66666666-6666-4666-8666-666666666666']
   );

@@ -3,9 +3,9 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 
 process.env.ENCRYPTION_KEY ||= 'backup-account-policy-test-key';
-const { encrypt } = require('../dist/src/security/encryption');
-const { setDb, getDb } = require('../dist/src/state');
-const { importBackupForUser } = require('../dist/src/services/backup');
+const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+const { setDb, getDb } = require('../dist/src/state') as typeof import('../src/state');
+const { importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
 
 test('restore applies connection policy before activating account settings', async (t) => {
   const previousDb = getDb();
@@ -30,7 +30,7 @@ test('restore applies connection policy before activating account settings', asy
       return [[]];
     },
   };
-  setDb({ execute: (...args: Parameters<typeof connection.execute>) => connection.execute(...args), getConnection: async () => connection });
+  setDb({ execute: ((...args: Parameters<typeof connection.execute>) => connection.execute(...args)), getConnection: async () => connection } as FixtureValue);
 
   await t.test('private mail settings remain inactive even with usable restored credentials', async () => {
     writes.length = 0;
@@ -59,7 +59,7 @@ test('restore applies connection policy before activating account settings', asy
       assert.equal(result.valid, true);
       const account = [...storedAccounts.values()].at(-1);
       assert.equal(account.is_active, active);
-      assert.equal(result.warnings.some((warning: FixtureValue) => warning.includes('inactive')), !active);
+      assert.equal(result.warnings.some((warning) => warning.includes('inactive')), !active);
     });
   }
 

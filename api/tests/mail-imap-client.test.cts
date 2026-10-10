@@ -10,10 +10,10 @@ const fs = (require('node:fs') as typeof import('node:fs'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 const { execFileSync } = (require('node:child_process') as typeof import('node:child_process'));
-const { connectImap, imapFlowOptions, MAX_LITERAL_BYTES } = require('../dist/src/services/mail-imap-client');
-const { closeImapConnection } = require('../dist/src/services/mail-imap-guard');
-const pool = require('../dist/src/services/mail-engine/connection-pool');
-const { isTlsTrustError } = require('../dist/src/services/mail-host-policy');
+const { connectImap, imapFlowOptions, MAX_LITERAL_BYTES } = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+const { closeImapConnection } = require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard');
+const pool = require('../dist/src/services/mail-engine/connection-pool') as typeof import('../src/services/mail-engine/connection-pool');
+const { isTlsTrustError } = require('../dist/src/services/mail-host-policy') as typeof import('../src/services/mail-host-policy');
 
 function session(socket: FixtureValue, commands: FixtureValue) {
   socket.write('* OK synthetic peer\r\n');
@@ -45,7 +45,7 @@ async function listen(server: FixtureValue) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return server.address().port;
 }
-const config = (port: FixtureValue, extra: FixtureValue = {}) => ({ imap: { host: '127.0.0.1', port, user: 'fixture', password: 'fixture-secret', tls: false,
+const config = (port: FixtureValue, extra = {}) => ({ imap: { host: '127.0.0.1', port, user: 'fixture', password: 'fixture-secret', tls: false,
   keepalive: false, connTimeout: 1000, authTimeout: 1000, socketTimeout: 5000, ...extra } });
 
 test('connection config keeps the pinned address, TLS hostname and trust decision and disables logging', () => {
@@ -60,8 +60,8 @@ test('connection config keeps the pinned address, TLS hostname and trust decisio
   assert.equal(options.disableAutoIdle, true); assert.equal(options.disableCompression, true);
   assert.equal(options.maxLiteralSize, MAX_LITERAL_BYTES);
   assert.equal(options.socketTimeout, 60000);
-  const selfSigned = imapFlowOptions({ imap: { host: '203.0.113.7', tls: true, tlsOptions: { rejectUnauthorized: false } } });
-  assert.equal(selfSigned.tls.rejectUnauthorized, false);
+  const selfSigned = imapFlowOptions({ imap: { host: '203.0.113.7', tls: true, tlsOptions: { rejectUnauthorized: false } } as FixtureValue });
+  assert.equal(selfSigned.tls!.rejectUnauthorized, false);
   assert.equal(selfSigned.servername, undefined, 'an IP literal host is verified against itself');
 });
 
@@ -124,7 +124,7 @@ test('strict TLS refuses a self-signed certificate; only an explicit trust decis
   t.after(() => new Promise(resolve => server.close(resolve)));
   const secure = (trust: FixtureValue) => config(port, { tls: true, tlsOptions: { rejectUnauthorized: !trust, servername: 'imap.example.test' } });
   let failure: FixtureValue;
-  await assert.rejects(connectImap(secure(false)).catch((error: FixtureValue) => { failure = error; throw error; }));
+  await assert.rejects(connectImap(secure(false)).catch((error) => { failure = error; throw error; }));
   assert.equal(isTlsTrustError(failure), true, String(failure?.code || failure?.message));
   assert(!commands.some(cmd => cmd.startsWith('LOGIN ')), 'credentials never cross an unverified channel');
   const client = await connectImap(secure(true));

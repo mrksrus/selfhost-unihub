@@ -1,20 +1,20 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { MODULE_CATALOG, getModuleForPath } = require('../dist/src/services/module-catalog');
-const { ORDER_KEY, SETTING_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY, getUserPages, pageOrderFromValue, pagesFromValues, modulesFromValue, orderFromValue, validateModuleUpdates, validateModuleRequest, getUserModules, getOrderedUserModules, setUserModules, isModuleEnabled, isModuleBackgroundEnabled } = require('../dist/src/services/module-settings');
-const { SECTION_POLICIES } = require('../dist/src/services/backup-catalog');
-const { validateBackupPayload } = require('../dist/src/services/backup-validate');
+const { MODULE_CATALOG, getModuleForPath } = require('../dist/src/services/module-catalog') as typeof import('../src/services/module-catalog');
+const { ORDER_KEY, SETTING_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY, getUserPages, pageOrderFromValue, pagesFromValues, modulesFromValue, orderFromValue, validateModuleUpdates, validateModuleRequest, getUserModules, getOrderedUserModules, setUserModules, isModuleEnabled, isModuleBackgroundEnabled } = require('../dist/src/services/module-settings') as typeof import('../src/services/module-settings');
+const { SECTION_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+const { validateBackupPayload } = require('../dist/src/services/backup-validate') as typeof import('../src/services/backup-validate');
 
 test('all built-in modules default on and reference recoverable data', () => {
   const modules = modulesFromValue(null);
-  assert.deepEqual(modules.map((m: FixtureValue) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
+  assert.deepEqual(modules.map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
   for (const module of modules) {
     assert.equal(module.visible && module.enabled && module.background, true);
     assert.ok(SECTION_POLICIES[module.recoverySection]);
   }
-  assert.equal(MODULE_CATALOG.some((m: FixtureValue) => m.id === 'settings'), false);
-  assert.deepEqual(modules.map((module: FixtureValue) => module.recoverySection).sort(), Object.keys(SECTION_POLICIES).filter(id => id !== 'settings').sort());
+  assert.equal(MODULE_CATALOG.some((m) => m.id === 'settings'), false);
+  assert.deepEqual(modules.map((module) => module.recoverySection).sort(), Object.keys(SECTION_POLICIES).filter(id => id !== 'settings').sort());
 });
 test('module updates reject unknown IDs, controls, owner injection and non-booleans', () => {
   for (const input of [null, {}, { modules: [] }, { modules: { unknown: {} } }, { modules: { mail: { enabled: 0 } } }, { modules: { mail: { owner: 'other' } } }, { modules: {}, userId: 'other' }]) {
@@ -36,26 +36,26 @@ test('saved owner settings retain independent hide, disable and background choic
     assert.match(sql, /WHERE user_id = \? AND setting_key = \?/);
     return [records.has(key) ? [{ setting_value: JSON.stringify(records.get(key)) }] : []];
   } };
-  await setUserModules('owner', { modules: { mail: { visible: false }, calendar: { background: false }, recordings: { enabled: false } } }, connection);
-  await setUserModules('owner', { modules: { mail: { background: false } } }, connection);
-  const modules = await getUserModules('owner', connection);
-  assert.equal(modules.find((m: FixtureValue) => m.id === 'mail').visible, false);
-  assert.equal(await isModuleEnabled('owner', 'mail', connection), true);
-  assert.equal(await isModuleBackgroundEnabled('owner', 'mail', connection), false);
-  assert.equal(await isModuleEnabled('owner', 'recordings', connection), false);
-  assert.equal(await isModuleEnabled('other', 'recordings', connection), true);
+  await setUserModules('owner', { modules: { mail: { visible: false }, calendar: { background: false }, recordings: { enabled: false } } }, connection as FixtureValue);
+  await setUserModules('owner', { modules: { mail: { background: false } } }, connection as FixtureValue);
+  const modules = await getUserModules('owner', connection as FixtureValue);
+  assert.equal(modules.find((m) => m.id === 'mail')!.visible, false);
+  assert.equal(await isModuleEnabled('owner', 'mail', connection as FixtureValue), true);
+  assert.equal(await isModuleBackgroundEnabled('owner', 'mail', connection as FixtureValue), false);
+  assert.equal(await isModuleEnabled('owner', 'recordings', connection as FixtureValue), false);
+  assert.equal(await isModuleEnabled('other', 'recordings', connection as FixtureValue), true);
   assert.equal(writes.length, 2);
-  await assert.rejects(setUserModules('owner', { modules: { mail: { enabled: 'no' } } }, connection));
+  await assert.rejects(setUserModules('owner', { modules: { mail: { enabled: 'no' } } }, connection as FixtureValue));
   assert.equal(writes.length, 2);
 });
 test('legacy saved games and notes choices are ignored on read, backup validation and later saves', async () => {
   const stored: FixtureValue = { games: { visible: false }, notes: { enabled: false }, mail: { visible: false } };
   const modules = modulesFromValue(JSON.stringify(stored));
-  assert.deepEqual(modules.map((m: FixtureValue) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
-  assert.equal(modules.find((m: FixtureValue) => m.id === 'mail').visible, false);
+  assert.deepEqual(modules.map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
+  assert.equal(modules.find((m) => m.id === 'mail')!.visible, false);
   assert.deepEqual(validateBackupPayload({ version: 1, user: { id: 'u', email: 'a@example.com' },
-    data: { user_settings: [{ user_id: 'u', setting_key: 'module_preferences', setting_value: JSON.stringify(stored) }] } })
-    .errors.filter((error: FixtureValue) => /module preferences/.test(error)), []);
+    data: { user_settings: [{ user_id: 'u', setting_key: 'module_preferences', setting_value: JSON.stringify(stored) }] } } as FixtureValue)
+    .errors.filter((error) => /module preferences/.test(error)), []);
   const connection = { async execute(sql: string, params: FixtureValue) {
     if (sql.startsWith('INSERT INTO user_settings')) {
       for (const [id, values] of Object.entries(JSON.parse(params[2]))) stored[id] = { ...stored[id], ...(values as FixtureValue) };
@@ -63,16 +63,16 @@ test('legacy saved games and notes choices are ignored on read, backup validatio
     }
     return [[{ setting_value: JSON.stringify(stored) }]];
   } };
-  const updated = await setUserModules('owner', { modules: { recordings: { enabled: false } } }, connection);
-  assert.equal(updated.find((m: FixtureValue) => m.id === 'recordings').enabled, false);
-  assert.equal(updated.some((m: FixtureValue) => m.id === 'games' || m.id === 'notes'), false);
-  assert.equal(await isModuleEnabled('owner', 'mail', connection), true);
+  const updated = await setUserModules('owner', { modules: { recordings: { enabled: false } } }, connection as FixtureValue);
+  assert.equal(updated.find((m) => m.id === 'recordings')!.enabled, false);
+  assert.equal(updated.some((m) => m.id === 'games' || m.id === 'notes'), false);
+  assert.equal(await isModuleEnabled('owner', 'mail', connection as FixtureValue), true);
   for (const id of ['games', 'notes']) assert.throws(() => validateModuleUpdates({ modules: { [id]: { visible: true } } }), { status: 400 });
   assert.equal(getModuleForPath('/api/games/tetris/leaderboard'), null);
   assert.equal(getModuleForPath('/api/notes/id/export'), null);
 });
 test('module checks fail closed on database failure and malformed saved settings', async () => {
-  await assert.rejects(isModuleEnabled('u', 'mail', { execute: async () => { throw new Error('Database unavailable'); } }), /Database unavailable/);
+  await assert.rejects(isModuleEnabled('u', 'mail', { execute: async () => { throw new Error('Database unavailable'); } } as FixtureValue), /Database unavailable/);
   assert.throws(() => modulesFromValue('{broken'));
 });
 test('module path gates include attachments and destructive settings while preserving core routes', () => {
@@ -103,15 +103,15 @@ function keyedSettings(initial: FixtureValue = {}) {
 test('module order is saved per owner and shown in that order, while access checks keep catalog order', async () => {
   const connection = keyedSettings();
   const order = ['recordings', 'mail', 'contacts', 'calendar'];
-  const updated = await setUserModules('owner', { order }, connection);
-  assert.deepEqual(updated.map((m: FixtureValue) => m.id), order);
+  const updated = await setUserModules('owner', { order }, connection as FixtureValue);
+  assert.deepEqual(updated.map((m) => m.id), order);
   assert.deepEqual(connection.writes, [ORDER_KEY]);
-  assert.deepEqual((await getOrderedUserModules('owner', connection)).map((m: FixtureValue) => m.id), order);
-  assert.deepEqual((await getUserModules('owner', connection)).map((m: FixtureValue) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
-  assert.deepEqual((await getOrderedUserModules('other', connection)).map((m: FixtureValue) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
-  const both = await setUserModules('owner', { modules: { mail: { visible: false } }, order: ['mail', 'calendar', 'contacts', 'recordings'] }, connection);
-  assert.deepEqual(both.map((m: FixtureValue) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
-  assert.equal(both.find((m: FixtureValue) => m.id === 'mail').visible, false);
+  assert.deepEqual((await getOrderedUserModules('owner', connection as FixtureValue)).map((m) => m.id), order);
+  assert.deepEqual((await getUserModules('owner', connection as FixtureValue)).map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
+  assert.deepEqual((await getOrderedUserModules('other', connection as FixtureValue)).map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
+  const both = await setUserModules('owner', { modules: { mail: { visible: false } }, order: ['mail', 'calendar', 'contacts', 'recordings'] }, connection as FixtureValue);
+  assert.deepEqual(both.map((m) => m.id), ['mail', 'calendar', 'contacts', 'recordings']);
+  assert.equal(both.find((m) => m.id === 'mail')!.visible, false);
 });
 
 test('module order requests must list every current module once', () => {
@@ -135,21 +135,21 @@ const allPages = ['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music',
 
 test('pages are shown, hidden and ordered one by one while modules stay enabled together', async () => {
   const connection = keyedSettings();
-  assert.deepEqual((await getUserPages('owner', connection)).map((page: FixtureValue) => [page.id, page.module, page.visible]), [
+  assert.deepEqual((await getUserPages('owner', connection as FixtureValue)).map((page) => [page.id, page.module, page.visible]), [
     ['mail', 'mail', true], ['calendar', 'calendar', true], ['todo', 'calendar', true], ['contacts', 'contacts', true],
     ['recordings', 'recordings', true], ['music', 'recordings', true], ['today', null, true]]);
-  await setUserModules('owner', { pages: { todo: { visible: false } } }, connection);
-  await setUserModules('owner', { pages: { music: { visible: false }, today: { visible: false } } }, connection);
+  await setUserModules('owner', { pages: { todo: { visible: false } } }, connection as FixtureValue);
+  await setUserModules('owner', { pages: { music: { visible: false }, today: { visible: false } } }, connection as FixtureValue);
   const order = ['today', 'music', 'mail', 'todo', 'calendar', 'contacts', 'recordings'];
-  const modules = await setUserModules('owner', { page_order: order }, connection);
+  const modules = await setUserModules('owner', { page_order: order }, connection as FixtureValue);
   assert.deepEqual(connection.writes, [PAGE_SETTING_KEY, PAGE_SETTING_KEY, PAGE_ORDER_KEY]);
-  const pages = await getUserPages('owner', connection);
-  assert.deepEqual(pages.map((page: FixtureValue) => page.id), order);
-  assert.deepEqual(pages.filter((page: FixtureValue) => !page.visible).map((page: FixtureValue) => page.id), ['today', 'music', 'todo']);
+  const pages = await getUserPages('owner', connection as FixtureValue);
+  assert.deepEqual(pages.map((page) => page.id), order);
+  assert.deepEqual(pages.filter((page) => !page.visible).map((page) => page.id), ['today', 'music', 'todo']);
   // Hiding a page never disables or hides its module.
-  assert.equal(modules.every((module: FixtureValue) => module.enabled && module.visible), true);
-  assert.equal(await isModuleEnabled('owner', 'calendar', connection), true);
-  assert.deepEqual((await getUserPages('other', connection)).every((page: FixtureValue) => page.visible), true);
+  assert.equal(modules.every((module) => module.enabled && module.visible), true);
+  assert.equal(await isModuleEnabled('owner', 'calendar', connection as FixtureValue), true);
+  assert.deepEqual((await getUserPages('other', connection as FixtureValue)).every((page) => page.visible), true);
 });
 
 test('page requests accept only visibility of known pages and a complete page order', () => {
@@ -164,11 +164,11 @@ test('page requests accept only visibility of known pages and a complete page or
 test('pages without a choice follow the module order and the older module visibility', () => {
   const modules = modulesFromValue(JSON.stringify({ calendar: { visible: false } }));
   const pages = pagesFromValues(modules, ['recordings', 'calendar', 'mail', 'contacts'], JSON.stringify({ todo: { visible: true } }), null);
-  assert.deepEqual(pages.map((page: FixtureValue) => page.id), ['recordings', 'music', 'calendar', 'todo', 'mail', 'contacts', 'today']);
-  assert.deepEqual(pages.filter((page: FixtureValue) => !page.visible).map((page: FixtureValue) => page.id), ['calendar']);
+  assert.deepEqual(pages.map((page) => page.id), ['recordings', 'music', 'calendar', 'todo', 'mail', 'contacts', 'today']);
+  assert.deepEqual(pages.filter((page) => !page.visible).map((page) => page.id), ['calendar']);
   // Unreadable or outdated page choices are ignored rather than failing the module list.
   for (const value of [null, '{broken', '[]', JSON.stringify({ notes: { visible: false }, todo: { visible: 'no' } })]) {
-    assert.equal(pagesFromValues(modulesFromValue(null), orderFromValue(null), value, '{broken').every((page: FixtureValue) => page.visible), true, String(value));
+    assert.equal(pagesFromValues(modulesFromValue(null), orderFromValue(null), value, '{broken').every((page) => page.visible), true, String(value));
   }
   assert.deepEqual(pageOrderFromValue(JSON.stringify(['today', 'notes', 'today', 'music'])), ['today', 'music', 'mail', 'calendar', 'todo', 'contacts', 'recordings']);
 });

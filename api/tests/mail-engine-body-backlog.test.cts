@@ -9,7 +9,7 @@ const userId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const accountId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const engine = (name: FixtureValue) => require.resolve(`../dist/src/services/mail-engine/${name}`);
 
-function stub(t: import('node:test').TestContext, entries: FixtureValue, target: FixtureValue) {
+function stub<T>(t: import('node:test').TestContext, entries: FixtureValue, target: string): T {
   const paths = [...entries.map(([p]: FixtureValue) => p), target];
   const prior = paths.map(p => require.cache[p]);
   for (const [p, exports] of entries) require.cache[p] = { id: p, filename: p, loaded: true, exports } as NodeJS.Module;
@@ -31,7 +31,7 @@ function backlog(t: import('node:test').TestContext, count: number, { fetchRawMe
     }
     throw Error(`Unexpected SQL: ${sql}`);
   } };
-  const content = stub(t, [
+  const content = stub<typeof import('../src/services/mail-engine/content')>(t, [
     [engine('repository'), { withTransaction: (fn: FixtureValue) => fn(db) }],
     [engine('runtime'), { async assertFence() {} }],
     [engine('transport'), { async selectMailbox() { return { uidvalidity: 7 }; },
@@ -43,9 +43,9 @@ function backlog(t: import('node:test').TestContext, count: number, { fetchRawMe
       persisted.push(input.uid); queued.shift(); return { emailId: input.existingEmail.id }; } }],
     [require.resolve('../dist/src/services/mail'), { MAIL_RAW_STORAGE_ROOT: '/nonexistent', recordMailServerMessageForDeletion: async () => {} }],
   ], engine('content'));
-  const run = (options: FixtureValue = {}) => content.processBodySlice({ db, connection: {}, account: { id: accountId, user_id: userId },
+  const run = (options = {}) => content.processBodySlice({ db: db as FixtureValue, connection: {} as FixtureValue, account: { id: accountId, user_id: userId },
     folder: { folderName: 'INBOX', dbFolderName: 'inbox' }, mailboxId: 'box',
-    job: { id: 'job', lease_owner: 'worker', worker_generation: 1 }, report: (change: FixtureValue) => reports.push(change), ...options });
+    job: { id: 'job', lease_owner: 'worker', worker_generation: 1 } as FixtureValue, report: (change: FixtureValue) => reports.push(change), ...options });
   return { content, queued, persisted, reports, marked, fetches, run };
 }
 
@@ -86,7 +86,7 @@ test('a large message gets five minutes and up to 50 MiB, and the FETCH itself t
   assert.equal(h.content.DEFAULT_TIMEOUT_MS, 5 * 60 * 1000);
   assert.equal(h.content.DEFAULT_MAX_BYTES, 50 * 1024 * 1024);
   assert.deepEqual(h.fetches, [{ uid: 1, maxBytes: 50 * 1024 * 1024, timeoutMs: 5 * 60 * 1000 }]);
-  assert.equal(require('../dist/src/services/mail-imap-client').MAX_LITERAL_BYTES, 50 * 1024 * 1024);
+  assert.equal((require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client')).MAX_LITERAL_BYTES, 50 * 1024 * 1024);
 });
 
 for (const code of ['MAIL_BODY_TIMEOUT', 'MAIL_IMAP_TIMEOUT']) {
@@ -119,7 +119,7 @@ test('a cancelled download is not set aside as slow', async t => {
 
 test('discovery requeues body work for every mailbox with queued content and promotes old priorities', async t => {
   const enqueued: FixtureValue[] = [], statements: FixtureValue[] = [];
-  const sync = stub(t, [
+  const sync = stub<typeof import('../src/services/mail-engine/sync')>(t, [
     [engine('runtime'), { async enqueueJob(input: FixtureValue) { enqueued.push(input); } }],
   ], engine('sync'));
   const db = { async execute(sql: string, params: FixtureValue) {
@@ -128,7 +128,7 @@ test('discovery requeues body work for every mailbox with queued content and pro
     if (sql.includes('UPDATE mail_engine_jobs SET priority')) return [{ affectedRows: 1 }];
     throw Error(`Unexpected SQL: ${sql}`);
   } };
-  assert.deepEqual(await sync.enqueuePendingBodies({ userId, accountId }, db), { mailboxes: 2 });
+  assert.deepEqual(await sync.enqueuePendingBodies({ userId, accountId }, db as FixtureValue), { mailboxes: 2 });
   assert.deepEqual(enqueued, ['inbox', 'all-mail'].map(mailboxId =>
     ({ userId, accountId, mailboxId, kind: 'body', priority: sync.BODY_PRIORITY })));
   const select = statements.find(s => s.sql.includes('SELECT DISTINCT'));
@@ -142,7 +142,7 @@ test('discovery requeues body work for every mailbox with queued content and pro
 });
 
 test('a manual sync queues set-aside slow messages again; a scheduled one does not', async t => {
-  const sync = stub(t, [[engine('runtime'), { async enqueueJob() {} }]], engine('sync'));
+  const sync = stub<typeof import('../src/services/mail-engine/sync')>(t, [[engine('runtime'), { async enqueueJob() {} }]], engine('sync'));
   for (const retrySlow of [false, true]) {
     const statements: FixtureValue[] = [];
     const db = { async execute(sql: string, params: FixtureValue) {
@@ -152,7 +152,7 @@ test('a manual sync queues set-aside slow messages again; a scheduled one does n
       if (sql.includes('UPDATE mail_engine_jobs SET priority')) return [{ affectedRows: 0 }];
       throw Error(`Unexpected SQL: ${sql}`);
     } };
-    await sync.enqueuePendingBodies({ userId, accountId, retrySlow }, db);
+    await sync.enqueuePendingBodies({ userId, accountId, retrySlow }, db as FixtureValue);
     const requeue = statements.filter(s => s.sql.includes("SET content_state = 'queued'"));
     if (!retrySlow) { assert.deepEqual(requeue, []); continue; }
     assert.equal(requeue.length, 1);

@@ -5,8 +5,8 @@ const { EventEmitter } = (require('node:events') as typeof import('node:events')
 const { PassThrough } = (require('node:stream') as typeof import('node:stream'));
 const https: FixtureValue = (require('node:https') as typeof import('node:https'));
 const dns = (require('node:dns') as typeof import('node:dns')).promises;
-const { davRequest, MAX_DAV_RESPONSE_BYTES } = require('../dist/src/security/caldav-transport');
-const { discoverCalDavCalendars, validateDavUrlPolicy } = require('../dist/src/services/caldav');
+const { davRequest, MAX_DAV_RESPONSE_BYTES } = require('../dist/src/security/caldav-transport') as typeof import('../src/security/caldav-transport');
+const { discoverCalDavCalendars, validateDavUrlPolicy } = require('../dist/src/services/caldav') as typeof import('../src/services/caldav');
 
 const origin = 'https://calendar.example';
 const credentials = { username: 'fixture-user', password: 'fixture-secret' };

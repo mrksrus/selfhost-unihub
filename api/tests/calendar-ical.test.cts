@@ -10,7 +10,7 @@ const {
   updateEventIcs,
   removeOccurrenceIcs,
   objectUid,
-} = require('../dist/src/services/calendar-ical');
+} = require('../dist/src/services/calendar-ical') as typeof import('../src/services/calendar-ical');
 
 const BERLIN_TZ = [
   'BEGIN:VTIMEZONE', 'TZID:Europe/Berlin',
@@ -70,7 +70,7 @@ test('recurring series expand with EXDATE, overrides, cancellations and DST', ()
   const result = expandCalendarObject(SERIES, window);
   assert.equal(result.recurring, true);
   assert.equal(result.rrule, 'FREQ=WEEKLY;COUNT=6');
-  const byId = Object.fromEntries(result.occurrences.map((item: FixtureValue) => [item.recurrenceId, item]));
+  const byId = Object.fromEntries(result.occurrences.map((item) => [item.recurrenceId, item]));
   assert.deepEqual(Object.keys(byId), ['20260302T080000Z', '20260316T080000Z', '20260330T070000Z', '20260406T070000Z']);
   assert.equal(byId['20260316T080000Z'].title, 'Standup (moved)');
   assert.equal(byId['20260316T080000Z'].startMs, Date.UTC(2026, 2, 16, 10));
@@ -81,11 +81,11 @@ test('recurring series expand with EXDATE, overrides, cancellations and DST', ()
 test('occurrence edits add an override and occurrence deletes add an EXDATE', () => {
   const edited = updateEventIcs(SERIES, { title: 'Only this one' }, { recurrenceId: '20260406T070000Z', scope: 'occurrence', userTimeZone: 'Europe/Berlin' });
   const afterEdit = expandCalendarObject(edited, window).occurrences;
-  assert.equal(afterEdit.find((item: FixtureValue) => item.recurrenceId === '20260406T070000Z').title, 'Only this one');
-  assert.equal(afterEdit.find((item: FixtureValue) => item.recurrenceId === '20260302T080000Z').title, 'Standup');
+  assert.equal(afterEdit.find((item) => item.recurrenceId === '20260406T070000Z')!.title, 'Only this one');
+  assert.equal(afterEdit.find((item) => item.recurrenceId === '20260302T080000Z')!.title, 'Standup');
 
   const removed = removeOccurrenceIcs(edited, '20260406T070000Z', { userTimeZone: 'Europe/Berlin' });
-  const ids = expandCalendarObject(removed, window).occurrences.map((item: FixtureValue) => item.recurrenceId);
+  const ids = expandCalendarObject(removed, window).occurrences.map((item) => item.recurrenceId);
   assert.deepEqual(ids, ['20260302T080000Z', '20260316T080000Z', '20260330T070000Z']);
 });
 
@@ -98,9 +98,9 @@ test('moving one occurrence of a series moves the series and its overrides', () 
   assert.equal(occurrences[0].startMs, Date.UTC(2026, 2, 2, 9));
   // Overrides follow the series by their original time and keep their own time.
   assert.equal(occurrences.length, 4);
-  const override = occurrences.find((item: FixtureValue) => item.title === 'Standup (moved)');
-  assert.equal(override.recurrenceId, '20260316T090000Z');
-  assert.equal(override.startMs, Date.UTC(2026, 2, 16, 10));
+  const override = occurrences.find((item) => item.title === 'Standup (moved)');
+  assert.equal(override!.recurrenceId, '20260316T090000Z');
+  assert.equal(override!.startMs, Date.UTC(2026, 2, 16, 10));
 });
 
 test('created events round-trip through expansion', () => {
@@ -124,7 +124,7 @@ test('subscription feeds are split per UID with their time zones', () => {
     'BEGIN:VEVENT', 'UID:b', 'DTSTART;TZID=Europe/Berlin:20260101T100000', 'END:VEVENT',
     'BEGIN:VEVENT', 'UID:b', 'RECURRENCE-ID:20260108T090000Z', 'DTSTART:20260108T120000Z', 'END:VEVENT'));
   assert.equal(feed.name, 'Team');
-  assert.deepEqual(feed.objects.map((item: FixtureValue) => item.uid), ['a', 'b']);
+  assert.deepEqual(feed.objects.map((item) => item.uid), ['a', 'b']);
   assert.match(feed.objects[1].ics, /BEGIN:VTIMEZONE/);
   assert.equal((feed.objects[1].ics.match(/BEGIN:VEVENT/g) || []).length, 2);
   assert.equal(splitIcsFeed(feed.objects[0].ics).objects[0].etag, feed.objects[0].etag, 'Unchanged events keep their ETag');

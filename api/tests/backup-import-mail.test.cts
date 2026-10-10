@@ -74,7 +74,7 @@ test('backup import maps restored mail to existing account and email sync identi
     },
   });
 
-  const { importBackupForUser } = require('../dist/src/services/backup');
+  const { importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
   const backup = {
     app: 'unihub',
     version: 1,

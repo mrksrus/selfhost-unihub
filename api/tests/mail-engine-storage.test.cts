@@ -2,10 +2,10 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { assertUid32, assertDecimal64 } = require('../dist/src/services/mail-engine/repository-identity');
-const repo = require('../dist/src/services/mail-engine/repository');
-const runtime = require('../dist/src/services/mail-engine/runtime');
-const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler');
+const { assertUid32, assertDecimal64 } = require('../dist/src/services/mail-engine/repository-identity') as typeof import('../src/services/mail-engine/repository-identity');
+const repo = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler') as typeof import('../src/services/mail-sync-scheduler');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('protocol IDs, decimal precision and boolean wire values are strict', () => {
@@ -30,16 +30,16 @@ test('repository refuses incomplete coverage, stale epoch and unrelated-owner oc
     throw new Error(sql);
   } };
   const base = { userId: 'u', accountId: 'a', mailboxId: 'm', epoch: 9, stream: 'recent', windowStart: 11, windowEnd: 20, coveredThrough: 20 };
-  await assert.rejects(repo.saveCursor({ ...base, complete: false }, cx), { code: 'INCOMPLETE_COVERAGE' });
-  await assert.rejects(repo.saveCursor({ ...base, windowEnd: 50000 }, cx), RangeError);
-  await assert.rejects(repo.saveCursor({ ...base, epoch: 10 }, cx), { code: 'MAIL_EPOCH_STALE' });
-  await repo.saveCursor(base, cx);
+  await assert.rejects(repo.saveCursor({ ...base, complete: false }, cx as FixtureValue), { code: 'INCOMPLETE_COVERAGE' });
+  await assert.rejects(repo.saveCursor({ ...base, windowEnd: 50000 }, cx as FixtureValue), RangeError);
+  await assert.rejects(repo.saveCursor({ ...base, epoch: 10 }, cx as FixtureValue), { code: 'MAIL_EPOCH_STALE' });
+  await repo.saveCursor(base, cx as FixtureValue);
   assert(calls.some(({ sql }) => sql.includes('covered_through=VALUES(covered_through)')));
-  await assert.rejects(repo.markAbsentInWindow({ ...base, presentUids: [], complete: false }, cx), { code: 'INCOMPLETE_COVERAGE' });
-  assert.equal(await repo.markAbsentInWindow({ ...base, presentUids: [11, 13], complete: true }, cx), 1);
+  await assert.rejects(repo.markAbsentInWindow({ ...base, presentUids: [], complete: false }, cx as FixtureValue), { code: 'INCOMPLETE_COVERAGE' });
+  assert.equal(await repo.markAbsentInWindow({ ...base, presentUids: [11, 13], complete: true }, cx as FixtureValue), 1);
   const update = calls.find(({ sql }) => sql.includes("presence = 'absent'"));
   assert.match(update.sql, /uid BETWEEN \? AND \?.*uid NOT IN \(\?,\?\)/s);
-  assert.equal(await repo.getOccurrence({ userId: 'foreign', accountId: 'a', mailboxId: 'm', epoch: 9, uid: 11 }, cx), null);
+  assert.equal(await repo.getOccurrence({ userId: 'foreign', accountId: 'a', mailboxId: 'm', epoch: 9, uid: 11 }, cx as FixtureValue), null);
 });
 
 test('idempotency receipt replays exact response and rejects payload reuse', async () => {
@@ -57,16 +57,16 @@ test('idempotency receipt replays exact response and rejects payload reuse', asy
     throw new Error(sql);
   } };
   const input = { userId: 'u', clientKey: 'abc-123', requestHash: 'a'.repeat(64), response: { operation_ids: ['original'], accepted_revision: 12 } };
-  assert.equal((await repo.recordReceipt(input, cx)).replayed, false);
-  assert.deepEqual(await repo.recordReceipt({ ...input, response: { operation_ids: ['different'] } }, cx), { response: input.response, replayed: true });
-  await assert.rejects(repo.recordReceipt({ ...input, requestHash: 'b'.repeat(64) }, cx), { code: 'IDEMPOTENCY_KEY_REUSED' });
-  await assert.rejects(repo.recordReceipt({ ...input, clientKey: 'bad key\n' }, cx), TypeError);
+  assert.equal((await repo.recordReceipt(input, cx as FixtureValue)).replayed, false);
+  assert.deepEqual(await repo.recordReceipt({ ...input, response: { operation_ids: ['different'] } }, cx as FixtureValue), { response: input.response, replayed: true });
+  await assert.rejects(repo.recordReceipt({ ...input, requestHash: 'b'.repeat(64) }, cx as FixtureValue), { code: 'IDEMPOTENCY_KEY_REUSED' });
+  await assert.rejects(repo.recordReceipt({ ...input, clientKey: 'bad key\n' }, cx as FixtureValue), TypeError);
   // Claim by INSERT first; a duplicate is only read with a shared lock (no FOR UPDATE gap lock before INSERT).
   assert(!calls.some(sql => sql.includes('FOR UPDATE')));
   assert(calls.some(sql => sql.startsWith('SELECT request_hash') && sql.includes('LOCK IN SHARE MODE')));
-  await repo.finishReceipt({ ...input, response: { operation_ids: ['final'] } }, cx);
-  assert.deepEqual((await repo.recordReceipt(input, cx)).response, { operation_ids: ['final'] });
-  await assert.rejects(repo.finishReceipt({ ...input, requestHash: 'b'.repeat(64), response: {} }, cx), { code: 'IDEMPOTENCY_KEY_BUSY' });
+  await repo.finishReceipt({ ...input, response: { operation_ids: ['final'] } }, cx as FixtureValue);
+  assert.deepEqual((await repo.recordReceipt(input, cx as FixtureValue)).response, { operation_ids: ['final'] });
+  await assert.rejects(repo.finishReceipt({ ...input, requestHash: 'b'.repeat(64), response: {} }, cx as FixtureValue), { code: 'IDEMPOTENCY_KEY_BUSY' });
 });
 
 test('claim skips active account and fences stale commits; unknown operation outcomes stay reconciling', async () => {
@@ -85,12 +85,12 @@ test('claim skips active account and fences stale commits; unknown operation out
     if (sql.includes('SELECT a.generation')) return [[]];
     throw new Error(sql);
   } };
-  const job = await runtime.claimDueJob({ workerId: 'worker' }, cx);
-  assert.equal(job.id, 'j2');
+  const job = await runtime.claimDueJob({ workerId: 'worker' }, cx as FixtureValue);
+  assert.equal(job!.id, 'j2');
   assert(calls.some(({ sql }) => sql.includes('FOR UPDATE SKIP LOCKED')));
-  await assert.rejects(runtime.assertFence({ accountId: 'free', jobId: 'j2', workerId: 'old', generation: 2 }, cx), { code: 'MAIL_WORKER_FENCED' });
+  await assert.rejects(runtime.assertFence({ accountId: 'free', jobId: 'j2', workerId: 'old', generation: 2 }, cx as FixtureValue), { code: 'MAIL_WORKER_FENCED' });
   assert.equal(calls.filter(({ sql }) => sql.startsWith('UPDATE mail_engine_jobs')).length, 1);
-  const rec = await runtime.recoverExpiredJobs(cx);
+  const rec = await runtime.recoverExpiredJobs(cx as FixtureValue);
   assert.deepEqual(rec, { jobs: 1, operations: 1 });
   assert(calls.some(({ sql }) => sql.includes("kind = IF(operation_id IS NULL,kind,'reconcile')")));
   assert(calls.some(({ sql }) => sql.includes("w.state = 'reconciling', w.status = 'pending'")));
@@ -107,7 +107,7 @@ test('dispatch fence refuses a stale source tuple before journaling an attempt',
     throw new Error(sql);
   } };
   await assert.rejects(runtime.beginOperationAttempt({ operationId: 'op', userId: 'u', accountId: 'a',
-    workerId: 'worker', generation: 4 }, cx), { code: 'MAIL_EPOCH_STALE' });
+    workerId: 'worker', generation: 4 }, cx as FixtureValue), { code: 'MAIL_EPOCH_STALE' });
   assert(!calls.some(sql => sql.includes('INSERT INTO mail_operation_attempts')));
 });
 
@@ -123,15 +123,15 @@ test('durable scheduler uses repository claims and persists progress before succ
     async completeJob(input: FixtureValue) { resolved.push(input.state); },
     async getJobStatus() { return { state: resolved.at(-1) }; },
   };
-  const scheduler = createDurableMailScheduler(async (_job: FixtureValue, signal: FixtureValue, report: FixtureValue) => {
+  const scheduler = createDurableMailScheduler(async (_job, signal, report) => {
     assert.equal(signal.aborted, false); await report({ phase: 'recent', processed: 2, total: null }); return { success: true };
-  }, { repository: fake, pollMs: 100000 });
+  }, { repository: fake as FixtureValue, pollMs: 100000 });
   try {
     await scheduler.start(); await scheduler.enqueue({ userId: 'u', accountId: 'a' });
     await tick(); await tick();
     assert.deepEqual(resolved, ['idle']);
     assert.equal(recoveryCount, 1, 'recover at startup; later drains are time-gated');
     assert.equal(updates[0].phase, 'recent');
-    assert.equal(await scheduler.state({ userId: 'u', accountId: 'a' }).then((s: FixtureValue) => s.state), 'idle');
+    assert.equal(await scheduler.state({ userId: 'u', accountId: 'a' }).then((s) => s.state), 'idle');
   } finally { scheduler.stop(); }
 });

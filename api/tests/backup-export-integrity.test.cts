@@ -5,8 +5,8 @@ const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const { writeZip } = require('../dist/src/services/export-jobs');
-const { readZipEntries } = require('../dist/src/services/backup');
+const { writeZip } = require('../dist/src/services/export-jobs') as typeof import('../src/services/export-jobs');
+const { readZipEntries } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
 const hash = (bytes: FixtureValue) => crypto.createHash('sha256').update(bytes).digest('hex');
 
 async function fixture(t: import('node:test').TestContext) {
@@ -36,7 +36,7 @@ test('a changed file cannot produce a ready archive with stale checksums', async
 for (const [name, replacement] of [['same size', 'modified-message'], ['truncated', 'short'], ['growing', 'longer-than-original-message']] as const) {
   test(`file changing after ZIP preparation (${name}) fails and removes partial archive`, async t => {
     const { source, output, entry } = await fixture(t);
-    await assert.rejects(writeZip([entry], output, { onProgress: async (phase: FixtureValue) => {
+    await assert.rejects(writeZip([entry], output, { onProgress: async (phase) => {
       if (phase === 'prepare') await fs.writeFile(source, replacement);
     } }), /source changed while archiving/);
     await assert.rejects(fs.access(output), { code: 'ENOENT' });
@@ -45,7 +45,7 @@ for (const [name, replacement] of [['same size', 'modified-message'], ['truncate
 
 test('file disappearing after ZIP preparation fails and removes partial archive', async t => {
   const { source, output, entry } = await fixture(t);
-  await assert.rejects(writeZip([entry], output, { onProgress: async (phase: FixtureValue) => {
+  await assert.rejects(writeZip([entry], output, { onProgress: async (phase) => {
     if (phase === 'prepare') await fs.unlink(source);
   } }), { code: 'ENOENT' });
   await assert.rejects(fs.access(output), { code: 'ENOENT' });

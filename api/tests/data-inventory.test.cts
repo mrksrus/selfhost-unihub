@@ -3,7 +3,7 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const fs = (require('node:fs') as typeof import('node:fs'));
 const path = (require('node:path') as typeof import('node:path'));
-const { assertInventoryCoverage, verifyDatabaseInventory } = require('../dist/src/services/data-inventory');
+const { assertInventoryCoverage, verifyDatabaseInventory } = require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory');
 
 // Independent input: actual production DDL declarations, never a snapshot made
 // from the policy catalog. MySQL startup tests below cover executed/dynamic DDL.
@@ -62,6 +62,6 @@ test('generated fresh-install schema is fully classified', () => {
 
 test('database verifier reads information_schema rather than assuming the catalog is the schema', async () => {
   let sql: FixtureValue;
-  await assert.rejects(verifyDatabaseInventory({ async execute(query: string) { sql = query; return [[{ table_name: 'emails', column_name: 'surprise' }]]; } }), /Unclassified field emails.surprise/);
+  await assert.rejects(verifyDatabaseInventory({ async execute(query: string) { sql = query; return [[{ table_name: 'emails', column_name: 'surprise' }]]; } } as FixtureValue), /Unclassified field emails.surprise/);
   assert.match((sql as string), /FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE\(\)/);
 });

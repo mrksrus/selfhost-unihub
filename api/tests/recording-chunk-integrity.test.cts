@@ -1,4 +1,4 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, With } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = require('crypto');
@@ -8,14 +8,14 @@ const path = require('path');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'unihub-recordings-'));
 process.env.RECORDINGS_ROOT = root;
-const { setDb } = require('../dist/src/state');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 const {
   startRecordingUpload,
   getRecordingUploadStatus,
   appendRecordingUploadChunk,
   completeRecordingUpload,
   abortRecordingUpload,
-} = require('../dist/src/services/recordings');
+} = require('../dist/src/services/recordings') as typeof import('../src/services/recordings');
 
 test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
@@ -85,7 +85,7 @@ function chunk(bytes: FixtureValue, offset: number, length: FixtureValue) {
 
 async function startUpload(db: FixtureValue, bytes: FixtureValue) {
   setDb(db);
-  const { upload } = await startRecordingUpload('user', { total_bytes: bytes.length, title: 'Take', source: 'recorded', content_type: 'audio/wav' });
+  const { upload } = await startRecordingUpload('user', { total_bytes: bytes.length, title: 'Take', source: 'recorded', content_type: 'audio/wav' }) as With<Awaited<ReturnType<typeof startRecordingUpload>>, 'upload'>;
   return upload;
 }
 
@@ -100,7 +100,7 @@ test('recording chunks verify their original browser bytes before writing', asyn
   const accepted = await appendRecordingUploadChunk('user', upload.id, {
     ...payload, sha256: crypto.createHash('sha256').update('abc').digest('hex'),
   });
-  assert.equal(accepted.upload.bytes_received, 3);
+  assert.equal((accepted as With<typeof accepted, 'upload'>).upload.bytes_received, 3);
   assert.equal(fs.readFileSync(db.uploads.get(upload.id).temp_path, 'utf8'), 'abc');
 });
 
@@ -112,9 +112,9 @@ test('a repeated chunk is refused with the offset to resume from', async t => {
   await appendRecordingUploadChunk('user', upload.id, chunk(bytes, 0, 100));
   const repeated = await appendRecordingUploadChunk('user', upload.id, chunk(bytes, 0, 100));
   assert.equal(repeated.status, 409);
-  assert.equal(repeated.upload.bytes_received, 100);
+  assert.equal((repeated as With<typeof repeated, 'upload'>).upload.bytes_received, 100);
   const status = await getRecordingUploadStatus('user', upload.id);
-  assert.equal(status.upload.bytes_received, 100);
+  assert.equal(status.upload!.bytes_received, 100);
 });
 
 test('concurrent copies of one chunk write it once', async t => {
@@ -141,7 +141,7 @@ test('bytes from a write whose database update was lost are replaced', async t =
   fs.appendFileSync(db.uploads.get(upload.id).temp_path, Buffer.from('garbage-from-a-crash'));
   await appendRecordingUploadChunk('user', upload.id, chunk(bytes, 100, 100));
   const result = await completeRecordingUpload('user', upload.id);
-  assert.equal(result.recording.id, upload.id);
+  assert.equal(result.recording!.id, upload.id);
   assert.deepEqual(fs.readFileSync(db.recordings.get(upload.id).storage_path), bytes);
 });
 
@@ -153,7 +153,7 @@ test('completing twice returns the same recording', async t => {
   await appendRecordingUploadChunk('user', upload.id, chunk(bytes, 0, 64));
   const first = await completeRecordingUpload('user', upload.id);
   const second = await completeRecordingUpload('user', upload.id);
-  assert.equal(second.recording.id, first.recording.id);
+  assert.equal(second.recording!.id, first.recording!.id);
   assert.equal(db.recordings.size, 1);
   const status = await getRecordingUploadStatus('user', upload.id);
   assert.equal(status.completed, true);
@@ -184,21 +184,21 @@ test('cancelling an upload removes its temporary file', async t => {
 test('repeating a start with the same upload id resumes that upload', async t => {
   t.after(() => setDb(null));
   const db = fakeDb();
-  setDb(db);
+  setDb(db as FixtureValue);
   const bytes = wavBytes(200);
   const id = crypto.randomUUID();
   const payload = { upload_id: id, total_bytes: bytes.length, title: 'Take', source: 'recorded', content_type: 'audio/wav' };
   const first = await startRecordingUpload('user', payload);
-  assert.equal(first.upload.id, id);
+  assert.equal((first as With<typeof first, 'upload'>).upload.id, id);
   await appendRecordingUploadChunk('user', id, chunk(bytes, 0, 100));
   const again = await startRecordingUpload('user', payload);
-  assert.equal(again.upload.bytes_received, 100);
+  assert.equal((again as With<typeof again, 'upload'>).upload.bytes_received, 100);
   assert.equal(db.uploads.size, 1);
   assert.equal((await startRecordingUpload('user', { ...payload, total_bytes: 10 })).status, 409);
   assert.equal((await startRecordingUpload('user', { ...payload, upload_id: '../x' })).status, 400);
   await appendRecordingUploadChunk('user', id, chunk(bytes, 100, 100));
   await completeRecordingUpload('user', id);
   const finished = await startRecordingUpload('user', payload);
-  assert.equal(finished.completed, true);
-  assert.equal(finished.recording.id, id);
+  assert.equal((finished as With<typeof finished, 'completed'>).completed, true);
+  assert.equal((finished as With<typeof finished, 'recording'>).recording.id, id);
 });

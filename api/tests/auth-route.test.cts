@@ -82,16 +82,16 @@ test('password change invalidates all sessions and clears auth cookies', async (
     deleteTwoFactorLoginChallenge: async () => {},
   });
 
-  const routes = require('../dist/src/routes/auth');
+  const routes = require('../dist/src/routes/auth') as typeof import('../src/routes/auth');
   const res = { cleared: [] };
   const result = await routes['PUT /api/auth/password'](
-    { headers: {}, url: '/api/auth/password' },
+    { headers: {}, url: '/api/auth/password' } as FixtureValue,
     'user-1',
-    { current_password: 'old-password', new_password: 'new-password-123' },
-    res
+    { current_password: 'old-password', new_password: 'new-password-123' } as FixtureValue,
+    res as FixtureValue
   );
 
-  assert.match(result.message, /Sign in again/);
+  assert.match(result.message!, /Sign in again/);
   assert.deepEqual(res.cleared, ['auth', 'csrf']);
   assert.ok(calls.some(call => call.sql === 'UPDATE users SET password_hash = ? WHERE id = ?'));
   assert.ok(calls.some(call => call.sql === 'DELETE FROM sessions WHERE user_id = ?'));
@@ -148,6 +148,6 @@ test('public signup mode endpoint defaults to disabled', async (t) => {
     deleteTwoFactorLoginChallenge: async () => {},
   });
 
-  const routes = require('../dist/src/routes/auth');
+  const routes = require('../dist/src/routes/auth') as typeof import('../src/routes/auth');
   assert.deepEqual(await routes['GET /api/auth/signup-mode'](), { signup_mode: 'disabled' });
 });

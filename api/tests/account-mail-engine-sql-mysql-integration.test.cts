@@ -1,12 +1,13 @@
 'use strict';
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, With } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 // Disposable MySQL 8 schema ending _test. Real SQL for queue maintenance and
 // recovery paths that the unit suites only exercise against fake executors.
 // Named to sort before database-startup smoke, which leaves a populated schema.
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const mysql = require('mysql2/promise');
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 
 const uuid = () => crypto.randomUUID();
 const DAY = 86400;
@@ -20,9 +21,9 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD,
     database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 6 });
-  const state = require('../dist/src/state'), previous = state.getDb();
+  const state = require('../dist/src/state') as typeof import('../src/state'), previous = state.getDb();
   let ownsSchema = false;
-  const rows = async (sql: string, params: FixtureValue[] = []) => (await pool.execute(sql, params))[0];
+  const rows = async (sql: string, params: FixtureValue[] = []) => (await pool.execute<RowDataPacket[]>(sql, params))[0];
   const one = async (sql: string, params: FixtureValue[] = []) => (await rows(sql, params))[0];
   t.after(async () => {
     try {
@@ -30,7 +31,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
         const cx = await pool.getConnection();
         try {
           await cx.query('SET FOREIGN_KEY_CHECKS = 0');
-          for (const row of (await cx.query('SHOW TABLES'))[0]) {
+          for (const row of (await cx.query<RowDataPacket[]>('SHOW TABLES'))[0]) {
             const name = Object.values(row)[0]; assert.match((name as string), /^[a-z_]+$/);
             await cx.query(`DROP TABLE \`${name}\``);
           }
@@ -39,26 +40,26 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     } finally { state.setDb(previous); await pool.end(); }
   });
   assert.match((await one('SELECT VERSION() AS version')).version, /MariaDB/);
-  assert.equal((await rows('SHOW TABLES')).length, 0, 'Refuse a populated schema');
+  assert.equal(((await rows('SHOW TABLES'))).length, 0, 'Refuse a populated schema');
   ownsSchema = true; state.setDb(pool);
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'engine-sql-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-engine-sql-bootstrap-password';
-  await require('../dist/src/services/database').ensureSchema();
-  const runtime = require('../dist/src/services/mail-engine/runtime');
-  const repo = require('../dist/src/services/mail-engine/repository');
-  const writebacks = require('../dist/src/services/mail-writebacks');
-  const mail = require('../dist/src/services/mail');
+  await (require('../dist/src/services/database') as typeof import('../src/services/database')).ensureSchema();
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+  const repo = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+  const writebacks = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+  const mail = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 
   async function seedAccount(label: string) {
     const userId = uuid(), accountId = uuid();
-    await pool.execute('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, `sql-${label}@example.test`, 'synthetic']);
-    await pool.execute(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active)
+    await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, `sql-${label}@example.test`, 'synthetic']);
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active)
       VALUES (?,?,?,'custom','sync',TRUE)`, [accountId, userId, `sql-${label}@example.test`]);
     return { userId, accountId };
   }
   async function seedEmail({ userId, accountId }: FixtureValue, uid = 12, uidvalidity = 9) {
     const id = uuid();
-    await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,remote_folder,remote_uid,remote_uidvalidity)
+    await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,remote_folder,remote_uid,remote_uidvalidity)
       VALUES (?,?,?,'fixture@example.test','[]','inbox','INBOX',?,?)`, [id, userId, accountId, uid, uidvalidity]);
     return id;
   }
@@ -66,7 +67,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     state: opState = 'queued', status = 'pending', dispatched = false, isCurrent = true, evidence = null, emailId = null }: FixtureValue = {}) {
     const id = uuid(), email = emailId || await seedEmail(owner, uid, uidvalidity);
     // available_at is set explicitly in UTC: its column default follows the session time zone.
-    await pool.execute(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,remote_folder,
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,remote_folder,
         remote_uid,remote_uidvalidity,status,state,dispatched,is_current,evidence_json,available_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,DATE_SUB(UTC_TIMESTAMP(), INTERVAL 60 SECOND))`,
     [id, owner.userId, owner.accountId, email, action, target, base, remoteFolder, uid, uidvalidity, status, opState,
@@ -76,7 +77,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
   // Every timestamp relative to UTC_TIMESTAMP() on the server, never the client clock.
   async function seedJob(owner: FixtureValue, { kind, jobState, mailboxId = null, operationId = null, priority = 0, createdAgo, completedAgo = null }: FixtureValue) {
     const id = uuid();
-    await pool.execute(`INSERT INTO mail_engine_jobs (id,user_id,mail_account_id,mailbox_id,operation_id,kind,state,priority,due_at,created_at,completed_at)
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_engine_jobs (id,user_id,mail_account_id,mailbox_id,operation_id,kind,state,priority,due_at,created_at,completed_at)
       VALUES (?,?,?,?,?,?,?,?,DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? SECOND),DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? SECOND),
         ${completedAgo === null ? 'NULL' : 'DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? SECOND)'})`,
     [id, owner.userId, owner.accountId, mailboxId, operationId, kind, jobState, priority, createdAgo, createdAgo,
@@ -87,12 +88,12 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
   // test, also after a failed section.
   async function retire(...owners: FixtureValue[]) {
     for (const { userId, accountId } of owners) {
-      await pool.execute('DELETE FROM mail_engine_jobs WHERE user_id = ? AND mail_account_id = ?', [userId, accountId]);
-      await pool.execute('UPDATE mail_accounts SET is_active = FALSE WHERE id = ? AND user_id = ?', [accountId, userId]);
+      await pool.execute<ResultSetHeader>('DELETE FROM mail_engine_jobs WHERE user_id = ? AND mail_account_id = ?', [userId, accountId]);
+      await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET is_active = FALSE WHERE id = ? AND user_id = ?', [accountId, userId]);
     }
   }
-  const jobIds = async (owner: FixtureValue) => new Set<FixtureValue>((await rows('SELECT id FROM mail_engine_jobs WHERE user_id = ? AND mail_account_id = ?',
-    [owner.userId, owner.accountId])).map((row: FixtureValue) => row.id));
+  const jobIds = async (owner: FixtureValue) => new Set<FixtureValue>(((await rows('SELECT id FROM mail_engine_jobs WHERE user_id = ? AND mail_account_id = ?',
+    [owner.userId, owner.accountId]))).map((row) => row.id));
 
   await t.test('pruneFinishedJobs deletes old finished history in batches, keeps the newest per stream and unsettled operations', async t => {
     const owner = await seedAccount('prune'), other = await seedAccount('prune-other');
@@ -150,13 +151,13 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
       assert.equal(left.has(id), !expectedDeleted.includes(key), `${key} ${expectedDeleted.includes(key) ? 'pruned' : 'kept'}`);
     }
     assert((await jobIds(other)).has(ids.otherOnly), 'another account keeps its only job');
-    assert.equal((await rows('SELECT id FROM mail_writebacks WHERE user_id = ?', [owner.userId])).length, 4, 'operations are never pruned');
+    assert.equal(((await rows('SELECT id FROM mail_writebacks WHERE user_id = ?', [owner.userId]))).length, 4, 'operations are never pruned');
   });
 
   await t.test('claimDueJob returns another account while a leased account holds more than the candidate window', async t => {
     const busy = await seedAccount('claim-busy'), idle = await seedAccount('claim-idle');
     t.after(() => retire(busy, idle));
-    await pool.execute(`INSERT INTO mail_engine_accounts (mail_account_id,user_id,generation,lease_owner,lease_until)
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_engine_accounts (mail_account_id,user_id,generation,lease_owner,lease_until)
       VALUES (?,?,5,'busy-worker',DATE_ADD(UTC_TIMESTAMP(), INTERVAL 300 SECOND))`, [busy.accountId, busy.userId]);
     // Older queued work ages ahead in ORDER BY; 40 rows exceed LIMIT 32.
     for (let i = 0; i < 40; i++) await seedJob(busy, { kind: 'sync', jobState: 'queued', createdAgo: 600 + i });
@@ -172,9 +173,9 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
       generation: Number(claimed.worker_generation) }, pool);
     assert.equal(await runtime.claimDueJob({ workerId: 'fair-worker' }, pool), null, 'still leased');
     // Expired but unrecovered: the old worker may still hold an unknown provider outcome.
-    await pool.execute('UPDATE mail_engine_accounts SET lease_until = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 5 SECOND) WHERE mail_account_id = ?', [busy.accountId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_accounts SET lease_until = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 5 SECOND) WHERE mail_account_id = ?', [busy.accountId]);
     assert.equal(await runtime.claimDueJob({ workerId: 'fair-worker' }, pool), null, 'expired lease still awaits recovery');
-    await pool.execute('UPDATE mail_engine_accounts SET lease_owner = NULL, lease_until = NULL WHERE mail_account_id = ?', [busy.accountId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_accounts SET lease_owner = NULL, lease_until = NULL WHERE mail_account_id = ?', [busy.accountId]);
     const recovered = await runtime.claimDueJob({ workerId: 'fair-worker' }, pool);
     assert.equal(recovered?.mail_account_id, busy.accountId);
     assert.equal(Number(recovered.worker_generation), 6);
@@ -236,7 +237,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     const before: FixtureValue = {};
     for (const [key, id] of Object.entries(refused)) before[key] = await snapshot(id);
 
-    await pool.execute("UPDATE mail_writebacks SET error = 'Outcome unknown' WHERE id = ?", [withEvidence]);
+    await pool.execute<ResultSetHeader>("UPDATE mail_writebacks SET error = 'Outcome unknown' WHERE id = ?", [withEvidence]);
     const result = await writebacks.acceptServerState(owner.userId, withEvidence);
     assert.equal(result.sync_queued, true);
     assert.deepEqual(scheduled, [owner.accountId]);
@@ -257,7 +258,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     assert.equal((await snapshot(foreign)).state, 'needs_attention');
 
     const disconnected = await seedWriteback(offline, sentMove);
-    await pool.execute('UPDATE mail_accounts SET disconnected_at = UTC_TIMESTAMP() WHERE id = ?', [offline.accountId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET disconnected_at = UTC_TIMESTAMP() WHERE id = ?', [offline.accountId]);
     const quiet = await writebacks.acceptServerState(offline.userId, disconnected);
     assert.equal(quiet.sync_queued, false, 'no sync for a disconnected account');
     assert.equal((await snapshot(disconnected)).state, 'superseded');
@@ -272,7 +273,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     const observed = await seedEmail(owner, 30);
     await repo.upsertOccurrence({ userId: owner.userId, accountId: owner.accountId, mailboxId: box.id, epoch: 9, uid: 30,
       emailId: observed, flags: [] }, pool);
-    await repo.withTransaction((cx: FixtureValue) => repo.saveCursor({ userId: owner.userId, accountId: owner.accountId, mailboxId: box.id,
+    await repo.withTransaction((cx) => repo.saveCursor({ userId: owner.userId, accountId: owner.accountId, mailboxId: box.id,
       stream: 'recent', epoch: 9, windowStart: 1, windowEnd: 30, coveredThrough: 30 }, cx), pool);
     const move = { action: 'move', target: 'Archive', base: 'INBOX' };
     const ops = {
@@ -295,7 +296,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     assert.deepEqual([Number(reset.uidvalidity), reset.state, Number(reset.epoch_revision)], [10, 'active', Number(box.epoch_revision) + 1]);
     assert.deepEqual({ ...await one('SELECT presence, quarantine_reason FROM mail_remote_occurrences WHERE mailbox_id = ?', [box.id]) },
       { presence: 'quarantined', quarantine_reason: 'epoch_changed' });
-    assert.equal((await rows('SELECT stream FROM mail_engine_cursors WHERE mailbox_id = ?', [box.id])).length, 0);
+    assert.equal(((await rows('SELECT stream FROM mail_engine_cursors WHERE mailbox_id = ?', [box.id]))).length, 0);
 
     const after: FixtureValue = {};
     for (const [key, id] of Object.entries(ops)) after[key] = await snapshot(id);
@@ -316,7 +317,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
   });
 
   await t.test('enqueuePendingBodies queues one body job per mailbox with queued content and promotes old body jobs', async t => {
-    const { enqueuePendingBodies, BODY_PRIORITY } = require('../dist/src/services/mail-engine/sync');
+    const { enqueuePendingBodies, BODY_PRIORITY } = require('../dist/src/services/mail-engine/sync') as typeof import('../src/services/mail-engine/sync');
     const owner = await seedAccount('bodies'), sibling = await seedAccount('bodies-sibling');
     t.after(() => retire(owner, sibling));
     const box = async (who: FixtureValue, folderName: FixtureValue) => repo.ensureMailbox({ userId: who.userId, accountId: who.accountId, folderName, epoch: 9 }, pool);
@@ -324,7 +325,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
       await box(owner, 'Done'), await box(sibling, 'INBOX')];
     const seed = async (who: FixtureValue, mailbox: FixtureValue, uid: FixtureValue, contentState: FixtureValue) => {
       const id = await seedEmail(who, uid);
-      await pool.execute('UPDATE emails SET content_state = ?, import_complete = ? WHERE id = ?',
+      await pool.execute<ResultSetHeader>('UPDATE emails SET content_state = ?, import_complete = ? WHERE id = ?',
         [contentState, contentState === 'complete', id]);
       await repo.upsertOccurrence({ userId: who.userId, accountId: who.accountId, mailboxId: mailbox.id, epoch: 9, uid,
         emailId: id, flags: [] }, pool);
@@ -338,9 +339,9 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     assert.deepEqual(await enqueuePendingBodies({ userId: owner.userId, accountId: owner.accountId }, pool), { mailboxes: 2 });
     const jobs = await rows(`SELECT id, mailbox_id, priority FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'body'
       AND state = 'queued' ORDER BY mailbox_id`, [owner.accountId]);
-    assert.deepEqual(jobs.map((job: FixtureValue) => job.mailbox_id).sort(), [inbox.id, allMail.id].sort(), 'none for a complete mailbox');
-    assert(jobs.every((job: FixtureValue) => Number(job.priority) === BODY_PRIORITY));
-    assert(jobs.some((job: FixtureValue) => job.id === stale), 'the existing INBOX job is promoted, not duplicated');
+    assert.deepEqual(jobs.map((job) => job.mailbox_id).sort(), [inbox.id, allMail.id].sort(), 'none for a complete mailbox');
+    assert(jobs.every((job) => Number(job.priority) === BODY_PRIORITY));
+    assert(jobs.some((job) => job.id === stale), 'the existing INBOX job is promoted, not duplicated');
     assert.equal(Number((await one(`SELECT COUNT(*) AS n FROM mail_engine_jobs WHERE mail_account_id = ? AND kind = 'body'`,
       [sibling.accountId])).n), 0, 'another account is untouched');
     await enqueuePendingBodies({ userId: owner.userId, accountId: owner.accountId }, pool);
@@ -350,15 +351,15 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
 
   await t.test('withTransaction runs the callback again after InnoDB picks it as a real deadlock victim', async () => {
     await pool.query('CREATE TABLE tx_deadlock_probe (id INT PRIMARY KEY, v INT NOT NULL DEFAULT 0) ENGINE=InnoDB');
-    await pool.query(`INSERT INTO tx_deadlock_probe (id) VALUES ${Array.from({ length: 202 }, (_, i) => `(${i + 1})`).join(',')}`);
+    await pool.query<ResultSetHeader>(`INSERT INTO tx_deadlock_probe (id) VALUES ${Array.from({ length: 202 }, (_, i) => `(${i + 1})`).join(',')}`);
     let runs = 0, firstLocked: FixtureValue, secondLocked: FixtureValue;
     const firstLockedP = new Promise(resolve => { firstLocked = resolve; });
     const secondLockedP = new Promise(resolve => { secondLocked = resolve; });
-    const retried = repo.withTransaction(async (cx: FixtureValue) => {
+    const retried = repo.withTransaction(async (cx) => {
       runs++;
-      await cx.execute('SELECT v FROM tx_deadlock_probe WHERE id = 1 FOR UPDATE');
+      await cx.execute<RowDataPacket[]>('SELECT v FROM tx_deadlock_probe WHERE id = 1 FOR UPDATE');
       if (runs === 1) { firstLocked(); await secondLockedP; }
-      await cx.execute('UPDATE tx_deadlock_probe SET v = v + 1 WHERE id = 2');
+      await cx.execute<ResultSetHeader>('UPDATE tx_deadlock_probe SET v = v + 1 WHERE id = 2');
       return runs;
     }, pool);
     const other = await pool.getConnection();
@@ -367,11 +368,11 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
       await other.beginTransaction();
       // Many modified rows make this transaction heavier, so InnoDB rolls back
       // the lighter withTransaction attempt, not this one.
-      await other.execute('UPDATE tx_deadlock_probe SET v = v + 10 WHERE id > 2');
-      await other.execute('SELECT v FROM tx_deadlock_probe WHERE id = 2 FOR UPDATE');
+      await other.execute<ResultSetHeader>('UPDATE tx_deadlock_probe SET v = v + 10 WHERE id > 2');
+      await other.execute<RowDataPacket[]>('SELECT v FROM tx_deadlock_probe WHERE id = 2 FOR UPDATE');
       secondLocked();
       await sleep(200); // let the first attempt wait on row 2 before closing the cycle
-      await other.execute('SELECT v FROM tx_deadlock_probe WHERE id = 1 FOR UPDATE');
+      await other.execute<RowDataPacket[]>('SELECT v FROM tx_deadlock_probe WHERE id = 1 FOR UPDATE');
       await other.commit();
     } catch (error) {
       await other.rollback();
@@ -379,7 +380,7 @@ test('MySQL mail engine SQL: job pruning, fair claims, due backoff, accepted ser
     } finally { other.release(); }
     assert.equal(await retried, 2, 'first attempt was the deadlock victim and the second committed');
     assert.equal(runs, 2);
-    assert.deepEqual((await rows('SELECT id, v FROM tx_deadlock_probe WHERE id IN (1,2,3) ORDER BY id')).map((row: FixtureValue) => [row.id, row.v]),
+    assert.deepEqual(((await rows('SELECT id, v FROM tx_deadlock_probe WHERE id IN (1,2,3) ORDER BY id'))).map((row) => [row.id, row.v]),
       [[1, 0], [2, 1], [3, 10]], 'the rolled-back attempt left no write; the retry wrote once');
   });
 });

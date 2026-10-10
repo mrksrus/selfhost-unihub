@@ -256,7 +256,7 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
     },
   });
 
-  return { routes: require('../dist/src/routes/mail'), state, uploadRoot };
+  return { routes: (require('../dist/src/routes/mail') as typeof import('../src/routes/mail')), state, uploadRoot };
 }
 
 test('draft routes create, update, and delete draft attachments', async (t) => {
@@ -265,7 +265,7 @@ test('draft routes create, update, and delete draft attachments', async (t) => {
   const attachmentB = Buffer.from('second attachment').toString('base64');
 
   const created = await routes['POST /api/mail/drafts'](
-    { url: '/api/mail/drafts', headers: { host: 'localhost' } },
+    { url: '/api/mail/drafts', headers: { host: 'localhost' } } as FixtureValue,
     'user-1',
     {
       account_id: 'account-1',
@@ -277,14 +277,14 @@ test('draft routes create, update, and delete draft attachments', async (t) => {
     }
   );
 
-  assert.equal(created.draft.folder, 'drafts');
-  assert.equal(created.draft.is_draft, true);
-  assert.equal(created.draft.attachments.length, 1);
+  assert.equal((created.draft! as FixtureValue).folder, 'drafts');
+  assert.equal(created.draft!.is_draft, true);
+  assert.equal(created.draft!.attachments.length, 1);
   const firstAttachmentPath = [...state.attachments.values()][0].storage_path;
   await assert.doesNotReject(() => fs.stat(firstAttachmentPath));
 
   const updated = await routes['PUT /api/mail/drafts/:id'](
-    { url: `/api/mail/drafts/${created.draft.id}`, headers: { host: 'localhost' } },
+    { url: `/api/mail/drafts/${(created.draft! as FixtureValue).id}`, headers: { host: 'localhost' } } as FixtureValue,
     'user-1',
     {
       subject: 'Updated',
@@ -294,19 +294,19 @@ test('draft routes create, update, and delete draft attachments', async (t) => {
     }
   );
 
-  assert.equal(updated.draft.subject, 'Updated');
-  assert.equal(updated.draft.attachments.length, 1);
-  assert.equal(updated.draft.attachments[0].filename, 'second.txt');
+  assert.equal(updated.draft!.subject, 'Updated');
+  assert.equal(updated.draft!.attachments.length, 1);
+  assert.equal(updated.draft!.attachments[0].filename, 'second.txt');
   await assert.rejects(() => fs.stat(firstAttachmentPath));
 
   const secondAttachmentPath = [...state.attachments.values()][0].storage_path;
   const deleted = await routes['DELETE /api/mail/drafts/:id'](
-    { url: `/api/mail/drafts/${created.draft.id}`, headers: { host: 'localhost' } },
+    { url: `/api/mail/drafts/${(created.draft! as FixtureValue).id}`, headers: { host: 'localhost' } } as FixtureValue,
     'user-1'
   );
 
   assert.equal(deleted.deleted, true);
-  assert.equal(state.emails.has(created.draft.id), false);
+  assert.equal(state.emails.has((created.draft! as FixtureValue).id), false);
   await assert.rejects(() => fs.stat(secondAttachmentPath));
 });
 
@@ -320,7 +320,7 @@ test('send draft sends stored content and removes the local draft', async (t) =>
   });
 
   const created = await routes['POST /api/mail/drafts'](
-    { url: '/api/mail/drafts', headers: { host: 'localhost' } },
+    { url: '/api/mail/drafts', headers: { host: 'localhost' } } as FixtureValue,
     'user-1',
     {
       account_id: 'account-1',
@@ -332,7 +332,7 @@ test('send draft sends stored content and removes the local draft', async (t) =>
   );
 
   const sent = await routes['POST /api/mail/drafts/:id/send'](
-    { url: `/api/mail/drafts/${created.draft.id}/send`, headers: { host: 'localhost' } },
+    { url: `/api/mail/drafts/${(created.draft! as FixtureValue).id}/send`, headers: { host: 'localhost' } } as FixtureValue,
     'user-1'
   );
 
@@ -341,21 +341,21 @@ test('send draft sends stored content and removes the local draft', async (t) =>
   assert.equal(sentPayload.payload.to, 'reader@example.test');
   assert.equal(sentPayload.payload.subject, 'Ready');
   assert.equal(sentPayload.payload.body, '<p>Send me</p>');
-  assert.equal(state.emails.has(created.draft.id), false);
+  assert.equal(state.emails.has((created.draft! as FixtureValue).id), false);
 });
 
 test('invalid replacement leaves original draft and attachment intact', async (t) => {
   const { routes, state } = await createDraftRouteHarness(t);
-  const created = await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' }, 'user-1', {
+  const created = await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' } as FixtureValue, 'user-1', {
     account_id: 'account-1', subject: 'Original', body: 'Original body',
     attachments: [{ filename: 'original.txt', dataBase64: Buffer.from('original').toString('base64') }],
   });
   const original = [...state.attachments.values()][0];
-  const result = await routes['PUT /api/mail/drafts/:id']({ url: `/api/mail/drafts/${created.draft.id}` }, 'user-1', {
+  const result = await routes['PUT /api/mail/drafts/:id']({ url: `/api/mail/drafts/${(created.draft! as FixtureValue).id}` } as FixtureValue, 'user-1', {
     subject: 'Must not persist', existing_attachment_ids: [], attachments: [{ filename: 'empty', dataBase64: '' }],
   });
   assert.equal(result.status, 400);
-  assert.equal(state.emails.get(created.draft.id).subject, 'Original');
+  assert.equal(state.emails.get((created.draft! as FixtureValue).id).subject, 'Original');
   assert.equal(state.attachments.size, 1);
   assert.equal(await fs.readFile(original.storage_path, 'utf8'), 'original');
 });
@@ -365,19 +365,19 @@ test('database failure rolls back draft replacement and removes staged files', a
   const { routes, state, uploadRoot } = await createDraftRouteHarness(t, {
     failWhen: (sql: string) => fail && sql.includes('INSERT INTO email_attachments'),
   });
-  const created = await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' }, 'user-1', {
+  const created = await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' } as FixtureValue, 'user-1', {
     account_id: 'account-1', subject: 'Original', body: 'Original body',
     attachments: [{ filename: 'original.txt', dataBase64: Buffer.from('original').toString('base64') }],
   });
   const original = [...state.attachments.values()][0];
   const beforeFiles = await fs.readdir(path.join(uploadRoot, 'user-1'));
   fail = true;
-  const result = await routes['PUT /api/mail/drafts/:id']({ url: `/api/mail/drafts/${created.draft.id}` }, 'user-1', {
+  const result = await routes['PUT /api/mail/drafts/:id']({ url: `/api/mail/drafts/${(created.draft! as FixtureValue).id}` } as FixtureValue, 'user-1', {
     subject: 'Must roll back', existing_attachment_ids: [],
     attachments: [{ filename: 'replacement.txt', dataBase64: Buffer.from('replacement').toString('base64') }],
   });
   assert.equal(result.status, 500);
-  assert.equal(state.emails.get(created.draft.id).subject, 'Original');
+  assert.equal(state.emails.get((created.draft! as FixtureValue).id).subject, 'Original');
   assert.equal(state.attachments.size, 1);
   assert.equal(await fs.readFile(original.storage_path, 'utf8'), 'original');
   assert.deepEqual(await fs.readdir(path.join(uploadRoot, 'user-1')), beforeFiles);
@@ -385,7 +385,7 @@ test('database failure rolls back draft replacement and removes staged files', a
 
 test('invalid draft creation does not leave an orphan draft', async (t) => {
   const { routes, state } = await createDraftRouteHarness(t);
-  const result = await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' }, 'user-1', {
+  const result = await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' } as FixtureValue, 'user-1', {
     account_id: 'account-1', subject: 'Invalid', attachments: 'invalid',
   });
   assert.equal(result.status, 400);
@@ -395,17 +395,17 @@ test('invalid draft creation does not leave an orphan draft', async (t) => {
 
 test('attachments return an owner-checked stream descriptor without buffering file content', async (t) => {
   const { routes, state } = await createDraftRouteHarness(t);
-  await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' }, 'user-1', {
+  await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' } as FixtureValue, 'user-1', {
     account_id: 'account-1', body: 'With attachment',
     attachments: [{ filename: 'a.txt', dataBase64: Buffer.from('content').toString('base64') }],
   });
   const attachment = [...state.attachments.values()][0];
   const req = { url: `/api/mail/attachments/${attachment.id}?download=1` };
-  const response = await routes['GET /api/mail/attachments/:id'](req, 'user-1');
+  const response = await (routes['GET /api/mail/attachments/:id'] as FixtureValue)(req, 'user-1');
   assert.equal(response.__streamPath, attachment.storage_path);
   assert.equal(response.__contentLength, 7);
   assert.equal(response.__raw, undefined);
-  assert.equal((await routes['GET /api/mail/attachments/:id'](req, 'other-user')).status, 404);
+  assert.equal((await (routes['GET /api/mail/attachments/:id'] as FixtureValue)(req, 'other-user')).status, 404);
   attachment.storage_path = '/etc/passwd';
-  assert.equal((await routes['GET /api/mail/attachments/:id'](req, 'user-1')).status, 400);
+  assert.equal((await (routes['GET /api/mail/attachments/:id'] as FixtureValue)(req, 'user-1')).status, 400);
 });

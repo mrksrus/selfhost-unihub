@@ -5,7 +5,7 @@ const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
-const { setDb } = require('../dist/src/state');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 async function fixture(t: import('node:test').TestContext, failure?: FixtureValue) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-backup-transaction-'));
@@ -15,7 +15,7 @@ async function fixture(t: import('node:test').TestContext, failure?: FixtureValu
   const originalBackup = require.cache[backupPath];
   require.cache[recordingsPath] = { id: recordingsPath, filename: recordingsPath, loaded: true, exports: { RECORDINGS_ROOT: directory } } as NodeJS.Module;
   t.after(require('./helpers/backup-service-modules.cts').evictBackupServiceModules());
-  const { importBackupForUser, buildBackupArchiveEntriesForUser } = require('../dist/src/services/backup');
+  const { importBackupForUser, buildBackupArchiveEntriesForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
   t.after(async () => {
     setDb(null);
     if (originalRecordings) require.cache[recordingsPath] = originalRecordings;
@@ -34,11 +34,11 @@ async function fixture(t: import('node:test').TestContext, failure?: FixtureValu
   };
   setDb({
     execute: async () => [[]],
-    getConnection: async () => {
+    getConnection: (async () => {
       if (failure === 'acquire') throw new Error('Connection unavailable');
       return connection;
-    },
-  });
+    }),
+  } as FixtureValue);
   const audio = Buffer.from('RIFF\x00\x00\x00\x00WAVEfmt ');
   const backup = {
     app: 'unihub', version: 2,
@@ -87,12 +87,12 @@ test('new selected recording exports reject unsupported stored audio while other
       return [[]];
     },
   };
-  setDb({ getConnection: async () => connection });
+  setDb({ getConnection: async () => connection } as FixtureValue);
   const contactEntries = await buildBackupArchiveEntriesForUser('test-user', ['contacts']);
   t.after(async () => {
-    await Promise.all(contactEntries.filter((entry: FixtureValue) => entry.cleanupAfterWrite).map((entry: FixtureValue) => fs.rm(entry.filePath, { force: true })));
+    await Promise.all(contactEntries.filter((entry) => entry.cleanupAfterWrite).map((entry: FixtureValue) => fs.rm(entry.filePath, { force: true })));
   });
-  assert.ok(contactEntries.some((entry: FixtureValue) => entry.name === 'data/backup.json'));
+  assert.ok(contactEntries.some((entry) => entry.name === 'data/backup.json'));
   await assert.rejects(buildBackupArchiveEntriesForUser('test-user', ['recordings']), error => (error as FixtureValue).status === 409 && /stored audio is unsupported or unreadable/.test((error as FixtureValue).message));
   assert.deepEqual(await fs.readFile(sourcePath), original);
 });

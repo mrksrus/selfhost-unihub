@@ -1,4 +1,5 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, With } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 
@@ -10,8 +11,8 @@ process.env.ENCRYPTION_KEY ||= 'two-factor-mysql-test-key';
 process.env.JWT_SECRET ||= 'two-factor-mysql-test-jwt-key';
 
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const mysql = require('mysql2/promise');
-const { getDb, setDb } = require('../dist/src/state');
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 // Independent of the service's implementation: RFC 6238 with SHA-1, 6 digits, 30 s.
 function otp(secret: FixtureValue) {
@@ -45,7 +46,7 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
         if (ownsDatabase) {
           await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
           try {
-            const [tables] = await connection.query('SHOW TABLES');
+            const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES');
             for (const row of tables) {
               const table = Object.values(row)[0];
               assert.match((table as string), /^[a-z_]+$/);
@@ -56,45 +57,45 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
       } finally { await pool.end(); await connection.end(); }
     });
     assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/, 'Use an empty disposable test database');
-    const [existing] = await connection.query('SHOW TABLES');
+    const [existing] = await connection.query<RowDataPacket[]>('SHOW TABLES');
     assert.equal(existing.length, 0, 'Refusing to change a nonempty database');
     ownsDatabase = true;
     setDb(pool);
-    await require('../dist/src/services/database').ensureSchema();
+    await (require('../dist/src/services/database') as typeof import('../src/services/database')).ensureSchema();
 
-    const { hashPassword } = require('../dist/src/auth');
-    const authRoutes = require('../dist/src/routes/auth');
-    const adminRoutes = require('../dist/src/routes/admin');
-    const { createTwoFactorLoginChallenge, replaceRecoveryCodes } = require('../dist/src/services/two-factor');
+    const { hashPassword } = require('../dist/src/auth') as typeof import('../src/auth');
+    const authRoutes = require('../dist/src/routes/auth') as typeof import('../src/routes/auth');
+    const adminRoutes = require('../dist/src/routes/admin') as typeof import('../src/routes/admin');
+    const { createTwoFactorLoginChallenge, replaceRecoveryCodes } = require('../dist/src/services/two-factor') as typeof import('../src/services/two-factor');
 
     const admin = crypto.randomUUID();
     const person = crypto.randomUUID();
-    await pool.execute("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'admin@example.test',?,'admin',TRUE)",
+    await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'admin@example.test',?,'admin',TRUE)",
       [admin, await hashPassword('synthetic-admin-password')]);
-    await pool.execute("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'person@example.test',?,'user',TRUE)",
+    await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'person@example.test',?,'user',TRUE)",
       [person, await hashPassword('synthetic-person-password')]);
-    const addSession = (userId: string, token: FixtureValue) => pool.execute('INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 DAY))', [userId, token]);
-    const sessions = async (userId: string) => (await pool.execute('SELECT token FROM sessions WHERE user_id = ? ORDER BY token', [userId]))[0].map((row: FixtureValue) => row.token);
+    const addSession = (userId: string, token: FixtureValue) => pool.execute<ResultSetHeader>('INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 DAY))', [userId, token]);
+    const sessions = async (userId: string) => (await pool.execute<RowDataPacket[]>('SELECT token FROM sessions WHERE user_id = ? ORDER BY token', [userId]))[0].map((row) => row.token);
     await addSession(admin, 'admin-session');
     await addSession(person, 'person-current');
     await addSession(person, 'person-laptop');
 
     // Setup: a wrong code changes nothing; the right one enables 2FA and signs out the other device.
-    const setup = await authRoutes['POST /api/auth/2fa/setup/start'](request('person-current'), person);
-    assert.match(setup.secret, /^[A-Z2-7]{32}$/);
-    assert.match(setup.otpauth_uri, /^otpauth:\/\/totp\/UniHub%3Aperson%40example\.test\?secret=/);
-    const confirm = (body: FixtureValue) => authRoutes['POST /api/auth/2fa/setup/confirm'](request('person-current'), person, { secret: setup.secret, ...body }, response());
+    const setup = await authRoutes['POST /api/auth/2fa/setup/start'](request('person-current') as FixtureValue, person);
+    assert.match(setup.secret!, /^[A-Z2-7]{32}$/);
+    assert.match(setup.otpauth_uri!, /^otpauth:\/\/totp\/UniHub%3Aperson%40example\.test\?secret=/);
+    const confirm = (body: FixtureValue) => authRoutes['POST /api/auth/2fa/setup/confirm'](request('person-current') as FixtureValue, person, { secret: setup.secret, ...body }, response() as FixtureValue);
     const wrong = String((Number(otp(setup.secret)) + 500000) % 1000000).padStart(6, '0');
-    assert.equal((await confirm({ code: wrong, current_password: 'synthetic-person-password' })).status, 400);
+    assert.equal(((await confirm({ code: wrong, current_password: 'synthetic-person-password' })) as FixtureValue).status, 400);
     // A signed-in session alone cannot enable 2FA and sign out the other devices.
-    assert.equal((await confirm({ code: otp(setup.secret) })).status, 400);
-    assert.equal((await confirm({ code: otp(setup.secret), current_password: 'wrong-person-password' })).status, 401);
+    assert.equal(((await confirm({ code: otp(setup.secret) })) as FixtureValue).status, 400);
+    assert.equal(((await confirm({ code: otp(setup.secret), current_password: 'wrong-person-password' })) as FixtureValue).status, 401);
     assert.deepEqual(await sessions(person), ['person-current', 'person-laptop']);
-    assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, false);
+    assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, false);
     // A password change or deactivation commits before its session deletion. One landing
     // between the password check and the locked recheck changes nothing either.
     for (const change of ['UPDATE users SET password_hash = ? WHERE id = ?', 'UPDATE users SET is_active = FALSE WHERE id = ?']) {
-      const [[saved]] = await pool.execute('SELECT password_hash FROM users WHERE id = ?', [person]);
+      const [[saved]] = await pool.execute<RowDataPacket[]>('SELECT password_hash FROM users WHERE id = ?', [person]);
       const getConnection = async () => {
         const cx = await pool.getConnection();
         return { beginTransaction: () => cx.beginTransaction(), commit: () => cx.commit(), rollback: () => cx.rollback(), release: () => cx.release(),
@@ -103,83 +104,83 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
             return cx.execute(sql, params);
           } };
       };
-      setDb({ execute: (...args: FixtureValue[]) => pool.execute(...args), getConnection });
+      setDb({ execute: (...args: FixtureValue[]) => pool.execute(...args as [string, FixtureValue]), getConnection } as FixtureValue);
       try {
-        assert.equal((await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' })).status, 401);
+        assert.equal(((await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' })) as FixtureValue).status, 401);
       } finally { setDb(pool); }
-      await pool.execute('UPDATE users SET password_hash = ?, is_active = TRUE WHERE id = ?', [saved.password_hash, person]);
-      assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, false);
+      await pool.execute<ResultSetHeader>('UPDATE users SET password_hash = ?, is_active = TRUE WHERE id = ?', [saved.password_hash, person]);
+      assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, false);
       assert.deepEqual(await sessions(person), ['person-current', 'person-laptop']);
     }
     const enabled = await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' });
-    assert.equal(enabled.enabled, true);
-    assert.equal(enabled.recoveryCodes.length, 10);
+    assert.equal((enabled as With<typeof enabled, 'enabled'>).enabled, true);
+    assert.equal((enabled as With<typeof enabled, 'recoveryCodes'>).recoveryCodes.length, 10);
     assert.deepEqual(await sessions(person), ['person-current']);
-    assert.deepEqual(await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person), { enabled: true, recoveryCodesRemaining: 10, secretReadable: true });
+    assert.deepEqual(await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person), { enabled: true, recoveryCodesRemaining: 10, secretReadable: true });
 
     // A secret stored under another ENCRYPTION_KEY cannot be read. Status says so,
     // regenerating refuses without using up the recovery code, and sign-in with one still works.
-    await pool.execute('UPDATE users SET encrypted_two_factor_secret = ? WHERE id = ?', ['00:00:00', person]);
-    assert.deepEqual(await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person), { enabled: true, recoveryCodesRemaining: 10, secretReadable: false });
-    const regenerate = await authRoutes['POST /api/auth/2fa/recovery-codes/regenerate'](request('person-current'), person, { code: enabled.recoveryCodes[0] }, response());
-    assert.equal(regenerate.status, 409);
-    assert.match(regenerate.error, /encryption key changed/);
-    const challenge = await createTwoFactorLoginChallenge(person, request());
-    const signedIn = await authRoutes['POST /api/auth/2fa/login'](request(), null, { challenge_token: challenge, code: enabled.recoveryCodes[0] }, response());
-    assert.equal(signedIn.usedRecoveryCode, true);
-    assert.equal(signedIn.recoveryCodesRemaining, 9);
-    await createTwoFactorLoginChallenge(person, request());
+    await pool.execute<ResultSetHeader>('UPDATE users SET encrypted_two_factor_secret = ? WHERE id = ?', ['00:00:00', person]);
+    assert.deepEqual(await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person), { enabled: true, recoveryCodesRemaining: 10, secretReadable: false });
+    const regenerate = await authRoutes['POST /api/auth/2fa/recovery-codes/regenerate'](request('person-current') as FixtureValue, person, { code: (enabled as With<typeof enabled, 'recoveryCodes'>).recoveryCodes[0] } as FixtureValue, response() as FixtureValue);
+    assert.equal((regenerate as With<typeof regenerate, 'status'>).status, 409);
+    assert.match((regenerate as With<typeof regenerate, 'error'>).error, /encryption key changed/);
+    const challenge = await createTwoFactorLoginChallenge(person, request() as FixtureValue);
+    const signedIn = await authRoutes['POST /api/auth/2fa/login'](request() as FixtureValue, null, { challenge_token: challenge, code: (enabled as With<typeof enabled, 'recoveryCodes'>).recoveryCodes[0] } as FixtureValue, response() as FixtureValue);
+    assert.equal((signedIn as With<typeof signedIn, 'usedRecoveryCode'>).usedRecoveryCode, true);
+    assert.equal((signedIn as With<typeof signedIn, 'recoveryCodesRemaining'>).recoveryCodesRemaining, 9);
+    await createTwoFactorLoginChallenge(person, request() as FixtureValue);
 
     // Admin reset: admins only, not for themselves, with the admin's own password.
     const resetUrl = `/api/admin/users/${person}/2fa/reset`;
     const reset = (userId: string, target: FixtureValue, password: FixtureValue, token = 'admin-session') => adminRoutes['POST /api/admin/users/:id/2fa/reset'](
-      request(token, `/api/admin/users/${target}/2fa/reset`), userId, { current_password: password }, response());
-    assert.equal((await adminRoutes['POST /api/admin/users/:id/2fa/reset'](request(null, resetUrl), person, { current_password: 'synthetic-person-password' }, response())).status, 403);
+      request(token, `/api/admin/users/${target}/2fa/reset`) as FixtureValue, userId, { current_password: password } as FixtureValue, response() as FixtureValue);
+    assert.equal((await adminRoutes['POST /api/admin/users/:id/2fa/reset'](request(null, resetUrl) as FixtureValue, person, { current_password: 'synthetic-person-password' } as FixtureValue, response() as FixtureValue)).status, 403);
     assert.equal((await reset(admin, admin, 'synthetic-admin-password')).status, 400);
     // 403, not 401: the client signs out on a 401 from a non-auth endpoint.
     assert.equal((await reset(admin, person, 'wrong-admin-password')).status, 403);
     assert.equal((await reset(admin, crypto.randomUUID(), 'synthetic-admin-password')).status, 404);
-    const listed = (await adminRoutes['GET /api/admin/users'](request(null, '/api/admin/users'), admin)).users;
-    assert.equal(listed.find((user: FixtureValue) => user.id === person).two_factor_enabled, true);
-    assert.equal(listed.find((user: FixtureValue) => user.id === admin).two_factor_enabled, false);
+    const listed = (await adminRoutes['GET /api/admin/users'](request(null, '/api/admin/users') as FixtureValue, admin)).users;
+    assert.equal(listed!.find((user: FixtureValue) => user.id === person)!.two_factor_enabled, true);
+    assert.equal(listed!.find((user: FixtureValue) => user.id === admin)!.two_factor_enabled, false);
 
     // A request from an admin session that was signed out meanwhile changes nothing.
     assert.equal((await reset(admin, person, 'synthetic-admin-password', 'admin-signed-out')).status, 401);
-    assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, true);
+    assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
     // Deactivation commits before deleting sessions; an admin caught in between changes nothing either.
-    await pool.execute('UPDATE users SET is_active = FALSE WHERE id = ?', [admin]);
+    await pool.execute<ResultSetHeader>('UPDATE users SET is_active = FALSE WHERE id = ?', [admin]);
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 401);
-    assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, true);
-    await pool.execute('UPDATE users SET is_active = TRUE WHERE id = ?', [admin]);
+    assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
+    await pool.execute<ResultSetHeader>('UPDATE users SET is_active = TRUE WHERE id = ?', [admin]);
     // So is an admin whose password changed after it was checked, before the session deletion.
-    setDb({ execute: (...args: FixtureValue[]) => pool.execute(...args), getConnection: async () => {
+    setDb({ execute: (...args: FixtureValue[]) => pool.execute(...args as [string, FixtureValue]), getConnection: (async () => {
       const cx = await pool.getConnection();
       return { beginTransaction: () => cx.beginTransaction(), commit: () => cx.commit(), rollback: () => cx.rollback(), release: () => cx.release(),
         execute: async (sql: string, params: FixtureValue) => {
           if (/FROM users WHERE id IN \(\?, \?\) ORDER BY id FOR UPDATE/.test(sql))
-            await pool.execute("UPDATE users SET password_hash = 'changed-meanwhile' WHERE id = ?", [admin]);
+            await pool.execute<ResultSetHeader>("UPDATE users SET password_hash = 'changed-meanwhile' WHERE id = ?", [admin]);
           return cx.execute(sql, params);
         } };
-    } });
+    }) } as FixtureValue);
     try {
       assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 401);
     } finally { setDb(pool); }
-    await pool.execute('UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword('synthetic-admin-password'), admin]);
-    assert.equal((await authRoutes['GET /api/auth/2fa/status'](request('person-current'), person)).enabled, true);
+    await pool.execute<ResultSetHeader>('UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword('synthetic-admin-password'), admin]);
+    assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
 
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).message, 'Two-factor authentication reset');
-    const [[after]] = await pool.execute('SELECT two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE id = ?', [person]);
+    const [[after]] = await pool.execute<RowDataPacket[]>('SELECT two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE id = ?', [person]);
     assert.deepEqual({ ...after, two_factor_enabled: !!after.two_factor_enabled }, { two_factor_enabled: false, encrypted_two_factor_secret: null, two_factor_recovery_codes: null });
     assert.deepEqual(await sessions(person), []);
-    assert.equal((await pool.execute('SELECT COUNT(*) AS count FROM two_factor_challenges WHERE user_id = ?', [person]))[0][0].count, 0);
+    assert.equal((await pool.execute<RowDataPacket[]>('SELECT COUNT(*) AS count FROM two_factor_challenges WHERE user_id = ?', [person]))[0][0].count, 0);
     assert.deepEqual(await sessions(admin), ['admin-session']);
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 400);
 
     // A request from a session the reset deleted, already past authentication, cannot turn 2FA back on.
     const late = await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' });
-    assert.equal(late.status, 401);
-    assert.equal(late.recoveryCodes, undefined);
+    assert.equal((late as With<typeof late, 'status'>).status, 401);
+    assert.equal((late as With<typeof late, 'recoveryCodes'>).recoveryCodes, undefined);
     assert.equal(await replaceRecoveryCodes(person, []), false);
-    const [[still]] = await pool.execute('SELECT two_factor_enabled, two_factor_recovery_codes FROM users WHERE id = ?', [person]);
+    const [[still]] = await pool.execute<RowDataPacket[]>('SELECT two_factor_enabled, two_factor_recovery_codes FROM users WHERE id = ?', [person]);
     assert.deepEqual({ ...still, two_factor_enabled: !!still.two_factor_enabled }, { two_factor_enabled: false, two_factor_recovery_codes: null });
   });

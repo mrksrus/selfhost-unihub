@@ -1,5 +1,6 @@
 'use strict';
 import type { FixtureValue } from './helpers/test-types.cts';
+import type { ResultSetHeader } from 'mysql2/promise';
 // Requires an empty disposable MySQL 8 schema ending in _test. Real ImapFlow sockets.
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
@@ -7,10 +8,10 @@ const net = (require('node:net') as typeof import('node:net'));
 const { fork } = (require('node:child_process') as typeof import('node:child_process'));
 const path = (require('node:path') as typeof import('node:path'));
 const { randomUUID } = (require('node:crypto') as typeof import('node:crypto'));
-const mysql = require('mysql2/promise');
-const { connectImap } = require('../dist/src/services/mail-imap-client');
-const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
-const { selectMailbox } = require('../dist/src/services/mail-engine/transport');
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+const { connectImap } = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard');
+const { selectMailbox } = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
 
 const rows = async (db: FixtureValue, sql: string, params: FixtureValue[] = []) => (await db.execute(sql, params))[0];
 const one = async (db: FixtureValue, sql: string, params: FixtureValue[] = []) => (await rows(db, sql, params))[0];
@@ -107,7 +108,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 8 });
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'wire-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-wire-bootstrap-password';
-  const state = require('../dist/src/state');
+  const state = require('../dist/src/state') as typeof import('../src/state');
   const originalDb = state.getDb();
   let ownsSchema = false;
   t.after(async () => {
@@ -130,44 +131,44 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
   assert.match((await one(pool, 'SELECT VERSION() AS version')).version, /MariaDB/);
   assert.equal((await rows(pool, 'SHOW TABLES')).length, 0, 'Refuse populated database');
   ownsSchema = true; state.setDb(pool);
-  await require('../dist/src/services/database').ensureSchema();
-  const repo = require('../dist/src/services/mail-engine/repository');
-  const runtime = require('../dist/src/services/mail-engine/runtime');
-  const operations = require('../dist/src/services/mail-engine/operations');
-  const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync');
-  const { runRecoveredReconcileJob } = require('../dist/src/services/mail');
+  await (require('../dist/src/services/database') as typeof import('../src/services/database')).ensureSchema();
+  const repo = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+  const operations = require('../dist/src/services/mail-engine/operations') as typeof import('../src/services/mail-engine/operations');
+  const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync') as typeof import('../src/services/mail-engine/sync');
+  const { runRecoveredReconcileJob } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 
   async function setup(label: string, options: FixtureValue) {
     const userId = randomUUID(), accountId = randomUUID(), emailId = randomUUID();
-    await pool.execute('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, `${label}@example.test`, 'synthetic']);
-    await pool.execute(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active)
+    await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, `${label}@example.test`, 'synthetic']);
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active)
       VALUES (?,?,?,'custom','sync',TRUE)`, [accountId,userId,`${label}@example.test`]);
-    await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,
+    await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,
       remote_folder,remote_uid,remote_uidvalidity,raw_storage_path,raw_sha256) VALUES (?,?,?,'synthetic@example.test','[]','inbox','INBOX',103,9,?,?)`,
     [emailId,userId,accountId,`/synthetic/${label}/original.eml`, 'a'.repeat(64)]);
-    const source = await repo.withTransaction(async (cx: FixtureValue) => {
+    const source = await repo.withTransaction(async (cx) => {
       const mailbox = await repo.ensureMailbox({ userId, accountId, folderName: 'INBOX', epoch: 9 }, cx);
       return repo.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch: 9, uid: 103,
         emailId, flags: ['\\Seen'] }, cx);
     }, pool);
     const opId = randomUUID();
-    await pool.execute(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,
       base_value,target_folder,remote_folder,remote_uid,remote_uidvalidity,source_occurrence_id,status,state,
       is_current,intent_revision,dispatched) VALUES (?,?,?,?, 'move','Filed','INBOX','filed','INBOX',103,9,?,
-      'pending','queued',TRUE,1,FALSE)`, [opId,userId,accountId,emailId,source.id]);
+      'pending','queued',TRUE,1,FALSE)`, [opId,userId,accountId,emailId,source!.id]);
     const job = await runtime.enqueueJob({ userId,accountId,operationId:opId,kind:'operation',priority:0 }, pool);
     const workerId = `${label}-worker`;
     const claimed = await runtime.claimDueJob({ workerId,kinds:['operation'] }, pool);
-    assert.equal(claimed.id,job.id);
+    assert.equal(claimed!.id,job.id);
     const fixture = await peer(pool,opId,options); t.after(() => fixture.close());
     const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
     await selectMailbox(connection, { folder: 'INBOX' });
     const account = { id:accountId,user_id:userId,sync_mode:'sync' };
     const op = { id:opId,user_id:userId,mail_account_id:accountId,
       email_id:emailId,action:'move',target_value:'Filed',target_folder:'filed',remote_folder:'INBOX',
-      remote_uid:103,remote_uidvalidity:9,source_occurrence_id:source.id,intent_revision:1,state:'queued',dispatched:0 };
-    const apply = () => operations.applyMove(op,
-      connection,Number(claimed.worker_generation),new AbortController().signal,workerId,job.id);
+      remote_uid:103,remote_uidvalidity:9,source_occurrence_id:source!.id,intent_revision:1,state:'queued',dispatched:0 };
+    const apply = () => operations.applyMove(op as FixtureValue,
+      connection,Number(claimed!.worker_generation),new AbortController().signal,workerId,job.id);
     return { userId,accountId,emailId,opId,source,job,claimed,workerId,fixture,connection,account,op,apply };
   }
   const opRow = (id: FixtureValue) => one(pool, 'SELECT id,email_id,state,status,dispatched,attempts,evidence_json FROM mail_writebacks WHERE id=?', [id]);
@@ -187,14 +188,14 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
       JOIN mail_remote_mailboxes m ON m.id=o.mailbox_id WHERE m.mail_account_id=? AND m.remote_name='Filed' AND o.uid=207`, [f.accountId]);
     assert.ok(provisional); assert.notEqual(provisional.email_id,f.emailId);
     const provisionalArchive = `/synthetic/scan-first/provisional.eml`;
-    await pool.execute(`UPDATE emails SET raw_storage_path=?,raw_sha256=? WHERE id=?`,
+    await pool.execute<ResultSetHeader>(`UPDATE emails SET raw_storage_path=?,raw_sha256=? WHERE id=?`,
       [provisionalArchive,'b'.repeat(64),provisional.email_id]);
     f.fixture.release(); await timeout(running);
     const op = await opRow(f.opId); assert.equal(op.state,'confirmed'); assert.equal(op.status,'done');
     assert.equal(decode(op.evidence_json).kind,'copyuid_verified'); assert.equal(op.attempts,1);
     const found = await one(pool,'SELECT id,email_id,presence FROM mail_remote_occurrences WHERE id=?',[provisional.id]);
     assert.equal(found.email_id,f.emailId); assert.equal(found.presence,'present');
-    assert.equal((await one(pool,'SELECT presence FROM mail_remote_occurrences WHERE id=?',[f.source.id])).presence,'absent');
+    assert.equal((await one(pool,'SELECT presence FROM mail_remote_occurrences WHERE id=?',[f.source!.id])).presence,'absent');
     assert.deepEqual(await one(pool,'SELECT remote_folder,remote_uid,remote_uidvalidity,raw_storage_path FROM emails WHERE id=?',[f.emailId]),
       {remote_folder:'Filed',remote_uid:207,remote_uidvalidity:10,raw_storage_path:'/synthetic/scan-first/original.eml'});
     assert.deepEqual(await one(pool,'SELECT remote_missing,remote_folder,raw_storage_path,raw_sha256 FROM emails WHERE id=?',[provisional.email_id]),
@@ -208,18 +209,18 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     await timeout(f.apply());
     assert.equal(f.fixture.destinationPresent,true);
     assert.equal((await opRow(f.opId)).state,'reconciling');
-    await pool.execute('UPDATE mail_engine_accounts SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE mail_account_id=?',[f.accountId]);
-    await pool.execute('UPDATE mail_engine_jobs SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE id=?',[f.job.id]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_accounts SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE mail_account_id=?',[f.accountId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_jobs SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE id=?',[f.job.id]);
     await assert.rejects(runtime.completeJob({ jobId:f.job.id,accountId:f.accountId,workerId:f.workerId,
-      generation:Number(f.claimed.worker_generation) },pool),{code:'MAIL_WORKER_FENCED'});
+      generation:Number(f.claimed!.worker_generation) },pool),{code:'MAIL_WORKER_FENCED'});
     const recovered = await runtime.recoverExpiredJobs(pool);
     assert.ok(recovered.jobs >= 1);
     const job = await runtime.claimDueJob({ workerId:'lost-recovered',kinds:['reconcile'] },pool);
-    assert.equal(job.id,f.job.id);
+    assert.equal(job!.id,f.job.id);
     const fresh = await f.fixture.connect();
     try {
       const result = await runRecoveredReconcileJob({ job,account:f.account,connection:fresh,
-        signal:new AbortController().signal,report(){} });
+        signal:new AbortController().signal,report(){} } as FixtureValue);
       assert.equal(result.success,true);
     } finally { closeImapConnection(fresh); }
     const op = await opRow(f.opId);
@@ -232,8 +233,8 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     assert.deepEqual(await one(pool,'SELECT outcome,completed_at FROM mail_operation_attempts WHERE operation_id=?',[f.opId]),
       {outcome:'needs_attention',completed_at:null}, 'A stopped outcome check is attention-required, not still running or falsely resolved');
     assert.deepEqual(moveCommands(f.fixture),['UID MOVE 103 "Filed"']);
-    await runtime.completeJob({ jobId:job.id,accountId:f.accountId,workerId:'lost-recovered',
-      generation:Number(job.worker_generation) },pool);
+    await runtime.completeJob({ jobId:job!.id,accountId:f.accountId,workerId:'lost-recovered',
+      generation:Number(job!.worker_generation) },pool);
   });
 
   await t.test('SIGKILL after server effect, before ACK: fresh worker reconciles without replay', async () => {
@@ -252,23 +253,23 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     assert.equal(ended.signal,'SIGKILL'); assert.deepEqual(childMessages,[]);
     f.fixture.release();
     assert.equal(f.fixture.destinationPresent,true);
-    await pool.execute('UPDATE mail_engine_accounts SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE mail_account_id=?',[f.accountId]);
-    await pool.execute('UPDATE mail_engine_jobs SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE id=?',[f.job.id]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_accounts SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE mail_account_id=?',[f.accountId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_jobs SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE id=?',[f.job.id]);
     const recovered = await runtime.recoverExpiredJobs(pool);
     assert.ok(recovered.jobs >= 1 && recovered.operations >= 1);
     const job = await runtime.claimDueJob({ workerId:'post-kill',kinds:['reconcile'] },pool);
-    assert.equal(job.id,f.job.id);
+    assert.equal(job!.id,f.job.id);
     const fresh = await f.fixture.connect();
     try {
       assert.equal((await runRecoveredReconcileJob({ job,account:f.account,connection:fresh,
-        signal:new AbortController().signal,report(){} })).success,true);
+        signal:new AbortController().signal,report(){} } as FixtureValue)).success,true);
     } finally { closeImapConnection(fresh); }
     const op = await opRow(f.opId);
     assert.equal(op.state,'needs_attention'); assert.equal(op.dispatched,1); assert.equal(op.attempts,1);
     assert.equal(decode(op.evidence_json).kind,'bounded_move_check');
     assert.deepEqual(moveCommands(f.fixture),['UID MOVE 103 "Filed"']);
-    await runtime.completeJob({ jobId:job.id,accountId:f.accountId,workerId:'post-kill',
-      generation:Number(job.worker_generation) },pool);
+    await runtime.completeJob({ jobId:job!.id,accountId:f.accountId,workerId:'post-kill',
+      generation:Number(job!.worker_generation) },pool);
   });
 
   await t.test('native MOVE OK without COPYUID: bounded outcome remains attention-required, never replayed', async () => {
@@ -278,15 +279,15 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     assert.equal(pending.state,'reconciling');
     assert.equal(decode(pending.evidence_json).mappingStatus,'missing');
     await runtime.completeJob({ jobId:f.job.id,accountId:f.accountId,workerId:f.workerId,
-      generation:Number(f.claimed.worker_generation) },pool);
+      generation:Number(f.claimed!.worker_generation) },pool);
     const queued = await runtime.enqueueJob({ userId:f.userId,accountId:f.accountId,operationId:f.opId,
       kind:'reconcile',priority:0 },pool);
     const job = await runtime.claimDueJob({ workerId:'absent-recovered',kinds:['reconcile'] },pool);
-    assert.equal(job.id,queued.id);
+    assert.equal(job!.id,queued.id);
     const fresh = await f.fixture.connect();
     try {
       assert.equal((await runRecoveredReconcileJob({ job,account:f.account,connection:fresh,
-        signal:new AbortController().signal,report(){} })).success,true);
+        signal:new AbortController().signal,report(){} } as FixtureValue)).success,true);
     } finally { closeImapConnection(fresh); }
     const checked = await opRow(f.opId);
     assert.equal(checked.state,'needs_attention'); assert.equal(checked.attempts,1);
@@ -294,8 +295,8 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     assert.equal(decode(checked.evidence_json).destinationCount,1);
     assert.equal((await one(pool,'SELECT remote_folder FROM emails WHERE id=?',[f.emailId])).remote_folder,'INBOX');
     assert.deepEqual(moveCommands(f.fixture),['UID MOVE 103 "Filed"']);
-    await runtime.completeJob({ jobId:job.id,accountId:f.accountId,workerId:'absent-recovered',
-      generation:Number(job.worker_generation) },pool);
+    await runtime.completeJob({ jobId:job!.id,accountId:f.accountId,workerId:'absent-recovered',
+      generation:Number(job!.worker_generation) },pool);
   });
 
   await t.test('later ordinary scan consumes persisted COPYUID and settles original operation', async () => {
@@ -316,7 +317,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     assert.equal(destination.email_id,f.emailId);
     assert.deepEqual(moveCommands(f.fixture),['UID MOVE 103 "Filed"']);
     await runtime.completeJob({ jobId:f.job.id,accountId:f.accountId,workerId:f.workerId,
-      generation:Number(f.claimed.worker_generation) },pool);
+      generation:Number(f.claimed!.worker_generation) },pool);
   });
 
   await t.test('ACK mapping persisted before lease expiry: recovered reconciliation confirms same operation without replay', async () => {
@@ -325,16 +326,16 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     const pending = await opRow(f.opId);
     assert.equal(pending.state,'reconciling');
     assert.deepEqual(decode(pending.evidence_json).mapping,{uidvalidity:10,sourceUids:[103],destinationUids:[207]});
-    await pool.execute('UPDATE mail_engine_accounts SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE mail_account_id=?',[f.accountId]);
-    await pool.execute('UPDATE mail_engine_jobs SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE id=?',[f.job.id]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_accounts SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE mail_account_id=?',[f.accountId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_engine_jobs SET lease_until=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 10 SECOND) WHERE id=?',[f.job.id]);
     const recovered = await runtime.recoverExpiredJobs(pool); assert.ok(recovered.jobs >= 1);
     assert.equal((await one(pool,'SELECT kind,state FROM mail_engine_jobs WHERE id=?',[f.job.id])).kind,'reconcile');
     const job = await runtime.claimDueJob({ workerId:'mapped-recovered',kinds:['reconcile'] },pool);
-    assert.equal(job.id,f.job.id);
+    assert.equal(job!.id,f.job.id);
     const fresh = await f.fixture.connect();
     try {
       const result = await runRecoveredReconcileJob({ job,account:f.account,connection:fresh,
-        signal:new AbortController().signal,report(){} });
+        signal:new AbortController().signal,report(){} } as FixtureValue);
       assert.equal(result.success,true);
     } finally { closeImapConnection(fresh); }
     const settled = await opRow(f.opId);
@@ -343,7 +344,7 @@ test('MySQL + installed IMAP wire peer: dispatched MOVE, scan-first and recovere
     assert.equal((await one(pool,'SELECT remote_folder FROM emails WHERE id=?',[f.emailId])).remote_folder,'Filed');
     assert.equal((await one(pool,'SELECT outcome FROM mail_operation_attempts WHERE operation_id=?',[f.opId])).outcome,'confirmed');
     assert.deepEqual(moveCommands(f.fixture),['UID MOVE 103 "Filed"']);
-    await runtime.completeJob({ jobId:job.id,accountId:f.accountId,workerId:'mapped-recovered',
-      generation:Number(job.worker_generation) },pool);
+    await runtime.completeJob({ jobId:job!.id,accountId:f.accountId,workerId:'mapped-recovered',
+      generation:Number(job!.worker_generation) },pool);
   });
 });

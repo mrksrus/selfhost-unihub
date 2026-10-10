@@ -5,7 +5,7 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 const {
   pickImapSyncFolders,
   ensureCustomImapFoldersForUser,
-} = require('../dist/src/services/mail');
+} = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 
 test('mail sync includes standard and custom IMAP folders while ignoring provider namespaces', () => {
   const plan = pickImapSyncFolders([
@@ -28,7 +28,7 @@ test('mail sync includes standard and custom IMAP folders while ignoring provide
 test('mail sync creates missing local custom folders on a newly connected IMAP account', async () => {
   const added: FixtureValue[] = [];
   // A guarded stand-in for an ImapFlow client.
-  const connection = require('../dist/src/services/mail-imap-guard').guardImapConnection(Object.assign(new ((require('node:events') as typeof import('node:events')))(), {
+  const connection = (require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard')).guardImapConnection(Object.assign(new ((require('node:events') as typeof import('node:events')))(), {
     close() {},
     async mailboxCreate(name: FixtureValue) { added.push(name); return { path: name, created: true }; },
   }));
@@ -39,14 +39,14 @@ test('mail sync creates missing local custom folders on a newly connected IMAP a
     ]],
   };
 
-  const result = await ensureCustomImapFoldersForUser('user-1', connection, ['INBOX', 'Receipts'], db);
+  const result = await ensureCustomImapFoldersForUser('user-1', connection as FixtureValue, ['INBOX', 'Receipts'], db as FixtureValue);
 
   assert.deepEqual(added, ['Project Alpha']);
   assert.deepEqual(result, { created: 1, failed: [] });
 });
 
 test('provider special-use attributes survive nesting and existing folder mappings win', () => {
-  const { imapListToFolders } = require('../dist/src/services/mail');
+  const { imapListToFolders } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
   const roles = new Map();
   const entry = (path: FixtureValue, flags: FixtureValue) => ({ path, delimiter: '/', flags: new Set<FixtureValue>(flags) });
   // ImapFlow LIST entries; a name-based specialUse guess must not assign a role.
@@ -56,7 +56,7 @@ test('provider special-use attributes survive nesting and existing folder mappin
     entry('[Provider]/Gesendet', ['\\Sent']),
     entry('[Provider]/Entwürfe', ['\\Drafts']),
     entry('[Provider]/Spam', ['\\Junk']),
-    { ...entry('Trash', []), specialUse: '\\Trash' },
+    ({ ...entry('Trash', []), specialUse: '\\Trash' } as FixtureValue),
   ], roles);
   assert(!roles.has('Trash'));
   assert(names.includes('Trash'));
@@ -67,7 +67,7 @@ test('provider special-use attributes survive nesting and existing folder mappin
   const plan = pickImapSyncFolders(names, new Map([
     ['[Provider]/Gesendet', 'legacy_sent'], ['[Provider]/Entwürfe', 'drafts'], ['[Provider]/Spam', 'spam_2'],
   ]));
-  assert(plan.some((item: FixtureValue) => item.folderName === '[Provider]/Gesendet' && item.dbFolderName === 'legacy_sent'));
-  assert(plan.some((item: FixtureValue) => item.folderName === '[Provider]/Entwürfe' && item.dbFolderName === 'drafts'));
-  assert(plan.some((item: FixtureValue) => item.folderName === '[Provider]/Spam' && item.dbFolderName === 'spam_2'));
+  assert(plan.some((item) => item.folderName === '[Provider]/Gesendet' && item.dbFolderName === 'legacy_sent'));
+  assert(plan.some((item) => item.folderName === '[Provider]/Entwürfe' && item.dbFolderName === 'drafts'));
+  assert(plan.some((item) => item.folderName === '[Provider]/Spam' && item.dbFolderName === 'spam_2'));
 });

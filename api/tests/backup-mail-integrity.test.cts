@@ -1,17 +1,17 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { setDb } = require('../dist/src/state');
-const { validateRestoreRows } = require('../dist/src/services/backup-ownership');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
+const { validateRestoreRows } = require('../dist/src/services/backup-ownership') as typeof import('../src/services/backup-ownership');
 const { buildBackupForUser, remapRestoredInlineAttachments, restoreMailFolderRemoteBox,
   findExistingEmailForRestore, assertBackupMetadataSize, assertBackupFilesComplete,
-  scopeBackupForImport, findExistingAttachmentForRestore, findExistingRecordingForRestore } = require('../dist/src/services/backup');
-const { BACKUP_METADATA_LIMITS } = require('../dist/src/services/backup-format');
+  scopeBackupForImport, findExistingAttachmentForRestore, findExistingRecordingForRestore } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
+const { BACKUP_METADATA_LIMITS } = require('../dist/src/services/backup-format') as typeof import('../src/services/backup-format');
 
 test('new backup metadata must fit the same limits enforced by restore readers', () => {
   for (const [name, maximum] of Object.entries(BACKUP_METADATA_LIMITS)) {
     assert.doesNotThrow(() => assertBackupMetadataSize(name, maximum));
-    assert.throws(() => assertBackupMetadataSize(name, (maximum as FixtureValue) + 1), error => (error as FixtureValue).status === 413 && /export smaller sections/.test((error as FixtureValue).message));
+    assert.throws(() => assertBackupMetadataSize(name, (maximum) + 1), error => (error as FixtureValue).status === 413 && /export smaller sections/.test((error as FixtureValue).message));
   }
 });
 
@@ -30,12 +30,12 @@ test('backup metadata uses one consistent read-only snapshot including owned rem
     async rollback() { calls.push({ sql: 'ROLLBACK' }); },
     release() { calls.push({ sql: 'RELEASE' }); },
   };
-  setDb({ getConnection: async () => connection, execute: () => { throw new Error('Pool reads cannot provide a shared snapshot'); } });
+  setDb({ getConnection: async () => connection, execute: () => { throw new Error('Pool reads cannot provide a shared snapshot'); } } as FixtureValue);
   t.after(() => setDb(null));
   const backup = await buildBackupForUser('user', { includeFileData: false });
   assert.equal(backup.version, 4);
-  assert.equal(backup.producer.name, 'UniHub');
-  assert.equal(backup.data.mail_folder_remote_boxes[0].remote_name, 'Projects/2026');
+  assert.equal((backup.producer as { name: string }).name, 'UniHub');
+  assert.equal(backup.data.mail_folder_remote_boxes![0].remote_name, 'Projects/2026');
   assert.deepEqual(calls.slice(0, 2).map(item => item.sql), [
     'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ',
     'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY',
@@ -54,7 +54,7 @@ test('snapshot query failure rolls back and releases the dedicated connection', 
     async commit() { calls.push('commit'); },
     async rollback() { calls.push('rollback'); },
     release() { calls.push('release'); },
-  }) });
+  }) } as FixtureValue);
   t.after(() => setDb(null));
   await assert.rejects(buildBackupForUser('user', { sections: 'contacts' }), /read failed/);
   assert.deepEqual(calls, ['rollback', 'release']);
@@ -75,9 +75,9 @@ test('distinct source emails cannot both claim the same existing Message-ID copy
   const rows = [{ id: 'first' }, { id: 'second' }];
   const connection = { execute: async (sql: string) => sql.includes('message_id = ?') ? [rows] : [[]] };
   const row = { id: 'source', message_id: '<same@example.test>' };
-  assert.equal(await findExistingEmailForRestore(connection, row, 'user', 'account', new Set<FixtureValue>()), 'first');
-  assert.equal(await findExistingEmailForRestore(connection, row, 'user', 'account', new Set<FixtureValue>(['first'])), 'second');
-  assert.equal(await findExistingEmailForRestore(connection, row, 'user', 'account', new Set<FixtureValue>(['first', 'second'])), null);
+  assert.equal(await findExistingEmailForRestore(connection as FixtureValue, row as FixtureValue, 'user', 'account', new Set<FixtureValue>()), 'first');
+  assert.equal(await findExistingEmailForRestore(connection as FixtureValue, row as FixtureValue, 'user', 'account', new Set<FixtureValue>(['first'])), 'second');
+  assert.equal(await findExistingEmailForRestore(connection as FixtureValue, row as FixtureValue, 'user', 'account', new Set<FixtureValue>(['first', 'second'])), null);
 });
 
 test('exact provider location is matched before an ambiguous Message-ID on repeated restore', async () => {
@@ -88,9 +88,9 @@ test('exact provider location is matched before an ambiguous Message-ID on repea
     if (sql.includes('message_id = ?')) return [[{ id: 'different-copy' }]];
     return [[]];
   } };
-  const matched = await findExistingEmailForRestore(connection, {
+  const matched = await findExistingEmailForRestore(connection as FixtureValue, {
     id: 'old-id', message_id: '<same@example.test>', source_folder: 'INBOX', imap_uid: 42, imap_uidvalidity: 123,
-  }, 'user', 'account');
+  } as FixtureValue, 'user', 'account');
   assert.equal(matched, 'correct-location');
   assert.equal(calls.length, 2);
   assert.match(calls[1].sql, /AND imap_uidvalidity = \?/);
@@ -100,7 +100,7 @@ test('exact provider location is matched before an ambiguous Message-ID on repea
 test('provider-folder restore remaps both parents and uses an ownership-scoped lookup', async () => {
   const calls: FixtureValue[] = [];
   const connection = { async execute(sql: string, params: FixtureValue) { calls.push({ sql, params }); return [[]]; } };
-  await restoreMailFolderRemoteBox(connection, 'user', { folder_id: 'old-folder', mail_account_id: 'old-account', remote_name: 'Projects/2026' },
+  await restoreMailFolderRemoteBox(connection as FixtureValue, 'user', { folder_id: 'old-folder', mail_account_id: 'old-account', remote_name: 'Projects/2026' } as FixtureValue,
     new Map([['old-folder', 'new-folder']]), new Map([['old-account', 'new-account']]), 'replace', []);
   assert.match(calls[0].sql, /f.user_id = \? AND a.user_id = \?/);
   assert.match(calls[1].sql, /^INSERT INTO mail_folder_remote_boxes/);
@@ -119,19 +119,19 @@ test('provider-folder restore never steals another existing local folder mapping
   const accountMap = new Map([['old-account', 'new-account']]);
   for (const mode of ['keep_existing', 'keep_both']) {
     const warnings: FixtureValue[] = [];
-    await restoreMailFolderRemoteBox(connection, 'user', row, folderMap, accountMap, mode, warnings);
+    await restoreMailFolderRemoteBox(connection as FixtureValue, 'user', row as FixtureValue, folderMap, accountMap, mode, warnings);
     assert.equal(warnings.length, 1);
   }
-  await assert.rejects(restoreMailFolderRemoteBox(connection, 'user', row, folderMap, accountMap, 'replace', []), /already mapped/);
+  await assert.rejects(restoreMailFolderRemoteBox(connection as FixtureValue, 'user', row as FixtureValue, folderMap, accountMap, 'replace', []), /already mapped/);
   assert.ok(calls.every(call => call.sql.startsWith('SELECT')));
 });
 
 test('provider-folder restore rejects missing or foreign parents before inserting', async () => {
   const calls: FixtureValue[] = [];
   const connection = { async execute(sql: string, params: FixtureValue) { calls.push({ sql, params }); return [[]]; } };
-  await assert.rejects(restoreMailFolderRemoteBox(connection, 'user', {
+  await assert.rejects(restoreMailFolderRemoteBox(connection as FixtureValue, 'user', {
     folder_id: 'foreign-folder', mail_account_id: 'account', remote_name: 'Projects',
-  }, new Map(), new Map([['account', 'owned-account']]), 'replace', []), /unavailable mail_folders/);
+  } as FixtureValue, new Map(), new Map([['account', 'owned-account']]), 'replace', []), /unavailable mail_folders/);
   assert.ok(calls.every(call => call.sql.startsWith('SELECT')));
   assert.deepEqual(calls[0].params, ['foreign-folder', 'user']);
 });
@@ -147,18 +147,18 @@ test('distinct same-name same-size attachments cannot share one restored row', a
   const candidates = [{ id: 'attachment-one' }, { id: 'attachment-two' }];
   const connection = { async execute(sql: string) { return sql.includes('AND filename = ?') ? [candidates] : [[]]; } };
   const row = { id: 'source', filename: 'image.png', size_bytes: 100 };
-  assert.equal(await findExistingAttachmentForRestore(connection, row, 'user', 'email'), 'attachment-one');
-  assert.equal(await findExistingAttachmentForRestore(connection, row, 'user', 'email', new Set<FixtureValue>(['attachment-one'])), 'attachment-two');
-  assert.equal(await findExistingAttachmentForRestore(connection, row, 'user', 'email', new Set<FixtureValue>(['attachment-one', 'attachment-two'])), null);
+  assert.equal(await findExistingAttachmentForRestore(connection as FixtureValue, row as FixtureValue, 'user', 'email'), 'attachment-one');
+  assert.equal(await findExistingAttachmentForRestore(connection as FixtureValue, row as FixtureValue, 'user', 'email', new Set<FixtureValue>(['attachment-one'])), 'attachment-two');
+  assert.equal(await findExistingAttachmentForRestore(connection as FixtureValue, row as FixtureValue, 'user', 'email', new Set<FixtureValue>(['attachment-one', 'attachment-two'])), null);
 });
 
 test('distinct same-name same-size recordings cannot share one restored row', async () => {
   const candidates = [{ id: 'recording-one' }, { id: 'recording-two' }];
   const connection = { async execute(sql: string) { return sql.includes('COALESCE(original_filename') ? [candidates] : [[]]; } };
   const row = { id: 'source', original_filename: 'recording.wav', size_bytes: 100 };
-  assert.equal(await findExistingRecordingForRestore(connection, row, 'user', '/restored/audio'), 'recording-one');
-  assert.equal(await findExistingRecordingForRestore(connection, row, 'user', '/restored/audio', new Set<FixtureValue>(['recording-one'])), 'recording-two');
-  assert.equal(await findExistingRecordingForRestore(connection, row, 'user', '/restored/audio', new Set<FixtureValue>(['recording-one', 'recording-two'])), null);
+  assert.equal(await findExistingRecordingForRestore(connection as FixtureValue, row as FixtureValue, 'user', '/restored/audio'), 'recording-one');
+  assert.equal(await findExistingRecordingForRestore(connection as FixtureValue, row as FixtureValue, 'user', '/restored/audio', new Set<FixtureValue>(['recording-one'])), 'recording-two');
+  assert.equal(await findExistingRecordingForRestore(connection as FixtureValue, row as FixtureValue, 'user', '/restored/audio', new Set<FixtureValue>(['recording-one', 'recording-two'])), null);
 });
 
 test('recording title and timestamp identity takes priority over a reused file name', async () => {
@@ -167,9 +167,9 @@ test('recording title and timestamp identity takes priority over a reused file n
     calls.push(sql);
     return sql.includes('LOWER(title)') ? [[{ id: 'correct-recording' }]] : [[]];
   } };
-  assert.equal(await findExistingRecordingForRestore(connection, {
+  assert.equal(await findExistingRecordingForRestore(connection as FixtureValue, {
     id: 'source', title: 'Journal', recorded_at: '2026-01-01 10:00:00', original_filename: 'recording.wav', size_bytes: 100,
-  }, 'user', '/restored/audio'), 'correct-recording');
+  } as FixtureValue, 'user', '/restored/audio'), 'correct-recording');
   assert.ok(calls.every(sql => !sql.includes('COALESCE(original_filename')));
 });
 
@@ -178,8 +178,8 @@ test('new selected-section backups reject missing referenced bytes without block
     contacts: [{ id: 'contact' }], recordings: [{ id: 'recording', storage_path: '/missing/audio' }],
     emails: [{ id: 'mail', raw_storage_path: '/missing/raw' }], email_attachments: [{ id: 'attachment' }],
   }, files: [{ kind: 'recording', id: 'recording', missing: true }] };
-  assert.throws(() => assertBackupFilesComplete(scopeBackupForImport(backup, ['recordings'])), /missing or unreadable/);
-  assert.throws(() => assertBackupFilesComplete(scopeBackupForImport(backup, ['mail'])), /missing or unreadable/);
-  assert.doesNotThrow(() => assertBackupFilesComplete(scopeBackupForImport(backup, ['contacts'])));
-  assert.doesNotThrow(() => assertBackupFilesComplete({ data: { emails: [{ id: 'draft', is_draft: true }] }, files: [] }));
+  assert.throws(() => assertBackupFilesComplete(scopeBackupForImport(backup as FixtureValue, ['recordings']) as FixtureValue), /missing or unreadable/);
+  assert.throws(() => assertBackupFilesComplete(scopeBackupForImport(backup as FixtureValue, ['mail']) as FixtureValue), /missing or unreadable/);
+  assert.doesNotThrow(() => assertBackupFilesComplete(scopeBackupForImport(backup as FixtureValue, ['contacts']) as FixtureValue));
+  assert.doesNotThrow(() => assertBackupFilesComplete({ data: { emails: [{ id: 'draft', is_draft: true }] }, files: [] } as FixtureValue));
 });

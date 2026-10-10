@@ -1,7 +1,7 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { getDb, setDb } = require('../dist/src/state');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 function stub(path: FixtureValue, exports: FixtureValue) { require.cache[path] = { id: path, filename: path, loaded: true, exports } as NodeJS.Module; }
 
@@ -56,8 +56,8 @@ function calendarFixture(t: import('node:test').TestContext, { account = {}, mai
     if (/^(UPDATE|DELETE|INSERT)/.test(sql.trim())) { writes.push([sql, params]); return [{ affectedRows: 1 }]; }
     return [[]];
   };
-  setDb({ execute, getConnection: async () => ({ execute, release() {} }) });
-  return { sync: require('../dist/src/services/calendar-sync'), writes, state, row };
+  setDb({ execute, getConnection: async () => ({ execute, release() {} }) } as FixtureValue);
+  return { sync: (require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync')), writes, state, row };
 }
 
 const event = { id: 'event', calendar_id: 'calendar', title: 'Meeting', start_time: '2026-10-05 10:00:00', end_time: '2026-10-05 11:00:00' };
@@ -71,7 +71,7 @@ test('a linked calendar syncs and writes with the mail login as stored at that m
   } });
   await sync.syncCalendarAccount('linked', { userId: 'owner' });
   state.mail = { username: 'owner@example.test', encrypted_password: 'changed-login' };
-  await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event }), error => error === stop);
+  await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event: event as FixtureValue }), error => error === stop);
   assert.deepEqual(logins, [['sync', 'owner@example.test', 'mail-login'], ['write', 'owner@example.test', 'changed-login']]);
 });
 
@@ -84,8 +84,8 @@ test('a linked calendar waits while its mail account is disconnected and changes
   assert.equal(noted[0][1][0], sync.MAIL_DISCONNECTED_MESSAGE);
   assert.ok(writes.every(([sql]) => !/encrypted_password\s*=|is_active\s*=\s*FALSE/.test(sql)), 'No login or switch of the calendar is changed');
 
-  await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event }), error => (error as FixtureValue).status === 409 && (error as FixtureValue).code === 'MAIL_ACCOUNT_DISCONNECTED');
-  await assert.rejects(sync.pushEventMove({ userId: 'owner', event: { ...event, calendar_id: 'source' }, targetCalendarId: 'target', changes: {} }),
+  await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event: event as FixtureValue }), error => (error as FixtureValue).status === 409 && (error as FixtureValue).code === 'MAIL_ACCOUNT_DISCONNECTED');
+  await assert.rejects(sync.pushEventMove({ userId: 'owner', event: { ...event, calendar_id: 'source' } as FixtureValue, targetCalendarId: 'target', changes: {} }),
     error => (error as FixtureValue).code === 'MAIL_ACCOUNT_DISCONNECTED');
   assert.ok(writes.every(([sql]) => !/calendar_event_external_refs|INSERT INTO/.test(sql)), 'The move is refused before the target is touched');
 });
@@ -268,7 +268,7 @@ test('a mail disconnect does not stop or mark a linked subscription, which does 
   await fetched;
   await sync.stopLinkedCalendarWork('owner', 'mail');
   release();
-  assert.equal((await run).ok, true);
+  assert.equal(((await run) as FixtureValue).ok, true);
   assert.ok(writes.every(([sql]) => !sql.includes("sync_status = 'paused'")));
 });
 
@@ -313,31 +313,30 @@ test('a restored mail calendar that still holds a copied password uses only its 
   state.mailWithAddress = true;
   await sync.syncCalendarAccount('linked', { userId: 'owner' });
   assert.match(writes.filter(([sql]) => sql.includes("sync_status = 'paused'")).at(-1)[1][0], /uses another calendar/);
-  await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event }), error => (error as FixtureValue).status === 409 && (error as FixtureValue).code === 'MAIL_CALENDAR_UNLINKED');
+  await assert.rejects(sync.pushCreatedEvent({ userId: 'owner', event: event as FixtureValue }), error => (error as FixtureValue).status === 409 && (error as FixtureValue).code === 'MAIL_CALENDAR_UNLINKED');
 });
 
 test('a finished calendar sync releases its stop switch', async t => {
-  let sync: FixtureValue, running;
-  ({ sync } = calendarFixture(t, { caldav: { listCalendars: async () => { running = sync.runningCalendarWorkCount(); return []; } } }));
+  let running;
+  const { sync } = calendarFixture(t, { caldav: { listCalendars: async () => { running = sync.runningCalendarWorkCount(); return []; } } });
   await sync.syncCalendarAccount('linked', { userId: 'owner' });
   assert.equal(running, 1);
   assert.equal(sync.runningCalendarWorkCount(), 0, 'No entry is kept after the run');
 });
 
 test('a mail disconnect after the last server response keeps the sync from reporting success', async t => {
-  let sync: FixtureValue, writes, state: FixtureValue;
-  ({ sync, writes, state } = calendarFixture(t, { caldav: { listCalendars: async () => {
+  const { sync, writes, state } = calendarFixture(t, { caldav: { listCalendars: async () => {
     state.mail = null;
     await sync.stopLinkedCalendarWork('owner', 'mail');
     return [];
-  } } }));
+  } } });
   await assert.rejects(sync.syncCalendarAccount('linked', { userId: 'owner' }), error => (error as FixtureValue).code === 'MAIL_ACCOUNT_DISCONNECTED');
   const statuses = writes.filter(([sql]) => /sync_status = \?/.test(sql)).map(([, params]) => params[0]);
   assert.ok(statuses.every(value => !['ok', 'error'].includes(value)), 'No success or error status');
 });
 
 test('a linked calendar is listed as paused while its mail account is disconnected', () => {
-  const { serializeCalendarAccount, MAIL_DISCONNECTED_MESSAGE } = require('../dist/src/services/calendar');
+  const { serializeCalendarAccount, MAIL_DISCONNECTED_MESSAGE } = require('../dist/src/services/calendar') as typeof import('../src/services/calendar');
   const row = { id: 'linked', provider: 'caldav', mail_account_id: 'mail', is_active: 1, sync_status: 'ok', sync_error: null };
   const view = (extra: FixtureValue) => { const { sync_status: status, sync_error: error } = serializeCalendarAccount({ ...row, ...extra }); return [status, error]; };
   assert.deepEqual(view({ mail_connected: 0 }), ['paused', MAIL_DISCONNECTED_MESSAGE]);

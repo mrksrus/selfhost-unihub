@@ -7,7 +7,7 @@ const path = (require('node:path') as typeof import('node:path'));
 const {
   BACKUP_UPLOAD_MAX_SIZE,
   MAIL_COMPOSE_REQUEST_MAX_SIZE,
-} = require('../dist/src/config');
+} = require('../dist/src/config') as typeof import('../src/config');
 
 const repoRoot = path.resolve(__dirname, '..', '..');
 

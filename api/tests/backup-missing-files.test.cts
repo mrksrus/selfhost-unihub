@@ -1,8 +1,8 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { setDb } = require('../dist/src/state');
-const { importBackupForUser } = require('../dist/src/services/backup');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
+const { importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
 
 function installConnection(t: import('node:test').TestContext, selectRows: FixtureValue) {
   const writes: FixtureValue[] = [];
@@ -14,7 +14,7 @@ function installConnection(t: import('node:test').TestContext, selectRows: Fixtu
       return [{ affectedRows: 1 }];
     },
   };
-  setDb({ execute: async () => [[]], getConnection: async () => connection });
+  setDb({ execute: async () => [[]], getConnection: async () => connection } as FixtureValue);
   t.after(() => setDb(null));
   return writes;
 }
@@ -37,8 +37,8 @@ test('replacing from a legacy missing-file backup retains existing raw files and
   assert.ok(emailWrite);
   assert.doesNotMatch(emailWrite.sql, /`raw_storage_path`|`raw_sha256`|`import_complete`/);
   assert.ok(writes.every(call => !call.sql.includes('email_attachments')));
-  assert.ok(result.warnings.some((warning: FixtureValue) => warning.includes('Kept the existing raw message')));
-  assert.ok(result.warnings.some((warning: FixtureValue) => warning.includes('Kept existing attachment')));
+  assert.ok(result.warnings.some((warning) => warning.includes('Kept the existing raw message')));
+  assert.ok(result.warnings.some((warning) => warning.includes('Kept existing attachment')));
 });
 
 test('legacy missing recordings retain existing audio or skip new recordings and their links', async (t) => {
@@ -58,6 +58,6 @@ test('legacy missing recordings retain existing audio or skip new recordings and
   const links = writes.filter(call => call.sql.startsWith('INSERT INTO recording_tag_links'));
   assert.equal(links.length, 1);
   assert.deepEqual(links[0].params, ['old-recording', 'owned-tag', 'user']);
-  assert.ok(result.warnings.some((warning: FixtureValue) => warning.includes('Kept existing recording')));
-  assert.ok(result.warnings.some((warning: FixtureValue) => warning.includes('Skipped recording missing-recording and its tag links')));
+  assert.ok(result.warnings.some((warning) => warning.includes('Kept existing recording')));
+  assert.ok(result.warnings.some((warning) => warning.includes('Skipped recording missing-recording and its tag links')));
 });

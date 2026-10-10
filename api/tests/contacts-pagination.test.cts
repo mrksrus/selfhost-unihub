@@ -1,8 +1,8 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { setDb, getDb } = require('../dist/src/state');
-const routes = require('../dist/src/routes/contacts');
+const { setDb, getDb } = require('../dist/src/state') as typeof import('../src/state');
+const routes = require('../dist/src/routes/contacts') as typeof import('../src/routes/contacts');
 
 test('contacts pagination returns more than 2,000 contacts without truncation and has a stable tie-breaker', async (t) => {
   const previous = getDb(); t.after(() => setDb(previous));
@@ -15,27 +15,27 @@ test('contacts pagination returns more than 2,000 contacts without truncation an
     assert.match(sql, /ORDER BY is_favorite DESC, first_name ASC, last_name ASC, id ASC/);
     const [, count, offset] = sql.match(/LIMIT (\d+) OFFSET (\d+)/)!;
     return [all.slice(Number(offset), Number(offset) + Number(count))];
-  } });
+  } } as FixtureValue);
   const req = (url: string) => ({ url, headers: { host: 'localhost' } });
-  const first = await routes['GET /api/contacts'](req('/api/contacts?limit=2000'), 'u1');
-  const second = await routes['GET /api/contacts'](req('/api/contacts?limit=2000&offset=2000'), 'u1');
-  assert.equal(first.contacts.length, 2000); assert.equal(first.has_more, true);
-  assert.equal(second.contacts.length, 105); assert.equal(second.has_more, false); assert.equal(second.offset, 2000);
+  const first = await routes['GET /api/contacts'](req('/api/contacts?limit=2000') as FixtureValue, 'u1');
+  const second = await routes['GET /api/contacts'](req('/api/contacts?limit=2000&offset=2000') as FixtureValue, 'u1');
+  assert.equal(first.contacts!.length, 2000); assert.equal(first.has_more, true);
+  assert.equal(second.contacts!.length, 105); assert.equal(second.has_more, false); assert.equal(second.offset, 2000);
   assert.equal(new Set<FixtureValue>([...first.contacts, ...second.contacts].map(row => row.id)).size, 2105);
   all.splice(0, 1);
-  const refreshed = await routes['GET /api/contacts'](req('/api/contacts?limit=2000&offset=0'), 'u1');
-  assert.equal(refreshed.contacts[0].id, 'contact-00001');
+  const refreshed = await routes['GET /api/contacts'](req('/api/contacts?limit=2000&offset=0') as FixtureValue, 'u1');
+  assert.equal(refreshed.contacts![0].id, 'contact-00001');
   assert.equal(calls.length, 3);
 });
 
 test('contacts filters keep user scope and pagination integers bounded; unauthenticated reads do no SQL', async (t) => {
   const previous = getDb(); t.after(() => setDb(previous));
   const calls: FixtureValue[] = [];
-  setDb({ async execute(sql: string, params: FixtureValue) { calls.push({ sql, params }); return [[]]; } });
+  setDb({ async execute(sql: string, params: FixtureValue) { calls.push({ sql, params }); return [[]]; } } as FixtureValue);
   const req = (url: string) => ({ url, headers: { host: 'localhost' } });
-  assert.equal((await routes['GET /api/contacts'](req('/api/contacts'), null)).status, 401);
+  assert.equal((await routes['GET /api/contacts'](req('/api/contacts') as FixtureValue, null)).status, 401);
   assert.equal(calls.length, 0);
-  await routes['GET /api/contacts'](req('/api/contacts?group=name_only&q=%25_&limit=99999&offset=-3'), 'u1');
+  await routes['GET /api/contacts'](req('/api/contacts?group=name_only&q=%25_&limit=99999&offset=-3') as FixtureValue, 'u1');
   assert.equal(calls[0].params[0], 'u1');
   assert.ok(calls[0].params.slice(1).every((value: FixtureValue) => value === '%\\%\\_%'));
   assert.match(calls[0].sql, /LIMIT 2001 OFFSET 0$/);

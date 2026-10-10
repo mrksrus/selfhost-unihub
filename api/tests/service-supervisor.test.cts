@@ -2,12 +2,12 @@ import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { EventEmitter } = (require('node:events') as typeof import('node:events'));
-const { superviseServices, apiIdentity } = require('../dist/src/service-supervisor');
+const { superviseServices, apiIdentity } = require('../dist/src/service-supervisor') as typeof import('../src/service-supervisor');
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 function harness(options: FixtureValue = {}) {
   const children: FixtureValue[] = [], exits: FixtureValue[] = [], signals = new EventEmitter();
-  const control = superviseServices({ delayMs: 0, graceMs: 5, signals, exit: (code: FixtureValue) => exits.push(code),
+  const control = superviseServices({ delayMs: 0, graceMs: 5, signals, exit: (code) => exits.push(code),
     spawnChild(command: FixtureValue, args: FixtureValue, spawnOptions: FixtureValue) {
       const child: FixtureValue = new EventEmitter(); Object.assign(child, { command, args, spawnOptions, killed: [], closed: false });
       child.finish = (code: FixtureValue) => { if (!child.closed) { child.closed = true; child.emit('close', code); } };

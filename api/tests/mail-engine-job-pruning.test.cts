@@ -1,7 +1,7 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const runtime = require('../dist/src/services/mail-engine/runtime');
+const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
 
 const DAY = 86400;
 // Synthetic job table. The fake evaluates the statement's documented predicate
@@ -39,7 +39,7 @@ const job = (id: FixtureValue, extra?: FixtureValue) => ({ id, user_id: 'owner',
 
 test('prune SQL is bounded, parameterized and keeps the newest job of each account/kind/mailbox', async () => {
   const db = fakeDb({ jobs: [job('a')] });
-  await runtime.pruneFinishedJobs({}, db);
+  await runtime.pruneFinishedJobs({}, db as FixtureValue);
   const [select, del] = db.log;
   assert.match(select.sql, /j\.state IN \(\?,\?,\?\) AND j\.completed_at < DATE_SUB\(UTC_TIMESTAMP\(\), INTERVAL \? DAY\)/);
   assert.match(select.sql, /n\.user_id = j\.user_id AND n\.mail_account_id = j\.mail_account_id\s+AND n\.kind = j\.kind AND n\.mailbox_id <=> j\.mailbox_id/);
@@ -73,7 +73,7 @@ test('prune deletes only old finished history and keeps status, discovery and ba
   const operations = { done: { user_id: 'owner', state: 'confirmed' }, stuck: { user_id: 'owner', state: 'needs_attention' },
     legacy: { user_id: 'owner', state: null } };
   const db = fakeDb({ jobs, operations, now });
-  assert.deepEqual(await runtime.pruneFinishedJobs({}, db), { deleted: 4, batches: 1 });
+  assert.deepEqual(await runtime.pruneFinishedJobs({}, db as FixtureValue), { deleted: 4, batches: 1 });
   assert.deepEqual(jobs.map(j => j.id).sort(), ['op-latest', 'op-legacy', 'op-pending-1', 'op-pending-2', 'paused-newer', 'paused-old',
     'recent-other-box', 'sync-latest', 'sync-recent', 'sync-recent-2', 'sync-running'].sort());
 });
@@ -81,11 +81,11 @@ test('prune deletes only old finished history and keeps status, discovery and ba
 test('prune works in bounded batches and stops at its cap', async () => {
   const jobs = Array.from({ length: 26 }, (_, i) => job(`j${String(i).padStart(2, '0')}`, { created_at: i, completed_at: i }));
   const db = fakeDb({ jobs });
-  assert.deepEqual(await runtime.pruneFinishedJobs({ batchSize: 10, maxBatches: 2 }, db), { deleted: 20, batches: 2 });
+  assert.deepEqual(await runtime.pruneFinishedJobs({ batchSize: 10, maxBatches: 2 }, db as FixtureValue), { deleted: 20, batches: 2 });
   assert.equal(jobs.length, 6);
   assert(db.log.filter(entry => entry.sql.startsWith('DELETE')).every(entry => entry.args.length === 10 + 4));
-  assert.deepEqual(await runtime.pruneFinishedJobs({ batchSize: 10, maxBatches: 2 }, db), { deleted: 5, batches: 1 });
+  assert.deepEqual(await runtime.pruneFinishedJobs({ batchSize: 10, maxBatches: 2 }, db as FixtureValue), { deleted: 5, batches: 1 });
   assert.deepEqual(jobs.map(j => j.id), ['j25'], 'the newest job survives');
-  await assert.rejects(runtime.pruneFinishedJobs({ batchSize: 5000 }, db), RangeError);
-  await assert.rejects(runtime.pruneFinishedJobs({ olderThanDays: 0 }, db), RangeError);
+  await assert.rejects(runtime.pruneFinishedJobs({ batchSize: 5000 }, db as FixtureValue), RangeError);
+  await assert.rejects(runtime.pruneFinishedJobs({ olderThanDays: 0 }, db as FixtureValue), RangeError);
 });

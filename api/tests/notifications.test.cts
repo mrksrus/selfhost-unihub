@@ -6,8 +6,8 @@ const vm = (require('node:vm') as typeof import('node:vm'));
 const { createRequire } = (require('node:module') as typeof import('node:module'));
 const {
   reminderMinutes, reminderKey, reminderIsCurrent, normalizeSubscription, retryDisposition,
-} = require('../dist/src/services/notification-rules');
-const { isPublicAddress } = require('../dist/src/services/push-transport');
+} = require('../dist/src/services/notification-rules') as typeof import('../src/services/notification-rules');
+const { isPublicAddress } = require('../dist/src/services/push-transport') as typeof import('../src/services/push-transport');
 
 function loadService(db: FixtureValue, sender: FixtureValue = {}) {
   const filename = require.resolve('../dist/src/services/notifications');
@@ -30,9 +30,9 @@ function validSubscription(endpoint = 'https://fcm.googleapis.com/fcm/send/examp
 }
 
 test('at-start and duplicate reminder offsets retain numeric zero', () => {
-  assert.deepEqual(reminderMinutes({ reminders: '[0,5,5,60,-1,null]' }), [0, 5, 60]);
-  assert.deepEqual(reminderMinutes({ reminder_minutes: 0 }), [0]);
-  assert.deepEqual(reminderMinutes({ reminders: [Infinity, -5, 1.5] }), []);
+  assert.deepEqual(reminderMinutes({ reminders: '[0,5,5,60,-1,null]' } as FixtureValue), [0, 5, 60]);
+  assert.deepEqual(reminderMinutes({ reminder_minutes: 0 } as FixtureValue), [0]);
+  assert.deepEqual(reminderMinutes({ reminders: [Infinity, -5, 1.5] } as FixtureValue), []);
 });
 test('reminder delivery validates current occurrence, offset, cancellation and lateness', () => {
   const event = { id: 'event-1', start_time: '2026-09-06 12:00:00', reminders: [0, 5], is_visible: 1 };
@@ -52,8 +52,8 @@ test('subscription validation rejects SSRF targets and malformed keys', () => {
 });
 test('expired subscriptions are removed and retries are bounded', () => {
   assert.deepEqual(retryDisposition({ statusCode: 410 }, 1), { expired: true, retry: false });
-  assert.equal(retryDisposition({ statusCode: 429 }, 1, 0).nextAttempt.getTime(), 30000);
-  assert.equal(retryDisposition(new Error('offline'), 3, 0).nextAttempt.getTime(), 120000);
+  assert.equal(retryDisposition({ statusCode: 429 }, 1, 0).nextAttempt!.getTime(), 30000);
+  assert.equal(retryDisposition(new Error('offline') as FixtureValue, 3, 0).nextAttempt!.getTime(), 120000);
   assert.equal(retryDisposition({ statusCode: 503 }, 8).retry, false);
   assert.equal(retryDisposition({ statusCode: 403 }, 1).retry, false);
 });
@@ -222,11 +222,11 @@ test('reminder scans preserve skipped changes through restore cancellation and r
 });
 
 test('restore sections retain todo aliases, merge active jobs, and scope notification query exclusions', async () => {
-  const { getActiveRestoreSectionsByUser } = require('../dist/src/services/restore-locks');
+  const { getActiveRestoreSectionsByUser } = require('../dist/src/services/restore-locks') as typeof import('../src/services/restore-locks');
   const active = await getActiveRestoreSectionsByUser({ async execute() {
     return [[{ user_id: 'u1', requested_sections: '["todo"]' }, { user_id: 'u1', requested_sections: '["mail"]' }, { user_id: 'u2', requested_sections: '["contacts"]' }]];
-  } });
-  assert.deepEqual([...active.get('u1')].sort(), ['calendar', 'mail']);
+  } } as FixtureValue);
+  assert.deepEqual([...active.get('u1')!].sort(), ['calendar', 'mail']);
   const calls: FixtureValue[] = [];
   const connection = { async execute(sql: string, values: FixtureValue) { calls.push({ sql, values }); return [[]]; } };
   const service: FixtureValue = loadService({});

@@ -1,10 +1,10 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { collectOfflineSnapshot, createOfflineSnapshot, OFFLINE_MAX_BYTES } = require('../dist/src/services/offline');
-const routes = require('../dist/src/routes/offline');
-const { getDb, setDb } = require('../dist/src/state');
-const { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES } = require('../dist/src/services/calendar');
+const { collectOfflineSnapshot, createOfflineSnapshot, OFFLINE_MAX_BYTES } = require('../dist/src/services/offline') as typeof import('../src/services/offline');
+const routes = require('../dist/src/routes/offline') as typeof import('../src/routes/offline');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
+const { CALENDAR_PROVIDER_DEFAULT_CAPABILITIES } = require('../dist/src/services/calendar') as typeof import('../src/services/calendar');
 
 function fixture({ oversizeTable, failTable, modules = {} }: FixtureValue = {}) {
   const contact = (index: number) => ({ id: `contact-${String(index).padStart(5, '0')}`, user_id: 'user-1', first_name: 'Person', last_name: String(index), is_favorite: 0, notes: 'Full contact note' });
@@ -53,12 +53,12 @@ function fixture({ oversizeTable, failTable, modules = {} }: FixtureValue = {}) 
 
 test('offline snapshot includes all 2,105 contacts, all events/todos and 100 full message bodies with safe serialization', async () => {
   const f = fixture();
-  const snapshot = await collectOfflineSnapshot(f.connection, 'user-1');
+  const snapshot = await collectOfflineSnapshot(f.connection as FixtureValue, 'user-1');
   assert.equal(snapshot.contacts.length, 2105);
   assert.equal(snapshot.events.length, 2);
   assert.equal(snapshot.emails.length, 100);
   assert.equal(snapshot.emails[0].id, 'email-119');
-  assert.ok(snapshot.emails[0].body_text.length > 500);
+  assert.ok((snapshot.emails[0] as FixtureValue).body_text.length > 500);
   assert.deepEqual(snapshot.emails[0].to_addresses, ['recipient@example.test']);
   assert.equal(snapshot.events[0].subtasks[0].is_done, true);
   assert.deepEqual(snapshot.events[0].reminders, [0, 15]);
@@ -74,7 +74,7 @@ test('offline snapshot includes all 2,105 contacts, all events/todos and 100 ful
 
 test('refresh replaces deleted contacts, events and messages from the current transaction snapshot', async (t) => {
   const previous = getDb();
-  const f = fixture(); setDb(f.db); t.after(() => setDb(previous));
+  const f = fixture(); setDb(f.db as FixtureValue); t.after(() => setDb(previous));
   const before = await createOfflineSnapshot('user-1');
   f.data.contacts = f.data.contacts.filter(row => row.id !== 'contact-00000');
   f.data.calendar_events = f.data.calendar_events.filter(row => row.id !== 'event-1');
@@ -93,7 +93,7 @@ test('refresh replaces deleted contacts, events and messages from the current tr
 
 test('oversized metadata fails preflight before any full rows are transferred and rolls back', async (t) => {
   const previous = getDb();
-  const f = fixture(({ oversizeTable: 'contacts' } as FixtureValue)); setDb(f.db); t.after(() => setDb(previous));
+  const f = fixture(({ oversizeTable: 'contacts' })); setDb(f.db as FixtureValue); t.after(() => setDb(previous));
   await assert.rejects(createOfflineSnapshot('user-1'), { status: 413 });
   assert.equal(f.calls.filter(sql => sql.startsWith('SELECT ') && !sql.includes('estimated_bytes') && !sql.includes('FROM user_settings')).length, 0);
   assert.ok(f.calls.includes('ROLLBACK'));
@@ -103,10 +103,10 @@ test('oversized metadata fails preflight before any full rows are transferred an
 
 test('snapshot query failure rolls back and unauthenticated snapshot routes never touch the database', async (t) => {
   const previous = getDb();
-  const f = fixture(({ failTable: 'calendar_events' } as FixtureValue)); setDb(f.db); t.after(() => setDb(previous));
-  assert.equal((await routes['GET /api/offline/snapshot']({}, null)).status, 401);
+  const f = fixture(({ failTable: 'calendar_events' })); setDb(f.db as FixtureValue); t.after(() => setDb(previous));
+  assert.equal((await routes['GET /api/offline/snapshot']({} as FixtureValue, null)).status, 401);
   assert.equal(f.calls.length, 0);
-  const result = await routes['GET /api/offline/snapshot']({}, 'user-1');
+  const result = await routes['GET /api/offline/snapshot']({} as FixtureValue, 'user-1');
   assert.equal(result.status, 500);
   assert.match(result.error, /previous snapshot was kept/);
   assert.ok(f.calls.includes('ROLLBACK'));
@@ -119,18 +119,18 @@ test('offline snapshot preserves filing and Legacy identity and verified folder 
   Object.assign(f.data.emails[119], { mail_account_id: 'mail-account-1', filing_account_id: 'mail-account-2', is_legacy: 0 });
   Object.assign(f.data.emails[118], { mail_account_id: 'mail-account-1', is_legacy: 1, folder: 'missing-folder' });
   f.data.mail_folders.push(({ id: 'folder-2', user_id: 'user-1', slug: 'connected', mail_account_id: 'mail-account-1', is_system: 0 } as FixtureValue));
-  const snapshot = await collectOfflineSnapshot(f.connection, 'user-1');
+  const snapshot = await collectOfflineSnapshot(f.connection as FixtureValue, 'user-1');
   assert.equal(snapshot.emails[0].mail_account_id, 'mail-account-2');
   assert.equal(snapshot.emails[0].source_mail_account_id, 'mail-account-1');
   assert.equal(snapshot.emails[1].is_legacy, true);
-  assert.equal(snapshot.folders[1].mail_account_id, 'mail-account-1');
+  assert.equal((snapshot.folders[1] as FixtureValue).mail_account_id, 'mail-account-1');
   assert.deepEqual(snapshot.folders[1].connected_account_ids, ['mail-account-2']);
 });
 
 
 test('offline refresh omits disabled modules without reading their data', async () => {
   const f = fixture({ modules: { mail: { enabled: false }, calendar: { enabled: false } } });
-  const snapshot = await collectOfflineSnapshot(f.connection, 'user-1');
+  const snapshot = await collectOfflineSnapshot(f.connection as FixtureValue, 'user-1');
   assert.equal(snapshot.contacts.length, 2105);
   assert.deepEqual(snapshot.emails, []);
   assert.deepEqual(snapshot.events, []);

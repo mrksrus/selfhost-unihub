@@ -2,9 +2,9 @@ import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const net = (require('node:net') as typeof import('node:net'));
-const { connectImap } = require('../dist/src/services/mail-imap-client');
-const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
-const { selectMailbox, fetchMetadataWindow, setFlag, nativeMove } = require('../dist/src/services/mail-engine/transport');
+const { connectImap } = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard');
+const { selectMailbox, fetchMetadataWindow, setFlag, nativeMove } = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
 
 // Loopback protocol peer, not a mocked imap object: ImapFlow parser/queue ->
 // socket -> tagged replies -> the production guard/transport.
@@ -131,7 +131,7 @@ test('real library serializes four UID-scoped conditional flag deltas and readba
   ] as const) {
     const result = await changeFlag(connection, action, value, dispatches);
     assert.equal(result.completion, 'ok'); assert.equal(result.modified, false);
-    assert.equal(result.after.flags.includes(flag), Boolean(value));
+    assert.equal(result.after!.flags.includes(flag), Boolean(value));
     const command = fixture.commands.filter((cmd: FixtureValue) => cmd.startsWith('UID STORE ')).at(-1);
     assert.equal(command, `UID STORE 103 (UNCHANGEDSINCE ${dispatches.at(-1)}) ${verb}FLAGS.SILENT (${flag})`);
   }
@@ -200,7 +200,7 @@ test('large MODSEQ is kept as a decimal string on the actual wire', async t => {
   const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
   const dispatches: FixtureValue[] = [];
   const result = await changeFlag(connection, 'star', 1, dispatches);
-  assert.equal(result.completion, 'ok'); assert(result.after.flags.includes('\\Flagged'));
+  assert.equal(result.completion, 'ok'); assert(result.after!.flags.includes('\\Flagged'));
   assert.deepEqual(dispatches, ['9007199254740993123']);
   assert(fixture.commands.includes('UID STORE 103 (UNCHANGEDSINCE 9007199254740993123) +FLAGS.SILENT (\\Flagged)'));
 });
@@ -221,7 +221,7 @@ test('non-CONDSTORE server sends only UID-scoped delta, not SET FLAGS', async t 
   const fixture: FixtureValue = await peer({ conditional: false }); t.after(() => fixture.close());
   const connection = await fixture.connect(); t.after(() => closeImapConnection(connection));
   const result = await changeFlag(connection, 'read', 1, []);
-  assert.equal(result.completion, 'ok'); assert(result.after.flags.includes('\\Seen'));
+  assert.equal(result.completion, 'ok'); assert(result.after!.flags.includes('\\Seen'));
   assert(fixture.commands.includes('UID STORE 103 +FLAGS.SILENT (\\Seen)'));
   assert.deepEqual([...fixture.messages.get(103).flags].sort(), ['$custom', '\\Seen']);
 });
@@ -242,7 +242,7 @@ test('timed-out conditional wire command settles once as lost; late reply cannot
   const fixture = await peer(); t.after(() => fixture.close());
   const connection = await fixture.connect({ timeoutMs: 300 }); t.after(() => closeImapConnection(connection));
   const box = await selectMailbox(connection, { folder: 'INBOX' });
-  const socket = connection.socket;
+  const socket = (connection as FixtureValue).socket;
   fixture.holdStore();
   const result = await setFlag(connection, { uid: 103, uidvalidity: box.uidvalidity, sourceFolder: 'INBOX', flag: '\\Seen', value: true, modseq: '295' },
     { beforeDispatch: async () => {} });

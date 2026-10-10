@@ -12,12 +12,12 @@ import { performance } from 'node:perf_hooks';
 const require = createRequire(new URL('../api/package.json', import.meta.url));
 const { ImapFlow } = require('imapflow') as typeof import('imapflow');
 const { simpleParser } = require('mailparser') as typeof import('mailparser');
-interface SmokeAccount { id: string; email_address: string; sync_mode: string; imap_host: string; username?: string; account_id: string; state: string; error?: string }
+interface SmokeAccount { id: string; email_address: string; sync_mode: string; imap_host: string; username?: string }
+interface SmokeSyncState { account_id: string; state: string; error?: string }
 interface SmokeEmail { id: string; subject: string; folder: string; mail_account_id: string; is_read: boolean; is_starred: boolean; read_sync_pending: boolean; star_sync_pending: boolean; body_text?: string; body_html?: string }
 interface SmokeOperation { id: string; email_id: string; action: string; status: string; error?: string }
 interface SmokeFolder { slug: string; display_name: string; mail_account_id: string }
-interface SmokeData { csrfToken?: string; error?: string; user: { email: string; role: string }; accounts: SmokeAccount[]; emails: SmokeEmail[]; email: SmokeEmail; operations: SmokeOperation[]; folders: SmokeFolder[]; success: boolean; sync_pending: boolean }
-interface ApiResult { data: SmokeData; ms: number }
+interface ApiResult<T> { data: T; ms: number }
 
 const env = process.env;
 assert.equal(env.UNIHUB_SMOKE_CONFIRM, 'I own this test mailbox', 'Explicitly authorize a dedicated test mailbox');
@@ -40,13 +40,14 @@ const results: { check: string; acceptance_ms?: number; passed?: boolean; error?
 const cookies = new Map<string, string>();
 let csrf: string | undefined;
 let phase = 'authentication';
-let account: SmokeAccount | undefined;
+// Matched before any helper runs; the report reads it with ?. because a failure can come first.
+let account!: SmokeAccount;
 let emailId: string | undefined;
 let provider: InstanceType<typeof ImapFlow> | undefined;
 let selectedBox: string | undefined;
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function api(method: string, path: string, body?: unknown, accepted = [200]): Promise<ApiResult> {
+async function api<T = unknown>(method: string, path: string, body?: unknown, accepted = [200]): Promise<ApiResult<T>> {
   const start = performance.now();
   const response = await fetch(base + path, {
     method,
@@ -64,12 +65,12 @@ async function api(method: string, path: string, body?: unknown, accepted = [200
     const separator = pair.indexOf('=');
     cookies.set(pair.slice(0, separator), pair.slice(separator + 1));
   }
-  const data = await response.json() as SmokeData;
+  const data = await response.json() as T & { csrfToken?: string; error?: string };
   assert(accepted.includes(response.status), `${method} ${path}: HTTP ${response.status}; ${String(data.error || 'Unexpected status').slice(0, 250)}`);
   if (data.csrfToken) csrf = data.csrfToken;
   return { data, ms: Math.round(performance.now() - start) };
 }
-function fast(result: ApiResult, label: string) {
+function fast<T>(result: ApiResult<T>, label: string) {
   assert(result.ms <= maxAcceptanceMs, `${label} waited ${result.ms} ms (limit ${maxAcceptanceMs} ms); provider work must not block acceptance`);
   results.push({ check: label, acceptance_ms: result.ms });
   return result.data;
@@ -115,22 +116,22 @@ async function providerMessage(folder = 'INBOX', writable = false) {
   return { ...message, sha256: crypto.createHash('sha256').update(message.raw).digest('hex') };
 }
 async function fixture() {
-  const { data } = await api('GET', `/api/mail/emails?folder=all&account_id=${encodeURIComponent(account!.id)}&search=${encodeURIComponent(subject)}&limit=100`);
+  const { data } = await api<{ emails: SmokeEmail[] }>('GET', `/api/mail/emails?folder=all&account_id=${encodeURIComponent(account.id)}&search=${encodeURIComponent(subject)}&limit=100`);
   const rows = data.emails.filter(item => item.subject === subject && item.folder !== 'sent');
   assert(rows.length <= 1, 'Ambiguous application fixture; refusing mutation');
   if (rows.length) {
-    assert.equal(rows[0].mail_account_id, account!.id);
+    assert.equal(rows[0].mail_account_id, account.id);
     emailId = rows[0].id;
   }
   return rows[0];
 }
 async function sync() {
-  const accepted = fast(await api('POST', '/api/mail/sync', { account_id: account!.id }, [200, 202]), 'sync request');
+  const accepted = fast(await api<{ success: boolean }>('POST', '/api/mail/sync', { account_id: account.id }, [200, 202]), 'sync request');
   assert.equal(accepted.success, true, 'Sync request must actually be accepted');
   await until('account sync', async () => {
-    const { data } = await api('GET', `/api/mail/sync/status?account_id=${encodeURIComponent(account!.id)}`);
-    assert(data.accounts.every(item => item.account_id === account!.id), 'Scoped status leaked another account');
-    const state = data.accounts.find(item => item.account_id === account!.id);
+    const { data } = await api<{ accounts: SmokeSyncState[] }>('GET', `/api/mail/sync/status?account_id=${encodeURIComponent(account.id)}`);
+    assert(data.accounts.every(item => item.account_id === account.id), 'Scoped status leaked another account');
+    const state = data.accounts.find(item => item.account_id === account.id);
     assert(state, 'Account status must be returned');
     assert(!['error', 'cancelled'].includes(state.state), `Sync ${state.state}: ${state.error || ''}`);
     return state.state === 'idle';
@@ -143,7 +144,7 @@ async function flagsMatch(read: boolean, star: boolean, folder = 'INBOX') {
     const item = await fixture();
     if (!item || item.is_read !== read || item.is_starred !== star) return false;
     if (item.read_sync_pending || item.star_sync_pending) return false;
-    const { data } = await api('GET', '/api/mail/writebacks');
+    const { data } = await api<{ operations: SmokeOperation[] }>('GET', '/api/mail/writebacks');
     const operations = data.operations.filter(op => op.email_id === emailId);
     const failed = operations.find(op => ['failed', 'conflict'].includes(op.status));
     assert(!failed, `Provider operation ${failed?.action} ${failed?.status}: ${failed?.error}`);
@@ -154,18 +155,18 @@ async function flagsMatch(read: boolean, star: boolean, folder = 'INBOX') {
   });
 }
 async function putFlag(kind: 'read' | 'star', value: boolean) {
-  const accepted = fast(await api('PUT', `/api/mail/emails/${emailId}/${kind}`, { [kind === 'read' ? 'is_read' : 'is_starred']: value }), `${kind}=${value}`);
+  const accepted = fast(await api<{ sync_pending: boolean }>('PUT', `/api/mail/emails/${emailId}/${kind}`, { [kind === 'read' ? 'is_read' : 'is_starred']: value }), `${kind}=${value}`);
   assert.equal(accepted.sync_pending, true, `${kind}=${value} must queue a provider write, not only change local state`);
   return accepted;
 }
 async function move(folder: string) {
-  const accepted = fast(await api('POST', '/api/mail/emails/bulk-move', { email_ids: [emailId], folder }), `move to ${folder}`);
+  const accepted = fast(await api<{ sync_pending: boolean }>('POST', '/api/mail/emails/bulk-move', { email_ids: [emailId], folder }), `move to ${folder}`);
   assert.equal(accepted.sync_pending, true, `move to ${folder} must queue a provider write`);
   return accepted;
 }
 async function moveDone(previousId: string | null = null) {
   return until('durable provider move completion', async () => {
-    const { data } = await api('GET', '/api/mail/writebacks');
+    const { data } = await api<{ operations: SmokeOperation[] }>('GET', '/api/mail/writebacks');
     const moveOp = data.operations.find(op => op.email_id === emailId && op.action === 'move');
     if (!moveOp || moveOp.id === previousId) return false;
     assert(!['failed', 'conflict'].includes(moveOp.status), `Move ${moveOp.status}: ${moveOp.error}`);
@@ -174,35 +175,35 @@ async function moveDone(previousId: string | null = null) {
 }
 
 try {
-  const login = await api('POST', '/api/auth/signin', { email: address, password: env.UNIHUB_TEST_PASSWORD });
+  const login = await api<{ user: { email: string; role: string } }>('POST', '/api/auth/signin', { email: address, password: env.UNIHUB_TEST_PASSWORD });
   assert.equal(login.data.user.email.toLowerCase(), address.toLowerCase());
   assert.equal(login.data.user.role, 'user', 'Use a regular dedicated test user, never the administrator');
-  const { data: accounts } = await api('GET', '/api/mail/accounts');
+  const { data: accounts } = await api<{ accounts: SmokeAccount[] }>('GET', '/api/mail/accounts');
   const matches = accounts.accounts.filter(item => item.email_address.toLowerCase() === address.toLowerCase()
     && (!env.UNIHUB_TEST_ACCOUNT_ID || item.id === env.UNIHUB_TEST_ACCOUNT_ID));
   assert.equal(matches.length, 1, 'Exactly one owned test account must match');
   account = matches[0];
-  assert.equal(account!.sync_mode, 'sync', 'Two-way sync mode is required');
-  assert.equal(account!.imap_host, env.UNIHUB_IMAP_HOST);
-  assert.equal(account!.username || account!.email_address, env.UNIHUB_IMAP_USER);
+  assert.equal(account.sync_mode, 'sync', 'Two-way sync mode is required');
+  assert.equal(account.imap_host, env.UNIHUB_IMAP_HOST);
+  assert.equal(account.username || account.email_address, env.UNIHUB_IMAP_USER);
   await connectProvider();
   phase = 'send-and-receive';
   if (!env.UNIHUB_SMOKE_SUBJECT) {
-    await api('POST', '/api/mail/send', { account_id: account!.id, to: address, subject, body: sentinel, isHtml: false });
+    await api('POST', '/api/mail/send', { account_id: account.id, to: address, subject, body: sentinel, isHtml: false });
   }
   const original = await until('SMTP delivery', () => providerMessage());
   assert(!original.flags.includes('\\Seen') && !original.flags.includes('\\Flagged'), 'New fixture must start unread and unstarred to exercise both provider writes');
   await sync();
   await until('message imported with content', async () => {
     if (!await fixture()) return false;
-    const { data } = await api('GET', `/api/mail/emails/${emailId}`);
+    const { data } = await api<{ email: SmokeEmail }>('GET', `/api/mail/emails/${emailId}`);
     assert((data.email.body_text || data.email.body_html || '').includes(sentinel), 'Incoming body must be preserved');
     return true;
   });
   results.push({ check: phase, passed: true });
 
   phase = 'nonblocking-flags-during-sync';
-  const parallelSync = fast(await api('POST', '/api/mail/sync', { account_id: account!.id }, [200, 202]), 'parallel sync request');
+  const parallelSync = fast(await api<{ success: boolean }>('POST', '/api/mail/sync', { account_id: account.id }, [200, 202]), 'parallel sync request');
   assert.equal(parallelSync.success, true, 'Parallel sync request must be accepted');
   await Promise.all([putFlag('read', true), putFlag('star', true), api('GET', '/api/mail/accounts').then(result => fast(result, 'account list during sync'))]);
   await flagsMatch(true, true);
@@ -231,12 +232,12 @@ try {
 
   phase = 'move-and-restore';
   const displayName = 'UniHub Live Smoke';
-  let { data: folders } = await api('GET', `/api/mail/folders?account_id=${encodeURIComponent(account!.id)}`);
-  let target = folders.folders.find(item => item.display_name === displayName && item.mail_account_id === account!.id);
+  let { data: folders } = await api<{ folders: SmokeFolder[] }>('GET', `/api/mail/folders?account_id=${encodeURIComponent(account.id)}`);
+  let target = folders.folders.find(item => item.display_name === displayName && item.mail_account_id === account.id);
   if (!target) {
-    await api('POST', '/api/mail/folders', { mail_account_id: account!.id, display_name: displayName });
-    ({ data: folders } = await api('GET', `/api/mail/folders?account_id=${encodeURIComponent(account!.id)}`));
-    target = folders.folders.find(item => item.display_name === displayName && item.mail_account_id === account!.id);
+    await api('POST', '/api/mail/folders', { mail_account_id: account.id, display_name: displayName });
+    ({ data: folders } = await api<{ folders: SmokeFolder[] }>('GET', `/api/mail/folders?account_id=${encodeURIComponent(account.id)}`));
+    target = folders.folders.find(item => item.display_name === displayName && item.mail_account_id === account.id);
   }
   assert(target, 'Created folder must be visible for the correct account');
   await move(target.slug);

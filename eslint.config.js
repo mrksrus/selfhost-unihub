@@ -41,9 +41,10 @@ export default tseslint.config(
     },
   },
   {
-    // Fixtures capture setup variables before callbacks initialize them.
+    // Cleanup hooks and provider doubles read setup variables before the test
+    // assigns them; a const there would throw if setup fails first.
     files: ["api/tests/**/*.cts"],
-    rules: { "prefer-const": "off" },
+    rules: { "prefer-const": ["error", { ignoreReadBeforeAssign: true }] },
   },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
@@ -52,14 +53,19 @@ export default tseslint.config(
     rules: { "@typescript-eslint/no-unused-vars": "off" },
   },
   {
-    // Node strips types from these scripts but does not turn ES modules into
-    // CommonJS, so a value import or export fails at run time even though tsc
-    // accepts it. Type-only imports and exports are erased and stay allowed.
-    files: ["api/scripts/*.cts"],
+    // Node strips types from these scripts and tests but does not turn ES
+    // modules into CommonJS, so a value import or export fails at run time even
+    // though tsc accepts it. Type-only imports and exports are erased and stay
+    // allowed. api/tsconfig.tests.json cannot enforce erasable syntax itself:
+    // the tests' typed requires pull in API source that tsc compiles.
+    files: ["api/scripts/*.cts", "api/tests/**/*.cts"],
     rules: {
       "no-restricted-syntax": ["error", {
         selector: "Program > :matches(ImportDeclaration[importKind!='type'], ExportNamedDeclaration[exportKind!='type']:not([declaration.declare=true]), ExportDefaultDeclaration, ExportAllDeclaration[exportKind!='type'])",
         message: "Scripts run as CommonJS: use `require('x') as typeof import('x')`, `import type` and `module.exports`.",
+      }, {
+        selector: "TSEnumDeclaration:not([declare=true]), TSModuleDeclaration:not([declare=true]), TSParameterProperty, TSImportEqualsDeclaration[importKind!='type'], TSExportAssignment",
+        message: "Node only strips erasable TypeScript: no enums, namespaces, parameter properties, `import x = require()` or `export =`.",
       }],
     },
   },

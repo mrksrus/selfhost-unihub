@@ -2,9 +2,9 @@ import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 process.env.ENCRYPTION_KEY = 'mail-background-setting-test-only-key';
-const mail = require('../dist/src/services/mail');
-const runtime = require('../dist/src/services/mail-engine/runtime');
-const { getDb, setDb } = require('../dist/src/state');
+const mail = require('../dist/src/services/mail') as typeof import('../src/services/mail');
+const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const REASONS = ['Mail module disabled', 'Mail background paused'];
 
@@ -28,11 +28,11 @@ function engineSpies(t: import('node:test').TestContext) {
 
 test('background off: periodic admission enqueues nothing; manual and follow-up work still run without lifting it', async t => {
   const old = getDb(); t.after(() => setDb(old));
-  setDb(settingsDb({ enabled: true, background: false }));
+  setDb(settingsDb({ enabled: true, background: false }) as FixtureValue);
   const { resumes, enqueued } = engineSpies(t);
   const periodic = await mail.scheduleMailAccountSync('A', { background: true });
   assert.deepEqual([periodic.started, periodic.skipped], [false, true]);
-  assert.equal((await periodic.promise).skipped, true);
+  assert.equal(((await periodic.promise) as FixtureValue).skipped, true);
   assert.deepEqual(enqueued, [], 'a background tick must not create durable sync work');
   await mail.scheduleMailAccountSync('A', { followUp: true });
   assert.equal(enqueued.length, 1);
@@ -45,7 +45,7 @@ test('background off: periodic admission enqueues nothing; manual and follow-up 
 
 test('background on: periodic sync is admitted as non-manual and never resumes', async t => {
   const old = getDb(); t.after(() => setDb(old));
-  setDb(settingsDb({ enabled: true, background: true }));
+  setDb(settingsDb({ enabled: true, background: true }) as FixtureValue);
   const { resumes, enqueued } = engineSpies(t);
   const job = await mail.scheduleMailAccountSync('A', { background: true });
   assert.equal(job.skipped, undefined);
@@ -56,9 +56,9 @@ test('background on: periodic sync is admitted as non-manual and never resumes',
 // mocked so the job is claimed exactly once.
 function operationJob(t: import('node:test').TestContext, accountId: string, { prefs = {}, needsSync = true }: FixtureValue = {}) {
   const { EventEmitter } = (require('node:events') as typeof import('node:events'));
-  const imapClient = require('../dist/src/services/mail-imap-client');
-  const engine = require('../dist/src/services/mail-engine/operations');
-  const repository = require('../dist/src/services/mail-engine/repository');
+  const imapClient = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+  const engine = require('../dist/src/services/mail-engine/operations') as typeof import('../src/services/mail-engine/operations');
+  const repository = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const followUps: FixtureValue[] = [], completions: FixtureValue[] = [], processed: FixtureValue[] = [];
   let claimed = false, connects = 0;
@@ -81,14 +81,14 @@ function operationJob(t: import('node:test').TestContext, accountId: string, { p
     processed.push(options.background); return { needsSync, connectionFailed: false };
   });
   t.mock.method(mail, 'syncMailAccount', async (id: FixtureValue, options: FixtureValue) => { followUps.push([id, options]); return { success: true }; });
-  setDb({ execute: async (sql: string) => {
+  setDb({ execute: (async (sql: string) => {
     if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: accountId, user_id: 'owner', sync_mode: 'sync', is_active: 1 }]];
     if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: prefs }) }]];
     if (sql.includes('FROM backup_restore_jobs')) return [[]];
     if (sql.includes('FROM mail_writebacks WHERE id=?')) return [[{ id: 'accepted-op' }]];
     if (sql.includes('FROM mail_writebacks WHERE mail_account_id=?')) return [[]];
     assert.fail(`Unexpected SQL: ${sql}`);
-  } });
+  }) } as FixtureValue);
   return { followUps, completions, processed, connects: () => connects, async finished() {
     for (let i = 0; i < 100 && !completions.length; i++) await tick();
     for (let i = 0; i < 5; i++) await tick();
@@ -138,12 +138,12 @@ test('service-worker background trigger uses background admission and reports a 
         : { started: true, promise: Promise.resolve({ success: true }) };
     },
   } } as NodeJS.Module;
-  setDb({ execute: async (sql: string) => {
+  setDb({ execute: (async (sql: string) => {
     if (sql.includes('FROM mail_accounts')) return [[{ id: 'off', last_synced_at: null }, { id: 'on', last_synced_at: null }]];
     assert.fail(sql);
-  } });
-  const routes = require('../dist/src/routes/mail');
-  const result = await routes['POST /api/mail/sync/background']({ url: '/api/mail/sync/background' }, 'owner', {});
+  }) } as FixtureValue);
+  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const result = await routes['POST /api/mail/sync/background']({ url: '/api/mail/sync/background' } as FixtureValue, 'owner', {});
   assert.deepEqual(calls, [['off', { background: true }], ['on', { background: true }]]);
   assert.deepEqual([result.started, result.skipped, result.alreadyRunning], [['on'], ['off'], []]);
 });
@@ -155,7 +155,7 @@ test('module toggle: background off drops read work without fencing; disable sti
   delete require.cache[routePath];
   const saved: FixtureValue = {};
   const stops: FixtureValue[] = [], cancels: FixtureValue[] = [], resumes: FixtureValue[] = [];
-  setDb({ execute: async (sql: string, params: FixtureValue) => {
+  setDb({ execute: (async (sql: string, params: FixtureValue) => {
     if (sql.startsWith('INSERT INTO user_settings')) {
       for (const [id, value] of Object.entries(JSON.parse(params[2]))) saved[id] = { ...saved[id], ...(value as FixtureValue) };
       return [{ affectedRows: 1 }];
@@ -164,19 +164,19 @@ test('module toggle: background off drops read work without fencing; disable sti
     if (sql.includes('FROM mail_accounts')) return [[{ id: 'A', is_active: 1, disconnected_at: null },
       { id: 'B', is_active: 0, disconnected_at: null }]];
     assert.fail(sql);
-  } });
+  }) } as FixtureValue);
   t.mock.method(mail, 'stopMailAccountWork', async (id: FixtureValue, reason: FixtureValue) => { stops.push([id, reason]); return true; });
   t.mock.method(mail, 'cancelMailAccountSync', async (id: FixtureValue) => { cancels.push(id); return true; });
   t.mock.method(runtime, 'resumeAccount', async (input: FixtureValue) => { resumes.push(input); return { resumed: 0, retired: 0 }; });
-  const route = require('../dist/src/routes/modules')['PUT /api/modules'];
-  await route({}, 'owner', { modules: { mail: { background: false } } });
+  const route = (require('../dist/src/routes/modules') as typeof import('../src/routes/modules'))['PUT /api/modules'];
+  await route({} as FixtureValue, 'owner', { modules: { mail: { background: false } } });
   assert.deepEqual(stops, [], 'background off is a scheduling preference, not an account fence');
   assert.deepEqual(cancels, ['A', 'B']);
   assert.deepEqual(resumes, [{ userId: 'owner', accountId: 'A', resumeStreams: false, reasons: REASONS }]);
-  await route({}, 'owner', { modules: { mail: { enabled: false } } });
+  await route({} as FixtureValue, 'owner', { modules: { mail: { enabled: false } } });
   assert.deepEqual(stops, [['A', 'Mail module disabled'], ['B', 'Mail module disabled']]);
   cancels.length = 0; resumes.length = 0;
-  await route({}, 'owner', { modules: { mail: { enabled: true, background: true } } });
+  await route({} as FixtureValue, 'owner', { modules: { mail: { enabled: true, background: true } } });
   assert.deepEqual(cancels, []);
   assert.deepEqual(resumes, [{ userId: 'owner', accountId: 'A', resumeStreams: true, reasons: REASONS }]);
   assert.ok(resumes.every(input => !input.reasons.includes('Deployment canary hold')));

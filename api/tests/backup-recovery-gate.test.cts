@@ -1,4 +1,5 @@
 import type {} from 'node:module';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { spawnSync } = (require('node:child_process') as typeof import('node:child_process'));
@@ -16,20 +17,20 @@ test('the recovery release gate fails rather than skipping unavailable database 
 
 test('recovery gate refuses populated test databases without modifying their data', { skip: !process.env.MYSQL_TEST_HOST }, async () => {
   assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/);
-  const mysql = require('mysql2/promise');
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE });
   let owned = false;
   try {
-    const [tables] = await connection.query('SHOW TABLES');
+    const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES');
     assert.equal(tables.length, 0, 'Use an empty disposable test database');
     await connection.query('CREATE TABLE recovery_gate_sentinel (value INT)');
     owned = true;
-    await connection.query('INSERT INTO recovery_gate_sentinel VALUES (42)');
+    await connection.query<ResultSetHeader>('INSERT INTO recovery_gate_sentinel VALUES (42)');
     const env = { ...process.env }; delete env.NODE_TEST_CONTEXT;
     const result = spawnSync(process.execPath, [path.join(__dirname, '../scripts/test-recovery.cts')], { env, encoding: 'utf8' });
     assert.equal(result.status, 1);
     assert.match(result.stderr, /refuses a non-empty database/);
-    const [rows] = await connection.query('SELECT value FROM recovery_gate_sentinel');
+    const [rows] = await connection.query<RowDataPacket[]>('SELECT value FROM recovery_gate_sentinel');
     assert.deepEqual(rows, [{ value: 42 }]);
   } finally {
     if (owned) await connection.query('DROP TABLE recovery_gate_sentinel');

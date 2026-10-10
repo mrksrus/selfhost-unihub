@@ -1,17 +1,18 @@
 'use strict';
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, With } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 // Disposable MySQL 8 schema ending _test; real installed ImapFlow over loopback TCP.
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const net = (require('node:net') as typeof import('node:net'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const mysql = require('mysql2/promise');
-const { connectImap } = require('../dist/src/services/mail-imap-client');
-const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
-const transport = require('../dist/src/services/mail-engine/transport');
-const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler');
-const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync');
-const { fetchRawBounded } = require('../dist/src/services/mail-engine/content');
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+const { connectImap } = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard');
+const transport = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
+const { createDurableMailScheduler } = require('../dist/src/services/mail-sync-scheduler') as typeof import('../src/services/mail-sync-scheduler');
+const { scanMailboxSlice } = require('../dist/src/services/mail-engine/sync') as typeof import('../src/services/mail-engine/sync');
+const { fetchRawBounded } = require('../dist/src/services/mail-engine/content') as typeof import('../src/services/mail-engine/content');
 
 const now = () => performance.now();
 const waitFor = async (predicate: FixtureValue, label: string, ms = 12000) => {
@@ -137,7 +138,7 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
     const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
       user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD,
       database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 12 });
-    const state = require('../dist/src/state'), priorDb = state.getDb();
+    const state = require('../dist/src/state') as typeof import('../src/state'), priorDb = state.getDb();
     let ownsSchema = false, peer: FixtureValue, scheduler: FixtureValue, arrivals: FixtureValue;
     t.after(async () => {
       clearInterval(arrivals); await scheduler?.stop();
@@ -148,7 +149,7 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
             const cx = await pool.getConnection();
             try {
               await cx.query('SET FOREIGN_KEY_CHECKS=0');
-              try { for (const table of (await cx.query('SHOW TABLES'))[0]) {
+              try { for (const table of (await cx.query<RowDataPacket[]>('SHOW TABLES'))[0]) {
                 const name = Object.values(table)[0]; assert.match((name as string), /^[a-z_]+$/);
                 await cx.query(`DROP TABLE \`${name}\``);
               } } finally { await cx.query('SET FOREIGN_KEY_CHECKS=1'); }
@@ -158,37 +159,37 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
       }
     });
     assert.match((await queryOne(pool, 'SELECT VERSION() AS version')).version, /MariaDB/);
-    assert.equal((await pool.query('SHOW TABLES'))[0].length, 0);
+    assert.equal((await pool.query<RowDataPacket[]>('SHOW TABLES'))[0].length, 0);
     ownsSchema = true; state.setDb(pool);
-    await require('../dist/src/services/database').ensureSchema();
+    await (require('../dist/src/services/database') as typeof import('../src/services/database')).ensureSchema();
     peer = await startPeer();
-    const runtime = require('../dist/src/services/mail-engine/runtime');
-    const repo = require('../dist/src/services/mail-engine/repository');
-    const admission = require('../dist/src/services/mail-writebacks');
-    const operations = require('../dist/src/services/mail-engine/operations');
+    const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+    const repo = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+    const admission = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+    const operations = require('../dist/src/services/mail-engine/operations') as typeof import('../src/services/mail-engine/operations');
     const identities: FixtureValue = {};
     for (const label of ['A', 'B', 'C']) {
       const userId = crypto.randomUUID(), accountId = crypto.randomUUID();
       identities[label] = { id: accountId, user_id: userId, sync_mode: 'sync' };
-      await pool.execute('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)',
+      await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)',
         [userId, `${label.toLowerCase()}@fixture.test`, 'synthetic']);
-      await pool.execute(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active)
+      await pool.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active)
         VALUES (?,?,?,'custom','sync',TRUE)`, [accountId,userId,`${label.toLowerCase()}@fixture.test`]);
     }
     const mailbox: FixtureValue = {};
     for (const label of ['A', 'B', 'C']) {
       const account = identities[label];
-      mailbox[label] = await repo.withTransaction((cx: FixtureValue) => repo.ensureMailbox({ userId: account.user_id,
+      mailbox[label] = await repo.withTransaction((cx) => repo.ensureMailbox({ userId: account.user_id,
         accountId: account.id, folderName: 'INBOX', epoch: 9 }, cx), pool);
     }
     const email: FixtureValue = {};
     async function seed(label: string, uid: FixtureValue, contentState: FixtureValue, imported = false) {
       const account = identities[label], id = crypto.randomUUID();
-      await pool.execute(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,
+      await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,from_address,to_addresses,folder,
         source_folder,remote_folder,remote_uid,remote_uidvalidity,imap_uid,imap_uidvalidity,content_state,import_complete)
         VALUES (?,?,?,'synthetic@example.test','[]','inbox','INBOX','INBOX',?,9,?,9,?,?)`,
       [id,account.user_id,account.id,uid,uid,contentState,imported]);
-      await repo.withTransaction((cx: FixtureValue) => repo.upsertOccurrence({ userId:account.user_id, accountId:account.id,
+      await repo.withTransaction((cx) => repo.upsertOccurrence({ userId:account.user_id, accountId:account.id,
         mailboxId:mailbox[label].id, epoch:9, uid, emailId:id, flags:[] },cx), pool);
       return id;
     }
@@ -196,13 +197,13 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
     email.flag = await seed('A',500,'complete',true); email.move = await seed('A',501,'complete',true);
     const accountA = identities.A;
     const folderId = crypto.randomUUID();
-    await pool.execute("INSERT INTO mail_folders (id,user_id,slug,display_name,is_system,mail_account_id) VALUES (?,?,'filed','Filed',FALSE,?)",
+    await pool.execute<ResultSetHeader>("INSERT INTO mail_folders (id,user_id,slug,display_name,is_system,mail_account_id) VALUES (?,?,'filed','Filed',FALSE,?)",
       [folderId,accountA.user_id,accountA.id]);
-    await pool.execute("INSERT INTO mail_folder_remote_boxes (folder_id,mail_account_id,remote_name) VALUES (?,?,'Filed')",
+    await pool.execute<ResultSetHeader>("INSERT INTO mail_folder_remote_boxes (folder_id,mail_account_id,remote_name) VALUES (?,?,'Filed')",
       [folderId,accountA.id]);
     const start: FixtureValue[] = [], finish: FixtureValue[] = [], scans: FixtureValue[] = [], bodies: FixtureValue[] = [], ms: FixtureValue = {}, issues: FixtureValue[] = [];
     let transientDeadlocks = 0, recentEnqueuePending = false;
-    scheduler = createDurableMailScheduler(async (job: FixtureValue, signal: FixtureValue, report: FixtureValue) => {
+    scheduler = createDurableMailScheduler(async (job, signal, report) => {
       const label = Object.keys(identities).find(key => identities[key].id === job.mail_account_id);
       const account = identities[(label as FixtureValue)];
       let cx;
@@ -212,14 +213,14 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
           // History slices queue C's own bodies ahead of further history. Like
           // a real body slice, fetch C's newest queued message and mark a batch
           // imported; the scheduler requeues the body while content stays queued.
-          const [queued] = label === 'C' ? await pool.execute(`SELECT e.id,o.uid FROM emails e
+          const [queued] = label === 'C' ? await pool.execute<RowDataPacket[]>(`SELECT e.id,o.uid FROM emails e
             JOIN mail_remote_occurrences o ON o.email_id=e.id AND o.mail_account_id=e.mail_account_id
             WHERE e.mail_account_id=? AND e.content_state='queued' ORDER BY o.uid DESC LIMIT 25`,[account.id]) : [[{ uid:499 }]];
           if (!queued.length) return { success:true, more:false };
           await transport.selectMailbox(cx,{ folder:'INBOX', readOnly:true, signal });
           const raw = await fetchRawBounded(transport, cx, { folder:'INBOX',uidvalidity:9,uid:Number(queued[0].uid) },
             { signal, timeoutMs:60000 });
-          if (label === 'C') await pool.query(`UPDATE emails SET content_state='complete',import_complete=TRUE
+          if (label === 'C') await pool.query<ResultSetHeader>(`UPDATE emails SET content_state='complete',import_complete=TRUE
             WHERE id IN (?)`,[queued.map((q: FixtureValue)=>q.id)]);
           bodies.push({ label, bytes:raw.length, at:now() });
           return { success:true, more:false };
@@ -231,7 +232,7 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
         }
         const result = await scanMailboxSlice({ db:pool,connection:cx,account,
           folder:{folderName:'INBOX',dbFolderName:'inbox'},stream:job.kind,signal,job,report });
-        scans.push({ label, stream:job.kind, through:result.through, upper:result.upper, currentUpper:result.currentUpper,
+        scans.push({ label, stream:job.kind, through:(result as With<typeof result, 'through'>).through, upper:result.upper, currentUpper:result.currentUpper,
           processed:result.processed, more:result.more, at:now() });
         return { success:true, more:result.more };
       } catch (error: FixtureValue) {
@@ -240,7 +241,7 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
         throw error;
       } finally { if (cx) closeImapConnection(cx); }
     }, { concurrency:2, pollMs:100, leaseSeconds:30,
-      onState:(s: FixtureValue) => { if (s.id && s.state === 'running') start.push({ id:s.id,kind:s.kind,at:now() });
+      onState:(s) => { if (s.id && s.state === 'running') start.push({ id:s.id,kind:s.kind,at:now() });
         if (s.id && ['idle','cancelled','error'].includes(s.state)) finish.push({ id:s.id,kind:s.kind,state:s.state,at:now() }); } });
     const bodyJobs: FixtureValue = {};
     for (const label of ['A','B']) bodyJobs[label] = await runtime.enqueueJob({userId:identities[label].user_id,
@@ -299,8 +300,8 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
     await scheduler.drain();
     await waitFor(async () => (await queryOne(pool,"SELECT COUNT(*) AS n FROM mail_writebacks WHERE mail_account_id=? AND state='confirmed'",[accountA.id])).n===2,
       'accepted read and MOVE provider verification',12000);
-    const ops = (await pool.execute('SELECT action,state,status,attempts FROM mail_writebacks WHERE mail_account_id=? ORDER BY action',[accountA.id]))[0];
-    assert.deepEqual(ops.map((o: FixtureValue)=>[o.action,o.state,o.attempts]),[['move','confirmed',1],['read','confirmed',1]]);
+    const ops = (await pool.execute<RowDataPacket[]>('SELECT action,state,status,attempts FROM mail_writebacks WHERE mail_account_id=? ORDER BY action',[accountA.id]))[0];
+    assert.deepEqual(ops.map((o)=>[o.action,o.state,o.attempts]),[['move','confirmed',1],['read','confirmed',1]]);
     ms.confirmed = now()-before;
     await waitFor(() => scans.some(s=>s.label==='C' && s.stream==='history' && s.through >= 260) && peer.arrivalCount >= 8,
       'finite history continues under arrivals and stalled B body',20000);
@@ -309,7 +310,7 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
       await waitFor(() => scans.some(s=>s.label==='C' && s.stream==='recent' && s.through >= 260+peer.arrivalCount),
         'recent arrivals caught without restarting history',12000);
     } catch (error) {
-      const [pendingJobs] = await pool.execute(`SELECT kind,state,phase,priority,processed,coverage_json FROM mail_engine_jobs
+      const [pendingJobs] = await pool.execute<RowDataPacket[]>(`SELECT kind,state,phase,priority,processed,coverage_json FROM mail_engine_jobs
         WHERE mail_account_id=? ORDER BY created_at`, [identities.C.id]);
       console.log('RESPONSIVENESS_DIAGNOSTIC '+JSON.stringify({ arrivals:peer.arrivalCount,
         scans:scans.filter(s=>s.label==='C'), pendingJobs, issues, transientDeadlocks:transientDeadlocks }));
@@ -332,11 +333,11 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
     assert.equal(peer.commands.filter((x: FixtureValue)=>/UID (?:COPY|EXPUNGE)/.test(x.cmd)).length,0);
     assert.deepEqual(issues,[]);
     assert.equal(finish.find(s=>s.id===bodyJobs.A.id)?.state,'idle','interactive yield is continuation, not cancellation');
-    const [cursors] = await pool.execute(`SELECT stream,covered_through,coverage_json FROM mail_engine_cursors
+    const [cursors] = await pool.execute<RowDataPacket[]>(`SELECT stream,covered_through,coverage_json FROM mail_engine_cursors
       WHERE mail_account_id=? ORDER BY stream`,[identities.C.id]);
     const latest = peer.arrivalCount+260;
-    assert(Number(cursors.find((c: FixtureValue)=>c.stream==='history').covered_through)>=260);
-    assert(Number(cursors.find((c: FixtureValue)=>c.stream==='recent').covered_through)>=latest);
+    assert(Number(cursors.find((c)=>c.stream==='history')!.covered_through)>=260);
+    assert(Number(cursors.find((c)=>c.stream==='recent')!.covered_through)>=latest);
     const observed = await queryOne(pool,`SELECT COUNT(*) AS n FROM mail_remote_occurrences
       WHERE mail_account_id=? AND uidvalidity=9 AND uid BETWEEN 261 AND ?`,[identities.C.id,latest]);
     assert.equal(observed.n,peer.arrivalCount);
@@ -370,7 +371,7 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
     const stoppedJob = await runtime.enqueueJob({userId:identities.C.user_id,accountId:identities.C.id,
       mailboxId:mailbox.C.id,kind:'recent',priority:10},pool);
     let heldClaim: FixtureValue, releaseClaim: FixtureValue, unexpectedRuns = 0;
-    const stoppingScheduler = createDurableMailScheduler(() => { unexpectedRuns++; }, {
+    const stoppingScheduler = createDurableMailScheduler((() => { unexpectedRuns++; }) as FixtureValue, {
       workerId:'stopped-claim',pollMs:60000,repository:{...runtime,
         async claimDueJob(input: FixtureValue) {
           const claimed = await runtime.claimDueJob({...input,kinds:['recent'],accountId:identities.C.id},pool);
@@ -393,14 +394,14 @@ test('real MySQL + IMAP TCP + durable scheduler: two held bodies, accepted write
     await assert.rejects(runtime.assertFence({jobId:heldClaim.id,accountId:identities.C.id,
       workerId:'stopped-claim',generation:Number(heldClaim.worker_generation)},pool),{code:'MAIL_WORKER_FENCED'});
     const replacement = await runtime.claimDueJob({workerId:'replacement',kinds:['recent'],accountId:identities.C.id},pool);
-    assert.equal(replacement.id,stoppedJob.id,'shutdown retains the accepted job identity');
-    await runtime.completeJob({jobId:replacement.id,accountId:identities.C.id,workerId:'replacement',
-      generation:Number(replacement.worker_generation)},pool);
+    assert.equal(replacement!.id,stoppedJob.id,'shutdown retains the accepted job identity');
+    await runtime.completeJob({jobId:replacement!.id,accountId:identities.C.id,workerId:'replacement',
+      generation:Number(replacement!.worker_generation)},pool);
     const mem = process.memoryUsage();
     console.log('RESPONSIVENESS_EVIDENCE '+JSON.stringify({fixture:{accounts:3,initialHistoricalUids:260,
       uidWindow:128,heldBodyJobs:2,arrivals:peer.arrivalCount},latencyMs:ms,
       historyWindows:cHistory.map(s=>({through:s.through,upper:s.upper,currentUpper:s.currentUpper})),
-      recentThrough:Number(cursors.find((c: FixtureValue)=>c.stream==='recent').covered_through),
+      recentThrough:Number(cursors.find((c)=>c.stream==='recent')!.covered_through),
       observedArrivals:observed.n,heapUsedBytes:mem.heapUsed,rssBytes:mem.rss,
       providerCommands:peer.commands.length,confirmedOperations:ops.length,
       transientDeadlockRetries:transientDeadlocks,errors:issues.length}));

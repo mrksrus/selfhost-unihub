@@ -1,10 +1,10 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { setDb } = require('../dist/src/state');
-const writes = require('../dist/src/services/mail-writebacks');
-const settle = require('../dist/src/services/mail-engine/reconciliation');
-const ops = require('../dist/src/services/mail-engine/operations');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
+const writes = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+const settle = require('../dist/src/services/mail-engine/reconciliation') as typeof import('../src/services/mail-engine/reconciliation');
+const ops = require('../dist/src/services/mail-engine/operations') as typeof import('../src/services/mail-engine/operations');
 
 function model() {
   const userId = 'owner', accountId = 'account';
@@ -146,9 +146,9 @@ test('acknowledgment-first verified COPYUID settles a destination that scanner i
   f.cx.rollback = async () => {}; f.cx.release = () => {};
   f.op.state = 'queued'; f.op.is_current = 1; f.op.dispatched = 0;
   f.email.remote_uidvalidity = 9;
-  const transport = require('../dist/src/services/mail-engine/transport');
-  const runtime = require('../dist/src/services/mail-engine/runtime');
-  const repository = require('../dist/src/services/mail-engine/repository');
+  const transport = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+  const repository = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
   const history: FixtureValue[] = [];
   const original = f.cx.execute;
   f.cx.execute = async (sql: string, args: FixtureValue[] = []) => {
@@ -168,7 +168,7 @@ test('acknowledgment-first verified COPYUID settles a destination that scanner i
     }
     return original(sql, args);
   };
-  setDb({ execute: f.cx.execute, getConnection: async () => f.cx });
+  setDb({ execute: f.cx.execute, getConnection: async () => f.cx } as FixtureValue);
   t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
   t.mock.method(runtime, 'beginOperationAttempt', async () => {
     f.op.dispatched = 1; f.op.state = 'executing'; return { id: 'attempt' };
@@ -182,7 +182,7 @@ test('acknowledgment-first verified COPYUID settles a destination that scanner i
   t.mock.method(transport, 'nativeMove', async (_: FixtureValue, __: FixtureValue, { beforeDispatch }: FixtureValue) => {
     await beforeDispatch(); return { transmission: 'possible', completion: 'ok', mappingStatus: 'valid', mapping };
   });
-  const outcome = await ops.applyMove(f.op, {}, 1, null, 'worker', 'job');
+  const outcome = await ops.applyMove(f.op, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job');
   assert.equal(outcome.connectionFailed, undefined, JSON.stringify(history));
   assert.equal(outcome.needsSync, true);
   assert.equal(f.op.state, 'confirmed'); assert.equal(f.destination.email_id, 'item');
@@ -196,15 +196,15 @@ test('idempotency key syntax, canonical payload, bounded backoff and no dispatch
   for (const key of ['', '\n', ' ', 'x'.repeat(129)]) assert.throws(() => writes.keyCheck(key), { status: 400 });
   assert.equal(writes.keyCheck('safe-key_1'), 'safe-key_1');
   assert(ops.retryDelay(5) > ops.retryDelay(2)); assert(ops.retryDelay(500) <= 3600);
-  await assert.rejects(ops.processDueOperations({ id: 'a', user_id: 'u' }, {}, {}), { code: 'MAIL_WORKER_FENCED' });
+  await assert.rejects(ops.processDueOperations({ id: 'a', user_id: 'u' }, {} as FixtureValue, {}), { code: 'MAIL_WORKER_FENCED' });
 });
 test('receipt readback is owner-scoped and replays the original admission response', async () => {
   const response = { message: 'Provider changes queued', operation_ids: ['one'], accepted_revision: 1, sync_pending: true };
-  setDb({ execute: async (sql: string, args: FixtureValue) => {
+  setDb({ execute: (async (sql: string, args: FixtureValue) => {
     if (sql.includes('mail_command_receipts')) return [[args[0] === 'owner' ? { response_json: JSON.stringify(response) } : null].filter(Boolean)];
     if (sql.includes('mail_writebacks')) return [[{ id: 'one', is_current: 1, action: 'move', dispatched: 1, state: 'reconciling' }]];
     throw new Error(`Unexpected ${sql}`);
-  } });
+  }) } as FixtureValue);
   assert.deepEqual(await writes.getOperationReceipt('stranger', 'key'), { found: false, response: null, operations: [] });
   const found = await writes.getOperationReceipt('owner', 'key');
   assert.equal(found.found, true); assert.deepEqual(found.response, response);
@@ -212,16 +212,16 @@ test('receipt readback is owner-scoped and replays the original admission respon
 });
 test('restored receipt warns instead of promising provider acceptance; default list retains unresolved history', async () => {
   const queries: FixtureValue[] = [];
-  setDb({ execute: async (sql: string, args: FixtureValue) => {
+  setDb({ execute: (async (sql: string, args: FixtureValue) => {
     queries.push({ sql, args });
     if (sql.includes('mail_command_receipts')) return [[{ response_json: JSON.stringify({
       message: 'Provider changes queued', operation_ids: ['old'], sync_pending: true, recovery_required: true }) }]];
     return [[{ id: 'old', state: 'needs_attention', status: 'conflict', is_current: 0,
       action: 'move', dispatched: 1 }]];
-  } });
+  }) } as FixtureValue);
   const receipt = await writes.getOperationReceipt('owner', 'restored-key');
-  assert.equal(receipt.found, true); assert.equal(receipt.response.recovery_required, true);
-  assert.equal(receipt.response.sync_pending, false); assert.match(receipt.response.message, /revalidation/);
+  assert.equal(receipt.found, true); assert.equal(receipt.response!.recovery_required, true);
+  assert.equal(receipt.response!.sync_pending, false); assert.match(receipt.response!.message!, /revalidation/);
   const recent = await writes.listWritebacks('owner', { accountId: 'account' });
   assert.equal(recent.operations[0].retry_action, 'check_outcome');
   assert.match(queries.at(-1).sql, /is_current=TRUE OR state IN/);
@@ -232,7 +232,7 @@ test('restored receipt warns instead of promising provider acceptance; default l
 });
 test('admission commits receipt, intent and job together; exact replay never appends', async t => {
   const receipts = new Map(), admitted: FixtureValue[] = [], jobs: FixtureValue[] = [], history: FixtureValue[] = [], nudged: FixtureValue[] = [];
-  t.mock.method(require('../dist/src/services/mail'), 'runMailOperationsNow', async (id: FixtureValue, options: FixtureValue) => { nudged.push([id, options]); return true; });
+  t.mock.method((require('../dist/src/services/mail') as typeof import('../src/services/mail')), 'runMailOperationsNow', async (id: FixtureValue, options: FixtureValue) => { nudged.push([id, options]); return true; });
   const email = { id: 'item', user_id: 'owner', mail_account_id: 'account', sync_mode: 'sync', is_active: 1,
     remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9, is_read: 0 };
   const cx: FixtureValue = {
@@ -266,15 +266,15 @@ test('admission commits receipt, intent and job together; exact replay never app
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };
-  setDb({ execute: cx.execute, getConnection: async () => cx });
+  setDb({ execute: cx.execute, getConnection: async () => cx } as FixtureValue);
   const first = await writes.mutateMessages('owner', ['item'], { read: true }, async () => {}, { idempotencyKey: 'request-1' });
-  assert.equal(first.operation_ids.length, 1); assert.deepEqual(jobs, first.operation_ids);
+  assert.equal(first.operation_ids!.length, 1); assert.deepEqual(jobs, first.operation_ids);
   const second = await writes.mutateMessages('owner', ['item'], { read: 1 }, async () => {}, { idempotencyKey: 'request-1' });
   assert.deepEqual(second, first); assert.equal(admitted.length, 1);
   await assert.rejects(writes.mutateMessages('owner', ['item'], { read: false }, async () => {}, { idempotencyKey: 'request-1' }), { status: 409 });
   assert.equal(admitted.length, 1);
   const reversed = await writes.mutateMessages('owner', ['item'], { read: false }, async () => {}, { idempotencyKey: 'request-2' });
-  assert.notEqual(reversed.operation_ids[0], first.operation_ids[0]); assert.equal(admitted.length, 2);
+  assert.notEqual(reversed.operation_ids![0], first.operation_ids![0]); assert.equal(admitted.length, 2);
   assert.equal(admitted[0].is_current, 0); assert.equal(admitted[1].is_current, 1);
   assert(history.some(sql => sql.includes('FOR UPDATE')));
   await new Promise(resolve => setImmediate(resolve));
@@ -297,19 +297,19 @@ test('dispatch attempt is committed before mutation and stale lease cannot fence
       if (sql.includes('SELECT * FROM mail_operation_attempts WHERE id')) return [[{ id: args[0] }]];
       return [{ affectedRows: 1 }];
     } };
-  setDb({ execute: cx.execute, getConnection: async () => cx });
-  const id = await ops.beginDispatch(op, 1, '9007199254740993123', 'worker', 'job');
+  setDb({ execute: cx.execute, getConnection: async () => cx } as FixtureValue);
+  const id = await ops.beginDispatch(op as FixtureValue, 1, '9007199254740993123', 'worker', 'job');
   assert.match(id, /^[0-9a-f-]{36}$/);
   const journal = steps.findIndex(s => s.startsWith('INSERT INTO mail_operation_attempts'));
   const fence = steps.findIndex(s => s.startsWith('UPDATE mail_writebacks SET state ='));
   const commit = steps.lastIndexOf('commit');
   assert(journal > 0 && fence > journal && commit > fence);
   leaseActive = false;
-  await assert.rejects(ops.beginDispatch(op, 1, '9007199254740993123', 'worker', 'job'), { code: 'STALE_FENCE' });
+  await assert.rejects(ops.beginDispatch(op as FixtureValue, 1, '9007199254740993123', 'worker', 'job'), { code: 'STALE_FENCE' });
   assert.equal(steps.filter(s => s.startsWith('INSERT INTO mail_operation_attempts')).length, 1);
 });
 test('no-COPYUID after crash performs only bounded reads, records ambiguity and never repeats MOVE', async t => {
-  const transport = require('../dist/src/services/mail-engine/transport');
+  const transport = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
   const calls: FixtureValue[] = [];
   t.mock.method(transport, 'nativeMove', () => { assert.fail('second MOVE must not run'); });
   t.mock.method(transport, 'selectMailbox', async (_: FixtureValue, { folder, readOnly }: FixtureValue) => {
@@ -341,8 +341,8 @@ test('no-COPYUID after crash performs only bounded reads, records ambiguity and 
       }
       throw new Error(`Unexpected SQL ${sql}`);
     } };
-  setDb({ execute: cx.execute, getConnection: async () => cx });
-  assert.deepEqual(await ops.processDueOperations({ id: 'account', user_id: 'owner' }, {},
+  setDb({ execute: cx.execute, getConnection: async () => cx } as FixtureValue);
+  assert.deepEqual(await ops.processDueOperations({ id: 'account', user_id: 'owner' }, {} as FixtureValue,
     { workerId: 'worker', workerGeneration: 1, jobId: 'job' }), { needsSync: false, connectionFailed: false });
   assert.equal(state, 'needs_attention');
   assert.equal(attemptNeedsAttention, true, 'Unresolved attempt must not remain falsely reconciling after its bounded check');
@@ -352,8 +352,8 @@ test('no-COPYUID after crash performs only bounded reads, records ambiguity and 
     ['select', 'Filed', true], ['fetch', 'Filed', 272, 399]]);
 });
 test('cancellation or lease loss between SELECT and FETCH prevents every subsequent provider command', async t => {
-  const transport = require('../dist/src/services/mail-engine/transport');
-  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const transport = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
   const op = { id: 'flag', user_id: 'owner', mail_account_id: 'account', email_id: 'item',
     action: 'read', remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9 };
   let fence = 'valid', commands = 0;
@@ -368,15 +368,15 @@ test('cancellation or lease loss between SELECT and FETCH prevents every subsequ
   });
   t.mock.method(transport, 'fetchMetadataWindow', () => assert.fail('FETCH after cancellation/fence loss'));
   t.mock.method(transport, 'setFlag', () => assert.fail('STORE after cancellation/fence loss'));
-  setDb({ execute: async (sql: string) => {
+  setDb({ execute: (async (sql: string) => {
     if (sql.includes('SELECT observation_revision FROM emails')) return [[{ observation_revision: 0 }]];
     if (sql.includes('backup_restore_jobs') || sql.includes('user_settings')) return [[]];
     throw new Error(`Unexpected SQL ${sql}`);
-  } });
-  await assert.rejects(ops.applyFlag(op, {}, 1, null, 'worker', 'job'), { code: 'MAIL_WORKER_FENCED' });
+  }) } as FixtureValue);
+  await assert.rejects(ops.applyFlag(op as FixtureValue, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job'), { code: 'MAIL_WORKER_FENCED' });
   assert.equal(commands, 1);
   fence = 'lost';
-  await assert.rejects(ops.applyFlag(op, {}, 1, null, 'worker', 'job'), { code: 'MAIL_WORKER_FENCED' });
+  await assert.rejects(ops.applyFlag(op as FixtureValue, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job'), { code: 'MAIL_WORKER_FENCED' });
   assert.equal(commands, 1, 'lease loss before SELECT makes zero further commands');
 });
 test('stale scan revision cannot repaint a confirmed flag after overlay retires', async () => {

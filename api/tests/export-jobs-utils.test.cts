@@ -12,8 +12,8 @@ const {
   ZIP32_MAX_ENTRIES,
   ZIP32_MAX_FILENAME_BYTES,
   writeZip,
-} = require('../dist/src/services/export-jobs');
-const { setDb } = require('../dist/src/state');
+} = require('../dist/src/services/export-jobs') as typeof import('../src/services/export-jobs');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
@@ -52,7 +52,7 @@ test('crc32Buffer matches known CRC32 value', () => {
 });
 
 test('writeZip preserves long backup filenames including extensions', async () => {
-  const { readZipEntries } = require('../dist/src/services/backup');
+  const { readZipEntries } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-zip-name-'));
   const zipPath = path.join(dir, 'backup.zip');
   const longName = 'files/mail-attachments/0a6fbcc5-351e-47cf-92a4-7b7193dbd401-8d2608f7-8d3e-4078-912d-5ea7198aa2d8-0a6fbcc5-351e-47cf-92a4-7b7193dbd401-logo-gray.png';
@@ -64,7 +64,7 @@ test('writeZip preserves long backup filenames including extensions', async () =
 });
 
 test('writeZip streams file-backed entries into the archive', async () => {
-  const { readZipEntries } = require('../dist/src/services/backup');
+  const { readZipEntries } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-zip-file-'));
   const sourcePath = path.join(dir, 'source.eml');
   const zipPath = path.join(dir, 'backup.zip');
@@ -111,10 +111,10 @@ test('export worker drains more than 25 jobs sequentially', async (t) => {
       assert.match(sql, /WHERE status = 'queued'/);
       return [[pending.shift()].filter(Boolean)];
     },
-  });
+  } as FixtureValue);
   t.after(() => setDb(null));
 
-  await pumpDataExportJobs(async (jobId: FixtureValue) => {
+  await pumpDataExportJobs(async (jobId) => {
     active += 1;
     maxActive = Math.max(maxActive, active);
     await new Promise(resolve => setTimeout(resolve, 1));
@@ -134,7 +134,7 @@ test('restart recovery reconciles every pending export without a row limit', asy
       if (sql.includes('COUNT(*) AS pending_jobs')) return [[{ pending_jobs: 31 }]];
       return [{ affectedRows: 0 }];
     },
-  });
+  } as FixtureValue);
   t.after(() => setDb(null));
 
   const resumed = await resumePendingDataExportJobs({ schedule: false });
@@ -174,15 +174,15 @@ test('queued export cancellation finalizes the job without running it', async (t
       }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
-  });
+  } as FixtureValue);
   t.after(() => setDb(null));
 
-  const result = await cancelDataExportJob(42, job.id);
+  const result = await cancelDataExportJob(42 as FixtureValue, job.id);
 
   assert.equal(updateCount, 1);
-  assert.equal(result.job.status, 'cancelled');
-  assert.equal(result.job.cancel_requested, true);
-  assert.equal(result.job.progress, 100);
+  assert.equal(result.job!.status, 'cancelled');
+  assert.equal(result.job!.cancel_requested, true);
+  assert.equal(result.job!.progress, 100);
 });
 
 test('deleting an export retains a key referenced by an uploaded restore archive', async (t) => {
@@ -228,7 +228,7 @@ test('deleting an export retains a key referenced by an uploaded restore archive
       }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
-  });
+  } as FixtureValue);
   t.after(() => setDb(null));
 
   const result = await deleteDataExportJob(job.user_id, job.id);

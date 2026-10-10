@@ -3,9 +3,9 @@ import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const net = (require('node:net') as typeof import('node:net'));
-const { connectImap } = require('../dist/src/services/mail-imap-client');
-const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
-const { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove } = require('../dist/src/services/mail-engine/transport');
+const { connectImap } = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+const { guardImapConnection, closeImapConnection } = require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard');
+const { selectMailbox, fetchMetadataWindow, fetchRawMessage, setFlag, nativeMove } = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
 
 async function peer({ move = true, condstore = true, reply = 'tagged', uidvalidity = 9, raw = Buffer.from([0, 255, 128, 13, 10, 0x3d, 0x20, 0x0a]), stall = false, metadata = 'normal', highest = '9007199254740993123', itemModseq = '9007199254740993123' }: FixtureValue = {}) {
   const commands: FixtureValue[] = [], sockets = new Set<import('node:net').Socket>();
@@ -177,7 +177,7 @@ test('MOVE deadline retains possible transmission; late reply cannot confirm', a
 test('aborted in-flight MOVE closes the connection and preserves uncertain transmission', async t => {
   const { fixture, connection } = await setup(t, { stall: true });
   const controller = new AbortController();
-  const socket = connection.socket;
+  const socket = (connection as FixtureValue).socket;
   const attempt = nativeMove(connection, moveRequest, { beforeDispatch: async () => {}, signal: controller.signal });
   await new Promise(resolve => setTimeout(resolve, 30));
   assert.equal(fixture.commands.filter(cmd => cmd.startsWith('UID MOVE')).length, 1);

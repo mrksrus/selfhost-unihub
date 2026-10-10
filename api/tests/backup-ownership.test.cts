@@ -5,8 +5,8 @@ const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
-const { chooseTargetId, writeOwnedRow, resolveOwnedReference, validateRestoreRows } = require('../dist/src/services/backup-ownership');
-const { validateBackupPayload, importBackupForUser } = require('../dist/src/services/backup');
+const { chooseTargetId, writeOwnedRow, resolveOwnedReference, validateRestoreRows } = require('../dist/src/services/backup-ownership') as typeof import('../src/services/backup-ownership');
+const { validateBackupPayload, importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
 
 test('restore allocates fresh IDs unless deliberately matching a same-owner row', () => {
   for (const mode of ['keep_existing', 'replace', 'keep_both']) {
@@ -29,7 +29,7 @@ test('unexpected global ID collision fails without an unscoped update', async ()
     if (sql.startsWith('INSERT')) throw Object.assign(new Error('Duplicate primary key'), { code: 'ER_DUP_ENTRY' });
     throw new Error('Unexpected write');
   } };
-  await assert.rejects(writeOwnedRow(connection, 'importer', 'contacts', ['id', 'user_id', 'first_name'], ['occupied', 'importer', 'Changed'], ['first_name']), /Duplicate primary key/);
+  await assert.rejects(writeOwnedRow(connection as FixtureValue, 'importer', 'contacts', ['id', 'user_id', 'first_name'], ['occupied', 'importer', 'Changed'], ['first_name']), /Duplicate primary key/);
   assert.ok(calls.every(call => !call.sql.includes('ON DUPLICATE') && !call.sql.startsWith('UPDATE')));
   assert.deepEqual(victim, { id: 'occupied', user_id: 'victim', first_name: 'Original' });
 });
@@ -37,7 +37,7 @@ test('unexpected global ID collision fails without an unscoped update', async ()
 test('matched updates are constrained by both primary key and owner', async () => {
   const calls: FixtureValue[] = [];
   const connection = { async execute(sql: string, params: FixtureValue) { calls.push({ sql, params }); return sql.startsWith('SELECT') ? [[{ id: 'owned' }]] : [{ affectedRows: 1 }]; } };
-  await writeOwnedRow(connection, 'importer', 'contacts', ['id', 'user_id', 'first_name'], ['owned', 'importer', 'Changed'], ['first_name']);
+  await writeOwnedRow(connection as FixtureValue, 'importer', 'contacts', ['id', 'user_id', 'first_name'], ['owned', 'importer', 'Changed'], ['first_name']);
   assert.match(calls[1].sql, /WHERE `id` = \? AND user_id = \?$/);
   assert.deepEqual(calls[1].params, ['Changed', 'owned', 'importer']);
 });
@@ -45,13 +45,13 @@ test('matched updates are constrained by both primary key and owner', async () =
 test('legacy parent fallbacks require ownership, while imported parents use their remapped IDs', async () => {
   const calls: FixtureValue[] = [];
   const connection = { async execute(sql: string, params: FixtureValue) { calls.push({ sql, params }); return [[]]; } };
-  assert.equal(await resolveOwnedReference(connection, 'importer', 'emails', 'old', new Map([['old', 'new']])), 'new');
+  assert.equal(await resolveOwnedReference(connection as FixtureValue, 'importer', 'emails', 'old', new Map([['old', 'new']])), 'new');
   assert.equal(calls.length, 0);
-  await assert.rejects(resolveOwnedReference(connection, 'importer', 'emails', 'foreign', new Map()), /unavailable emails record/);
+  await assert.rejects(resolveOwnedReference(connection as FixtureValue, 'importer', 'emails', 'foreign', new Map()), /unavailable emails record/);
   assert.match(calls[0].sql, /id = \? AND user_id = \? FOR UPDATE/);
   assert.deepEqual(calls[0].params, ['foreign', 'importer']);
-  await assert.rejects(resolveOwnedReference(connection, 'importer', 'emails', null, new Map()), /missing/);
-  assert.equal(await resolveOwnedReference(connection, 'importer', 'calendar_calendars', null, new Map(), { nullable: true }), null);
+  await assert.rejects(resolveOwnedReference(connection as FixtureValue, 'importer', 'emails', null, new Map()), /missing/);
+  assert.equal(await resolveOwnedReference(connection as FixtureValue, 'importer', 'calendar_calendars', null, new Map(), { nullable: true }), null);
 });
 
 test('ambiguous duplicate imported IDs are rejected before writing', () => {
@@ -84,5 +84,5 @@ test('file-range recording validation reads the archive entry boundary, not an u
   delete backup.files[0].data_base64;
   const result = await importBackupForUser('importer', backup, { fileSourcesByPath: new Map([['files/recording', { filePath, start: prefix.length, size: html.length }]]) });
   assert.equal(result.valid, false);
-  assert.match(result.errors.join(' '), /not supported audio/);
+  assert.match(result.errors!.join(' '), /not supported audio/);
 });

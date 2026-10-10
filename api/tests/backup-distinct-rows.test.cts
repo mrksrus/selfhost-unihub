@@ -1,8 +1,8 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { setDb } = require('../dist/src/state');
-const { importBackupForUser } = require('../dist/src/services/backup');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
+const { importBackupForUser } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
 
 // Model the relevant SQL lookups, including rows inserted earlier in the restore.
 function database(t: import('node:test').TestContext) {
@@ -15,7 +15,7 @@ function database(t: import('node:test').TestContext) {
       const insert = sql.match(/^INSERT INTO (\w+) \((.*?)\) VALUES/);
       if (insert) {
         const columns = insert[2].replaceAll('`', '').split(', ');
-        tables[insert[1]].push(Object.fromEntries(columns.map((key: FixtureValue, index: number) => [key, params[index]])));
+        tables[insert[1]].push(Object.fromEntries(columns.map((key, index: number) => [key, params[index]])));
         return [{ affectedRows: 1 }];
       }
       const update = sql.match(/^UPDATE `(\w+)` SET (.*?) WHERE/);
@@ -47,7 +47,7 @@ function database(t: import('node:test').TestContext) {
       return [reverseCandidates ? [...rows].reverse() : rows];
     },
   };
-  setDb({ getConnection: async () => connection, execute: async () => [[]] });
+  setDb({ getConnection: async () => connection, execute: async () => [[]] } as FixtureValue);
   t.after(() => setDb(null));
   return { tables, reverse() { reverseCandidates = true; } };
 }

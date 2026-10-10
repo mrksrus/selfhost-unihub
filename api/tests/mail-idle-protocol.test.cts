@@ -8,10 +8,10 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const net = (require('node:net') as typeof import('node:net'));
 process.env.ENCRYPTION_KEY = 'mail-idle-protocol-test-only-key';
-const { createIdleSupervisor } = require('../dist/src/services/mail-idle');
-const { connectImap } = require('../dist/src/services/mail-imap-client');
-const control = require('../dist/src/services/mail-sync-control');
-const { getDb, setDb } = require('../dist/src/state');
+const { createIdleSupervisor } = require('../dist/src/services/mail-idle') as typeof import('../src/services/mail-idle');
+const { connectImap } = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+const control = require('../dist/src/services/mail-sync-control') as typeof import('../src/services/mail-sync-control');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate: FixtureValue, ms = 3000) {
@@ -76,20 +76,20 @@ test('`* N EXISTS` during IDLE enqueues a durable recent job for the account INB
   const port = await imap.listen();
   t.after(() => imap.close());
   const old = getDb(); t.after(() => setDb(old));
-  setDb({ execute: async (query: string) => {
+  setDb({ execute: (async (query: string) => {
     if (query.includes('LEFT JOIN mail_engine_accounts')) return [[{ user_id: 'owner', sync_mode: 'sync' }]];
     if (query.includes('FROM user_settings')) return [[]];
     if (query.includes('FROM backup_restore_jobs')) return [[]];
     assert.fail(`Unexpected SQL: ${query}`);
-  } });
+  }) } as FixtureValue);
   const jobs: FixtureValue[] = [];
   const scheduler = { start: async () => {}, enqueue: async (input: FixtureValue) => { jobs.push(input); return { id: `job-${jobs.length}` }; } };
-  const supervisor = createIdleSupervisor({ debounceMs: 20, log: () => {}, pollMs: 60 * 60 * 1000,
+  const supervisor = createIdleSupervisor({ debounceMs: 20 as FixtureValue, log: () => {}, pollMs: 60 * 60 * 1000,
     listEligible: async () => [{ accountId: 'acct-1', userId: 'owner', syncMode: 'sync', mailboxId: 'inbox-box',
       remoteName: 'INBOX', fingerprint: 'fp' }],
-    connect: () => connectImap({ imap: { host: '127.0.0.1', port, user: 'fixture', password: 'fixture-secret', tls: false,
+    connect: () => connectImap({ imap: { host: '127.0.0.1', port: port as FixtureValue, user: 'fixture', password: 'fixture-secret', tls: false,
       keepalive: true, connTimeout: 2000, authTimeout: 2000, idleRestartMs: 60 * 1000 } }),
-    enqueue: (input: FixtureValue) => control.enqueueIdleRefresh(input, { scheduler }) });
+    enqueue: (input) => control.enqueueIdleRefresh(input, { scheduler: scheduler as FixtureValue }) });
   t.after(() => supervisor.stop());
   await supervisor.start();
   await until(() => imap.idling && supervisor.isHealthy('acct-1'));
@@ -111,10 +111,10 @@ test('IDLE is re-issued after maxIdleTime on the same session (RFC 2177 re-IDLE)
   const port = await imap.listen();
   t.after(() => imap.close());
   let connects = 0;
-  const supervisor = createIdleSupervisor({ debounceMs: 20, log: () => {}, pollMs: 60 * 60 * 1000,
+  const supervisor = createIdleSupervisor({ debounceMs: 20 as FixtureValue, log: () => {}, pollMs: 60 * 60 * 1000,
     listEligible: async () => [{ accountId: 'acct-1', userId: 'owner', syncMode: 'sync', mailboxId: 'inbox-box',
       remoteName: 'INBOX', fingerprint: 'fp' }],
-    connect: () => { connects++; return connectImap({ imap: { host: '127.0.0.1', port, user: 'fixture', password: 'fixture-secret',
+    connect: () => { connects++; return connectImap({ imap: { host: '127.0.0.1', port: port as FixtureValue, user: 'fixture', password: 'fixture-secret',
       tls: false, keepalive: true, connTimeout: 2000, authTimeout: 2000, idleRestartMs: 100 } }); },
     enqueue: async () => {} });
   t.after(() => supervisor.stop());

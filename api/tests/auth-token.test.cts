@@ -3,7 +3,7 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 process.env.JWT_SECRET = 'auth-token-test-only-secret';
 const jwt = require('jsonwebtoken');
-const { generateToken } = require('../dist/src/auth');
+const { generateToken } = require('../dist/src/auth') as typeof import('../src/auth');
 
 test('separate sessions for one user remain unique within the same second and verify normally', t => {
   const now = Date.now();
@@ -34,8 +34,8 @@ function cookieRequest(token: FixtureValue, csrf = 'a'.repeat(64)) {
 }
 
 test('sessions slide at most once a day and keep working after the JWT lifetime', async t => {
-  const { setDb } = require('../dist/src/state');
-  const { verifyToken, refreshSessionCookies, sessionNeedsRenewal, getSessionExpiry } = require('../dist/src/auth');
+  const { setDb } = require('../dist/src/state') as typeof import('../src/state');
+  const { verifyToken, refreshSessionCookies, sessionNeedsRenewal, getSessionExpiry } = require('../dist/src/auth') as typeof import('../src/auth');
   t.after(() => setDb(null));
   const now = new Date('2026-10-03T12:00:00Z');
   assert.equal(sessionNeedsRenewal(getSessionExpiry(now), now), false);
@@ -45,9 +45,9 @@ test('sessions slide at most once a day and keep working after the JWT lifetime'
   // A token signed 30 days ago has an expired JWT, but its session row is live.
   const old = jwt.sign({ userId: 'fixture-user', sub: 'fixture-user', iat: Math.floor(Date.now() / 1000) - 30 * 86400 }, process.env.JWT_SECRET, { expiresIn: '21d' });
   const db = sessionDb(new Date(Date.now() + 3600000));
-  setDb(db);
+  setDb(db as FixtureValue);
   const read = cookieRequest(old);
-  assert.equal(await verifyToken(read), 'fixture-user');
+  assert.equal(await verifyToken(read as FixtureValue), 'fixture-user');
   assert.equal(db.calls.some(call => call.sql.startsWith('UPDATE')), false, 'only the central handler renews');
   const req: FixtureValue = cookieRequest(old);
   assert.equal(await verifyToken(req, { renew: true }), 'fixture-user');
@@ -56,7 +56,7 @@ test('sessions slide at most once a day and keep working after the JWT lifetime'
 
   const headers = new Map();
   const res = { getHeader: (key: FixtureValue) => headers.get(key), setHeader: (key: FixtureValue, value: FixtureValue) => headers.set(key, value) };
-  refreshSessionCookies(req, res);
+  refreshSessionCookies(req, res as FixtureValue);
   const cookies = headers.get('Set-Cookie');
   assert.equal(cookies.length, 2);
   assert.match(cookies[0], new RegExp(`^auth-token=${old.replace(/[.]/g, '\\.')};`));
@@ -71,30 +71,30 @@ test('sessions slide at most once a day and keep working after the JWT lifetime'
 });
 
 test('expired session rows and bad signatures are rejected without renewal', async t => {
-  const { setDb } = require('../dist/src/state');
-  const { verifyToken } = require('../dist/src/auth');
+  const { setDb } = require('../dist/src/state') as typeof import('../src/state');
+  const { verifyToken } = require('../dist/src/auth') as typeof import('../src/auth');
   t.after(() => setDb(null));
   const token = generateToken('fixture-user');
   const db = sessionDb(new Date(Date.now() - 1000));
-  setDb(db);
+  setDb(db as FixtureValue);
   const req: FixtureValue = cookieRequest(token);
   assert.equal(await verifyToken(req, { renew: true }), null);
   assert.equal(req.sessionRenewed, undefined);
   const forged = jwt.sign({ userId: 'fixture-user' }, 'some-other-secret');
   db.row.expires_at = new Date(Date.now() + 3600000);
-  assert.equal(await verifyToken(cookieRequest(forged), { renew: true }), null);
+  assert.equal(await verifyToken(cookieRequest(forged) as FixtureValue, { renew: true }), null);
 });
 
 test('only recording uploads accept the service worker header instead of a CSRF token', () => {
-  const { validateCsrfToken } = require('../dist/src/auth');
-  const request = (method: string, url: string, headers: FixtureValue = {}) => ({ method, url, headers });
+  const { validateCsrfToken } = require('../dist/src/auth') as typeof import('../src/auth');
+  const request = (method: string, url: string, headers = {}) => ({ method, url, headers });
   const background = { 'x-background-sync': '1' };
-  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/start', background)), true);
-  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/chunk', background)), true);
-  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/complete', background)), true);
-  assert.equal(validateCsrfToken(request('DELETE', '/api/recordings/uploads/abc', background)), true);
-  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/chunk')), false);
-  assert.equal(validateCsrfToken(request('DELETE', '/api/recordings/abc', background)), false);
-  assert.equal(validateCsrfToken(request('PUT', '/api/recordings/uploads/abc', background)), false);
-  assert.equal(validateCsrfToken(request('POST', '/api/contacts', background)), false);
+  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/start', background) as FixtureValue), true);
+  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/chunk', background) as FixtureValue), true);
+  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/complete', background) as FixtureValue), true);
+  assert.equal(validateCsrfToken(request('DELETE', '/api/recordings/uploads/abc', background) as FixtureValue), true);
+  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/chunk') as FixtureValue), false);
+  assert.equal(validateCsrfToken(request('DELETE', '/api/recordings/abc', background) as FixtureValue), false);
+  assert.equal(validateCsrfToken(request('PUT', '/api/recordings/uploads/abc', background) as FixtureValue), false);
+  assert.equal(validateCsrfToken(request('POST', '/api/contacts', background) as FixtureValue), false);
 });

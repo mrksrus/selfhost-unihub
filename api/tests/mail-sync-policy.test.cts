@@ -1,8 +1,8 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const policy = require('../dist/src/services/mail-sync-policy');
-const { imapListToFolders } = require('../dist/src/services/mail-folders');
+const policy = require('../dist/src/services/mail-sync-policy') as typeof import('../src/services/mail-sync-policy');
+const { imapListToFolders } = require('../dist/src/services/mail-folders') as typeof import('../src/services/mail-folders');
 
 test('retention windows accept only the offered choices; empty means all mail', () => {
   for (const days of [14, 30, 90, 180, 365]) {
@@ -22,17 +22,17 @@ test('windows apply per mailbox in Sync mode only, by INTERNALDATE', () => {
   const inbox = { remote_name: 'INBOX', special_use: null };
   const trash = { remote_name: 'Deleted', special_use: 'trash' };
   const spam = { remote_name: '[Gmail]/Spam', special_use: null };
-  assert.equal(policy.windowDaysFor(sync, inbox), 30);
-  assert.equal(policy.windowDaysFor(sync, trash), 14);
-  assert.equal(policy.windowDaysFor(sync, spam), 14);
-  assert.equal(policy.windowDaysFor(sync, { remote_name: 'Junk', special_use: 'junk' }), 14);
-  assert.equal(policy.windowDaysFor({ ...sync, sync_mode: 'download' }, inbox), null, 'Download mode ignores windows');
-  assert.equal(policy.outsideWindow(sync, inbox, '2026-08-01T00:00:00Z', now), true);
-  assert.equal(policy.outsideWindow(sync, inbox, '2026-09-20T00:00:00Z', now), false);
-  assert.equal(policy.outsideWindow(sync, trash, '2026-09-10T00:00:00Z', now), true);
-  assert.equal(policy.outsideWindow(sync, inbox, null, now), false, 'Unknown dates are never old');
-  assert.equal(policy.outsideWindow(sync, inbox, 'not a date', now), false);
-  assert.equal(policy.outsideWindow({ ...sync, sync_window_days: null }, inbox, '1999-01-01T00:00:00Z', now), false, 'All mail');
+  assert.equal(policy.windowDaysFor(sync as FixtureValue, inbox), 30);
+  assert.equal(policy.windowDaysFor(sync as FixtureValue, trash), 14);
+  assert.equal(policy.windowDaysFor(sync as FixtureValue, spam), 14);
+  assert.equal(policy.windowDaysFor(sync as FixtureValue, { remote_name: 'Junk', special_use: 'junk' }), 14);
+  assert.equal(policy.windowDaysFor({ ...sync, sync_mode: 'download' } as FixtureValue, inbox), null, 'Download mode ignores windows');
+  assert.equal(policy.outsideWindow(sync as FixtureValue, inbox, '2026-08-01T00:00:00Z', now), true);
+  assert.equal(policy.outsideWindow(sync as FixtureValue, inbox, '2026-09-20T00:00:00Z', now), false);
+  assert.equal(policy.outsideWindow(sync as FixtureValue, trash, '2026-09-10T00:00:00Z', now), true);
+  assert.equal(policy.outsideWindow(sync as FixtureValue, inbox, null, now), false, 'Unknown dates are never old');
+  assert.equal(policy.outsideWindow(sync as FixtureValue, inbox, 'not a date', now), false);
+  assert.equal(policy.outsideWindow({ ...sync, sync_window_days: null } as FixtureValue, inbox, '1999-01-01T00:00:00Z', now), false, 'All mail');
   assert.deepEqual(policy.storedWindows({ sync_window_days: '90', trash_window_days: null }), { sync: 90, trash: null });
 });
 
@@ -53,10 +53,10 @@ test('LIST marks \\All mailboxes so Sync can tell archived Gmail mail from delet
 test('mode impact for Download mode removes nothing and needs no database', async () => {
   const impact = await policy.computeModeImpact({ id: 'a', user_id: 'u', sync_mode: 'sync' }, { mode: 'download' }, {
     execute: async () => { throw new Error('no query expected'); },
-  });
+  } as FixtureValue);
   assert.deepEqual({ ...impact, notes: impact.notes.length }, { mode: 'download', local_only: 0, outside_window: 0,
     outside_trash_window: 0, gmail_duplicates: 0, total_removals: 0, notes: 1 });
-  await assert.rejects(policy.computeModeImpact({}, { mode: 'mirror' }), error => (error as FixtureValue).status === 400);
+  await assert.rejects(policy.computeModeImpact({} as FixtureValue, { mode: 'mirror' }), error => (error as FixtureValue).status === 400);
 });
 
 test('prune does nothing for Download accounts', async () => {

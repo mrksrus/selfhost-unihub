@@ -1,9 +1,9 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { mailAccountModeChange: change } = require('../dist/src/services/mail-account-mode');
-const { readV3 } = require('../dist/src/services/backup-formats/v3');
-const { validateRestoreRows } = require('../dist/src/services/backup-ownership');
+const { mailAccountModeChange: change } = require('../dist/src/services/mail-account-mode') as typeof import('../src/services/mail-account-mode');
+const { readV3 } = require('../dist/src/services/backup-formats/v3') as typeof import('../src/services/backup-formats/v3');
+const { validateRestoreRows } = require('../dist/src/services/backup-ownership') as typeof import('../src/services/backup-ownership');
 
 test('mode switches require confirmation and never carry deletion across modes', () => {
   const download = { sync_mode: 'download', delete_emails_on_server: 1, email_address: 'Owner@Example.test' };
@@ -35,13 +35,13 @@ test('old archives default to Download; current archives retain identity and res
   assert.equal(archive.data.emails[1].source_folder, 'Original');
   assert.equal(archive.data.emails[1].remote_missing, true);
   assert.equal(archive.data.emails[2].remote_folder, null);
-  assert.ok(validateRestoreRows({ mail_accounts: [{ id: 'a', sync_mode: 'invalid' }] }).some((error: FixtureValue) => /mode/.test(error)));
+  assert.ok(validateRestoreRows({ mail_accounts: [{ id: 'a', sync_mode: 'invalid' }] }).some((error) => /mode/.test(error)));
 });
 
 
 test('provider mailbox comparisons allow credential rotation but separate UID namespaces', () => {
-  const { sameProviderMailbox } = require('../dist/src/services/mail-account-mode');
+  const { sameProviderMailbox } = require('../dist/src/services/mail-account-mode') as typeof import('../src/services/mail-account-mode');
   const account = { email_address: 'a@example.test', username: 'Login', imap_host: 'MAIL.EXAMPLE.TEST', imap_port: 993 };
-  assert.equal(sameProviderMailbox(account, { ...account, imap_host: 'mail.example.test', encrypted_password: 'rotated', smtp_host: 'elsewhere' }), true);
+  assert.equal(sameProviderMailbox(account, { ...account, imap_host: 'mail.example.test', encrypted_password: 'rotated', smtp_host: 'elsewhere' } as FixtureValue), true);
   for (const changed of [{ username: 'login' }, { imap_host: 'other.test' }, { imap_port: 143 }, { email_address: 'b@example.test' }]) assert.equal(sameProviderMailbox(account, { ...account, ...changed }), false);
 });

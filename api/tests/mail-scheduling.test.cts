@@ -1,8 +1,8 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { queueChanges, runDueWritebacks, mutateMessages } = require('../dist/src/services/mail-writebacks');
-const { getDb, setDb } = require('../dist/src/state');
+const { queueChanges, runDueWritebacks, mutateMessages } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('HTTP sync acknowledgement is prompt and status never includes another owner', async t => {
@@ -23,7 +23,7 @@ test('HTTP sync acknowledgement is prompt and status never includes another owne
     getMailSyncState: (id: FixtureValue) => ({ account_id: id, state: 'queued', phase: null, processed: 0, total: null,
       started_at: null, updated_at: new Date().toISOString(), error: null }),
   } } as NodeJS.Module;
-  setDb({ execute: async (sql: string, params: FixtureValue) => {
+  setDb({ execute: (async (sql: string, params: FixtureValue) => {
     if (sql.includes('FROM mail_accounts')) {
       if (sql.includes('WHERE id = ? AND user_id = ?')) {
         const owned = params[1] === 'alice' ? 'alice-mail' : 'bob-mail';
@@ -33,27 +33,27 @@ test('HTTP sync acknowledgement is prompt and status never includes another owne
       return [params.length > 1 ? owned.filter(row => row.id === params[1]) : owned];
     }
     assert.fail(sql);
-  } });
-  const routes = require('../dist/src/routes/mail');
+  }) } as FixtureValue);
+  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
   const req = (url: string) => ({ url });
-  assert.equal((await routes['POST /api/mail/sync'](req('/api/mail/sync'), 'alice', { account_id: 'bob-mail' })).status, 404);
-  const accepted = await routes['POST /api/mail/sync'](req('/api/mail/sync'), 'alice', { account_id: 'alice-mail' });
+  assert.equal((await routes['POST /api/mail/sync'](req('/api/mail/sync') as FixtureValue, 'alice', { account_id: 'bob-mail' })).status, 404);
+  const accepted = await routes['POST /api/mail/sync'](req('/api/mail/sync') as FixtureValue, 'alice', { account_id: 'alice-mail' });
   assert.deepEqual([accepted.status, accepted.started, accepted.alreadyRunning], [202, true, false]);
-  const again = await routes['POST /api/mail/sync'](req('/api/mail/sync'), 'alice', { account_id: 'alice-mail' });
+  const again = await routes['POST /api/mail/sync'](req('/api/mail/sync') as FixtureValue, 'alice', { account_id: 'alice-mail' });
   assert.deepEqual([again.status, again.started, again.alreadyRunning], [200, false, true]);
-  const status = await routes['GET /api/mail/sync/status'](req('/api/mail/sync/status'), 'alice');
-  assert.deepEqual(status.accounts.map((row: FixtureValue) => row.account_id), ['alice-mail']);
-  assert.equal((await routes['GET /api/mail/sync/status'](req('/api/mail/sync/status?account_id=bob-mail'), 'alice')).status, 404);
+  const status = await routes['GET /api/mail/sync/status'](req('/api/mail/sync/status') as FixtureValue, 'alice');
+  assert.deepEqual(status.accounts!.map((row) => row.account_id), ['alice-mail']);
+  assert.equal((await routes['GET /api/mail/sync/status'](req('/api/mail/sync/status?account_id=bob-mail') as FixtureValue, 'alice')).status, 404);
   const cancel = routes['POST /api/mail/sync/cancel'];
-  assert.equal((await cancel(req('/api/mail/sync/cancel'), null, { account_id: 'alice-mail' })).status, 401);
-  assert.equal((await cancel(req('/api/mail/sync/cancel'), 'alice', {})).status, 400);
-  assert.equal((await cancel(req('/api/mail/sync/cancel'), 'alice', { account_id: 'bob-mail' })).status, 404);
+  assert.equal((await cancel(req('/api/mail/sync/cancel') as FixtureValue, null, { account_id: 'alice-mail' })).status, 401);
+  assert.equal((await cancel(req('/api/mail/sync/cancel') as FixtureValue, 'alice', {})).status, 400);
+  assert.equal((await cancel(req('/api/mail/sync/cancel') as FixtureValue, 'alice', { account_id: 'bob-mail' })).status, 404);
   assert.deepEqual(cancellations, [], 'foreign or invalid cancellation never reaches the scheduler');
-  const cancelled = await cancel(req('/api/mail/sync/cancel'), 'alice', { account_id: 'alice-mail' });
+  const cancelled = await cancel(req('/api/mail/sync/cancel') as FixtureValue, 'alice', { account_id: 'alice-mail' });
   assert.equal(cancelled.status, 202);
   assert.equal(cancelled.cancellationRequested, true);
   assert.deepEqual(cancellations, ['alice-mail']);
-  assert.equal((await cancel(req('/api/mail/sync/cancel'), 'alice', { account_id: 'alice-mail' })).cancellationRequested, false);
+  assert.equal((await cancel(req('/api/mail/sync/cancel') as FixtureValue, 'alice', { account_id: 'alice-mail' })).cancellationRequested, false);
 });
 
 test('opposite intent accepted after dispatch uses prior target, not stale stored flag', async () => {
@@ -72,7 +72,7 @@ test('opposite intent accepted after dispatch uses prior target, not stale store
     if (sql.includes('SELECT * FROM mail_engine_jobs')) return [[]];
     return [{ affectedRows: 1 }];
   } };
-  await queueChanges(connection, 'owner', [email], { read: 0 });
+  await queueChanges(connection as FixtureValue, 'owner', [(email as FixtureValue)], { read: 0 });
   const insert = statements.find(item => item.sql.includes('INSERT INTO mail_writebacks'));
   assert.equal(insert.args[5], '0');
   assert.equal(insert.args[6], '1');
@@ -86,7 +86,7 @@ test('opposite intent accepted after dispatch uses prior target, not stale store
 });
 
 test('stale flag completion cannot erase a newer opposite request', async t => {
-  const settle = require('../dist/src/services/mail-engine/reconciliation');
+  const settle = require('../dist/src/services/mail-engine/reconciliation') as typeof import('../src/services/mail-engine/reconciliation');
   const email = { id: 'email', user_id: 'owner', mail_account_id: 'account', observation_revision: 0, is_read: 0 };
   const old = { id: 'old', user_id: 'owner', mail_account_id: 'account', email_id: 'email', action: 'read',
     remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9, target_value: '1', is_current: 0,
@@ -104,29 +104,29 @@ test('stale flag completion cannot erase a newer opposite request', async t => {
     return [{ affectedRows: 1 }];
   } };
   const first = await settle.settleFlagObservation({ operationId: old.id, userId: 'owner', accountId: 'account',
-    source: { folder: 'INBOX', uid: 12, uidvalidity: 9 }, flags: ['\\Seen'], observationRevision: 0, executor: cx });
+    source: { folder: 'INBOX', uid: 12, uidvalidity: 9 }, flags: ['\\Seen'], observationRevision: 0, executor: cx as FixtureValue });
   assert.equal(first.settled, true); assert.equal(email.is_read, 1);
   assert.equal(old.state, 'confirmed'); assert.equal(newest.state, 'queued');
   assert.equal(newest.is_current, 1); assert.equal(newest.status, 'pending', 'newer opposite overlay remains visible');
   const second = await settle.settleFlagObservation({ operationId: newest.id, userId: 'owner', accountId: 'account',
-    source: { folder: 'INBOX', uid: 12, uidvalidity: 9 }, flags: [], observationRevision: 1, executor: cx });
+    source: { folder: 'INBOX', uid: 12, uidvalidity: 9 }, flags: [], observationRevision: 1, executor: cx as FixtureValue });
   assert.equal(second.settled, true); assert.equal(email.is_read, 0); assert.equal(newest.state, 'confirmed');
 });
 
 test('startup/due pass schedules uncertain MOVE observation, never another mutation', async t => {
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const calls: FixtureValue[] = [], enqueued: FixtureValue[] = [];
-  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
   t.mock.method(runtime, 'enqueueJob', async (job: FixtureValue) => { enqueued.push(job); });
   const nudged: FixtureValue[] = [];
-  t.mock.method(require('../dist/src/services/mail'), 'runMailOperationsNow', async (id: FixtureValue) => { nudged.push(id); return true; });
-  setDb({ execute: async (sql: string, params: FixtureValue) => {
+  t.mock.method((require('../dist/src/services/mail') as typeof import('../src/services/mail')), 'runMailOperationsNow', async (id: FixtureValue) => { nudged.push(id); return true; });
+  setDb({ execute: (async (sql: string, params: FixtureValue) => {
     calls.push({ sql, params });
     if (sql.includes('FROM user_settings')) return [[]];
     if (sql.includes('SELECT w.id,w.user_id,w.mail_account_id')) return [[{ id: 'move-op', user_id: 'owner',
       mail_account_id: 'due-account', state: 'reconciling', action: 'move' }]];
     assert.fail(sql);
-  } });
+  }) } as FixtureValue);
   assert.equal(await runDueWritebacks(), 1);
   await tick();
   assert.deepEqual(enqueued, [{ userId: 'owner', accountId: 'due-account', operationId: 'move-op', kind: 'reconcile', priority: 0 }]);
@@ -139,8 +139,8 @@ test('startup/due pass schedules uncertain MOVE observation, never another mutat
 // Drives the module's own durable scheduler with a mocked runtime: the job is
 // claimed once, then runDurableMailJob executes it like any other durable job.
 function durableOperation(t: import('node:test').TestContext, job: FixtureValue) {
-  const runtime = require('../dist/src/services/mail-engine/runtime');
-  const repository = require('../dist/src/services/mail-engine/repository');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+  const repository = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
   let claimed = false;
   const completions: FixtureValue[] = [];
   t.mock.method(runtime, 'recoverExpiredJobs', async () => ({}));
@@ -162,8 +162,8 @@ function durableOperation(t: import('node:test').TestContext, job: FixtureValue)
 }
 
 test('accepted changes nudge the durable scheduler as foreground work; the due scan as background', async t => {
-  const mail = require('../dist/src/services/mail');
-  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const mail = require('../dist/src/services/mail') as typeof import('../src/services/mail');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
   const oldDb = getDb(); t.after(() => setDb(oldDb));
   const nudges: FixtureValue[] = [];
   t.mock.method(mail, 'runMailOperationsNow', async (id: FixtureValue, options: FixtureValue) => { nudges.push([id, options]); return true; });
@@ -177,14 +177,14 @@ test('accepted changes nudge the durable scheduler as foreground work; the due s
       if (sql.includes('FROM mail_remote_occurrences')) return [[]];
       return [{ affectedRows: 1 }];
     } };
-  setDb({ getConnection: async () => cx, execute: async (sql: string) => {
+  setDb({ getConnection: async () => cx, execute: (async (sql: string) => {
     if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
     if (sql.includes('SELECT w.id,w.user_id,w.mail_account_id')) return [[
       { id: 'due-1', user_id: 'owner', mail_account_id: 'due-acct', state: 'retry_wait', action: 'read' },
       { id: 'due-2', user_id: 'owner', mail_account_id: 'due-acct', state: 'queued', action: 'star' }]];
     if (sql.includes("j.state='paused'")) return [[]];
     assert.fail(sql);
-  } });
+  }) } as FixtureValue);
   const result = await mutateMessages('owner', ['item'], { read: 1 });
   assert.equal(result.sync_pending, true);
   assert.deepEqual(nudges, [], 'the HTTP response does not wait for a read job to yield');
@@ -200,7 +200,7 @@ test('the mail scheduler reserves a slot for provider changes and a nudge yields
   const service = require.resolve('../dist/src/services/mail');
   const schedulerPath = require.resolve('../dist/src/services/mail-sync-scheduler');
   const old = new Map([service, schedulerPath].map(p => [p, require.cache[p]]));
-  const real = require(schedulerPath);
+  const real = require(schedulerPath) as typeof import('../src/services/mail-sync-scheduler');
   const calls: FixtureValue[] = [];
   let options: FixtureValue;
   require.cache[schedulerPath] = { id: schedulerPath, loaded: true, exports: { ...real,
@@ -211,7 +211,7 @@ test('the mail scheduler reserves a slot for provider changes and a nudge yields
     } } } as NodeJS.Module;
   t.after(require('./helpers/mail-service-modules.cts').evictMailServiceModules());
   t.after(() => { for (const [p, entry] of old) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
-  const mail = require(service);
+  const mail = require(service) as typeof import('../src/services/mail');
   assert.deepEqual([options.concurrency, options.readConcurrency], [3, 2]);
   assert.equal(await mail.runMailOperationsNow(' acct '), true);
   assert.deepEqual(calls, [['yield', 'acct'], ['drain']]);
@@ -220,14 +220,14 @@ test('the mail scheduler reserves a slot for provider changes and a nudge yields
 
 test('a durable operation job sees cancellation before connecting and retains the accepted operation', async t => {
   const oldDb = getDb(); t.after(() => setDb(oldDb));
-  const mail = require('../dist/src/services/mail');
-  const imapClient = require('../dist/src/services/mail-imap-client');
-  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const mail = require('../dist/src/services/mail') as typeof import('../src/services/mail');
+  const imapClient = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
   let connects = 0, fences = 0;
   const harness = durableOperation(t, { id: 'cancel-job', mail_account_id: 'cancel-account' });
   t.mock.method(runtime, 'assertFence', async () => { fences++; return { cancellationRequested: true }; });
   t.mock.method(imapClient, 'connectImap', async () => { connects++; assert.fail('cancelled worker connected'); });
-  setDb({ execute: async () => assert.fail('cancelled worker queried account or discarded operation') });
+  setDb({ execute: async () => assert.fail('cancelled worker queried account or discarded operation') } as FixtureValue);
   await mail.runMailOperationsNow('cancel-account');
   assert.equal((await harness.finished()).state, 'cancelled');
   assert.equal(fences, 1); assert.equal(connects, 0);
@@ -236,10 +236,10 @@ test('a durable operation job sees cancellation before connecting and retains th
 test('lease lost after connect destroys transport before any provider operation', async t => {
   const { EventEmitter } = (require('node:events') as typeof import('node:events'));
   const oldDb = getDb(); t.after(() => setDb(oldDb));
-  const mail = require('../dist/src/services/mail');
-  const imapClient = require('../dist/src/services/mail-imap-client');
-  const runtime = require('../dist/src/services/mail-engine/runtime');
-  const engine = require('../dist/src/services/mail-engine/operations');
+  const mail = require('../dist/src/services/mail') as typeof import('../src/services/mail');
+  const imapClient = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+  const engine = require('../dist/src/services/mail-engine/operations') as typeof import('../src/services/mail-engine/operations');
   let fences = 0, destroys = 0;
   const connection: FixtureValue = new EventEmitter();
   connection.close = () => { destroys++; };
@@ -251,13 +251,13 @@ test('lease lost after connect destroys transport before any provider operation'
     return { cancellationRequested: false };
   });
   t.mock.method(engine, 'processDueOperations', () => assert.fail('provider commands after lease loss'));
-  setDb({ execute: async (sql: string) => {
+  setDb({ execute: (async (sql: string) => {
     if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: 'lost-account', user_id: 'owner',
       sync_mode: 'sync', is_active: 1 }]];
     if (sql.includes('FROM mail_writebacks WHERE id=?')) return [[{ id: 'accepted-op' }]];
     if (sql.includes('backup_restore_jobs') || sql.includes('user_settings')) return [[]];
     throw new Error(`Unexpected ${sql}`);
-  } });
+  }) } as FixtureValue);
   await mail.runMailOperationsNow('lost-account');
   for (let i = 0; i < 100 && !destroys; i++) await tick();
   assert.equal(fences, 2); assert.equal(destroys, 1);
@@ -268,10 +268,10 @@ test('lease lost after connect destroys transport before any provider operation'
 test('account stop aborts a running operation job and destroys its guarded socket', async t => {
   const { EventEmitter } = (require('node:events') as typeof import('node:events'));
   const oldDb = getDb(); t.after(() => setDb(oldDb));
-  const mail = require('../dist/src/services/mail');
-  const imapClient = require('../dist/src/services/mail-imap-client');
-  const runtime = require('../dist/src/services/mail-engine/runtime');
-  const engine = require('../dist/src/services/mail-engine/operations');
+  const mail = require('../dist/src/services/mail') as typeof import('../src/services/mail');
+  const imapClient = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+  const engine = require('../dist/src/services/mail-engine/operations') as typeof import('../src/services/mail-engine/operations');
   const connection: FixtureValue = new EventEmitter();
   let socketDestroyed = 0, entered = false, remoteCommands = 0;
   const paused: FixtureValue[] = [];
@@ -285,13 +285,13 @@ test('account stop aborts a running operation job and destroys its guarded socke
     entered = true;
     return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new Error('stopped')), { once: true }));
   });
-  setDb({ execute: async (sql: string) => {
+  setDb({ execute: (async (sql: string) => {
     if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: 'stop-account', user_id: 'owner', sync_mode: 'sync', is_active: 1 }]];
     if (sql.includes('SELECT user_id FROM mail_accounts')) return [[{ user_id: 'owner' }]];
     if (sql.includes('FROM mail_writebacks WHERE id=?')) return [[{ id: 'accepted-op' }]];
     if (sql.includes('FROM backup_restore_jobs') || sql.includes('FROM user_settings')) return [[]];
     remoteCommands++; assert.fail(`Unexpected provider/mutation SQL after stop: ${sql}`);
-  } });
+  }) } as FixtureValue);
   await mail.runMailOperationsNow('stop-account', { foreground: true });
   for (let i = 0; i < 50 && !entered; i++) await tick();
   assert.equal(entered, true);

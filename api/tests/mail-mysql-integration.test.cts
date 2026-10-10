@@ -1,14 +1,15 @@
 import type { FixtureValue } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const mysql = require('mysql2/promise');
-const { loadMailFoldersForUser, loadExistingImportedUidSet } = require('../dist/src/services/mail');
-const { loadFolderSyncState, saveFolderSyncState } = require('../dist/src/services/mail-sync-state');
-const { persistImportedMessage } = require('../dist/src/services/mail-import');
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+const { loadMailFoldersForUser, loadExistingImportedUidSet } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
+const { loadFolderSyncState, saveFolderSyncState } = require('../dist/src/services/mail-sync-state') as typeof import('../src/services/mail-sync-state');
+const { persistImportedMessage } = require('../dist/src/services/mail-import') as typeof import('../src/services/mail-import');
 
 test('MySQL mail defaults, folder checkpoints and atomic import rollback', { skip: !process.env.MYSQL_TEST_HOST }, async (t) => {
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
@@ -43,17 +44,17 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
   const userId = crypto.randomUUID();
   const accountId = crypto.randomUUID();
   await loadMailFoldersForUser(userId, connection);
-  await connection.execute("UPDATE mail_folders SET display_name = 'Personal Inbox', position = 777 WHERE user_id = ? AND slug = 'inbox'", [userId]);
+  await connection.execute<ResultSetHeader>("UPDATE mail_folders SET display_name = 'Personal Inbox', position = 777 WHERE user_id = ? AND slug = 'inbox'", [userId]);
   const folders = await loadMailFoldersForUser(userId, connection);
   assert.equal(folders.length, 10);
-  assert.equal(folders.find((row: FixtureValue) => row.slug === 'inbox').display_name, 'Personal Inbox');
-  assert.equal(folders.find((row: FixtureValue) => row.slug === 'inbox').position, 777);
+  assert.equal(folders.find((row) => row.slug === 'inbox')!.display_name, 'Personal Inbox');
+  assert.equal((folders.find((row) => row.slug === 'inbox')! as FixtureValue).position, 777);
   await saveFolderSyncState(connection, accountId, 'INBOX', 123, 5);
   assert.deepEqual(await loadFolderSyncState(connection, accountId, 'INBOX', 123), { incremental: true, lastUid: 5 });
   assert.deepEqual(await loadFolderSyncState(connection, accountId, 'INBOX', 124), { incremental: false, lastUid: 0 });
   assert.deepEqual(await loadFolderSyncState(connection, accountId, 'New Folder', 123), { incremental: false, lastUid: 0 });
   const db = { async getConnection() { return {
-    execute: (...args: FixtureValue[]) => connection.execute(...args), beginTransaction: () => connection.beginTransaction(),
+    execute: (...args: FixtureValue[]) => connection.execute(...args as [string, FixtureValue]), beginTransaction: () => connection.beginTransaction(),
     commit: () => connection.commit(), rollback: () => connection.rollback(), release() {},
   }; } };
   const args = { db, account: { user_id: userId }, accountId, folderName: 'INBOX', uid: 6, uidValidity: 123,
@@ -66,13 +67,13 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
       return { rawStoragePath, rawSha256: 'a'.repeat(64) };
     },
   };
-  await persistImportedMessage(args);
+  await persistImportedMessage(args as FixtureValue);
   assert.deepEqual([...await loadExistingImportedUidSet({ connection, accountId, folderName: 'INBOX', uidValidity: 123, uids: [6] })], [6]);
   const beforeFiles = await fs.readdir(root, { recursive: true });
   await assert.rejects(persistImportedMessage({ ...args, uid: 7, messageId: '<invalid@example.test>', parsed: {
     ...args.parsed, attachments: [{ filename: 'b.txt', contentType: 'x'.repeat(101), content: Buffer.from('invalid') }],
-  } }), error => (error as FixtureValue).code === 'ER_DATA_TOO_LONG');
-  const [[counts]] = await connection.execute('SELECT COUNT(*) AS total FROM emails');
+  } } as FixtureValue), error => (error as FixtureValue).code === 'ER_DATA_TOO_LONG');
+  const [[counts]] = await connection.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM emails');
   assert.equal(counts.total, 1);
   assert.deepEqual((await fs.readdir(root, { recursive: true })).sort(), beforeFiles.sort());
 });

@@ -1,4 +1,5 @@
 import type { FixtureValue } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 
@@ -9,8 +10,8 @@ process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-purge-fixture-admin-2026';
 process.env.ENCRYPTION_KEY ||= 'mail-account-purge-mysql-test-key';
 
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const mysql = require('mysql2/promise');
-const { getDb, setDb } = require('../dist/src/state');
+const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 test('disconnect and delete removes the mail account, its mail and its linked calendar, and nothing of another user',
   { skip: !process.env.MYSQL_TEST_HOST }, async (t) => {
@@ -27,7 +28,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
         if (ownsDatabase) {
           await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
           try {
-            const [tables] = await connection.query('SHOW TABLES');
+            const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES');
             for (const row of tables) {
               const table = Object.values(row)[0];
               assert.match((table as string), /^[a-z_]+$/);
@@ -38,33 +39,33 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
       } finally { await pool.end(); await connection.end(); }
     });
     assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/, 'Use an empty disposable test database');
-    const [existing] = await connection.query('SHOW TABLES');
+    const [existing] = await connection.query<RowDataPacket[]>('SHOW TABLES');
     assert.equal(existing.length, 0, 'Refusing to change a nonempty database');
     ownsDatabase = true;
     setDb(pool);
-    await require('../dist/src/services/database').ensureSchema();
+    await (require('../dist/src/services/database') as typeof import('../src/services/database')).ensureSchema();
 
-    const { encrypt } = require('../dist/src/security/encryption');
-    const lifecycle = require('../dist/src/services/mail-account-lifecycle');
-    const { setUserModules } = require('../dist/src/services/module-settings');
-    const calendarSync = require('../dist/src/services/calendar-sync');
+    const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+    const lifecycle = require('../dist/src/services/mail-account-lifecycle') as typeof import('../src/services/mail-account-lifecycle');
+    const { setUserModules } = require('../dist/src/services/module-settings') as typeof import('../src/services/module-settings');
+    const calendarSync = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
 
     // Each user has a connected mail account with two messages and a linked
     // calendar account holding one calendar with two events.
     const seed = async (name: FixtureValue) => {
       const user = crypto.randomUUID(), mail = crypto.randomUUID(), calendarAccount = crypto.randomUUID(), calendar = crypto.randomUUID();
-      await connection.execute('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)', [user, `${name}@example.test`, 'synthetic-hash']);
-      await connection.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, username, imap_host, encrypted_password, is_active)
+      await connection.execute<ResultSetHeader>('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)', [user, `${name}@example.test`, 'synthetic-hash']);
+      await connection.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id, user_id, email_address, provider, username, imap_host, encrypted_password, is_active)
         VALUES (?, ?, ?, 'custom', ?, 'imap.example.test', ?, TRUE)`, [mail, user, `${name}@example.test`, `${name}@example.test`, encrypt('synthetic-password')]);
       for (const subject of ['First', 'Second']) {
-        await connection.execute(`INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, subject)
+        await connection.execute<ResultSetHeader>(`INSERT INTO emails (id, user_id, mail_account_id, from_address, to_addresses, subject)
           VALUES (?, ?, ?, 'sender@example.test', '[]', ?)`, [crypto.randomUUID(), user, mail, subject]);
       }
-      await connection.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, mail_account_id, is_active)
+      await connection.execute<ResultSetHeader>(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, mail_account_id, is_active)
         VALUES (?, ?, 'caldav', ?, ?, TRUE)`, [calendarAccount, user, `${name}@example.test`, mail]);
-      await connection.execute('INSERT INTO calendar_calendars (id, user_id, account_id, name) VALUES (?, ?, ?, ?)', [calendar, user, calendarAccount, 'Work']);
+      await connection.execute<ResultSetHeader>('INSERT INTO calendar_calendars (id, user_id, account_id, name) VALUES (?, ?, ?, ?)', [calendar, user, calendarAccount, 'Work']);
       for (const title of ['Meeting', 'Review']) {
-        await connection.execute(`INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time)
+        await connection.execute<ResultSetHeader>(`INSERT INTO calendar_events (id, user_id, calendar_id, title, start_time, end_time)
           VALUES (?, ?, ?, ?, '2026-10-05 09:00:00', '2026-10-05 10:00:00')`, [crypto.randomUUID(), user, calendar, title]);
       }
       return { user, mail, calendarAccount };
@@ -72,7 +73,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     const owner = await seed('owner');
     const other = await seed('other');
     const paused = await seed('paused');
-    const count = async (sql: string, params: FixtureValue) => Number((await connection.execute(sql, params))[0][0].n);
+    const count = async (sql: string, params: FixtureValue) => Number((await connection.execute<RowDataPacket[]>(sql, params))[0][0].n);
 
     const preview = await lifecycle.purgePreview(owner.user, owner.mail, undefined, { disconnecting: true });
     assert.deepEqual({ emails: preview.email_count, calendars: preview.calendar_accounts, events: preview.calendar_events, blocked: preview.blocked },
@@ -83,7 +84,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     // With Calendar off, its data is not changed through the mail route: the
     // delete is refused before anything happens, including the disconnect.
     await setUserModules(owner.user, { modules: { calendar: { enabled: false } } });
-    assert.match((await lifecycle.purgePreview(owner.user, owner.mail, undefined, { disconnecting: true })).reason, /Calendar is turned off/);
+    assert.match((await lifecycle.purgePreview(owner.user, owner.mail, undefined, { disconnecting: true })).reason!, /Calendar is turned off/);
     await assert.rejects(lifecycle.disconnectAndPurgeAccount(owner.user, owner.mail, 'owner@example.test'), /Calendar is turned off/);
     assert.equal(await count('SELECT COUNT(*) AS n FROM mail_accounts WHERE user_id = ? AND is_active = TRUE', [owner.user]), 1);
     await setUserModules(owner.user, { modules: { calendar: { enabled: true } } });
@@ -113,12 +114,12 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     // counted, gated and deleted like a linked one. A calendar account added on
     // its own for the same address stays.
     const restored = await seed('restored');
-    await connection.execute(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = '{"mailLinked":true}' WHERE id = ?`, [restored.calendarAccount]);
+    await connection.execute<ResultSetHeader>(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = '{"mailLinked":true}' WHERE id = ?`, [restored.calendarAccount]);
     const standalone = crypto.randomUUID();
-    await connection.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active)
+    await connection.execute<ResultSetHeader>(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active)
       VALUES (?, ?, 'caldav', 'restored@example.test', '{"server":{"url":"https://dav.example.test"}}', TRUE)`, [standalone, restored.user]);
     await setUserModules(restored.user, { modules: { calendar: { enabled: false } } });
-    assert.match((await lifecycle.purgePreview(restored.user, restored.mail, undefined, { disconnecting: true })).reason, /Calendar is turned off/);
+    assert.match((await lifecycle.purgePreview(restored.user, restored.mail, undefined, { disconnecting: true })).reason!, /Calendar is turned off/);
     await setUserModules(restored.user, { modules: { calendar: { enabled: true } } });
     const restoredPreview = await lifecycle.purgePreview(restored.user, restored.mail, undefined, { disconnecting: true });
     assert.deepEqual([restoredPreview.calendar_accounts, restoredPreview.calendar_events, restoredPreview.blocked], [1, 2, false]);
@@ -130,39 +131,39 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     // A linked calendar has no password of its own. Disconnecting mail leaves
     // the calendar row as it is; its sync then waits (noted as paused) until
     // the mail account is connected again, and a pause of its user is its own.
-    const calendarRow = async (id: FixtureValue) => (await connection.execute(
+    const calendarRow = async (id: FixtureValue) => (await connection.execute<RowDataPacket[]>(
       'SELECT is_active, encrypted_password, sync_status, sync_error, mail_account_id FROM calendar_accounts WHERE id = ?', [id]))[0][0];
-    await connection.execute('UPDATE calendar_accounts SET encrypted_password = NULL WHERE id IN (?, ?)', [paused.calendarAccount, other.calendarAccount]);
+    await connection.execute<ResultSetHeader>('UPDATE calendar_accounts SET encrypted_password = NULL WHERE id IN (?, ?)', [paused.calendarAccount, other.calendarAccount]);
     await setUserModules(paused.user, { modules: { calendar: { enabled: false } } });
     await lifecycle.disconnectAccount(paused.user, paused.mail);
     await setUserModules(paused.user, { modules: { calendar: { enabled: true } } });
-    const [[pausedRow]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    const [[pausedRow]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.equal(Number(pausedRow.is_active), 1, 'Disconnecting mail does not switch the calendar off');
-    await assert.rejects(calendarSync.resolveLogin(pausedRow), { code: 'MAIL_ACCOUNT_DISCONNECTED' });
+    await assert.rejects(calendarSync.resolveLogin(pausedRow as FixtureValue), { code: 'MAIL_ACCOUNT_DISCONNECTED' });
     assert.deepEqual(await calendarSync.syncCalendarAccount(paused.calendarAccount, { userId: paused.user }), { skipped: true, reason: 'mail-disconnected' });
     const waiting = await calendarRow(paused.calendarAccount);
     assert.deepEqual([Number(waiting.is_active), waiting.encrypted_password, waiting.sync_status, waiting.sync_error],
       [1, null, 'paused', calendarSync.MAIL_DISCONNECTED_MESSAGE]);
     const listed = async (userId: string) => {
-      const routes = require('../dist/src/routes/calendar');
-      const { accounts } = await routes['GET /api/calendar/accounts']({ url: '/api/calendar/accounts' }, userId);
-      return accounts.filter((account: FixtureValue) => account.provider === 'caldav').map((account: FixtureValue) => [account.sync_status, account.sync_error]);
+      const routes = require('../dist/src/routes/calendar') as typeof import('../src/routes/calendar');
+      const { accounts } = await routes['GET /api/calendar/accounts']({ url: '/api/calendar/accounts' } as FixtureValue, userId);
+      return accounts!.filter((account) => account.provider === 'caldav').map((account) => [account.sync_status, account.sync_error]);
     };
     assert.deepEqual(await listed(paused.user), [['paused', calendarSync.MAIL_DISCONNECTED_MESSAGE]]);
 
     // Reconnected (a new password): the calendar uses it right away, with no
     // copy written, and is listed as waiting for its next sync.
-    await connection.execute('UPDATE mail_accounts SET is_active = TRUE, disconnected_at = NULL, encrypted_password = ? WHERE id = ?',
+    await connection.execute<ResultSetHeader>('UPDATE mail_accounts SET is_active = TRUE, disconnected_at = NULL, encrypted_password = ? WHERE id = ?',
       [encrypt('new-synthetic-password'), paused.mail]);
-    const login = await calendarSync.resolveLogin(pausedRow);
-    const [[mailLogin]] = await connection.execute('SELECT encrypted_password FROM mail_accounts WHERE id = ?', [paused.mail]);
+    const login = await calendarSync.resolveLogin(pausedRow as FixtureValue);
+    const [[mailLogin]] = await connection.execute<RowDataPacket[]>('SELECT encrypted_password FROM mail_accounts WHERE id = ?', [paused.mail]);
     assert.deepEqual(login, { username: 'paused@example.test', encryptedPassword: mailLogin.encrypted_password });
     assert.equal((await calendarRow(paused.calendarAccount)).encrypted_password, null);
     assert.deepEqual(await listed(paused.user), [['pending', null]]);
 
     // A pause of the user: a sync while the mail account is disconnected
     // does not overwrite it.
-    await connection.execute("UPDATE calendar_accounts SET is_active = FALSE, sync_status = 'paused', sync_error = NULL WHERE id = ?", [other.calendarAccount]);
+    await connection.execute<ResultSetHeader>("UPDATE calendar_accounts SET is_active = FALSE, sync_status = 'paused', sync_error = NULL WHERE id = ?", [other.calendarAccount]);
     await lifecycle.disconnectAccount(other.user, other.mail);
     assert.deepEqual(await calendarSync.syncCalendarAccount(other.calendarAccount, { userId: other.user }), { skipped: true, reason: 'inactive' });
     const userPause = await calendarRow(other.calendarAccount);
@@ -170,59 +171,59 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
 
     // A restored mail calendar (link not restored, no password of its own)
     // finds its mail account the first time it needs a login.
-    await connection.execute(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = '{"mailLinked":true}' WHERE id = ?`, [paused.calendarAccount]);
-    const [[unlinked]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
-    assert.deepEqual(await calendarSync.resolveLogin(unlinked), login);
+    await connection.execute<ResultSetHeader>(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = '{"mailLinked":true}' WHERE id = ?`, [paused.calendarAccount]);
+    const [[unlinked]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    assert.deepEqual(await calendarSync.resolveLogin(unlinked as FixtureValue), login);
     assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, paused.mail);
 
     // That relink raced with connecting the calendar of a newly added mail
     // account: the one just connected stays its calendar, and the restored
     // one waits without using the mail login.
     const connectedNow = crypto.randomUUID();
-    await connection.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active, mail_account_id, created_at)
+    await connection.execute<ResultSetHeader>(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active, mail_account_id, created_at)
       VALUES (?, ?, 'caldav', 'paused@example.test', '{"mailLinked":true}', TRUE, ?, UTC_TIMESTAMP() + INTERVAL 1 MINUTE)`, [connectedNow, paused.user, paused.mail]);
     // A restored subscription linked meanwhile too: unlinked, but not stopped.
     const subscription = crypto.randomUUID();
-    await connection.execute(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active, mail_account_id)
+    await connection.execute<ResultSetHeader>(`INSERT INTO calendar_accounts (id, user_id, provider, account_email, provider_config, is_active, mail_account_id)
       VALUES (?, ?, 'ics', 'paused@example.test', '{"mailLinked":true}', TRUE, ?)`, [subscription, paused.user, paused.mail]);
     const stopped: FixtureValue[] = [], stopWork = calendarSync.stopCalendarAccountWork;
-    calendarSync.stopCalendarAccountWork = (id: FixtureValue, reason: FixtureValue) => stopped.push([id, reason]);
-    try { await require('../dist/src/services/calendar-accounts').keepMailCalendar(paused.user, paused.mail, connectedNow); }
+    calendarSync.stopCalendarAccountWork = (id, reason) => stopped.push([id, reason]);
+    try { await (require('../dist/src/services/calendar-accounts') as typeof import('../src/services/calendar-accounts')).keepMailCalendar(paused.user, paused.mail, connectedNow); }
     finally { calendarSync.stopCalendarAccountWork = stopWork; }
     assert.deepEqual(stopped, [[paused.calendarAccount, 'replaced']], 'Its running work, which read the mail login, stops');
     assert.equal((await calendarRow(subscription)).mail_account_id, null);
-    await connection.execute('DELETE FROM calendar_accounts WHERE id = ?', [subscription]);
-    const [[mailRow]] = await connection.execute('SELECT id, email_address FROM mail_accounts WHERE id = ?', [paused.mail]);
-    assert.equal((await require('../dist/src/services/calendar-accounts').linkedCalendarAccount(paused.user, mailRow)).id, connectedNow);
-    const [[orphan]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    await connection.execute<ResultSetHeader>('DELETE FROM calendar_accounts WHERE id = ?', [subscription]);
+    const [[mailRow]] = await connection.execute<RowDataPacket[]>('SELECT id, email_address FROM mail_accounts WHERE id = ?', [paused.mail]);
+    assert.equal((await (require('../dist/src/services/calendar-accounts') as typeof import('../src/services/calendar-accounts')).linkedCalendarAccount(paused.user, mailRow as FixtureValue))!.id, connectedNow);
+    const [[orphan]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.equal(orphan.mail_account_id, null);
-    await assert.rejects(calendarSync.resolveLogin(orphan), { code: 'MAIL_CALENDAR_UNLINKED' });
+    await assert.rejects(calendarSync.resolveLogin(orphan as FixtureValue), { code: 'MAIL_CALENDAR_UNLINKED' });
     assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, null);
 
     // All mail accounts cleared: the calendar stays, unlinked, and waits; a
     // mail account with its address added again is found.
-    await connection.execute('DELETE FROM calendar_accounts WHERE id = ?', [connectedNow]);
+    await connection.execute<ResultSetHeader>('DELETE FROM calendar_accounts WHERE id = ?', [connectedNow]);
     // Written over by a 0.17.0 backup while linked: no mark, a server entry and
     // a copy of the mail password.
-    await connection.execute(`UPDATE calendar_accounts SET mail_account_id = ?, provider_config = '{"server":{"url":"https://dav.example.test"}}',
+    await connection.execute<ResultSetHeader>(`UPDATE calendar_accounts SET mail_account_id = ?, provider_config = '{"server":{"url":"https://dav.example.test"}}',
       encrypted_password = ? WHERE id = ?`, [paused.mail, encrypt('old-copy'), paused.calendarAccount]);
-    const settingsRoutes = require('../dist/src/routes/settings');
-    await settingsRoutes['POST /api/settings/clear-mail-accounts']({}, paused.user);
-    const [[cleared]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    const settingsRoutes = require('../dist/src/routes/settings') as typeof import('../src/routes/settings');
+    await settingsRoutes['POST /api/settings/clear-mail-accounts']({} as FixtureValue, paused.user);
+    const [[cleared]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.equal(cleared.mail_account_id, null);
     assert.equal(cleared.encrypted_password, null, 'The copy goes with the link');
     const clearedConfig = typeof cleared.provider_config === 'string' ? JSON.parse(cleared.provider_config) : cleared.provider_config;
     assert.equal(clearedConfig.mailLinked, true, 'It stays a mail calendar');
-    await assert.rejects(calendarSync.resolveLogin(cleared), { code: 'MAIL_CALENDAR_UNLINKED' });
+    await assert.rejects(calendarSync.resolveLogin(cleared as FixtureValue), { code: 'MAIL_CALENDAR_UNLINKED' });
     // A link left to a deleted mail account (before 0.18.2) goes when used.
-    await connection.execute('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ?', [crypto.randomUUID(), paused.calendarAccount]);
-    await assert.rejects(calendarSync.resolveLogin(cleared), { code: 'MAIL_CALENDAR_UNLINKED' });
+    await connection.execute<ResultSetHeader>('UPDATE calendar_accounts SET mail_account_id = ? WHERE id = ?', [crypto.randomUUID(), paused.calendarAccount]);
+    await assert.rejects(calendarSync.resolveLogin(cleared as FixtureValue), { code: 'MAIL_CALENDAR_UNLINKED' });
     assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, null);
     const again = crypto.randomUUID();
-    await connection.execute(`INSERT INTO mail_accounts (id, user_id, email_address, provider, username, imap_host, encrypted_password, is_active)
+    await connection.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id, user_id, email_address, provider, username, imap_host, encrypted_password, is_active)
       VALUES (?, ?, 'paused@example.test', 'custom', 'paused@example.test', 'imap.example.test', ?, TRUE)`, [again, paused.user, encrypt('synthetic-password')]);
-    const [[waitingAgain]] = await connection.execute('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
-    assert.equal((await calendarSync.resolveLogin(waitingAgain)).username, 'paused@example.test');
+    const [[waitingAgain]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
+    assert.equal((await calendarSync.resolveLogin(waitingAgain as FixtureValue)).username, 'paused@example.test');
     assert.equal((await calendarRow(paused.calendarAccount)).mail_account_id, again);
     assert.equal(await count('SELECT COUNT(*) AS n FROM emails WHERE user_id = ?', [other.user]), 2);
     assert.equal(await count('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [other.user]), 2);

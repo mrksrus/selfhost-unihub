@@ -2,11 +2,11 @@ import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { EventEmitter } = (require('node:events') as typeof import('node:events'));
-const { guardImapConnection, runGuardedImap, closeImapConnection } = require('../dist/src/services/mail-imap-guard');
-const { withMailAccountLock } = require('../dist/src/services/mail-account-lock');
-const operations = require('../dist/src/services/mail-engine/operations');
-const transport = require('../dist/src/services/mail-engine/transport');
-const { getDb, setDb } = require('../dist/src/state');
+const { guardImapConnection, runGuardedImap, closeImapConnection } = require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard');
+const { withMailAccountLock } = require('../dist/src/services/mail-account-lock') as typeof import('../src/services/mail-account-lock');
+const operations = require('../dist/src/services/mail-engine/operations') as typeof import('../src/services/mail-engine/operations');
+const transport = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // Stands in for an ImapFlow client: close() is its synchronous hard close
@@ -120,10 +120,10 @@ for (const action of ['read', 'star', 'move']) {
         assert(!sql.startsWith('UPDATE emails'), 'An uncertain reply must never confirm local mail state');
         return [{ affectedRows: 1 }];
       } };
-    setDb({ execute: cx.execute, getConnection: async () => cx });
+    setDb({ execute: cx.execute, getConnection: async () => cx } as FixtureValue);
     let reads = 0;
-    transport.selectMailbox = async () => ({ uidvalidity: 9, capabilities: { condstore: false } });
-    transport.fetchMetadataWindow = async () => { reads++; return { items: [{ uid: 12, flags: [], modseq: null }] }; };
+    transport.selectMailbox = async () => ({ uidvalidity: 9, capabilities: { condstore: false } }) as FixtureValue;
+    transport.fetchMetadataWindow = (async () => { reads++; return { items: [{ uid: 12, flags: [], modseq: null }] }; }) as FixtureValue;
     const lost = async (_conn: FixtureValue, _input: FixtureValue, { beforeDispatch }: FixtureValue) => {
       await beforeDispatch();
       assert(trace.includes('commit'), 'Dispatch journal must commit before any mutation bytes');
@@ -131,10 +131,10 @@ for (const action of ['read', 'star', 'move']) {
       catch (error: FixtureValue) { assert.equal(error.code, 'MAIL_IMAP_TIMEOUT'); }
       return { transmission: 'possible', completion: 'lost', mapping: null, mappingStatus: 'missing' };
     };
-    transport.setFlag = lost; transport.nativeMove = lost;
+    transport.setFlag = lost as FixtureValue; transport.nativeMove = lost as FixtureValue;
     const result = action === 'move'
-      ? await operations.applyMove(op, f.connection, 1, undefined, 'worker', 'job')
-      : await operations.applyFlag(op, f.connection, 1, undefined, 'worker', 'job');
+      ? await operations.applyMove(op as FixtureValue, f.connection, 1, undefined, 'worker', 'job')
+      : await operations.applyFlag(op as FixtureValue, f.connection, 1, undefined, 'worker', 'job');
     assert.equal(result.connectionFailed, true); assert.equal(op.state, 'reconciling');
     assert.equal(op.status, 'pending'); assert.equal(op.attempts, 1); assert.equal(f.destroyed, 1);
     assert.equal(reads, 1, 'Lost acknowledgement cannot trigger a confirming readback');

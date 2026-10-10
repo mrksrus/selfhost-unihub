@@ -1,4 +1,5 @@
 import type { FixtureValue } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
@@ -39,7 +40,7 @@ test('production export and restore jobs round-trip every section through encryp
 }, async (t) => {
   const database = process.env.MYSQL_TEST_DATABASE || 'unihub_test';
   assert.match(database, /_test$/, 'Use an empty disposable database ending in _test');
-  const mysql = require('mysql2/promise');
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   const pool = mysql.createPool({
     host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     database, user: process.env.MYSQL_TEST_USER || 'unihub_test',
@@ -56,7 +57,7 @@ test('production export and restore jobs round-trip every section through encryp
         const connection = await pool.getConnection();
         try {
           await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
-          const [tables] = await connection.query('SHOW TABLES');
+          const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES');
           for (const row of tables) {
             const table = Object.values(row)[0];
             assert.match((table as string), /^[a-z_]+$/);
@@ -70,7 +71,7 @@ test('production export and restore jobs round-trip every section through encryp
       await fs.rm(directory, { recursive: true, force: true });
     }
   });
-  const [existing] = await pool.query('SHOW TABLES');
+  const [existing] = await pool.query<RowDataPacket[]>('SHOW TABLES');
   assert.equal(existing.length, 0, 'Refusing to change a nonempty database');
   ownsDatabase = true;
   const source = createBackupRuntime(sourceRoot, 'source-roundtrip-key', pool);
@@ -81,7 +82,7 @@ test('production export and restore jobs round-trip every section through encryp
   const destinationCrypto = destination('security/encryption');
   async function insert(table: string, row: FixtureValue) {
     const columns = Object.keys(row);
-    await pool.execute(`INSERT INTO ${table} (${columns.map(name => '`' + name + '`').join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`, Object.values(row));
+    await pool.execute<ResultSetHeader>(`INSERT INTO ${table} (${columns.map(name => '`' + name + '`').join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`, Object.values(row));
   }
   async function newUser(label: string) {
     const id = uuid();
@@ -90,11 +91,11 @@ test('production export and restore jobs round-trip every section through encryp
   }
   async function rowsFor(table: string, userId: string) {
     const [rows] = table === 'mail_folder_remote_boxes'
-      ? await pool.execute('SELECT boxes.* FROM mail_folder_remote_boxes boxes JOIN mail_folders folders ON folders.id = boxes.folder_id JOIN mail_accounts accounts ON accounts.id = boxes.mail_account_id WHERE folders.user_id = ? AND accounts.user_id = ?', [userId, userId])
+      ? await pool.execute<RowDataPacket[]>('SELECT boxes.* FROM mail_folder_remote_boxes boxes JOIN mail_folders folders ON folders.id = boxes.folder_id JOIN mail_accounts accounts ON accounts.id = boxes.mail_account_id WHERE folders.user_id = ? AND accounts.user_id = ?', [userId, userId])
       : table === 'mail_folder_rule_overrides'
-        ? await pool.execute('SELECT o.* FROM mail_folder_rule_overrides o JOIN mail_sender_rules r ON r.id = o.rule_id JOIN mail_accounts a ON a.id = o.mail_account_id WHERE r.user_id = ? AND a.user_id = ?', [userId, userId])
-        : await pool.execute(`SELECT * FROM ${table} WHERE user_id = ?`, [userId]);
-    return rows.map((row: FixtureValue) => ({ ...row })).sort((a: FixtureValue, b: FixtureValue) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+        ? await pool.execute<RowDataPacket[]>('SELECT o.* FROM mail_folder_rule_overrides o JOIN mail_sender_rules r ON r.id = o.rule_id JOIN mail_accounts a ON a.id = o.mail_account_id WHERE r.user_id = ? AND a.user_id = ?', [userId, userId])
+        : await pool.execute<RowDataPacket[]>(`SELECT * FROM ${table} WHERE user_id = ?`, [userId]);
+    return rows.map((row: FixtureValue) => ({ ...row })).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   }
   async function snapshot(userId: string) {
     return Object.fromEntries(await Promise.all(TABLES.map(async table => [table, await rowsFor(table, userId)])));
@@ -102,7 +103,7 @@ test('production export and restore jobs round-trip every section through encryp
   const sourceUser = await newUser('roundtrip-source');
   const unrelatedUser = await newUser('roundtrip-unrelated');
   await insert('contacts', { id: uuid(), user_id: unrelatedUser, first_name: 'Do not export or change', notes: 'Unrelated private data' });
-  await pool.execute('UPDATE users SET full_name = ?, timezone = ? WHERE id = ?', ['Grüße Roundtrip', 'Europe/Vienna', sourceUser]);
+  await pool.execute<ResultSetHeader>('UPDATE users SET full_name = ?, timezone = ? WHERE id = ?', ['Grüße Roundtrip', 'Europe/Vienna', sourceUser]);
   await insert('user_settings', { user_id: sourceUser, setting_key: 'calendar_preferences', setting_value: JSON.stringify({ firstDay: 1, custom: 'Grüße\nTwo lines' }) });
   // Choices and an order saved by older releases still name removed modules.
   await insert('user_settings', { user_id: sourceUser, setting_key: 'module_preferences', setting_value: JSON.stringify({ notes: { visible: false, enabled: false, background: false }, games: { visible: false }, recordings: { visible: false } }) });
@@ -143,25 +144,25 @@ test('production export and restore jobs round-trip every section through encryp
       await fs.writeFile(secondPath, secondBytes);
       // Same name and byte count are not proof that two attachments are equal.
       await insert('email_attachments', { id: secondId, user_id: sourceUser, email_id: emailId, filename: 'data-0.bin', content_type: 'application/octet-stream', size_bytes: secondBytes.length, storage_path: secondPath, content_id: 'second-content-0' });
-      await pool.execute('UPDATE emails SET body_html = CONCAT(body_html, ?) WHERE id = ?', [`<img src="/api/mail/attachments/${secondId}">`, emailId]);
+      await pool.execute<ResultSetHeader>('UPDATE emails SET body_html = CONCAT(body_html, ?) WHERE id = ?', [`<img src="/api/mail/attachments/${secondId}">`, emailId]);
     }
     await insert('mail_email_scores', { id: uuid(), user_id: sourceUser, email_id: emailId, score_version: 'v1', total_score: 12.5, reasons: JSON.stringify(['synthetic reason']), metadata: JSON.stringify({ test: true }) });
     }
   }
-  const [mailAccounts] = await pool.execute('SELECT * FROM mail_accounts WHERE user_id = ? ORDER BY email_address', [sourceUser]);
-  const [sourceEmails] = await pool.execute('SELECT * FROM emails WHERE user_id = ? ORDER BY body_text', [sourceUser]);
-  await pool.execute('UPDATE mail_folders SET mail_account_id = ?, special_use = ? WHERE id = ?', [mailAccounts[1].id, 'archive', folderIds.research]);
-  await pool.execute('UPDATE emails SET filing_account_id = ? WHERE id = ?', [mailAccounts[1].id, sourceEmails[0].id]);
-  await pool.execute('UPDATE emails SET is_legacy = TRUE WHERE id = ?', [sourceEmails[1].id]);
+  const [mailAccounts] = await pool.execute<RowDataPacket[]>('SELECT * FROM mail_accounts WHERE user_id = ? ORDER BY email_address', [sourceUser]);
+  const [sourceEmails] = await pool.execute<RowDataPacket[]>('SELECT * FROM emails WHERE user_id = ? ORDER BY body_text', [sourceUser]);
+  await pool.execute<ResultSetHeader>('UPDATE mail_folders SET mail_account_id = ?, special_use = ? WHERE id = ?', [mailAccounts[1].id, 'archive', folderIds.research]);
+  await pool.execute<ResultSetHeader>('UPDATE emails SET filing_account_id = ? WHERE id = ?', [mailAccounts[1].id, sourceEmails[0].id]);
+  await pool.execute<ResultSetHeader>('UPDATE emails SET is_legacy = TRUE WHERE id = ?', [sourceEmails[1].id]);
   for (const account of mailAccounts) {
     const mappings = await rowsFor('mail_folder_remote_boxes', sourceUser);
     await insert('mail_folder_reconciliations', { mail_account_id: account.id, user_id: sourceUser,
       inventory: JSON.stringify(['INBOX/Research', 'Archive/Copies']),
-      previous_mappings: JSON.stringify(mappings.filter((row: FixtureValue) => row.mail_account_id === account.id)), completed_at: '2030-01-01 11:00:00' });
+      previous_mappings: JSON.stringify(mappings.filter((row) => row.mail_account_id === account.id)), completed_at: '2030-01-01 11:00:00' });
   }
   await insert('mail_folder_recovery_items', { email_id: sourceEmails[0].id, user_id: sourceUser, source_account_id: mailAccounts[0].id,
     original_folder: 'old-research', original_filing_account_id: mailAccounts[0].id, target_folder: 'research', target_account_id: mailAccounts[1].id, action: 'manual', created_at: '2030-01-01 11:00:00' });
-  const [rules] = await pool.execute('SELECT id FROM mail_sender_rules WHERE user_id = ? ORDER BY id', [sourceUser]);
+  const [rules] = await pool.execute<RowDataPacket[]>('SELECT id FROM mail_sender_rules WHERE user_id = ? ORDER BY id', [sourceUser]);
   await insert('mail_folder_rule_overrides', { rule_id: rules[0].id, mail_account_id: mailAccounts[1].id, target_folder: 'research' });
   // Legacy row from the removed Games module: kept in place, never exported.
   await insert('tetris_scores', { user_id: sourceUser, score: 13500, lines: 42, level: 5, achieved_at: '2030-01-01 11:00:00' });
@@ -202,7 +203,7 @@ test('production export and restore jobs round-trip every section through encryp
     assert.ok(ready.file_path.startsWith(sourceRoot + path.sep));
     let password = null;
     if (encrypted) {
-      const [[key]] = await pool.execute('SELECT recovery_password_ciphertext FROM backup_archive_keys WHERE backup_uuid = ? AND user_id = ?', [ready.backup_uuid, sourceUser]);
+      const [[key]] = await pool.execute<RowDataPacket[]>('SELECT recovery_password_ciphertext FROM backup_archive_keys WHERE backup_uuid = ? AND user_id = ?', [ready.backup_uuid, sourceUser]);
       password = source('services/backup-container').revealProtectedRecoveryPassword(key.recovery_password_ciphertext, ready.backup_uuid);
       assert.equal(bytes.includes(Buffer.from('synthetic-mail-password-0')), false);
     }
@@ -226,7 +227,7 @@ test('production export and restore jobs round-trip every section through encryp
     assert.equal(failed.file_path, null);
     const files = await fs.readdir(path.join(sourceRoot, 'backups', sourceUser));
     assert.equal(files.some(filename => filename.startsWith(started.id)), false, 'Remove unusable archive and temporary ZIP');
-    const [[keys]] = await pool.execute('SELECT COUNT(*) AS total FROM backup_archive_keys WHERE export_job_id = ?', [started.id]);
+    const [[keys]] = await pool.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM backup_archive_keys WHERE export_job_id = ?', [started.id]);
     assert.equal(keys.total, 0, 'Remove unusable archive key metadata');
   });
   await t.test('a missing selected recording fails export clearly while an unrelated section can still export', async () => {
@@ -272,7 +273,7 @@ test('production export and restore jobs round-trip every section through encryp
     const restored = await snapshot(userId);
     const commands = await rowsFor('mail_writebacks', userId);
     assert.ok(commands.length >= 1, 'Accepted provider intent remains inspectable after restore');
-    assert.ok(commands.some((row: FixtureValue) => {
+    assert.ok(commands.some((row) => {
       const evidence = typeof row.evidence_json === 'string' ? JSON.parse(row.evidence_json) : row.evidence_json;
       return evidence?.archive_operation_id === sourceWritebackId && evidence.restore_requires_revalidation === true;
     }), 'Archived unresolved intent retains its source ID and a revalidation marker');
@@ -284,8 +285,8 @@ test('production export and restore jobs round-trip every section through encryp
       assert.notEqual(row.state, 'reconciling');
       assert.equal(row.is_current, 0, 'Archived intent must not become a runnable overlay');
     }
-    const [jobs] = await pool.execute('SELECT state, lease_owner, lease_until FROM mail_engine_jobs WHERE user_id = ?', [userId]);
-    assert.ok(jobs.every((job: FixtureValue) => !['queued', 'running', 'error'].includes(job.state) && job.lease_owner == null && job.lease_until == null));
+    const [jobs] = await pool.execute<RowDataPacket[]>('SELECT state, lease_owner, lease_until FROM mail_engine_jobs WHERE user_id = ?', [userId]);
+    assert.ok(jobs.every((job) => !['queued', 'running', 'error'].includes(job.state) && job.lease_owner == null && job.lease_until == null));
     for (const table of TABLES) {
       assert.equal(restored[table].length, original[table].length, `${table}: preserve every row`);
       for (const row of restored[table]) {
@@ -386,7 +387,7 @@ test('production export and restore jobs round-trip every section through encryp
       assert.deepEqual(await fs.readFile(recording.storage_path), audioByTitle.get(recording.title));
       assert.ok(restored.recording_tag_links.some((link: FixtureValue) => link.recording_id === recording.id && link.tag_id === restored.recording_tags[0].id));
     }
-    const [[profile]] = await pool.execute('SELECT full_name, timezone, role FROM users WHERE id = ?', [userId]);
+    const [[profile]] = await pool.execute<RowDataPacket[]>('SELECT full_name, timezone, role FROM users WHERE id = ?', [userId]);
     assert.deepEqual(profile, { full_name: 'Grüße Roundtrip', timezone: 'Europe/Vienna', role: 'user' });
     return restored;
   }
@@ -425,7 +426,7 @@ test('production export and restore jobs round-trip every section through encryp
   await t.test('a lost COMMIT acknowledgement preserves the committed restore and every restored file', async () => {
     let injected = false;
     destination('state').setDb({
-      execute: (...args: FixtureValue[]) => pool.execute(...args),
+      execute: (...args: FixtureValue[]) => pool.execute(...args as [string, FixtureValue]),
       async getConnection() {
         const connection = await pool.getConnection();
         let completesRestore = false;
@@ -434,7 +435,7 @@ test('production export and restore jobs round-trip every section through encryp
             if (/UPDATE backup_restore_jobs\s+SET status = 'completed'/.test(sql)) completesRestore = true;
             return connection.execute(sql, params);
           },
-          query: (...args: FixtureValue[]) => connection.query(...args),
+          query: (...args: FixtureValue[]) => connection.query(...args as [string, FixtureValue]),
           beginTransaction: () => connection.beginTransaction(),
           rollback: () => connection.rollback(),
           release: () => connection.release(),
@@ -456,22 +457,22 @@ test('production export and restore jobs round-trip every section through encryp
     } finally { destination('state').setDb(pool); }
   });
   await t.test('repeated complete archives honor keep-existing, replace and keep-both without detaching children', async () => {
-    await pool.execute('UPDATE contacts SET notes = ? WHERE user_id = ?', ['Local edit', encryptedUser]);
+    await pool.execute<ResultSetHeader>('UPDATE contacts SET notes = ? WHERE user_id = ?', ['Local edit', encryptedUser]);
     await uploadAndRestore(destination, encryptedUser, encrypted, 'keep_existing');
     assert.equal((await rowsFor('contacts', encryptedUser))[0].notes, 'Local edit');
     assert.equal((await rowsFor('emails', encryptedUser)).length, original.emails.length);
-    const localEmail = (await rowsFor('emails', encryptedUser)).find((row: FixtureValue) => row.mail_account_id);
+    const localEmail = (await rowsFor('emails', encryptedUser)).find((row) => row.mail_account_id);
     const destinationWritebackId = uuid();
     await insert('mail_writebacks', { id: destinationWritebackId, user_id: encryptedUser, mail_account_id: localEmail.mail_account_id,
       email_id: localEmail.id, action: 'read', target_value: '1', base_value: '0', remote_folder: 'INBOX', remote_uid: 1,
       remote_uidvalidity: 1, is_current: 1 });
     // Legacy accepted rows can have NULL state until the resumable backfill
     // classifies them. Restore must still pause that exact destination intent.
-    const [[unclassified]] = await pool.execute('SELECT state, status FROM mail_writebacks WHERE id = ?', [destinationWritebackId]);
+    const [[unclassified]] = await pool.execute<RowDataPacket[]>('SELECT state, status FROM mail_writebacks WHERE id = ?', [destinationWritebackId]);
     assert.equal(unclassified.state, null); assert.equal(unclassified.status, 'pending');
     await uploadAndRestore(destination, encryptedUser, encrypted, 'replace');
     const destinationCommands = await rowsFor('mail_writebacks', encryptedUser);
-    const destinationIntent = destinationCommands.find((row: FixtureValue) => row.id === destinationWritebackId);
+    const destinationIntent = destinationCommands.find((row) => row.id === destinationWritebackId);
     assert.ok(destinationIntent && destinationIntent.state === 'needs_attention' && destinationIntent.status === 'conflict',
       'Replacing archived mail preserves the destination intent as non-runnable review evidence');
     assert.equal(destinationIntent.is_current, 0, 'Destination intent cannot remain a runnable overlay');
@@ -506,7 +507,7 @@ test('production export and restore jobs round-trip every section through encryp
   await t.test('kept reconciliation state cannot hide newly restored mail and fails atomically', async () => {
     const userId = await newUser('kept-inventory-conflict');
     await uploadAndRestore(destination, userId, encrypted);
-    await pool.execute('UPDATE mail_folder_reconciliations SET inventory = ? WHERE user_id = ?', ['[]', userId]);
+    await pool.execute<ResultSetHeader>('UPDATE mail_folder_reconciliations SET inventory = ? WHERE user_id = ?', ['[]', userId]);
     const before = await snapshot(userId);
     await assert.rejects(destination('services/backup').importBackupForUser(userId, legacyParsed.backup, {
       mode: 'apply', conflict_mode: 'keep_both', fileSourcesByPath: legacyParsed.fileSourcesByPath,
@@ -553,7 +554,7 @@ test('production export and restore jobs round-trip every section through encryp
     assert.equal(failed.archive_path, validated.archive_path, 'A failed apply retains the uploaded archive');
     assert.equal((await fs.stat(failed.archive_path)).size, legacy.bytes.length);
     for (const rows of Object.values(await snapshot(userId))) assert.equal((rows as FixtureValue).length, 0, 'No section may be partially imported');
-    const [[profile]] = await pool.execute('SELECT full_name FROM users WHERE id = ?', [userId]);
+    const [[profile]] = await pool.execute<RowDataPacket[]>('SELECT full_name FROM users WHERE id = ?', [userId]);
     assert.equal(profile.full_name, 'changed-after-validation');
   });
   for (const format of ['plain', 'encrypted']) {
@@ -706,22 +707,22 @@ test('production export and restore jobs round-trip every section through encryp
         const attendees = await rowsFor('calendar_event_attendees', userId);
         const contacts = await rowsFor('contacts', userId);
         for (const rows of [events, subtasks, attendees, contacts]) assert.equal(rows.length, 2);
-        const meaning = events.map((event: FixtureValue) => ({ id: event.id, description: event.description,
-          tasks: subtasks.filter((row: FixtureValue) => row.event_id === event.id).map((row: FixtureValue) => ({ id: row.id, is_done: row.is_done })),
-          attendees: attendees.filter((row: FixtureValue) => row.event_id === event.id).map((row: FixtureValue) => ({ id: row.id, display_name: row.display_name })),
-        })).sort((a: FixtureValue, b: FixtureValue) => a.description.localeCompare(b.description));
+        const meaning = events.map((event) => ({ id: event.id, description: event.description,
+          tasks: subtasks.filter((row) => row.event_id === event.id).map((row) => ({ id: row.id, is_done: row.is_done })),
+          attendees: attendees.filter((row) => row.event_id === event.id).map((row) => ({ id: row.id, display_name: row.display_name })),
+        })).sort((a, b) => a.description.localeCompare(b.description));
         for (const event of meaning) {
           assert.equal(event.tasks.length, 1); assert.equal(event.attendees.length, 1);
           assert.equal(event.tasks[0].is_done, event.description === 'first' ? 1 : 0);
           assert.equal(event.attendees[0].display_name, event.description);
         }
-        return { events: meaning, contacts: contacts.map((row: FixtureValue) => ({ id: row.id, notes: row.notes })).sort((a: FixtureValue, b: FixtureValue) => a.notes.localeCompare(b.notes)) };
+        return { events: meaning, contacts: contacts.map((row) => ({ id: row.id, notes: row.notes })).sort((a, b) => a.notes.localeCompare(b.notes)) };
       };
       await destination('services/backup').importBackupZipFileForUser(userId, archivePath, options);
       const first = await readMeaning();
       // Force the fallback order to disagree with source order on the next run.
-      await pool.execute('UPDATE calendar_events SET created_at = ? WHERE id = ?', ['2000-01-01 00:00:00', first.events[1].id]);
-      await pool.execute('UPDATE contacts SET created_at = ? WHERE id = ?', ['2000-01-01 00:00:00', first.contacts[1].id]);
+      await pool.execute<ResultSetHeader>('UPDATE calendar_events SET created_at = ? WHERE id = ?', ['2000-01-01 00:00:00', first.events[1].id]);
+      await pool.execute<ResultSetHeader>('UPDATE contacts SET created_at = ? WHERE id = ?', ['2000-01-01 00:00:00', first.contacts[1].id]);
       await destination('services/backup').importBackupZipFileForUser(userId, archivePath, options);
       assert.deepEqual(await readMeaning(), first);
     }

@@ -1,11 +1,11 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { setDb } = require('../dist/src/state');
-const { buildBackupForUser, importBackupForUser, validateBackupPayload } = require('../dist/src/services/backup');
-const { normalizeBackupPayload } = require('../dist/src/services/backup-format');
-const { BACKUP_VERSION } = require('../dist/src/services/backup-format');
-const { SECTION_POLICIES, TABLE_POLICIES } = require('../dist/src/services/backup-catalog');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
+const { buildBackupForUser, importBackupForUser, validateBackupPayload } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
+const { normalizeBackupPayload } = require('../dist/src/services/backup-format') as typeof import('../src/services/backup-format');
+const { BACKUP_VERSION } = require('../dist/src/services/backup-format') as typeof import('../src/services/backup-format');
+const { SECTION_POLICIES, TABLE_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
 
 function database(t: import('node:test').TestContext, execute: FixtureValue = async () => [[]]) {
   const calls: FixtureValue[] = [];
@@ -26,7 +26,7 @@ function database(t: import('node:test').TestContext, execute: FixtureValue = as
     rollback: async () => calls.push({ sql: 'ROLLBACK' }),
     release() {},
   };
-  setDb({ getConnection: async () => connection, execute: async () => [[]] });
+  setDb({ getConnection: async () => connection, execute: async () => [[]] } as FixtureValue);
   t.after(() => setDb(null));
   return calls;
 }
@@ -42,7 +42,7 @@ const archive = (data: FixtureValue) => ({ app: 'unihub', version: 3, data, file
 
 test('contacts-only schema 3 export never reads mail, credentials or recording tables', async t => {
   const calls = database(t, (async (sql: string) => sql.includes('FROM contacts ')
-    ? [[{ id: 'contact', user_id: 'owner', first_name: 'Local' }]] : [[]] as FixtureValue));
+    ? [[{ id: 'contact', user_id: 'owner', first_name: 'Local' }]] : [[]]));
   const backup = await buildBackupForUser('owner', { sections: 'contacts', includeFileData: false });
   assert.equal(backup.version, BACKUP_VERSION);
   assert.deepEqual(Object.keys(backup.data), ['contacts']);
@@ -169,7 +169,7 @@ test('unknown required tables, fields, file kinds and unsafe transcript rows fai
 test('older protected-folder mail uses legacy defaults without inventing Legacy assignments', () => {
   const old = { ...archive({ emails: ['inbox', 'sent', 'drafts', 'trash'].map((folder, index) => ({ id: String(index), folder })) }), version: 2 };
   const normalized = normalizeBackupPayload(old);
-  assert.ok(normalized.data.emails.every((row: FixtureValue) => row.is_legacy === false && row.filing_account_id === null));
+  assert.ok(normalized.data.emails!.every((row) => row.is_legacy === false && row.filing_account_id === null));
   assert.ok(!Object.hasOwn(normalized.data, 'tetris_scores'));
   assert.equal(TABLE_POLICIES.recording_transcription_jobs.fieldPolicies.transcript_text, 'preserve');
   assert.ok(SECTION_POLICIES.recordings.tables.includes('recording_transcription_jobs'));

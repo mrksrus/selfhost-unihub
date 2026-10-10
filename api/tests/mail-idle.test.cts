@@ -8,12 +8,12 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { EventEmitter } = (require('node:events') as typeof import('node:events'));
 process.env.ENCRYPTION_KEY = 'mail-idle-test-only-key';
-const { createIdleSupervisor, defaultListEligible, kindsFor, idleSupervisor } = require('../dist/src/services/mail-idle');
-const control = require('../dist/src/services/mail-sync-control');
-const runtime = require('../dist/src/services/mail-engine/runtime');
-const { imapFlowOptions } = require('../dist/src/services/mail-imap-client');
-const { installShutdownHandler } = require('../dist/src/services/server-events');
-const { getDb, setDb } = require('../dist/src/state');
+const { createIdleSupervisor, defaultListEligible, kindsFor, idleSupervisor } = require('../dist/src/services/mail-idle') as typeof import('../src/services/mail-idle');
+const control = require('../dist/src/services/mail-sync-control') as typeof import('../src/services/mail-sync-control');
+const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+const { imapFlowOptions } = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
+const { installShutdownHandler } = require('../dist/src/services/server-events') as typeof import('../src/services/server-events');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(predicate: FixtureValue, ms = 2000) {
@@ -50,15 +50,15 @@ function fakeClient({ caps = ['IMAP4rev1', 'IDLE'] }: FixtureValue = {}) {
   } });
   return { client: proxy, used, opens, raw: target };
 }
-const row = (accountId: string, extra: FixtureValue = {}) => ({ accountId, userId: `user-${accountId}`, syncMode: 'sync', mailboxId: `inbox-${accountId}`,
+const row = (accountId: string, extra = {}) => ({ accountId, userId: `user-${accountId}`, syncMode: 'sync', mailboxId: `inbox-${accountId}`,
   remoteName: 'INBOX', fingerprint: `fp-${accountId}`, ...extra });
 function harness(t: import('node:test').TestContext, { rows = [row('A')], connect, ...options }: FixtureValue = {}) {
   const enqueued: FixtureValue[] = [], clients: FixtureValue[] = [], connects: FixtureValue[] = [];
   let eligible = rows;
   const supervisor = createIdleSupervisor({ debounceMs: 15, pollMs: 60 * 60 * 1000, backoffBaseMs: 5, backoffMaxMs: 40,
     random: () => 1, log: () => {}, listEligible: async () => eligible,
-    connect: connect || (async (entry: FixtureValue) => { connects.push(entry.accountId); const fake = fakeClient(); clients.push(fake); return fake.client; }),
-    enqueue: async (input: FixtureValue) => { enqueued.push(input); }, ...options });
+    connect: connect || (async (entry) => { connects.push(entry.accountId); const fake = fakeClient(); clients.push(fake); return fake.client; }),
+    enqueue: async (input) => { enqueued.push(input); }, ...options });
   t.after(() => supervisor.stop());
   return { supervisor, enqueued, clients, connects, setRows: (next: FixtureValue) => { eligible = next; } };
 }
@@ -66,7 +66,7 @@ function harness(t: import('node:test').TestContext, { rows = [row('A')], connec
 test('eligibility: active, connected, unpaused accounts with a mapped INBOX, mail background on, no restore', async t => {
   const old = getDb(); t.after(() => setDb(old));
   let sql = '';
-  setDb({ execute: async (query: string) => {
+  setDb({ execute: (async (query: string) => {
     if (query.includes('FROM mail_accounts a')) {
       sql = query;
       return [[
@@ -81,9 +81,9 @@ test('eligibility: active, connected, unpaused accounts with a mapped INBOX, mai
     ]];
     if (query.includes('FROM backup_restore_jobs')) return [[{ user_id: 'u4', requested_sections: JSON.stringify(['mail']) }]];
     assert.fail(`Unexpected SQL: ${query}`);
-  } });
+  }) } as FixtureValue);
   const rows = await defaultListEligible();
-  assert.deepEqual(rows.map((r: FixtureValue) => [r.accountId, r.syncMode, r.mailboxId]), [['A', 'sync', 'm1'], ['B', 'download', 'm2']],
+  assert.deepEqual(rows.map((r) => [r.accountId, r.syncMode, r.mailboxId]), [['A', 'sync', 'm1'], ['B', 'download', 'm2']],
     'background off (u3) and a running mail restore (u4) are not eligible; both modes import new mail');
   for (const clause of ['a.is_active = TRUE', 'a.disconnected_at IS NULL', 'e.paused_reason IS NULL',
     "a.sync_mode IN ('sync','download')", "f.slug = 'inbox'", "m.state = 'active'"]) assert.ok(sql.includes(clause), clause);
@@ -143,7 +143,7 @@ test('a lost session reconnects with exponential backoff and jitter, capped', as
   const timers = { setTimeout: (fn: FixtureValue, ms: number) => { delays.push(ms); return setTimeout(fn, 1); }, clearTimeout, setInterval, clearInterval };
   let attempts = 0;
   const { supervisor } = harness(t, ({ timers, debounceMs: 999, random: () => 0.5,
-    connect: async () => { attempts++; throw Object.assign(new Error('ECONNRESET'), { code: 'ECONNRESET' }); } } as FixtureValue));
+    connect: async () => { attempts++; throw Object.assign(new Error('ECONNRESET'), { code: 'ECONNRESET' }); } }));
   await supervisor.start();
   await until(() => attempts >= 6);
   supervisor.stop();
@@ -170,14 +170,14 @@ test('a rejected login stops IDLE for the account until its settings change', as
   const { supervisor, setRows } = harness(t, ({ connect: async () => {
     attempts++;
     throw Object.assign(new Error('Authentication failed'), { authenticationFailed: true });
-  } } as FixtureValue));
+  } }));
   await supervisor.start();
   await until(() => attempts === 1 && supervisor.size() === 0);
   await wait(30);
   await supervisor.refresh();
   await wait(20);
   assert.equal(attempts, 1, 'no retry, no lockout risk at the provider');
-  assert.equal(supervisor.blocked().get('A').reason, 'auth');
+  assert.equal(supervisor.blocked().get('A')!.reason, 'auth');
   setRows([row('A', { fingerprint: 'fp-A-new-password' })]);
   await supervisor.refresh();
   await until(() => attempts === 2);
@@ -185,17 +185,17 @@ test('a rejected login stops IDLE for the account until its settings change', as
 
 test('a server without IDLE is skipped; polling remains', async t => {
   const fake: FixtureValue = fakeClient({ caps: ['IMAP4rev1'] });
-  const { supervisor, enqueued } = harness(t, ({ connect: async () => fake.client } as FixtureValue));
+  const { supervisor, enqueued } = harness(t, ({ connect: async () => fake.client }));
   await supervisor.start();
   await until(() => fake.raw.isClosed);
   assert.equal(supervisor.isHealthy('A'), false);
-  assert.equal(supervisor.blocked().get('A').reason, 'unsupported');
+  assert.equal(supervisor.blocked().get('A')!.reason, 'unsupported');
   assert.equal(enqueued.length, 0);
   assert.equal(fake.opens.length, 0);
 });
 
 test('global cap: at most maxSessions IDLE sessions, one per account', async t => {
-  const { supervisor, connects } = harness(t, ({ maxSessions: 2, rows: [row('A'), row('A'), row('B'), row('C')] } as FixtureValue));
+  const { supervisor, connects } = harness(t, ({ maxSessions: 2, rows: [row('A'), row('A'), row('B'), row('C')] }));
   await supervisor.start();
   await until(() => connects.length === 2);
   await supervisor.refresh();
@@ -232,7 +232,7 @@ test('stopAccount closes the session at once and wins over an in-flight eligibil
   assert.equal(supervisor.isHealthy('A'), false);
   // A pass that read the database before the stop must not reopen it.
   const gate = new Promise(resolve => { release = resolve; });
-  const slow = createIdleSupervisor({ debounceMs: 15, log: () => {}, listEligible: async () => { await gate; return [row('A')]; },
+  const slow = createIdleSupervisor({ debounceMs: 15 as FixtureValue, log: () => {}, listEligible: async () => { await gate; return [row('A')]; },
     connect: async () => assert.fail('must not connect'), enqueue: async () => {} });
   t.after(() => slow.stop());
   const pass = slow.start();
@@ -246,10 +246,10 @@ test('stopAccount closes the session at once and wins over an in-flight eligibil
 
 test('stopMailAccountWork stops the account IDLE session', async t => {
   const old = getDb(); t.after(() => setDb(old));
-  setDb({ execute: async (query: string) => {
+  setDb({ execute: (async (query: string) => {
     if (query.includes('SELECT user_id FROM mail_accounts')) return [[{ user_id: 'owner' }]];
     assert.fail(`Unexpected SQL: ${query}`);
-  } });
+  }) } as FixtureValue);
   t.mock.method(runtime, 'pauseAccount', async () => ({}));
   const stopped: FixtureValue[] = [];
   t.mock.method(idleSupervisor, 'stopAccount', (key: FixtureValue) => { stopped.push(key); return true; });
@@ -259,19 +259,19 @@ test('stopMailAccountWork stops the account IDLE session', async t => {
 
 test('background sync off in module settings stops IDLE sessions', async t => {
   const old = getDb(); t.after(() => setDb(old));
-  setDb({ execute: async (query: string, params: FixtureValue) => {
+  setDb({ execute: (async (query: string, params: FixtureValue) => {
     if (query.startsWith('INSERT INTO user_settings')) return [{}];
     if (query.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify({ mail: { background: false } }) }]];
     if (query.includes('SELECT id, is_active, disconnected_at FROM mail_accounts')) return [[{ id: 'acct-1', is_active: 1, disconnected_at: null }]];
     if (query.includes('SELECT user_id FROM mail_accounts')) return [[{ user_id: params[0] === 'acct-1' ? 'owner' : null }]];
     if (query.includes('FROM mail_engine_jobs')) return [[]];
     assert.fail(`Unexpected SQL: ${query}`);
-  } });
+  }) } as FixtureValue);
   t.mock.method(runtime, 'resumeAccount', async () => ({ resumed: 0 }));
   const stopped: FixtureValue[] = [];
   t.mock.method(idleSupervisor, 'stopAccount', (key: FixtureValue) => { stopped.push(key); return true; });
-  const routes = require('../dist/src/routes/modules');
-  const result = await routes['PUT /api/modules']({}, 'owner', { modules: { mail: { background: false } } });
+  const routes = require('../dist/src/routes/modules') as typeof import('../src/routes/modules');
+  const result = await routes['PUT /api/modules']({} as FixtureValue, 'owner', { modules: { mail: { background: false } } });
   assert.ok(result.modules);
   assert.deepEqual(stopped, ['acct-1']);
 });
@@ -288,21 +288,21 @@ test('IDLE refresh is ordinary background admission: durable jobs, no manual res
   const old = getDb(); t.after(() => setDb(old));
   const jobs: FixtureValue[] = [];
   const scheduler = { start: async () => {}, enqueue: async (input: FixtureValue) => { jobs.push(input); return { id: 'j' }; } };
-  setDb(admissionDb());
+  setDb(admissionDb() as FixtureValue);
   const input = { accountId: 'A', userId: 'owner', mailboxId: 'inbox-A', kinds: ['recent', 'flags', 'presence', 'history'] };
-  const result = await control.enqueueIdleRefresh(input, { executor: getDb(), scheduler });
+  const result = await control.enqueueIdleRefresh(input, { executor: getDb() as FixtureValue, scheduler: scheduler as FixtureValue });
   assert.deepEqual(result.enqueued, ['recent', 'flags', 'presence'], 'never history or a full sync');
   assert.deepEqual(jobs.map(job => [job.kind, job.mailboxId, job.manualRefresh]), [['recent', 'inbox-A', undefined],
     ['flags', 'inbox-A', undefined], ['presence', 'inbox-A', undefined]]);
   jobs.length = 0;
-  setDb(admissionDb({ account: { user_id: 'owner', sync_mode: 'download' } }));
-  await control.enqueueIdleRefresh(input, { executor: getDb(), scheduler });
+  setDb(admissionDb({ account: { user_id: 'owner', sync_mode: 'download' } }) as FixtureValue);
+  await control.enqueueIdleRefresh(input, { executor: getDb() as FixtureValue, scheduler: scheduler as FixtureValue });
   assert.deepEqual(jobs.map(job => job.kind), ['recent'], 'Download mode never mirrors remote flags');
   jobs.length = 0;
-  setDb(admissionDb({ background: false }));
-  await control.enqueueIdleRefresh(input, { executor: getDb(), scheduler });
-  setDb(admissionDb({ account: null })); // paused, disconnected or inactive
-  await control.enqueueIdleRefresh(input, { executor: getDb(), scheduler });
+  setDb(admissionDb({ background: false }) as FixtureValue);
+  await control.enqueueIdleRefresh(input, { executor: getDb() as FixtureValue, scheduler: scheduler as FixtureValue });
+  setDb(admissionDb({ account: null }) as FixtureValue); // paused, disconnected or inactive
+  await control.enqueueIdleRefresh(input, { executor: getDb() as FixtureValue, scheduler: scheduler as FixtureValue });
   assert.deepEqual(jobs, []);
 });
 
@@ -315,14 +315,14 @@ test('periodic INBOX follow-up relaxes to a 5-minute safety net while IDLE is he
     if (query.includes('FROM mail_remote_mailboxes m')) return [[{ id: 'inbox-box' }]];
     assert.fail(`Unexpected SQL: ${query}`);
   } };
-  setDb(executor);
+  setDb(executor as FixtureValue);
   const enqueued: FixtureValue[] = [];
   const scheduler = { start: async () => {}, enqueue: async (input: FixtureValue) => { enqueued.push(input); return { id: 'j' }; } };
   let clock = 1_000_000, healthy = true;
-  const tick = () => control.schedulePeriodicMailWork('idle-acct', { executor, scheduler, idleHealthy: () => healthy, now: () => clock });
+  const tick = () => control.schedulePeriodicMailWork('idle-acct', { executor: executor as FixtureValue, scheduler: scheduler as FixtureValue, idleHealthy: () => healthy, now: () => clock });
   await tick();
   assert.equal(enqueued.length, 1, 'first tick still runs');
-  for (let i = 0; i < 9; i++) { clock += 30_000; assert.equal((await tick()).idle, true); }
+  for (let i = 0; i < 9; i++) { clock += 30_000; assert.equal(((await tick()) as FixtureValue).idle, true); }
   assert.equal(enqueued.length, 1, 'no 30 s polling while IDLE is up');
   clock += 30_000;
   await tick();
@@ -338,17 +338,17 @@ test('IDLE session options: explicit IDLE with periodic restart, still no automa
     tlsOptions: { servername: 'imap.example.test' }, keepalive: true, idleRestartMs: 10 * 60 * 1000 } });
   assert.equal(options.maxIdleTime, 10 * 60 * 1000);
   assert.ok(options.maxIdleTime < 29 * 60 * 1000, 'RFC 2177');
-  assert.ok(options.socketTimeout > options.maxIdleTime);
+  assert.ok(options.socketTimeout! > options.maxIdleTime);
   assert.equal(options.disableAutoIdle, true);
   assert.equal(options.logger, false);
-  assert.equal(imapFlowOptions({ imap: { host: 'h', keepalive: true } }).maxIdleTime, undefined);
+  assert.equal(imapFlowOptions({ imap: { host: 'h', keepalive: true } as FixtureValue }).maxIdleTime, undefined);
 });
 
 test('process shutdown runs the IDLE stop hook before re-raising the signal', () => {
   const signals = new EventEmitter();
   let stopped = 0, killed = null;
-  installShutdownHandler({ bus: { closeAll() {} }, signals, onShutdown: [() => { stopped++; }, () => { throw new Error('ignored'); }],
-    kill: (signal: FixtureValue) => { killed = signal; }, timers: { setTimeout: (fn: FixtureValue) => fn() } });
+  installShutdownHandler({ bus: { closeAll() {} } as FixtureValue, signals, onShutdown: [() => { stopped++; }, () => { throw new Error('ignored'); }],
+    kill: (signal) => { killed = signal; }, timers: { setTimeout: ((fn: FixtureValue) => fn()) as FixtureValue } });
   signals.emit('SIGTERM');
   assert.equal(stopped, 1);
   assert.equal(killed, 'SIGTERM');

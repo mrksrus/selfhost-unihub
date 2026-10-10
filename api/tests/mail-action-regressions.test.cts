@@ -1,10 +1,10 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { getDb, setDb } = require('../dist/src/state');
-const routes = require('../dist/src/routes/mail');
-const { withMailAccountLock } = require('../dist/src/services/mail-account-lock');
-const { mutateMessages, retryWriteback } = require('../dist/src/services/mail-writebacks');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
+const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+const { withMailAccountLock } = require('../dist/src/services/mail-account-lock') as typeof import('../src/services/mail-account-lock');
+const { mutateMessages, retryWriteback } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
 const request = (url: string) => ({ url, headers: { host: 'localhost' } });
 function installDb(t: import('node:test').TestContext, db: FixtureValue) { const old = getDb(); setDb(db); t.after(() => setDb(old)); }
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -18,13 +18,13 @@ for (const [read, star] of [[0, 0], [0, 1], [1, 0], [1, 1], ['0', '0'], ['0', '1
       return [[{ id: 'email', user_id: 'owner', to_addresses: '[]', is_read: read, is_starred: star,
         effective_is_read: read, effective_is_starred: star, read_sync_pending: 0, star_sync_pending: 0 }]];
     } });
-    const list = await routes['GET /api/mail/emails'](request('/api/mail/emails'), 'owner');
-    const detail = await routes['GET /api/mail/emails/:id'](request('/api/mail/emails/email'), 'owner');
-    for (const row of [list.emails[0], detail.email]) {
-      assert.equal(row.is_read, Number(read) === 1);
-      assert.equal(row.is_starred, Number(star) === 1);
-      assert.equal(row.read_sync_pending, false);
-      assert.equal(row.star_sync_pending, false);
+    const list = await routes['GET /api/mail/emails'](request('/api/mail/emails') as FixtureValue, 'owner');
+    const detail = await routes['GET /api/mail/emails/:id'](request('/api/mail/emails/email') as FixtureValue, 'owner');
+    for (const row of [list.emails![0], detail.email]) {
+      assert.equal(row!.is_read, Number(read) === 1);
+      assert.equal(row!.is_starred, Number(star) === 1);
+      assert.equal(row!.read_sync_pending, false);
+      assert.equal(row!.star_sync_pending, false);
     }
   });
 }
@@ -45,7 +45,7 @@ test('HTTP flag acceptance commits while a provider lock is held, without waitin
         assert.fail(`Unexpected query ${sql}`);
       } };
   } });
-  const result = await routes['PUT /api/mail/emails/:id/star'](request('/api/mail/emails/e/star'), 'owner', { is_starred: true });
+  const result = await routes['PUT /api/mail/emails/:id/star'](request('/api/mail/emails/e/star') as FixtureValue, 'owner', { is_starred: true });
   assert.equal(result.sync_pending, false);
   assert.equal(transactions, 1);
   assert.equal(committed, 1);

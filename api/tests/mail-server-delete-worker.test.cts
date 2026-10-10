@@ -121,9 +121,9 @@ test(`server deletion worker: ${scenario}`, async (t) => {
       search: async (query: string) => {
         if (scenario === 'module-paused-during-search') modulePaused = true;
         if (scenario === 'lifecycle-stop-during-search') {
-          const runtime = require('../dist/src/services/mail-engine/runtime');
+          const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
           t.mock.method(runtime, 'pauseAccount', async () => {});
-          await require('../dist/src/services/mail').stopMailAccountWork('account-1', 'Disconnected');
+          await (require('../dist/src/services/mail') as typeof import('../src/services/mail')).stopMailAccountWork('account-1', 'Disconnected');
         }
         return [Number((query as FixtureValue).uid)];
       },
@@ -134,7 +134,7 @@ test(`server deletion worker: ${scenario}`, async (t) => {
     }),
   });
 
-  const { processMailServerDeletionForAccount } = require('../dist/src/services/mail');
+  const { processMailServerDeletionForAccount } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
   const result = await processMailServerDeletionForAccount('account-1');
 
   if (['already-sync', 'module-paused'].includes(scenario)) {

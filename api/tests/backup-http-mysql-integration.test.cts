@@ -1,4 +1,5 @@
 import type { FixtureValue } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const http = (require('node:http') as typeof import('node:http'));
@@ -9,20 +10,20 @@ const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts');
 
 test('authenticated HTTP encrypted backup download, upload and restore work after re-enabling', { skip: !process.env.MYSQL_TEST_HOST, timeout: 60000 }, async () => {
-  const mysql = require('mysql2/promise');
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   assert.match((process.env.MYSQL_TEST_DATABASE as string), /_test$/);
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306), database: process.env.MYSQL_TEST_DATABASE, user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, connectionLimit: 8 });
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-http-recovery-'));
   let server: FixtureValue; let owned = false;
   try {
-    const [tables] = await pool.query('SHOW TABLES'); assert.equal(tables.length, 0, 'Use an empty disposable test database'); owned = true;
+    const [tables] = await pool.query<RowDataPacket[]>('SHOW TABLES'); assert.equal(tables.length, 0, 'Use an empty disposable test database'); owned = true;
     const runtime = createBackupRuntime(directory, 'http-recovery-synthetic-key', pool);
     await runtime('services/database').ensureSchema();
     await runtime('services/notifications').ensureNotificationSchema();
     await runtime('services/data-inventory').verifyDatabaseInventory(pool);
     const password = 'http-fixture-password-2026';
     const passwordHash = await require('bcryptjs').hash(password, 10);
-    for (const name of ['source', 'destination']) await pool.execute('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [crypto.randomUUID(), `${name}@example.test`, passwordHash, name]);
+    for (const name of ['source', 'destination']) await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,?)', [crypto.randomUUID(), `${name}@example.test`, passwordHash, name]);
     const { handleRequest } = runtime('request-handler');
     server = http.createServer((req, res) => handleRequest(req, res).catch((error: FixtureValue) => res.destroy(error)));
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -41,7 +42,7 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
         if (result.csrfToken) csrf = result.csrfToken;
         return result;
       };
-      request.get = (route: FixtureValue, headers: FixtureValue = {}) => fetch(base + '/api' + route, { headers: {
+      request.get = (route: FixtureValue, headers = {}) => fetch(base + '/api' + route, { headers: {
         Cookie: [...cookies].map(([key,value]) => `${key}=${value}`).join('; '), ...headers }, signal: AbortSignal.timeout(15000) });
       return request;
     }
@@ -94,7 +95,7 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
 
   } finally {
     if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
-    if (owned) { const connection = await pool.getConnection(); try { await connection.query('SET FOREIGN_KEY_CHECKS=0'); const [tables] = await connection.query('SHOW TABLES'); for(const row of tables) await connection.query('DROP TABLE ??',[Object.values(row)[0]]); } finally { await connection.query('SET FOREIGN_KEY_CHECKS=1'); connection.release(); } }
+    if (owned) { const connection = await pool.getConnection(); try { await connection.query('SET FOREIGN_KEY_CHECKS=0'); const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES'); for(const row of tables) await connection.query('DROP TABLE ??',[Object.values(row)[0]]); } finally { await connection.query('SET FOREIGN_KEY_CHECKS=1'); connection.release(); } }
     await pool.end(); await fs.rm(directory,{recursive:true,force:true});
   }
 });

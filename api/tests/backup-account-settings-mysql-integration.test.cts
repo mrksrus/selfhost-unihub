@@ -1,4 +1,5 @@
 import type { FixtureValue } from './helpers/test-types.cts';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
@@ -27,7 +28,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
 }, async (t) => {
   const database = process.env.MYSQL_TEST_DATABASE || 'unihub_test';
   assert.match(database, /_test$/, 'Use an empty disposable database ending in _test');
-  const mysql = require('mysql2/promise');
+  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   const pool = mysql.createPool({
     host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     database, user: process.env.MYSQL_TEST_USER || 'unihub_test',
@@ -42,7 +43,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
         const connection = await pool.getConnection();
         try {
           await connection.execute('SET FOREIGN_KEY_CHECKS = 0');
-          const [tables] = await connection.query('SHOW TABLES');
+          const [tables] = await connection.query<RowDataPacket[]>('SHOW TABLES');
           for (const row of tables) {
             const table = Object.values(row)[0];
             assert.match((table as string), /^[a-z_]+$/);
@@ -56,7 +57,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
       await fs.rm(directory, { recursive: true, force: true });
     }
   });
-  const [existing] = await pool.query('SHOW TABLES');
+  const [existing] = await pool.query<RowDataPacket[]>('SHOW TABLES');
   assert.equal(existing.length, 0, 'Refusing to change a nonempty database');
   ownsDatabase = true;
   const source = createBackupRuntime(path.join(directory, 'source'), 'source-accounts-key', pool);
@@ -67,14 +68,14 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   const destinationCrypto = destination('security/encryption');
   async function insert(table: string, row: FixtureValue) {
     const columns = Object.keys(row);
-    await pool.execute(`INSERT INTO ${table} (${columns.map(name => '`' + name + '`').join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`, Object.values(row));
+    await pool.execute<ResultSetHeader>(`INSERT INTO ${table} (${columns.map(name => '`' + name + '`').join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`, Object.values(row));
   }
   async function newUser(label: string) {
     const id = uuid();
     await insert('users', { id, email: label + '@example.test', password_hash: 'synthetic-hash', full_name: label, role: 'user' });
     return id;
   }
-  const rows = async (table: string, userId: string) => (await pool.execute(`SELECT * FROM ${table} WHERE user_id = ?`, [userId]))[0];
+  const rows = async (table: string, userId: string) => (await pool.execute<RowDataPacket[]>(`SELECT * FROM ${table} WHERE user_id = ?`, [userId]))[0];
 
   const sourceUser = await newUser('accounts-source');
   await insert('user_settings', { user_id: sourceUser, setting_key: 'calendar_preferences', setting_value: JSON.stringify({ firstDay: 1 }) });
@@ -117,7 +118,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   const ready = await waitFor(() => exportJobs.getDataExportJob(sourceUser, started.id), (job: FixtureValue) => job?.status === 'ready', 'Export');
   const bytes = await fs.readFile(ready.file_path);
   assert.equal(bytes.includes(Buffer.from('synthetic-mail-password')), false);
-  const [[key]] = await pool.execute('SELECT recovery_password_ciphertext FROM backup_archive_keys WHERE backup_uuid = ? AND user_id = ?', [ready.backup_uuid, sourceUser]);
+  const [[key]] = await pool.execute<RowDataPacket[]>('SELECT recovery_password_ciphertext FROM backup_archive_keys WHERE backup_uuid = ? AND user_id = ?', [ready.backup_uuid, sourceUser]);
   const password = source('services/backup-container').revealProtectedRecoveryPassword(key.recovery_password_ciphertext, ready.backup_uuid);
 
   const destinationUser = await newUser('accounts-destination');
@@ -146,7 +147,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   }
 
   await restore();
-  const restoredMail = (await rows('mail_accounts', destinationUser)).find((row: FixtureValue) => row.email_address === 'synced@example.test');
+  const restoredMail = (await rows('mail_accounts', destinationUser)).find((row) => row.email_address === 'synced@example.test');
   assert.ok(restoredMail, 'Mail account is restored');
   assert.notEqual(restoredMail.id, mailAccountId);
   assert.equal(restoredMail.is_active, 1, 'Restored account is signed in');
@@ -159,48 +160,48 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   assert.equal(restoredMail.username, 'synced-login');
   assert.equal(restoredMail.smtp_port, 465);
   assert.equal(destinationCrypto.decrypt(restoredMail.encrypted_password), 'synthetic-mail-password');
-  const kept = (await rows('mail_accounts', destinationUser)).find((row: FixtureValue) => row.id === keptAccountId);
-  assert.equal(kept.is_active, 1, 'Existing accounts are not paused');
-  assert.ok(kept.sync_policy_confirmed_at, 'Existing Sync policy stays confirmed');
+  const kept = (await rows('mail_accounts', destinationUser)).find((row) => row.id === keptAccountId);
+  assert.equal(kept!.is_active, 1, 'Existing accounts are not paused');
+  assert.ok(kept!.sync_policy_confirmed_at, 'Existing Sync policy stays confirmed');
   assert.deepEqual(await rows('emails', destinationUser), []);
-  assert.equal((await rows('mail_folders', destinationUser)).some((row: FixtureValue) => row.slug === 'custom-folder'), false);
+  assert.equal((await rows('mail_folders', destinationUser)).some((row) => row.slug === 'custom-folder'), false);
   assert.deepEqual(await rows('contacts', destinationUser), [], 'Unselected sections are not exported');
   const calendarAccounts = await rows('calendar_accounts', destinationUser);
-  assert.deepEqual(calendarAccounts.map((row: FixtureValue) => row.provider).sort(), ['caldav', 'caldav', 'ics', 'ics'], 'Local calendars are calendar content');
-  const caldav = calendarAccounts.find((row: FixtureValue) => row.account_email === 'calendar@example.test');
-  const mailCalendar = calendarAccounts.find((row: FixtureValue) => row.account_email === 'synced@example.test');
-  assert.deepEqual([mailCalendar.is_active, mailCalendar.encrypted_password, mailCalendar.mail_account_id], [1, null, null],
+  assert.deepEqual(calendarAccounts.map((row) => row.provider).sort(), ['caldav', 'caldav', 'ics', 'ics'], 'Local calendars are calendar content');
+  const caldav = calendarAccounts.find((row) => row.account_email === 'calendar@example.test');
+  const mailCalendar = calendarAccounts.find((row) => row.account_email === 'synced@example.test');
+  assert.deepEqual([mailCalendar!.is_active, mailCalendar!.encrypted_password, mailCalendar!.mail_account_id], [1, null, null],
     'A mail calendar is restored on: it finds its mail account when it first syncs');
-  assert.equal(caldav.is_active, 1);
-  assert.equal(caldav.last_synced_at, null);
-  assert.deepEqual(calendarAccounts.map((row: FixtureValue) => row.sync_status), ['pending', 'pending', 'pending', 'pending'], 'The first sync is owed');
-  assert.equal(destinationCrypto.decrypt(caldav.encrypted_password), 'synthetic-calendar-password');
-  assert.deepEqual(calendarAccounts.filter((row: FixtureValue) => row.provider === 'ics').map((row: FixtureValue) => destinationCrypto.decrypt(row.encrypted_password)).sort(),
+  assert.equal(caldav!.is_active, 1);
+  assert.equal(caldav!.last_synced_at, null);
+  assert.deepEqual(calendarAccounts.map((row) => row.sync_status), ['pending', 'pending', 'pending', 'pending'], 'The first sync is owed');
+  assert.equal(destinationCrypto.decrypt(caldav!.encrypted_password), 'synthetic-calendar-password');
+  assert.deepEqual(calendarAccounts.filter((row) => row.provider === 'ics').map((row) => destinationCrypto.decrypt(row.encrypted_password)).sort(),
     ['https://8.8.8.8/holidays.ics', 'https://8.8.8.8/sports.ics'], 'Each subscription is restored');
   assert.deepEqual(await rows('calendar_calendars', destinationUser), [], 'Calendars are discovered again by sync');
   assert.equal((await rows('user_settings', destinationUser)).length, 1);
   // The first download is durable with the restore and user initiated, so a
   // disabled background setting or a restart right after the restore cannot
   // skip it.
-  const [jobs] = await pool.execute('SELECT kind, state, manual_refresh FROM mail_engine_jobs WHERE mail_account_id = ?', [restoredMail.id]);
-  assert.deepEqual(jobs.map((job: FixtureValue) => [job.kind, job.state, Number(job.manual_refresh)]), [['sync', 'queued', 1]]);
+  const [jobs] = await pool.execute<RowDataPacket[]>('SELECT kind, state, manual_refresh FROM mail_engine_jobs WHERE mail_account_id = ?', [restoredMail.id]);
+  assert.deepEqual(jobs.map((job) => [job.kind, job.state, Number(job.manual_refresh)]), [['sync', 'queued', 1]]);
   await waitFor(async () => started_syncs, (calls: FixtureValue) => calls.length === 5, 'Sync start');
   assert.deepEqual(started_syncs[0], ['mail', restoredMail.id, false]);
-  assert.deepEqual(started_syncs.slice(1).map(call => call[1]).sort(), calendarAccounts.map((row: FixtureValue) => row.id).sort());
+  assert.deepEqual(started_syncs.slice(1).map(call => call[1]).sort(), calendarAccounts.map((row) => row.id).sort());
 
   // Restoring the same settings again leaves connected accounts unchanged.
   started_syncs.length = 0;
-  await pool.execute('UPDATE mail_accounts SET sync_window_days = 30 WHERE id = ?', [restoredMail.id]);
+  await pool.execute<ResultSetHeader>('UPDATE mail_accounts SET sync_window_days = 30 WHERE id = ?', [restoredMail.id]);
   const again = await restore();
   assert.match(again.result_counts.warnings.join('\n'), /Mail account synced@example.test is already connected/);
   assert.match(again.result_counts.warnings.join('\n'), /Calendar account calendar@example.test is already connected/);
   assert.equal((await rows('mail_accounts', destinationUser)).length, 2);
   assert.match(again.result_counts.warnings.join('\n'), /Calendar account Sports is already connected/);
   assert.equal((await rows('calendar_accounts', destinationUser)).length, 4);
-  assert.equal((await rows('mail_accounts', destinationUser)).find((row: FixtureValue) => row.id === restoredMail.id).sync_window_days, 30);
+  assert.equal((await rows('mail_accounts', destinationUser)).find((row) => row.id === restoredMail.id)!.sync_window_days, 30);
   await new Promise(resolve => setTimeout(resolve, 50));
   assert.deepEqual(started_syncs, []);
-  assert.equal((await pool.execute('SELECT id FROM mail_engine_jobs WHERE mail_account_id = ?', [restoredMail.id]))[0].length, 1);
+  assert.equal((await pool.execute<RowDataPacket[]>('SELECT id FROM mail_engine_jobs WHERE mail_account_id = ?', [restoredMail.id]))[0].length, 1);
 
   // With Mail disabled the first download waits, paused like the user's other
   // accounts, and runs once Mail is turned on, even with background sync off.
@@ -210,7 +211,7 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   await restore(disabledUser);
   const waiting = (await rows('mail_accounts', disabledUser))[0];
   assert.equal(waiting.is_active, 1);
-  const engineState = async () => (await pool.execute(`SELECT j.state, a.paused_reason FROM mail_engine_jobs j
+  const engineState = async () => (await pool.execute<RowDataPacket[]>(`SELECT j.state, a.paused_reason FROM mail_engine_jobs j
     JOIN mail_engine_accounts a ON a.mail_account_id = j.mail_account_id WHERE j.mail_account_id = ?`, [waiting.id]))[0];
   assert.deepEqual(await engineState(), [{ state: 'paused', paused_reason: 'Mail module disabled' }]);
   await waitFor(async () => started_syncs, (calls: FixtureValue) => calls.length === 4, 'Calendar sync start');

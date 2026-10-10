@@ -1,12 +1,12 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const { getDb, setDb } = require('../dist/src/state');
-const ops = require('../dist/src/services/mail-engine/operations');
-const writes = require('../dist/src/services/mail-writebacks');
-const repository = require('../dist/src/services/mail-engine/repository');
-const runtime = require('../dist/src/services/mail-engine/runtime');
-const transport = require('../dist/src/services/mail-engine/transport');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
+const ops = require('../dist/src/services/mail-engine/operations') as typeof import('../src/services/mail-engine/operations');
+const writes = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+const repository = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
+const transport = require('../dist/src/services/mail-engine/transport') as typeof import('../src/services/mail-engine/transport');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 // Synthetic single-operation store with a controllable clock (seconds).
@@ -36,9 +36,9 @@ function store(t: import('node:test').TestContext, op: FixtureValue, { prior = [
     return [{ affectedRows: 1 }];
   };
   const cx = { execute, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {} };
-  setDb({ execute, getConnection: async () => cx });
+  setDb({ execute, getConnection: async () => cx } as FixtureValue);
   t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
-  for (const name of ['selectMailbox', 'fetchMetadataWindow', 'nativeMove', 'setFlag'])
+  for (const name of ['selectMailbox', 'fetchMetadataWindow', 'nativeMove', 'setFlag'] as const)
     t.mock.method(transport, name, () => assert.fail(`${name} must not run`));
   return { clock, log };
 }
@@ -49,10 +49,10 @@ const moveOp = (extra?: FixtureValue) => ({ id: 'newer', user_id: 'owner', mail_
 test('a newer MOVE behind an unresolved dispatched MOVE asks for attention instead of spinning', async t => {
   const op = moveOp();
   store(t, op, { prior: [{ id: 'older', state: 'needs_attention' }] });
-  assert.deepEqual(await ops.applyMove(op, {}, 1, null, 'worker', 'job'), {});
+  assert.deepEqual(await ops.applyMove(op, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job'), {});
   assert.equal(op.state, 'needs_attention'); assert.equal(op.status, 'conflict'); assert.equal(op.dispatched, 0);
   assert.deepEqual(op.evidence, { kind: 'blocked_by_unconfirmed_move', prior: 'older' });
-  setDb({ execute: async () => [[op]] });
+  setDb({ execute: async () => [[op]] } as FixtureValue);
   const [view] = (await writes.listWritebacks('owner')).operations;
   assert.equal(view.can_retry, true); assert.equal(view.can_cancel, true); assert.equal(view.retry_action, 'retry');
 });
@@ -63,12 +63,12 @@ test('a stuck operation is not re-dispatched every second by the due scan', asyn
   const enqueued: FixtureValue[] = [];
   t.mock.method(runtime, 'enqueueJob', async (job: FixtureValue) => { enqueued.push({ ...job, at: clock.now }); });
   // Each enqueue nudges the durable scheduler; this test runs the job itself.
-  t.mock.method(require('../dist/src/services/mail'), 'runMailOperationsNow', async () => true);
+  t.mock.method((require('../dist/src/services/mail') as typeof import('../src/services/mail')), 'runMailOperationsNow', async () => true);
   for (clock.now = 0; clock.now < 120; clock.now++) {
     const before = enqueued.length;
     await writes.runDueWritebacks(); await tick();
     // The enqueued job executes the operation, which cannot progress yet.
-    if (enqueued.length > before) await ops.applyMove(op, {}, 1, null, 'worker', 'job');
+    if (enqueued.length > before) await ops.applyMove(op, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job');
   }
   assert.deepEqual(enqueued.map(job => job.at), [0, 15, 45, 105], 'exponential backoff, never a 1s loop');
   assert.equal(op.state, 'retry_wait'); assert.equal(op.dispatched, 0, 'no MOVE was sent');
@@ -76,19 +76,19 @@ test('a stuck operation is not re-dispatched every second by the due scan', asyn
   assert.match(due, /NOT EXISTS \(SELECT 1 FROM mail_engine_jobs j WHERE j\.operation_id=w\.id AND j\.user_id=w\.user_id/);
   assert.match(due, /w\.is_current=TRUE AND w\.state IN \('queued','retry_wait'\)/);
   assert.match(due, /w\.dispatched=TRUE AND w\.state IN \('executing','verifying','reconciling'\)/);
-  for (let n = 0; n < 8; n++) await ops.applyMove(op, {}, 1, null, 'worker', 'job');
+  for (let n = 0; n < 8; n++) await ops.applyMove(op, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job');
   assert.equal(op.state, 'needs_attention', 'bounded stalls end in an actionable state');
 });
 
 test('a flag already at the provider but not yet locally settled backs off instead of spinning', async t => {
   const op = moveOp({ action: 'read', target_value: '1', dispatched: 1, state: 'reconciling', attempts: 1 });
   const { clock } = store(t, op);
-  const settle = require('../dist/src/services/mail-engine/reconciliation');
+  const settle = require('../dist/src/services/mail-engine/reconciliation') as typeof import('../src/services/mail-engine/reconciliation');
   t.mock.method(settle, 'settleFlagObservation', async () => ({ settled: false, reason: 'stale_observation' }));
   t.mock.method(transport, 'selectMailbox', async () => ({ uidvalidity: 9, capabilities: {} }));
   t.mock.method(transport, 'fetchMetadataWindow', async () => ({ items: [{ uid: 12, flags: ['\\Seen'], modseq: null }] }));
   clock.now = 100;
-  assert.deepEqual(await ops.applyFlag(op, {}, 1, null, 'worker', 'job'), { needsSync: true });
+  assert.deepEqual(await ops.applyFlag(op, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job'), { needsSync: true });
   assert.equal(op.state, 'reconciling'); assert.equal(op.attempts, 2); assert.equal(op.available_at, 130);
 });
 
@@ -101,7 +101,7 @@ test('mailbox epoch reset parks undispatched intents in attention and checks dis
     if (sql.includes('FROM mail_remote_mailboxes')) return [[mailbox]];
     return [{ affectedRows: 1 }];
   } };
-  await repository.ensureMailbox({ userId: 'owner', accountId: 'account', folderName: 'INBOX', epoch: 10 }, cx);
+  await repository.ensureMailbox({ userId: 'owner', accountId: 'account', folderName: 'INBOX', epoch: 10 }, cx as FixtureValue);
   const updates = calls.filter(call => call.sql.startsWith('UPDATE mail_writebacks'));
   assert.equal(updates.length, 2);
   assert.match(updates[0].sql, /state = 'reconciling'[\s\S]*WHERE dispatched = TRUE AND user_id = \? AND mail_account_id = \?/);
@@ -143,15 +143,15 @@ test('retry/cancel flags match what the endpoints accept for every stuck state',
       return [{ affectedRows: 1 }];
     };
     const cx = { execute, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {} };
-    setDb({ execute, getConnection: async () => cx });
+    setDb({ execute, getConnection: async () => cx } as FixtureValue);
     const [view] = (await writes.listWritebacks('owner')).operations;
     const label = JSON.stringify(row);
     assert.equal(view.can_retry, canRetry, label); assert.equal(view.can_cancel, canCancel, label); assert.equal(view.retry_action, action, label);
-    const cancelled = await writes.cancelWriteback('owner', 'op').then(() => true, (error: FixtureValue) => { assert.equal(error.status, 409); return false; });
+    const cancelled = await writes.cancelWriteback('owner', 'op').then(() => true, (error) => { assert.equal(error.status, 409); return false; });
     assert.equal(cancelled, canCancel, `cancel ${label}`);
     if (action === 'check_outcome') continue; // dispatched MOVE: read-only check path, covered elsewhere
     sql.length = 0;
-    const retried = await writes.retryWriteback('owner', 'op').then(() => true, (error: FixtureValue) => { assert.equal(error.status, 409); return false; });
+    const retried = await writes.retryWriteback('owner', 'op').then(() => true, (error) => { assert.equal(error.status, 409); return false; });
     assert.equal(retried, canRetry, `retry ${label}`);
     const requeue = sql.find(entry => entry.text.startsWith("UPDATE mail_writebacks SET state='queued'"));
     assert.equal(Boolean(requeue), canRetry, label);
@@ -182,7 +182,7 @@ test('a worker holding a stale copy cannot revive a cancelled or superseded chan
   for (const state of ['cancelled', 'superseded']) {
     const op = moveOp({ state });
     const { log } = store(t, op, { prior: [{ id: 'older', state: 'reconciling' }] });
-    await ops.applyMove({ ...op, state: 'queued' }, {}, 1, null, 'worker', 'job');
+    await ops.applyMove({ ...op, state: 'queued' }, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job');
     assert.equal(op.state, state);
     assert(!log.some(entry => entry.sql.startsWith('UPDATE mail_writebacks SET state=?')));
   }
@@ -210,11 +210,11 @@ function acceptStore(t: import('node:test').TestContext, op: FixtureValue, { acc
     return [{ affectedRows: 1 }];
   };
   const cx = { execute, beginTransaction: async () => {}, commit: async () => {}, rollback: async () => {}, release() {} };
-  setDb({ execute, getConnection: async () => cx });
-  t.mock.method(require('../dist/src/services/mail'), 'scheduleMailAccountSync', async (accountId: string, options: FixtureValue) => {
+  setDb({ execute, getConnection: async () => cx } as FixtureValue);
+  t.mock.method((require('../dist/src/services/mail') as typeof import('../src/services/mail')), 'scheduleMailAccountSync', async (accountId: string, options: FixtureValue) => {
     syncs.push({ accountId, options }); return { started: true };
   });
-  for (const name of ['selectMailbox', 'fetchMetadataWindow', 'nativeMove', 'setFlag'])
+  for (const name of ['selectMailbox', 'fetchMetadataWindow', 'nativeMove', 'setFlag'] as const)
     t.mock.method(transport, name, () => assert.fail(`${name} must not run`));
   t.mock.method(runtime, 'enqueueJob', async () => assert.fail('no provider job may be queued'));
   return { log, syncs };
@@ -231,7 +231,7 @@ test('accept server state flag matches what the endpoint accepts for every state
     const { log, syncs } = acceptStore(t, op);
     const [view] = (await writes.listWritebacks('owner')).operations;
     assert.equal(view.can_accept_server_state, expected, label);
-    const accepted = await writes.acceptServerState('owner', 'op').then(() => true, (error: FixtureValue) => { assert.equal(error.status, 409, label); return false; });
+    const accepted = await writes.acceptServerState('owner', 'op').then(() => true, (error) => { assert.equal(error.status, 409, label); return false; });
     assert.equal(accepted, expected, `accept ${label}`);
     assert.equal(syncs.length, expected ? 1 : 0, label);
     if (!expected) assert.equal(op.state, row.state, `unchanged ${label}`);
@@ -271,7 +271,7 @@ test('after the server state is accepted a newer MOVE of that message is no long
   const op = moveOp();
   const { log } = store(t, op, { email: { remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9 } });
   // Evaluate the prior-MOVE query's own terminal-state list.
-  const execute = getDb().execute;
+  const execute = getDb()!.execute;
   const priorAware = async (sql: string, args: FixtureValue) => {
     if (sql.includes('SELECT id,state FROM mail_writebacks WHERE user_id=')) {
       const terminal = (/state NOT IN \(([^)]*)\)/.exec as FixtureValue)(sql)[1].split(',').map((s: FixtureValue) => s.trim().replace(/'/g, ''));
@@ -280,15 +280,15 @@ test('after the server state is accepted a newer MOVE of that message is no long
     return execute(sql, args);
   };
   setDb({ execute: priorAware, getConnection: async () => ({ execute: priorAware, beginTransaction: async () => {},
-    commit: async () => {}, rollback: async () => {}, release() {} }) });
-  await ops.applyMove(op, {}, 1, null, 'worker', 'job');
+    commit: async () => {}, rollback: async () => {}, release() {} }) } as FixtureValue);
+  await ops.applyMove(op, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job');
   assert.deepEqual(op.evidence, { kind: 'blocked_by_unconfirmed_move', prior: 'older' });
   older.state = 'superseded'; // what acceptServerState commits
   Object.assign(op, { state: 'queued', status: 'pending', evidence: null });
   t.mock.method(transport, 'selectMailbox', async () => ({ uidvalidity: 10, capabilities: {} }));
   log.length = 0;
-  await ops.applyMove(op, {}, 1, null, 'worker', 'job');
+  await ops.applyMove(op, {} as FixtureValue, 1, null as FixtureValue, 'worker', 'job');
   assert.notDeepEqual(op.evidence, { kind: 'blocked_by_unconfirmed_move', prior: 'older' });
-  assert.equal(transport.selectMailbox.mock.callCount(), 1, 'the newer move proceeds to its own source check');
+  assert.equal((transport.selectMailbox as FixtureValue).mock.callCount(), 1, 'the newer move proceeds to its own source check');
   assert.equal(op.dispatched, 0, 'epoch mismatch here: still nothing sent');
 });

@@ -10,19 +10,19 @@ const {
   accountCredentialScope,
   canonicalHref,
   normalizeIcsFeedUrl,
-} = require('../dist/src/services/caldav');
+} = require('../dist/src/services/caldav') as typeof import('../src/services/caldav');
 const {
   parseDigestChallenge,
   digestAuthorization,
   resolveCalDavUrl,
   davRequest,
-} = require('../dist/src/security/caldav-transport');
-const { calendarErrorResponse } = require('../dist/src/services/calendar-sync');
+} = require('../dist/src/security/caldav-transport') as typeof import('../src/security/caldav-transport');
+const { calendarErrorResponse } = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
 
 test('known providers are matched by IMAP host before mail domain', () => {
-  assert.equal(matchCalendarProvider({ emailAddress: 'user@icloud.com' }).id, 'icloud');
-  assert.equal(matchCalendarProvider({ emailAddress: 'user@example.com', imapHost: 'imap.fastmail.com' }).id, 'fastmail');
-  assert.equal(matchCalendarProvider({ emailAddress: 'user@gmail.com' }).unsupported, true);
+  assert.equal(matchCalendarProvider({ emailAddress: 'user@icloud.com' })!.id, 'icloud');
+  assert.equal(matchCalendarProvider({ emailAddress: 'user@example.com', imapHost: 'imap.fastmail.com' })!.id, 'fastmail');
+  assert.equal(matchCalendarProvider({ emailAddress: 'user@gmail.com' })!.unsupported, true);
   assert.equal(matchCalendarProvider({ emailAddress: 'user@example.com', imapHost: 'mail.example.com' }), null);
 });
 
@@ -40,7 +40,7 @@ test('well-known candidates cover the mail domain and the IMAP host', () => {
 
 test('SRV records become ordered HTTPS candidates with the TXT path', async () => {
   const urls = await lookupSrvCandidates('example.com', {
-    resolveSrv: async (name: FixtureValue) => {
+    resolveSrv: async (name) => {
       assert.equal(name, '_caldavs._tcp.example.com');
       return [
         { name: 'backup.example.com', port: 8443, priority: 20, weight: 0 },
@@ -60,9 +60,9 @@ test('discovery explains unsupported providers and missing passwords without net
 });
 
 test('credential scope uses known presets only and otherwise the discovery origin', () => {
-  const icloud = matchCalendarProvider({ emailAddress: 'user@icloud.com' }).scope;
+  const icloud = matchCalendarProvider({ emailAddress: 'user@icloud.com' })!.scope;
   assert.deepEqual(accountCredentialScope({ provider_config: { credentialScope: icloud }, discovery_url: 'https://caldav.icloud.com/' }), icloud);
-  assert.equal(resolveCalDavUrl('https://p42-caldav.icloud.com/123/calendars/', undefined, icloud), 'https://p42-caldav.icloud.com/123/calendars/');
+  assert.equal(resolveCalDavUrl('https://p42-caldav.icloud.com/123/calendars/', undefined, icloud!), 'https://p42-caldav.icloud.com/123/calendars/');
   // A widened scope that is not a preset (a tampered backup) falls back to the origin.
   const widened = JSON.stringify({ credentialScope: { origin: 'https://dav.example.com', hostSuffixes: ['.com'] } });
   assert.equal(accountCredentialScope({ provider_config: widened, discovery_url: 'https://dav.example.com/dav/', base_url: 'https://other.example.com/' }), 'https://dav.example.com');
@@ -111,13 +111,13 @@ test('davRequest retries once with Digest and never sends credentials across ori
     { status: 401, headers: { 'www-authenticate': 'Digest realm="r", nonce="n", qop="auth"' } },
     { status: 207, body: '<multistatus/>' },
   ], seen);
-  const result = await davRequest('https://dav.example.com/cal/', { username: 'u', password: 'p' }, { request, resolveTarget });
+  const result = await davRequest('https://dav.example.com/cal/', { username: 'u', password: 'p' }, { request, resolveTarget: resolveTarget as FixtureValue });
   assert.equal(result.status, 207);
   assert.match(seen[0].headers.Authorization, /^Basic /);
   assert.match(seen[1].headers.Authorization, /^Digest username="u"/);
 
   const redirect = fakeServer([{ status: 301, headers: { location: 'https://evil.example.net/cal/' } }], []);
-  await assert.rejects(davRequest('https://dav.example.com/cal/', { username: 'u', password: 'p' }, { request: redirect, resolveTarget }), /different server origin/);
+  await assert.rejects(davRequest('https://dav.example.com/cal/', { username: 'u', password: 'p' }, { request: redirect, resolveTarget: resolveTarget as FixtureValue }), /different server origin/);
 });
 
 test('calendar errors never forward a raw 401 to the browser', () => {

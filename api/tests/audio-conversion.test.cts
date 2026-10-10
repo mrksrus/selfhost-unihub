@@ -2,8 +2,8 @@ import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { EventEmitter } = require('events');
-const { createAudioConversionQueue } = require('../dist/src/services/audio-conversion-queue');
-const { buildAudioConversionArgs, runAudioConversion, MAX_CONVERTED_BYTES } = require('../dist/src/services/audio-transcode');
+const { createAudioConversionQueue } = require('../dist/src/services/audio-conversion-queue') as typeof import('../src/services/audio-conversion-queue');
+const { buildAudioConversionArgs, runAudioConversion, MAX_CONVERTED_BYTES } = require('../dist/src/services/audio-transcode') as typeof import('../src/services/audio-transcode');
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function gate() {
@@ -53,7 +53,7 @@ test('FFmpeg options constrain threads, formats, nested references and output si
   assert.equal(value('-f'), 'wav');
   assert.equal(value('-fs'), String(MAX_CONVERTED_BYTES));
   assert.equal(value('-filter_threads'), '1');
-  assert.equal(args.filter((value: FixtureValue) => value === '-threads').length, 2);
+  assert.equal(args.filter((value) => value === '-threads').length, 2);
   assert.equal(value('-threads'), '1');
   assert.equal(args.at(-1), '/output.mp3');
   assert.throws(() => buildAudioConversionArgs('/input.m3u', '/output.mp3', 'hls'), /Unsupported/);

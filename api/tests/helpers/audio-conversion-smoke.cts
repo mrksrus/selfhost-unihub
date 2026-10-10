@@ -7,8 +7,8 @@ const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 const { spawnSync } = (require('node:child_process') as typeof import('node:child_process'));
 const apiRoot = process.env.UNIHUB_API_ROOT || path.resolve(__dirname, '../../dist');
-const { inspectRecordingAudio } = require(path.join(apiRoot, 'src/services/recording-audio'));
-const { runAudioConversion } = require(path.join(apiRoot, 'src/services/audio-transcode'));
+const { inspectRecordingAudio } = require(path.join(apiRoot, 'src/services/recording-audio')) as typeof import('../../src/services/recording-audio');
+const { runAudioConversion } = require(path.join(apiRoot, 'src/services/audio-transcode')) as typeof import('../../src/services/audio-transcode');
 
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'unihub-audio-smoke-'));

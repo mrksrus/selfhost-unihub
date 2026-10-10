@@ -1,4 +1,4 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, With } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 
@@ -82,9 +82,9 @@ test('add mail account maps strict IMAP TLS failures to host trust confirmation'
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   });
 
-  const routes = require('../dist/src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
   const result = await routes['POST /api/mail/accounts'](
-    { headers: { host: 'localhost' }, url: '/api/mail/accounts' },
+    { headers: { host: 'localhost' }, url: '/api/mail/accounts' } as FixtureValue,
     'user-1',
     {
       email_address: 'user@example.test',
@@ -100,10 +100,10 @@ test('add mail account maps strict IMAP TLS failures to host trust confirmation'
   );
 
   assert.equal(result.status, 409);
-  assert.equal(result.requiresHostTrustConfirmation, true);
-  assert.equal(result.mailHostTrust.requiresConfirmation, true);
-  assert.equal(result.mailHostTrust.requiresInsecureTls, true);
-  assert.equal(result.mailHostTrust.certificates.imap.error, 'self-signed certificate');
+  assert.equal((result as With<typeof result, 'requiresHostTrustConfirmation'>).requiresHostTrustConfirmation, true);
+  assert.equal(result.mailHostTrust!.requiresConfirmation, true);
+  assert.equal(result.mailHostTrust!.requiresInsecureTls, true);
+  assert.equal(result.mailHostTrust!.certificates.imap!.error, 'self-signed certificate');
 });
 
 test('add mail account keeps server deletion off by default and can enable grace period', async (t) => {
@@ -188,7 +188,7 @@ test('add mail account keeps server deletion off by default and can enable grace
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   });
 
-  const routes = require('../dist/src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
   const baseBody = {
     email_address: 'user@example.test',
     provider: 'custom',
@@ -201,9 +201,9 @@ test('add mail account keeps server deletion off by default and can enable grace
     sync_fetch_limit: 'all',
   };
 
-  await routes['POST /api/mail/accounts']({ headers: { host: 'localhost' }, url: '/api/mail/accounts' }, 'user-1', baseBody);
+  await routes['POST /api/mail/accounts']({ headers: { host: 'localhost' }, url: '/api/mail/accounts' } as FixtureValue, 'user-1', baseBody);
   await routes['POST /api/mail/accounts'](
-    { headers: { host: 'localhost' }, url: '/api/mail/accounts' },
+    { headers: { host: 'localhost' }, url: '/api/mail/accounts' } as FixtureValue,
     'user-1',
     { ...baseBody, email_address: 'enabled@example.test', username: 'enabled@example.test', delete_emails_on_server: true }
   );
@@ -228,7 +228,7 @@ test('update mail account can disable server deletion without password changes',
   let cancellations = 0;
   const queueUpdates = [];
   const resumes: FixtureValue[] = [];
-  t.mock.method(require('../dist/src/services/mail-engine/runtime'), 'resumeAccount', async (input: FixtureValue) => {
+  t.mock.method((require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime')), 'resumeAccount', async (input: FixtureValue) => {
     resumes.push(input); return { resumed: 0, retired: 0 };
   });
 
@@ -317,27 +317,27 @@ test('update mail account can disable server deletion without password changes',
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   });
 
-  const routes = require('../dist/src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
   const result = await routes['PUT /api/mail/accounts/:id'](
-    { headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' },
+    { headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' } as FixtureValue,
     'user-1',
     { delete_emails_on_server: false }
   );
 
   assert.equal(result.error, undefined);
-  assert.equal(result.account.delete_emails_on_server, false);
+  assert.equal(result.account!.delete_emails_on_server, false);
   assert.deepEqual(resumes, [{ userId: 'user-1', accountId: 'account-1' }]);
   assert.equal(imapTests, 0);
   assert.match(updates[0].sql, /delete_emails_on_server = FALSE/);
   assert.match(updates[0].sql, /server_delete_grace_until = NULL/);
-  const put = (body: FixtureValue) => routes['PUT /api/mail/accounts/:id']({ headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' }, 'user-1', body);
+  const put = (body: FixtureValue) => routes['PUT /api/mail/accounts/:id']({ headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' } as FixtureValue, 'user-1', body);
   const unconfirmed = await put({ sync_mode: 'sync', sync_mode_confirmed: true });
   assert.equal(unconfirmed.status, 400);
-  assert.equal(unconfirmed.requires_confirmation, true);
+  assert.equal((unconfirmed as FixtureValue).requires_confirmation, true);
   assert.equal((await put({ sync_mode: 'sync', confirm_address: 'someone-else@example.test' })).status, 400);
   assert.equal((await put({ sync_window_days: 7 })).status, 400, 'Only the offered windows are accepted');
   assert.equal(updates.length, 1, 'Unconfirmed switch cannot write');
-  const { withMailAccountLock } = require('../dist/src/services/mail-account-lock');
+  const { withMailAccountLock } = require('../dist/src/services/mail-account-lock') as typeof import('../src/services/mail-account-lock');
   let release: FixtureValue;
   const holding = withMailAccountLock('account-1', () => new Promise(resolve => { release = resolve; }));
   await new Promise(resolve => setImmediate(resolve));
@@ -347,7 +347,7 @@ test('update mail account can disable server deletion without password changes',
   assert.equal(cancellations, 1);
   assert.equal(updates.length, 1, 'Mode commit waits for the worker lock');
   release(); await holding;
-  assert.ok((await switching).account);
+  assert.ok(((await switching) as FixtureValue).account);
   assert.equal(cancellations, 2);
   assert.equal(resumes.length, 2);
   assert.match(updates[1].sql, /sync_mode = .*sync_status = .*delete_emails_on_server = FALSE/);
@@ -372,7 +372,7 @@ test('reconnect uses the saved password of an account a restore paused, never of
   });
   t.after(require('./helpers/mail-service-modules.cts').evictMailRouteModules());
   const resumes: FixtureValue[] = [], updates: FixtureValue[] = [], loginTests: FixtureValue[] = [];
-  t.mock.method(require('../dist/src/services/mail-engine/runtime'), 'resumeAccount', async (input: FixtureValue) => { resumes.push(input); return { resumed: 0, retired: 0 }; });
+  t.mock.method((require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime')), 'resumeAccount', async (input: FixtureValue) => { resumes.push(input); return { resumed: 0, retired: 0 }; });
   let row: FixtureValue;
   setRequireStub(statePath, { db: { execute: async (sql: string, params: FixtureValue[] = []) => {
     if (sql.includes('SELECT * FROM mail_accounts')) return [[{ id: 'account-1', user_id: 'user-1', email_address: 'user@example.test', username: 'user@example.test',
@@ -395,8 +395,8 @@ test('reconnect uses the saved password of an account a restore paused, never of
     syncMailAccount: async () => ({ success: true }),
     isAnyMailAccountSyncRunning: () => false, getRunningMailSyncAccountIds: () => [], getRunningMailServerDeleteAccountIds: () => [],
   });
-  const routes = require('../dist/src/routes/mail');
-  const put = (body: FixtureValue) => routes['PUT /api/mail/accounts/:id']({ headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' }, 'user-1', body);
+  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const put = (body: FixtureValue) => routes['PUT /api/mail/accounts/:id']({ headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' } as FixtureValue, 'user-1', body);
 
   row = { is_active: 0, disconnected_at: null, encrypted_password: 'encrypted:restored' };
   const paused = await put({ is_active: true });
@@ -410,7 +410,7 @@ test('reconnect uses the saved password of an account a restore paused, never of
     { is_active: 0, disconnected_at: '2026-10-04 09:00:00', encrypted_password: 'encrypted:left-over' }]) {
     row = state;
     const refused = await put({ is_active: true });
-    assert.equal(refused.status, 400); assert.match(refused.error, /credentials again/);
+    assert.equal(refused.status, 400); assert.match(refused.error!, /credentials again/);
   }
   assert.equal(loginTests.length, 1); assert.equal(updates.length, 1);
 });

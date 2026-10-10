@@ -3,16 +3,11 @@ import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import http from 'node:http';
 
+interface SmokeUser { id: string; email: string; role: string }
 interface SmokeItem { id: string; email: string; title: string; notes: string; size_bytes: number }
 interface SmokeJob { id: string; status: string; error?: string; archive_available: boolean; file_size: number; file_sha256: string }
-interface SmokeData {
-  csrfToken?: string; health: string; database: string; publicKey: string;
-  user: { id: string; email: string; role: string }; upload: { id: string };
-  recording: SmokeItem; recordings: SmokeItem[]; contact: SmokeItem; contacts: SmokeItem[];
-  job: SmokeJob; recovery_password: string;
-}
 interface RequestOptions { expected?: number; authenticated?: boolean; headers?: Record<string, string>; binary?: boolean; rawBody?: boolean }
-interface JsonResult { response: Response; data: SmokeData }
+interface JsonResult<T> { response: Response; data: T }
 interface BinaryResult { response: Response; bytes: Buffer }
 
 const container = process.env.UNIHUB_SMOKE_CONTAINER;
@@ -26,8 +21,8 @@ class Session {
   cookies = new Map<string, string>();
   csrf: string | null = null;
   request(method: string, path: string, body: unknown, options: RequestOptions & { binary: true }): Promise<BinaryResult>;
-  request(method: string, path: string, body?: unknown, options?: RequestOptions & { binary?: false }): Promise<JsonResult>;
-  async request(method: string, path: string, body?: unknown, { expected = 200, authenticated = true, headers = {}, binary = false, rawBody = false }: RequestOptions = {}): Promise<JsonResult | BinaryResult> {
+  request<T = unknown>(method: string, path: string, body?: unknown, options?: RequestOptions & { binary?: false }): Promise<JsonResult<T>>;
+  async request(method: string, path: string, body?: unknown, { expected = 200, authenticated = true, headers = {}, binary = false, rawBody = false }: RequestOptions = {}): Promise<JsonResult<unknown> | BinaryResult> {
     const response = await fetch(base + path, {
       method,
       headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
@@ -47,7 +42,7 @@ class Session {
       }
     }
     if (binary) return { response, bytes: Buffer.from(await response.arrayBuffer()) };
-    const data = await response.json() as SmokeData;
+    const data = await response.json() as { csrfToken?: string };
     if (authenticated && data.csrfToken) this.csrf = data.csrfToken;
     return { response, data };
   }
@@ -55,7 +50,7 @@ class Session {
 async function waitForJob(session: Session, path: string, status: string, { uploadCleaned = false } = {}) {
   const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
-    const { data } = await session.request('GET', path);
+    const { data } = await session.request<{ job?: SmokeJob }>('GET', path);
     assert(data.job, `${path} must return a job`);
     assert.notEqual(data.job.status, 'failed', `${path}: ${data.job.error || 'job failed'}`);
     if (data.job.status === status && (!uploadCleaned || !data.job.archive_available)) return data.job;
@@ -75,10 +70,10 @@ let recordingId: string | null = null;
 let contactId: string | null = null;
 let backupId: string | null = null;
 try {
-  const health = await primary.request('GET', '/health', undefined, { authenticated: false });
+  const health = await primary.request<{ health: string; database: string }>('GET', '/health', undefined, { authenticated: false });
   assert.equal(health.data.health, 'ok'); assert.equal(health.data.database, 'ok');
   const directHealth = await fetch('http://localhost:4000/health', { signal: AbortSignal.timeout(5000) });
-  assert.equal(directHealth.status, 200); assert.equal((await directHealth.json() as SmokeData).database, 'ok');
+  assert.equal(directHealth.status, 200); assert.equal((await directHealth.json() as { database: string }).database, 'ok');
   for (const url of [base + '/api/auth/signup-mode', 'http://localhost:4000/api/auth/signup-mode']) {
     // fetch replaces the Host header; use the HTTP client to send the actual
     // malformed authority and exercise both nginx and the API boundary.
@@ -102,13 +97,13 @@ try {
   const sw = await fetch(base + '/sw.js');
   assert.equal(sw.status, 200); assert.match(sw.headers.get('cache-control')!, /no-store/);
 
-  const login = await primary.request('POST', '/api/auth/signin', { email, password });
+  const login = await primary.request<{ user: SmokeUser }>('POST', '/api/auth/signin', { email, password });
   assert.equal(login.data.user.email, email); assert.equal(login.data.user.role, 'admin');
   assert(primary.cookies.has('auth-token') && primary.cookies.has('csrf-token') && primary.csrf);
-  const me = await primary.request('GET', '/api/auth/me');
+  const me = await primary.request<{ user: SmokeUser }>('GET', '/api/auth/me');
   const userId = me.data.user.id;
   assert.equal(me.data.user.email, email);
-  assert.equal((await primary.request('GET', '/api/notifications/config')).data.publicKey.length, 87);
+  assert.equal((await primary.request<{ publicKey: string }>('GET', '/api/notifications/config')).data.publicKey.length, 87);
   // The same operation without a CSRF token must be rejected even with valid auth cookies.
   const savedCsrf = primary.csrf; primary.csrf = null;
   await primary.request('POST', '/api/recordings/uploads/start', {}, { expected: 403 });
@@ -121,16 +116,16 @@ try {
   wav.writeUInt32LE(sampleRate, 24); wav.writeUInt32LE(sampleRate * 2, 28);
   wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write('data', 36); wav.writeUInt32LE(sampleRate * 2, 40);
   for (let index = 0; index < sampleRate; index++) wav.writeInt16LE(Math.round(4000 * Math.sin(2 * Math.PI * 440 * index / sampleRate)), 44 + index * 2);
-  const started = await primary.request('POST', '/api/recordings/uploads/start', {
+  const started = await primary.request<{ upload: { id: string } }>('POST', '/api/recordings/uploads/start', {
     title: 'CI container audio smoke', original_filename: '../../ci-smoke.wav', content_type: 'audio/wav', total_bytes: wav.length, duration_seconds: 1, source: 'imported',
   });
   const uploadId = started.data.upload.id;
   await primary.request('POST', `/api/recordings/uploads/${uploadId}/chunk`, { offset: 0, data_base64: wav.toString('base64') });
-  const completed = await primary.request('POST', `/api/recordings/uploads/${uploadId}/complete`, { sha256: crypto.createHash('sha256').update(wav).digest('hex') });
+  const completed = await primary.request<{ recording: SmokeItem }>('POST', `/api/recordings/uploads/${uploadId}/complete`, { sha256: crypto.createHash('sha256').update(wav).digest('hex') });
   recordingId = completed.data.recording.id;
   assert.equal(completed.data.recording.size_bytes, wav.length);
   assert(!('storage_path' in completed.data.recording), 'API must not expose an absolute storage path');
-  const listed = await primary.request('GET', '/api/recordings');
+  const listed = await primary.request<{ recordings: SmokeItem[] }>('GET', '/api/recordings');
   assert(listed.data.recordings.some(item => item.id === recordingId));
   const downloaded = await primary.request('GET', `/api/recordings/${recordingId}/file?download=1`, undefined, { binary: true });
   assert.deepEqual(downloaded.bytes, wav);
@@ -146,7 +141,7 @@ try {
     console.log(id);}finally{await db.end();}})().catch(error=>{console.error(error.code||error.name);process.exit(1)});`, { SMOKE_OTHER_EMAIL: otherEmail });
   const other = new Session();
   await other.request('POST', '/api/auth/signin', { email: otherEmail, password: 'ci-isolation-password-2026' });
-  assert(!(await other.request('GET', '/api/recordings')).data.recordings.some(item => item.id === recordingId));
+  assert(!(await other.request<{ recordings: SmokeItem[] }>('GET', '/api/recordings')).data.recordings.some(item => item.id === recordingId));
   await other.request('GET', `/api/recordings/${recordingId}/file`, undefined, { expected: 404 });
   await other.request('DELETE', `/api/recordings/${recordingId}`, undefined, { expected: 404 });
 
@@ -154,16 +149,16 @@ try {
   // upload parser and actual job workers. The second synthetic user has no
   // server-side key for this archive and must supply its recovery password.
   const contactEmail = `ci-backup-${crypto.randomUUID()}@example.test`;
-  const contact = await primary.request('POST', '/api/contacts', { first_name: 'CI Grüße', last_name: 'Backup', email: contactEmail, notes: 'Preserve this contact\nAnd its second line' });
+  const contact = await primary.request<{ contact: SmokeItem }>('POST', '/api/contacts', { first_name: 'CI Grüße', last_name: 'Backup', email: contactEmail, notes: 'Preserve this contact\nAnd its second line' });
   contactId = contact.data.contact.id;
-  const sourceContacts = (await primary.request('GET', '/api/contacts')).data.contacts;
-  const sourceRecordings = (await primary.request('GET', '/api/recordings')).data.recordings;
-  const exported = await primary.request('POST', '/api/backup/jobs', { sections: ['contacts', 'recordings'], encrypt: true }, { expected: 202 });
+  const sourceContacts = (await primary.request<{ contacts: SmokeItem[] }>('GET', '/api/contacts')).data.contacts;
+  const sourceRecordings = (await primary.request<{ recordings: SmokeItem[] }>('GET', '/api/recordings')).data.recordings;
+  const exported = await primary.request<{ job: SmokeJob }>('POST', '/api/backup/jobs', { sections: ['contacts', 'recordings'], encrypt: true }, { expected: 202 });
   backupId = exported.data.job.id;
   const readyBackup = await waitForJob(primary, `/api/backup/jobs/${backupId}`, 'ready');
   await other.request('GET', `/api/backup/jobs/${backupId}`, undefined, { expected: 404 });
   await primary.request('GET', `/api/backup/jobs/${backupId}/download`, undefined, { expected: 409 });
-  const revealed = await primary.request('POST', `/api/backup/jobs/${backupId}/recovery-password/reveal`, {});
+  const revealed = await primary.request<{ recovery_password: string }>('POST', `/api/backup/jobs/${backupId}/recovery-password/reveal`, {});
   const recoveryPassword = revealed.data.recovery_password;
   assert(typeof recoveryPassword === 'string' && recoveryPassword.length > 16, 'Recovery password must be available exactly once');
   await primary.request('POST', `/api/backup/jobs/${backupId}/recovery-password/reveal`, {}, { expected: 410 });
@@ -171,7 +166,7 @@ try {
   assert.match(archive.response.headers.get('content-type')!, /application\/vnd\.unihub\.backup/);
   assert.equal(archive.bytes.length, readyBackup.file_size);
   assert.equal(crypto.createHash('sha256').update(archive.bytes).digest('hex'), readyBackup.file_sha256);
-  const imported = await other.request('POST', '/api/backup/import?sections=contacts,recordings&conflict_mode=replace', archive.bytes, {
+  const imported = await other.request<{ job: SmokeJob }>('POST', '/api/backup/import?sections=contacts,recordings&conflict_mode=replace', archive.bytes, {
     expected: 202, rawBody: true, headers: { 'Content-Type': 'application/vnd.unihub.backup' },
   });
   const restoreId = imported.data.job.id;
@@ -182,8 +177,8 @@ try {
   await waitForJob(other, `/api/backup/restore-jobs/${restoreId}`, 'validated');
   await other.request('POST', `/api/backup/restore-jobs/${restoreId}/start`, {}, { expected: 202 });
   await waitForJob(other, `/api/backup/restore-jobs/${restoreId}`, 'completed', { uploadCleaned: true });
-  const restoredContacts = (await other.request('GET', '/api/contacts')).data.contacts;
-  const restoredRecordings = (await other.request('GET', '/api/recordings')).data.recordings;
+  const restoredContacts = (await other.request<{ contacts: SmokeItem[] }>('GET', '/api/contacts')).data.contacts;
+  const restoredRecordings = (await other.request<{ recordings: SmokeItem[] }>('GET', '/api/recordings')).data.recordings;
   assert.equal(restoredContacts.length, sourceContacts.length);
   assert.equal(restoredRecordings.length, sourceRecordings.length);
   const restoredContact = restoredContacts.find(item => item.email === contactEmail);

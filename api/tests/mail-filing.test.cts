@@ -1,10 +1,10 @@
 import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const routes = require('../dist/src/routes/mail');
-const { getDb, setDb } = require('../dist/src/state');
-const { presentMailFiling, folderAcceptsAccount } = require('../dist/src/services/mail-filing');
-const mailWritebacks = require('../dist/src/services/mail-writebacks');
+const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
+const { presentMailFiling, folderAcceptsAccount } = require('../dist/src/services/mail-filing') as typeof import('../src/services/mail-filing');
+const mailWritebacks = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
 
 const request = (url: string) => ({ url, headers: { host: 'localhost' } });
 const recovered = () => ({ id: 'message', user_id: 'user', mail_account_id: 'source', filing_account_id: 'receiving',
@@ -32,16 +32,16 @@ test('list and detail preserve provider identity while presenting the receiving 
     assert.equal(params.includes('receiving'), true);
     return [[{ ...stored }]];
   } });
-  const list = await routes['GET /api/mail/emails'](request('/api/mail/emails?account_id=receiving'), 'user');
-  const detail = await routes['GET /api/mail/emails/:id'](request('/api/mail/emails/message'), 'user');
+  const list = await routes['GET /api/mail/emails'](request('/api/mail/emails?account_id=receiving') as FixtureValue, 'user');
+  const detail = await routes['GET /api/mail/emails/:id'](request('/api/mail/emails/message') as FixtureValue, 'user');
   assert.equal(list.error, undefined);
   assert.equal(detail.error, undefined);
   for (const email of [list.emails[0], detail.email]) {
     assert.equal(email.mail_account_id, 'receiving');
     assert.equal(email.source_mail_account_id, 'source');
-    assert.equal(email.source_folder, undefined);
-    assert.equal(email.imap_uid, undefined);
-    assert.equal(email.imap_uidvalidity, undefined);
+    assert.equal((email as FixtureValue).source_folder, undefined);
+    assert.equal((email as FixtureValue).imap_uid, undefined);
+    assert.equal((email as FixtureValue).imap_uidvalidity, undefined);
     assert.equal(email.is_legacy, false);
     assert.equal(email.is_read, true);
     assert.equal(email.is_starred, false);
@@ -95,7 +95,7 @@ function backfillDb(t: import('node:test').TestContext, { concurrentChange = fal
 
 test('sender backfill uses receiving-account rules and connected destinations without rewriting provider IDs', async t => {
   const f = backfillDb(t);
-  const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
+  const result = await routes['POST /api/mail/sender-rules/backfill']({} as FixtureValue, 'user', { account_id: 'receiving', mode: 'apply' });
   assert.equal(result.matched, 1); assert.equal(result.applied, 1); assert.equal(result.queued, 0);
   assert.equal(result.updates[0].rule_id, 'receiving-rule');
   assert.deepEqual(f.moves, [{ ids: ['message'], changes: { move: 'connected' } }]);
@@ -108,14 +108,14 @@ test('sender backfill uses receiving-account rules and connected destinations wi
 
 test('sender backfill dry run reports matches without moving mail', async t => {
   const f = backfillDb(t);
-  const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving' });
+  const result = await routes['POST /api/mail/sender-rules/backfill']({} as FixtureValue, 'user', { account_id: 'receiving' });
   assert.equal(result.dry_run, true); assert.equal(result.matched, 1); assert.equal(result.applied, 0);
   assert.deepEqual(f.moves, []);
 });
 
 test('sender backfill skips messages whose filing changed after scanning and reports actual applied count', async t => {
   const f = backfillDb(t, { concurrentChange: true });
-  const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
+  const result = await routes['POST /api/mail/sender-rules/backfill']({} as FixtureValue, 'user', { account_id: 'receiving', mode: 'apply' });
   assert.equal(result.matched, 1); assert.equal(result.applied, 0); assert.equal(result.skipped, 1);
   assert.equal(f.stored.folder, 'inbox'); assert.deepEqual(f.moves, []);
 });
@@ -123,7 +123,7 @@ test('sender backfill skips messages whose filing changed after scanning and rep
 test('sender backfill queues server moves for Sync accounts', async t => {
   const f = backfillDb(t, { syncMode: 'sync' });
   f.stored.mail_account_id = 'receiving';
-  const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
+  const result = await routes['POST /api/mail/sender-rules/backfill']({} as FixtureValue, 'user', { account_id: 'receiving', mode: 'apply' });
   assert.equal(result.applied, 1); assert.equal(result.queued, 1); assert.equal(result.skipped, 0);
   assert.deepEqual(f.moves, [{ ids: ['message'], changes: { move: 'connected' } }]);
 });
@@ -132,14 +132,14 @@ test('sender backfill skips Sync messages when the folder is not on their server
   // System folders accept every account, but this one has no server folder.
   const f = backfillDb(t, { syncMode: 'sync', target: 'archive' });
   f.stored.mail_account_id = 'receiving';
-  const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
+  const result = await routes['POST /api/mail/sender-rules/backfill']({} as FixtureValue, 'user', { account_id: 'receiving', mode: 'apply' });
   assert.equal(result.matched, 1); assert.equal(result.applied, 0); assert.equal(result.skipped, 1);
   assert.deepEqual(f.moves, []); assert.equal(f.stored.folder, 'inbox');
 });
 
 for (const target of ['source-only', 'unconnected']) test(`sender backfill rejects destination ${target} outside receiving account`, async t => {
   const f = backfillDb(t, { target });
-  const result = await routes['POST /api/mail/sender-rules/backfill']({}, 'user', { account_id: 'receiving', mode: 'apply' });
+  const result = await routes['POST /api/mail/sender-rules/backfill']({} as FixtureValue, 'user', { account_id: 'receiving', mode: 'apply' });
   assert.equal(result.matched, 0); assert.equal(result.applied, 0);
   assert.equal(f.stored.folder, 'inbox');
 });

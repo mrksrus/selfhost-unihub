@@ -26,9 +26,9 @@ async function eventsServer(t: import('node:test').TestContext, { sessions = new
     isModuleEnabled: async (userId: string, id: FixtureValue) => modules(userId).includes(id),
   });
   stub(locksPath, { getActiveRestoreSections: async () => new Set<FixtureValue>() });
-  stub(routesPath, require(eventsPath));
-  const { handleRequest } = require(handlerPath);
-  const events = require(busPath);
+  stub(routesPath, require(eventsPath) as typeof import('../src/routes/events'));
+  const { handleRequest } = require(handlerPath) as typeof import('../src/request-handler');
+  const events = require(busPath) as typeof import('../src/services/server-events');
   const server: FixtureValue = http.createServer((req, res) => { void handleRequest(req, res); });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const clients = new Set<FixtureValue>();

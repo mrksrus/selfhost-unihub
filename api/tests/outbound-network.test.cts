@@ -6,12 +6,12 @@ process.env.ENCRYPTION_KEY = 'outbound-network-test-only-key';
 process.env.TRUSTED_MAIL_HOSTS = 'mail.internal.example';
 const {
   isPublicNetworkAddress, resolveMailConnectionTarget, isTrustedMailHost,
-} = require('../dist/src/security/outbound-network');
-const { encrypt } = require('../dist/src/security/encryption');
-const mail = require('../dist/src/services/mail');
-const imapClient = require('../dist/src/services/mail-imap-client');
+} = require('../dist/src/security/outbound-network') as typeof import('../src/security/outbound-network');
+const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
+const mail = require('../dist/src/services/mail') as typeof import('../src/services/mail');
+const imapClient = require('../dist/src/services/mail-imap-client') as typeof import('../src/services/mail-imap-client');
 const nodemailer = require('nodemailer');
-const { setDb } = require('../dist/src/state');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 const publicAddress = '93.184.216.34';
 
@@ -34,9 +34,9 @@ test('DNS failures and mixed public/private answers fail closed, including trust
   await assert.rejects(resolveMailConnectionTarget('mail.internal.example', {
     lookup: async () => { throw Object.assign(new Error('missing'), { code: 'ENOTFOUND' }); },
   }), /could not be resolved/);
-  await assert.rejects(resolveMailConnectionTarget('mail.example', { lookup: async () => [
+  await assert.rejects(resolveMailConnectionTarget('mail.example', { lookup: (async () => [
     { address: publicAddress }, { address: '::ffff:7f00:1' },
-  ] }), /non-public/);
+  ]) as FixtureValue }), /non-public/);
   await assert.rejects(resolveMailConnectionTarget('mail.example', {
     timeoutMs: 5, lookup: () => new Promise(() => {}),
   }), /timed out/);
@@ -68,11 +68,11 @@ function installMailFixture(t: import('node:test').TestContext, host: FixtureVal
     imap_host: host, imap_port: 993, smtp_host: host, smtp_port: 587,
     encrypted_password: encrypt('fixture-password'), is_active: 1, delete_emails_on_server: 1,
     server_delete_grace_until: new Date(0), allow_self_signed: 0 };
-  setDb({ execute: async (sql: string) => {
+  setDb({ execute: (async (sql: string) => {
     if (sql.includes('FROM mail_accounts')) return [[account]];
     if (sql.includes('FROM mail_server_messages')) return [[{ id: 'queued', user_id: account.user_id }]];
     return [[]];
-  } });
+  }) } as FixtureValue);
   t.after(() => setDb(null));
   const imapConfigs: FixtureValue[] = [];
   const smtpConfigs: FixtureValue[] = [];
@@ -82,7 +82,7 @@ function installMailFixture(t: import('node:test').TestContext, host: FixtureVal
 }
 
 async function exerciseMailConnectionPaths(t: import('node:test').TestContext, account: FixtureValue) {
-  const runtime = require('../dist/src/services/mail-engine/runtime');
+  const runtime = require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime');
   t.mock.method(runtime, 'assertFence', async () => ({ cancellationRequested: false }));
   await mail.testImapConnection(account);
   await mail.createRemoteMailFolderForUserAccounts(account.user_id, 'Folder', account.id);
@@ -90,7 +90,7 @@ async function exerciseMailConnectionPaths(t: import('node:test').TestContext, a
   // DNS check immediately before the provider connection (and after validation).
   const job = { id: 'fixture-job', user_id: account.user_id, mail_account_id: account.id,
     lease_owner: 'fixture-worker', worker_generation: 1, kind: 'sync' };
-  await assert.rejects(mail.runDurableMailJob(job, new AbortController().signal, async () => {}),
+  await assert.rejects(mail.runDurableMailJob(job as FixtureValue, new AbortController().signal, async () => {}),
     /non-public address|fixture transport stop/);
   await mail.processMailServerDeletionForAccount(account.id);
   await assert.rejects(mail.sendEmail(account.id, { to: 'nobody@example.test', subject: 'Fixture', body: '' }));
@@ -139,6 +139,6 @@ test('accepting an unverified TLS certificate cannot authorize a private or mapp
   account.allow_self_signed = 1;
   const result = await mail.testImapConnection(account);
   assert.equal(result.success, false);
-  assert.match(result.error, /non-public/);
+  assert.match(result.error!, /non-public/);
   assert.equal(imapConfigs.length, 0);
 });

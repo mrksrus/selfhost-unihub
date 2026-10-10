@@ -6,8 +6,8 @@ const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 const { spawn } = (require('node:child_process') as typeof import('node:child_process'));
 const { once } = (require('node:events') as typeof import('node:events'));
-const { getDatabaseConfig } = require('../dist/src/services/database-config');
-const { probeDatabase, waitForDatabase, seconds } = require('../dist/src/database-readiness');
+const { getDatabaseConfig } = require('../dist/src/services/database-config') as typeof import('../src/services/database-config');
+const { probeDatabase, waitForDatabase, seconds } = require('../dist/src/database-readiness') as typeof import('../src/database-readiness');
 
 const config = { host: 'database', port: 3306, user: 'unihub', password: 'test-password', database: 'unihub' };
 
@@ -21,7 +21,7 @@ test('readiness uses the API DATABASE_URL precedence and configured credentials 
   await probeDatabase(selected, { timeoutMs: 2500, createConnection(options: FixtureValue) {
     calls.push(options);
     return { promise: () => ({ query: async (sql: string) => { calls.push(sql); } }), destroy: () => calls.push('destroyed') };
-  } });
+  } } as FixtureValue);
   assert.deepEqual(calls, [{ ...selected, timezone: '+00:00', connectTimeout: 2500 }, 'SELECT 1', 'destroyed']);
 });
 
@@ -30,7 +30,7 @@ test('a slow database retains the full default five-minute budget and exits only
   let attempts = 0;
   const logs: FixtureValue[] = [];
   const ready = await waitForDatabase(config, {
-    now: () => elapsed, sleep: async (ms: number) => { elapsed += ms; }, log: (line: FixtureValue) => logs.push(line),
+    now: () => elapsed, sleep: async (ms: number) => { elapsed += ms; }, log: (line) => logs.push(line),
     probe: async () => {
       attempts++;
       if (elapsed < 290000) throw Object.assign(new Error('Not ready yet'), { code: 'ECONNREFUSED' });
@@ -50,8 +50,8 @@ test('failed authentication never becomes readiness and retries stop at the actu
   const logs: FixtureValue[] = [];
   const ready = await waitForDatabase(config, {
     maxWaitMs: 1000, intervalMs: 500, now: () => elapsed,
-    sleep: async (ms: number) => { elapsed += ms; }, log: (line: FixtureValue) => logs.push(line),
-    probe: async (_config: FixtureValue, options: FixtureValue) => {
+    sleep: async (ms: number) => { elapsed += ms; }, log: (line) => logs.push(line),
+    probe: async (_config, options) => {
       timeouts.push(options.timeoutMs);
       elapsed += 700;
       throw Object.assign(new Error('Sensitive test-password'), { code: 'ER_ACCESS_DENIED_ERROR' });
@@ -74,9 +74,9 @@ test('a stalled handshake/query is destroyed at its per-attempt deadline', async
   let cleared;
   const pending = probeDatabase(config, {
     timeoutMs: 100,
-    createConnection: () => ({ promise: () => ({ query: () => new Promise(() => {}) }), destroy: () => { destroyed = true; } }),
-    setTimer: (callback: FixtureValue) => { expire = callback; return 'deadline'; },
-    clearTimer: (timer: FixtureValue) => { cleared = timer; },
+    createConnection: (() => ({ promise: () => ({ query: () => new Promise(() => {}) }), destroy: () => { destroyed = true; } })) as FixtureValue,
+    setTimer: ((callback: FixtureValue) => { expire = callback; return 'deadline'; }) as FixtureValue,
+    clearTimer: (timer) => { cleared = timer; },
   });
   const rejected = assert.rejects(pending, { code: 'ETIMEDOUT' });
   expire();
@@ -119,7 +119,7 @@ esac
 });
 
 test('readiness authenticates against the configured MariaDB CI service', { skip: !process.env.MYSQL_TEST_HOST }, async () => {
-  await probeDatabase({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
+  await probeDatabase({ host: process.env.MYSQL_TEST_HOST as FixtureValue, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER || 'unihub_test', password: process.env.MYSQL_TEST_PASSWORD || 'test-db-password',
     database: process.env.MYSQL_TEST_DATABASE || 'unihub_test' }, { timeoutMs: 5000 });
 });

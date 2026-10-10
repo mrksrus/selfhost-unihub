@@ -9,8 +9,8 @@ const { createBackupRuntime } = require('./helpers/isolated-backup-runtime.cts')
 process.env.ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || 'test-encryption-key-for-restore-jobs';
 process.env.BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || 'test-backup-master-key-for-restore-jobs';
 
-const { pruneArchiveKeyIfUnreferenced } = require('../dist/src/services/backup-archive-keys');
-const { setDb } = require('../dist/src/state');
+const { pruneArchiveKeyIfUnreferenced } = require('../dist/src/services/backup-archive-keys') as typeof import('../src/services/backup-archive-keys');
+const { setDb } = require('../dist/src/state') as typeof import('../src/state');
 
 test('shared archive key is retained until the last archive reference is detached', async (t) => {
   let retainedRestoreReferences = [{ id: 'restore-2' }];
@@ -25,7 +25,7 @@ test('shared archive key is retained until the last archive reference is detache
       }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
-  });
+  } as FixtureValue);
   t.after(() => setDb(null));
 
   assert.equal(await pruneArchiveKeyIfUnreferenced('user-1', 'backup-1'), false);
@@ -48,7 +48,7 @@ test('generated backup reference keeps its server unlock key', async (t) => {
       }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
-  });
+  } as FixtureValue);
   t.after(() => setDb(null));
 
   assert.equal(await pruneArchiveKeyIfUnreferenced('user-1', 'backup-1'), false);
