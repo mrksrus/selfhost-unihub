@@ -338,8 +338,11 @@ async function scanMailboxSlice({ db, connection, account, folder, stream = 'rec
     ? JSON.parse(cursor.coverage_json) : cursor?.coverage_json;
   // A history/sweep pass has a finite captured upper boundary. Arrivals are
   // handled by recent, not by indefinitely extending the current older pass.
+  // A pass that has not covered anything yet (a new sweep generation) captures
+  // the current boundary instead of the previous pass's, so mail that arrived
+  // since then is swept too.
   const pinned = uint32(storedCoverage?.upper);
-  const upper = stream !== 'recent' && pinned && covered < pinned ? Math.min(pinned, remoteUpper) : remoteUpper;
+  const upper = stream !== 'recent' && pinned && covered > 0 && covered < pinned ? Math.min(pinned, remoteUpper) : remoteUpper;
   const window = targetUid === null
     ? windowFor(stream, cursor, upper, Math.min(WINDOW, Math.max(1, maxWindow)))
     : { start: targetUid, end: targetUid };

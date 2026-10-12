@@ -43,3 +43,21 @@ test('Sync items without any provider link change locally; damaged links refuse 
   const partial = { ...unlinked, id: 'partial', remote_folder: 'INBOX' };
   await assert.rejects(run([partial, { ...partial, id: 'partial2' }, linked], { read: true }), /^Error: 2 selected messages have a damaged link/);
 });
+test('leaving Sync applies never-sent changes locally instead of leaving them pending', async () => {
+  const { cancelForAccount } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+  const queries: FixtureValue[] = [];
+  const db = { execute: async (sql: string, args: FixtureValue) => { queries.push({ sql, args });
+    return sql.startsWith('SELECT * FROM mail_writebacks') ? [[
+      { id: 'w1', email_id: 'e1', action: 'read', target_value: '1', target_folder: null },
+      { id: 'w2', email_id: 'e2', action: 'move', target_value: 'Archive', target_folder: 'archive' },
+    ]] : [[]]; } };
+  await cancelForAccount(db as FixtureValue, 'account', 'owner', { leavingSync: true });
+  assert.match(queries[0].sql, /state='reconciling'/, 'sent changes still get checked against the server');
+  assert(queries[1].sql.includes('dispatched=FALSE'));
+  const applied = queries.filter(q => q.sql.startsWith('UPDATE emails'));
+  assert.deepEqual(applied.map(q => [q.sql.match(/SET (\w+)/)![1], q.args[0], q.args[1]]), [['is_read', 1, 'e1'], ['folder', 'archive', 'e2']]);
+  assert.equal(queries.filter(q => q.sql.includes("state='superseded'")).length, 2);
+  queries.length = 0;
+  await cancelForAccount(db as FixtureValue, 'account', 'owner');
+  assert.equal(queries.length, 1, 'other pauses keep queued changes for later');
+});

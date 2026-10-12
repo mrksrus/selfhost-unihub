@@ -241,11 +241,18 @@ async function runDurableMailJob(job: ClaimedJob, signal: AbortSignal, report: J
             kind, priority, manualRefresh: Number(job.manual_refresh) === 1 && ['flags', 'presence'].includes(kind) });
         }
       }
+      // A folder the server no longer lists was deleted or renamed there. Its
+      // mail leaves the folder views (it stays in All mail, nothing is deleted)
+      // and comes back if the folder does.
+      await (require('./mail-engine/repository') as typeof import('./mail-engine/repository')).retireUnlistedMailboxes({ userId: account.user_id,
+        accountId, listed: registered.map(folder => folder.remoteName) }, db);
       await (require('./mail-engine/sync') as typeof import('./mail-engine/sync')).enqueuePendingBodies({ userId: account.user_id, accountId,
         retrySlow: Number(job.manual_refresh) === 1 }, db);
       // Sync policy (retention, proven absence, Gmail merge, archive filing)
       // is applied by a low-priority local job after each discovery pass.
       if (account.sync_mode === 'sync') await (require('./mail-sync-policy') as typeof import('./mail-sync-policy')).enqueuePrune({ userId: account.user_id, accountId });
+      // The server answered with its full folder list: that is what "last synced" means.
+      await db.execute('UPDATE mail_accounts SET last_synced_at = NOW() WHERE id = ? AND user_id = ?', [accountId, account.user_id]);
       // Stream jobs select a single mapped mailbox in account-scoped rounds.
       return done({ success: true, started: true, folders: registered.length });
     }
@@ -261,6 +268,12 @@ async function runDurableMailJob(job: ClaimedJob, signal: AbortSignal, report: J
         WHERE m.id=? AND m.user_id=? AND m.mail_account_id=? AND m.state='active' LIMIT 1`,
       [job.mailbox_id, account.user_id, account.id]);
       mailbox = rows[0];
+    }
+    if (!mailbox && job.mailbox_id) {
+      const [[gone]] = await db.execute<RowDataPacket[]>(`SELECT id FROM mail_remote_mailboxes
+        WHERE id = ? AND user_id = ? AND mail_account_id = ? AND state = 'missing'`, [job.mailbox_id, account.user_id, account.id]);
+      // Work queued before the folder disappeared from the server.
+      if (gone) return done({ success: true, more: false, skipped: true });
     }
     if (!mailbox) return { success: false, error: 'Durable mailbox mapping missing' };
     const folder = { folderName: mailbox.remote_name, dbFolderName: mailbox.slug };

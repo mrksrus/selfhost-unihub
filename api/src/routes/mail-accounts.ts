@@ -5,7 +5,7 @@ import * as mailAccountLifecycle from '../services/mail-account-lifecycle';
 import { mailAccountModeChange, sameProviderMailbox, addressConfirmed } from '../services/mail-account-mode';
 import * as mailSyncPolicy from '../services/mail-sync-policy';
 import { withMailAccountLock } from '../services/mail-account-lock';
-import { FILING_ACCOUNT_SQL } from '../services/mail-folder-reconciliation';
+import { accountUnreadQuery } from '../services/mail-folder-view';
 import crypto from 'crypto';
 import { db } from '../state';
 import { encrypt } from '../security/encryption';
@@ -122,15 +122,13 @@ export = {
       const [accounts] = await db.execute<(RowDataPacket & AccountRow)[]>(`SELECT ${ACCOUNT_COLUMNS} FROM mail_accounts WHERE user_id = ?`, [userId]);
       await ensureDefaultMailFoldersForUser(userId);
 
-      // Fetch unread email counts per account
-      const [unreadRows] = await db.execute<(RowDataPacket & AccountRow)[]>(
-        `SELECT CASE WHEN is_legacy THEN 'legacy' ELSE ${FILING_ACCOUNT_SQL} END AS mail_account_id, COUNT(*) as unread_count FROM emails WHERE user_id = ? AND ${EFFECTIVE_READ_SQL} = 0 GROUP BY 1`,
-        [userId]
-      );
+      // The badge is the sum of the account's folder counts, so mail that sits
+      // in no folder (gone from the server, awaiting cleanup) is not counted.
+      const [unreadRows] = await db.execute<(RowDataPacket & AccountRow)[]>(accountUnreadQuery(EFFECTIVE_READ_SQL), [userId]);
 
       const unreadByAccount: Record<string, number> = {};
       for (const row of unreadRows) {
-        unreadByAccount[row.mail_account_id] = row.unread_count;
+        unreadByAccount[row.mail_account_id] = Number(row.unread_count) || 0;
       }
 
       const [deleteRows] = await db.execute<(RowDataPacket & AccountRow)[]>(
@@ -550,7 +548,7 @@ export = {
         );
       }
 
-      if (modeChange.changed) await mailWritebacks.cancelForAccount(db, id, userId);
+      if (modeChange.changed) await mailWritebacks.cancelForAccount(db, id, userId, { leavingSync: modeChange.mode !== 'sync' });
       if (stopRequired && (body.is_active === true || toBooleanFlag(existingAccount.is_active)))
         await (require('../services/mail-engine/runtime') as typeof import('../services/mail-engine/runtime')).resumeAccount({ userId, accountId: id });
 

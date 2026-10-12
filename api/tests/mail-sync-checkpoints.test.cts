@@ -28,6 +28,14 @@ function scanFixture(t: import('node:test').TestContext, { uids = [1, 2, 3], epo
     if (sql.includes('FROM mail_writebacks w JOIN')) return [[]];
     if (sql.includes('INSERT INTO emails')) { writes.push(['email', params[0], params[5]]); return [{ affectedRows: 1 }]; }
     if (sql.includes('UPDATE emails')) return [{ affectedRows: 1 }];
+    // A finished flags/presence sweep starts over once its throttle has passed
+    // (simulated as passed). Like production SQL, it leaves coverage_json alone.
+    if (sql.includes('UPDATE mail_engine_cursors SET covered_through = 0')) {
+      const cursor = cursors.get(params[1]);
+      if (!cursor || cursor.covered_through < params[5]) return [{ affectedRows: 0 }];
+      cursor.covered_through = 0; cursor.sweep_generation = (cursor.sweep_generation || 0) + 1;
+      return [{ affectedRows: 1 }];
+    }
     throw Error(`Unexpected SQL: ${sql}`);
   } };
   const repository = {
@@ -38,7 +46,7 @@ function scanFixture(t: import('node:test').TestContext, { uids = [1, 2, 3], epo
     },
     async loadCursor({ stream }: FixtureValue) { return cursors.get(stream) || null; },
     async saveCursor(input: FixtureValue) { cursors.set(input.stream, { covered_through: input.coveredThrough,
-      coverage_json: input.coverage, uidvalidity: input.epoch }); writes.push(['cursor', input.stream, input.coveredThrough]); },
+      sweep_generation: input.sweepGeneration, coverage_json: input.coverage, uidvalidity: input.epoch }); writes.push(['cursor', input.stream, input.coveredThrough]); },
     async getOccurrence({ uid }: FixtureValue) { return occurrences.get(uid) || null; },
     async upsertOccurrence(input: FixtureValue) {
       const row = { uid: input.uid, email_id: input.emailId, observation_revision: input.observationRevision };
@@ -60,7 +68,7 @@ function scanFixture(t: import('node:test').TestContext, { uids = [1, 2, 3], epo
   const { scanMailboxSlice } = require(paths[3]) as typeof import('../src/services/mail-engine/sync');
   t.after(() => paths.forEach((p, i) => { if (prior[i]) require.cache[p] = prior[i]; else delete require.cache[p]; }));
   return { reads, writes, occurrences, cursors, bodyJobs,
-    setEpoch(n: FixtureValue) { selectedEpoch = n; }, setUpper(n: FixtureValue) { upper = n; }, fail(value: FixtureValue) { failWindow = value; },
+    setEpoch(n: FixtureValue) { selectedEpoch = n; }, setUpper(n: FixtureValue) { upper = n; }, addRemote(uid: number) { remotes.add(uid); }, fail(value: FixtureValue) { failWindow = value; },
     scan(stream = 'history') { return scanMailboxSlice({ db: db as FixtureValue, connection: {} as FixtureValue, account: { id: accountId, user_id: userId }, folder, stream }); } };
 }
 
@@ -72,6 +80,22 @@ test('new folder scans historical UIDs despite recent account timestamp; bodies 
   assert.deepEqual(h.reads[1], [1, 128]);
   assert(h.bodyJobs.every(job => job.kind === 'body'));
   assert.equal(h.occurrences.size, 3);
+});
+
+test('a later flags sweep covers mail that arrived after the first sweep', async t => {
+  const fixture = scanFixture(t, { uids: [1, 2, 3] });
+  await fixture.scan('flags');
+  assert.deepEqual(fixture.reads.at(-1), [1, 3]);
+  // New mail arrives (imported by the recent stream); the next sweep starts over.
+  for (const uid of [4, 5]) {
+    fixture.addRemote(uid);
+    fixture.occurrences.set(uid, { uid, email_id: `e${uid}`, observation_revision: 1 });
+  }
+  fixture.setUpper(5);
+  const result = await fixture.scan('flags');
+  assert.deepEqual(fixture.reads.at(-1), [1, 5], 'the new generation reaches the current upper boundary');
+  assert.equal(result.upper, 5);
+  assert.equal(fixture.cursors.get('flags').coverage_json.upper, 5);
 });
 
 test('failed historical window retains checkpoint and retries without reimporting already observed items', async t => {

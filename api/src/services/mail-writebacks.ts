@@ -274,10 +274,21 @@ async function acceptServerState(userId: string, id: string) {
   return { message: syncQueued ? 'UniHub stopped tracking this move and is syncing from the server'
     : 'UniHub stopped tracking this move; the next sync follows the server', sync_queued: syncQueued };
 }
-async function cancelForAccount(cx: SqlExecutor, accountId: string, userId: string) {
+async function cancelForAccount(cx: SqlExecutor, accountId: string, userId: string, { leavingSync = false } = {}) {
   // Disconnect/settings pause does not erase an accepted or uncertain provider effect.
   await cx.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',error='Account paused; check provider after reconnect'
     WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN ('executing','verifying','retry_wait')`, [accountId, userId]);
+  if (!leavingSync) return;
+  // Download mode never talks back to the server, so changes that were never
+  // sent stay local: apply them to the copy here instead of leaving them pending.
+  const [ops] = await cx.execute<OperationRow[]>(`SELECT * FROM mail_writebacks WHERE mail_account_id=? AND user_id=? AND is_current=TRUE
+    AND dispatched=FALSE AND state IN ('queued','retry_wait') ORDER BY intent_revision,created_at,id`, [accountId, userId]);
+  for (const op of ops) {
+    const value = op.action === 'move' ? op.target_folder : Number(op.target_value === '1');
+    if (fields[op.action] && value !== null && value !== undefined)
+      await cx.execute(`UPDATE emails SET ${fields[op.action]}=? WHERE id=? AND user_id=?`, [value, op.email_id, userId]);
+    await cx.execute(`UPDATE mail_writebacks SET state='superseded',status='done',is_current=FALSE,error=NULL WHERE id=? AND user_id=?`, [op.id, userId]);
+  }
 }
 // Operation and reconcile jobs run on the durable mail scheduler
 // (runDurableMutationJob in mail-durable-jobs.ts). This only starts them

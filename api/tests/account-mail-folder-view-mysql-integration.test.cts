@@ -105,6 +105,22 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
     await pool.execute<ResultSetHeader>("UPDATE mail_remote_occurrences SET presence='present' WHERE email_id=?",[item]);
     await pool.execute<ResultSetHeader>('UPDATE emails SET remote_missing=FALSE WHERE id=?',[item]);
   });
+  await t.test('a folder the server stops listing leaves folder views and badges, and returns when listed again', async () => {
+    const accountsRoutes = require('../dist/src/routes/mail-accounts') as typeof import('../src/routes/mail-accounts');
+    const badge = async () => ((await accountsRoutes['GET /api/mail/accounts']({url:'/api/mail/accounts',headers:{host:'localhost'}} as FixtureValue,owner)) as FixtureValue)
+      .accounts.find((row: FixtureValue) => row.id === account).unread_count;
+    assert.equal((await list('label')).pagination.total,1);
+    assert.equal(await badge(),2, 'A message with several labels counts once');
+    assert.equal(await repository.retireUnlistedMailboxes({userId:owner,accountId:account,listed:['INBOX','[Gmail]/All Mail']},pool),1);
+    assert.equal((await list('label')).pagination.total,0);
+    assert.equal((await list('inbox')).pagination.total,2, 'Listed folders are untouched');
+    assert.equal(((await counts()) as FixtureValue).unreadByFolder.label,undefined);
+    await pool.execute<ResultSetHeader>("UPDATE mail_remote_mailboxes SET state='active' WHERE id IN (?,?)",[boxes.get('inbox').id,boxes.get('all-mail').id]);
+    assert.equal(await repository.retireUnlistedMailboxes({userId:owner,accountId:account,listed:['INBOX','[Gmail]/All Mail']},pool),0, 'Already retired');
+    await repository.withTransaction((cx) => repository.ensureMailbox({userId:owner,accountId:account,folderName:'Projects/Grüße',epoch:17},cx),pool);
+    assert.equal((await list('label')).pagination.total,1, 'Listed again: membership is back');
+    await assert.rejects(repository.retireUnlistedMailboxes({userId:owner,accountId:account,listed:[]},pool), /complete folder listing/);
+  });
   await t.test('explicit local Legacy filing is not overwritten by provider labels', async () => {
     await pool.execute<ResultSetHeader>("UPDATE emails SET is_legacy=TRUE,folder='retained' WHERE id=?",[item]);
     assert.equal((await list('label')).pagination.total,0);

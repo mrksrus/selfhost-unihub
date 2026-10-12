@@ -36,13 +36,12 @@ const folderMembershipSql = `(CASE
     THEN EXISTS(SELECT 1 FROM ${membershipTables} WHERE ${membershipWhere} AND f.slug = ?)
   ELSE ${fallbackFolderSql} = ? END)`;
 
-function membershipCountQuery(effectiveReadSql: string, accountId: string | null | undefined, { onlyUnread = false, byAccount = false } = {}) {
+// One row per message and folder it is shown in.
+function folderViewRows(effectiveReadSql: string, accountId: string | null | undefined) {
   const hasAccount = accountId && accountId !== 'all';
   const filter = !hasAccount ? '' : accountId === 'legacy' ? ' AND emails.is_legacy = TRUE' :
     ' AND emails.is_legacy = FALSE AND COALESCE(emails.filing_account_id, emails.mail_account_id) = ?';
-  return `SELECT folder${byAccount ? ', mail_account_id' : ''}, COUNT(*) AS total_count,
-    SUM(CASE WHEN view_is_read = 0 THEN 1 ELSE 0 END) AS unread_count FROM (
-    SELECT DISTINCT emails.id,
+  return `SELECT DISTINCT emails.id,
       CASE WHEN emails.is_legacy THEN 'legacy' ELSE COALESCE(emails.filing_account_id, emails.mail_account_id) END AS mail_account_id,
       ${effectiveReadSql} AS view_is_read,
       COALESCE(${pendingMoveSql}, memberships.folder_slug, ${fallbackFolderSql}) AS folder
@@ -51,8 +50,18 @@ function membershipCountQuery(effectiveReadSql: string, accountId: string | null
       FROM ${membershipTables} WHERE o.presence = 'present'
     ) memberships ON memberships.email_id = emails.id AND memberships.user_id = emails.user_id
       AND memberships.mail_account_id = emails.mail_account_id AND NOT ${localFilingSql}
-    WHERE emails.user_id = ?${filter}
+    WHERE emails.user_id = ?${filter}`;
+}
+function membershipCountQuery(effectiveReadSql: string, accountId: string | null | undefined, { onlyUnread = false, byAccount = false } = {}) {
+  return `SELECT folder${byAccount ? ', mail_account_id' : ''}, COUNT(*) AS total_count,
+    SUM(CASE WHEN view_is_read = 0 THEN 1 ELSE 0 END) AS unread_count FROM (
+    ${folderViewRows(effectiveReadSql, accountId)}
   ) mail_view WHERE folder IS NOT NULL${onlyUnread ? ' AND view_is_read = 0' : ''} GROUP BY folder${byAccount ? ', mail_account_id' : ''}`;
 }
 const unreadMembershipQuery = (effectiveReadSql: string, accountId: string | null | undefined) => membershipCountQuery(effectiveReadSql, accountId, { onlyUnread: true, byAccount: true });
-export { folderMembershipSql, membershipCountQuery, unreadMembershipQuery, pendingMoveSql };
+// Unread messages per account that appear in at least one folder; a message
+// with several Gmail labels counts once. Takes one parameter: the user id.
+const accountUnreadQuery = (effectiveReadSql: string) => `SELECT mail_account_id, COUNT(DISTINCT id) AS unread_count FROM (
+    ${folderViewRows(effectiveReadSql, null)}
+  ) mail_view WHERE folder IS NOT NULL AND view_is_read = 0 GROUP BY mail_account_id`;
+export { folderMembershipSql, membershipCountQuery, unreadMembershipQuery, accountUnreadQuery, pendingMoveSql };
