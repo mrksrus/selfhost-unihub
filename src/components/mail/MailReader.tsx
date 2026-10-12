@@ -8,12 +8,16 @@ import type { Email, MailAccount, MailFlagKind } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
 import { useContactActions } from '@/hooks/use-contact-actions';
 import { Button } from '@/components/ui/button';
+import { LoadingState } from '@/components/ui/page-states';
 import { SafeEmailContent } from '@/components/mail/SafeEmailContent';
-import { deriveContactNameFromEmail, flagPendingLabel } from '@/components/mail/mail-page-model';
+import { MailPendingMark } from '@/components/mail/MailPendingMark';
+import { deriveContactNameFromEmail } from '@/components/mail/mail-page-model';
 
 interface Props {
-  /** The loaded message. The reader hook only sets it for the current selection. */
+  /** The open message. The reader hook only sets it for the current selection. */
   email: Email;
+  /** The body and attachments are still loading; the header comes from the list row. */
+  loading?: boolean;
   accounts: MailAccount[];
   /** "Account / folder" shown next to the back button. */
   location: string;
@@ -31,7 +35,7 @@ interface Props {
 }
 
 /** Reader pane: full screen on narrow screens, the right column of the split view on wide ones. */
-export function MailReader({ email, accounts, location, backLabel, isMobile, isReplying, flagRequests, requestFlag,
+export function MailReader({ email, loading = false, accounts, location, backLabel, isMobile, isReplying, flagRequests, requestFlag,
   senderInContacts, onBack, onReply, onForward, inlineCompose }: Props) {
   const { toast } = useToast();
   const { create: createContact } = useContactActions();
@@ -57,6 +61,7 @@ export function MailReader({ email, accounts, location, backLabel, isMobile, isR
                 variant="outline"
                 size="sm"
                 onClick={onReply}
+                disabled={loading}
               >
                 <Reply className="h-4 w-4 mr-2" />
                 Reply
@@ -65,6 +70,7 @@ export function MailReader({ email, accounts, location, backLabel, isMobile, isR
                 variant="outline"
                 size="sm"
                 onClick={onForward}
+                disabled={loading}
               >
                 <Forward className="h-4 w-4 mr-2" />
                 Forward
@@ -74,10 +80,7 @@ export function MailReader({ email, accounts, location, backLabel, isMobile, isR
           <div className="flex shrink-0 flex-wrap items-center gap-2 ml-auto">
             {accounts.find(account => account.id === email.mail_account_id)?.disconnected_at && <span className="text-xs text-muted-foreground">Disconnected · retained locally; provider presence unverified</span>}
             {email.remote_missing && <span className="text-xs text-muted-foreground">Local copy · provider presence unverified</span>}
-            {(email.read_sync_pending || email.star_sync_pending) && <span className="text-xs text-muted-foreground">
-              {flagPendingLabel(email)}
-            </span>}
-            {(flagRequests.has(`read:${email.id}`) || flagRequests.has(`star:${email.id}`)) && <span className="text-xs text-muted-foreground">Saving change…</span>}
+            <MailPendingMark email={email} saving={flagRequests.has(`read:${email.id}`) || flagRequests.has(`star:${email.id}`)} className="h-8 w-8" />
             <Button
               variant="outline"
               size="sm"
@@ -144,8 +147,10 @@ export function MailReader({ email, accounts, location, backLabel, isMobile, isR
               </div>
             </div>
 
+            {loading && <LoadingState label="Loading email…" compact className="border-t border-border" />}
+
             {/* Attachments */}
-            {email.attachments && email.attachments.length > 0 && (
+            {!loading && email.attachments && email.attachments.length > 0 && (
               <div className="border-t border-border pt-4">
                 <div className="flex items-center gap-2 mb-3">
                   <Paperclip className="h-4 w-4 text-muted-foreground" />
@@ -207,13 +212,13 @@ export function MailReader({ email, accounts, location, backLabel, isMobile, isR
               </div>
             )}
 
-            <div className="border-t border-border pt-4">
+            {!loading && <div className="border-t border-border pt-4">
               <SafeEmailContent
                 emailId={email.id}
                 bodyHtml={email.body_html}
                 bodyText={email.body_text}
               />
-            </div>
+            </div>}
           </div>
         </div>
 

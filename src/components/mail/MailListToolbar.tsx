@@ -89,7 +89,7 @@ export function MailListToolbar({ emailCount, selection, folderLabel, accountLab
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="max-h-[60vh] overflow-y-auto">
               {moveTargets.map((folder) => (
-                <DropdownMenuItem key={folder.id} onClick={() => bulk.move(selectedIds, folder.id)}>
+                <DropdownMenuItem key={folder.id} onClick={() => bulk.move(selectedIds, folder.id, undefined, folder.label)}>
                   <folder.icon className="mr-2 h-4 w-4" />Move to {folder.label}
                 </DropdownMenuItem>
               ))}

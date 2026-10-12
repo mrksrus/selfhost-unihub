@@ -6,6 +6,30 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.19.3
+
+Mail actions feel immediate without hiding what the server has confirmed.
+No database or API change.
+
+### Changed
+
+- **Mail changes look done at once.** Moving or trashing a message takes it
+  out of the list, closes it in the reader and updates the folder's unread
+  count immediately; marking read or starring already did. A message opens
+  from its row right away with its sender, subject and date while the body
+  loads, and is marked read at that moment. If UniHub rejects a request, the
+  rows and counts return to how they were and a message says so.
+- **One quiet pending mark.** Instead of "Saving change…" and "awaiting
+  provider" text in every row, a small hollow dot on the row and in the reader
+  marks a read or star change the provider has not confirmed yet. Its tooltip
+  (and screen-reader text) names the change; nothing is disabled while it
+  waits. The sync button's count and panel keep showing all waiting changes.
+- **Shorter confirmations.** After a move or trash the notice says only where
+  the message went ("Moved to Archive") and, for a synced account, "Waiting
+  for the server". Undo stays for local (Download) accounts.
+- Marking many messages read or starred refreshes the view once, not once
+  per message.
+
 ## 0.19.2
 
 A new, calmer layout for every page, and groundwork in the API for the

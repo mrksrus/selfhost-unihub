@@ -71,7 +71,7 @@ Flag writes change only the requested flag, not the entire flag set. CONDSTORE i
 
 Moves require native IMAP MOVE. There is **no COPY/EXPUNGE fallback**. A valid COPYUID mapping and verified destination can settle the original operation, including when ordinary synchronization discovers that destination first. If COPYUID is missing or invalid, bounded read-only reconciliation may end in **needs attention**. Matching bytes, Message-ID or a missing source alone do not prove which independent copy moved. Do not repeatedly submit new MOVE requests to hide an uncertain result.
 
-In the mail view, the sync button at the end of the list toolbar carries this state; the sync panel lists each account, its operations and their Retry, Discard and Accept server state actions. See [mail sync](MAIL_SYNC.md#status-updates).
+In the mail view a change looks done as soon as you make it: a read, star, move or trash changes the row, the open message and the folder counts at once, and a message opens from its row before its body has loaded. UniHub's acceptance and the provider's confirmation arrive afterwards. A small hollow dot on the row and in the reader marks a read or star change the provider has not confirmed yet (its tooltip names the change); the dot disappears once the change is confirmed. A request UniHub rejects is put back the way it was and reported. The sync button at the end of the list toolbar carries the overall state (changes waiting, changes needing attention); the sync panel lists each account, its operations and their Retry, Discard and Accept server state actions. See [mail sync](MAIL_SYNC.md#status-updates).
 
 ## Mailboxes, labels and coverage
 

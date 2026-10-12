@@ -2,9 +2,9 @@ import { useCallback, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { ToastAction } from '@/components/ui/toast';
 import { useToast } from '@/hooks/use-toast';
-import { invalidateMailQueries, type Email, type MailFlagKind } from '@/lib/mail-api';
+import { invalidateMailMoveViews, mailQueryKeys, showRequestedMoveInMailCaches, type Email, type MailFlagKind, type MovedEmail } from '@/lib/mail-api';
 import { acceptMailCommand, newMailCommand, UnknownMailAcceptance } from '@/lib/mail-operations';
-import { bulkKey } from '@/components/mail/mail-page-model';
+import { ALL_MAIL, bulkKey } from '@/components/mail/mail-page-model';
 
 interface BulkOptions {
   /** Messages of the current list, used to find flags and source folders. */
@@ -13,13 +13,19 @@ interface BulkOptions {
   selectedFolder: string;
   requestFlag: (email: Email, kind: MailFlagKind, value: boolean) => void;
   clearSelection: () => void;
+  /** Messages that just left the current folder view (the reader closes if it shows one). */
+  onMovedAway?: (emailIds: string[]) => void;
 }
 
+const messages = (count: number) => count === 1 ? '' : `${count} messages `;
+
 /**
- * Read/star/move/trash for one or more messages. An identical request is not
- * sent again while it is in flight; `*Pending` report that for the toolbar.
+ * Read/star/move/trash for one or more messages. A move or trash shows at
+ * once and is rolled back if UniHub rejects it; the server-change list in the
+ * sync control carries the provider outcome. An identical request is not sent
+ * again while it is in flight; `*Pending` report that for the toolbar.
  */
-export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requestFlag, clearSelection }: BulkOptions) {
+export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requestFlag, clearSelection, onMovedAway }: BulkOptions) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const bulkRequests = useRef(new Set<string>());
@@ -36,20 +42,34 @@ export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requ
     });
   }, []);
 
+  const findEmail = (id: string) => emails.find(item => item.id === id) || (selectedEmail?.id === id ? selectedEmail : null);
+
+  // Before the request: rows leave the view, counts follow, the selection is
+  // done with. Returns the undo for a rejection.
+  const showMove = (emailIds: string[], folder: string) => {
+    const moved = emailIds.map(findEmail).filter((email): email is Email => !!email && email.folder !== folder) as MovedEmail[];
+    void queryClient.cancelQueries({ queryKey: mailQueryKeys.all });
+    const undo = showRequestedMoveInMailCaches(queryClient, moved, folder);
+    clearSelection();
+    if (folder !== selectedFolder && selectedFolder !== ALL_MAIL && selectedFolder !== 'starred') onMovedAway?.(moved.map(email => email.id));
+    return undo;
+  };
+
   const bulkMove = useMutation({
-    mutationFn: async ({ emailIds, folder, accountId }: { emailIds: string[]; folder: string; accountId?: string }) => {
+    mutationFn: async ({ emailIds, folder, accountId }: { emailIds: string[]; folder: string; accountId?: string; folderLabel?: string }) => {
       const response = await acceptMailCommand(newMailCommand('POST', '/mail/emails/bulk-move', { email_ids: emailIds, folder, account_id: accountId }));
       return response;
     },
+    onMutate: ({ emailIds, folder }) => showMove(emailIds, folder),
     onSuccess: (data, variables) => {
-      void invalidateMailQueries(queryClient);
-      clearSelection();
-      toast({ title: `Move accepted for ${variables.emailIds.length} email(s)`,
-        description: data?.sync_pending !== false ? 'Provider confirmation is pending. The sync button shows the outcome.' : 'The local request was accepted; provider confirmation is not implied.' });
+      toast({ title: `Moved ${messages(variables.emailIds.length)}to ${variables.folderLabel ?? variables.folder}`,
+        description: data?.sync_pending !== false ? 'Waiting for the server' : undefined });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, _variables, undo) => {
+      undo?.();
       toast({ title: error instanceof UnknownMailAcceptance ? 'Move outcome unknown — do not resend' : 'Move request rejected', description: error.message, variant: 'destructive' });
     },
+    onSettled: () => { void invalidateMailMoveViews(queryClient); },
   });
 
   const bulkDelete = useMutation({
@@ -57,12 +77,13 @@ export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requ
       const response = await acceptMailCommand(newMailCommand('POST', '/mail/emails/bulk-delete', { email_ids: emailIds }));
       return { count: emailIds.length, pending: response.sync_pending !== false };
     },
+    onMutate: ({ emailIds }) => showMove(emailIds, 'trash'),
     onSuccess: ({ count, pending }, variables) => {
-      void invalidateMailQueries(queryClient);
-      clearSelection();
       toast({
-        title: pending ? `Trash move saved for ${count} email(s)` : `Trash request accepted for ${count} email(s)`,
-        description: pending ? 'Server changes are waiting to sync. The sync button shows their progress.' : undefined,
+        title: `Moved ${messages(count)}to Trash`,
+        description: pending ? 'Waiting for the server' : undefined,
+        // A local (Download) move can be undone at once; a provider move is a
+        // second MOVE, which the sync panel handles deliberately.
         action: pending ? undefined : (
           <ToastAction
             altText="Undo move to trash"
@@ -82,12 +103,12 @@ export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requ
         ),
       });
     },
-    onError: (error: Error) => {
+    onError: (error: Error, _variables, undo) => {
+      undo?.();
       toast({ title: error instanceof UnknownMailAcceptance ? 'Trash request outcome unknown' : 'Trash request rejected', description: error.message, variant: 'destructive' });
     },
+    onSettled: () => { void invalidateMailMoveViews(queryClient); },
   });
-
-  const findEmail = (id: string) => emails.find(item => item.id === id) || (selectedEmail?.id === id ? selectedEmail : null);
 
   // Bulk flag controls use the same per-email/field admission lanes as row and
   // reader clicks. A slow batch must not overtake a later single-message click.
@@ -113,8 +134,8 @@ export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requ
       runBulk('read', { emailIds, is_read }, ({ is_read: value }) => requestBulkFlags(emailIds, 'read', value)),
     star: (emailIds: string[]) =>
       runBulk('star', { emailIds, is_starred: true }, ({ is_starred }) => requestBulkFlags(emailIds, 'star', is_starred)),
-    move: (emailIds: string[], folder: string, accountId?: string) =>
-      runBulk('move', accountId === undefined ? { emailIds, folder } : { emailIds, folder, accountId }, bulkMove.mutateAsync),
+    move: (emailIds: string[], folder: string, accountId?: string, folderLabel?: string) =>
+      runBulk('move', { emailIds, folder, ...(accountId === undefined ? {} : { accountId }), ...(folderLabel === undefined ? {} : { folderLabel }) }, bulkMove.mutateAsync),
     trash: (emailIds: string[]) => runBulk('delete', trashPayload(emailIds), bulkDelete.mutateAsync),
     readPending: (emailIds: string[], is_read: boolean) => bulkPending.has(bulkKey('read', { emailIds, is_read })),
     starPending: (emailIds: string[]) => bulkPending.has(bulkKey('star', { emailIds, is_starred: true })),

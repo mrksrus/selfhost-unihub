@@ -240,8 +240,8 @@ export const formatAttachmentSize = (bytes: number) => {
 };
 
 export const flagPendingLabel = (email: Pick<Email, 'read_sync_pending' | 'star_sync_pending'>) =>
-  email.read_sync_pending && email.star_sync_pending ? 'Read and star changes awaiting provider'
-    : email.read_sync_pending ? 'Read change awaiting provider' : 'Star change awaiting provider';
+  email.read_sync_pending && email.star_sync_pending ? 'Read and star changes waiting for the server'
+    : email.read_sync_pending ? 'Read change waiting for the server' : 'Star change waiting for the server';
 
 /** Today: time. This year: day and month. Older: with the year. */
 export function formatListDate(value: string) {

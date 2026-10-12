@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { PenSquare, Plus } from 'lucide-react';
@@ -75,9 +75,14 @@ const MailPage = () => {
   const { emails } = list;
   const selection = useMailListSelection(`${selectedAccount ?? ''}\n${selectedFolder}`, emails);
   const { selectedIds } = selection;
-  const bulk = useMailBulkActions({ emails, selectedEmail, selectedFolder, requestFlag, clearSelection: selection.clearSelection });
+  const bulk = useMailBulkActions({ emails, selectedEmail, selectedFolder, requestFlag, clearSelection: selection.clearSelection,
+    // The open message left this folder: close it, unless a reply is being written.
+    onMovedAway: ids => { if (selectedEmail && ids.includes(selectedEmail.id) && !compose.isReplying) closeReader(); } });
   useMailListShortcuts(selection, emails, bulk.trash);
 
+  // The list rows open the reader at once; a link without a row waits for the load.
+  const rows = useRef(emails);
+  rows.current = emails;
   const loadEmailForReader = React.useCallback((emailId: string) => {
     supersedeRefresh();
     return loadEmail(emailId, {
@@ -85,7 +90,7 @@ const MailPage = () => {
       reconcileEmail: captureMailFlagReconciler(queryClient),
       onMarkRead: (email) => requestFlag(email, 'read', true),
       onError: (message) => toast({ title: 'Failed to load email', description: message, variant: 'destructive' }),
-    });
+    }, rows.current.find(email => email.id === emailId));
   }, [loadEmail, supersedeRefresh, compose.openDraftForCompose, requestFlag, queryClient, toast]);
 
   // Open a message linked from a notification or search, then drop the parameter.
@@ -181,7 +186,7 @@ const MailPage = () => {
         </Button>
       )}
 
-      {isReaderLoading && <MailReaderLoading onCancel={closeReader} />}
+      {isReaderLoading && !selectedEmail && <MailReaderLoading onCancel={closeReader} />}
 
       {contextMenuEmail && (
         <MailContextMenu target={contextMenuEmail} onClose={() => setContextMenuEmail(null)} requestFlag={requestFlag}
@@ -191,7 +196,7 @@ const MailPage = () => {
       <MailAccountRemovalDialogs removal={accountRemoval} accounts={accounts} />
 
       {selectedEmail && (
-        <MailReader email={selectedEmail} accounts={accounts} location={`${accountLabel} / ${folderLabel}`}
+        <MailReader email={selectedEmail} loading={isReaderLoading} accounts={accounts} location={`${accountLabel} / ${folderLabel}`}
           backLabel={`Back to ${accountLabel}, ${folderLabel}`} isMobile={isMobile} isReplying={compose.isReplying}
           flagRequests={flagRequests} requestFlag={requestFlag} senderInContacts={senderAlreadyInContacts}
           onBack={() => {

@@ -7,7 +7,8 @@ import { Button } from '@/components/ui/button';
 import { EmptyState, LoadingState } from '@/components/ui/page-states';
 import { cn } from '@/lib/utils';
 import { Pagination, PaginationContent, PaginationItem } from '@/components/ui/pagination';
-import { ALL_ACCOUNTS, ALL_MAIL, flagPendingLabel, formatListDate, type MailFolderItem } from '@/components/mail/mail-page-model';
+import { MailPendingMark } from '@/components/mail/MailPendingMark';
+import { ALL_ACCOUNTS, ALL_MAIL, formatListDate, type MailFolderItem } from '@/components/mail/mail-page-model';
 
 interface ListProps {
   account: string | null;
@@ -87,9 +88,10 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
                       {email.from_name || email.from_address}
                     </span>
                     {unread && <span className="sr-only">(unread)</span>}
-                    {(email.read_sync_pending || email.star_sync_pending) && <span className="shrink-0 text-xs text-muted-foreground">{flagPendingLabel(email)}</span>}
-                    {(flagRequests.has(`read:${email.id}`) || flagRequests.has(`star:${email.id}`)) && <span className="shrink-0 text-xs text-muted-foreground">Saving change…</span>}
-                    <span className="ml-auto shrink-0 pl-2 text-xs tabular-nums text-muted-foreground">{formatListDate(email.received_at)}</span>
+                    <span className="ml-auto flex shrink-0 items-center gap-2 self-center pl-2">
+                      <MailPendingMark email={email} saving={flagRequests.has(`read:${email.id}`) || flagRequests.has(`star:${email.id}`)} />
+                      <span className="text-xs tabular-nums text-muted-foreground">{formatListDate(email.received_at)}</span>
+                    </span>
                   </span>
                   <span className="mt-0.5 flex min-w-0 items-center gap-2 pl-4">
                     <span className={cn('min-w-0 flex-1 truncate', unread ? 'text-foreground' : 'text-muted-foreground')}>{email.subject || '(No subject)'}</span>
@@ -238,7 +240,7 @@ export function MailContextMenu({ target, onClose, requestFlag, movableFolders, 
               key={`context-move-${folder.id}`}
               className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
               onClick={() => {
-                bulk.move([target.email.id], folder.id);
+                bulk.move([target.email.id], folder.id, undefined, folder.label);
                 onClose();
               }}
             >

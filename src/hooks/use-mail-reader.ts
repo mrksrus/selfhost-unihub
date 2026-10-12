@@ -18,6 +18,9 @@ interface ReaderActions {
  * requests started earlier, so a late response for an earlier selection or
  * account is dropped. The first scope (restoring the account on page load)
  * does not cancel a message opened from a link.
+ *
+ * A load started from a list row opens the reader at once with what the row
+ * already knows (sender, subject, flags) and marks it read; the body follows.
  */
 export function useMailReader(scope: string | null = null) {
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
@@ -50,10 +53,21 @@ export function useMailReader(scope: string | null = null) {
     setIsReaderLoading(false);
   }, [cancel]);
 
-  const loadEmail = useCallback(async (id: string, actions: ReaderActions) => {
+  const loadEmail = useCallback(async (id: string, actions: ReaderActions, preview?: Email | null) => {
     cancel();
+    const canMarkRead = !isOfflineMode() && isOnline();
     // Never display the previous message while a different selection loads.
-    setSelectedEmail(null);
+    // A list row's data (not a draft, which opens in compose) is shown at
+    // once without its truncated preview text; the body arrives below.
+    const known = preview && preview.id === id && !preview.is_draft && preview.folder !== 'drafts' ? preview : null;
+    setSelectedEmail(known ? { ...known, body_text: null, body_html: null, attachments: undefined } : null);
+    // Pending unread intent must not be undone by simply opening it.
+    const markRead = (email: Email) => !email.is_read && !email.read_sync_pending && canMarkRead;
+    let marked = false;
+    if (known && markRead(known)) {
+      actions.onMarkRead(known);
+      marked = true;
+    }
     const current = generation.current;
     const controller = new AbortController();
     pending.current = controller;
@@ -69,13 +83,12 @@ export function useMailReader(scope: string | null = null) {
         setSelectedEmail(null);
         actions.onDraft(email);
       } else {
-        const canMarkRead = !isOfflineMode() && isOnline();
         setSelectedEmail(email);
-        // Pending unread intent must not be undone by simply opening it.
-        if (!email.is_read && !email.read_sync_pending && canMarkRead) actions.onMarkRead(email);
+        if (!marked && markRead(email)) actions.onMarkRead(email);
       }
     } catch (error) {
       if (current !== generation.current || controller.signal.aborted) return;
+      setSelectedEmail(null);
       actions.onError(error instanceof Error ? error.message : 'Could not load email');
     } finally {
       if (current === generation.current) {

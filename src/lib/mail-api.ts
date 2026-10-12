@@ -289,6 +289,103 @@ export function showRequestedFlagInMailLists(client: QueryClient, ids: string[],
 export function showRequestedReadInMailLists(client: QueryClient, ids: string[], isRead: boolean) {
   showRequestedFlagInMailLists(client, ids, { is_read: isRead });
 }
+
+export interface MailUnreadCountChange { folder: string; accountId: string; delta: number }
+
+/** Moves cached unread counts with a requested change, so folder counts agree with the rows at once. */
+export function adjustMailUnreadCounts(client: QueryClient, changes: MailUnreadCountChange[]) {
+  for (const query of client.getQueryCache().findAll({ queryKey: ['mail-unread-counts'] })) {
+    const scope = query.queryKey[1];
+    client.setQueryData<MailUnreadCountsResponse>(query.queryKey, current => {
+      if (!current) return current;
+      const byFolder = { ...(current.unreadByFolder ?? {}) };
+      const byAccount = current.unreadByFolderAccount ? { ...current.unreadByFolderAccount } : undefined;
+      for (const change of changes) {
+        if (scope !== 'all' && scope !== change.accountId) continue;
+        byFolder[change.folder] = Math.max(0, (byFolder[change.folder] ?? 0) + change.delta);
+        if (byAccount) {
+          const row = { ...(byAccount[change.folder] ?? {}) };
+          row[change.accountId] = Math.max(0, (row[change.accountId] ?? 0) + change.delta);
+          byAccount[change.folder] = row;
+        }
+      }
+      return { ...current, unreadByFolder: byFolder, ...(byAccount ? { unreadByFolderAccount: byAccount } : {}) };
+    });
+  }
+}
+
+export type MovedEmail = Pick<Email, 'id' | 'folder' | 'is_read' | 'mail_account_id'>;
+
+/**
+ * Shows a requested move (or trash) in every cached list and count before the
+ * server answers: rows leave the lists of other folders, stay with the new
+ * folder in All mail and Starred, and unread counts follow. Returns the undo
+ * for a rejected request; flag edits made in between are kept.
+ */
+export function showRequestedMoveInMailCaches(client: QueryClient, moved: MovedEmail[], target: string) {
+  const ids = new Set(moved.map(email => email.id));
+  const reconcile = captureMailFlagReconciler(client);
+  const previous: [readonly unknown[], MailListResponse][] = [];
+  for (const query of client.getQueryCache().findAll({ queryKey: mailQueryKeys.all })) {
+    const current = query.state.data as MailListResponse | undefined;
+    if (!Array.isArray(current?.emails) || !current.emails.some(email => ids.has(email.id))) continue;
+    const folder = query.queryKey[2];
+    if (folder === target) continue;
+    previous.push([query.queryKey, current]);
+    const keepRows = folder === 'all' || folder === 'starred';
+    const emails = keepRows ? current.emails.map(email => ids.has(email.id) ? { ...email, folder: target } : email)
+      : current.emails.filter(email => !ids.has(email.id));
+    const removed = current.emails.length - emails.length;
+    client.setQueryData<MailListResponse>(query.queryKey, {
+      ...current, emails,
+      ...(current.pagination && removed ? { pagination: { ...current.pagination, total: Math.max(0, current.pagination.total - removed) } } : {}),
+    });
+  }
+  const counts = moved.filter(email => !email.is_read && email.folder !== target).flatMap(email => [
+    { folder: email.folder, accountId: email.mail_account_id, delta: -1 },
+    { folder: target, accountId: email.mail_account_id, delta: 1 },
+  ]);
+  adjustMailUnreadCounts(client, counts);
+  return () => {
+    for (const [key, data] of previous) client.setQueryData<MailListResponse>(key, { ...data, emails: data.emails.map(reconcile) });
+    adjustMailUnreadCounts(client, counts.map(change => ({ ...change, delta: -change.delta })));
+  };
+}
+
+/** After a move or trash was accepted or rejected: the lists, folder counts and the server-change list. */
+export function invalidateMailMoveViews(client: QueryClient) {
+  return client.invalidateQueries({ predicate: query => ['emails', 'mail-folders', 'mail-unread-counts', 'mail-writebacks', 'dashboard-unread-mail'].includes(String(query.queryKey[0])) });
+}
+
+/** How long accepted flag changes are collected before one refresh of the affected views. */
+export const MAIL_FLAG_REFRESH_MS = 400;
+const flagRefreshes = new WeakMap<QueryClient, { timer?: ReturnType<typeof setTimeout>; read: boolean; star: boolean }>();
+
+/**
+ * Refreshes the views an accepted read/star change can still differ in, once
+ * for a whole burst of changes (a bulk mark read is one refresh, not one per
+ * message). Cached rows already show the accepted value; only lists filtered
+ * by the changed flag (Starred, unread only) drop rows, counts are confirmed
+ * and the server-change list picks up the queued provider change.
+ */
+export function scheduleMailFlagRefresh(client: QueryClient, kind: MailFlagKind) {
+  let state = flagRefreshes.get(client);
+  if (!state) {
+    state = { read: false, star: false };
+    flagRefreshes.set(client, state);
+  }
+  state[kind] = true;
+  if (state.timer) return;
+  state.timer = setTimeout(() => {
+    const { read, star } = state;
+    state.timer = undefined;
+    state.read = state.star = false;
+    void client.invalidateQueries({ predicate: query => query.queryKey[0] === 'emails' &&
+      ((star && query.queryKey[2] === 'starred') || (read && query.queryKey[5] === true)) });
+    if (read) void client.invalidateQueries({ queryKey: ['mail-unread-counts'] });
+    void client.invalidateQueries({ queryKey: mailQueryKeys.writebacks });
+  }, MAIL_FLAG_REFRESH_MS);
+}
 export async function fetchMailList(filters: MailListFilters, signal?: AbortSignal): Promise<MailListResponse> {
   const params = new URLSearchParams({ limit: '50', offset: String((filters.page - 1) * 50) });
   if (filters.account && filters.account !== 'all') params.set('account_id', filters.account);

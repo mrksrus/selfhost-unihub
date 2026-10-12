@@ -234,7 +234,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     }
   });
 
-  it('routes bulk flags through field lanes while a failed move leaves the reader unchanged', async () => {
+  it('routes bulk flags through field lanes and brings a rejected trash back to the list', async () => {
     vi.mocked(api.post).mockResolvedValue({ error: 'Account busy; move not accepted' });
     vi.mocked(api.put).mockImplementation(async (path) => {
       if (path.endsWith('/star')) stored[0] = { ...stored[0], is_starred: true, star_sync_pending: true };
@@ -246,12 +246,14 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
     fireEvent.click(screen.getByRole('button', { name: 'Star selected' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/emails/a/star', { is_starred: true }, expect.objectContaining({ headers: { 'Idempotency-Key': expect.any(String) } })));
-    await waitFor(() => expect(screen.getAllByText('Star change awaiting provider')).toHaveLength(2));
+    await waitFor(() => expect(screen.getAllByText('Star change waiting for the server')).toHaveLength(2));
     fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
     fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
+    // The open message leaves the folder at once; the rejection restores the row, not the reader.
+    expect(screen.queryByText(bodyText('a'))).not.toBeInTheDocument();
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Trash request rejected', description: 'Account busy; move not accepted' })));
-    expect(screen.getByText(bodyText('a'))).toBeInTheDocument();
     expect(row('a')).toBeInTheDocument();
+    expect(cached('a')).toMatchObject({ is_starred: true, folder: 'inbox' });
   });
   it('keeps another field interactive during slow bulk read acceptance', async () => {
     const slowRead = deferred<{ error: string }>();
@@ -350,7 +352,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unstar message' })).toBeEnabled());
     expect(screen.getByRole('button', { name: 'Unstar Subject a' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Star Subject b' })).toBeEnabled();
-    expect(screen.getAllByText('Saving change…')).toHaveLength(2);
+    expect(screen.getAllByText('Saving…')).toHaveLength(2);
     expect(cached('a', searchKey)?.is_starred).toBe(true);
 
     await act(async () => { await client.invalidateQueries({ queryKey: mailQueryKeys.all }); });
@@ -361,14 +363,14 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     operations = [outcome('pending')];
     await act(async () => { write.resolve({ data: { sync_pending: true } }); });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unstar message' })).toBeEnabled());
-    expect(screen.queryByText('Saving change…')).not.toBeInTheDocument();
-    expect(screen.getAllByText('Star change awaiting provider')).toHaveLength(2);
+    expect(screen.queryByText('Saving…')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Star change waiting for the server')).toHaveLength(2);
     await screen.findByRole('button', { name: 'Sync mail — 1 change waiting — open sync details' });
 
     stored[0].star_sync_pending = false;
     operations = [outcome('done')];
     await poll();
-    await waitFor(() => expect(screen.queryByText('Star change awaiting provider')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('Star change waiting for the server')).not.toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Unstar message' })).toBeEnabled();
     expect(api.put).toHaveBeenCalledTimes(1);
     expect(row('a')).toBe(originalRow);
@@ -392,7 +394,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     await waitFor(() => expect(screen.getByRole('button', { name: 'Mark unread' })).toBeEnabled());
     fireEvent.click(within(row('a')).getByText('Subject a'));
     await screen.findByText(bodyText('a'));
-    expect(screen.getAllByText('Read change awaiting provider')).toHaveLength(2);
+    expect(screen.getAllByText('Read change waiting for the server')).toHaveLength(2);
     expect(api.put).toHaveBeenCalledTimes(1);
   });
 
@@ -456,7 +458,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     await waitFor(() => expect(screen.getByRole('button', { name: 'Unstar message' })).toBeEnabled());
     await act(async () => { detail.resolve({ data: { email: oldEmail } }); });
     expect(screen.getByRole('button', { name: 'Unstar message' })).toBeEnabled();
-    expect(screen.getAllByText('Star change awaiting provider')).toHaveLength(2);
+    expect(screen.getAllByText('Star change waiting for the server')).toHaveLength(2);
   });
 
   it('does not overwrite an accepted star when a reader load that began before the edit finally arrives', async () => {
@@ -483,7 +485,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     fireEvent.click(await screen.findByText('Subject a'));
     await screen.findByText(bodyText('a'));
     expect(screen.getByRole('button', { name: 'Mark read' })).toBeEnabled();
-    expect(screen.getAllByText('Read change awaiting provider')).toHaveLength(2);
+    expect(screen.getAllByText('Read change waiting for the server')).toHaveLength(2);
     expect(api.put).not.toHaveBeenCalled();
   });
 
@@ -504,6 +506,6 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     await waitFor(() => expect(screen.queryByRole('button', { name: /^(Unstar|Star) Subject a$/ })).not.toBeInTheDocument());
     expect(screen.getByText(bodyText('a'))).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Star message' })).toBeEnabled();
-    expect(screen.getByText('Star change awaiting provider')).toBeInTheDocument();
+    expect(screen.getByText('Star change waiting for the server')).toBeInTheDocument();
   });
 });
