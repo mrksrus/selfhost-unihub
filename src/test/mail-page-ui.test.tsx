@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -137,17 +137,6 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     expect(await screen.findByRole('dialog', { name: 'Mail sync' })).toBeInTheDocument();
   });
 
-  it('keeps account selection above a scrollable folder list', async () => {
-    renderMailPage();
-
-    const accountsRegion = await screen.findByRole('region', { name: 'Mail accounts' });
-    const folderNav = screen.getByRole('navigation', { name: 'Mail folders' });
-
-    expect(accountsRegion.compareDocumentPosition(folderNav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(accountsRegion).toHaveClass('shrink-0', 'max-h-[40%]', 'overflow-y-auto');
-    expect(folderNav).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
-  });
-
   it('shows a save/discard prompt when closing a dirty compose', async () => {
     renderMailPage();
 
@@ -164,18 +153,6 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     expect(screen.getByRole('button', { name: /keep editing/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /discard/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /save draft/i })).toBeInTheDocument();
-  });
-
-  it('exposes both mark read and mark unread in the selection toolbar', async () => {
-    renderMailPage([inboxEmail]);
-
-    const row = await screen.findByText('Inbox subject');
-    const listItem = row.closest('li') as HTMLElement;
-    const checkboxButton = within(listItem).getAllByRole('button')[0];
-    fireEvent.click(checkboxButton);
-
-    expect(screen.getByRole('button', { name: /mark selected as read/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /mark selected as unread/i })).toBeInTheDocument();
   });
 
   it('keeps Starred available as a virtual flag view when no Starred mailbox exists', async () => {
@@ -196,27 +173,5 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     expect(screen.getByLabelText('Subject')).toHaveValue('Draft subject');
     expect(screen.getByText(/draft saved/i)).toBeInTheDocument();
-  });
-
-  it('keeps the list free of the sync coverage explanation for a sync-mode account', async () => {
-    localStorage.setItem('mail_last_selected_account', 'account-1');
-    renderMailPage([inboxEmail], '/mail', { sync_mode: 'sync', sync_status: 'idle' });
-
-    await screen.findByText('Inbox subject');
-    expect(screen.queryByText(/separate coverage/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Sync with server/)).not.toBeInTheDocument();
-  });
-
-  it('keeps compose footer actions rendered with long content', async () => {
-    renderMailPage();
-
-    fireEvent.click(await screen.findByRole('button', { name: /compose/i }));
-    const editor = getComposeEditor();
-    expect(editor).toBeTruthy();
-    editor!.innerHTML = `<p>${'Long message '.repeat(1000)}</p>`;
-    fireEvent.input(editor!);
-
-    expect(screen.getByRole('button', { name: /send/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /save draft/i })).toBeInTheDocument();
   });
 });

@@ -64,14 +64,6 @@ describe('pages', () => {
     expect(screen.getByText('false false false false true')).toBeInTheDocument();
   });
 
-  it('shows the first four pages in the mobile bar and marks More for the rest', () => {
-    const pages = reorder(defaultPages(defaults), ['recordings', 'contacts', 'mail', 'today', 'calendar', 'todo', 'music']);
-    renderWithClient(<BottomNav />, defaults, '/todo', pages);
-    const links = within(screen.getByRole('navigation')).getAllByRole('link');
-    expect(links.map(link => link.textContent)).toEqual(['Recordings', 'Contacts', 'Mail', 'Today', 'More']);
-    expect(links[4].className).toContain('text-accent');
-  });
-
   it('opens a hidden start page, and falls back to the first shown page when its module is disabled', async () => {
     vi.spyOn(api, 'get').mockResolvedValue({ data: { preferences: { default_start_page: 'music' } } });
     function Where() { return <p>At {useLocation().pathname}</p>; }

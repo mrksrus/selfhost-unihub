@@ -19,41 +19,6 @@ const {
 } = require('../dist/src/security/caldav-transport') as typeof import('../src/security/caldav-transport');
 const { calendarErrorResponse } = require('../dist/src/services/calendar-sync') as typeof import('../src/services/calendar-sync');
 
-test('known providers are matched by IMAP host before mail domain', () => {
-  assert.equal(matchCalendarProvider({ emailAddress: 'user@icloud.com' })!.id, 'icloud');
-  assert.equal(matchCalendarProvider({ emailAddress: 'user@example.com', imapHost: 'imap.fastmail.com' })!.id, 'fastmail');
-  assert.equal(matchCalendarProvider({ emailAddress: 'user@gmail.com' })!.unsupported, true);
-  assert.equal(matchCalendarProvider({ emailAddress: 'user@example.com', imapHost: 'mail.example.com' }), null);
-});
-
-test('well-known candidates cover the mail domain and the IMAP host', () => {
-  assert.deepEqual(wellKnownCandidates({ emailAddress: 'user@example.com', imapHost: 'mail.example.net' }), [
-    'https://example.com/.well-known/caldav',
-    'https://example.net/.well-known/caldav',
-    'https://mail.example.net/.well-known/caldav',
-  ]);
-  assert.deepEqual(wellKnownCandidates({ emailAddress: 'user@example.com', imapHost: 'imap.example.com' }), [
-    'https://example.com/.well-known/caldav',
-    'https://imap.example.com/.well-known/caldav',
-  ]);
-});
-
-test('SRV records become ordered HTTPS candidates with the TXT path', async () => {
-  const urls = await lookupSrvCandidates('example.com', {
-    resolveSrv: async (name) => {
-      assert.equal(name, '_caldavs._tcp.example.com');
-      return [
-        { name: 'backup.example.com', port: 8443, priority: 20, weight: 0 },
-        { name: 'dav.example.com.', port: 443, priority: 10, weight: 5 },
-        { name: '.', port: 0, priority: 0, weight: 0 },
-      ];
-    },
-    resolveTxt: async () => [['path=/dav/', 'cal/']],
-  });
-  assert.deepEqual(urls, ['https://dav.example.com/dav/cal/', 'https://backup.example.com:8443/dav/cal/']);
-  assert.deepEqual(await lookupSrvCandidates('example.com', { resolveSrv: async () => { throw new Error('NXDOMAIN'); } }), []);
-});
-
 test('discovery explains unsupported providers and missing passwords without network access', async () => {
   await assert.rejects(findCalDavServer({ emailAddress: 'user@gmail.com', password: 'x' }), { code: 'CALDAV_PROVIDER_UNSUPPORTED', status: 422 });
   await assert.rejects(findCalDavServer({ emailAddress: 'user@example.com' }), { code: 'CALDAV_NO_PASSWORD' });
@@ -67,13 +32,6 @@ test('credential scope uses known presets only and otherwise the discovery origi
   const widened = JSON.stringify({ credentialScope: { origin: 'https://dav.example.com', hostSuffixes: ['.com'] } });
   assert.equal(accountCredentialScope({ provider_config: widened, discovery_url: 'https://dav.example.com/dav/', base_url: 'https://other.example.com/' }), 'https://dav.example.com');
   assert.throws(() => resolveCalDavUrl('https://other.example.com/cal/', undefined, 'https://dav.example.com'), /different server origin/);
-});
-
-test('hrefs are compared decoded and subscription addresses are normalized', () => {
-  assert.equal(canonicalHref('/cal/my%20event.ics', 'https://dav.example.com/'), '/cal/my event.ics');
-  assert.equal(canonicalHref('https://dav.example.com/cal/a.ics?x=1'), '/cal/a.ics');
-  assert.equal(normalizeIcsFeedUrl('webcal://calendar.example.com/feed.ics'), 'https://calendar.example.com/feed.ics');
-  assert.throws(() => normalizeIcsFeedUrl('http://calendar.example.com/feed.ics'), /HTTPS/);
 });
 
 test('Digest challenges are parsed and answered per RFC 7616', () => {

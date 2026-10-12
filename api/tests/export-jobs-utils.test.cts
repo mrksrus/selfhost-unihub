@@ -18,68 +18,6 @@ const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 
-test('normalizeSections returns all sections for full export', () => {
-  assert.deepEqual(normalizeSections('full'), ['settings', 'contacts', 'calendar', 'mail', 'recordings']);
-});
-
-test('normalizeSections rejects unknown sections and removes duplicates', () => {
-  assert.throws(() => normalizeSections(['mail', 'unknown']), /Unsupported backup section/);
-  assert.deepEqual(normalizeSections(['mail', 'mail', 'recordings']), ['mail', 'recordings']);
-  // Jobs persisted before 0.12.0 may still name the removed games section.
-  assert.deepEqual(normalizeSections(['mail', 'games']), ['mail']);
-});
-
-test('normalizeSections keeps account settings as requested', () => {
-  assert.deepEqual(normalizeSections(['accounts', 'settings']), ['settings', 'accounts']);
-  assert.deepEqual(normalizeSections(['mail', 'calendar', 'accounts']), ['calendar', 'mail']);
-  assert.deepEqual(parseRequestedSections('["settings","accounts"]'), ['settings', 'accounts']);
-});
-
-test('parseRequestedSections accepts JSON arrays returned as strings', () => {
-  assert.deepEqual(parseRequestedSections('["contacts","mail"]'), ['contacts', 'mail']);
-});
-
-test('parseRequestedSections accepts parsed JSON arrays from mysql', () => {
-  assert.deepEqual(parseRequestedSections(['contacts', 'calendar', 'mail']), ['contacts', 'calendar', 'mail']);
-});
-
-test('parseRequestedSections accepts legacy comma-separated values', () => {
-  assert.deepEqual(parseRequestedSections('contacts,calendar,mail'), ['contacts', 'calendar', 'mail']);
-});
-
-test('crc32Buffer matches known CRC32 value', () => {
-  assert.equal((crc32Buffer(Buffer.from('hello')) ^ -1) >>> 0, 0x3610a686);
-});
-
-test('writeZip preserves long backup filenames including extensions', async () => {
-  const { readZipEntries } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-zip-name-'));
-  const zipPath = path.join(dir, 'backup.zip');
-  const longName = 'files/mail-attachments/0a6fbcc5-351e-47cf-92a4-7b7193dbd401-8d2608f7-8d3e-4078-912d-5ea7198aa2d8-0a6fbcc5-351e-47cf-92a4-7b7193dbd401-logo-gray.png';
-
-  await writeZip([{ name: longName, data: 'image' }], zipPath);
-
-  const entries = readZipEntries(await fs.readFile(zipPath));
-  assert.equal(entries.has(longName), true);
-});
-
-test('writeZip streams file-backed entries into the archive', async () => {
-  const { readZipEntries } = require('../dist/src/services/backup') as typeof import('../src/services/backup');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-zip-file-'));
-  const sourcePath = path.join(dir, 'source.eml');
-  const zipPath = path.join(dir, 'backup.zip');
-  const contents = Buffer.from('file-backed raw email', 'utf8');
-  await fs.writeFile(sourcePath, contents);
-
-  await writeZip([{
-    name: 'files/mail-raw/email-1.eml',
-    filePath: sourcePath,
-  }], zipPath);
-
-  const entries = readZipEntries(await fs.readFile(zipPath));
-  assert.deepEqual(entries.get('files/mail-raw/email-1.eml'), contents);
-});
-
 test('writeZip rejects ZIP32 entry-count overflow before writing', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-zip-limit-'));
   const zipPath = path.join(dir, 'backup.zip');

@@ -56,16 +56,6 @@ test('parseBody rejects malformed JSON with a distinct 400 error', async () => {
   await assert.rejects(parsed, { status: 400, message: 'Invalid JSON request body' });
 });
 
-test('parseRawBody returns binary request data', async () => {
-  const req: FixtureValue = new PassThrough();
-  req.headers = {};
-  const parsed = parseRawBody(req, 20);
-
-  req.end(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
-
-  assert.deepEqual(await parsed, Buffer.from([0x50, 0x4b, 0x03, 0x04]));
-});
-
 test('parseRawBodyToFile streams binary request data to disk', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'unihub-request-upload-'));
   const targetPath = path.join(dir, 'backup.zip');

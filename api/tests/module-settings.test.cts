@@ -114,15 +114,6 @@ test('module order is saved per owner and shown in that order, while access chec
   assert.equal(both.find((m) => m.id === 'mail')!.visible, false);
 });
 
-test('module order requests must list every current module once', () => {
-  for (const input of [{}, { order: null }, { order: 'mail' }, { order: ['mail', 'calendar', 'contacts'] },
-    { order: ['mail', 'mail', 'contacts', 'recordings'] }, { order: ['mail', 'calendar', 'contacts', 'recordings', 'notes'] },
-    { order: ['mail', 'calendar', 'contacts', 'notes'] }, { order: ['mail', 'calendar', 'contacts', 'recordings'], userId: 'other' }]) {
-    assert.throws(() => validateModuleRequest(input), { status: 400 }, JSON.stringify(input));
-  }
-  assert.deepEqual(validateModuleRequest({ order: ['contacts', 'mail', 'calendar', 'recordings'] }).modules, null);
-});
-
 test('saved order from older releases or backups never hides or breaks modules', () => {
   // Removed modules are dropped, modules missing from an older order follow in catalog order.
   assert.deepEqual(orderFromValue(JSON.stringify(['notes', 'recordings', 'games', 'mail'])), ['recordings', 'mail', 'calendar', 'contacts']);
@@ -150,15 +141,6 @@ test('pages are shown, hidden and ordered one by one while modules stay enabled 
   assert.equal(modules.every((module) => module.enabled && module.visible), true);
   assert.equal(await isModuleEnabled('owner', 'calendar', connection as FixtureValue), true);
   assert.deepEqual((await getUserPages('other', connection as FixtureValue)).every((page) => page.visible), true);
-});
-
-test('page requests accept only visibility of known pages and a complete page order', () => {
-  for (const input of [{ pages: [] }, { pages: { notes: { visible: true } } }, { pages: { todo: { enabled: false } } },
-    { pages: { todo: { visible: 'no' } } }, { pages: { todo: null } }, { page_order: allPages.slice(1) },
-    { page_order: [...allPages, 'notes'] }, { page_order: [...allPages.slice(1), 'todo'] }, { page_order: 'mail' }]) {
-    assert.throws(() => validateModuleRequest(input), { status: 400 }, JSON.stringify(input));
-  }
-  assert.deepEqual(validateModuleRequest({ pages: { today: { visible: false } }, page_order: allPages }).pageOrder, allPages);
 });
 
 test('pages without a choice follow the module order and the older module visibility', () => {

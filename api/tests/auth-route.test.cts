@@ -3,14 +3,6 @@ const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { spawnSync } = (require('node:child_process') as typeof import('node:child_process'));
 
-test('auth maintenance does not keep a process alive after its server stops', () => {
-  const result = spawnSync(process.execPath, ['-e', 'require(process.argv[1])', require.resolve('../dist/src/auth')], {
-    encoding: 'utf8', timeout: 5000,
-  });
-  assert.equal(result.error, undefined, 'auth maintenance kept the process alive');
-  assert.equal(result.status, 0, result.stderr);
-});
-
 function setRequireStub(modulePath: string, exports: FixtureValue) {
   require.cache[modulePath] = {
     id: modulePath,

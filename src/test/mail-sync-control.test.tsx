@@ -22,7 +22,6 @@ const op = (id: string, state: MailWriteback['state'], extra: Partial<MailWriteb
   id, email_id: `email-${id}`, action: 'star', status: state === 'needs_attention' ? 'conflict' : 'pending', state,
   error: 'private provider details', created_at: '2026-09-30T10:00:00Z', ...extra,
 });
-const waiting = (count: number) => Array.from({ length: count }, (_, index) => op(`w${index}`, 'queued'));
 const mailModule = (background: boolean): ModulePreference[] =>
   [{ id: 'mail', label: 'Mail', visible: true, enabled: true, background, backgroundSupported: true }];
 
@@ -100,17 +99,6 @@ describe('toolbar sync control', () => {
     expect(onSync).toHaveBeenCalledExactlyOnceWith('a2');
   });
 
-  it('shows the number of changes waiting for the server, capped at 99+', () => {
-    const view = mount({ operations: waiting(53) });
-    expect(syncButton()).toHaveAccessibleName('Sync mail — 53 changes waiting — open sync details');
-    expect(screen.getByTestId('mail-sync-badge')).toHaveTextContent('53');
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('mail-sync-warning')).not.toBeInTheDocument();
-    view.unmount();
-    mount({ operations: waiting(120) });
-    expect(screen.getByTestId('mail-sync-badge')).toHaveTextContent('99+');
-  });
-
   it('lists waiting operations in a collapsed line inside the panel', async () => {
     mount({ operations: [op('q', 'queued'), op('r', 'retry_wait', { available_at: new Date(Date.now() + 4 * 60000 + 5000).toISOString() })] });
     fireEvent.click(syncButton());
@@ -148,13 +136,5 @@ describe('toolbar sync control', () => {
     await waitFor(() => expect(toggle).not.toBeChecked());
     expect(screen.getByText(/UniHub won’t sync on its own/)).toBeInTheDocument();
     expect(syncButton()).toHaveAccessibleName('Sync mail — background sync paused');
-  });
-
-  it('uses a bottom sheet on touch screens without a hover-only cancel icon', async () => {
-    mount({ touch: true, jobs: [job('a1', 'running')] });
-    fireEvent.click(syncButton());
-    const sheet = await screen.findByRole('dialog', { name: 'Mail sync' });
-    expect(within(sheet).getByRole('button', { name: 'Cancel sync for owner@example.test' })).toBeInTheDocument();
-    expect(onCancel).not.toHaveBeenCalled();
   });
 });

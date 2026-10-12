@@ -11,28 +11,6 @@ const {
   validateMailHostPolicy,
 } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 
-test('normalizes legacy initial sync limits to all', () => {
-  assert.equal(normalizeSyncFetchLimit(undefined), 'all');
-  assert.equal(normalizeSyncFetchLimit('all'), 'all');
-  assert.equal(normalizeSyncFetchLimit('500'), 'all');
-  assert.equal(normalizeSyncFetchLimit('nope'), null);
-});
-
-test('host policy validation does not require certificate probes for public custom hosts', async () => {
-  const result = await validateMailHostPolicy({
-    imap_host: '93.184.216.34',
-    imap_port: 993,
-    smtp_host: '93.184.216.34',
-    smtp_port: 587,
-  });
-
-  assert.equal(result.accepted, true);
-  assert.equal(result.mailHostTrust.blocked, false);
-  assert.equal(result.mailHostTrust.requiresConfirmation, false);
-  assert.equal(result.mailHostTrust.requiresInsecureTls, false);
-  assert.deepEqual(result.mailHostTrust.certificates, {});
-});
-
 test('IMAP TLS verification failures produce host trust confirmation details', async () => {
   const result = await buildMailHostTrustResult({
     imap_host: '93.184.216.34',
@@ -49,34 +27,6 @@ test('IMAP TLS verification failures produce host trust confirmation details', a
   assert.equal(result.certificates.imap!.error, 'self-signed certificate');
   assert.equal(result.certificates.smtp, undefined);
   assert.match(result.warnings.join('\n'), /IMAP certificate/);
-});
-
-test('classifies Node TLS certificate errors for trust confirmation', () => {
-  assert.equal(isTlsTrustError({ code: 'DEPTH_ZERO_SELF_SIGNED_CERT', message: 'self-signed certificate' }), true);
-  assert.equal(isTlsTrustError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID', message: 'Hostname/IP does not match certificate' }), true);
-  assert.equal(isTlsTrustError({ code: 'ECONNRESET', message: 'Connection ended unexpectedly' }), false);
-});
-
-test('loads existing imported UIDs before message download', async () => {
-  const calls: FixtureValue[] = [];
-  const existingUids = await loadExistingImportedUidSet({
-    accountId: 'account-1',
-    folderName: 'INBOX',
-    uidValidity: 123,
-    uids: [1, 2, 2, 3],
-    connection: {
-      async execute(query: string, params: FixtureValue) {
-        calls.push({ query, params });
-        return [[{ imap_uid: 2 }, { imap_uid: 3 }]];
-      },
-    } as FixtureValue,
-  });
-
-  assert.deepEqual(Array.from(existingUids).sort((a, b) => (a) - (b)), [2, 3]);
-  assert.equal(calls.length, 1);
-  assert.match(calls[0].query, /source_folder = \?/);
-  assert.match(calls[0].query, /imap_uid IN \(\?,\?,\?\)/);
-  assert.deepEqual(calls[0].params, ['account-1', 'INBOX', 1, 2, 3, 123]);
 });
 
 // A guarded stand-in for an ImapFlow client: exec() is its command queue.

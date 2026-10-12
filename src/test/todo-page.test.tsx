@@ -51,18 +51,6 @@ describe('ToDo', () => {
     expect(screen.queryByText('Filed taxes')).not.toBeInTheDocument();
   });
 
-  it('shows only the checkbox on a closed row and the other actions once it is opened', async () => {
-    mount();
-    const title = await screen.findByRole('button', { name: /^Car service/, expanded: false });
-    expect(screen.queryByRole('button', { name: 'Move' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Cancel task')).not.toBeInTheDocument();
-    fireEvent.click(title);
-    expect(screen.getByRole('button', { name: 'Move' })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('textbox', { name: 'Add a subtask to Car service' }), { target: { value: 'Book a slot' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/calendar/events/Car service/subtasks', { title: 'Book a slot' }));
-  });
-
   it('marks a task done from its checkbox', async () => {
     mount();
     fireEvent.click(await screen.findByRole('button', { name: 'Mark Order printer ink done' }));

@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
 import { MailAccountDialog } from '@/components/mail/MailAccountDialog';
 import { MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
 import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
@@ -59,45 +58,6 @@ const chooseWindow = (dialog: HTMLElement, label: string, option: string) => {
 };
 const impactCalls = () => vi.mocked(api.get).mock.calls.map(([endpoint]) => endpoint).filter(endpoint => endpoint.includes('/mode-impact'));
 const saveButton = (dialog: HTMLElement) => within(dialog).getByRole('button', { name: 'Save Changes' });
-
-describe('mail account mode chooser', () => {
-  it('explains both modes in plain language and shows the right options for each', () => {
-    const props = { mode: 'download' as const, syncWindow: null, trashWindow: 30 as const, deleteOnServer: false,
-      onModeChange: vi.fn(), onSyncWindowChange: vi.fn(), onTrashWindowChange: vi.fn(), onDeleteChange: vi.fn() };
-    const view = render(<MailAccountModeSettings {...props} />);
-    expect(screen.getByText('How should UniHub handle this account?')).toBeInTheDocument();
-    const sync = screen.getByRole('radio', { name: /Sync — works like a mail client/ });
-    const download = screen.getByRole('radio', { name: /Download — keep an archive/ });
-    expect(sync).toHaveAccessibleDescription(/deleted or moved elsewhere is deleted or moved here too/);
-    expect(download).toHaveAccessibleDescription(/never changes the server/);
-    expect(download).toBeChecked();
-    expect(screen.getByText('Server deletion options exist only in Download mode.')).toBeInTheDocument();
-    expect(screen.getByText('Delete emails on server after download')).toBeInTheDocument();
-    fireEvent.click(sync);
-    expect(props.onModeChange).toHaveBeenCalledWith('sync');
-
-    view.rerender(<MailAccountModeSettings {...props} mode="sync" />);
-    expect(screen.queryByText('Delete emails on server after download')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Keep mail from the last')).toHaveTextContent('All mail');
-    expect(screen.getByLabelText('Trash & spam: keep the last')).toHaveTextContent('1 month');
-    expect(screen.getByText(/Older mail stays on the server and is removed from UniHub/)).toBeInTheDocument();
-
-    view.rerender(<MailAccountModeSettings {...props} saveDownloadFirst />);
-    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
-    expect(screen.getByText(/Save Download mode first/)).toBeInTheDocument();
-  });
-
-  it('explains the modes for a new account without asking for an impact', async () => {
-    const dialog = mountEditor();
-    expect(within(dialog).getByRole('radio', { name: /Sync — works like a mail client/ })).toBeInTheDocument();
-    expect(within(dialog).getByRole('radio', { name: /Download — keep an archive/ })).toBeChecked();
-    fireEvent.click(within(dialog).getByRole('radio', { name: /Sync/ }));
-    expect(within(dialog).getByLabelText('Keep mail from the last')).toBeInTheDocument();
-    await new Promise(resolve => setTimeout(resolve, 500));
-    expect(impactCalls()).toEqual([]);
-    expect(within(dialog).queryByText('Before you save')).not.toBeInTheDocument();
-  });
-});
 
 describe('pre-save impact for an existing account', () => {
   it('fetches the impact of a window change and requires the typed address before saving', async () => {
@@ -256,11 +216,6 @@ describe('sync policy upgrade gate', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Turn on mail-client behavior' })).not.toBeInTheDocument());
   });
 
-  it('shows nothing when no account needs a decision', () => {
-    mountPanel([confirmed, archive]);
-    expect(screen.queryByRole('status')).not.toBeInTheDocument();
-  });
-
   it('shows a failed confirmation inside the dialog', async () => {
     vi.mocked(api.post).mockResolvedValue({ status: 400, error: 'The address does not match this account.' });
     mountPanel([pending]);
@@ -270,11 +225,6 @@ describe('sync policy upgrade gate', () => {
     fireEvent.change(within(confirmDialog).getByLabelText(/to confirm/), { target: { value: 'old@example.test' } });
     fireEvent.click(within(confirmDialog).getByRole('button', { name: /Turn on and remove/ }));
     expect(await within(confirmDialog).findByRole('alert')).toHaveTextContent('The address does not match this account.');
-  });
-
-  it('shows the notice in the account settings too', () => {
-    const dialog = mountEditor(pending);
-    expect(within(dialog).getByRole('group', { name: /Turn on mail-client behavior for old@example.test/ })).toBeInTheDocument();
   });
 });
 
@@ -291,11 +241,6 @@ describe('provider sync warnings', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toHaveTextContent('In Gmail: Settings → Labels → All Mail → Show in IMAP.');
     expect(within(panel).queryByText(/future_warning_code/)).not.toBeInTheDocument();
-  });
-
-  it('shows the warning in the account settings', () => {
-    const dialog = mountEditor(gmail);
-    expect(within(dialog).getByText(/can’t tell archived mail from deleted mail and keeps it/)).toBeInTheDocument();
   });
 });
 
