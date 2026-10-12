@@ -134,6 +134,7 @@ test('retry/cancel flags match what the endpoints accept for every stuck state',
       if (text.includes('SELECT id,email_id,action')) return [[op]];
       if (text.includes('FROM mail_writebacks WHERE id')) return [[args[0] === 'op' && args[1] === 'owner' ? op : null].filter(Boolean)];
       if (text.includes('FROM emails')) return [[{ remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9 }]];
+      if (text.includes('FROM mail_remote_occurrences')) return [[{ id: 'occurrence' }]];
       if (text.startsWith("UPDATE mail_writebacks SET state='cancelled'")) {
         // Evaluate the endpoint's own WHERE parameters against the synthetic row.
         const states = args.slice(2);

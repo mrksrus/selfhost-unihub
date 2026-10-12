@@ -186,6 +186,17 @@ async function settleMoveEvidence({ operationId, userId, accountId, attemptId = 
     }
     if (op.source_occurrence_id && op.source_occurrence_id !== found.id) await cx.execute(`UPDATE mail_remote_occurrences SET presence='absent',absent_at=UTC_TIMESTAMP()
       WHERE id=? AND user_id=? AND mail_account_id=? AND email_id=?`, [op.source_occurrence_id, userId, accountId, op.email_id]);
+    // Gmail lists a message in Trash or Spam in no other folder (not in All
+    // Mail or any label). Drop its other copies now; waiting for the slow
+    // sweeps of those folders made it reappear there for hours.
+    const toTrash = ['trash', 'junk'].includes(String(mailbox.special_use || '').toLowerCase())
+      || /^\[(Gmail|Google Mail)\]\/(Trash|Spam)$/.test(mailbox.remote_name);
+    if (toTrash) {
+      const [[gmail]] = await cx.execute<RowDataPacket[]>(`SELECT id FROM mail_remote_mailboxes WHERE user_id=? AND mail_account_id=?
+        AND special_use='all' AND state='active' LIMIT 1`, [userId, accountId]);
+      if (gmail) await cx.execute(`UPDATE mail_remote_occurrences SET presence='absent',absent_at=UTC_TIMESTAMP()
+        WHERE email_id=? AND user_id=? AND mail_account_id=? AND presence='present' AND id<>?`, [op.email_id, userId, accountId, found.id]);
+    }
     await cx.execute(`UPDATE emails SET folder=?, remote_folder=?, remote_uid=?, remote_uidvalidity=?,remote_missing=FALSE,
       observation_revision=observation_revision+1 WHERE id=? AND user_id=? AND mail_account_id=?`,
       [op.target_folder, op.target_value, destination.uid!, destination.uidvalidity!, op.email_id, userId, accountId]);

@@ -66,7 +66,7 @@ test('opposite intent accepted after dispatch uses prior target, not stale store
   const connection = { execute: async (sql: string, args: FixtureValue) => {
     statements.push({ sql, args });
     if (sql.includes('SELECT * FROM mail_writebacks')) return [[previous]];
-    if (sql.includes('SELECT o.id FROM mail_remote_occurrences')) return [[]];
+    if (sql.includes('FROM mail_remote_occurrences')) return [[]];
     if (sql.includes('SELECT id FROM mail_accounts WHERE id')) return [[{ id: 'account' }]];
     if (sql.includes('SELECT id FROM mail_writebacks WHERE id')) return [[{ id: args[0] }]];
     if (sql.includes('SELECT * FROM mail_engine_jobs')) return [[]];

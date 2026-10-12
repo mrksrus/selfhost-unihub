@@ -37,6 +37,16 @@ No database upgrade and no configuration change.
   picked up.** Each check of read, starred and deleted state now covers all
   mail up to the moment it starts; before, mail that arrived after the
   account's first full check was left out of later checks.
+- **A message moved or archived in another mail app can be changed from
+  UniHub again.** UniHub kept acting on the message's old place on the server,
+  so starring, reading or moving it failed, the message jumped back and the
+  change waited for review; Retry did not help. UniHub now follows the copy
+  the server still has, and Retry recovers changes already stuck this way.
+- **On Gmail, a message moved to Trash leaves Archive, Important and labels at
+  once** instead of reappearing there until the slower checks of those
+  folders caught up.
+- **Sort now** sorts what the Inbox shows, so mail archived in another app is
+  no longer sorted and Gmail mail first seen in All Mail is no longer missed.
 - **Folders deleted or renamed on the server** no longer keep showing their
   old mail; they show as empty, and moving mail into them is refused. The
   mail stays in All mail and comes back into the folder if the folder

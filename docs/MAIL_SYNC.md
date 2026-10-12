@@ -67,6 +67,14 @@ join active mailboxes only, so their mail leaves the folder views and stays in
 All mail; nothing is deleted, and a later LIST that shows the folder again
 makes it active through `ensureMailbox`.
 
+An item's provider address (`emails.remote_folder/uid/uidvalidity`) always
+names a copy the server still has: when a presence sweep proves the addressed
+copy absent while another active mailbox still holds the message, the sweep
+re-points the item there (`repointToLiveOccurrence`, a real folder before All
+Mail). Queuing and Retry do the same, so changes are never sent to a dead
+address. After a confirmed move into Trash or Spam on Gmail, the item's other
+copies are marked absent in the same transaction.
+
 `emails.mail_account_id` remains the source identity used by IMAP sync;
 `filing_account_id` is an optional local display/recovery account. `is_legacy`
 marks unresolved/pending messages. List/detail/unread queries use the local

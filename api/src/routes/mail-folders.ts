@@ -1,7 +1,7 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError, SqlExecutor } from '../types';
 import { folderConnections } from '../services/mail-folder-reconciliation';
-import { membershipCountQuery, unreadMembershipQuery } from '../services/mail-folder-view';
+import { folderMembershipSql, membershipCountQuery, unreadMembershipQuery } from '../services/mail-folder-view';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
 import crypto from 'crypto';
 import * as mailWritebacks from '../services/mail-writebacks';
@@ -437,8 +437,11 @@ export = {
         const [accounts] = await db.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1', [accountId, userId]);
         if (!accounts.length) return { error: 'Invalid account_id', status: 400 };
       }
-      const where = ['e.user_id = ?', 'e.is_legacy = FALSE', "e.folder = 'inbox'", 'e.from_address IS NOT NULL', "TRIM(e.from_address) <> ''"];
-      const params = [userId];
+      // Inbox as the mail views show it: on Sync accounts the server's folders
+      // decide, not the folder stored when the message first arrived.
+      const where = ['e.user_id = ?', 'e.is_legacy = FALSE', `EXISTS (SELECT 1 FROM emails WHERE emails.id = e.id AND ${folderMembershipSql})`,
+        'e.from_address IS NOT NULL', "TRIM(e.from_address) <> ''"];
+      const params = [userId, 'inbox', 'inbox', 'inbox'];
       if (accountId) {
         where.push('COALESCE(e.filing_account_id, e.mail_account_id) = ?');
         params.push(accountId);

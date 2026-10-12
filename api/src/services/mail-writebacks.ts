@@ -135,10 +135,19 @@ async function queueChanges(cx: SqlExecutor, userId: string, emails: EmailRow[],
           [pendingEffect ? 'reconciling' : old.state === 'confirmed' ? 'confirmed' : 'superseded',
             pendingEffect ? 'pending' : old.state === 'confirmed' ? 'done' : 'done', old.id, userId, email.mail_account_id]);
       }
-      const [[source]] = await cx.execute<RowDataPacket[]>(`SELECT o.id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes b ON b.id=o.mailbox_id
+      let [[source]] = await cx.execute<RowDataPacket[]>(`SELECT o.id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes b ON b.id=o.mailbox_id
         WHERE o.user_id=? AND o.mail_account_id=? AND o.email_id=? AND o.presence='present'
         AND BINARY b.remote_name=BINARY ? AND o.uidvalidity=? AND o.uid=? LIMIT 1`,
         [userId, email.mail_account_id, email.id, email.remote_folder, email.remote_uidvalidity, email.remote_uid]);
+      if (!source) {
+        // Moved or archived elsewhere since: act on a copy the server still has.
+        const live = await repository.repointToLiveOccurrence({ userId, accountId: email.mail_account_id, emailId: email.id,
+          from: { folder: email.remote_folder!, uid: email.remote_uid!, uidvalidity: email.remote_uidvalidity! } }, cx);
+        if (live) {
+          Object.assign(email, { remote_folder: live.folder, remote_uid: live.uid, remote_uidvalidity: live.uidvalidity });
+          source = { id: live.occurrenceId } as RowDataPacket;
+        }
+      }
       const base = action === 'move' ? email.remote_folder : old && Number(old.dispatched) ? old.target_value : Number(Boolean(email[fields[action]])).toString();
       const id = crypto.randomUUID();
       await cx.execute(`INSERT INTO mail_writebacks
@@ -382,16 +391,26 @@ async function requeue(userId: string, op: OperationRow) {
     if (!row || moveCheck(row) || !canRetry(row)) { await cx.rollback(); return false; }
     const [[email]] = await cx.execute<RowDataPacket[]>(`SELECT remote_folder,remote_uid,remote_uidvalidity FROM emails
       WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`, [row.email_id, userId, row.mail_account_id]);
-    if (email?.remote_folder && (email.remote_folder !== row.remote_folder || String(email.remote_uid) !== String(row.remote_uid)
-      || String(email.remote_uidvalidity) !== String(row.remote_uidvalidity))) {
-      const [[occ]] = await cx.execute<RowDataPacket[]>(`SELECT o.id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id=o.mailbox_id
+    if (email?.remote_folder) {
+      let [[occ]] = await cx.execute<RowDataPacket[]>(`SELECT o.id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id=o.mailbox_id
         AND m.user_id=o.user_id AND m.mail_account_id=o.mail_account_id AND m.state='active' AND m.uidvalidity=o.uidvalidity
         WHERE o.email_id=? AND o.user_id=? AND o.mail_account_id=? AND o.presence='present'
         AND BINARY m.remote_name=BINARY ? AND o.uid=? AND o.uidvalidity=? LIMIT 1`,
       [row.email_id, userId, row.mail_account_id, email.remote_folder, email.remote_uid, email.remote_uidvalidity]);
-      if (occ) await cx.execute(`UPDATE mail_writebacks SET remote_folder=?,remote_uid=?,remote_uidvalidity=?,source_occurrence_id=?
-        WHERE id=? AND user_id=? AND mail_account_id=?`,
-      [email.remote_folder, email.remote_uid, email.remote_uidvalidity, occ.id, row.id, userId, row.mail_account_id]);
+      if (!occ) {
+        // The stored copy is gone; retry on a copy the server still has.
+        const live = await repository.repointToLiveOccurrence({ userId, accountId: row.mail_account_id, emailId: row.email_id,
+          from: { folder: email.remote_folder, uid: email.remote_uid, uidvalidity: email.remote_uidvalidity } }, cx);
+        if (live) {
+          Object.assign(email, { remote_folder: live.folder, remote_uid: live.uid, remote_uidvalidity: live.uidvalidity });
+          occ = { id: live.occurrenceId } as RowDataPacket;
+        }
+      }
+      if (occ && (email.remote_folder !== row.remote_folder || String(email.remote_uid) !== String(row.remote_uid)
+        || String(email.remote_uidvalidity) !== String(row.remote_uidvalidity)))
+        await cx.execute(`UPDATE mail_writebacks SET remote_folder=?,remote_uid=?,remote_uidvalidity=?,source_occurrence_id=?
+          WHERE id=? AND user_id=? AND mail_account_id=?`,
+        [email.remote_folder, email.remote_uid, email.remote_uidvalidity, occ.id, row.id, userId, row.mail_account_id]);
     }
     await cx.execute(`UPDATE mail_writebacks SET state='queued',status='pending',error=NULL,dispatched=FALSE,attempts=0,
       available_at=UTC_TIMESTAMP() WHERE id=? AND user_id=? AND mail_account_id=?`, [row.id, userId, row.mail_account_id]);

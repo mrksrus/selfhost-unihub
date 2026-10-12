@@ -16,6 +16,11 @@ between UniHub and the mail server are fixed.
 
 ### Fixed
 
+- A message moved or archived in another mail app can be changed from UniHub
+  again instead of failing and jumping back.
+- On Gmail, a message moved to Trash leaves Archive, Important and labels at
+  once.
+- Sort now sorts exactly what the Inbox shows.
 - Read and star changes made on the server to recently arrived mail are
   picked up by every check, not only the first.
 - Folders deleted or renamed on the server show as empty instead of their old mail.

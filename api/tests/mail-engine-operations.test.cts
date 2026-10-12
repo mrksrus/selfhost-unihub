@@ -248,7 +248,7 @@ test('admission commits receipt, intent and job together; exact replay never app
         receipts.get(`${args[1]}:${args[2]}`).response_json = args[0]; return [{ affectedRows: 1 }]; }
       if (sql.includes('SELECT e.*,a.sync_mode,a.is_active')) return [[email]];
       if (sql.includes('SELECT * FROM mail_writebacks WHERE user_id=')) return [[...admitted].reverse().slice(0, 1)];
-      if (sql.includes('SELECT o.id FROM mail_remote_occurrences')) return [[]];
+      if (sql.includes('SELECT o.id FROM mail_remote_occurrences') || sql.includes('SELECT o.id, m.remote_name')) return [[]];
       if (sql.startsWith('UPDATE mail_writebacks SET is_current=')) {
         const old = admitted.find(op => op.id === args[2]); Object.assign(old, { is_current: 0, state: args[0] });
         return [{ affectedRows: 1 }];

@@ -108,6 +108,28 @@ async function retireUnlistedMailboxes({ userId, accountId, listed }: { userId: 
       WHERE id = ? AND user_id = ? AND mail_account_id = ? AND state = 'active'`, [box.id, userId, accountId]);
   return gone.length;
 }
+// The provider address UniHub acts on (emails.remote_*) must name a copy the
+// server still has. When that copy is gone but the message is present in
+// another active mailbox (moved or archived by another client; on Gmail a
+// removed label), point the item at that copy, preferring a real folder over
+// All Mail. Only an item still holding the dead address is changed.
+async function repointToLiveOccurrence({ userId, accountId, emailId, from }: { userId: string; accountId: string; emailId: string;
+  from: { folder: string; uid: string | number | bigint; uidvalidity: string | number | bigint } }, cx: SqlExecutor = db) {
+  const [[live]] = await cx.execute<RowDataPacket[]>(`SELECT o.id, m.remote_name, o.uid, o.uidvalidity, f.slug FROM mail_remote_occurrences o
+    JOIN mail_remote_mailboxes m ON m.id = o.mailbox_id AND m.user_id = o.user_id AND m.mail_account_id = o.mail_account_id
+      AND m.state = 'active' AND m.uidvalidity = o.uidvalidity
+    LEFT JOIN mail_folder_remote_boxes b ON b.mail_account_id = m.mail_account_id AND BINARY b.remote_name = BINARY m.remote_name
+    LEFT JOIN mail_folders f ON f.id = b.folder_id AND f.user_id = o.user_id
+    WHERE o.email_id = ? AND o.user_id = ? AND o.mail_account_id = ? AND o.presence = 'present'
+    ORDER BY (m.special_use <=> 'all'), m.remote_name, o.uid LIMIT 1`, [emailId, userId, accountId]);
+  if (!live) return null;
+  const [result] = await cx.execute<ResultSetHeader>(`UPDATE emails SET remote_folder = ?, remote_uid = ?, remote_uidvalidity = ?, folder = COALESCE(?, folder)
+    WHERE id = ? AND user_id = ? AND mail_account_id = ? AND is_legacy = FALSE
+      AND COALESCE(filing_account_id, mail_account_id) = mail_account_id
+      AND BINARY remote_folder = BINARY ? AND remote_uid = ? AND remote_uidvalidity = ?`,
+  [live.remote_name, live.uid, live.uidvalidity, live.slug ?? null, emailId, userId, accountId, from.folder, from.uid, from.uidvalidity]);
+  return result.affectedRows === 1 ? { occurrenceId: live.id as string, folder: live.remote_name as string, uid: live.uid, uidvalidity: live.uidvalidity } : null;
+}
 async function getOccurrence({ userId, accountId, mailboxId, epoch, uid }: OccurrenceInput, executor: SqlExecutor = db) {
   epoch = assertUid32(epoch); uid = assertUid32(uid);
   const [rows] = await executor.execute<(RowDataPacket & RemoteOccurrence)[]>(`SELECT o.* FROM mail_remote_occurrences o
@@ -261,6 +283,7 @@ export {
   ownMailbox,
   ensureMailbox,
   retireUnlistedMailboxes,
+  repointToLiveOccurrence,
   upsertOccurrence,
   getOccurrence,
   loadCursor,

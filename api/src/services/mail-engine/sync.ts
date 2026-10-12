@@ -278,6 +278,17 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
           WHERE gone.user_id = ? AND gone.mail_account_id = ? AND gone.mailbox_id = ?
             AND gone.uidvalidity = ? AND gone.uid BETWEEN ? AND ? AND gone.presence = 'absent'
         )`, [userId, accountId, userId, accountId, mailbox.id, epoch, window.start, window.end]);
+      // Items still addressed at a copy this window proved gone act on another
+      // live copy from now on, so later changes are not sent to a dead address.
+      const [stale] = await executor.execute<RowDataPacket[]>(`SELECT e.id, gone.uid FROM emails e
+        JOIN mail_remote_occurrences gone ON gone.email_id = e.id AND gone.user_id = e.user_id
+          AND gone.mail_account_id = e.mail_account_id AND gone.mailbox_id = ? AND gone.uidvalidity = ?
+          AND gone.uid BETWEEN ? AND ? AND gone.presence = 'absent'
+        WHERE e.user_id = ? AND e.mail_account_id = ? AND BINARY e.remote_folder = BINARY ?
+          AND e.remote_uidvalidity = gone.uidvalidity AND e.remote_uid = gone.uid`,
+      [mailbox.id, epoch, window.start, window.end, userId, accountId, folder.folderName]);
+      for (const row of stale) await repository.repointToLiveOccurrence({ userId, accountId, emailId: row.id,
+        from: { folder: folder.folderName, uid: row.uid, uidvalidity: epoch } }, executor);
     }
     if (saveCoverage) await repository.saveCursor({ userId, accountId, mailboxId: mailbox.id, stream, epoch,
       windowStart: window.start, windowEnd: window.end, coveredThrough: window.end,

@@ -105,6 +105,52 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
     await pool.execute<ResultSetHeader>("UPDATE mail_remote_occurrences SET presence='present' WHERE email_id=?",[item]);
     await pool.execute<ResultSetHeader>('UPDATE emails SET remote_missing=FALSE WHERE id=?',[item]);
   });
+  await t.test('a message moved away on the server is acted on where it is now, not at its old address', async () => {
+    const { queueChanges } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+    await pool.execute<ResultSetHeader>("UPDATE emails SET remote_folder='INBOX',remote_uid=11,remote_uidvalidity=17 WHERE id=?",[item]);
+    // Archived on the phone: the INBOX copy is gone, the labelled copies remain.
+    await pool.execute<ResultSetHeader>("UPDATE mail_remote_occurrences SET presence='absent' WHERE email_id=? AND mailbox_id=?",[item,boxes.get('inbox').id]);
+    const row = { id: item, user_id: owner, mail_account_id: account, filing_account_id: null, sync_mode: 'sync', is_active: 1,
+      remote_folder: 'INBOX', remote_uid: 11, remote_uidvalidity: 17, is_starred: 0 };
+    await repository.withTransaction((cx) => queueChanges(cx, owner, [row as FixtureValue], { star: true }), pool);
+    const [[op]] = await pool.execute<RowDataPacket[]>("SELECT remote_folder,remote_uid,source_occurrence_id FROM mail_writebacks WHERE email_id=? AND action='star' AND is_current=TRUE",[item]);
+    assert.equal(op.remote_folder,'Projects/Grüße', 'A real folder is preferred over All Mail');
+    assert(op.source_occurrence_id, 'The change names a copy the server has');
+    const [[stored]] = await pool.execute<RowDataPacket[]>('SELECT remote_folder,folder FROM emails WHERE id=?',[item]);
+    assert.deepEqual({ ...stored }, { remote_folder: 'Projects/Grüße', folder: 'label' });
+    assert.equal(await repository.repointToLiveOccurrence({userId:owner,accountId:account,emailId:item,from:{folder:'INBOX',uid:11,uidvalidity:17}},pool),null,
+      'Only an item still holding the dead address moves');
+    await pool.execute<ResultSetHeader>("DELETE FROM mail_writebacks WHERE email_id=?",[item]);
+    await pool.execute<ResultSetHeader>("DELETE FROM mail_engine_jobs WHERE user_id=?",[owner]);
+    await pool.execute<ResultSetHeader>("UPDATE mail_remote_occurrences SET presence='present' WHERE email_id=?",[item]);
+    await pool.execute<ResultSetHeader>("UPDATE emails SET remote_folder=NULL,remote_uid=NULL,remote_uidvalidity=NULL,folder='inbox' WHERE id=?",[item]);
+  });
+  await t.test('a confirmed Gmail move to Trash leaves All Mail and labels at once', async () => {
+    const reconcile = require('../dist/src/services/mail-engine/reconciliation') as typeof import('../src/services/mail-engine/reconciliation');
+    await pool.execute<ResultSetHeader>("UPDATE mail_remote_mailboxes SET special_use='all' WHERE id=?",[boxes.get('all-mail').id]);
+    await pool.execute<ResultSetHeader>("UPDATE emails SET remote_folder='INBOX',remote_uid=11,remote_uidvalidity=17 WHERE id=?",[item]);
+    const trashFolder = randomUUID();
+    await pool.execute<ResultSetHeader>("INSERT INTO mail_folders (id,user_id,slug,display_name,is_system,mail_account_id) VALUES (?,?,'gmail-trash','Trash',0,?)",[trashFolder,owner,account]);
+    await pool.execute<ResultSetHeader>("INSERT INTO mail_folder_remote_boxes (folder_id,mail_account_id,remote_name) VALUES (?,?,'[Gmail]/Trash')",[trashFolder,account]);
+    const trash = await repository.withTransaction((cx) => repository.ensureMailbox({userId:owner,accountId:account,folderName:'[Gmail]/Trash',epoch:17},cx),pool);
+    const [[source]] = await pool.execute<RowDataPacket[]>('SELECT id FROM mail_remote_occurrences WHERE email_id=? AND mailbox_id=?',[item,boxes.get('inbox').id]);
+    const move = randomUUID();
+    await pool.execute<ResultSetHeader>(`INSERT INTO mail_writebacks (id,user_id,mail_account_id,email_id,action,target_value,base_value,target_folder,
+      remote_folder,remote_uid,remote_uidvalidity,status,state,is_current,intent_revision,dispatched,source_occurrence_id)
+      VALUES (?,?,?,?,'move','[Gmail]/Trash','INBOX','gmail-trash','INBOX',11,17,'pending','verifying',TRUE,1,TRUE,?)`,[move,owner,account,item,source.id]);
+    await repository.withTransaction((cx) => repository.upsertOccurrence({userId:owner,accountId:account,mailboxId:trash.id,epoch:17,uid:90,emailId:item},cx),pool);
+    const result = await reconcile.settleMoveEvidence({operationId:move,userId:owner,accountId:account,
+      mapping:{uidvalidity:17,sourceUids:[11],destinationUids:[90]},
+      destination:{mailboxId:trash.id,folder:'[Gmail]/Trash',uidvalidity:17,uid:90},source:{absent:true},evidence:{verified:true}} as FixtureValue);
+    assert.equal(result.settled,true);
+    for (const folder of ['inbox','all-mail','label']) assert.equal((await list(folder)).emails.some((row: FixtureValue) => row.id === item),false,folder);
+    assert.equal((await list('gmail-trash')).pagination.total,1);
+    await pool.execute<ResultSetHeader>('DELETE FROM mail_writebacks WHERE email_id=?',[item]);
+    await pool.execute<ResultSetHeader>('DELETE FROM mail_remote_occurrences WHERE mailbox_id=?',[trash.id]);
+    await pool.execute<ResultSetHeader>('DELETE FROM mail_remote_mailboxes WHERE id=?',[trash.id]);
+    await pool.execute<ResultSetHeader>("UPDATE mail_remote_occurrences SET presence='present' WHERE email_id=?",[item]);
+    await pool.execute<ResultSetHeader>("UPDATE emails SET remote_folder=NULL,remote_uid=NULL,remote_uidvalidity=NULL,folder='inbox' WHERE id=?",[item]);
+  });
   await t.test('a folder the server stops listing leaves folder views and badges, and returns when listed again', async () => {
     const accountsRoutes = require('../dist/src/routes/mail-accounts') as typeof import('../src/routes/mail-accounts');
     const badge = async () => ((await accountsRoutes['GET /api/mail/accounts']({url:'/api/mail/accounts',headers:{host:'localhost'}} as FixtureValue,owner)) as FixtureValue)

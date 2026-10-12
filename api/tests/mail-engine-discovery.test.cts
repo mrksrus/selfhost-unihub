@@ -31,6 +31,7 @@ function fixture(t: import('node:test').TestContext, { uids = [1], epoch = 123, 
       .filter(o => o.epoch === params[3] && o.uid >= params[4] && o.uid <= params[5] && o.presence === 'present')
       .map(o => ({ uid: o.uid, observation_revision: o.observation_revision }))];
     if (sql.includes('SELECT uidvalidity FROM mail_remote_mailboxes')) return [[{ uidvalidity: storedEpoch }]];
+    if (sql.includes('SELECT e.id, gone.uid FROM emails e')) return [[]];
     if (sql.includes('SELECT o.email_id FROM mail_remote_occurrences')) {
       const o = occurrences.get(params[4]); return [[o && o.epoch === params[3] ? { email_id: o.email_id } : undefined].filter(Boolean)];
     }

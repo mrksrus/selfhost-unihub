@@ -69,7 +69,9 @@ function backfillDb(t: import('node:test').TestContext, { concurrentChange = fal
       assert.match(sql, /e.is_legacy = FALSE/);
       assert.match(sql, /COALESCE\(e.filing_account_id, e.mail_account_id\) = \?/);
       assert.doesNotMatch(sql, /sync_mode = 'sync'/);
-      assert.equal(params[1], 'receiving');
+      // Inbox membership as the views compute it, not the stored folder.
+      assert.doesNotMatch(sql, /e.folder = 'inbox'/);
+      assert.deepEqual(params.slice(0, 5), ['user', 'inbox', 'inbox', 'inbox', 'receiving']);
       return [[{ ...stored }]];
     }
     if (sql.includes('INSERT INTO mail_folders')) return [{ affectedRows: 0 }];
