@@ -18,7 +18,7 @@ between UniHub and the mail server are fixed.
 
 - Read and star changes made on the server to recently arrived mail are
   picked up by every check, not only the first.
-- Folders deleted or renamed on the server stop showing their old mail.
+- Folders deleted or renamed on the server show as empty instead of their old mail.
 - Switching from Sync to Download no longer leaves unsent changes waiting.
 - The account unread count matches the folder counts.
 - "Last synced" updates after every sync.

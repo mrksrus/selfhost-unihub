@@ -8,6 +8,8 @@ import { captureMailFlagReconciler, type Email } from '@/lib/mail-api';
 interface ReaderActions {
   onDraft: (draft: Email) => void;
   onMarkRead: (email: Email) => void;
+  /** Takes back the read mark set on open when the message then fails to load. */
+  onUndoMarkRead?: (email: Email) => void;
   reconcileEmail?: (email: Email) => Email;
   onError: (message: string) => void;
 }
@@ -89,6 +91,7 @@ export function useMailReader(scope: string | null = null) {
     } catch (error) {
       if (current !== generation.current || controller.signal.aborted) return;
       setSelectedEmail(null);
+      if (marked && known) actions.onUndoMarkRead?.(known);
       actions.onError(error instanceof Error ? error.message : 'Could not load email');
     } finally {
       if (current === generation.current) {

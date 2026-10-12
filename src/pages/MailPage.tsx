@@ -89,6 +89,7 @@ const MailPage = () => {
       onDraft: compose.openDraftForCompose,
       reconcileEmail: captureMailFlagReconciler(queryClient),
       onMarkRead: (email) => requestFlag(email, 'read', true),
+      onUndoMarkRead: (email) => requestFlag({ ...email, is_read: true }, 'read', false),
       onError: (message) => toast({ title: 'Failed to load email', description: message, variant: 'destructive' }),
     }, rows.current.find(email => email.id === emailId));
   }, [loadEmail, supersedeRefresh, compose.openDraftForCompose, requestFlag, queryClient, toast]);

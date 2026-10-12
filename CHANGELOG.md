@@ -38,8 +38,9 @@ No database upgrade and no configuration change.
   mail up to the moment it starts; before, mail that arrived after the
   account's first full check was left out of later checks.
 - **Folders deleted or renamed on the server** no longer keep showing their
-  old mail. The mail stays in All mail and comes back into the folder if the
-  folder returns.
+  old mail; they show as empty, and moving mail into them is refused. The
+  mail stays in All mail and comes back into the folder if the folder
+  returns.
 - **Switching an account from Sync to Download** applies changes that had not
   been sent yet to UniHub's copy, instead of leaving them waiting forever.
 - The unread count next to an account counts each message once and only mail
@@ -51,6 +52,7 @@ No database upgrade and no configuration change.
   the browser no longer drops them and reports that UniHub did not answer.
 - When UniHub does not answer a mail change, the message says so in plain
   words.
+- A message that fails to open is no longer left marked as read.
 
 ## 0.19.2
 

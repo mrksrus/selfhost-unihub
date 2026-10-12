@@ -252,7 +252,7 @@ async function runDurableMailJob(job: ClaimedJob, signal: AbortSignal, report: J
       // is applied by a low-priority local job after each discovery pass.
       if (account.sync_mode === 'sync') await (require('./mail-sync-policy') as typeof import('./mail-sync-policy')).enqueuePrune({ userId: account.user_id, accountId });
       // The server answered with its full folder list: that is what "last synced" means.
-      await db.execute('UPDATE mail_accounts SET last_synced_at = NOW() WHERE id = ? AND user_id = ?', [accountId, account.user_id]);
+      await db.execute('UPDATE mail_accounts SET last_synced_at = UTC_TIMESTAMP() WHERE id = ? AND user_id = ?', [accountId, account.user_id]);
       // Stream jobs select a single mapped mailbox in account-scoped rounds.
       return done({ success: true, started: true, folders: registered.length });
     }

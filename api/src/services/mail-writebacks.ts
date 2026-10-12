@@ -111,9 +111,13 @@ async function queueChanges(cx: SqlExecutor, userId: string, emails: EmailRow[],
       }
       let target = action === 'move' ? String(value) : Number(Boolean(value)).toString(), targetFolder = null;
       if (action === 'move') {
-        const [mappings] = await cx.execute<RowDataPacket[]>(`SELECT b.remote_name FROM mail_folder_remote_boxes b JOIN mail_folders f ON f.id=b.folder_id
+        const [mappings] = await cx.execute<RowDataPacket[]>(`SELECT b.remote_name, EXISTS(SELECT 1 FROM mail_remote_mailboxes m
+            WHERE m.user_id=f.user_id AND m.mail_account_id=b.mail_account_id AND BINARY m.remote_name=BINARY b.remote_name AND m.state='missing') AS gone
+          FROM mail_folder_remote_boxes b JOIN mail_folders f ON f.id=b.folder_id
           WHERE f.user_id=? AND f.slug=? AND b.mail_account_id=?`, [userId, value as ExecuteValues, email.mail_account_id]);
         if (mappings.length !== 1) throw fail('Choose a folder connected to this provider account.');
+        // A move into a folder deleted on the server would only fail there.
+        if (Number(mappings[0].gone)) throw fail('This folder no longer exists on the mail server.');
         targetFolder = value as string; target = mappings[0].remote_name;
       }
       const [oldRows] = await cx.execute<OperationRow[]>(`SELECT * FROM mail_writebacks WHERE user_id=? AND mail_account_id=? AND email_id=? AND action=?

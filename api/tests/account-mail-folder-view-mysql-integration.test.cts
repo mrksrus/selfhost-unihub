@@ -115,6 +115,11 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
     assert.equal((await list('label')).pagination.total,0);
     assert.equal((await list('inbox')).pagination.total,2, 'Listed folders are untouched');
     assert.equal(((await counts()) as FixtureValue).unreadByFolder.label,undefined);
+    const { queueChanges } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+    const row = { id: item, user_id: owner, mail_account_id: account, filing_account_id: account, sync_mode: 'sync', is_active: 1,
+      remote_folder: 'INBOX', remote_uid: 11, remote_uidvalidity: 17, is_read: 0 };
+    await assert.rejects(repository.withTransaction((cx) => queueChanges(cx, owner, [row as FixtureValue], { move: 'label' }), pool),
+      /no longer exists on the mail server/);
     await pool.execute<ResultSetHeader>("UPDATE mail_remote_mailboxes SET state='active' WHERE id IN (?,?)",[boxes.get('inbox').id,boxes.get('all-mail').id]);
     assert.equal(await repository.retireUnlistedMailboxes({userId:owner,accountId:account,listed:['INBOX','[Gmail]/All Mail']},pool),0, 'Already retired');
     await repository.withTransaction((cx) => repository.ensureMailbox({userId:owner,accountId:account,folderName:'Projects/Grüße',epoch:17},cx),pool);
