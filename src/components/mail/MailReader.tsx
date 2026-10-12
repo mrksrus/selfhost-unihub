@@ -1,10 +1,12 @@
+import { saveFile } from '@/lib/platform';
 import type { MouseEvent, ReactNode } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+
 import { format } from 'date-fns';
 import { ArrowLeft, CheckCircle2, Download, Forward, Loader2, Mail, Paperclip, Reply, Star, UserPlus } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { Email, MailAccount, MailFlagKind } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
+import { useContactActions } from '@/hooks/use-contact-actions';
 import { Button } from '@/components/ui/button';
 import { SafeEmailContent } from '@/components/mail/SafeEmailContent';
 import { deriveContactNameFromEmail, flagPendingLabel } from '@/components/mail/mail-page-model';
@@ -32,25 +34,7 @@ interface Props {
 export function MailReader({ email, accounts, location, backLabel, isMobile, isReplying, flagRequests, requestFlag,
   senderInContacts, onBack, onReply, onForward, inlineCompose }: Props) {
   const { toast } = useToast();
-  const queryClient = useQueryClient();
-  const createContactFromEmail = useMutation({
-    mutationFn: async (email: Email) => {
-      const derivedName = deriveContactNameFromEmail(email);
-      const response = await api.post('/contacts', {
-        ...derivedName,
-        email: email.from_address,
-      });
-      if (response.error) throw new Error(response.error);
-      return response.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['contacts'] });
-      toast({ title: 'Contact added' });
-    },
-    onError: (error: Error) => {
-      toast({ title: 'Failed to add contact', description: error.message, variant: 'destructive' });
-    },
-  });
+  const { create: createContact } = useContactActions();
 
   return (
     <div className="fixed inset-0 z-50 bg-background xl:relative xl:inset-auto xl:z-auto xl:h-full xl:w-[45%] xl:shrink-0 xl:border-l xl:border-border">
@@ -139,10 +123,10 @@ export function MailReader({ email, accounts, location, backLabel, isMobile, isR
                       variant="outline"
                       size="sm"
                       className="h-7 gap-1.5"
-                      onClick={() => createContactFromEmail.mutate(email)}
-                      disabled={createContactFromEmail.isPending}
+                      onClick={() => createContact.mutate({ ...deriveContactNameFromEmail(email), email: email.from_address })}
+                      disabled={createContact.isPending}
                     >
-                      {createContactFromEmail.isPending ? (
+                      {createContact.isPending ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       ) : (
                         <UserPlus className="h-3.5 w-3.5" />
@@ -176,14 +160,7 @@ export function MailReader({ email, accounts, location, backLabel, isMobile, isR
                       e.preventDefault();
                       try {
                         const { blob, filename } = await api.getBlob(`/mail/attachments/${attachment.id}`);
-                        const blobUrl = window.URL.createObjectURL(blob);
-                        const link = document.createElement('a');
-                        link.href = blobUrl;
-                        link.download = filename || attachment.filename || 'attachment';
-                        document.body.appendChild(link);
-                        link.click();
-                        document.body.removeChild(link);
-                        window.URL.revokeObjectURL(blobUrl);
+                        saveFile(blob, filename || attachment.filename || 'attachment');
                       } catch (error) {
                         console.error('Download failed:', error);
                         const errorWithStatus = error as Error & { status?: number };

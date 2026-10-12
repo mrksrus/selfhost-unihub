@@ -1,6 +1,5 @@
 import ModuleGuard from '@/components/modules/ModuleGuard';
-import { MotionConfig } from 'framer-motion';
-import UpdatePrompt from '@/components/pwa/UpdatePrompt';
+
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -11,6 +10,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import AppLayout from "@/components/layout/AppLayout";
 import InstallPrompt from "@/components/pwa/InstallPrompt";
+import { LoadingState } from "@/components/ui/page-states";
 const Auth = lazy(() => import("./pages/Auth"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Contacts = lazy(() => import("./pages/Contacts"));
@@ -33,7 +33,7 @@ const AuthenticatedApp = () => {
       <TooltipProvider>
         <Toaster />
         <BrowserRouter>
-          <Suspense fallback={<div role="status" className="flex min-h-[40vh] items-center justify-center text-muted-foreground">Loading…</div>}>
+          <Suspense fallback={<LoadingState className="min-h-[40vh]" />}>
           <Routes>
             <Route path="/auth" element={<Auth />} />
             <Route element={<AppLayout />}>
@@ -54,13 +54,12 @@ const AuthenticatedApp = () => {
           </Routes>
           </Suspense>
           <InstallPrompt />
-          <UpdatePrompt />
         </BrowserRouter>
       </TooltipProvider>
     </SessionQueryProvider>
   );
 };
 
-const App = () => <MotionConfig reducedMotion="user"><ThemeProvider><AuthProvider><AuthenticatedApp /></AuthProvider></ThemeProvider></MotionConfig>;
+const App = () => <ThemeProvider><AuthProvider><AuthenticatedApp /></AuthProvider></ThemeProvider>;
 
 export default App;

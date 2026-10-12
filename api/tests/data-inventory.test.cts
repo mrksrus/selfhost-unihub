@@ -24,7 +24,7 @@ function sourceColumns(source: FixtureValue) {
 }
 const serviceSource = (name: FixtureValue) => fs.readFileSync(path.join(__dirname, '../src/services', `${name}.ts`), 'utf8');
 function productionColumns() {
-  return sourceColumns(['database-baseline', 'database', 'database-migrations', 'notifications'].map(serviceSource).join('\n'));
+  return sourceColumns(['database-baseline', 'database', 'database-migrations'].map(serviceSource).join('\n'));
 }
 
 test('every runtime schema table and field has an explicit recovery policy', () => {
@@ -39,10 +39,11 @@ test('every runtime schema table and field has an explicit recovery policy', () 
 test('the 0.16.0 baseline creates the fields declared through migration 11', () => {
   const baseline = sourceColumns(['database-baseline', 'database-migrations'].map(serviceSource).join('\n'));
   assert.ok(baseline.length > 400, 'The DDL reader must inspect the whole baseline');
-  assert.doesNotThrow(() => assertInventoryCoverage(baseline, { includeNotifications: false, throughMigration: 11 }));
-  assert.throws(() => assertInventoryCoverage(baseline, { includeNotifications: false, throughMigration: 12 }), /Missing declared field calendar_accounts.mail_account_id/);
+  assert.doesNotThrow(() => assertInventoryCoverage(baseline, { throughMigration: 11 }));
+  assert.throws(() => assertInventoryCoverage(baseline, { throughMigration: 12 }), /Missing declared field calendar_accounts.mail_account_id/);
+  assert.throws(() => assertInventoryCoverage(baseline, { throughMigration: 15 }), /Missing declared field notification_config.public_key/);
   assert.ok(!baseline.some(row => row.table_name === 'notes'), 'Notes tables were removed in step 11');
-  assert.throws(() => assertInventoryCoverage([...baseline, { table_name: 'notes', column_name: 'title' }], { includeNotifications: false, throughMigration: 11 }),
+  assert.throws(() => assertInventoryCoverage([...baseline, { table_name: 'notes', column_name: 'title' }], { throughMigration: 11 }),
     /Removed field still present notes.title/);
 });
 

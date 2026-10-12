@@ -1,4 +1,6 @@
 import { api } from '@/lib/api';
+import { emitAppEvent } from '@/lib/app-events';
+
 
 export const NOTIFICATION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 export const BACKGROUND_NOTIFICATION_SYNC_TAG = 'unihub-notification-check';
@@ -14,7 +16,7 @@ export async function initServiceWorker(): Promise<ServiceWorkerRegistration | n
   if (!messageListenerAttached) {
     navigator.serviceWorker.addEventListener('message', event => {
       if (event.data?.type === 'NOTIFICATION_DATA_CHANGED') {
-        window.dispatchEvent(new CustomEvent('unihub-notification-data', { detail: event.data }));
+        emitAppEvent('unihub:notification-data', event.data);
       }
     });
     messageListenerAttached = true;

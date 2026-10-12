@@ -18,10 +18,6 @@ vi.mock('@/lib/api', () => ({
   },
 }));
 
-vi.mock('@/hooks/use-mobile', () => ({
-  useIsMobile: () => false,
-}));
-
 const account = {
   id: 'account-1',
   email_address: 'sender@example.test',
@@ -136,6 +132,11 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     expect(api.post).not.toHaveBeenCalled();
   });
 
+  it('opens the sync panel when arriving from the attention tray', async () => {
+    renderMailPage([inboxEmail], '/mail?review=sync');
+    expect(await screen.findByRole('dialog', { name: 'Mail sync' })).toBeInTheDocument();
+  });
+
   it('keeps account selection above a scrollable folder list', async () => {
     renderMailPage();
 
@@ -145,15 +146,6 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     expect(accountsRegion.compareDocumentPosition(folderNav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(accountsRegion).toHaveClass('shrink-0', 'max-h-[40%]', 'overflow-y-auto');
     expect(folderNav).toHaveClass('min-h-0', 'flex-1', 'overflow-y-auto');
-  });
-
-  it('opens with the account and folder list collapsed when it was collapsed before', async () => {
-    localStorage.setItem('mail_sidebar_collapsed', 'true');
-    renderMailPage();
-    const expand = await screen.findByRole('button', { name: 'Expand account and folder navigation' });
-    fireEvent.click(expand);
-    expect(await screen.findByRole('button', { name: 'Collapse account and folder navigation' })).toBeInTheDocument();
-    expect(localStorage.getItem('mail_sidebar_collapsed')).toBe('false');
   });
 
   it('shows a save/discard prompt when closing a dirty compose', async () => {
@@ -178,12 +170,12 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     renderMailPage([inboxEmail]);
 
     const row = await screen.findByText('Inbox subject');
-    const listItem = row.closest('[class*="cursor-pointer"]') as HTMLElement;
+    const listItem = row.closest('li') as HTMLElement;
     const checkboxButton = within(listItem).getAllByRole('button')[0];
     fireEvent.click(checkboxButton);
 
-    expect(screen.getByRole('button', { name: /mark read/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /mark unread/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /mark selected as read/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /mark selected as unread/i })).toBeInTheDocument();
   });
 
   it('keeps Starred available as a virtual flag view when no Starred mailbox exists', async () => {

@@ -5,12 +5,11 @@ import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useToast } from '@/hooks/use-toast';
-import { Loader2, Users, Calendar, Mail, Lock } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { Loader2, Lock } from 'lucide-react';
 import { z } from 'zod';
 
 const emailSchema = z.string().email('Please enter a valid email address');
@@ -167,74 +166,19 @@ const Auth = () => {
     );
   }
 
-  const features = [
-    { icon: Users, label: 'Contacts', description: 'Manage all your contacts' },
-    { icon: Calendar, label: 'Calendar', description: 'Schedule and organize' },
-    { icon: Mail, label: 'Mail', description: 'Multiple email accounts' },
-  ];
-
   return (
-    <div className="flex min-h-screen">
-      {/* Left Panel - Branding */}
-      <div className="hidden lg:flex lg:w-1/2 bg-gradient-hero relative overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_hsl(221_83%_53%_/_0.15),_transparent_50%)]" />
-        <div className="relative z-10 flex flex-col justify-center px-12 xl:px-20">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-          >
-            <h1 className="text-4xl xl:text-5xl font-bold text-primary-foreground mb-4">
-              Uni<span className="text-gradient">Hub</span>
-            </h1>
-            <p className="text-primary-foreground/80 text-lg xl:text-xl mb-12 max-w-md">
-              Your unified productivity suite. Contacts, Calendar, and Mail — all in one secure place.
-            </p>
-          </motion.div>
-          
-          <div className="grid grid-cols-3 gap-4">
-            {features.map((feature, index) => (
-              <motion.div
-                key={feature.label}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: 0.2 + index * 0.1 }}
-                className="bg-white/5 backdrop-blur-sm rounded-xl p-4 border border-white/10"
-              >
-                <feature.icon className="h-8 w-8 text-accent mb-2" />
-                <h3 className="text-primary-foreground font-semibold">{feature.label}</h3>
-                <p className="text-primary-foreground/60 text-sm">{feature.description}</p>
-              </motion.div>
-            ))}
-          </div>
+    <div className="flex min-h-dvh items-center justify-center bg-background p-6">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 flex flex-col items-center gap-3">
+          <span aria-hidden="true" className="flex h-11 w-11 items-center justify-center rounded-lg bg-accent text-lg font-semibold text-accent-foreground">U</span>
+          <h1 className="text-2xl font-semibold tracking-tight">UniHub</h1>
         </div>
-      </div>
-
-      {/* Right Panel - Auth Form */}
-      <div className="w-full lg:w-1/2 flex items-center justify-center p-6 bg-background">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.4 }}
-          className="w-full max-w-md"
-        >
-          <div className="lg:hidden text-center mb-8">
-            <h1 className="text-3xl font-bold text-foreground">
-              Uni<span className="text-gradient">Hub</span>
-            </h1>
-            <p className="text-muted-foreground mt-2">Your unified productivity suite</p>
-          </div>
-
-          <Card className="border-border/50 shadow-lg">
-            <CardHeader className="text-center">
-              <CardTitle className="text-2xl">Welcome</CardTitle>
-              <CardDescription>Sign in to access your unified workspace</CardDescription>
-            </CardHeader>
-            <CardContent>
+          <Card>
+            <CardContent className="pt-6">
               <Tabs defaultValue="signin" className="w-full">
                 <TabsList className="grid w-full grid-cols-2 mb-6">
-                  <TabsTrigger value="signin">Sign In</TabsTrigger>
-                  <TabsTrigger value="signup">Sign Up</TabsTrigger>
+                  <TabsTrigger value="signin">Sign in</TabsTrigger>
+                  <TabsTrigger value="signup">Create account</TabsTrigger>
                 </TabsList>
                 
                 <TabsContent value="signin">
@@ -262,7 +206,7 @@ const Auth = () => {
                             Verifying...
                           </>
                         ) : (
-                          'Verify and Sign In'
+                          'Verify and sign in'
                         )}
                       </Button>
                       <Button
@@ -313,10 +257,10 @@ const Auth = () => {
                       {loading ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Signing in...
+                          Signing in…
                         </>
                       ) : (
-                        'Sign In'
+                        'Sign in'
                       )}
                     </Button>
                     </form>
@@ -334,7 +278,7 @@ const Auth = () => {
                       </Alert>
                     )}
                     <div className="space-y-2">
-                      <Label htmlFor="signup-name">Full Name</Label>
+                      <Label htmlFor="signup-name">Full name</Label>
                       <Input
                         id="signup-name"
                         type="text"
@@ -381,10 +325,10 @@ const Auth = () => {
                       {loading ? (
                         <>
                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Creating account...
+                          Creating account…
                         </>
                       ) : (
-                        'Create Account'
+                        'Create account'
                       )}
                     </Button>
                   </form>
@@ -392,7 +336,6 @@ const Auth = () => {
               </Tabs>
             </CardContent>
           </Card>
-        </motion.div>
       </div>
     </div>
   );

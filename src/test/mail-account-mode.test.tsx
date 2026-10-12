@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MailAccountModeSettings } from '@/components/mail/MailAccountModeSettings';
 import { MailAccountDialog } from '@/components/mail/MailAccountDialog';
-import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
+import { MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
 import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
 import { api } from '@/lib/api';
 import type { MailAccount, MailModeImpact } from '@/lib/mail-api';
@@ -220,7 +220,8 @@ describe('sync policy upgrade gate', () => {
   function PanelHarness({ accounts }: { accounts: MailAccount[] }) {
     const [panel, setPanel] = useState<SyncPanelFocus | null>(null);
     return <>
-      <MailSyncAttentionLine operations={[]} accounts={accounts} onReview={setPanel} />
+      {/* What arriving from the attention tray's "Decide" link does (MailPage reads ?review=decision). */}
+      <button type="button" onClick={() => setPanel('decision')}>Review</button>
       <MailSyncControl accounts={accounts} viewAccountIds={accounts.map(account => account.id)} jobs={[]} jobsError={false}
         operations={[]} operationsError={false} syncing={new Set()} cancelling={new Set()} onSync={vi.fn()} onCancel={vi.fn()}
         panel={panel} onPanelChange={setPanel} touch={false} />
@@ -233,7 +234,6 @@ describe('sync policy upgrade gate', () => {
     vi.mocked(api.post).mockResolvedValue({ data: { confirmed: true, queued: true } });
     const invalidate = vi.spyOn(client, 'invalidateQueries');
     mountPanel([pending, nothingPending, confirmed, archive]);
-    expect(screen.getByRole('status')).toHaveTextContent('2 accounts need a decision');
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     const panel = await screen.findByRole('dialog');
     const notices = within(panel).getAllByRole('group');

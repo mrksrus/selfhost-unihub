@@ -1,3 +1,4 @@
+import { isOnline } from '@/lib/platform';
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { isOfflineMode } from '@/lib/offline';
@@ -81,7 +82,7 @@ export function useMailFlags(setSelectedEmail: Dispatch<SetStateAction<Email | n
   }, [busy, client, onError, publish]);
 
   const requestFlag = useCallback((email: Email, kind: MailFlagKind, value: boolean) => {
-    if (isOfflineMode() || !navigator.onLine) return;
+    if (isOfflineMode() || !isOnline()) return;
     const key = `${kind}:${email.id}`;
     let slot = slots.current.get(key);
     if (!slot) {

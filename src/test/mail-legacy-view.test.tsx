@@ -1,12 +1,12 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { MailAccountList } from '@/components/mail/MailSidebar';
+import { MailAccountList } from '@/components/mail/MailPanel';
 import type { MailAccount } from '@/lib/mail-api';
 
 const account = { id: 'account-1', email_address: 'person@example.test', display_name: 'Person' } as MailAccount;
 
 const list = (legacyCount: number | null) => render(
-  <MailAccountList accounts={[account]} loading={false} selectedAccount="all" legacyCount={legacyCount} compact={false}
+  <MailAccountList accounts={[account]} loading={false} selectedAccount="all" legacyCount={legacyCount}
     addAccount={null} onSelect={vi.fn()} onEdit={vi.fn()} onRemove={vi.fn()} />,
 );
 

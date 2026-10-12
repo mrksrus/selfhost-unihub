@@ -35,7 +35,7 @@ describe('optional module access', () => {
     const mounted = vi.fn(); function Page() { mounted(); return <p>Private content</p>; }
     renderWithClient(<ModuleGuard id="contacts"><Page /></ModuleGuard>, [module('contacts', 'Contacts', { enabled: false })]);
     expect(mounted).not.toHaveBeenCalled();
-    expect(screen.getByRole('link', { name: 'Data management' })).toHaveAttribute('href', '/settings?tab=data');
+    expect(screen.getByRole('link', { name: 'Backup and restore' })).toHaveAttribute('href', '/settings?section=backup');
     expect(screen.getByText('Contacts is disabled')).toBeInTheDocument();
   });
   it('ignores removed modules in saved device snapshots', () => {

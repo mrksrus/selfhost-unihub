@@ -252,25 +252,3 @@ export function MailSyncControl(props: ControlProps) {
     </PopoverContent>
   </Popover>;
 }
-
-/**
- * The only inline sync element: one line while a change needs the user's
- * decision or an existing Sync account waits for its cleanup confirmation.
- */
-export function MailSyncAttentionLine({ operations, accounts = [], onReview }: {
-  operations: MailWriteback[]; accounts?: MailAccount[]; onReview: (focus: 'attention' | 'decision') => void;
-}) {
-  const count = groupWritebacks(operations).attention.length;
-  const decisions = accounts.filter(needsSyncPolicyDecision).length;
-  if ((!count && !decisions) || isOfflineMode()) return null;
-  const text = [
-    count > 0 && `${plural(count, 'change needs', 'changes need')} your attention`,
-    decisions > 0 && `${plural(decisions, 'account needs', 'accounts need')} a decision`,
-  ].filter(Boolean).join(' · ');
-  return <div role="status" className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-3 text-xs sm:px-4">
-    <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-warning" />
-    <span className="truncate">{text}</span>
-    <span aria-hidden="true" className="text-muted-foreground">·</span>
-    <Button variant="link" size="sm" className="h-auto shrink-0 p-0 text-xs" onClick={() => onReview(count ? 'attention' : 'decision')}>Review</Button>
-  </div>;
-}

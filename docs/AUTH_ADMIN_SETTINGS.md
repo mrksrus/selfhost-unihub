@@ -38,6 +38,20 @@ CSRF is skipped for:
 - `POST /api/auth/signin`
 - `POST /api/auth/signup`
 - `POST /api/mail/sync/background` when `X-Background-Sync: 1` is present
+- recording upload routes with `X-Background-Sync: 1` (the service worker
+  finishing an upload)
+- requests whose session was verified from an `Authorization: Bearer` header
+  and that carry no `auth-token` cookie at all
+
+The last rule is what lets a native client (the planned Android app) write
+without cookies. It is safe because a browser never attaches an `Authorization`
+header on its own, and cross-origin script cannot add one without a preflight
+that the API refuses for foreign origins, so such a request cannot be a forged
+form or image load. `verifyToken` records which credential it accepted in
+`req.authCredential`; the CSRF check reads that record instead of looking at the
+headers again. When an auth cookie is present next to the bearer header, the
+cookie could have carried the request, so the cookie/header token check still
+applies. Tests: `api/tests/request-csrf.test.cts`.
 
 The frontend stores the CSRF token in memory via `src/lib/api.ts`; it does not
 store auth tokens in localStorage.
@@ -318,9 +332,9 @@ During an active background restore, writes to affected sections return
 `409 Restore in progress`. Reads and unaffected sections remain available.
 Account deletion is blocked while any restore section is active.
 
-## Backup Data Management
+## Backup and restore in Settings
 
-The Data Management tab also exposes generated backup and durable restore jobs:
+The Backup and restore section in Settings also exposes generated backup and durable restore jobs:
 
 - encrypted-by-default full and section backups
 - background progress with start/end times
@@ -334,7 +348,7 @@ Backup and restore job ownership is scoped to the signed-in user. Generated
 archives remain until manually deleted. Uploaded archives expire after seven
 days and are deleted after a successful restore.
 
-Data Management loads its backup/restore view when first opened. Status polling
+Backup and restore loads its backup/restore view when first opened. Status polling
 runs only while that Settings tab is active and a job is queued, running,
 validating or cancelling. It stops for completed jobs and jobs waiting for a
 password or restore confirmation.
@@ -368,8 +382,9 @@ Behavior:
 
 - Session cookies are HttpOnly and SameSite=Strict.
 - In production, cookies are also marked Secure.
-- Auth tokens are accepted from the cookie or `Authorization: Bearer`, but the
-  frontend uses cookies.
+- Auth tokens are accepted from the cookie or `Authorization: Bearer`; the
+  frontend uses cookies. A bearer-only request is exempt from CSRF (see
+  [CSRF Protection](#csrf-protection)).
 - All admin actions are server-side role checked.
 - Account/user destructive actions also remove related files where the service
   owns those paths.

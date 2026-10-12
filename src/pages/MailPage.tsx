@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Plus } from 'lucide-react';
+import { PenSquare, Plus } from 'lucide-react';
 import { captureMailFlagReconciler, type Email } from '@/lib/mail-api';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
-import { useIsMobile } from '@/hooks/use-mobile';
+import { NARROW_QUERY, useIsMobile, useMediaQuery } from '@/hooks/use-mobile';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
 import { useMailAccountSelection, useRememberedMailAccount } from '@/hooks/use-mail-account-selection';
 import { useMailFolderView } from '@/hooks/use-mail-folder-view';
@@ -19,7 +19,8 @@ import { useMailAccountEditor } from '@/hooks/use-mail-account-editor';
 import { useMailAccountRemoval } from '@/hooks/use-mail-account-removal';
 import { useMailSyncJobs } from '@/hooks/use-mail-sync-jobs';
 import { useMailWritebacks } from '@/hooks/use-mail-writebacks';
-import { MailAccountList, MailSidebar } from '@/components/mail/MailSidebar';
+import { MailAccountList, MailPanel } from '@/components/mail/MailPanel';
+import { PageShell } from '@/components/layout/PageShell';
 import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
 import { MailLegacyRecovery, MailListToolbar } from '@/components/mail/MailListToolbar';
 import { MailContextMenu, MailMessageList } from '@/components/mail/MailMessageList';
@@ -28,9 +29,8 @@ import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/comp
 import { MailAccountDialog } from '@/components/mail/MailAccountDialog';
 import { MailAccountRemovalDialogs } from '@/components/mail/MailAccountRemovalDialogs';
 import { MailFolderDialogs } from '@/components/mail/MailFolderDialogs';
-import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
+import { MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
 import { systemFolders, ALL_ACCOUNTS, LEGACY_ACCOUNT, ALL_MAIL } from '@/components/mail/mail-page-model';
-import { usePersistedFlag } from '@/hooks/use-persisted-flag';
 
 /**
  * Mail: account/folder sidebar, message list and reader (side by side on wide
@@ -43,6 +43,7 @@ const MailPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const isMobile = useIsMobile();
+  const narrow = useMediaQuery(NARROW_QUERY);
   const { accountId: activeMailAccountId, queryAccount: selectedAccount, selectAccount: setSelectedAccount } = useMailAccountSelection();
   const { data: accounts = [], isLoading: accountsLoading } = useMailAccounts();
   const folderView = useMailFolderView(selectedAccount, accounts);
@@ -64,8 +65,6 @@ const MailPage = () => {
   const accountEditor = useMailAccountEditor();
   const compose = useMailCompose({ activeMailAccountId, selectedAccount, setSelectedAccount, isMobile });
   const accountRemoval = useMailAccountRemoval(() => setSelectedAccount(ALL_ACCOUNTS));
-  const [sidebarCollapsed, setSidebarCollapsed] = usePersistedFlag('mail_sidebar_collapsed');
-  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const { jobs: syncJobs, requestSync, syncingAccountIds, requestCancel, cancellingAccountIds } = useMailSyncJobs(accounts);
@@ -100,6 +99,16 @@ const MailPage = () => {
     navigate({ pathname: location.pathname, search: params.toString(), hash: location.hash }, { replace: true });
   }, [loadEmailForReader, location.pathname, location.search, location.hash, navigate]);
 
+  // The attention tray links here to review mail decisions in the sync panel.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const review = params.get('review');
+    if (!review) return;
+    setSyncPanel(review === 'attention' || review === 'decision' ? review : 'default');
+    params.delete('review');
+    navigate({ pathname: location.pathname, search: params.toString(), hash: location.hash }, { replace: true });
+  }, [location.pathname, location.search, location.hash, navigate]);
+
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
   const selectedFolderData = folders.find((folder) => folder.id === selectedFolder);
   const folderLabel = selectedFolder === ALL_MAIL ? 'All mail' : selectedFolderData?.label || selectedFolder;
@@ -111,47 +120,40 @@ const MailPage = () => {
     ? compose.contactEmailSuggestions.some((suggestion) => suggestion.email.toLowerCase() === selectedEmail.from_address.toLowerCase())
     : false;
 
-  return (
-    <div className="relative flex h-full min-h-0 overflow-hidden">
-      <MailSidebar isMobile={isMobile} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
-        mobileOpen={mobileSidebarOpen} onMobileOpenChange={setMobileSidebarOpen} onCompose={compose.openCompose}>
-        <MailAccountList accounts={accounts} loading={accountsLoading} selectedAccount={selectedAccount} legacyCount={folderView.legacyCount}
-          compact={sidebarCollapsed && !isMobile}
-          addAccount={<MailAccountDialog editor={accountEditor} touch={isMobile} trigger={
-            <Button variant="ghost" size="icon" className={`h-6 w-6 ${(sidebarCollapsed && !isMobile) ? 'mx-auto' : ''}`} title={(sidebarCollapsed && !isMobile) ? 'Add Account' : undefined}>
-              <Plus className="h-4 w-4" />
-            </Button>
-          } />}
-          onSelect={id => {
-            setSelectedAccount(id);
-            if (id === LEGACY_ACCOUNT) setSelectedFolder(ALL_MAIL);
-            if (isMobile) setMobileSidebarOpen(false);
-          }}
-          onEdit={accountEditor.startEdit}
-          onRemove={account => {
-            if (account.disconnected_at) void accountRemoval.openPurgePreview(account.id);
-            else accountRemoval.requestDisconnect(account.id);
-          }} />
-        <MailFolderNavigation
-          folders={folderView.folderFilters}
-          systemIds={systemFolders.map(folder => folder.id)}
-          selectedFolder={selectedFolder}
-          accountLabel={accountLabel}
-          collapsed={sidebarCollapsed && !isMobile}
-          unreadByFolder={folderView.unreadByFolder}
-          onSelect={id => { setSelectedFolder(id); if (isMobile) setMobileSidebarOpen(false); }}
-          onManage={() => setFolderDialogOpen(true)}
-        />
-      </MailSidebar>
+  const panel = (
+    <MailPanel onCompose={compose.openCompose}>
+      <MailAccountList accounts={accounts} loading={accountsLoading} selectedAccount={selectedAccount} legacyCount={folderView.legacyCount}
+        addAccount={<MailAccountDialog editor={accountEditor} touch={isMobile} trigger={
+          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Add mail account" title="Add mail account">
+            <Plus aria-hidden="true" />
+          </Button>
+        } />}
+        onSelect={id => {
+          setSelectedAccount(id);
+          if (id === LEGACY_ACCOUNT) setSelectedFolder(ALL_MAIL);
+        }}
+        onEdit={accountEditor.startEdit}
+        onRemove={account => {
+          if (account.disconnected_at) void accountRemoval.openPurgePreview(account.id);
+          else accountRemoval.requestDisconnect(account.id);
+        }} />
+      <MailFolderNavigation
+        folders={folderView.folderFilters}
+        systemIds={systemFolders.map(folder => folder.id)}
+        selectedFolder={selectedFolder}
+        accountLabel={accountLabel}
+        unreadByFolder={folderView.unreadByFolder}
+        onSelect={setSelectedFolder}
+        onManage={() => setFolderDialogOpen(true)}
+      />
+    </MailPanel>
+  );
 
-      {/* Main Content */}
+  return (
+    <PageShell panel={panel} panelLabel="Accounts and folders">
+    <div className="relative flex h-full min-h-0 overflow-hidden">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <MailSyncAttentionLine operations={writebacks.data ?? []} accounts={accounts} onReview={setSyncPanel} />
-        {selectedAccount === LEGACY_ACCOUNT && (
-          <MailLegacyRecovery accounts={accounts} folders={folderView.mailFolders} selectedIds={selectedIds}
-            onRecover={(accountId, folder) => bulk.move(selectedIds, folder, accountId)} />
-        )}
-        <MailListToolbar isMobile={isMobile} onOpenSidebar={() => setMobileSidebarOpen(true)} emailCount={emails.length}
+        <MailListToolbar emailCount={emails.length}
           selection={selection} folderLabel={folderLabel} accountLabel={accountLabel} account={selectedAccount} list={list}
           bulk={bulk} moveTargets={movableFolders.filter(folder => folder.id !== selectedFolder)}
           syncControl={
@@ -161,12 +163,23 @@ const MailPage = () => {
               syncing={syncingAccountIds} cancelling={cancellingAccountIds} onSync={requestSync} onCancel={requestCancel}
               panel={syncPanel} onPanelChange={setSyncPanel} touch={isMobile} />
           } />
+        {selectedAccount === LEGACY_ACCOUNT && (
+          <MailLegacyRecovery accounts={accounts} folders={folderView.mailFolders} selectedIds={selectedIds}
+            onRecover={(accountId, folder) => bulk.move(selectedIds, folder, accountId)} />
+        )}
 
         <MailMessageList account={selectedAccount} folder={selectedFolder} folderLabel={folderLabel} accountLabel={accountLabel}
           list={list} selection={selection} accounts={accounts} flagRequests={flagRequests} requestFlag={requestFlag}
           onOpen={loadEmailForReader} onContextMenu={(email, x, y) => setContextMenuEmail({ email, x, y })}
           onAddAccount={accountEditor.openAdd} />
       </div>
+
+      {narrow && !selectedEmail && (
+        <Button onClick={compose.openCompose} aria-label="Compose"
+          className="fixed bottom-[calc(5rem+env(safe-area-inset-bottom,0px))] right-4 z-30 h-14 w-14 rounded-2xl shadow-lg md:bottom-6 md:right-6 [&_svg]:size-5">
+          <PenSquare aria-hidden="true" />
+        </Button>
+      )}
 
       {isReaderLoading && <MailReaderLoading onCancel={closeReader} />}
 
@@ -202,6 +215,7 @@ const MailPage = () => {
       <MailComposeDialog compose={compose} accounts={accounts} isMobile={isMobile} onSelectAccount={setSelectedAccount} />
 
     </div>
+    </PageShell>
   );
 };
 

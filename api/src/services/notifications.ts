@@ -3,10 +3,11 @@ import type { SqlExecutor, ApiError } from '../types';
 
 import crypto from 'crypto';
 import { db } from '../state';
-import { encrypt, decrypt } from '../security/encryption';
-import { pushAgent } from './push-transport';
-import { isModuleBackgroundEnabled, getBackgroundPausedModulesByUser } from './module-settings';
+import { isModuleBackgroundEnabled } from './module-settings';
 import { getActiveRestoreSectionsByUser } from './restore-locks';
+import { blockedBackgroundModulesByUser } from './access-policy';
+import { NOTIFICATION_TRANSPORTS, getVapidKeys } from './notification-transports';
+import type { DeliveryTarget } from './notification-transports';
 import {
   REMINDER_GRACE_MS,
   EXCLUDED_MAIL_FOLDERS,
@@ -16,10 +17,8 @@ import {
   reminderIsCurrent,
   hash,
   normalizeSubscription,
-  retryDisposition,
 } from './notification-rules';
 
-interface VapidKeys { publicKey: string; privateKey: string; subject: string }
 interface NotificationPayload extends Record<string, unknown> {
   dedupeKey?: string;
   reminderMinutes?: unknown;
@@ -38,82 +37,22 @@ interface EventInput {
   endpointHash?: string | null;
 }
 interface EventRow { kind: string; source_id: string | null; user_id: string }
+interface DueDelivery extends EventRow {
+  event_id: string;
+  subscription_id: string;
+  attempts: number | string;
+  payload: unknown;
+  expires_at: unknown;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}
 type BlockedModules = ReadonlyMap<string, ReadonlySet<string>>;
-type PushError = Error & { statusCode?: number };
 
 const SESSION_WARNING_MS = 2 * 24 * 60 * 60 * 1000;
 const RECORDING_STALL_MS = 10 * 60 * 1000;
 let running = false;
-let keyPromise: Promise<VapidKeys> | null = null;
 const jsonValue = (value: unknown): NotificationPayload => (typeof value === 'string' ? JSON.parse(value) : value) as NotificationPayload;
-
-async function ensureNotificationSchema() {
-  await db.execute(`CREATE TABLE IF NOT EXISTS notification_config (
-    id TINYINT PRIMARY KEY, public_key VARCHAR(128) NOT NULL, encrypted_private_key TEXT NOT NULL,
-    subject VARCHAR(320) NOT NULL, last_reminder_scan_at DATETIME NULL,
-    reminder_revision BIGINT NOT NULL DEFAULT 0, scanned_revision BIGINT NOT NULL DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS push_subscriptions (
-    id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, session_id CHAR(36) NOT NULL,
-    endpoint TEXT NOT NULL, endpoint_hash CHAR(64) NOT NULL UNIQUE,
-    p256dh VARCHAR(128) NOT NULL, auth VARCHAR(64) NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-    INDEX idx_push_user (user_id)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS notification_events (
-    id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, event_key CHAR(64) NOT NULL,
-    kind VARCHAR(24) NOT NULL, source_id CHAR(36) NULL, payload JSON NOT NULL,
-    expires_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY unique_notification_event (user_id, event_key),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    INDEX idx_notification_event_expiry (expires_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS notification_deliveries (
-    event_id CHAR(36) NOT NULL, subscription_id CHAR(36) NOT NULL,
-    status VARCHAR(12) NOT NULL DEFAULT 'pending', attempts INT NOT NULL DEFAULT 0,
-    available_at DATETIME NOT NULL, delivered_at DATETIME NULL, last_error VARCHAR(120) NULL,
-    PRIMARY KEY (event_id, subscription_id),
-    FOREIGN KEY (event_id) REFERENCES notification_events(id) ON DELETE CASCADE,
-    FOREIGN KEY (subscription_id) REFERENCES push_subscriptions(id) ON DELETE CASCADE,
-    INDEX idx_notification_due (status, available_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-  await db.execute(`CREATE TABLE IF NOT EXISTS notification_reminders (
-    event_id CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, minutes INT NOT NULL,
-    due_at DATETIME NOT NULL, queued_at DATETIME NULL,
-    PRIMARY KEY (event_id, minutes),
-    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    INDEX idx_reminder_due (queued_at, due_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-  const [indexes] = await db.execute<RowDataPacket[]>("SHOW INDEX FROM calendar_events WHERE Key_name = 'idx_events_notification_scan'");
-  if (!indexes.length) {
-    try { await db.execute('CREATE INDEX idx_events_notification_scan ON calendar_events(updated_at, start_time)'); }
-    catch (error) { if ((error as ApiError).code !== 'ER_DUP_KEYNAME') throw error; }
-  }
-  await getVapidKeys();
-}
-
-async function getVapidKeys(): Promise<VapidKeys> {
-  if (!keyPromise) keyPromise = (async () => {
-    let [rows] = await db.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
-    if (!rows.length) {
-      const webPush = require('web-push') as typeof import('web-push');
-      const keys = webPush.generateVAPIDKeys();
-      const [admins] = await db.execute<RowDataPacket[]>("SELECT email FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1");
-      const subject = process.env.WEB_PUSH_SUBJECT || `mailto:${admins[0]?.email || 'notifications@unihub.invalid'}`;
-      // Concurrent startups may generate candidates; INSERT IGNORE and reread choose exactly one stable pair.
-      await db.execute('INSERT IGNORE INTO notification_config (id, public_key, encrypted_private_key, subject) VALUES (1, ?, ?, ?)', [keys.publicKey, encrypt(keys.privateKey), subject]);
-      [rows] = await db.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
-    }
-    const privateKey = decrypt(rows[0].encrypted_private_key);
-    if (!privateKey) throw new Error('Unable to decrypt persisted Web Push key');
-    return { publicKey: rows[0].public_key, privateKey, subject: rows[0].subject };
-  })().catch(error => { keyPromise = null; throw error; });
-  return keyPromise;
-}
 
 async function subscribe(userId: string, sessionToken: string | null, input: unknown) {
   const subscription = normalizeSubscription(input as Parameters<typeof normalizeSubscription>[0]);
@@ -175,16 +114,6 @@ async function deviceStatus(userId: string, endpoint: unknown) {
 function notificationModule(kind: string) {
   return kind === 'mail' ? 'mail' : ['calendar', 'todo', 'reminder'].includes(kind) ? 'calendar' : kind === 'recording' ? 'recordings' : null;
 }
-async function blockedNotificationModules(connection: SqlExecutor) {
-  const blocked = await getActiveRestoreSectionsByUser(connection);
-  for (const [userId, modules] of await getBackgroundPausedModulesByUser(connection)) {
-    const sections = blocked.get(userId) || new Set();
-    for (const id of modules) sections.add(id);
-    blocked.set(userId, sections);
-  }
-  return blocked;
-}
-
 async function enqueueEvent({ userId, dedupeKey, kind, sourceId = null, title, body, url, expiresAt, data = {}, endpointHash = null }: EventInput, connection: SqlExecutor = db) {
   const moduleId = notificationModule(kind);
   if (moduleId && !await isModuleBackgroundEnabled(userId, moduleId, connection)) return null;
@@ -328,7 +257,9 @@ async function eventStillCurrent(row: EventRow, payload: NotificationPayload, co
   }
   return true;
 }
-async function deliverPending(connection: SqlExecutor, now: Date, activeRestores: BlockedModules = new Map()) {
+// Due deliveries whose device still belongs to a live session of an active
+// user, skipping users whose section is being restored.
+async function selectDueDeliveries(connection: SqlExecutor, now: Date, activeRestores: BlockedModules) {
   const exclusions = [];
   const excludedParams: string[] = [];
   for (const [section, kinds] of [['calendar', "'calendar', 'todo', 'reminder'"], ['mail', "'mail'"], ['recordings', "'recording'"]]) {
@@ -338,15 +269,23 @@ async function deliverPending(connection: SqlExecutor, now: Date, activeRestores
       excludedParams.push(...users);
     }
   }
-  const [rows] = await connection.execute<(RowDataPacket & EventRow)[]>(`SELECT d.*, e.user_id, e.kind, e.source_id, e.payload, e.expires_at, p.endpoint, p.p256dh, p.auth
+  const [rows] = await connection.execute<(RowDataPacket & DueDelivery)[]>(`SELECT d.*, e.user_id, e.kind, e.source_id, e.payload, e.expires_at, p.endpoint, p.p256dh, p.auth
     FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
     JOIN push_subscriptions p ON p.id = d.subscription_id JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id JOIN users u ON u.id = p.user_id
     WHERE d.status = 'pending' AND d.available_at <= ? AND e.expires_at > ? AND s.expires_at > UTC_TIMESTAMP() AND u.is_active = TRUE
     ${exclusions.length ? `AND ${exclusions.join(' AND ')}` : ''}
     ORDER BY d.available_at LIMIT 25`, [now, now, ...excludedParams]);
+  return rows;
+}
+// Every delivery row targets a browser push subscription today; a later
+// target kind column selects the transport per row.
+function deliveryTarget(row: DueDelivery): DeliveryTarget {
+  return { kind: 'webpush', id: row.subscription_id, endpoint: row.endpoint, p256dh: row.p256dh, auth: row.auth };
+}
+async function deliverPending(connection: SqlExecutor, now: Date, activeRestores: BlockedModules = new Map()) {
+  const rows = await selectDueDeliveries(connection, now, activeRestores);
   if (!rows.length) return 0;
-  const keys = await getVapidKeys();
-  const webPush = require('web-push') as typeof import('web-push');
+  for (const kind of new Set(rows.map(row => deliveryTarget(row).kind))) await NOTIFICATION_TRANSPORTS[kind].ready();
   let delivered = 0;
   for (const row of rows) {
     const moduleId = notificationModule(row.kind);
@@ -362,16 +301,16 @@ async function deliverPending(connection: SqlExecutor, now: Date, activeRestores
     }
     const attempts = Number(row.attempts) + 1;
     await connection.execute('UPDATE notification_deliveries SET attempts = ?, available_at = ? WHERE event_id = ? AND subscription_id = ?', [attempts, new Date(Date.now() + 60000), row.event_id, row.subscription_id]);
-    try {
-      await webPush.sendNotification({ endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth } }, JSON.stringify({ ...payload, notificationId: row.event_id }),
-        { agent: pushAgent, vapidDetails: keys, TTL: Math.max(0, Math.min(86400, Math.floor((asUtcDate(row.expires_at).getTime() - Date.now()) / 1000))), urgency: row.kind === 'reminder' ? 'high' : 'normal', timeout: 10000, topic: hash(payload.dedupeKey).slice(0, 32) });
+    const target = deliveryTarget(row);
+    const outcome = await NOTIFICATION_TRANSPORTS[target.kind].send(target, { eventId: row.event_id, kind: row.kind, payload, expiresAt: row.expires_at }, attempts);
+    if (outcome.sent) {
       await connection.execute("UPDATE notification_deliveries SET status = 'sent', delivered_at = UTC_TIMESTAMP(), last_error = NULL WHERE event_id = ? AND subscription_id = ?", [row.event_id, row.subscription_id]);
       delivered++;
-    } catch (error) {
-      const outcome = retryDisposition(error as PushError, attempts);
-      if (outcome.expired) await connection.execute('DELETE FROM push_subscriptions WHERE id = ?', [row.subscription_id]);
-      else await connection.execute('UPDATE notification_deliveries SET status = ?, available_at = ?, last_error = ? WHERE event_id = ? AND subscription_id = ?',
-        [outcome.retry ? 'pending' : 'failed', outcome.nextAttempt || now, `Push service ${Number((error as PushError).statusCode) || 'network error'}`, row.event_id, row.subscription_id]);
+    } else if (outcome.targetGone) {
+      await NOTIFICATION_TRANSPORTS[target.kind].discardTarget(connection, target);
+    } else {
+      await connection.execute('UPDATE notification_deliveries SET status = ?, available_at = ?, last_error = ? WHERE event_id = ? AND subscription_id = ?',
+        [outcome.retry ? 'pending' : 'failed', outcome.nextAttempt || now, outcome.error, row.event_id, row.subscription_id]);
     }
   }
   return delivered;
@@ -434,14 +373,14 @@ async function processNotificationJobs() {
     locked = Number(lock[0]?.acquired) === 1;
     if (!locked) return { skipped: true };
     const now = new Date();
-    await reconcileReminders(connection, now, await blockedNotificationModules(connection));
-    const paused = await blockedNotificationModules(connection);
+    await reconcileReminders(connection, now, await blockedBackgroundModulesByUser(connection));
+    const paused = await blockedBackgroundModulesByUser(connection);
     const calendarUsers = [...paused].filter(([, modules]) => modules.has('calendar')).map(([userId]) => userId);
     await connection.execute(`DELETE FROM notification_reminders WHERE due_at < ? ${calendarUsers.length ? `AND user_id NOT IN (${calendarUsers.map(() => '?').join(', ')})` : ''}`, [new Date(now.getTime() - REMINDER_GRACE_MS), ...calendarUsers]);
-    await enqueueDueReminders(connection, now, await blockedNotificationModules(connection));
+    await enqueueDueReminders(connection, now, await blockedBackgroundModulesByUser(connection));
     await enqueueSessionExpiryWarnings(connection);
-    await enqueueStalledRecordingUploads(connection, await blockedNotificationModules(connection));
-    const delivered = await deliverPending(connection, now, await blockedNotificationModules(connection));
+    await enqueueStalledRecordingUploads(connection, await blockedBackgroundModulesByUser(connection));
+    const delivered = await deliverPending(connection, now, await blockedBackgroundModulesByUser(connection));
     const pausedUsers = [...paused].filter(([, modules]) => modules.has('calendar') || modules.has('mail')).map(([userId]) => userId);
     await connection.execute(`DELETE FROM notification_events WHERE expires_at < UTC_TIMESTAMP() - INTERVAL 30 DAY ${pausedUsers.length ? `AND user_id NOT IN (${pausedUsers.map(() => '?').join(', ')})` : ''}`, pausedUsers);
     await connection.execute("DELETE FROM push_subscriptions WHERE session_id IN (SELECT id FROM sessions WHERE expires_at <= UTC_TIMESTAMP())");
@@ -455,7 +394,6 @@ async function processNotificationJobs() {
   }
 }
 export {
-  ensureNotificationSchema,
   getVapidKeys,
   subscribe,
   unsubscribe,

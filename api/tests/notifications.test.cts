@@ -9,20 +9,29 @@ const {
 } = require('../dist/src/services/notification-rules') as typeof import('../src/services/notification-rules');
 const { isPublicAddress } = require('../dist/src/services/push-transport') as typeof import('../src/services/push-transport');
 
-function loadService(db: FixtureValue, sender: FixtureValue = {}) {
-  const filename = require.resolve('../dist/src/services/notifications');
-  const nativeRequire = createRequire(filename);
-  const module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\nmodule.exports.testInternals = { enqueueDueReminders, deliverPending, reconcileReminders, enqueueSessionExpiryWarnings };', {
-    module, exports: module.exports, Date, Buffer, console, process: { env: {} },
-    require(name: FixtureValue) {
-      if (name === '../state') return { db };
-      if (name === '../security/encryption') return { encrypt: (text: string) => `encrypted:${text}`, decrypt: (text: string) => text?.startsWith('encrypted:') ? text.slice(10) : null };
-      if (name === 'web-push') return sender;
-      return nativeRequire(name);
-    },
-  }, { filename });
-  return module.exports;
+// The service and its delivery transports run in one sandbox that shares the
+// synthetic database, encryption and web-push sender; `transports` replaces
+// the transport map to test the dispatcher alone.
+function loadService(db: FixtureValue, sender: FixtureValue = {}, transports: FixtureValue = null) {
+  const sandboxed = new Set(['../dist/src/services/notifications', '../dist/src/services/notification-transports'].map(name => require.resolve(name)));
+  function load(filename: string) {
+    const nativeRequire = createRequire(filename);
+    const module = { exports: {} };
+    const internals = filename.endsWith('notifications.js') ? '\nmodule.exports.testInternals = { enqueueDueReminders, deliverPending, reconcileReminders, enqueueSessionExpiryWarnings, transports: notification_transports_1.NOTIFICATION_TRANSPORTS };' : '';
+    vm.runInNewContext(fs.readFileSync(filename, 'utf8') + internals, {
+      module, exports: module.exports, Date, Buffer, console, process: { env: {} },
+      require(name: FixtureValue) {
+        if (name === '../state') return { db };
+        if (name === '../security/encryption') return { encrypt: (text: string) => `encrypted:${text}`, decrypt: (text: string) => text?.startsWith('encrypted:') ? text.slice(10) : null };
+        if (name === 'web-push') return sender;
+        if (name === './notification-transports' && transports) return transports;
+        const resolved = nativeRequire.resolve(name);
+        return sandboxed.has(resolved) ? load(resolved) : nativeRequire(name);
+      },
+    }, { filename });
+    return module.exports;
+  }
+  return load(require.resolve('../dist/src/services/notifications'));
 }
 function validSubscription(endpoint = 'https://fcm.googleapis.com/fcm/send/example') {
   const publicKey = Buffer.alloc(65, 1); publicKey[0] = 4;
@@ -175,6 +184,62 @@ test('temporary sender failure schedules retry without falsely acknowledging del
   assert.equal(await service.testInternals.deliverPending(connection, now), 0);
   assert.ok(writes.some(call => call.values?.[0] === 'pending' && call.values[1] instanceof Date));
   assert.equal(writes.some(call => call.sql.includes("status = 'sent'")), false);
+});
+
+test('the dispatcher routes each due delivery to the transport of its target kind and records the outcome', async () => {
+  const now = new Date();
+  const row = (id: string, attempts: number) => ({ event_id: id, subscription_id: `sub-${id}`, attempts, user_id: 'u1', kind: 'test', payload: { dedupeKey: id }, expires_at: new Date(now.getTime() + 60000), endpoint: `https://push.example/${id}`, p256dh: 'key', auth: 'auth' });
+  const outcomes: FixtureValue = {
+    sent: { sent: true },
+    gone: { sent: false, targetGone: true, retry: false, nextAttempt: null, error: 'Push service 410' },
+    later: { sent: false, targetGone: false, retry: true, nextAttempt: new Date(now.getTime() + 30000), error: 'Push service 503' },
+    dead: { sent: false, targetGone: false, retry: false, nextAttempt: null, error: 'Push service 403' },
+  };
+  const sends: FixtureValue[] = []; const discarded: FixtureValue[] = []; let readied = 0;
+  const transports = { NOTIFICATION_TRANSPORTS: { webpush: {
+    async ready() { readied++; },
+    async send(target: FixtureValue, message: FixtureValue, attempts: number) { sends.push({ target, message, attempts }); return outcomes[message.eventId]; },
+    async discardTarget(_connection: FixtureValue, target: FixtureValue) { discarded.push(target.id); },
+  } } };
+  const writes: FixtureValue[] = [];
+  const connection = { async execute(sql: string, values: FixtureValue) {
+    if (sql.includes('FROM notification_deliveries d')) return [[row('sent', 0), row('gone', 1), row('later', 2), row('dead', 3)]];
+    writes.push({ sql, values }); return [{}];
+  } };
+  const service: FixtureValue = loadService({}, {}, transports);
+  assert.equal(await service.testInternals.deliverPending(connection, now), 1);
+  assert.equal(readied, 1, 'the transport is readied once per batch');
+  assert.deepEqual(sends.map(call => [call.target.kind, call.target.id, call.target.endpoint, call.attempts, call.message.payload.dedupeKey]), [
+    ['webpush', 'sub-sent', 'https://push.example/sent', 1, 'sent'], ['webpush', 'sub-gone', 'https://push.example/gone', 2, 'gone'],
+    ['webpush', 'sub-later', 'https://push.example/later', 3, 'later'], ['webpush', 'sub-dead', 'https://push.example/dead', 4, 'dead'],
+  ]);
+  assert.deepEqual(discarded, ['sub-gone']);
+  const reserved = writes.filter(call => call.sql.startsWith('UPDATE notification_deliveries SET attempts = ?'));
+  assert.deepEqual(reserved.map(call => call.values[0]), [1, 2, 3, 4], 'every attempt is reserved before transport');
+  // Arrays created inside the sandbox have another realm's prototype; copy them before comparing.
+  assert.deepEqual(writes.filter(call => call.sql.includes("status = 'sent'")).map(call => [...call.values]), [['sent', 'sub-sent']]);
+  const settled = writes.filter(call => call.sql.startsWith('UPDATE notification_deliveries SET status = ?'));
+  assert.deepEqual(settled.map(call => [...call.values]), [['pending', outcomes.later.nextAttempt, 'Push service 503', 'later', 'sub-later'], ['failed', now, 'Push service 403', 'dead', 'sub-dead']]);
+});
+
+test('the web push transport classifies expired, temporary and permanent push service failures', async () => {
+  const service: FixtureValue = loadService({ async execute() { return [[{ public_key: 'public', encrypted_private_key: 'encrypted:private', subject: 'mailto:admin@example.com' }]]; } }, {
+    async sendNotification(subscription: FixtureValue) { const status = Number(new URL(subscription.endpoint).pathname.slice(1)); if (!status) return { statusCode: 201 }; throw Object.assign(new Error('Push failed'), { statusCode: status }); },
+  });
+  const transport = service.testInternals.transports.webpush;
+  const target = (status: number) => ({ kind: 'webpush', id: 's1', endpoint: `https://push.example/${status}`, p256dh: 'key', auth: 'auth' });
+  const message = { eventId: 'n1', kind: 'test', payload: { dedupeKey: 'test-1' }, expiresAt: new Date(Date.now() + 60000) };
+  assert.equal(JSON.stringify(await transport.send(target(0), message, 1)), '{"sent":true}');
+  const gone = await transport.send(target(410), message, 1);
+  assert.deepEqual([gone.sent, gone.targetGone, gone.error], [false, true, 'Push service 410']);
+  const later = await transport.send(target(503), message, 1);
+  assert.deepEqual([later.sent, later.targetGone, later.retry, later.error], [false, false, true, 'Push service 503']);
+  assert.ok(later.nextAttempt instanceof Date);
+  const dead = await transport.send(target(403), message, 1);
+  assert.deepEqual([dead.sent, dead.targetGone, dead.retry, dead.nextAttempt, dead.error], [false, false, false, null, 'Push service 403']);
+  const deletes: FixtureValue[] = [];
+  await transport.discardTarget({ async execute(sql: string, values: FixtureValue) { deletes.push([sql, [...values]]); return [{}]; } }, target(410));
+  assert.deepEqual(deletes, [['DELETE FROM push_subscriptions WHERE id = ?', ['s1']]]);
 });
 
 test('reminder scans preserve skipped changes through restore cancellation and revalidate older committed timestamps', async () => {

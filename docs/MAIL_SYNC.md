@@ -410,7 +410,7 @@ A folder already represented by a legacy provider mapping cannot be recreated
 under the same remote name; choose a different name.
 
 All pre-upgrade custom folders remain under **Legacy shared**, collapsed in the
-sidebar by default. Their IDs, slugs, messages, routing rules and provider mappings
+folder list by default. Their IDs, slugs, messages, routing rules and provider mappings
 are preserved. Selecting an account shows its new folders plus shared/system
 folders; All Accounts labels new folders with their account address. System views
 such as Inbox still combine accounts in All Accounts.

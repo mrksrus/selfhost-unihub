@@ -1,5 +1,6 @@
 import { defaultPages, knownModules, knownPages, legacyOfflineModules, moduleForPath, type ModulePreference, type PagePreference } from '@/lib/modules';
 import type { User } from '@/contexts/auth-context';
+import { emitAppEvent } from '@/lib/app-events';
 
 type Row = Record<string, unknown>;
 export interface OfflineSnapshot {
@@ -39,19 +40,19 @@ export function setOfflineAccount(userId: string | null) {
 export function setOfflineMode(value: boolean) {
   if (offlineMode === value) return;
   offlineMode = value;
-  if (typeof window !== 'undefined') window.dispatchEvent(new Event('unihub-offline-mode'));
+  if (typeof window !== 'undefined') emitAppEvent('unihub:offline-mode');
 }
 export function isOfflineMode() { return offlineMode; }
 
 function announceChange() {
-  window.dispatchEvent(new Event('unihub-offline-change'));
+  emitAppEvent('unihub:offline-data');
   try { localStorage.setItem(CHANGE_KEY, identifier()); } catch { /* Optional cross-tab signal. */ }
 }
 if (typeof window !== 'undefined') window.addEventListener('storage', event => {
   if (event.key === CHANGE_KEY || event.key === EPOCH_KEY) {
     memory = null;
     generation++;
-    window.dispatchEvent(new Event('unihub-offline-change'));
+    emitAppEvent('unihub:offline-data');
   }
 });
 

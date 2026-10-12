@@ -33,7 +33,7 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('notification event navigation', () => {
-  for (const [path, Page, title] of [['calendar', CalendarPage, 'Edit event'], ['todo', TodoPage, 'Edit Task Details']] as const) {
+  for (const [path, Page, title] of [['calendar', CalendarPage, 'Edit event'], ['todo', TodoPage, 'Edit task']] as const) {
     it(`opens the exact ${path} item even when absent from the current list`, async () => {
       const get = vi.spyOn(api, 'get').mockImplementation(async endpoint => {
         if (endpoint === '/calendar/events/target') return { data: { event: event() } };

@@ -20,6 +20,12 @@ export function groupWritebacks(operations: MailWriteback[]) {
   return { waiting, attention, rejected };
 }
 
+export async function fetchMailWritebacks({ signal }: { signal?: AbortSignal } = {}) {
+  const response = await api.get<{ operations: MailWriteback[] }>('/mail/writebacks', { signal });
+  if (response.error || !Array.isArray(response.data?.operations)) throw new Error('Could not check server changes.');
+  return response.data.operations;
+}
+
 // Mount once per mail view: the effect refreshes the affected lists when a
 // writeback settles, and a second observer would repeat that work.
 export function useMailWritebacks(onSettled?: (emailIds: string[]) => void) {
@@ -29,11 +35,7 @@ export function useMailWritebacks(onSettled?: (emailIds: string[]) => void) {
   const live = useServerEventsConnected();
   const status = useQuery({
     queryKey: mailQueryKeys.writebacks,
-    queryFn: async ({ signal }) => {
-      const response = await api.get<{ operations: MailWriteback[] }>('/mail/writebacks', { signal });
-      if (response.error || !Array.isArray(response.data?.operations)) throw new Error('Could not check server changes.');
-      return response.data.operations;
-    },
+    queryFn: fetchMailWritebacks,
     enabled: !isOfflineMode(),
     // Operation events refetch this while the live stream is connected.
     refetchInterval: query => live ? LIVE_POLL_MS.writebacks : query.state.data?.some(isUnsettledWriteback) ? 3000 : 15000,

@@ -4,7 +4,7 @@ import { prepareFolderReconciliation } from './services/mail-folder-reconciliati
 import http from 'http';
 import { PORT } from './config';
 import { db } from './state';
-import { initDatabase, ensurePerformanceIndexes } from './services/database';
+import { initDatabase } from './services/database';
 import { schedulePeriodicMailWork, runMailServerDeletionPass } from './services/mail';
 import { runDueWritebacks } from './services/mail-writebacks';
 import { pruneFinishedJobs } from './services/mail-engine/runtime';
@@ -17,7 +17,7 @@ import { isSectionRestoreActive } from './services/restore-locks';
 import { handleRequest } from './request-handler';
 import { installShutdownHandler } from './services/server-events';
 import { idleSupervisor } from './services/mail-idle';
-import { ensureNotificationSchema, processNotificationJobs } from './services/notifications';
+import { getVapidKeys, processNotificationJobs } from './services/notifications';
 
 interface PoolStatistics {
   _allConnections?: { length: number };
@@ -34,8 +34,9 @@ let periodicMailServerDeleteRunning = false;
 
 async function start() {
   await initDatabase();
-  await ensureNotificationSchema();
   await verifyDatabaseInventory(db);
+  // The Web Push identity is generated once, at startup rather than on first delivery.
+  await getVapidKeys();
   await prepareFolderReconciliation();
   const runNotifications = () => processNotificationJobs().catch(error => console.error('[NOTIFICATIONS] Worker failed:', (error as Error).message));
   void runNotifications();
@@ -62,11 +63,6 @@ async function start() {
   installShutdownHandler({ server, onShutdown: [() => idleSupervisor.stop()] });
   server.listen(PORT, () => {
     console.log(`✓ UniHub API server running on port ${PORT}`);
-    setTimeout(() => {
-      ensurePerformanceIndexes().catch((error) => {
-        console.error('[DB] Mail performance index setup failed:', (error as Error).message);
-      });
-    }, 5000);
   });
 
   // A process restart cannot resume an IMAP connection; rescan safely using

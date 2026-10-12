@@ -13,7 +13,7 @@ The standard deployment is one app container and one MariaDB container. Nginx se
 | Area | Start here |
 | --- | --- |
 | Routes and page entry points | src/App.tsx, then the feature in src/pages/ |
-| Shared layout and navigation | src/components/layout/, src/components/GlobalCommandPalette.tsx |
+| Shared layout and navigation | src/components/layout/ (NavRail, BottomNav, PageShell), src/components/GlobalCommandPalette.tsx |
 | UI primitives, tokens, and theme | src/components/ui/, src/index.css, tailwind.config.ts, src/components/theme/ |
 | Browser API calls and state | src/lib/, src/hooks/, src/contexts/AuthContext.tsx, src/components/SessionQueryProvider.tsx |
 | Offline and PWA behavior | src/lib/offline.ts, src/lib/pwa-update.ts, src/utils/service-worker.ts, workers/sw-custom.ts |
@@ -43,7 +43,7 @@ For feature details, follow the corresponding file in docs/ rather than treating
 - Preserve UniHub's black, white, and blue identity unless the task asks for a redesign. Dark is the default; Light and System must also work. Use the semantic CSS variables in src/index.css through Tailwind classes, including the existing module and success/warning/destructive colors. Avoid hard-coded colors in feature views.
 - Use Inter for interface text and JetBrains Mono where code or fixed-width data helps. Keep headings and actions in plain, sentence-case language. Let spacing, type, and alignment show hierarchy; add borders, cards, gradients, or motion only when they clarify a real distinction.
 - Reuse src/components/ui/ controls and their variants. Keep feature-specific layout in the feature component. Do not create a new visual treatment for a common control when an existing variant fits.
-- The desktop shell has a sidebar; narrow screens use a header and bottom navigation. Check both widths, long content, scrolling, touch targets, and safe-area clearance. A change should remain usable with keyboard focus, visible errors, useful empty/loading states, sufficient contrast, and reduced motion.
+- Pages use `PageShell`: a navigation rail and an optional context panel on wide screens; on narrow screens the page header is the top bar, the panel opens as a sheet, and a bottom bar navigates. Prefer rows to cards and one main action per row. Check both widths, long content, scrolling, touch targets, and safe-area clearance. A change should remain usable with keyboard focus, visible errors, useful empty/loading states, sufficient contrast, and reduced motion.
 - Treat displayed email as untrusted content. Keep SafeEmailContent and its privacy controls in charge of HTML mail and remote images; do not render sender HTML as ordinary application UI.
 - Per-user color customization is planned; preserve the existing visual identity unless the task changes that requirement.
 

@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/lib/api';
+import { emitAppEvent, onAppEvent } from '@/lib/app-events';
 import { recordingsQueryKeys } from '@/lib/recordings-api';
 import type { UploadRequest } from '@/lib/recording-upload';
 import {
@@ -16,8 +17,7 @@ import {
   type StoredRecording,
 } from '@/lib/recording-queue';
 
-const QUEUED_EVENT = 'unihub:recording-queued';
-const STOP_EVENT = 'unihub:recording-stop';
+
 const FIRST_RETRY_MS = 15_000;
 const MAX_RETRY_MS = 5 * 60_000;
 
@@ -33,13 +33,13 @@ export const pageUploadRequest: UploadRequest = async (method, path, body) => {
 
 // Starts an upload pass now, for a recording that was just queued.
 export function kickRecordingUploads() {
-  window.dispatchEvent(new Event(QUEUED_EVENT));
+  emitAppEvent('unihub:recording-queued');
 }
 
 // Stops this page's upload pass after the current chunk, so a discard can
 // take the upload lock. kickRecordingUploads() starts it again.
 export function stopRecordingUploads() {
-  window.dispatchEvent(new Event(STOP_EVENT));
+  emitAppEvent('unihub:recording-stop');
 }
 
 // Notices that a recording is not uploaded yet are stale once it is.
@@ -145,8 +145,7 @@ export function useRecordingUploadRunner() {
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('pagehide', onPageHide);
     window.addEventListener('online', onOnline);
-    window.addEventListener(QUEUED_EVENT, onQueued);
-    window.addEventListener(STOP_EVENT, onStop);
+    const stopListening = [onAppEvent('unihub:recording-queued', onQueued), onAppEvent('unihub:recording-stop', onStop)];
     void run();
     return () => {
       disposed = true;
@@ -156,8 +155,7 @@ export function useRecordingUploadRunner() {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('online', onOnline);
-      window.removeEventListener(QUEUED_EVENT, onQueued);
-      window.removeEventListener(STOP_EVENT, onStop);
+      stopListening.forEach(stop => stop());
     };
   }, [queryClient, toast, userId]);
 }

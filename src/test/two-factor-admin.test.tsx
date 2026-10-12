@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import AdminUsers from '@/pages/AdminUsers';
 import { TotpQrCode } from '@/components/settings/TotpQrCode';
@@ -24,18 +25,30 @@ beforeEach(() => {
 
 function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><AdminUsers /></QueryClientProvider>);
+  render(<QueryClientProvider client={client}><MemoryRouter><AdminUsers /></MemoryRouter></QueryClientProvider>);
 }
+
+// Opens a user's actions menu and returns its Reset 2FA entry, if offered.
+async function resetEntry(email: string) {
+  fireEvent.pointerDown(await screen.findByRole('button', { name: `Actions for ${email}` }), { button: 0, ctrlKey: false });
+  await screen.findByRole('menu');
+  return screen.queryByRole('menuitem', { name: 'Reset 2FA' });
+}
+async function openReset(email: string) {
+  fireEvent.click((await resetEntry(email))!);
+  await screen.findByText(`Reset 2FA for ${email}`);
+}
+const closeMenu = () => fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
 
 describe('admin 2FA reset', () => {
   it('is offered only for other users with 2FA and needs the admin password', async () => {
     mount();
-    await screen.findByText('person@example.test');
-    const buttons = screen.getAllByRole('button', { name: 'Reset 2FA' });
-    expect(buttons).toHaveLength(1);
-    fireEvent.click(buttons[0]);
-    expect(screen.getByText('Reset 2FA for person@example.test')).toBeInTheDocument();
-    const submit = screen.getAllByRole('button', { name: 'Reset 2FA' }).at(-1)!;
+    expect(await resetEntry('admin@example.test')).toBeNull();
+    closeMenu();
+    expect(await resetEntry('plain@example.test')).toBeNull();
+    closeMenu();
+    await openReset('person@example.test');
+    const submit = screen.getByRole('button', { name: 'Reset 2FA' });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
     fireEvent.click(submit);
@@ -47,9 +60,9 @@ describe('admin 2FA reset', () => {
   it('keeps the dialog open and shows the error when the password is wrong', async () => {
     vi.mocked(api.post).mockResolvedValue({ error: 'Current password is incorrect', status: 403 });
     mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'Reset 2FA' }));
+    await openReset('person@example.test');
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'wrong' } });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Reset 2FA' }).at(-1)!);
+    fireEvent.click(screen.getByRole('button', { name: 'Reset 2FA' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: 'Current password is incorrect', variant: 'destructive' })));
     expect(screen.getByText('Reset 2FA for person@example.test')).toBeInTheDocument();
   });
@@ -60,15 +73,14 @@ describe('admin 2FA reset', () => {
     let finish!: (value: { data: { message: string } }) => void;
     vi.mocked(api.post).mockReturnValue(new Promise(resolve => { finish = resolve; }));
     mount();
-    await screen.findByText('other@example.test');
-    fireEvent.click(screen.getAllByRole('button', { name: 'Reset 2FA' })[0]);
+    await openReset('person@example.test');
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Reset 2FA' }).at(-1)!);
+    fireEvent.click(screen.getByRole('button', { name: 'Reset 2FA' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/users/user-2/2fa/reset', expect.anything()));
     // The admin closes the dialog and opens it for someone else before the first reset finishes.
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByText('Reset 2FA for person@example.test')).not.toBeInTheDocument());
-    fireEvent.click(screen.getAllByRole('button', { name: 'Reset 2FA' })[1]);
+    await openReset('other@example.test');
     fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'typed-for-other' } });
     finish({ data: { message: 'Two-factor authentication reset' } });
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Two-factor authentication reset for person@example.test' })));

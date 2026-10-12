@@ -76,7 +76,12 @@ keep the compiled modules testable:
   tests swap it in `require.cache`, is required in place and typed:
   `(require('./x') as typeof import('./x')).fn()`. Keep these where they are.
 - Route modules export one table of `'METHOD /path'` handlers with
-  `export =`; `routes/index.ts` spreads them.
+  `export =`; `routes/index.ts` spreads them. A key may contain `:name`
+  segments; `request-handler.ts` compiles the whole table into a matcher at
+  startup and fills `req.params`, so no routing code changes for a new route
+  (`api/tests/route-matcher.test.cts` checks every key against a sample path).
+  Body limits other than the 1000-byte default are declared next to the
+  handler lookup in `request-handler.ts`.
 
 The maintenance scripts in `api/scripts/` (build, recovery gate, schema dump,
 dev seed, local SQL) are `.cts` files that Node runs directly by stripping

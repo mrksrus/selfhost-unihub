@@ -8,7 +8,6 @@ import { setOfflineMode } from '@/lib/offline';
 import { applyMailPageWaitBudget, MAIL_PAGE_TEST_TIMEOUT } from '@/test/helpers/mail-page-budget';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn() } }));
-vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }));
 // The real hook returns a stable toast function. A new vi.fn() per render
 // would change every callback/effect that depends on toast on each render.
 const { toast } = vi.hoisted(() => ({ toast: vi.fn() }));

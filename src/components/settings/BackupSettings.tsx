@@ -1,3 +1,4 @@
+import { copyText, downloadFromServer, saveFile } from '@/lib/platform';
 import type { BackupJob, BackupImportResult, RestoreJob, BackupCapabilities } from '@/lib/backup-api';
 import { useState, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -13,12 +14,11 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { SettingsBlock, SettingsSection } from '@/components/settings/SettingsLayout';
 import { Separator } from '@/components/ui/separator';
 import { Progress } from '@/components/ui/progress';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Download, Loader2, Database, Trash2, Upload, LockKeyhole, Square, RotateCcw, Copy, Play } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { Download, Loader2, Trash2, Upload, LockKeyhole, Square, RotateCcw, Copy, Play } from 'lucide-react';
 
 export default function BackupSettings({ active }: { active: boolean }) {
   const { user } = useAuth();
@@ -268,12 +268,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
   };
 
   const startBackupDownload = (job: BackupJob) => {
-    const link = document.createElement('a');
-    link.href = api.getDownloadUrl(`/backup/jobs/${encodeURIComponent(job.id)}/download`);
-    link.download = `unihub-backup-${job.id}.${job.encryption_enabled ? 'unihub-backup' : 'zip'}`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    downloadFromServer(api.getDownloadUrl(`/backup/jobs/${encodeURIComponent(job.id)}/download`),
+      `unihub-backup-${job.id}.${job.encryption_enabled ? 'unihub-backup' : 'zip'}`);
   };
 
   const handleBackupDownload = (job: BackupJob) => {
@@ -323,12 +319,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
       [`UniHub backup: ${recoveryDialogJob.id}\nRecovery password: ${recoveryPassword}\n`],
       { type: 'text/plain;charset=utf-8' }
     );
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `unihub-backup-${recoveryDialogJob.id}-recovery-password.txt`;
-    link.click();
-    URL.revokeObjectURL(url);
+    saveFile(blob, `unihub-backup-${recoveryDialogJob.id}-recovery-password.txt`);
   };
 
   const handleDeleteBackupJob = async (job: BackupJob) => {
@@ -346,18 +337,11 @@ export default function BackupSettings({ active }: { active: boolean }) {
   };
 
   return (<>
-
-        {/* Backup and import */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.33 }}
-        >
-          <div className="space-y-6">
-          <div role="note" aria-label="Backup and restore ALPHA" className="rounded-md border border-accent/50 bg-accent/10 p-4 text-sm space-y-2">
-            <p className="font-semibold">ALPHA: backup, import and restore</p>
-            <p>These features are experimental. Do not rely on them as your only copy of important data.</p>
-            <p>Keep an independent backup of your database, uploads, configuration and secrets, especially before deleting emails from your email provider.</p>
+          <div className="mb-10 space-y-4">
+          <div role="note" aria-label="Backup and restore are experimental" className="space-y-1 rounded-md border border-warning/40 p-4 text-sm">
+            <p className="font-medium text-warning">Experimental</p>
+            <p>Backup, import and restore are still being tested. Do not rely on them as your only copy of important data.</p>
+            <p className="text-muted-foreground">Keep an independent server backup too, especially before deleting emails from your provider.</p>
           </div>
           {capabilitiesError && (
             <ErrorState
@@ -367,7 +351,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
               retrying={capabilitiesFetching}
             />
           )}
-          <p role="status" className="rounded-md border border-border p-4 text-sm">
+          <p role="status" className="max-w-prose text-sm text-muted-foreground">
             {capabilitiesLoading
               ? 'Checking backup availability…'
               : backupAvailable
@@ -376,19 +360,9 @@ export default function BackupSettings({ active }: { active: boolean }) {
             {' '}Full backups include data from hidden and disabled modules. A full server recovery also needs the database, uploads and configuration.
             {capabilities?.exclusions.map(item => <span key={item} className="mt-1 block text-muted-foreground">Not included: {item}.</span>)}
           </p>
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-accent/10">
-                  <Database className="h-5 w-5 text-accent" />
-                </div>
-                <div>
-                  <CardTitle className="text-lg">Create a backup (ALPHA)</CardTitle>
-                  <CardDescription>Create an archive on this server, then download it below.</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
+          </div>
+          <SettingsSection title="Create a backup" description="Create an archive on this server, then download it below.">
+            <SettingsBlock className="space-y-4">
               <div className="flex items-center justify-between gap-4 rounded-md border border-border p-3">
                 <div className="space-y-1">
                   <Label htmlFor="backupEncryption">Encrypt backups</Label>
@@ -514,22 +488,11 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   </div>
                 ))}
               </div>
-            </CardContent>
-          </Card>
+            </SettingsBlock>
+          </SettingsSection>
 
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-accent/10">
-                  <Upload className="h-5 w-5 text-accent" />
-                </div>
-                <div>
-                  <CardTitle className="text-lg">Import and review (ALPHA)</CardTitle>
-                  <CardDescription>Upload a backup and review its scope, counts and warnings before starting restore.</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
+          <SettingsSection title="Import and restore" description="Upload a backup and review its scope, counts and warnings before you start a restore.">
+            <SettingsBlock className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="backupImportFile">Backup file</Label>
                 <Input
@@ -634,7 +597,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                Restore is experimental (ALPHA) and is enabled after background validation. You may close this page while validation or restore runs.
+                Restore is experimental and is enabled after background validation. You may close this page while validation or restore runs.
               </p>
 
               {selectedRestoreJob?.status === 'awaiting_password' && (
@@ -813,8 +776,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
                   </div>
                 ))}
               </div>
-            </CardContent>
-          </Card>
+            </SettingsBlock>
+          </SettingsSection>
 
           <Dialog
             open={Boolean(recoveryDialogJob)}
@@ -835,7 +798,7 @@ export default function BackupSettings({ active }: { active: boolean }) {
               }}
             >
               <DialogHeader>
-                <DialogTitle>Encrypted backup recovery password (ALPHA)</DialogTitle>
+                <DialogTitle>Recovery password for the encrypted backup</DialogTitle>
               </DialogHeader>
               {!recoveryPassword ? (
                 <div className="space-y-4">
@@ -870,7 +833,9 @@ export default function BackupSettings({ active }: { active: boolean }) {
                         variant="outline"
                         size="icon"
                         title="Copy recovery password"
-                        onClick={() => navigator.clipboard.writeText(recoveryPassword)}
+                        onClick={() => void copyText(recoveryPassword).then(copied => toast(copied
+                          ? { title: 'Recovery password copied' }
+                          : { title: 'Could not copy', description: 'Select the password and copy it manually.', variant: 'destructive' }))}
                       >
                         <Copy className="h-4 w-4" />
                       </Button>
@@ -906,7 +871,5 @@ export default function BackupSettings({ active }: { active: boolean }) {
               )}
             </DialogContent>
           </Dialog>
-          </div>
-        </motion.div>
   </>);
 }

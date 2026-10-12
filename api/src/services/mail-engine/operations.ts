@@ -8,8 +8,7 @@ import { db } from '../../state';
 import * as transport from './transport';
 import * as reconciliation from './reconciliation';
 import * as runtime from './runtime';
-import { isSectionRestoreActive } from '../restore-locks';
-import { isModuleEnabled, isModuleBackgroundEnabled } from '../module-settings';
+import { canRunModule } from '../access-policy';
 
 interface StateContext {
   attemptId?: string;
@@ -40,8 +39,7 @@ async function providerReady(op: OperationRow, generation: number, workerId: str
   if (signal?.aborted) throw stopped();
   const fence = await runtime.assertFence({ accountId: op.mail_account_id, workerId: workerId!,
     generation: Number(generation), jobId });
-  if (signal?.aborted || fence.cancellationRequested || await isSectionRestoreActive(op.user_id, 'mail')
-    || !await isModuleEnabled(op.user_id, 'mail')) throw stopped();
+  if (signal?.aborted || fence.cancellationRequested || !await canRunModule(op.user_id, 'mail')) throw stopped();
 }
 async function accountFence(cx: SqlExecutor, op: OperationRow, generation: number | null | undefined, workerId: string | null | undefined, jobId: string | null | undefined) {
   if (!workerId || !Number.isSafeInteger(Number(generation)) || Number(generation) < 1) return false;
@@ -394,8 +392,7 @@ async function processDueOperations(account: { id: string; user_id: string }, co
   let needsSync = false, connectionFailed = false;
   for (const op of ops) {
     const lease = await runtime.assertFence({ accountId: account.id, workerId: workerId!, generation: Number(workerGeneration), jobId });
-    if (signal?.aborted || lease.cancellationRequested || await isSectionRestoreActive(account.user_id, 'mail')
-      || !await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) break;
+    if (signal?.aborted || lease.cancellationRequested || !await canRunModule(account.user_id, 'mail', { background })) break;
     try {
       const result = op.action === 'move' ? await applyMove(op, connection, workerGeneration, signal, workerId, jobId)
         : await applyFlag(op, connection, workerGeneration, signal, workerId, jobId);

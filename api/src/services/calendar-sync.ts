@@ -16,8 +16,7 @@ import type { CalendarAccount, CalendarCalendar, CalendarEvent } from '../types/
 import crypto from 'crypto';
 import { db } from '../state';
 import { decrypt } from '../security/encryption';
-import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
-import { isSectionRestoreActive } from './restore-locks';
+import { canRunModule } from './access-policy';
 import { publishCalendarChanged } from './server-events';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
@@ -661,10 +660,7 @@ async function runAccountSync(accountId: string, { userId, reason, full }: SyncO
   // background sync, so it also runs after Calendar is turned on or a restart.
   const firstSyncOwed = !account.last_synced_at && account.sync_status === 'pending';
   const background = reason === 'scheduled' && !firstSyncOwed;
-  const allowed = background
-    ? await isModuleBackgroundEnabled(account.user_id, 'calendar')
-    : await isModuleEnabled(account.user_id, 'calendar');
-  if (!allowed || await isSectionRestoreActive(account.user_id, 'calendar')) return { skipped: true, reason: 'paused' };
+  if (!await canRunModule(account.user_id, 'calendar', { background })) return { skipped: true, reason: 'paused' };
   if (!account.is_active) return { skipped: true, reason: 'inactive' };
 
   return withAccountLock(accountId, async () => {

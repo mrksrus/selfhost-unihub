@@ -1,238 +1,140 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import { Edit, FileAudio, Loader2, Music2, Save } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Textarea } from '@/components/ui/textarea';
-import { useToast } from '@/hooks/use-toast';
-import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
+import { Link, useSearchParams } from 'react-router-dom';
+import { ChevronDown, FileAudio, ListMusic, Loader2, Music2 } from 'lucide-react';
 import { recordingsApi, recordingsQueryKeys, type Recording } from '@/lib/recordings-api';
+import { formatDuration, formatRecordedAt } from '@/lib/recording-format';
+import { useToast } from '@/hooks/use-toast';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
+import { PageBody, PageHeader, PageShell, PanelGroup, PanelHeader, PanelItem } from '@/components/layout/PageShell';
+import { RecordingPlayer } from '@/components/recordings/RecordingPlayer';
 
 const EMPTY_RECORDINGS: Recording[] = [];
+type View = 'chords' | 'missing';
+const VIEWS: Record<View, { label: string; icon: typeof Music2 }> = {
+  chords: { label: 'With chords', icon: ListMusic },
+  missing: { label: 'Missing chords', icon: Music2 },
+};
 
-function formatDuration(value: number | null) {
-  if (!value || value < 0) return 'Unknown length';
-  const total = Math.round(value);
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-}
-
-function formatRecordedAt(value: string | null | undefined) {
-  if (!value) return 'No recording date';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'No recording date';
-  return date.toLocaleString();
+function SongRow({ recording, open, onToggle, startEditing, saving, onSave }: {
+  recording: Recording; open: boolean; onToggle: () => void; startEditing: boolean; saving: boolean; onSave: (chords: string, done: () => void) => void;
+}) {
+  const chords = recording.metadata?.chords || '';
+  const [editing, setEditing] = useState(startEditing);
+  const [draft, setDraft] = useState(chords);
+  const edit = () => { setDraft(chords); setEditing(true); };
+  return (
+    <li className="border-b border-border">
+      <button type="button" onClick={onToggle} aria-expanded={open}
+        className="flex w-full items-center gap-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+        <FileAudio aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{recording.title}</span>
+          <span className="block truncate text-xs text-muted-foreground">
+            {[formatRecordedAt(recording.recorded_at), formatDuration(recording.duration_seconds), ...recording.tags].join(' · ')}
+          </span>
+        </span>
+        <ChevronDown aria-hidden="true" className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="space-y-3 pb-4 pl-7">
+          <RecordingPlayer id={recording.id} />
+          {recording.description && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{recording.description}</p>}
+          {editing ? (
+            <form className="space-y-2" onSubmit={event => { event.preventDefault(); onSave(draft, () => setEditing(false)); }}>
+              <Textarea aria-label={`Chords for ${recording.title}`} value={draft} onChange={event => setDraft(event.target.value)} placeholder="C  G  Am  F" rows={5} className="font-mono" autoFocus />
+              <div className="flex justify-end gap-2">
+                {chords && <Button type="button" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>}
+                <Button type="submit" disabled={saving}>{saving && <Loader2 aria-hidden="true" className="animate-spin" />}Save chords</Button>
+              </div>
+            </form>
+          ) : (
+            <>
+              <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-sm">{chords}</pre>
+              <Button variant="outline" size="sm" onClick={edit}>Edit chords</Button>
+            </>
+          )}
+        </div>
+      )}
+    </li>
+  );
 }
 
 const Music = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
+  const view: View = params.get('view') === 'missing' ? 'missing' : 'chords';
+  const [openId, setOpenId] = useState<string | null>(null);
 
   const musicQuery = useQuery({
     queryKey: recordingsQueryKeys.list({ category: 'music' }),
     queryFn: () => recordingsApi.list({ category: 'music' }),
   });
-
   const missingChordsQuery = useQuery({
     queryKey: recordingsQueryKeys.list({ category: 'music', musicMissingChords: true }),
     queryFn: () => recordingsApi.list({ category: 'music', musicMissingChords: true }),
   });
-
   const musicRecordings = musicQuery.data ?? EMPTY_RECORDINGS;
   const missingChords = missingChordsQuery.data ?? EMPTY_RECORDINGS;
-  const hasChords = useMemo(
-    () => musicRecordings.filter((recording) => recording.metadata?.chords?.trim()),
-    [musicRecordings]
-  );
+  const withChords = useMemo(() => musicRecordings.filter(recording => recording.metadata?.chords?.trim()), [musicRecordings]);
 
   const saveChords = useMutation({
-    mutationFn: async ({ recording, chords }: { recording: Recording; chords: string }) => recordingsApi.update(recording.id, {
-      category: 'music',
-      metadata: { chords },
-    }),
-    onSuccess: (_, variables) => {
+    mutationFn: ({ recording, chords }: { recording: Recording; chords: string }) => recordingsApi.update(recording.id, { category: 'music', metadata: { chords } }),
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: recordingsQueryKeys.all });
-      setDrafts((current) => {
-        const next = { ...current };
-        delete next[variables.recording.id];
-        return next;
-      });
-      setEditingId(null);
       toast({ title: 'Chords saved' });
     },
-    onError: (error: Error) => {
-      toast({ title: 'Could not save chords', description: error.message, variant: 'destructive' });
-    },
+    onError: (error: Error) => toast({ title: 'Could not save chords', description: error.message, variant: 'destructive' }),
   });
 
-  const updateDraft = (recording: Recording, value: string) => {
-    setDrafts((current) => ({ ...current, [recording.id]: value }));
+  const selectView = (next: View) => {
+    setOpenId(null);
+    setParams(next === 'chords' ? {} : { view: next }, { replace: true });
   };
+  const list = view === 'chords' ? withChords : missingChords;
+  const error = musicQuery.error || missingChordsQuery.error;
 
-  const getDraft = (recording: Recording) => (
-    Object.prototype.hasOwnProperty.call(drafts, recording.id)
-      ? drafts[recording.id]
-      : recording.metadata?.chords || ''
+  const panel = (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <PanelHeader title="Music" />
+      <PanelGroup>
+        {(Object.keys(VIEWS) as View[]).map(id => (
+          <PanelItem key={id} icon={VIEWS[id].icon} active={view === id} onSelect={() => selectView(id)}
+            count={(id === 'chords' ? withChords : missingChords).length} countLabel="songs" countTone={id === 'missing' ? 'warning' : 'default'}>
+            {VIEWS[id].label}
+          </PanelItem>
+        ))}
+      </PanelGroup>
+
+    </div>
   );
 
-  const renderRecordingCard = (recording: Recording, mode: 'read' | 'missing') => {
-    const isEditing = editingId === recording.id || mode === 'missing';
-    const draft = getDraft(recording);
-
-    return (
-      <div key={recording.id} className="rounded-lg border border-border p-4">
-        <div className="space-y-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <h2 className="font-semibold text-foreground truncate">{recording.title}</h2>
-              <p className="text-xs text-muted-foreground">
-                {formatRecordedAt(recording.recorded_at)} • {formatDuration(recording.duration_seconds)}
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {recording.tags.map((tagName) => (
-                <Badge key={tagName} variant="secondary">{tagName}</Badge>
-              ))}
-            </div>
-          </div>
-
-          {recording.description && <p className="text-sm text-muted-foreground">{recording.description}</p>}
-          <audio controls className="w-full" src={`/api/recordings/${recording.id}/file`} />
-
-          {isEditing ? (
-            <div className="space-y-2">
-              <Textarea
-                value={draft}
-                onChange={(event) => updateDraft(recording, event.target.value)}
-                placeholder="C  G  Am  F"
-                rows={5}
-              />
-              <div className="flex flex-wrap justify-end gap-2">
-                {mode === 'read' && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => {
-                      setEditingId(null);
-                      setDrafts((current) => {
-                        const next = { ...current };
-                        delete next[recording.id];
-                        return next;
-                      });
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                )}
-                <Button
-                  type="button"
-                  onClick={() => saveChords.mutate({ recording, chords: draft })}
-                  disabled={saveChords.isPending}
-                >
-                  {saveChords.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
-                  Save chords
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 text-sm text-foreground font-sans">
-                {recording.metadata.chords}
-              </pre>
-              <div className="flex justify-end">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setEditingId(recording.id);
-                    updateDraft(recording, recording.metadata?.chords || '');
-                  }}
-                >
-                  <Edit className="h-4 w-4 mr-2" />
-                  Edit chords
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  };
-
-  const isLoading = musicQuery.isLoading || missingChordsQuery.isLoading;
-  const hasError = musicQuery.error || missingChordsQuery.error;
-
   return (
-    <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Music</h1>
-          <p className="text-muted-foreground">Review music recordings and document their chords</p>
-        </div>
-        <Button asChild variant="outline">
-          <Link to="/recordings">Open Recordings</Link>
-        </Button>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-accent/10">
-              <Music2 className="h-5 w-5 text-accent" />
-            </div>
-            <div>
-              <CardTitle className="text-lg">Music Recordings</CardTitle>
-              <CardDescription>{musicRecordings.length} music recordings</CardDescription>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {isLoading ? (
-            <LoadingState label="Loading music recordings…" />
-          ) : hasError ? (
-            <ErrorState
-              title="Could not load music recordings"
-              error={hasError}
-              onRetry={() => {
-                if (musicQuery.error) void musicQuery.refetch();
-                if (missingChordsQuery.error) void missingChordsQuery.refetch();
-              }}
-              retrying={musicQuery.isFetching || missingChordsQuery.isFetching}
-            />
+    <PageShell panel={panel} panelLabel="Music lists">
+      <PageHeader title="Music" scope={VIEWS[view].label} />
+      <PageBody width="reading">
+        {musicQuery.isLoading || missingChordsQuery.isLoading ? <LoadingState label="Loading music…" />
+          : error ? <ErrorState title="Could not load music" error={error} onRetry={() => { void musicQuery.refetch(); void missingChordsQuery.refetch(); }} retrying={musicQuery.isFetching || missingChordsQuery.isFetching} />
+          : list.length === 0 ? (
+            <EmptyState icon={Music2}
+              title={musicRecordings.length === 0 ? 'No music yet' : view === 'chords' ? 'No chords written down yet' : 'Every song has chords'}
+              description={musicRecordings.length === 0 ? 'Set a recording\'s category to Music to see it here.' : undefined}
+              action={musicRecordings.length === 0 ? <Button asChild variant="outline"><Link to="/recordings">Open Recordings</Link></Button> : undefined} />
           ) : (
-            <Tabs defaultValue="has-chords">
-              <TabsList className="mb-4">
-                <TabsTrigger value="has-chords">Has Chords</TabsTrigger>
-                <TabsTrigger value="missing-chords">Missing Chords</TabsTrigger>
-              </TabsList>
-
-              <TabsContent value="has-chords" className="space-y-3">
-                {hasChords.length === 0 ? (
-                  <EmptyState icon={FileAudio} title="No music recordings with chords yet" />
-                ) : (
-                  hasChords.map((recording) => renderRecordingCard(recording, 'read'))
-                )}
-              </TabsContent>
-
-              <TabsContent value="missing-chords" className="space-y-3">
-                {missingChords.length === 0 ? (
-                  <EmptyState icon={Music2} title="No music recordings are missing chords" />
-                ) : (
-                  missingChords.map((recording) => renderRecordingCard(recording, 'missing'))
-                )}
-              </TabsContent>
-            </Tabs>
+            <ul className="border-t border-border">
+              {list.map(recording => (
+                <SongRow key={`${view}:${recording.id}`} recording={recording} open={openId === recording.id} startEditing={view === 'missing'}
+                  onToggle={() => setOpenId(openId === recording.id ? null : recording.id)} saving={saveChords.isPending}
+                  onSave={(chords, done) => saveChords.mutate({ recording, chords }, { onSuccess: done })} />
+              ))}
+            </ul>
           )}
-        </CardContent>
-      </Card>
-    </div>
+      </PageBody>
+    </PageShell>
   );
 };
 

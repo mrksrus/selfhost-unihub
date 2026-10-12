@@ -1,3 +1,4 @@
+import { downloadFromServer } from '@/lib/platform';
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 import type { BackupJob } from '@/lib/backup-api';
@@ -39,12 +40,8 @@ export function useMailAccountBackup(accountId: string) {
   const current = jobId ? job.data ?? null : null;
   const download = () => {
     if (!current) return;
-    const link = document.createElement('a');
-    link.href = api.getDownloadUrl(`/backup/jobs/${encodeURIComponent(current.id)}/download`);
-    link.download = `unihub-mail-backup-${current.id}.${current.encryption_enabled ? 'unihub-backup' : 'zip'}`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    downloadFromServer(api.getDownloadUrl(`/backup/jobs/${encodeURIComponent(current.id)}/download`),
+      `unihub-mail-backup-${current.id}.${current.encryption_enabled ? 'unihub-backup' : 'zip'}`);
   };
   return {
     job: current,

@@ -10,7 +10,6 @@ import type { MailSyncJob } from '@/hooks/use-mail-sync-jobs';
 import { applyMailPageWaitBudget, MAIL_PAGE_TEST_TIMEOUT } from '@/test/helpers/mail-page-budget';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn(), put: vi.fn(), post: vi.fn(), delete: vi.fn(), getBlob: vi.fn() } }));
-vi.mock('@/hooks/use-mobile', () => ({ useIsMobile: () => false }));
 const { toast } = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
 
@@ -43,7 +42,7 @@ function mount() {
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/mail']}><MailPage /></MemoryRouter></QueryClientProvider>);
 }
 function row(id: string) {
-  return screen.getByRole('button', { name: new RegExp(`^(Unstar|Star) Subject ${id}$`) }).closest('[class*="cursor-pointer"]') as HTMLElement;
+  return screen.getByRole('button', { name: new RegExp(`^(Unstar|Star) Subject ${id}$`) }).closest('li') as HTMLElement;
 }
 function cached(id: string, key: readonly unknown[] = cacheKey) {
   return client.getQueryData<MailListResponse>(key)?.emails.find(email => email.id === id);
@@ -245,11 +244,11 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     fireEvent.click(await screen.findByText('Subject a'));
     await screen.findByText(bodyText('a'));
     fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Star' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Star selected' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/emails/a/star', { is_starred: true }, expect.objectContaining({ headers: { 'Idempotency-Key': expect.any(String) } })));
     await waitFor(() => expect(screen.getAllByText('Star change awaiting provider')).toHaveLength(2));
     fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Trash request rejected', description: 'Account busy; move not accepted' })));
     expect(screen.getByText(bodyText('a'))).toBeInTheDocument();
     expect(row('a')).toBeInTheDocument();
@@ -264,7 +263,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     mount();
     await screen.findByText('Subject a');
     fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Mark Unread' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark selected as unread' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/emails/a/read', { is_read: false }, expect.any(Object)));
     fireEvent.click(screen.getByRole('button', { name: 'Star Subject a' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/emails/a/star', { is_starred: true }, expect.any(Object)));
@@ -311,7 +310,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     fireEvent.click(await screen.findByText('Subject a'));
     await screen.findByText(bodyText('a'));
     fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Star' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Star selected' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: 'Unstar message' }));
     expect(cached('a')?.is_starred).toBe(false);
@@ -327,11 +326,11 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     mount();
     await screen.findByText('Subject a');
     fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Mark Read' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Mark selected as read' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Failed to update read status' })));
     expect(cached('a')?.is_read).toBe(false);
     fireEvent.click(row('a').querySelector('.email-checkbox button') as HTMLElement);
-    fireEvent.click(screen.getByRole('button', { name: 'Star' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Star selected' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Failed to update star' })));
     expect(cached('a')).toMatchObject({ is_read: false, is_starred: false });
   });

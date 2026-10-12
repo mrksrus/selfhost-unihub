@@ -21,7 +21,6 @@ test('frozen actual 0.10.3 archive restores through the current reader with acco
     owned = true;
     const runtime = createBackupRuntime(directory, 'v2-destination-test-key', pool);
     await runtime('services/database').ensureSchema();
-    await runtime('services/notifications').ensureNotificationSchema();
     const user = crypto.randomUUID();
     await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,full_name) VALUES (?,?,?,'V2 destination')", [user,'v2-destination@example.test','synthetic-password-hash']);
     const fixture = path.join(__dirname, 'fixtures/backups/v2-0.10.3');

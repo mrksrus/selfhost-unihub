@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { invalidateMailQueries } from '@/lib/mail-api';
+import { invalidateMailQueries, mailQueryKeys } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
 import type { MailPurgePreview } from '@/components/mail/mail-page-model';
 
@@ -30,7 +30,7 @@ export function useMailAccountRemoval(onPurged: () => void) {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['mail-accounts'] });
-      void queryClient.invalidateQueries({ queryKey: ['mail-sync-jobs'] });
+      void queryClient.invalidateQueries({ queryKey: mailQueryKeys.syncJobs });
       setAccountToDelete(null);
       toast({ title: 'Mail account disconnected', description: 'Your local mail is retained. Reconnect in account settings with credentials.' });
     },

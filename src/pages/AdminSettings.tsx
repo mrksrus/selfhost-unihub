@@ -1,15 +1,13 @@
-import { Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { LoadingState } from '@/components/ui/page-states';
 import { useToast } from '@/hooks/use-toast';
-import { HardDrive, KeyRound, Loader2, Shield, Users } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { KeyRound, Loader2 } from 'lucide-react';
+import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
+import { SettingsPanel } from '@/components/settings/SettingsPanel';
+import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 
 type StorageSection = {
   key: string;
@@ -107,248 +105,105 @@ const AdminSettings = () => {
     },
   });
 
-  if (user?.role !== 'admin') {
-    return (
-      <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto">
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-muted-foreground">You do not have permission to view this page.</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  const body = user?.role !== 'admin' ? (
+    <p className="text-sm text-muted-foreground">Only admins can see this page.</p>
+  ) : (
+    <>
+      <SettingsSection title="Sign-ups">
+        <SettingsRow label="Who can create an account" htmlFor="signup-mode"
+          description={signupMode === 'open' ? 'Anyone can sign up and use UniHub right away.'
+            : signupMode === 'approval' ? 'Anyone can sign up, and an admin approves them in Users.'
+            : 'Nobody can sign up. Existing accounts keep working.'}>
+          {isLoading ? <Loader2 aria-hidden="true" className="h-5 w-5 animate-spin text-muted-foreground" /> : (
+            <Select value={signupMode} onValueChange={mode => updateSignupMode.mutate(mode)} disabled={updateSignupMode.isPending}>
+              <SelectTrigger id="signup-mode" className="w-full sm:w-56"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="open">Anyone</SelectItem>
+                <SelectItem value="approval">Anyone, with approval</SelectItem>
+                <SelectItem value="disabled">Nobody</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Storage">
+        {storageLoading ? <SettingsBlock><LoadingState compact label="Scanning storage…" /></SettingsBlock>
+          : !storageOverview ? <SettingsBlock><p className="text-sm text-muted-foreground">Storage overview is unavailable.</p></SettingsBlock>
+          : (
+            <>
+              <SettingsBlock>
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-4">
+                  {[
+                    ['Total', formatBytes(storageOverview.totals.bytes), `${storageOverview.totals.files} files`],
+                    ['Users', String(storageOverview.totals.users), `${storageOverview.totals.active_users} active`],
+                    ['Emails', String(storageOverview.totals.emails), `${storageOverview.totals.mail_accounts} accounts`],
+                    ['Records', String(storageOverview.totals.contacts + storageOverview.totals.calendar_events), `${storageOverview.totals.contacts} contacts, ${storageOverview.totals.calendar_events} events and tasks`],
+                  ].map(([label, value, detail]) => (
+                    <div key={label}>
+                      <dt className="text-xs text-muted-foreground">{label}</dt>
+                      <dd className="mt-0.5 text-xl font-semibold tabular-nums">{value}</dd>
+                      <dd className="text-xs text-muted-foreground">{detail}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </SettingsBlock>
+              {storageOverview.sections.map(section => (
+                <SettingsRow key={section.key} label={section.label}
+                  description={<>
+                    {[`${section.files} files`, section.tracked_items !== undefined && `${section.tracked_items} tracked`, section.ready_items !== undefined && `${section.ready_items} ready`].filter(Boolean).join(', ')}
+                    {(!section.path_exists || section.scan_error) && <span className="block text-destructive">{section.scan_error || 'The storage folder does not exist yet.'}</span>}
+                  </>}>
+                  <span className="text-sm font-medium tabular-nums">{formatBytes(section.bytes)}</span>
+                </SettingsRow>
+              ))}
+            </>
+          )}
+      </SettingsSection>
+
+      {storageOverview && (
+        <SettingsSection title="Storage per person" description={`Last scanned ${new Date(storageOverview.generated_at).toLocaleString()}.`}>
+          {(storageOverview.users || []).length === 0 ? <SettingsBlock><p className="text-sm text-muted-foreground">No stored files yet.</p></SettingsBlock>
+            : storageOverview.users.map(storageUser => {
+              const share = storageOverview.totals.bytes > 0 ? Math.min(100, (storageUser.bytes / storageOverview.totals.bytes) * 100) : 0;
+              const sections = storageUser.sections || {};
+              return (
+                <SettingsBlock key={storageUser.user_id} className="space-y-2">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <p className="min-w-0 truncate text-sm font-medium">
+                      {formatUserLabel(storageUser)}
+                      {storageUser.orphaned ? <span className="font-normal text-warning"> (no longer has an account)</span> : !storageUser.is_active ? <span className="font-normal text-muted-foreground"> (inactive)</span> : null}
+                    </p>
+                    <p className="shrink-0 text-sm tabular-nums">{formatBytes(storageUser.bytes)} <span className="text-muted-foreground">({share.toFixed(1)}%)</span></p>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+                    <div className="h-full rounded-full bg-accent" style={{ width: `${share}%` }} />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Attachments {formatBytes(sections.mail_attachments?.bytes)}, raw mail {formatBytes(sections.mail_raw?.bytes)}, recordings {formatBytes(sections.recordings?.bytes)}, exports {formatBytes(sections.exports?.bytes)}. {storageUser.files} files.
+                  </p>
+                </SettingsBlock>
+              );
+            })}
+        </SettingsSection>
+      )}
+
+      <SettingsSection title="Deployment secrets">
+        <SettingsBlock>
+          <p className="flex gap-3 text-sm text-muted-foreground">
+            <KeyRound aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>UniHub cannot check whether JWT_SECRET and ENCRYPTION_KEY are strong. Keep them long, random, unique and stored outside the app. Changing ENCRYPTION_KEY needs planning, because stored mail and calendar sign-ins depend on it.</span>
+          </p>
+        </SettingsBlock>
+      </SettingsSection>
+    </>
+  );
 
   return (
-    <div className="p-4 sm:p-6 lg:p-8 max-w-4xl mx-auto space-y-6">
-      <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4 }}
-      >
-        <h1 className="text-2xl font-bold text-foreground">Admin Settings</h1>
-        <p className="text-muted-foreground">Server-wide settings separate from your personal preferences</p>
-      </motion.div>
-
-      <Alert>
-        <KeyRound className="h-4 w-4" />
-        <AlertTitle>Deployment Secrets</AlertTitle>
-        <AlertDescription>
-          UniHub cannot verify whether existing deployment secrets are strong. Admins should keep JWT_SECRET and
-          ENCRYPTION_KEY long, random, unique, and stored outside the app. Rotating ENCRYPTION_KEY requires planning
-          because stored mail and calendar credentials depend on it.
-        </AlertDescription>
-      </Alert>
-
-      <Tabs defaultValue="general" className="space-y-6">
-        <div className="-mx-4 overflow-x-auto px-4 sm:-mx-6 sm:px-6 lg:mx-0 lg:px-0">
-          <TabsList className="h-11 w-max min-w-full justify-start gap-1 rounded-none border-b border-border bg-transparent p-0 text-muted-foreground lg:min-w-0 lg:rounded-md lg:border lg:bg-muted lg:p-1">
-            <TabsTrigger value="general" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
-              General
-            </TabsTrigger>
-            <TabsTrigger value="signup" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
-              Signup
-            </TabsTrigger>
-            <TabsTrigger value="users" className="h-11 shrink-0 rounded-none border-b-2 border-transparent px-4 data-[state=active]:border-accent data-[state=active]:bg-transparent data-[state=active]:shadow-none lg:h-9 lg:rounded-sm lg:border-b-0 lg:data-[state=active]:bg-background lg:data-[state=active]:shadow-sm">
-              Users
-            </TabsTrigger>
-          </TabsList>
-        </div>
-
-        <TabsContent value="general" className="mt-0">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-accent/10">
-                  <HardDrive className="h-5 w-5 text-accent" />
-                </div>
-                <div>
-                  <CardTitle className="text-lg">Storage Overview</CardTitle>
-                  <CardDescription>Aggregate counts and disk usage for server-owned storage.</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-5">
-              {storageLoading ? (
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-              ) : !storageOverview ? (
-                <p className="text-sm text-muted-foreground">Storage overview is unavailable.</p>
-              ) : (
-                <>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <div className="rounded-md border border-border p-3">
-                      <p className="text-sm text-muted-foreground">Total storage</p>
-                      <p className="mt-1 text-2xl font-semibold text-foreground">{formatBytes(storageOverview.totals.bytes)}</p>
-                      <p className="text-xs text-muted-foreground">{storageOverview.totals.files} files</p>
-                    </div>
-                    <div className="rounded-md border border-border p-3">
-                      <p className="text-sm text-muted-foreground">Users</p>
-                      <p className="mt-1 text-2xl font-semibold text-foreground">{storageOverview.totals.users}</p>
-                      <p className="text-xs text-muted-foreground">{storageOverview.totals.active_users} active</p>
-                    </div>
-                    <div className="rounded-md border border-border p-3">
-                      <p className="text-sm text-muted-foreground">Mail</p>
-                      <p className="mt-1 text-2xl font-semibold text-foreground">{storageOverview.totals.emails}</p>
-                      <p className="text-xs text-muted-foreground">{storageOverview.totals.mail_accounts} accounts</p>
-                    </div>
-                    <div className="rounded-md border border-border p-3">
-                      <p className="text-sm text-muted-foreground">Records</p>
-                      <p className="mt-1 text-2xl font-semibold text-foreground">
-                        {storageOverview.totals.contacts + storageOverview.totals.calendar_events}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {storageOverview.totals.contacts} contacts, {storageOverview.totals.calendar_events} calendar/todo
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    {storageOverview.sections.map((section) => (
-                      <div key={section.key} className="rounded-md border border-border p-3">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <p className="font-medium text-foreground">{section.label}</p>
-                            <p className="text-xs text-muted-foreground">
-                              {section.files} files
-                              {section.tracked_items !== undefined ? ` • ${section.tracked_items} tracked items` : ''}
-                              {section.ready_items !== undefined ? ` • ${section.ready_items} ready` : ''}
-                            </p>
-                          </div>
-                          <div className="text-left sm:text-right">
-                            <p className="font-semibold text-foreground">{formatBytes(section.bytes)}</p>
-                            {section.tracked_bytes !== undefined && (
-                              <p className="text-xs text-muted-foreground">DB tracked {formatBytes(section.tracked_bytes)}</p>
-                            )}
-                          </div>
-                        </div>
-                        {(!section.path_exists || section.scan_error) && (
-                          <p className="mt-2 text-xs text-destructive">
-                            {section.scan_error || 'Storage path does not exist yet.'}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="space-y-3">
-                    <div>
-                      <p className="font-medium text-foreground">Per-user storage</p>
-                      <p className="text-sm text-muted-foreground">Aggregate disk usage split by account.</p>
-                    </div>
-                    {(storageOverview.users || []).length === 0 ? (
-                      <p className="text-sm text-muted-foreground">No user storage data yet.</p>
-                    ) : (
-                      <div className="space-y-2">
-                        {storageOverview.users.map((storageUser) => {
-                          const share = storageOverview.totals.bytes > 0
-                            ? Math.min(100, (storageUser.bytes / storageOverview.totals.bytes) * 100)
-                            : 0;
-                          const sections = storageUser.sections || {};
-                          return (
-                            <div key={storageUser.user_id} className="rounded-md border border-border p-3">
-                              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                                <div className="min-w-0">
-                                  <p className="truncate font-medium text-foreground">
-                                    {formatUserLabel(storageUser)}
-                                    {storageUser.orphaned ? ' (orphaned storage)' : ''}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground">
-                                    {storageUser.files} files
-                                    {!storageUser.is_active && !storageUser.orphaned ? ' • inactive' : ''}
-                                  </p>
-                                </div>
-                                <div className="text-left sm:text-right">
-                                  <p className="font-semibold text-foreground">{formatBytes(storageUser.bytes)}</p>
-                                  <p className="text-xs text-muted-foreground">{share.toFixed(1)}%</p>
-                                </div>
-                              </div>
-                              <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
-                                <div className="h-full rounded-full bg-accent" style={{ width: `${share}%` }} />
-                              </div>
-                              <p className="mt-2 text-xs text-muted-foreground">
-                                Attachments {formatBytes(sections.mail_attachments?.bytes)} • Raw mail {formatBytes(sections.mail_raw?.bytes)} • Recordings {formatBytes(sections.recordings?.bytes)} • Exports {formatBytes(sections.exports?.bytes)}
-                              </p>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  <p className="text-xs text-muted-foreground">
-                    Last scanned {new Date(storageOverview.generated_at).toLocaleString()}. This view exposes aggregate storage metadata only.
-                  </p>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="signup" className="mt-0">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-accent/10">
-                  <Shield className="h-5 w-5 text-accent" />
-                </div>
-                <div>
-                  <CardTitle className="text-lg">Signup Settings</CardTitle>
-                  <CardDescription>Control who can create accounts</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {isLoading ? (
-                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-              ) : (
-                <div className="max-w-md space-y-2">
-                  <Select
-                    value={signupMode}
-                    onValueChange={(mode) => updateSignupMode.mutate(mode)}
-                    disabled={updateSignupMode.isPending}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="open">Open (anyone can sign up)</SelectItem>
-                      <SelectItem value="approval">Approval required</SelectItem>
-                      <SelectItem value="disabled">Disabled</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <p className="text-sm text-muted-foreground">
-                    {signupMode === 'open' && 'New users can sign up and immediately access the app.'}
-                    {signupMode === 'approval' && 'New users can sign up but need admin approval before accessing the app.'}
-                    {signupMode === 'disabled' && 'New user signups are disabled.'}
-                  </p>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="users" className="mt-0">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-accent/10">
-                  <Users className="h-5 w-5 text-accent" />
-                </div>
-                <div>
-                  <CardTitle className="text-lg">User Management</CardTitle>
-                  <CardDescription>Promote admins, activate accounts, reset passwords, and delete users</CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <Button asChild variant="outline">
-                <Link to="/admin/users">Open User Management</Link>
-              </Button>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-    </div>
+    <PageShell panel={<SettingsPanel active="admin-settings" />} panelLabel="Settings sections">
+      <PageHeader title="Settings" scope="Server settings" />
+      <PageBody width="reading">{body}</PageBody>
+    </PageShell>
   );
 };
 

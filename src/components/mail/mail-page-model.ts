@@ -1,5 +1,5 @@
 import type { ComponentType } from 'react';
-import { format } from 'date-fns';
+import { format, isThisYear, isToday, isYesterday } from 'date-fns';
 import {
   Inbox,
   Send,
@@ -242,3 +242,12 @@ export const formatAttachmentSize = (bytes: number) => {
 export const flagPendingLabel = (email: Pick<Email, 'read_sync_pending' | 'star_sync_pending'>) =>
   email.read_sync_pending && email.star_sync_pending ? 'Read and star changes awaiting provider'
     : email.read_sync_pending ? 'Read change awaiting provider' : 'Star change awaiting provider';
+
+/** Today: time. This year: day and month. Older: with the year. */
+export function formatListDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  if (isToday(date)) return format(date, 'HH:mm');
+  if (isYesterday(date)) return 'Yesterday';
+  return format(date, isThisYear(date) ? 'd MMM' : 'd MMM yyyy');
+}

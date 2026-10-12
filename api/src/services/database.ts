@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import type { Pool, PoolConnection, RowDataPacket } from 'mysql2/promise';
+import type { SqlExecutor } from '../types';
 import { db, setDb, getDb } from '../state';
 import { JWT_SECRET, ENCRYPTION_KEY } from '../config';
 import { safeJsonParse } from './calendar';
@@ -173,7 +174,7 @@ async function ensureSchema() {
         }
       },
       verify: async (connection: PoolConnection) => {
-        await verifyDatabaseInventory(connection, { includeNotifications: false, throughMigration: 12 });
+        await verifyDatabaseInventory(connection, { throughMigration: 12 });
       },
     },
     {
@@ -226,6 +227,25 @@ async function ensureSchema() {
         if (Number(stale.n) !== 0) throw new Error('Calendar accounts still link a deleted mail account');
       },
     },
+    {
+      // 0.19.2: the notification tables (created at every start by the
+      // notification service until now) and the mail list indexes (added
+      // after listen, with errors only logged) become ordinary upgrade steps,
+      // so startup has one schema path. Existing databases already have all
+      // of them; a new database gets them here.
+      id: 15,
+      name: 'notification-tables-and-mail-indexes',
+      up: async (connection: PoolConnection) => {
+        await createNotificationTables(connection);
+        await createMailPerformanceIndexes(connection);
+      },
+      verify: async (connection: PoolConnection) => {
+        await verifyDatabaseInventory(connection, { throughMigration: 15 });
+        for (const [table, name] of [['calendar_events', NOTIFICATION_SCAN_INDEX], ...MAIL_PERFORMANCE_INDEXES.map(([name]) => ['emails', name])]) {
+          if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
+        }
+      },
+    },
   ], BASELINE);
 }
 
@@ -249,34 +269,81 @@ async function unmarkedMailCalendars(connection: PoolConnection) {
   return rows.filter(row => ((safeJsonParse(row.provider_config, {}) || {}) as { mailLinked?: unknown }).mailLinked !== true);
 }
 
-async function ensurePerformanceIndexes() {
-  const emailIndexMigrations = [
-    ['idx_emails_user_date', 'CREATE INDEX idx_emails_user_date ON emails(user_id, received_at DESC, id)'],
-    ['idx_emails_user_account_date', 'CREATE INDEX idx_emails_user_account_date ON emails(user_id, mail_account_id, received_at DESC, id)'],
-    ['idx_emails_user_folder_date', 'CREATE INDEX idx_emails_user_folder_date ON emails(user_id, folder, received_at DESC, id)'],
-    ['idx_emails_user_account_folder_date', 'CREATE INDEX idx_emails_user_account_folder_date ON emails(user_id, mail_account_id, folder, received_at DESC, id)'],
-    ['idx_emails_user_starred_date', 'CREATE INDEX idx_emails_user_starred_date ON emails(user_id, is_starred, received_at DESC)'],
-    ['idx_emails_user_read_folder_account', 'CREATE INDEX idx_emails_user_read_folder_account ON emails(user_id, is_read, folder, mail_account_id)'],
-  ];
+async function hasIndex(connection: SqlExecutor, table: string, name: string) {
+  const [present] = await connection.execute<RowDataPacket[]>(`SHOW INDEX FROM ${quoteIdentifier(table)} WHERE Key_name = ?`, [name]);
+  return present.length > 0;
+}
 
-  console.log('[DB] Checking mail performance indexes...');
-  for (const [indexName, createIndexSql] of emailIndexMigrations) {
-    try {
-      await db.execute(createIndexSql);
-      console.log(`[DB] Created mail performance index ${indexName}`);
-    } catch (error) {
-      const message = String((error as Error | null)?.message || '');
-      if (!message.includes('Duplicate key name')) {
-        console.warn(`[DB] Could not create mail performance index ${indexName}: ${message}`);
-      }
-    }
+// Web Push identity, device subscriptions, the notification outbox and the
+// reminder schedule (docs/PWA.md). Idempotent: upgrade step 15 runs it on
+// databases that have had these tables since 0.10.
+const NOTIFICATION_SCAN_INDEX = 'idx_events_notification_scan';
+async function createNotificationTables(connection: SqlExecutor) {
+  await connection.execute(`CREATE TABLE IF NOT EXISTS notification_config (
+    id TINYINT PRIMARY KEY, public_key VARCHAR(128) NOT NULL, encrypted_private_key TEXT NOT NULL,
+    subject VARCHAR(320) NOT NULL, last_reminder_scan_at DATETIME NULL,
+    reminder_revision BIGINT NOT NULL DEFAULT 0, scanned_revision BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await connection.execute(`CREATE TABLE IF NOT EXISTS push_subscriptions (
+    id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, session_id CHAR(36) NOT NULL,
+    endpoint TEXT NOT NULL, endpoint_hash CHAR(64) NOT NULL UNIQUE,
+    p256dh VARCHAR(128) NOT NULL, auth VARCHAR(64) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+    INDEX idx_push_user (user_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await connection.execute(`CREATE TABLE IF NOT EXISTS notification_events (
+    id CHAR(36) PRIMARY KEY, user_id CHAR(36) NOT NULL, event_key CHAR(64) NOT NULL,
+    kind VARCHAR(24) NOT NULL, source_id CHAR(36) NULL, payload JSON NOT NULL,
+    expires_at DATETIME NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY unique_notification_event (user_id, event_key),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_notification_event_expiry (expires_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await connection.execute(`CREATE TABLE IF NOT EXISTS notification_deliveries (
+    event_id CHAR(36) NOT NULL, subscription_id CHAR(36) NOT NULL,
+    status VARCHAR(12) NOT NULL DEFAULT 'pending', attempts INT NOT NULL DEFAULT 0,
+    available_at DATETIME NOT NULL, delivered_at DATETIME NULL, last_error VARCHAR(120) NULL,
+    PRIMARY KEY (event_id, subscription_id),
+    FOREIGN KEY (event_id) REFERENCES notification_events(id) ON DELETE CASCADE,
+    FOREIGN KEY (subscription_id) REFERENCES push_subscriptions(id) ON DELETE CASCADE,
+    INDEX idx_notification_due (status, available_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  await connection.execute(`CREATE TABLE IF NOT EXISTS notification_reminders (
+    event_id CHAR(36) NOT NULL, user_id CHAR(36) NOT NULL, minutes INT NOT NULL,
+    due_at DATETIME NOT NULL, queued_at DATETIME NULL,
+    PRIMARY KEY (event_id, minutes),
+    FOREIGN KEY (event_id) REFERENCES calendar_events(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_reminder_due (queued_at, due_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+  if (!await hasIndex(connection, 'calendar_events', NOTIFICATION_SCAN_INDEX)) {
+    await connection.execute(`CREATE INDEX ${NOTIFICATION_SCAN_INDEX} ON calendar_events(updated_at, start_time)`);
   }
-  console.log('[DB] Mail performance indexes ready');
+}
+
+// Mail list and unread-count indexes. The baseline creates them for new
+// databases; upgrade step 15 adds any that an older start could not create.
+const MAIL_PERFORMANCE_INDEXES: readonly [string, string][] = [
+  ['idx_emails_user_date', 'CREATE INDEX idx_emails_user_date ON emails(user_id, received_at DESC, id)'],
+  ['idx_emails_user_account_date', 'CREATE INDEX idx_emails_user_account_date ON emails(user_id, mail_account_id, received_at DESC, id)'],
+  ['idx_emails_user_folder_date', 'CREATE INDEX idx_emails_user_folder_date ON emails(user_id, folder, received_at DESC, id)'],
+  ['idx_emails_user_account_folder_date', 'CREATE INDEX idx_emails_user_account_folder_date ON emails(user_id, mail_account_id, folder, received_at DESC, id)'],
+  ['idx_emails_user_starred_date', 'CREATE INDEX idx_emails_user_starred_date ON emails(user_id, is_starred, received_at DESC)'],
+  ['idx_emails_user_read_folder_account', 'CREATE INDEX idx_emails_user_read_folder_account ON emails(user_id, is_read, folder, mail_account_id)'],
+];
+async function createMailPerformanceIndexes(connection: SqlExecutor) {
+  for (const [name, sql] of MAIL_PERFORMANCE_INDEXES) {
+    if (!await hasIndex(connection, 'emails', name)) await connection.execute(sql);
+  }
 }
 
 export {
   initDatabase,
   useUtcSessions,
   ensureSchema,
-  ensurePerformanceIndexes,
+  createNotificationTables,
+  createMailPerformanceIndexes,
 };

@@ -14,6 +14,7 @@ import {
   isRequestBodyTooLarge,
 } from './http/request';
 import { parseSingleByteRange, fileValidators, rangeAllowed } from './http/range';
+import { compileRouteMatcher } from './http/route-matcher';
 import { getModuleForPath } from './services/module-catalog';
 import { isModuleEnabled } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
@@ -27,6 +28,47 @@ import {
 type RouteTable = Record<string, (req: RouteRequest, userId: string | null | undefined, body: unknown, res: ServerResponse) => Promise<RouteResponse>>;
 
 const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
+// Compiled once from the route table: every key with a :param segment becomes a
+// segment matcher, so adding a route needs no change here.
+const matchRoute = compileRouteMatcher(Object.keys(routes));
+
+// Request body limits in bytes. Most routes take small JSON documents; the
+// routes below carry files, archives, imports, bulk selections or long text.
+const DEFAULT_BODY_LIMIT = 1000;
+const BODY_LIMIT_BY_PATH_PREFIX: readonly [string, number][] = [
+  ['/api/notifications/', 16384],
+];
+const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
+  'GET /api/modules': 16384,
+  'PUT /api/modules': 16384,
+  'POST /api/contacts/import': 500000, // vCard import can be large
+  'POST /api/recordings/uploads/:id/chunk': 1200 * 1024, // Recording chunks are base64 encoded JSON.
+  'POST /api/recordings/uploads/start': 50000,
+  'POST /api/backup/import': BACKUP_UPLOAD_MAX_SIZE,
+  'POST /api/mail/send': MAIL_COMPOSE_REQUEST_MAX_SIZE,
+  'POST /api/mail/drafts': MAIL_COMPOSE_REQUEST_MAX_SIZE,
+  'PUT /api/mail/drafts/:id': MAIL_COMPOSE_REQUEST_MAX_SIZE,
+  // Calendar account metadata payloads
+  'POST /api/calendar/accounts': 50000,
+  'PUT /api/calendar/accounts/:id': 50000,
+  'PUT /api/mail/accounts/:id/calendar': 50000,
+  // Synced events can carry long descriptions
+  'POST /api/calendar/events': 100000,
+  'PUT /api/calendar/events/:id': 100000,
+  // Mail account credentials and custom host metadata
+  'POST /api/mail/accounts': 50000,
+  'PUT /api/mail/accounts/:id': 50000,
+  // Bulk operations and sync need more space (100 emails * ~36 chars UUID + JSON overhead)
+  'POST /api/mail/emails/bulk-update': 50000,
+  'POST /api/mail/emails/bulk-delete': 50000,
+  'POST /api/mail/emails/bulk-move': 50000,
+  'POST /api/mail/sync': 50000,
+};
+function bodyLimitFor(routeKey: string, pathname: string) {
+  for (const [prefix, limit] of BODY_LIMIT_BY_PATH_PREFIX) if (pathname.startsWith(prefix)) return limit;
+  return BODY_LIMIT_BY_ROUTE[routeKey] ?? DEFAULT_BODY_LIMIT;
+}
+
 const PUBLIC_ROUTE_KEYS = new Set([
   'GET /health',
   'GET /api/auth/signup-mode',
@@ -83,125 +125,10 @@ async function handleRequest(req: RouteRequest, res: ServerResponse) {
 async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
   res.setHeader('Cache-Control', 'no-store');
   const url = requestUrl(req);
-  let routeKey = `${req.method} ${url.pathname}`;
-  req.params = {};
-
-  // Handle parameterized routes
-  if (routeKey.includes('/api/contacts/') && req.method !== 'GET' && req.method !== 'POST') {
-    routeKey = `${req.method} /api/contacts/:id`;
-    if (url.pathname.includes('/favorite')) {
-      routeKey = `${req.method} /api/contacts/:id/favorite`;
-    }
-  } else if (routeKey.includes('/api/calendar/accounts/')) {
-    routeKey = /^\/api\/calendar\/accounts\/[^/]+\/sync$/.test(url.pathname)
-      ? `${req.method} /api/calendar/accounts/:id/sync`
-      : `${req.method} /api/calendar/accounts/:id`;
-  } else if (routeKey.includes('/api/calendar/calendars/')) {
-    routeKey = `${req.method} /api/calendar/calendars/:id`;
-  } else if (routeKey.includes('/api/calendar/events/')) {
-    if (url.pathname.includes('/todo-status')) {
-      routeKey = `${req.method} /api/calendar/events/:id/todo-status`;
-    } else if (url.pathname.includes('/rsvp')) {
-      routeKey = `${req.method} /api/calendar/events/:id/rsvp`;
-    } else if (url.pathname.includes('/subtasks/reorder')) {
-      routeKey = `${req.method} /api/calendar/events/:id/subtasks/reorder`;
-    } else if (url.pathname.endsWith('/subtasks')) {
-      routeKey = `${req.method} /api/calendar/events/:id/subtasks`;
-    } else if (url.pathname.includes('/subtasks/')) {
-      routeKey = `${req.method} /api/calendar/events/:id/subtasks/:subtaskId`;
-    } else {
-      routeKey = `${req.method} /api/calendar/events/:id`;
-    }
-  } else if (routeKey.includes('/api/mail/sender-rules/') && !url.pathname.endsWith('/backfill')) {
-    const parts = url.pathname.split('/').filter(Boolean);
-    req.params.id = parts[parts.length - 1] || null;
-    routeKey = `${req.method} /api/mail/sender-rules/:id`;
-  } else if (routeKey.includes('/api/mail/folders/')) {
-    const parts = url.pathname.split('/').filter(Boolean);
-    req.params.slug = parts[parts.length - 1] || null;
-    routeKey = `${req.method} /api/mail/folders/:slug`;
-  } else if (routeKey.includes('/api/mail/drafts/')) {
-    if (url.pathname.endsWith('/send')) {
-      routeKey = `${req.method} /api/mail/drafts/:id/send`;
-    } else {
-      routeKey = `${req.method} /api/mail/drafts/:id`;
-    }
-  } else if (routeKey.includes('/api/mail/accounts/')) {
-    const match = /^\/api\/mail\/accounts\/([^/]+)(\/purge-preview|\/mode-impact|\/confirm-sync-policy|\/backup-export|\/calendar)?$/.exec(url.pathname);
-    if (match) {
-      req.params.id = match[1];
-      routeKey = `${req.method} /api/mail/accounts/:id${match[2] || ''}`;
-    }
-  } else if (routeKey.includes('/api/mail/attachments/')) {
-    routeKey = `${req.method} /api/mail/attachments/:id`;
-  } else if (url.pathname.startsWith('/api/mail/writebacks/')) {
-    const match = /^\/api\/mail\/writebacks\/([^/]+)\/(retry|cancel|accept-server-state)$/.exec(url.pathname);
-    if (match) {
-      req.params.id = match[1];
-      routeKey = `${req.method} /api/mail/writebacks/:id/${match[2]}`;
-    }
-  } else if (routeKey.includes('/api/mail/emails/')) {
-    if (url.pathname.includes('/bulk-delete')) {
-      routeKey = `${req.method} /api/mail/emails/bulk-delete`;
-    } else if (url.pathname.includes('/bulk-move')) {
-      routeKey = `${req.method} /api/mail/emails/bulk-move`;
-    } else if (url.pathname.includes('/bulk-update')) {
-      routeKey = `${req.method} /api/mail/emails/bulk-update`;
-    } else if (url.pathname.includes('/read')) {
-      routeKey = `${req.method} /api/mail/emails/:id/read`;
-    } else if (url.pathname.includes('/star')) {
-      routeKey = `${req.method} /api/mail/emails/:id/star`;
-    } else {
-      // Handle GET /api/mail/emails/:id
-      routeKey = `${req.method} /api/mail/emails/:id`;
-    }
-  } else if (routeKey.includes('/api/recordings/uploads/')) {
-    if (url.pathname.endsWith('/chunk')) {
-      routeKey = `${req.method} /api/recordings/uploads/:id/chunk`;
-    } else if (url.pathname.endsWith('/complete')) {
-      routeKey = `${req.method} /api/recordings/uploads/:id/complete`;
-    } else if (req.method === 'GET' || req.method === 'DELETE') {
-      routeKey = `${req.method} /api/recordings/uploads/:id`;
-    }
-  } else if (routeKey.includes('/api/recordings/') && url.pathname.endsWith('/file')) {
-    routeKey = `${req.method} /api/recordings/:id/file`;
-  } else if (routeKey.includes('/api/recordings/')) {
-    routeKey = `${req.method} /api/recordings/:id`;
-  } else if (routeKey.includes('/api/backup/restore-jobs/')) {
-    if (url.pathname.endsWith('/unlock')) {
-      routeKey = `${req.method} /api/backup/restore-jobs/:id/unlock`;
-    } else if (url.pathname.endsWith('/start')) {
-      routeKey = `${req.method} /api/backup/restore-jobs/:id/start`;
-    } else if (url.pathname.endsWith('/cancel')) {
-      routeKey = `${req.method} /api/backup/restore-jobs/:id/cancel`;
-    } else {
-      routeKey = `${req.method} /api/backup/restore-jobs/:id`;
-    }
-  } else if (routeKey.includes('/api/backup/jobs/')) {
-    if (url.pathname.endsWith('/download')) {
-      routeKey = `${req.method} /api/backup/jobs/:id/download`;
-    } else if (url.pathname.endsWith('/recovery-password/reveal')) {
-      routeKey = `${req.method} /api/backup/jobs/:id/recovery-password/reveal`;
-    } else if (url.pathname.endsWith('/restore')) {
-      routeKey = `${req.method} /api/backup/jobs/:id/restore`;
-    } else if (url.pathname.endsWith('/cancel')) {
-      routeKey = `${req.method} /api/backup/jobs/:id/cancel`;
-    } else {
-      routeKey = `${req.method} /api/backup/jobs/:id`;
-    }
-  } else if (routeKey.includes('/api/admin/users/')) {
-    if (url.pathname.includes('/password')) {
-      routeKey = `${req.method} /api/admin/users/:id/password`;
-    } else if (url.pathname.includes('/role')) {
-      routeKey = `${req.method} /api/admin/users/:id/role`;
-    } else if (url.pathname.includes('/activate')) {
-      routeKey = `${req.method} /api/admin/users/:id/activate`;
-    } else if (url.pathname.endsWith('/2fa/reset')) {
-      routeKey = `${req.method} /api/admin/users/:id/2fa/reset`;
-    } else {
-      routeKey = `${req.method} /api/admin/users/:id`;
-    }
-  }
+  // A path that matches no key keeps its own key and is a 404 below.
+  const match = matchRoute(req.method!, url.pathname);
+  const routeKey = match ? match.key : `${req.method} ${url.pathname}`;
+  req.params = match ? match.params : {};
 
   // CORS headers
   const allowedOrigin = getAllowedOriginForRequest(req);
@@ -284,50 +211,7 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       }
     }
 
-    // Allow larger bodies for vCard import and bulk operations
-    let maxBodySize = 1000; // Default for most endpoints
-    if (url.pathname === '/api/modules') {
-      maxBodySize = 16384;
-    } else if (url.pathname.startsWith('/api/notifications/')) {
-      maxBodySize = 16384;
-    } else if (routeKey === 'POST /api/contacts/import') {
-      maxBodySize = 500000; // vCard import can be large
-    } else if (routeKey === 'POST /api/recordings/uploads/:id/chunk') {
-      maxBodySize = 1200 * 1024; // Recording chunks are base64 encoded JSON.
-    } else if (routeKey === 'POST /api/recordings/uploads/start') {
-      maxBodySize = 50000;
-    } else if (routeKey === 'POST /api/backup/import') {
-      maxBodySize = BACKUP_UPLOAD_MAX_SIZE;
-    } else if (
-      routeKey === 'POST /api/mail/send' ||
-      routeKey === 'POST /api/mail/drafts' ||
-      routeKey === 'PUT /api/mail/drafts/:id'
-    ) {
-      maxBodySize = MAIL_COMPOSE_REQUEST_MAX_SIZE;
-    } else if (
-      routeKey === 'POST /api/calendar/accounts' ||
-      routeKey === 'PUT /api/calendar/accounts/:id' ||
-      routeKey === 'PUT /api/mail/accounts/:id/calendar'
-    ) {
-      maxBodySize = 50000; // Calendar account metadata payloads
-    } else if (
-      routeKey === 'POST /api/calendar/events' ||
-      routeKey === 'PUT /api/calendar/events/:id'
-    ) {
-      maxBodySize = 100000; // Synced events can carry long descriptions
-    } else if (
-      routeKey === 'POST /api/mail/accounts' ||
-      routeKey === 'PUT /api/mail/accounts/:id'
-    ) {
-      maxBodySize = 50000; // Mail account credentials and custom host metadata
-    } else if (
-      routeKey === 'POST /api/mail/emails/bulk-update' ||
-      routeKey === 'POST /api/mail/emails/bulk-delete' ||
-      routeKey === 'POST /api/mail/emails/bulk-move' ||
-      routeKey === 'POST /api/mail/sync'
-    ) {
-      maxBodySize = 50000; // Bulk operations and sync need more space (100 emails * ~36 chars UUID + JSON overhead)
-    }
+    const maxBodySize = bodyLimitFor(routeKey, url.pathname);
     if (isRequestBodyTooLarge(req, maxBodySize)) {
       res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
       res.end(JSON.stringify({ error: `Request body too large (max ${maxBodySize} bytes)` }));

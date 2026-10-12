@@ -9,8 +9,7 @@ import { acquireImapConnection, releaseImapConnection } from './mail-engine/conn
 import { operationDue, processOperationBatch } from './mail-engine/operation-batch';
 import { db } from '../state';
 import { publishMailJob } from './server-events';
-import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
-import { isSectionRestoreActive } from './restore-locks';
+import { canRunModule } from './access-policy';
 import { toBooleanFlag, buildImapConnectionConfig } from './mail-host-policy';
 import {
   ensureDefaultMailFoldersForUser,
@@ -151,8 +150,7 @@ async function runDurableMutationJob(job: ClaimedJob, signal: AbortSignal, repor
       if ((await fence()).cancellationRequested) return { cancelled: true };
       [[account]] = await db.execute<(RowDataPacket & EngineAccount)[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, job.user_id]);
       if (!account || account.sync_mode !== 'sync' || !toBooleanFlag(account.is_active) || account.disconnected_at
-        || await isSectionRestoreActive(account.user_id, 'mail')
-        || !await (background ? isModuleBackgroundEnabled : isModuleEnabled)(account.user_id, 'mail')) return { paused: true };
+        || !await canRunModule(account.user_id, 'mail', { background })) return { paused: true };
       const config = await (require('./mail') as typeof import('./mail')).buildImapConnectionConfig(account, { keepalive: false });
       if (!config) throw new Error('Missing credentials');
       // A click should fail fast, not wait out the read-path timeouts.
@@ -201,7 +199,7 @@ async function runDurableMailJob(job: ClaimedJob, signal: AbortSignal, report: J
     const [accounts] = await db.execute<(RowDataPacket & EngineAccount)[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [accountId, job.user_id]);
     const account = accounts[0];
     if (!account || !toBooleanFlag(account.is_active) || account.disconnected_at) return { success: false, error: 'Account inactive or disconnected' };
-    if (!await isModuleEnabled(account.user_id, 'mail') || await isSectionRestoreActive(account.user_id, 'mail'))
+    if (!await canRunModule(account.user_id, 'mail'))
       return { success: false, error: 'Mail module paused or restore in progress' };
     checkCancelled(signal);
     await runtime.assertFence({ accountId, jobId: job.id, workerId: job.lease_owner,

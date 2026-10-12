@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/useAuth';
 import { api } from '@/lib/api';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,13 +15,14 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
-import { Badge } from '@/components/ui/badge';
+import { buttonVariants } from '@/components/ui/button-variants';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
-import { Shield, Key, Trash2, Loader2, UserCheck, UserX, UserCog, ShieldOff } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { Loader2, MoreHorizontal } from 'lucide-react';
+import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
+import { SettingsPanel } from '@/components/settings/SettingsPanel';
 
 interface UserRow {
   id: string;
@@ -43,6 +42,7 @@ const AdminUsers = () => {
   const [newPassword, setNewPassword] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [resetTwoFactorUser, setResetTwoFactorUser] = useState<UserRow | null>(null);
+  const [deletingUser, setDeletingUser] = useState<UserRow | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
   // The user the reset dialog shows now, read when a request completes.
   const openResetUserId = useRef<string | null>(null);
@@ -144,176 +144,85 @@ const AdminUsers = () => {
     }
   };
 
-  if (user?.role !== 'admin') {
-    return (
-      <div className="p-6 lg:p-8 max-w-4xl mx-auto">
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-muted-foreground">You do not have permission to view this page.</p>
-          </CardContent>
-        </Card>
-      </div>
+  const list = isLoading ? <LoadingState label="Loading users…" />
+    : error ? <ErrorState title="Could not load users" error={error} onRetry={() => void refetch()} retrying={isFetching} />
+    : (
+      <ul aria-label="Users" className="divide-y divide-border border-y border-border">
+        {data?.map((u) => {
+          const self = u.id === user?.id;
+          const meta = [u.full_name ? u.email : null, u.role === 'admin' ? 'Admin' : null, u.two_factor_enabled ? '2FA on' : null,
+            `joined ${new Date(u.created_at).toLocaleDateString()}`].filter(Boolean).join(', ');
+          return (
+            <li key={u.id} className="flex items-center gap-3 py-3">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">
+                  {u.full_name || u.email}{self && <span className="font-normal text-muted-foreground"> (you)</span>}
+                </p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {!u.is_active && <span className="text-warning">Inactive, </span>}{meta}
+                </p>
+              </div>
+              {!u.is_active && (
+                <Button size="sm" variant="outline" onClick={() => toggleUserActive.mutate({ userId: u.id, is_active: true })} disabled={toggleUserActive.isPending}>
+                  Activate
+                </Button>
+              )}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" aria-label={`Actions for ${u.email}`}><MoreHorizontal aria-hidden="true" /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => updateUserRole.mutate({ userId: u.id, role: u.role === 'admin' ? 'user' : 'admin' })} disabled={updateUserRole.isPending}>
+                    {u.role === 'admin' ? 'Remove admin rights' : 'Make admin'}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { setPasswordDialogUser(u); setNewPassword(''); }}>Set a new password</DropdownMenuItem>
+                  {u.two_factor_enabled && !self && (
+                    <DropdownMenuItem onClick={() => { setResetTwoFactorUser(u); setAdminPassword(''); }}>Reset 2FA</DropdownMenuItem>
+                  )}
+                  {u.is_active && !self && (
+                    <DropdownMenuItem onClick={() => toggleUserActive.mutate({ userId: u.id, is_active: false })} disabled={toggleUserActive.isPending}>Deactivate</DropdownMenuItem>
+                  )}
+                  {!self && <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeletingUser(u)}>Delete user</DropdownMenuItem>
+                  </>}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </li>
+          );
+        })}
+      </ul>
     );
-  }
 
   return (
-    <div className="p-6 lg:p-8 max-w-5xl mx-auto">
-      <motion.div
-        initial={{ opacity: 0, y: -10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4 }}
-        className="mb-8"
-      >
-        <h1 className="text-2xl font-bold text-foreground">User Management</h1>
-        <p className="text-muted-foreground">Manage accounts and reset passwords</p>
-      </motion.div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.2 }}
-      >
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-accent/10">
-                <Shield className="h-5 w-5 text-accent" />
-              </div>
-              <div>
-                <CardTitle className="text-lg">All Users</CardTitle>
-                <CardDescription>{data?.length || 0} registered users</CardDescription>
-              </div>
+    <PageShell panel={<SettingsPanel active="admin-users" />} panelLabel="Settings sections">
+      <PageHeader title="Settings" scope="Users" />
+      <PageBody width="reading">
+        {user?.role !== 'admin' ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p> : (
+          <>
+            <div className="mb-3">
+              <h2 className="text-base font-semibold">Users</h2>
+              <p className="mt-1 text-sm text-muted-foreground">{data ? `${data.length} ${data.length === 1 ? 'account' : 'accounts'} on this server.` : 'Accounts on this server.'}</p>
             </div>
-          </CardHeader>
-          <CardContent>
-            {isLoading ? (
-              <LoadingState label="Loading users…" />
-            ) : error ? (
-              <ErrorState
-                title="Could not load users"
-                error={error}
-                onRetry={() => void refetch()}
-                retrying={isFetching}
-              />
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Email</TableHead>
-                    <TableHead>Role</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Created</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data?.map((u) => (
-                    <TableRow key={u.id}>
-                      <TableCell className="font-medium">{u.full_name || '\u2014'}</TableCell>
-                      <TableCell>{u.email}</TableCell>
-                      <TableCell>
-                        <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>
-                          {u.role}
-                        </Badge>
-                        {u.two_factor_enabled && <Badge variant="outline" className="ml-1">2FA</Badge>}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={u.is_active ? 'default' : 'secondary'} className={u.is_active ? 'bg-success' : 'bg-muted'}>
-                          {u.is_active ? 'Active' : 'Pending'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {new Date(u.created_at).toLocaleDateString()}
-                      </TableCell>
-                      <TableCell className="text-right space-x-2">
-                        {!u.is_active && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => toggleUserActive.mutate({ userId: u.id, is_active: true })}
-                            disabled={toggleUserActive.isPending}
-                            className="text-success hover:text-success"
-                          >
-                            <UserCheck className="h-3.5 w-3.5 mr-1" />
-                            Approve
-                          </Button>
-                        )}
-                        {u.is_active && u.id !== user?.id && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => toggleUserActive.mutate({ userId: u.id, is_active: false })}
-                            disabled={toggleUserActive.isPending}
-                            className="text-warning hover:text-warning"
-                          >
-                            <UserX className="h-3.5 w-3.5 mr-1" />
-                            Deactivate
-                          </Button>
-                        )}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => updateUserRole.mutate({ userId: u.id, role: u.role === 'admin' ? 'user' : 'admin' })}
-                          disabled={updateUserRole.isPending}
-                        >
-                          <UserCog className="h-3.5 w-3.5 mr-1" />
-                          {u.role === 'admin' ? 'Make user' : 'Make admin'}
-                        </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => { setPasswordDialogUser(u); setNewPassword(''); }}
-                        >
-                          <Key className="h-3.5 w-3.5 mr-1" />
-                          Password
-                        </Button>
-                        {u.two_factor_enabled && u.id !== user?.id && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => { setResetTwoFactorUser(u); setAdminPassword(''); }}
-                          >
-                            <ShieldOff className="h-3.5 w-3.5 mr-1" />
-                            Reset 2FA
-                          </Button>
-                        )}
-                        {u.id !== user?.id && (
-                          <AlertDialog>
-                            <AlertDialogTrigger asChild>
-                              <Button variant="outline" size="sm" className="text-destructive hover:text-destructive">
-                                <Trash2 className="h-3.5 w-3.5 mr-1" />
-                                Delete
-                              </Button>
-                            </AlertDialogTrigger>
-                            <AlertDialogContent>
-                              <AlertDialogHeader>
-                                <AlertDialogTitle>Delete user?</AlertDialogTitle>
-                                <AlertDialogDescription>
-                                  This will permanently delete {u.email} and all of their data. This action cannot be undone.
-                                </AlertDialogDescription>
-                              </AlertDialogHeader>
-                              <AlertDialogFooter>
-                                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                                <AlertDialogAction
-                                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                  onClick={() => deleteUser.mutate(u.id)}
-                                >
-                                  Delete
-                                </AlertDialogAction>
-                              </AlertDialogFooter>
-                            </AlertDialogContent>
-                          </AlertDialog>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-      </motion.div>
+            {list}
+          </>
+        )}
+      </PageBody>
+
+      <AlertDialog open={!!deletingUser} onOpenChange={(open) => { if (!open) setDeletingUser(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deletingUser?.email}?</AlertDialogTitle>
+            <AlertDialogDescription>Their account and all of their data are deleted permanently. This cannot be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction className={buttonVariants({ variant: 'destructive' })} onClick={() => { if (deletingUser) deleteUser.mutate(deletingUser.id); }}>
+              Delete user
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Password change dialog */}
       <Dialog open={!!passwordDialogUser} onOpenChange={(open) => {
@@ -321,17 +230,17 @@ const AdminUsers = () => {
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Change Password for {passwordDialogUser?.email}</DialogTitle>
+            <DialogTitle>New password for {passwordDialogUser?.email}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 pt-2">
             <div className="space-y-2">
-              <Label htmlFor="adminNewPassword">New Password</Label>
+              <Label htmlFor="adminNewPassword">New password</Label>
               <Input
                 id="adminNewPassword"
                 type="password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
-                placeholder="Min 12 characters"
+                placeholder="At least 12 characters"
               />
             </div>
             <div className="flex justify-end gap-2 pt-2">
@@ -340,7 +249,7 @@ const AdminUsers = () => {
               </Button>
               <Button onClick={handleChangePassword} disabled={passwordLoading}>
                 {passwordLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Update Password
+                Set password
               </Button>
             </div>
           </div>
@@ -388,7 +297,7 @@ const AdminUsers = () => {
           </form>
         </DialogContent>
       </Dialog>
-    </div>
+    </PageShell>
   );
 };
 

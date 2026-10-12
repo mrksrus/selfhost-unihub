@@ -4,15 +4,16 @@ import App from "./App.tsx";
 import "./index.css";
 import { initServiceWorker } from "./utils/service-worker";
 import { createPwaUpdateManager } from "./lib/pwa-update";
+import { emitAppEvent, onAppEvent } from "./lib/app-events";
 
 const updates = 'serviceWorker' in navigator ? createPwaUpdateManager({
   serviceWorker: navigator.serviceWorker,
   reload: () => window.location.reload(),
   onAvailable: () => {
     window.__unihubUpdateAvailable = true;
-    window.dispatchEvent(new Event('unihub-update-available'));
+    emitAppEvent('unihub:update-available');
   },
-  onFailure: () => window.dispatchEvent(new Event('unihub-update-failed')),
+  onFailure: () => emitAppEvent('unihub:update-failed'),
 }) : undefined;
 
 // Register service worker
@@ -37,9 +38,9 @@ registerSW({
   },
 });
 
-window.addEventListener('unihub-apply-update', () => {
+onAppEvent('unihub:apply-update', () => {
   if (updates) void updates.apply();
-  else window.dispatchEvent(new Event('unihub-update-failed'));
+  else emitAppEvent('unihub:update-failed');
 });
 
 createRoot(document.getElementById("root")!).render(<App />);

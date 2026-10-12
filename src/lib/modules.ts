@@ -7,7 +7,7 @@ export type PagePreference = { id: PageId; label: string; module: ModuleId | nul
 const routeModules: Record<string, ModuleId> = { mail: 'mail', calendar: 'calendar', todo: 'calendar', contacts: 'contacts', recordings: 'recordings', music: 'recordings' };
 const routePages: Record<string, PageId> = { mail: 'mail', calendar: 'calendar', todo: 'todo', contacts: 'contacts', recordings: 'recordings', music: 'music', dashboard: 'today' };
 const moduleIds = new Set<string>(Object.values(routeModules));
-// Same as PAGE_CATALOG in api/src/services/module-catalog.js.
+// Same as PAGE_CATALOG in api/src/services/module-catalog.ts (checked by src/test/module-catalog-parity.test.ts).
 export const PAGE_CATALOG: Omit<PagePreference, 'visible'>[] = [
   { id: 'mail', label: 'Mail', module: 'mail' },
   { id: 'calendar', label: 'Calendar', module: 'calendar' },

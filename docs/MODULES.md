@@ -5,7 +5,7 @@ Settings → Modules has two lists.
 **Pages** controls the navigation. Each page has its own entry: Mail, Calendar,
 ToDo, Contacts, Recordings, Music and Today.
 
-- **Order:** move a page up or down. The sidebar, the mobile bar and the More
+- **Order:** move a page up or down. The navigation rail, the mobile bar and the More
   page follow this order. The mobile bar shows the first four pages; the rest
   are listed on More.
 - **Show in navigation:** show or hide the page's shortcuts. A hidden page can
@@ -25,7 +25,7 @@ Today belongs to no module and can only be hidden.
 Contacts and recordings have no automatic provider worker to pause.
 Temporary-upload housekeeping continues to remove expired incomplete uploads.
 
-Core account settings and Data Management remain available. Full backups include
+Core account settings and Backup and restore remain available. Full backups include
 all saved modules, including hidden or paused ones. Restoring settings also restores
 module and page choices and their order. Search, `/api/stats` counts and new offline snapshots
 omit paused modules. Module controls are personal preferences, not a replacement
@@ -43,7 +43,13 @@ Older snapshots retain their original offline behavior until refreshed.
 
 ## Implementation contract
 
-The built-in module catalog defines page/API membership and worker capabilities.
+The built-in module catalog defines page/API membership and worker capabilities;
+the request boundary derives the `/api/<module>` gate from its ids. Workers ask
+`canRunModule(userId, moduleId, { background })` in `services/access-policy.ts`
+(module enabled, background allowed when unattended, no restore of its section)
+or take the per-user map from `blockedBackgroundModulesByUser` when they scan
+every user in one pass; services that report the module and restore causes
+differently keep their own two checks.
 The recovery catalog declares durable data and remains independent of visibility.
 Settings are archived under `user_settings.module_preferences`; the order is a
 separate `user_settings.module_order` JSON list of module IDs. `PUT /api/modules`

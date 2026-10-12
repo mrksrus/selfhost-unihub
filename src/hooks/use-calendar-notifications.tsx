@@ -1,3 +1,5 @@
+import { isOnline } from '@/lib/platform';
+import { onAppEvent } from '@/lib/app-events';
 import { useModules } from '@/hooks/use-modules';
 import { useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -18,12 +20,12 @@ export const useCalendarNotifications = () => {
   });
   useEffect(() => {
     if (!user?.id || !active) return;
-    const refresh = (event: Event) => {
-      const data = (event as CustomEvent).detail;
-      if (data?.userId === user.id && ['reminder', 'calendar', 'todo'].includes(data.kind)) void queryClient.invalidateQueries({ queryKey: calendarQueryKeys.all });
+    const refresh = (detail: unknown) => {
+      const data = detail as { userId?: string; kind?: string } | null;
+      if (data?.userId === user.id && ['reminder', 'calendar', 'todo'].includes(data.kind ?? ''))
+ void queryClient.invalidateQueries({ queryKey: calendarQueryKeys.all });
     };
-    window.addEventListener('unihub-notification-data', refresh);
-    return () => window.removeEventListener('unihub-notification-data', refresh);
+    return onAppEvent('unihub:notification-data', refresh);
   }, [queryClient, user?.id, active]);
   // Best-effort local fallback while an offline page remains alive. Closed-app reminders come from the server.
   useEffect(() => {
@@ -39,7 +41,8 @@ export const useCalendarNotifications = () => {
         const due = start - minutes * 60000;
         if (due < now - 5 * 60000 || due > now + 7 * 86400000) continue;
         timers.push(window.setTimeout(() => {
-          if (navigator.onLine !== false || !pushEnabledForUser(user.id)) return;
+          if (isOnline()
+ || !pushEnabledForUser(user.id)) return;
           void showNotification(event.title, { body: minutes === 0 ? 'Event is starting now' : `Event starts in ${minutes} minutes`, data: {
             userId: user.id, dedupeKey: `reminder:${event.id}:${new Date(start).toISOString()}:${minutes}`, eventId: event.id, url: event.is_todo_only ? '/todo' : '/calendar',
           } });

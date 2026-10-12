@@ -11,6 +11,7 @@ import { promisify } from 'util';
 import { db } from '../state';
 import { isModuleBackgroundEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
+import { canRunModule } from './access-policy';
 import { toBooleanFlag, buildImapConnectionConfig } from './mail-host-policy';
 import { normalizeMailAccountId, isMailAccountSyncRunning } from './mail-durable-jobs';
 
@@ -294,7 +295,7 @@ async function isMailServerDeletionStillEnabled(accountId: string) {
   const account = rows[0];
   if (!account || account.sync_mode === 'sync') return false;
   if (!toBooleanFlag(account.delete_emails_on_server) || !toBooleanFlag(account.is_active)) return false;
-  if (!await isModuleBackgroundEnabled(account.user_id, 'mail') || await isSectionRestoreActive(account.user_id, 'mail')) return false;
+  if (!await canRunModule(account.user_id, 'mail', { background: true })) return false;
   if (!account.server_delete_grace_until) return false;
   return new Date(account.server_delete_grace_until).getTime() <= Date.now();
 }

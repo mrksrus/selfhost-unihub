@@ -3,6 +3,7 @@ import { clearOfflineData, isOfflineMode, loadOfflineSession, setOfflineAccount,
 import { api } from '@/lib/api';
 import { resetBackgroundNotificationState, revokeDevicePushSubscription } from '@/utils/service-worker';
 import { AuthContext, type User } from '@/contexts/auth-context';
+import { onAppEvent } from '@/lib/app-events';
 
 const AUTH_CHANGE_KEY = 'unihub:auth-change';
 
@@ -86,16 +87,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (version === authVersion.current && isOfflineMode()) setOfflineSavedAt(saved?.savedAt);
     };
     window.addEventListener('online', onOnline);
-    window.addEventListener('unihub:session-expired', onSessionExpired);
-    window.addEventListener('unihub-offline-mode', onOfflineMode);
+    const unsubscribe = [
+      onAppEvent('unihub:session-expired', onSessionExpired),
+      onAppEvent('unihub:offline-mode', () => { void onOfflineMode(); }),
+    ];
     const onOfflineDataChange = async () => {
       if (!isOfflineMode()) return;
       const version = authVersion.current;
       const saved = await loadOfflineSession();
       if (!saved && version === authVersion.current && isOfflineMode()) clearLocalSession();
     };
-    window.addEventListener('unihub-offline-change', onOfflineDataChange);
-    window.addEventListener('unihub:retry-session', onSessionExpired);
+    unsubscribe.push(
+      onAppEvent('unihub:offline-data', () => { void onOfflineDataChange(); }),
+      onAppEvent('unihub:retry-session', onSessionExpired),
+    );
     const cancelPendingRefresh = () => {
       ++authVersion.current;
       refreshController.current?.abort();
@@ -104,10 +109,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       cancelPendingRefresh();
       window.removeEventListener('storage', onStorage);
       window.removeEventListener('online', onOnline);
-      window.removeEventListener('unihub:session-expired', onSessionExpired);
-      window.removeEventListener('unihub-offline-mode', onOfflineMode);
-      window.removeEventListener('unihub-offline-change', onOfflineDataChange);
-      window.removeEventListener('unihub:retry-session', onSessionExpired);
+      unsubscribe.forEach(stop => stop());
     };
   }, [refreshSession, clearLocalSession]);
 

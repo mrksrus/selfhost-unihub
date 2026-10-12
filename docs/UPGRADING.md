@@ -5,6 +5,17 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.19.2 A new layout
+
+Database upgrade 15 runs at startup. It creates the notification tables and
+the mail list indexes only where they are missing; installations that have
+run 0.10 or later already have them, so nothing changes for their data. No
+configuration change. Keep the same database, uploads volume and encryption
+keys. Links to `/settings?tab=…` from earlier versions still open the matching
+section. Earlier versions only logged a failure to create a mail list index;
+step 15 creates any missing index and stops startup if that fails (for
+example, when the disk is full), so free space and restart.
+
 ## 0.19.1 Tests and tools are written in TypeScript
 
 The application code, database schema, backup format and deployment

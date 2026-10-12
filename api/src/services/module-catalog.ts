@@ -23,12 +23,16 @@ const PAGE_CATALOG = Object.freeze([
 // They are ignored when read and rejected in new updates.
 const RETIRED_MODULE_IDS = Object.freeze(['games', 'notes']);
 
+// A module's API lives under /api/<module id>; the gate follows the catalog.
+const MODULE_IDS = MODULE_CATALOG.map(module => module.id);
+const MODULE_PATH_PATTERN = new RegExp(`^/api/(${MODULE_IDS.join('|')})(?:/|$)`);
+
 function getModuleForPath(pathname: string) {
-  const match = /^\/api\/(mail|calendar|contacts|recordings)(?:\/|$)/.exec(pathname);
+  const match = MODULE_PATH_PATTERN.exec(pathname);
   if (match) return match[1];
   // Settings remain accessible, but their module-specific operations follow the gate.
   if (pathname.startsWith('/api/settings/clear-mail') || pathname === '/api/settings/mail-sender-candidates') return 'mail';
-  for (const id of ['contacts', 'calendar', 'recordings']) if (pathname === `/api/settings/clear-${id}`) return id;
+  for (const id of MODULE_IDS) if (id !== 'mail' && pathname === `/api/settings/clear-${id}`) return id;
   return null;
 }
 export { MODULE_CATALOG, PAGE_CATALOG, RETIRED_MODULE_IDS, getModuleForPath };

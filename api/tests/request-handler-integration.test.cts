@@ -108,3 +108,25 @@ test('writes during a restore of their section get a 409 that clients can tell f
   assert.equal(result.body.code, 'RESTORE_IN_PROGRESS');
   assert.equal(called, false);
 });
+
+test('body limits come from the route table: the default applies to ordinary routes', async (t) => {
+  let called = 0;
+  const run = handlerHarness(t, ({ route: async () => { called++; return { success: true }; } }));
+  const oversized = await run('POST', '/api/parse-test', '{}', { 'content-length': '1001' });
+  assert.equal(oversized.status, 413);
+  assert.match(oversized.body.error, /max 1000 bytes/);
+  assert.equal(called, 0);
+  assert.equal((await run('POST', '/api/parse-test', '{}', { 'content-length': '2' })).status, 200);
+  assert.equal(called, 1);
+});
+
+test('a parameter with malformed percent-encoding is rejected with 400 before any route runs', async (t) => {
+  let called = 0;
+  const run = handlerHarness(t, ({ route: async (req: FixtureValue) => { called++; return { id: req.params.id }; } }));
+  const result = await run('PUT', '/api/mail/emails/%E0%A4%A', '{}');
+  assert.equal(result.status, 400);
+  assert.equal(called, 0);
+  const decoded = await run('PUT', '/api/mail/emails/e%201', '{}');
+  assert.equal(decoded.status, 200);
+  assert.equal(decoded.body.id, 'e 1');
+});

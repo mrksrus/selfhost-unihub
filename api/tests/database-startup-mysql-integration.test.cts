@@ -63,7 +63,6 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   const [progress] = await db.query<RowDataPacket[]>('SELECT source_table, last_id, processed FROM mail_engine_migration_progress ORDER BY source_table');
   assert.deepEqual(progress.map((row) => [row.source_table, row.last_id, Number(row.processed)]), [['emails', '', 0], ['mail_writebacks', '', 0]]);
   let notifications = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');
-  await notifications.ensureNotificationSchema();
   await (require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory')).verifyDatabaseInventory(db);
   await db.execute('ALTER TABLE emails ADD COLUMN recovery_inventory_probe TEXT NULL');
   try {
@@ -78,7 +77,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
     [5, 'explicit-mail-writebacks'], [6, 'mail-engine-additive-storage'],
     [7, 'mail-engine-resumable-backfill'], [8, 'mail-engine-manual-refresh-intent'],
     [9, 'calendar-color-default'], [10, 'mail-sync-policy'], [11, 'remove-notes-module'], [12, 'calendar-sync'],
-    [13, 'calendar-mail-link-marker'], [14, 'calendar-linked-login'],
+    [13, 'calendar-mail-link-marker'], [14, 'calendar-linked-login'], [15, 'notification-tables-and-mail-indexes'],
   ]);
   const [policyColumns] = await db.execute<RowDataPacket[]>(`SELECT COLUMN_NAME AS name, COLUMN_DEFAULT AS dflt, IS_NULLABLE AS nullable
     FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'mail_accounts'
@@ -101,12 +100,11 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   assert.equal(columns.length, 1);
   assert.equal(String(columns[0].Default), '0');
 
-  // Close the pool and discard the module's key cache to exercise database-backed recovery.
+  // Close the pool and discard the transport's key cache to exercise database-backed recovery.
   await getDb()!.end();
   await initDatabase();
-  delete require.cache[require.resolve('../dist/src/services/notifications')];
+  for (const name of ['notifications', 'notification-transports']) delete require.cache[require.resolve(`../dist/src/services/${name}`)];
   notifications = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');
-  await notifications.ensureNotificationSchema();
   assert.deepEqual(await notifications.getVapidKeys(), before);
   await (require('../dist/src/services/data-inventory') as typeof import('../src/services/data-inventory')).verifyDatabaseInventory(db);
   const [restartedHistory] = await db.execute<RowDataPacket[]>('SELECT id, name, completed_at FROM schema_migrations ORDER BY id');
@@ -140,7 +138,7 @@ test('production schema startup is repeatable, preserves encrypted VAPID keys an
   await getDb()!.end();
   await initDatabase();
   const [history] = await db.execute<RowDataPacket[]>('SELECT id FROM schema_migrations ORDER BY id');
-  assert.deepEqual(history.map((row) => row.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  assert.deepEqual(history.map((row) => row.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
   const [[calendarSync]] = await db.execute<RowDataPacket[]>('SELECT name FROM schema_migrations WHERE id = 12');
   assert.equal(calendarSync.name, 'calendar-sync');
 

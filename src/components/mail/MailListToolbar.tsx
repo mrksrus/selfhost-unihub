@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { CheckCircle2, CheckSquare, FolderOpen, Mail, Menu, MoreVertical, Search, Square, Star, Trash2, X } from 'lucide-react';
+import { CheckCircle2, CheckSquare, FolderOpen, Mail, Search, Square, Star, Trash2, X } from 'lucide-react';
 import type { MailAccount, MailFolder } from '@/lib/mail-api';
 import type { MailListView } from '@/hooks/use-mail-list-view';
 import type { MailListSelection } from '@/hooks/use-mail-list-selection';
@@ -7,7 +7,9 @@ import type { MailBulkActions } from '@/hooks/use-mail-bulk-actions';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { PageHeader } from '@/components/layout/PageShell';
+import { cn } from '@/lib/utils';
 import type { MailFolderItem } from '@/components/mail/mail-page-model';
 
 /** Legacy view: recover checked messages into a receiving account and folder. */
@@ -17,7 +19,7 @@ export function MailLegacyRecovery({ accounts, folders, selectedIds, onRecover }
   const [recoveryAccount, setRecoveryAccount] = useState('');
   const [recoveryFolder, setRecoveryFolder] = useState('inbox');
   return (
-    <div className="border-b border-border p-3 space-y-2 text-sm">
+    <div className="border-b border-border px-4 py-3 space-y-2 text-sm md:px-6">
       <p>These messages retain their original folders. Some need a receiving account; others await a successful server check. Select messages to recover them. Their original mail source is preserved.</p>
       {selectedIds.length > 0 && <div className="flex flex-wrap gap-2">
         <Select value={recoveryAccount} onValueChange={value => { setRecoveryAccount(value); setRecoveryFolder('inbox'); }}>
@@ -36,8 +38,6 @@ export function MailLegacyRecovery({ accounts, folders, selectedIds, onRecover }
 }
 
 interface ToolbarProps {
-  isMobile: boolean;
-  onOpenSidebar: () => void;
   emailCount: number;
   selection: MailListSelection;
   folderLabel: string;
@@ -51,195 +51,70 @@ interface ToolbarProps {
   syncControl: ReactNode;
 }
 
-/** List header: folder and account, unread filter, search, selection actions and the sync control. */
-export function MailListToolbar({ isMobile, onOpenSidebar, emailCount, selection, folderLabel, accountLabel, account, list, bulk,
+const chip = (on: boolean) => cn('inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+  on ? 'border-transparent bg-muted text-foreground' : 'border-border text-muted-foreground hover:text-foreground');
+
+/**
+ * The page header of Mail: folder and account, then a row with the unread
+ * filter and search, or with the actions for checked messages.
+ */
+export function MailListToolbar({ emailCount, selection, folderLabel, accountLabel, account, list, bulk,
   moveTargets, syncControl }: ToolbarProps) {
   const { selectedEmails, selectedIds } = selection;
+  const selecting = selectedEmails.size > 0;
+  const allSelected = emailCount > 0 && selectedEmails.size === emailCount;
   return (
-    <div className="min-h-14 border-b border-border flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-        {isMobile && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onOpenSidebar}
-            title="Choose account and folder"
-            aria-label="Choose account and folder"
-            className="shrink-0"
-          >
-            <Menu className="h-5 w-5" />
-          </Button>
-        )}
+    <PageHeader title={folderLabel} scope={accountLabel} actions={syncControl}>
+      {(account || emailCount > 0) && <div className="flex min-h-12 flex-wrap items-center gap-2 px-4 pb-2 md:px-6">
         {emailCount > 0 && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={selection.toggleAll}
-            title={selectedEmails.size === emailCount ? 'Deselect all' : 'Select all'}
-            className="shrink-0"
-          >
-            {selectedEmails.size === emailCount ? (
-              <CheckSquare className="h-4 w-4" />
-            ) : (
-              <Square className="h-4 w-4" />
-            )}
+          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={selection.toggleAll}
+            aria-label={allSelected ? 'Deselect all' : 'Select all'} title={allSelected ? 'Deselect all' : 'Select all'}>
+            {allSelected ? <CheckSquare aria-hidden="true" className="text-accent" /> : <Square aria-hidden="true" />}
           </Button>
         )}
-        <h2 className="font-semibold shrink-0">{folderLabel}</h2>
-        {!selectedEmails.size && account && (
-          <span className="text-sm text-muted-foreground min-w-0 truncate">
-            {accountLabel}
-          </span>
-        )}
-        {selectedEmails.size > 0 && (
-          <span className="text-sm text-muted-foreground shrink-0">
-            ({selectedEmails.size} selected)
-          </span>
-        )}
-        {account && !selectedEmails.size && (
-          <>
-            <Button
-              variant={list.showUnreadOnly ? "default" : "outline"}
-              size="sm"
-              onClick={() => list.setShowUnreadOnly(!list.showUnreadOnly)}
-              className="shrink-0"
-              title={list.showUnreadOnly ? "Show all emails" : "Show only unread emails"}
-            >
-              <Mail className="h-4 w-4 mr-2" />
-              {list.showUnreadOnly ? 'Unread Only' : 'All'}
-            </Button>
-            <div className="relative order-last w-full min-w-[180px] sm:order-none sm:ml-4 sm:max-w-md sm:flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                type="text"
-                placeholder="Search emails..."
-                value={list.searchQuery}
-                onChange={(e) => list.setSearchQuery(e.target.value)}
-                className="pl-9 h-9"
-              />
-              {list.searchQuery && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7"
-                  onClick={() => list.setSearchQuery('')}
-                >
-                  <X className="h-3 w-3" />
-                </Button>
-              )}
-            </div>
-          </>
-        )}
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        {selectedEmails.size > 0 && isMobile && (
+        {selecting ? <>
+          <span className="mr-1 text-sm font-medium">{selectedEmails.size} selected</span>
+          <Button variant="outline" size="sm" aria-label="Mark selected as read" onClick={() => bulk.setRead(selectedIds, true)} disabled={bulk.readPending(selectedIds, true)}>
+            <CheckCircle2 aria-hidden="true" /><span className="hidden sm:inline">Read</span>
+          </Button>
+          <Button variant="outline" size="sm" aria-label="Mark selected as unread" onClick={() => bulk.setRead(selectedIds, false)} disabled={bulk.readPending(selectedIds, false)}>
+            <Mail aria-hidden="true" /><span className="hidden sm:inline">Unread</span>
+          </Button>
+          <Button variant="outline" size="sm" aria-label="Star selected" onClick={() => bulk.star(selectedIds)} disabled={bulk.starPending(selectedIds)}>
+            <Star aria-hidden="true" /><span className="hidden sm:inline">Star</span>
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="icon" title="Selection actions">
-                <MoreVertical className="h-4 w-4" />
-              </Button>
+              <Button variant="outline" size="sm" aria-label="Move selected"><FolderOpen aria-hidden="true" /><span className="hidden sm:inline">Move</span></Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="max-h-[70vh] overflow-y-auto">
-              <DropdownMenuItem onClick={() => bulk.setRead(selectedIds, true)}>
-                <CheckCircle2 className="h-4 w-4 mr-2" />
-                Mark read
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => bulk.setRead(selectedIds, false)}>
-                <Mail className="h-4 w-4 mr-2" />
-                Mark unread
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => bulk.star(selectedIds)}>
-                <Star className="h-4 w-4 mr-2" />
-                Star
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              {moveTargets
-                .map((folder) => (
-                  <DropdownMenuItem
-                    key={folder.id}
-                    onClick={() => bulk.move(selectedIds, folder.id)}
-                  >
-                    <folder.icon className="h-4 w-4 mr-2" />
-                    Move to {folder.label}
-                  </DropdownMenuItem>
-                ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onClick={() => bulk.trash(selectedIds)}
-                className="text-destructive focus:text-destructive"
-              >
-                <Trash2 className="h-4 w-4 mr-2" />
-                Delete
-              </DropdownMenuItem>
+            <DropdownMenuContent align="start" className="max-h-[60vh] overflow-y-auto">
+              {moveTargets.map((folder) => (
+                <DropdownMenuItem key={folder.id} onClick={() => bulk.move(selectedIds, folder.id)}>
+                  <folder.icon className="mr-2 h-4 w-4" />Move to {folder.label}
+                </DropdownMenuItem>
+              ))}
             </DropdownMenuContent>
           </DropdownMenu>
-        )}
-        {selectedEmails.size > 0 && !isMobile && (
-          <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => bulk.setRead(selectedIds, true)}
-              disabled={bulk.readPending(selectedIds, true)}
-            >
-              <CheckCircle2 className="h-4 w-4 mr-2" />
-              Mark Read
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => bulk.setRead(selectedIds, false)}
-              disabled={bulk.readPending(selectedIds, false)}
-            >
-              <Mail className="h-4 w-4 mr-2" />
-              Mark Unread
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => bulk.star(selectedIds)}
-              disabled={bulk.starPending(selectedIds)}
-            >
-              <Star className="h-4 w-4 mr-2" />
-              Star
-            </Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                >
-                  <FolderOpen className="h-4 w-4 mr-2" />
-                  Move
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {moveTargets
-                  .map((folder) => (
-                    <DropdownMenuItem
-                      key={folder.id}
-                      onClick={() => bulk.move(selectedIds, folder.id)}
-                    >
-                      <folder.icon className="h-4 w-4 mr-2" />
-                      Move to {folder.label}
-                    </DropdownMenuItem>
-                  ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => bulk.trash(selectedIds)}
-              disabled={bulk.trashPending(selectedIds)}
-              className="text-destructive hover:text-destructive"
-            >
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete
-            </Button>
-          </>
-        )}
-        {syncControl}
-      </div>
-    </div>
+          <Button variant="outline" size="sm" aria-label="Delete selected" onClick={() => bulk.trash(selectedIds)} disabled={bulk.trashPending(selectedIds)}
+            className="text-destructive hover:text-destructive">
+            <Trash2 aria-hidden="true" /><span className="hidden sm:inline">Delete</span>
+          </Button>
+        </> : account && <>
+          <button type="button" className={chip(list.showUnreadOnly)} aria-pressed={list.showUnreadOnly}
+            onClick={() => list.setShowUnreadOnly(!list.showUnreadOnly)}>
+            Unread only
+          </button>
+          <div className="relative min-w-[180px] flex-1 md:max-w-md">
+            <Search aria-hidden="true" className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Input type="search" placeholder="Search mail" aria-label="Search mail" value={list.searchQuery}
+              onChange={(e) => list.setSearchQuery(e.target.value)} className="h-9 pl-9 pr-9" />
+            {list.searchQuery && (
+              <Button variant="ghost" size="icon" className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2" aria-label="Clear search"
+                onClick={() => list.setSearchQuery('')}><X aria-hidden="true" /></Button>
+            )}
+          </div>
+        </>}
+      </div>}
+    </PageHeader>
   );
 }

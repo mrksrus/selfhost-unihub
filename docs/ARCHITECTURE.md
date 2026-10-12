@@ -52,7 +52,8 @@ background jobs and do not depend on the proxy connection after job creation.
 | `api/src/services/mail-idle.ts` | IMAP IDLE supervisor: one read-only INBOX session per eligible account; changes become ordinary durable jobs |
 | `api/src/services/offline.ts` | Owner-scoped, size-bounded offline snapshots |
 | `api/src/services/caldav.ts`, `calendar-sync.ts`, `calendar-ical.ts`, `calendar-accounts.ts` | CalDAV discovery and requests, the sync engine and writeback, iCalendar parsing and recurrence expansion, calendars of mail accounts |
-| `api/src/services/notifications.ts` | Durable notification events, delivery state and reminder worker |
+| `api/src/services/notifications.ts`, `notification-transports.ts` | Durable notification events, delivery state and reminder worker; delivery transports keyed by target kind (today `webpush`, which owns the VAPID identity) |
+| `api/src/services/access-policy.ts` | `canRunModule` (module enabled, background allowed, no restore of its section) and the per-user blocked-module map used by workers |
 | `api/src/security/encryption.ts` | AES-256-GCM helpers |
 | `api/src/security/client-ip.ts`, `login-limits.ts` | Explicit proxy trust and separate IP/account attempt budgets |
 | `api/src/security/outbound-network.ts`, `caldav-transport.ts` | Checked-address connections and same-origin CalDAV credentials |
@@ -64,26 +65,36 @@ server entrypoint paths. Browser workers compile from `workers/` into classic
 scripts at their existing URLs. See [development](DEVELOPMENT.md) for commands.
 
 The API is a vanilla Node.js HTTP server. There is no Express router; routes are
-mapped by exact keys such as `GET /api/contacts`, with parameterized paths
-normalized in `request-handler.ts`.
+mapped by keys such as `GET /api/contacts` or `PUT /api/contacts/:id/favorite`.
+`http/route-matcher.ts` compiles every key of the route table once at startup:
+an exact key wins, then the parameterized keys of the same method are tried by
+whole path segment, the one with the most literal segments first (ties go to
+the pattern whose literal comes first), so a new parameterized route needs no
+change in `request-handler.ts`. A `:param` is one non-empty, percent-decoded
+segment, available to the handler as `req.params`; malformed encoding is a 400.
+Paths with an empty or trailing segment match nothing.
 
 ## Frontend Structure
 
 | Path | Purpose |
 | --- | --- |
 | `src/App.tsx` | Main router |
-| `src/pages/` | Page-level views |
-| `src/components/` | Layout, UI, mail, and PWA components |
+| `src/pages/` | One file per page; it composes the page's panel, header and body |
+| `src/components/layout/` | App shell: `NavRail` (desktop), `BottomNav` (phones), `PageShell` with `PageHeader`, `PageBody` and the context-panel parts, and the attention list |
+| `src/components/<feature>/` | Feature views (mail, calendar, todo, contacts, recordings, settings) |
 | `src/contexts/AuthContext.tsx` | Session validation, cross-tab account changes, CSRF, and offline viewing identity |
 | `src/components/SessionQueryProvider.tsx` | Private query cache lifetime tied to the signed-in account |
 | `src/lib/api.ts` | Cookie-based API client, request cancellation, and network-failure-only offline reads |
-| `src/lib/mail-api.ts`, `src/hooks/use-mail-queries.ts` | Shared mail types, query keys, and invalidation |
+| `src/lib/<feature>-api.ts` | A feature's types, query keys, requests and `invalidate…` helper (mail, calendar, contacts, recordings, settings, mail rules) |
+| `src/hooks/use-<feature>-actions.ts` | A feature's changes as mutations with their feedback (tasks, events, contacts) |
 | `src/hooks/use-mail-reader.ts` | Cancelled/stale reader requests and online read-state updates |
-| `src/lib/contacts-api.ts` | Complete paginated contacts loading shared by contacts and composition |
-| `src/components/settings/BackupSettings.tsx` | Lazy Data Management view and active-job polling |
+| `src/hooks/use-attention.ts` | Things that need the user (mail changes to review, failed syncs, app update) for the attention list |
+| `src/hooks/use-audio-capture.ts` | Microphone recording as WAV, written to the device while recording |
+| `src/lib/platform.ts` | Device boundary: saving files, downloads, clipboard and connectivity |
+| `src/lib/app-events.ts` | Typed in-app events between parts of the app that do not share React state |
+| `src/components/settings/BackupSettings.tsx` | Lazy backup and restore section and active-job polling |
 | `src/lib/offline.ts` | Device snapshot storage, account/epoch isolation, and read-only response resolution |
-| `src/lib/pwa-update.ts` | Service-worker activation with separate refresh consent for each tab |
-| `src/lib/calendar-api.ts` | Calendar-specific API helpers |
+| `src/lib/pwa-update.ts`, `src/hooks/use-app-update.ts` | Service-worker activation with separate refresh consent for each tab; the waiting update is an attention item |
 | `src/test/` | Vitest frontend tests |
 
 Main routes:
@@ -95,28 +106,43 @@ Main routes:
 - `/mail`
 - `/recordings`
 - `/more`
-- `/settings`
+- `/music`
+- `/settings` (sections chosen with `?section=`)
 - `/admin/users`
 - `/admin/settings`
+
+Pages use one layout. On wide windows a page has an optional context panel
+(folders, lists, sections) next to its content; on narrow windows the panel
+opens as a sheet from the scope button in the page header, and the header is
+the phone's top bar. A page's view, filters and open item live in the address
+(`?view=`, `?section=`, `?contact=`), so links from Today, notifications and
+the command palette open the same state. Links ending in `?action=new` open
+the page's form for a new item.
 
 Routes load in separate chunks. Account
 changes unmount the previous private query cache and cancel its requests before
 rendering the next account. Mail search is debounced, and a reader request that
-finishes after selection changes cannot replace the selected message. The Data
-Management view polls only active backup/restore jobs while its tab is visible;
+finishes after selection changes cannot replace the selected message. The backup
+and restore section polls only active backup/restore jobs while it is shown;
 terminal jobs and password-waiting jobs do not keep a polling loop running.
 
 ## Request Handling
 
 Every request passes through `handleRequest`:
 
-1. Build a route key from method and path.
-2. Normalize known parameterized routes.
-3. Apply CORS using `ALLOWED_ORIGINS`; if unset, only same-host origins are accepted.
-4. Handle `OPTIONS` preflight.
-5. Verify auth from the session cookie or bearer token.
-6. Validate CSRF for authenticated state-changing requests.
-7. Enforce endpoint-specific body size limits.
+1. Resolve the method and path to a route key and `req.params` through the
+   compiled route matcher.
+2. Apply CORS using `ALLOWED_ORIGINS`; if unset, only same-host origins are accepted.
+3. Handle `OPTIONS` preflight.
+4. Verify auth from the session cookie or bearer token; the accepted credential
+   is recorded on the request.
+5. Validate CSRF for authenticated state-changing requests (bearer-only
+   requests are exempt, see [Auth](AUTH_ADMIN_SETTINGS.md#csrf-protection)).
+6. Enforce body size limits from a table keyed by route key (`BODY_LIMIT_BY_ROUTE`
+   in `request-handler.ts`, plus a path-prefix list for `/api/notifications/`);
+   the default is 1000 bytes.
+7. Refuse disabled modules (`getModuleForPath` derives the `/api/<module>`
+   prefixes from `MODULE_CATALOG`) and writes to sections under restore.
 8. Decode chunked JSON with a UTF-8 decoder, rejecting malformed JSON with HTTP 400, or stream backup uploads directly to persisted storage.
 9. Dispatch to the route handler.
 10. Serialize JSON, raw downloads, stream downloads, redirects, or HTML responses.
@@ -224,8 +250,14 @@ Startup behavior:
    An empty database is first set up from the 0.16.0 baseline, which also
    creates the first admin from the bootstrap env vars and its default local
    calendar.
+5. Check the declared field inventory against the actual schema, then generate
+   the Web Push identity if `notification_config` is still empty.
 
-No container configuration change is needed for these application migrations.
+The numbered upgrades in `database.ts` are the only schema path: since 0.19.2
+step 15 also owns the notification tables and the mail list indexes, which
+earlier releases created outside the upgrade history (at every start and
+after listen). No container configuration change is needed for these
+application migrations.
 
 A new database is created from the 0.16.0 baseline, which stands for upgrade steps 1 to 11. Later upgrades have ordered IDs and completion records; completed repairs do not repeat. Required migration errors stop startup. A declared field inventory is checked against the actual schema. See [Recovery contracts](DATA_RECOVERY.md).
 
@@ -341,7 +373,8 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 ## Service Worker and PWA
 
 The frontend uses vite-plugin-pwa for an installable shell and a prompted update
-flow. The client overrides the plugin's automatic reload callback: worker
+flow: a waiting update appears in the attention list (rail and More) with a
+Reload action, not as a separate banner. The client overrides the plugin's automatic reload callback: worker
 activation is shared, but each tab must explicitly request its own refresh.
 Native worker activation/controller events complete the requesting tab's update,
 with a bounded timeout and retry if activation fails. Routes load
@@ -356,7 +389,12 @@ display, persistent per-user deduplication and same-origin click navigation.
 Mail, calendar and to-do notification links open the referenced item after
 owner-scoped loading. The API persists encrypted VAPID identity, session-bound
 subscriptions, a transactional notification outbox and indexed reminder
-schedules in MariaDB. One job loop processes notifications every 30 seconds.
+schedules in MariaDB. One job loop processes notifications every 30 seconds:
+`notifications.ts` selects due deliveries, revalidates their source and records
+outcomes; the transport map in `notification-transports.ts` (`webpush` today)
+does the sending and classifies failures. A native client transport (UniHub as
+its own push server over a long-lived connection) is a second map entry plus an
+expand-only migration for its target table.
 
 Opt-in offline reading uses a separate versioned IndexedDB snapshot with explicit account/epoch ownership. It contains the latest 100 full emails, all contacts and events, bounded to 32 MiB; it is not an authentication-response cache. Account changes and explicit clearing invalidate pending saves across tabs. See [PWA](PWA.md) and [Offline reading](OFFLINE.md).
 
@@ -425,5 +463,5 @@ checks. Settings/auth/recovery remain core functions. This is an internal catalo
 not a dynamic plugin or microservice system.
 
 Each user's module order is a separate `module_order` setting. The API returns
-modules in that order, and the sidebar, mobile bar and More page follow it. See
+modules in that order, and the navigation rail, mobile bar and More page follow it. See
 [Modules](MODULES.md).

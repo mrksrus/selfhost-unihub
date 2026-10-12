@@ -195,6 +195,7 @@ export const mailQueryKeys = {
   accounts: ['mail-accounts'] as const,
   folders: ['mail-folders'] as const,
   writebacks: ['mail-writebacks'] as const,
+  syncJobs: ['mail-sync-jobs'] as const,
   unread: (account: string | null) => ['mail-unread-counts', account] as const,
   dashboardUnread: ['dashboard-unread-mail'] as const,
   list: (filters: MailListFilters) => ['emails', filters.account, filters.folder, filters.page, filters.search, filters.unreadOnly] as const,
@@ -212,6 +213,22 @@ const MAIL_FLAG_COUNT_ROOTS = new Set(['mail-unread-counts', 'mail-accounts', 'm
 
 export function invalidateMailFlagViews(client: QueryClient) {
   return client.invalidateQueries({ predicate: query => query.queryKey[0] === 'emails' || MAIL_FLAG_COUNT_ROOTS.has(String(query.queryKey[0])) });
+}
+
+const MAIL_COUNT_ROOTS = new Set(['mail-unread-counts', 'dashboard-unread-mail', 'email-count', 'stats']);
+
+/**
+ * After the server reported changed mail: the lists of those accounts ('*' for
+ * every account; lists across all accounts always), every count and, when
+ * folders changed, the folder list.
+ */
+export function invalidateChangedMail(client: QueryClient, accounts: ReadonlySet<string>, folders: boolean) {
+  return client.invalidateQueries({ predicate: query => {
+    const [root, account] = query.queryKey;
+    if (MAIL_COUNT_ROOTS.has(String(root))) return true;
+    if (folders && root === mailQueryKeys.folders[0]) return true;
+    return root === mailQueryKeys.all[0] && (accounts.has('*') || account === 'all' || accounts.has(String(account)));
+  } });
 }
 
 export interface MailListFilters {

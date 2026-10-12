@@ -2,7 +2,7 @@ import { useState, type ComponentProps } from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MailSyncAttentionLine, MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
+import { MailSyncControl, type SyncPanelFocus } from '@/components/mail/MailSyncControl';
 import type { MailSyncJob } from '@/hooks/use-mail-sync-jobs';
 import { api } from '@/lib/api';
 import type { MailAccount, MailWriteback } from '@/lib/mail-api';
@@ -35,7 +35,8 @@ function Harness(props: Partial<Props>) {
   const [panel, setPanel] = useState<SyncPanelFocus | null>(props.panel ?? null);
   const operations = props.operations ?? [];
   return <>
-    <MailSyncAttentionLine operations={operations} onReview={() => setPanel('attention')} />
+    {/* What arriving from the attention tray's "Review" link does (MailPage reads ?review=attention). */}
+    <button type="button" onClick={() => setPanel('attention')}>Review</button>
     <MailSyncControl accounts={accounts} viewAccountIds={['a1']} jobs={[]} jobsError={false} operationsError={false}
       syncing={new Set()} cancelling={new Set()} onSync={onSync} onCancel={onCancel} touch={false} {...props}
       operations={operations} panel={panel} onPanelChange={setPanel} />
@@ -120,16 +121,14 @@ describe('toolbar sync control', () => {
     expect(screen.queryByText(/private provider details/)).not.toBeInTheDocument();
   });
 
-  it('shows the attention line and warning dot only for changes that need a decision', async () => {
+  it('shows the warning dot only for changes that need a decision and focuses them on review', async () => {
     const view = mount({ operations: [op('q', 'queued'), op('x', 'rejected', { status: 'failed' })] });
     expect(screen.queryByText(/need(s)? your attention/)).not.toBeInTheDocument();
     view.unmount();
     mount({ operations: [op('q', 'queued'), op('a', 'needs_attention', { can_cancel: true }), op('b', 'needs_attention')] });
     expect(syncButton()).toHaveAccessibleName('Sync mail — 1 change waiting, 2 changes need attention — open sync details');
     expect(screen.getByTestId('mail-sync-warning')).toBeInTheDocument();
-    const line = screen.getByRole('status');
-    expect(line).toHaveTextContent('2 changes need your attention');
-    fireEvent.click(within(line).getByRole('button', { name: 'Review' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     const dialog = await screen.findByRole('dialog', { name: 'Mail sync' });
     const heading = within(dialog).getByRole('heading', { name: '2 changes need your attention' });
     await waitFor(() => expect(heading).toHaveFocus());

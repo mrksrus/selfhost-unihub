@@ -1,3 +1,4 @@
+import { isOnline } from '@/lib/platform';
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { formatDistanceToNowStrict } from 'date-fns';
@@ -74,19 +75,19 @@ export function MailPendingChanges({ operations, unavailable, focusAttention }: 
       <span className="min-w-0">{actionLabels[operation.action]}: {describe(operation, check)}</span>
       <span className="flex gap-1">
         {canRetry && <Button size="sm" variant="outline" className="h-7 text-xs"
-          disabled={retry.isPending || !navigator.onLine}
+          disabled={retry.isPending || !isOnline()}
           aria-label={`${check ? 'Check outcome of' : 'Retry'} ${actionLabels[operation.action].toLowerCase()}`}
           onClick={() => retry.mutate(operation.id)}>
           {retry.isPending && retry.variables === operation.id ? 'Checking…' : check ? 'Check outcome' : 'Retry'}
         </Button>}
         {operation.can_cancel && <Button size="sm" variant="ghost" className="h-7 text-xs"
-          disabled={discard.isPending || !navigator.onLine}
+          disabled={discard.isPending || !isOnline()}
           aria-label={`Discard ${actionLabels[operation.action].toLowerCase()}`}
           onClick={() => discard.mutate(operation.id)}>
           {discard.isPending && discard.variables === operation.id ? 'Discarding…' : 'Discard'}
         </Button>}
         {operation.can_accept_server_state && confirmAccept !== operation.id && <Button size="sm" variant="ghost" className="h-7 text-xs"
-          disabled={accept.isPending || !navigator.onLine}
+          disabled={accept.isPending || !isOnline()}
           onClick={() => setConfirmAccept(operation.id)}>
           Accept server state
         </Button>}
@@ -97,7 +98,7 @@ export function MailPendingChanges({ operations, unavailable, focusAttention }: 
         </span>
         <span className="flex gap-1">
           <Button size="sm" variant="outline" className="h-7 text-xs" aria-describedby={`accept-server-state-${operation.id}`}
-            disabled={accept.isPending || !navigator.onLine} onClick={() => accept.mutate(operation.id)}>
+            disabled={accept.isPending || !isOnline()} onClick={() => accept.mutate(operation.id)}>
             {accept.isPending && accept.variables === operation.id ? 'Accepting…' : 'Stop tracking and sync'}
           </Button>
           <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={accept.isPending}

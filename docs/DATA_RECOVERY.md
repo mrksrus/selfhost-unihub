@@ -11,12 +11,12 @@ Every database column must be accounted for. Do not rely on `SELECT *` or add a
 new field without deciding its import, ownership and file behavior.
 
 `api/tests/data-inventory.test.cts` compares these declarations with production
-DDL. Startup checks the actual MariaDB inventory after notification schema setup.
+DDL. Startup checks the actual MariaDB inventory after the upgrades have run.
 An undeclared column fails instead of being silently omitted. Catalog coverage
 proves accounting, not correct behavior: extend representative restore assertions
 when changing relationships, files or field meaning.
 
-Sections drive export, import, restore locks and the Data Management choices
+Sections drive export, import, restore locks and the Backup and restore choices
 through `GET /api/backup/capabilities`. New routes and background writers must also
 participate in their section's write protection. Feature visibility is separate
 from data ownership: hiding a feature must never remove its data from recovery.

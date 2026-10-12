@@ -1,0 +1,87 @@
+import type { RowDataPacket } from 'mysql2/promise';
+import type { SqlExecutor } from '../types';
+
+import { db } from '../state';
+import { encrypt, decrypt } from '../security/encryption';
+import { pushAgent } from './push-transport';
+import { asUtcDate, hash, retryDisposition } from './notification-rules';
+
+// Delivery transports, keyed by the kind of target a delivery row points at.
+//
+// The dispatcher in notifications.ts selects due deliveries, revalidates
+// their source and records the outcome; a transport only knows how to reach
+// one kind of device and how to classify that device's failures. Today every
+// target is a browser push subscription (push_subscriptions, Web Push with
+// VAPID). A native Android client will instead hold a long-lived connection to
+// this API (the same model as the browser event stream in server-events.ts)
+// and UniHub will be its own push server: that becomes a second entry here,
+// 'android', plus an expand-only migration for its target table and a target
+// kind on notification_deliveries. Nothing in the dispatcher changes.
+interface VapidKeys { publicKey: string; privateKey: string; subject: string }
+interface WebPushTarget { kind: 'webpush'; id: string; endpoint: string; p256dh: string; auth: string }
+type DeliveryTarget = WebPushTarget;
+interface DeliveryMessage {
+  eventId: string;
+  kind: string;
+  payload: Record<string, unknown> & { dedupeKey?: unknown };
+  expiresAt: unknown;
+}
+type DeliveryOutcome =
+  | { sent: true }
+  // targetGone: the device no longer exists; the dispatcher discards the target.
+  | { sent: false; targetGone: boolean; retry: boolean; nextAttempt: Date | null; error: string };
+interface NotificationTransport<T extends DeliveryTarget = DeliveryTarget> {
+  // Once per batch, before any attempt is reserved: a transport whose identity
+  // is unavailable fails the pass here instead of using up attempts.
+  ready(): Promise<void>;
+  send(target: T, message: DeliveryMessage, attempts: number): Promise<DeliveryOutcome>;
+  discardTarget(connection: SqlExecutor, target: T): Promise<void>;
+}
+type PushError = Error & { statusCode?: number };
+
+let keyPromise: Promise<VapidKeys> | null = null;
+async function getVapidKeys(): Promise<VapidKeys> {
+  if (!keyPromise) keyPromise = (async () => {
+    let [rows] = await db.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
+    if (!rows.length) {
+      const webPush = require('web-push') as typeof import('web-push');
+      const keys = webPush.generateVAPIDKeys();
+      const [admins] = await db.execute<RowDataPacket[]>("SELECT email FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1");
+      const subject = process.env.WEB_PUSH_SUBJECT || `mailto:${admins[0]?.email || 'notifications@unihub.invalid'}`;
+      // Concurrent startups may generate candidates; INSERT IGNORE and reread choose exactly one stable pair.
+      await db.execute('INSERT IGNORE INTO notification_config (id, public_key, encrypted_private_key, subject) VALUES (1, ?, ?, ?)', [keys.publicKey, encrypt(keys.privateKey), subject]);
+      [rows] = await db.execute<(RowDataPacket & { public_key: string; encrypted_private_key: string; subject: string })[]>('SELECT public_key, encrypted_private_key, subject FROM notification_config WHERE id = 1');
+    }
+    const privateKey = decrypt(rows[0].encrypted_private_key);
+    if (!privateKey) throw new Error('Unable to decrypt persisted Web Push key');
+    return { publicKey: rows[0].public_key, privateKey, subject: rows[0].subject };
+  })().catch(error => { keyPromise = null; throw error; });
+  return keyPromise;
+}
+
+const webPushTransport: NotificationTransport<WebPushTarget> = {
+  async ready() { await getVapidKeys(); },
+  async send(target, message, attempts) {
+    const keys = await getVapidKeys();
+    const webPush = require('web-push') as typeof import('web-push');
+    try {
+      await webPush.sendNotification({ endpoint: target.endpoint, keys: { p256dh: target.p256dh, auth: target.auth } }, JSON.stringify({ ...message.payload, notificationId: message.eventId }),
+        { agent: pushAgent, vapidDetails: keys, TTL: Math.max(0, Math.min(86400, Math.floor((asUtcDate(message.expiresAt).getTime() - Date.now()) / 1000))), urgency: message.kind === 'reminder' ? 'high' : 'normal', timeout: 10000, topic: hash(message.payload.dedupeKey).slice(0, 32) });
+      return { sent: true };
+    } catch (error) {
+      const outcome = retryDisposition(error as PushError, attempts);
+      return { sent: false, targetGone: !!outcome.expired, retry: !!outcome.retry, nextAttempt: outcome.nextAttempt || null,
+        error: `Push service ${Number((error as PushError).statusCode) || 'network error'}` };
+    }
+  },
+  async discardTarget(connection, target) {
+    await connection.execute('DELETE FROM push_subscriptions WHERE id = ?', [target.id]);
+  },
+};
+
+const NOTIFICATION_TRANSPORTS: { readonly [K in DeliveryTarget['kind']]: NotificationTransport<Extract<DeliveryTarget, { kind: K }>> } = Object.freeze({
+  webpush: webPushTransport,
+});
+
+export { NOTIFICATION_TRANSPORTS, getVapidKeys };
+export type { DeliveryTarget, DeliveryMessage, DeliveryOutcome, NotificationTransport, VapidKeys, WebPushTarget };

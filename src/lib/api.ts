@@ -1,4 +1,6 @@
 import { isOfflineMode, readOfflineResponse, setOfflineMode } from '@/lib/offline';
+import { emitAppEvent } from '@/lib/app-events';
+import { isOnline } from '@/lib/platform';
 
 // API client for UniHub backend
 
@@ -18,7 +20,7 @@ interface BlobResponse {
 }
 
 function isBrowserOffline() {
-  return typeof navigator !== 'undefined' && navigator.onLine === false;
+  return !isOnline();
 }
 
 // A proxy answering 502-504 has not reached the API.
@@ -91,7 +93,7 @@ class ApiClient {
     if (this.csrfToken) { setOfflineMode(false); return; }
     if (Date.now() - this.sessionRetryAt < 30_000) return;
     this.sessionRetryAt = Date.now();
-    window.dispatchEvent(new Event('unihub:retry-session'));
+    emitAppEvent('unihub:retry-session');
   }
 
   // A write refused in offline mode checks whether the API is back, using a
@@ -178,7 +180,7 @@ class ApiClient {
 
       if (!response.ok) {
         if (response.status === 401 && !endpoint.startsWith('/auth/')) {
-          window.dispatchEvent(new Event('unihub:session-expired'));
+          emitAppEvent('unihub:session-expired');
         }
         const errorData = data && typeof data === 'object' ? data as Record<string, unknown> : {};
         return {

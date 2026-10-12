@@ -4,14 +4,13 @@ import { useServerEventsConnected } from '@/hooks/use-server-events';
 import { LIVE_POLL_MS } from '@/lib/server-events';
 import { captureMailFlagReconciler, mailQueryKeys, fetchMailList, type MailAccount, type MailFolder, type MailUnreadCountsResponse, type MailListFilters } from '@/lib/mail-api';
 
-export const useMailAccounts = () => useQuery({
-  queryKey: mailQueryKeys.accounts,
-  queryFn: async ({ signal }) => {
-    const response = await api.get<{ accounts: MailAccount[] }>('/mail/accounts', { signal });
-    if (response.error) throw new Error(response.error);
-    return response.data?.accounts ?? [];
-  },
-});
+export async function fetchMailAccounts({ signal }: { signal?: AbortSignal } = {}) {
+  const response = await api.get<{ accounts: MailAccount[] }>('/mail/accounts', { signal });
+  if (response.error) throw new Error(response.error);
+  return response.data?.accounts ?? [];
+}
+
+export const useMailAccounts = () => useQuery({ queryKey: mailQueryKeys.accounts, queryFn: fetchMailAccounts });
 
 export const useMailFolders = () => useQuery({
   queryKey: mailQueryKeys.folders,

@@ -1,3 +1,4 @@
+import { isOnline } from '@/lib/platform';
 import { isOfflineMode } from '@/lib/offline';
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -68,7 +69,7 @@ export function useMailReader(scope: string | null = null) {
         setSelectedEmail(null);
         actions.onDraft(email);
       } else {
-        const canMarkRead = !isOfflineMode() && navigator.onLine;
+        const canMarkRead = !isOfflineMode() && isOnline();
         setSelectedEmail(email);
         // Pending unread intent must not be undone by simply opening it.
         if (!email.is_read && !email.read_sync_pending && canMarkRead) actions.onMarkRead(email);

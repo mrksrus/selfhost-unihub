@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Bell, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { api } from '@/lib/api';
 import { enablePushSubscription, initServiceWorker, notificationSupport, pushEnabledForUser, requestNotificationPermission, revokeDevicePushSubscription, sendTestPush, setPushEnabledForUser } from '@/utils/service-worker';
 
@@ -68,18 +68,20 @@ export default function NotificationSettings() {
     catch (error) { setMessage(error instanceof Error ? error.message : 'Could not send test notification.'); }
     finally { setBusy(false); }
   };
-  return <Card>
-    <CardHeader><CardTitle className="flex items-center gap-2"><Bell className="h-5 w-5" />Notifications</CardTitle>
-      <CardDescription>New mail and calendar reminders on this device, including when UniHub is closed.</CardDescription></CardHeader>
-    <CardContent className="space-y-3">
-      <p className="text-sm text-muted-foreground">{!supported ? 'Use HTTPS and a browser that supports notifications. On iPhone or iPad, add UniHub to the Home Screen and open it there.' : permission === 'denied' ? 'Notifications are blocked. Allow them in your browser or device settings, then enable them here.' : enabled ? 'Enabled on this device.' : 'Notifications are not enabled on this device.'}</p>
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={enabled ? disable : enable} disabled={busy || !supported || (!enabled && permission === 'denied')} variant={enabled ? 'outline' : 'default'}>{busy && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{enabled ? 'Disable notifications' : 'Enable notifications'}</Button>
-        {enabled && <Button variant="outline" disabled={busy} onClick={test}>Test notification</Button>}
-      </div>
+  const state = !supported ? 'Use HTTPS and a browser that supports notifications. On iPhone or iPad, add UniHub to the Home Screen and open it there.'
+    : permission === 'denied' ? 'Notifications are blocked. Allow them in your browser or device settings, then turn them on here.'
+    : enabled ? 'On for this device.' : 'Off for this device.';
+  return <SettingsSection title="Notifications" description="New mail and reminders, also while UniHub is closed.">
+    <SettingsRow label="This device" description={state}>
+      {enabled && <Button variant="outline" disabled={busy} onClick={test}>Send a test</Button>}
+      <Button onClick={enabled ? disable : enable} disabled={busy || !supported || (!enabled && permission === 'denied')} variant={enabled ? 'outline' : 'default'}>
+        {busy && <Loader2 aria-hidden="true" className="animate-spin" />}{enabled ? 'Turn off' : 'Turn on'}
+      </Button>
+    </SettingsRow>
+    {(enabled || message) && <SettingsBlock className="space-y-2">
       {enabled && <DeviceStatus status={status} />}
       {message && <p role="status" className="text-sm">{message}</p>}
-      <p className="text-xs text-muted-foreground">Delivery needs connectivity and permission from your device. If UniHub is not opened here for 3 weeks, this device is signed out and notifications stop; you get a warning 2 days before.</p>
-    </CardContent>
-  </Card>;
+    </SettingsBlock>}
+    <SettingsBlock><p className="text-xs text-muted-foreground">If UniHub is not opened here for 3 weeks, this device is signed out and notifications stop. You are warned 2 days before.</p></SettingsBlock>
+  </SettingsSection>;
 }

@@ -1,51 +1,30 @@
-import * as React from "react";
+import { useSyncExternalStore } from 'react';
 
-// Privacy-friendly mobile detection using feature detection instead of user-agent
-// This approach respects user privacy by:
-// 1. Using pointer media query (coarse = touch device)
-// 2. Checking for touch capability
-// 3. Falling back to viewport width as secondary indicator
-// 
-// This avoids user-agent detection which can be used for fingerprinting
-const MOBILE_BREAKPOINT = 1200;
+// Layout follows the window width only. Touch support says nothing about the
+// space available (touch laptops, narrow desktop windows), so it no longer
+// switches layouts.
+//
+// The queries ask "is the window narrow?" so that a test environment whose
+// matchMedia never matches renders the wide layout.
 
+/** Phone layout: top bar per page and bottom navigation (Tailwind below `md`). */
+export const PHONE_QUERY = '(max-width: 767px)';
+/** Context panels open as a sheet instead of a column (below `lg`). */
+export const NARROW_QUERY = '(max-width: 1023px)';
+
+export function useMediaQuery(query: string) {
+  return useSyncExternalStore(
+    (notify) => {
+      const list = window.matchMedia(query);
+      list.addEventListener?.('change', notify);
+      return () => list.removeEventListener?.('change', notify);
+    },
+    () => window.matchMedia(query).matches,
+    () => false,
+  );
+}
+
+/** True for the phone layout. Mail uses it for full-screen dialogs and bottom sheets. */
 export function useIsMobile() {
-  const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined);
-
-  React.useEffect(() => {
-    // Primary detection: Pointer media query (privacy-friendly, detects touch devices)
-    // pointer: coarse = touch device (mobile/tablet)
-    // pointer: fine = precise pointing device (mouse/trackpad)
-    const pointerMql = window.matchMedia('(pointer: coarse)');
-    
-    // Secondary detection: Touch capability check
-    const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    
-    // Tertiary detection: Viewport width (for edge cases like tablets in landscape)
-    const viewportMql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`);
-    
-    const checkIsMobile = () => {
-      // If device has coarse pointer (touch) OR has touch capability, it's mobile
-      // Also check viewport for edge cases (e.g., tablet in portrait might be < 1200px)
-      const isTouchDevice = pointerMql.matches || hasTouch;
-      const isSmallViewport = viewportMql.matches;
-      
-      // Mobile if: touch device OR (small viewport AND touch capable)
-      setIsMobile(isTouchDevice || (isSmallViewport && hasTouch));
-    };
-    
-    // Listen to changes
-    pointerMql.addEventListener("change", checkIsMobile);
-    viewportMql.addEventListener("change", checkIsMobile);
-    
-    // Initial check
-    checkIsMobile();
-    
-    return () => {
-      pointerMql.removeEventListener("change", checkIsMobile);
-      viewportMql.removeEventListener("change", checkIsMobile);
-    };
-  }, []);
-
-  return !!isMobile;
+  return useMediaQuery(PHONE_QUERY);
 }

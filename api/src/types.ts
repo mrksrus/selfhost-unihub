@@ -56,7 +56,10 @@ export interface StagedAttachment {
   content_id: string | null;
 }
 
-export interface AuthRequest extends IncomingMessage { sessionRenewed?: string }
+// authCredential records which credential verifyToken accepted; the CSRF check
+// reads it rather than parsing the headers again.
+export interface AuthRequest extends IncomingMessage { sessionRenewed?: string; authCredential?: AuthCredentialSource }
+export type AuthCredentialSource = 'cookie' | 'bearer';
 
 export interface BackupFile {
   id?: string;

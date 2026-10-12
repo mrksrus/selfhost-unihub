@@ -1,5 +1,6 @@
 import { format, parseISO, type Locale } from 'date-fns';
 import { formatInTimeZone, fromZonedTime } from 'date-fns-tz';
+import type { QueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
 export type TodoStatus = 'done' | 'changed' | 'time_moved' | 'cancelled' | null;
@@ -172,6 +173,42 @@ export const calendarQueryKeys = {
   stats: ['stats'] as const,
 };
 
+/**
+ * Refreshes everything that shows events, tasks or calendars. Every change to
+ * an event or task goes through this, from any feature (Calendar, ToDo, and
+ * later mail turned into a task).
+ */
+export function invalidateCalendarQueries(client: QueryClient) {
+  return Promise.all([
+    client.invalidateQueries({ queryKey: calendarQueryKeys.all }),
+    client.invalidateQueries({ queryKey: calendarQueryKeys.accounts }),
+    client.invalidateQueries({ queryKey: calendarQueryKeys.calendars }),
+    client.invalidateQueries({ queryKey: calendarQueryKeys.upcomingEvents }),
+    client.invalidateQueries({ queryKey: calendarQueryKeys.stats }),
+  ]);
+}
+
+/** Choices for event and task reminders, in minutes before the start. */
+export const REMINDER_OPTIONS = [
+  { value: 0, label: 'At event time' },
+  { value: 5, label: '5 minutes before' },
+  { value: 15, label: '15 minutes before' },
+  { value: 30, label: '30 minutes before' },
+  { value: 60, label: '1 hour before' },
+  { value: 120, label: '2 hours before' },
+  { value: 1440, label: '1 day before' },
+] as const;
+
+/** Colors offered for events and tasks without their own calendar color. */
+export const EVENT_COLOR_OPTIONS = [
+  { value: '#22c55e', label: 'Green' },
+  { value: '#3b82f6', label: 'Blue' },
+  { value: '#8b5cf6', label: 'Purple' },
+  { value: '#f59e0b', label: 'Orange' },
+  { value: '#ef4444', label: 'Red' },
+  { value: '#06b6d4', label: 'Cyan' },
+] as const;
+
 export const calendarApi = {
   async fetchEvent(id: string, signal?: AbortSignal): Promise<CalendarEvent> {
     const response = await api.get<{ event: CalendarEvent }>(`/calendar/events/${encodeURIComponent(id)}`, { signal });
@@ -180,10 +217,10 @@ export const calendarApi = {
     return normalizeEvent(response.data.event);
   },
 
-  async fetchEvents(filters: CalendarEventFilters = {}): Promise<CalendarEvent[]> {
+  async fetchEvents(filters: CalendarEventFilters = {}, signal?: AbortSignal): Promise<CalendarEvent[]> {
     const query = buildEventsQuery(filters);
     const endpoint = query ? `/calendar/events?${query}` : '/calendar/events';
-    const response = await api.get<{ events: CalendarEvent[] }>(endpoint);
+    const response = await api.get<{ events: CalendarEvent[] }>(endpoint, { signal });
     if (response.error) throw new Error(response.error);
     return (response.data?.events || []).map(normalizeEvent);
   },
@@ -196,8 +233,8 @@ export const calendarApi = {
     return normalizeEvent(event);
   },
 
-  async fetchAccounts(): Promise<CalendarAccount[]> {
-    const response = await api.get<{ accounts: CalendarAccount[] }>('/calendar/accounts');
+  async fetchAccounts(signal?: AbortSignal): Promise<CalendarAccount[]> {
+    const response = await api.get<{ accounts: CalendarAccount[] }>('/calendar/accounts', { signal });
     if (response.error) throw new Error(response.error);
     return response.data?.accounts || [];
   },
@@ -259,8 +296,8 @@ export const calendarApi = {
     if (response.error) throw new Error(response.error);
   },
 
-  async fetchCalendars(): Promise<CalendarCalendar[]> {
-    const response = await api.get<{ calendars: CalendarCalendar[] }>('/calendar/calendars');
+  async fetchCalendars(signal?: AbortSignal): Promise<CalendarCalendar[]> {
+    const response = await api.get<{ calendars: CalendarCalendar[] }>('/calendar/calendars', { signal });
     if (response.error) throw new Error(response.error);
     return response.data?.calendars || [];
   },

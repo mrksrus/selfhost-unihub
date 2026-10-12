@@ -77,7 +77,6 @@ test('production export and restore jobs round-trip every section through encryp
   const source = createBackupRuntime(sourceRoot, 'source-roundtrip-key', pool);
   const destination = createBackupRuntime(destinationRoot, 'different-destination-roundtrip-key', pool);
   await source('services/database').ensureSchema();
-  await source('services/notifications').ensureNotificationSchema();
   const sourceCrypto = source('security/encryption');
   const destinationCrypto = destination('security/encryption');
   async function insert(table: string, row: FixtureValue) {

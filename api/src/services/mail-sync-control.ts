@@ -6,6 +6,7 @@ import { evictImapConnections } from './mail-engine/connection-pool';
 import { db } from '../state';
 import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
+import { canRunModule } from './access-policy';
 import { toBooleanFlag } from './mail-host-policy';
 import { durableScheduler, foregroundMutationAccounts, normalizeMailAccountId } from './mail-durable-jobs';
 import { mailDeleteStopRequests } from './mail-server-delete';
@@ -105,8 +106,7 @@ async function scheduleMailAccountSync(accountId: unknown, options: SyncOptions 
   // A manual request may reopen only a background/module pause, never a
   // disconnect, settings fence or active restore. The route calls this entry
   // directly, so the resume belongs at admission, not only syncMailAccount.
-  if (manual && await isModuleEnabled(accounts[0].user_id, 'mail')
-      && !await isSectionRestoreActive(accounts[0].user_id, 'mail'))
+  if (manual && await canRunModule(accounts[0].user_id, 'mail'))
     await (require('./mail-engine/runtime') as typeof import('./mail-engine/runtime')).resumeAccount({ userId: accounts[0].user_id,
       accountId: id, resumeStreams: true, reasons: ['Mail module disabled', 'Mail background paused'] });
   await durableScheduler.start();
@@ -149,8 +149,7 @@ async function enqueueIdleRefresh({ accountId, userId, mailboxId, kinds }: { acc
     LEFT JOIN mail_engine_accounts e ON e.mail_account_id = a.id
     WHERE a.id = ? AND a.user_id = ? AND a.is_active = TRUE AND a.disconnected_at IS NULL AND e.paused_reason IS NULL`, [id, userId]);
   const account = accounts[0];
-  if (!account || !await isModuleBackgroundEnabled(account.user_id, 'mail')
-    || await isSectionRestoreActive(account.user_id, 'mail')) return { enqueued: [] };
+  if (!account || !await canRunModule(account.user_id, 'mail', { background: true })) return { enqueued: [] };
   const enqueued = [];
   await scheduler.start();
   for (const kind of [...new Set(kinds)]) {

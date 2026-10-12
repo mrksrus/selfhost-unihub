@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
-import type { AuthRequest, StoredFlag } from './types';
+import type { AuthCredentialSource, AuthRequest, StoredFlag } from './types';
 
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
@@ -88,6 +88,16 @@ function validateCsrfToken(req: AuthRequest, res?: ServerResponse) {
     return true;
   }
 
+  // A request that proved its session with an Authorization header and carries
+  // no auth cookie cannot be a cross-site forgery: browsers never add that
+  // header on their own, and cross-origin script cannot add it without a
+  // preflight that refuses foreign origins. Native app clients write this way.
+  // When an auth cookie is present as well, the cookie could have carried the
+  // request, so the token check stays.
+  if (req.authCredential === 'bearer' && !parseCookies(req)[AUTH_COOKIE_NAME]) {
+    return true;
+  }
+
   // Get CSRF token from cookie and header
   const cookieToken = req.headers.cookie
     ?.split(';')
@@ -128,13 +138,18 @@ function parseCookies(req: Pick<IncomingMessage, 'headers'>): Record<string, str
   }, {});
 }
 
-function getAuthTokenFromRequest(req: Pick<IncomingMessage, 'headers'>) {
+// The bearer header wins over the cookie when both are sent.
+function getAuthCredential(req: Pick<IncomingMessage, 'headers'>): { token: string; source: AuthCredentialSource } | null {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
-    return authHeader.slice(7);
+    return { token: authHeader.slice(7), source: 'bearer' };
   }
   const cookies = parseCookies(req);
-  return cookies[AUTH_COOKIE_NAME] || null;
+  return cookies[AUTH_COOKIE_NAME] ? { token: cookies[AUTH_COOKIE_NAME], source: 'cookie' } : null;
+}
+
+function getAuthTokenFromRequest(req: Pick<IncomingMessage, 'headers'>) {
+  return getAuthCredential(req)?.token || null;
 }
 
 // Set CSRF token cookie
@@ -179,9 +194,11 @@ function refreshSessionCookies(req: AuthRequest, res: ServerResponse) {
 // JWT verification + session check. The session row is the authority on
 // expiry; the JWT signature still has to match. With `renew`, a session last
 // renewed more than a day ago is extended and req.sessionRenewed is set.
+// On success req.authCredential names the credential that was accepted.
 async function verifyToken(req: AuthRequest, { renew = false } = {}) {
-  const token = getAuthTokenFromRequest(req);
-  if (!token) return null;
+  const credential = getAuthCredential(req);
+  if (!credential) return null;
+  const { token } = credential;
   let decoded: jwt.JwtPayload & { userId?: string };
   try {
     decoded = jwt.verify(token, JWT_SECRET!, { ignoreExpiration: true }) as jwt.JwtPayload & { userId?: string };
@@ -216,6 +233,7 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
           }
         }
 
+        req.authCredential = credential.source;
         return session.user_id || decoded.userId || decoded.sub;
       } catch (dbError) {
         retries--;
@@ -271,6 +289,7 @@ export {
   validateCsrfToken,
   appendSetCookie,
   parseCookies,
+  getAuthCredential,
   getAuthTokenFromRequest,
   setCsrfCookie,
   clearCsrfCookie,

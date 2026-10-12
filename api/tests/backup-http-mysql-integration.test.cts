@@ -19,7 +19,6 @@ test('authenticated HTTP encrypted backup download, upload and restore work afte
     const [tables] = await pool.query<RowDataPacket[]>('SHOW TABLES'); assert.equal(tables.length, 0, 'Use an empty disposable test database'); owned = true;
     const runtime = createBackupRuntime(directory, 'http-recovery-synthetic-key', pool);
     await runtime('services/database').ensureSchema();
-    await runtime('services/notifications').ensureNotificationSchema();
     await runtime('services/data-inventory').verifyDatabaseInventory(pool);
     const password = 'http-fixture-password-2026';
     const passwordHash = await require('bcryptjs').hash(password, 10);

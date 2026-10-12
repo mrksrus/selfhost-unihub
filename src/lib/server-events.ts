@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query';
-import { mailQueryKeys } from '@/lib/mail-api';
+import { invalidateChangedMail, mailQueryKeys } from '@/lib/mail-api';
+import { invalidateCalendarQueries } from '@/lib/calendar-api';
 
 // Live status updates from GET /api/events (Server-Sent Events). Events are
 // hints: each one only marks the matching queries stale, and the normal API
@@ -15,10 +16,6 @@ export interface MailChangedEvent { accountId: string | null; reason: string | n
 /** Polling intervals while the live stream is connected (a slow safety net). */
 export const LIVE_POLL_MS = { syncJobs: 60_000, writebacks: 60_000, mailList: 300_000 } as const;
 
-const SYNC_JOBS_KEY = ['mail-sync-jobs'] as const;
-// Calendar sync changes events, calendars, account status and the mail account's calendar section.
-const CALENDAR_ROOTS = new Set(['calendar-events', 'calendar-accounts', 'calendar-calendars', 'upcoming-events', 'mail-calendar']);
-const COUNT_ROOTS = new Set(['mail-unread-counts', 'dashboard-unread-mail', 'email-count', 'stats']);
 // Refetches of one kind of query start at most this often, however many events arrive.
 const COALESCE_MS = 1500;
 const BACKOFF_BASE_MS = 2000;
@@ -78,20 +75,19 @@ export function startServerEvents({
     timers.delete(group);
     due.delete(group);
     lastRun.set(group, Date.now());
-    if (group === 'jobs') void client.invalidateQueries({ queryKey: SYNC_JOBS_KEY });
+    if (group === 'jobs') void client.invalidateQueries({ queryKey: mailQueryKeys.syncJobs });
     if (group === 'writebacks') void client.invalidateQueries({ queryKey: mailQueryKeys.writebacks });
-    if (group === 'calendar') void client.invalidateQueries({ predicate: query => CALENDAR_ROOTS.has(String(query.queryKey[0])) });
+    if (group === 'calendar') {
+      // Calendar sync also changes the calendar section of a mail account.
+      void invalidateCalendarQueries(client);
+      void client.invalidateQueries({ queryKey: ['mail-calendar'] });
+    }
     if (group === 'lists') {
       const accounts = new Set(changedAccounts);
       const folders = foldersChanged;
       changedAccounts.clear();
       foldersChanged = false;
-      void client.invalidateQueries({ predicate: query => {
-        const [root, account] = query.queryKey;
-        if (COUNT_ROOTS.has(String(root))) return true;
-        if (folders && root === mailQueryKeys.folders[0]) return true;
-        return root === mailQueryKeys.all[0] && (accounts.has('*') || account === 'all' || accounts.has(String(account)));
-      } });
+      void invalidateChangedMail(client, accounts, folders);
     }
   }
 

@@ -1,10 +1,12 @@
+import { onAppEvent } from '@/lib/app-events';
 import { useModules } from '@/hooks/use-modules';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Calendar, CheckSquare, LayoutDashboard, Mail, Mic, MoreHorizontal, Music2, Plus, Search, Settings, Users } from 'lucide-react';
+import { Calendar, CheckSquare, Mail, Mic, Plus, Settings, Users } from 'lucide-react';
 import { api } from '@/lib/api';
+import { navigationPages } from '@/lib/navigation';
 import {
   CommandDialog,
   CommandEmpty,
@@ -13,7 +15,6 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
-  CommandShortcut,
 } from '@/components/ui/command';
 
 type SearchResult = {
@@ -24,19 +25,12 @@ type SearchResult = {
   href: string;
 };
 
-const staticActions = [
-  { id: 'mail', label: 'Open Mail', href: '/mail', icon: Mail },
-  { id: 'compose', label: 'Compose Email', href: '/mail?action=compose', icon: Plus },
-  { id: 'calendar', label: 'Open Calendar', href: '/calendar', icon: Calendar },
-  { id: 'new-event', label: 'Create Event', href: '/calendar?action=new', icon: Plus },
-  { id: 'todo', label: 'Open ToDo', href: '/todo', icon: CheckSquare },
-  { id: 'contacts', label: 'Open Contacts', href: '/contacts', icon: Users },
-  { id: 'new-contact', label: 'Add Contact', href: '/contacts?action=new', icon: Plus },
-  { id: 'recordings', label: 'Open Recordings', href: '/recordings', icon: Mic },
-  { id: 'music', label: 'Open Music', href: '/music', icon: Music2 },
-  { id: 'more', label: 'Open More', href: '/more', icon: MoreHorizontal },
-  { id: 'dashboard', label: 'Open Today', href: '/dashboard', icon: LayoutDashboard },
-  { id: 'settings', label: 'Open Settings', href: '/settings', icon: Settings },
+// Things to start from anywhere. Each link opens its page with the new item's form.
+const createActions = [
+  { id: 'compose', label: 'New email', href: '/mail?action=compose', icon: Mail },
+  { id: 'new-event', label: 'New event', href: '/calendar?action=new', icon: Calendar },
+  { id: 'new-task', label: 'New task', href: '/todo?action=new', icon: CheckSquare },
+  { id: 'new-contact', label: 'New contact', href: '/contacts?action=new', icon: Users },
 ];
 
 function getResultIcon(type: SearchResult['type']) {
@@ -48,7 +42,7 @@ function getResultIcon(type: SearchResult['type']) {
 }
 
 const GlobalCommandPalette = () => {
-  const { canNavigate, canAccess } = useModules();
+  const { pages, canNavigate, canAccess } = useModules();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -65,10 +59,10 @@ const GlobalCommandPalette = () => {
     const openCommandPalette = () => setOpen(true);
 
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('open-global-command-palette', openCommandPalette);
+    const stopListening = onAppEvent('unihub:open-search', openCommandPalette);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('open-global-command-palette', openCommandPalette);
+      stopListening();
     };
   }, []);
 
@@ -83,11 +77,17 @@ const GlobalCommandPalette = () => {
     staleTime: 30000,
   });
 
-  const filteredActions = useMemo(() => {
+  const commands = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return staticActions;
-    return staticActions.filter((action) => action.label.toLowerCase().includes(needle));
-  }, [query]);
+    const matches = (label: string) => !needle || label.toLowerCase().includes(needle);
+    return {
+      create: createActions.filter(action => canAccess(action.href) && matches(action.label)),
+      pages: [
+        ...navigationPages(pages, canNavigate).map(page => ({ id: page.id, label: page.name, href: page.href, icon: page.icon })),
+        { id: 'settings', label: 'Settings', href: '/settings', icon: Settings },
+      ].filter(page => matches(page.label)),
+    };
+  }, [query, pages, canNavigate, canAccess]);
 
   const runCommand = (href: string) => {
     setOpen(false);
@@ -98,19 +98,28 @@ const GlobalCommandPalette = () => {
   return (
     <CommandDialog open={open} onOpenChange={setOpen}>
       <CommandInput
-        placeholder="Search enabled modules or run a command…"
+        placeholder="Search or go to…"
         value={query}
         onValueChange={setQuery}
       />
       <CommandList>
-        <CommandEmpty>{isFetching ? 'Searching...' : 'No results found.'}</CommandEmpty>
-        {filteredActions.length > 0 && (
-          <CommandGroup heading="Commands">
-            {filteredActions.filter(action => canNavigate(action.href)).map((action) => (
+        <CommandEmpty>{isFetching ? 'Searching…' : 'Nothing found.'}</CommandEmpty>
+        {commands.create.length > 0 && (
+          <CommandGroup heading="Create">
+            {commands.create.map(action => (
               <CommandItem key={action.id} value={action.label} onSelect={() => runCommand(action.href)}>
-                <action.icon className="mr-2 h-4 w-4" />
+                <Plus className="mr-2 h-4 w-4" />
                 <span>{action.label}</span>
-                {action.id === 'dashboard' && <CommandShortcut>Home</CommandShortcut>}
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
+        {commands.pages.length > 0 && (
+          <CommandGroup heading="Go to">
+            {commands.pages.map(page => (
+              <CommandItem key={page.id} value={`Go to ${page.label}`} onSelect={() => runCommand(page.href)}>
+                <page.icon className="mr-2 h-4 w-4" />
+                <span>{page.label}</span>
               </CommandItem>
             ))}
           </CommandGroup>
@@ -118,7 +127,7 @@ const GlobalCommandPalette = () => {
         {searchResults.length > 0 && (
           <>
             <CommandSeparator />
-            <CommandGroup heading="Search Results">
+            <CommandGroup heading="Results">
               {searchResults.filter(result => canAccess(result.href)).map((result) => {
                 const Icon = getResultIcon(result.type);
                 return (
@@ -137,12 +146,6 @@ const GlobalCommandPalette = () => {
               })}
             </CommandGroup>
           </>
-        )}
-        {query.trim().length < 2 && (
-          <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
-            <Search className="h-3.5 w-3.5" />
-            Type at least two characters for global search.
-          </div>
         )}
       </CommandList>
     </CommandDialog>

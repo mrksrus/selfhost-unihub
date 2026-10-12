@@ -63,7 +63,6 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   const source = createBackupRuntime(path.join(directory, 'source'), 'source-accounts-key', pool);
   const destination = createBackupRuntime(path.join(directory, 'destination'), 'different-destination-accounts-key', pool);
   await source('services/database').ensureSchema();
-  await source('services/notifications').ensureNotificationSchema();
   const sourceCrypto = source('security/encryption');
   const destinationCrypto = destination('security/encryption');
   async function insert(table: string, row: FixtureValue) {

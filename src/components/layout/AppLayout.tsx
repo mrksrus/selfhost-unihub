@@ -5,12 +5,13 @@ import { useBackgroundNotificationChecks } from '@/hooks/use-background-notifica
 import { useCalendarNotifications } from '@/hooks/use-calendar-notifications';
 import { useMailNotifications } from '@/hooks/use-mail-notifications';
 import { useRecordingUploadRunner } from '@/hooks/use-recording-uploads';
-import AppSidebar from './AppSidebar';
-import MobileHeader from './MobileHeader';
+import NavRail from './NavRail';
 import BottomNav from './BottomNav';
 import GlobalCommandPalette from '@/components/GlobalCommandPalette';
-import { Loader2 } from 'lucide-react';
+import { LoadingState } from '@/components/ui/page-states';
 
+// Global navigation only: the rail on wide windows, the bottom bar on phones.
+// Each page renders its own header and panel through PageShell.
 const AppLayout = () => {
   const { user, loading } = useAuth();
   useBackgroundNotificationChecks();
@@ -21,7 +22,7 @@ const AppLayout = () => {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
-        <Loader2 className="h-8 w-8 animate-spin text-accent" />
+        <LoadingState label="Loading UniHub…" />
       </div>
     );
   }
@@ -31,14 +32,16 @@ const AppLayout = () => {
   }
 
   return (
-    <div className="flex flex-col md:flex-row h-dvh overflow-hidden bg-background">
+    <div className="flex h-dvh overflow-hidden bg-background">
       <div className="hidden md:block">
-        <AppSidebar />
+        <NavRail />
       </div>
-      <MobileHeader />
-      <main className="flex-1 overflow-auto w-full pb-mobile-nav md:pb-0 min-w-0">
+      {/* Phones: clears the status bar once, above the offline banner and every page header. */}
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col pt-[env(safe-area-inset-top,0px)] md:pt-0">
         <OfflineBanner />
-        <Outlet />
+        <div className="min-h-0 flex-1">
+          <Outlet />
+        </div>
       </main>
       <GlobalCommandPalette />
       <BottomNav />

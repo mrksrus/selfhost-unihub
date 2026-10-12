@@ -323,8 +323,7 @@ function createIdleSupervisor(overrides: Overrides = {}) {
 // background sync on, no mail restore running. Both modes import new INBOX mail.
 async function defaultListEligible() {
   const { db } = require('../state') as typeof import('../state');
-  const { getBackgroundPausedModulesByUser } = require('./module-settings') as typeof import('./module-settings');
-  const { getActiveRestoreSectionsByUser } = require('./restore-locks') as typeof import('./restore-locks');
+  const { blockedBackgroundModulesByUser } = require('./access-policy') as typeof import('./access-policy');
   const [rows] = await db.execute<RowDataPacket[]>(`SELECT a.id, a.user_id, a.sync_mode, a.imap_host, a.imap_port, a.username,
       a.email_address, a.encrypted_password, a.allow_self_signed, a.trusted_imap_fingerprint256,
       m.id AS mailbox_id, m.remote_name
@@ -337,9 +336,8 @@ async function defaultListEligible() {
       AND a.sync_mode IN ('sync','download')
     ORDER BY a.id, (BINARY m.remote_name = BINARY 'INBOX') DESC, m.id`);
   if (!rows.length) return [];
-  const paused = await getBackgroundPausedModulesByUser();
-  const restoring = await getActiveRestoreSectionsByUser();
-  return rows.filter(row => !paused.get(row.user_id)?.has('mail') && !restoring.get(row.user_id)?.has('mail'))
+  const blocked = await blockedBackgroundModulesByUser();
+  return rows.filter(row => !blocked.get(row.user_id)?.has('mail'))
     .map(row => ({ accountId: String(row.id), userId: row.user_id, syncMode: row.sync_mode, mailboxId: row.mailbox_id,
       remoteName: row.remote_name, fingerprint: fingerprint(row as RowDataPacket & Parameters<typeof fingerprint>[0]) }));
 }

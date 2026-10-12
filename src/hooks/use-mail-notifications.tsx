@@ -1,3 +1,4 @@
+import { onAppEvent } from '@/lib/app-events';
 import { useModules } from '@/hooks/use-modules';
 import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
@@ -12,11 +13,10 @@ export const useMailNotifications = () => {
   const queryClient = useQueryClient();
   useEffect(() => {
     if (!user?.id || !active) return;
-    const refresh = (event: Event) => {
-      const data = (event as CustomEvent).detail;
+    const refresh = (detail: unknown) => {
+      const data = detail as { userId?: string; kind?: string } | null;
       if (data?.userId === user.id && data.kind === 'mail') void invalidateMailQueries(queryClient);
     };
-    window.addEventListener('unihub-notification-data', refresh);
-    return () => window.removeEventListener('unihub-notification-data', refresh);
+    return onAppEvent('unihub:notification-data', refresh);
   }, [queryClient, user?.id, active]);
 };

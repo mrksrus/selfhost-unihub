@@ -44,10 +44,8 @@ async function dumpSchema(connection: Pick<Connection, 'query'>) {
 
 // Everything the API runs against the schema at startup (api/src/app.ts).
 async function migrateCurrentSchema(): Promise<Pool> {
-  const { initDatabase, ensurePerformanceIndexes } = require('../dist/src/services/database') as typeof import('../src/services/database');
+  const { initDatabase } = require('../dist/src/services/database') as typeof import('../src/services/database');
   await initDatabase();
-  await (require('../dist/src/services/notifications') as typeof import('../src/services/notifications')).ensureNotificationSchema();
-  await ensurePerformanceIndexes();
   return (require('../dist/src/state') as typeof import('../src/state')).getDb()!;
 }
 

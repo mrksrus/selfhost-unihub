@@ -46,7 +46,7 @@ merges selected data; it is not a complete server rollback.
 
 ## Supported Backup Types
 
-The Data Management page can create:
+The Backup and restore section can create:
 
 - Full backup, with **Create full backup**
 - A backup of the selected sections: choose any of Settings, Contacts,
@@ -253,7 +253,7 @@ Job states include:
 - `ready`
 - `failed`
 
-The Data Management page shows the phase, progress, file size, encryption state,
+The Backup and restore section shows the phase, progress, file size, encryption state,
 start time, finish time, and errors.
 
 Backup-job API responses expose `recovery_password_available`,
@@ -639,7 +639,7 @@ source server while its unlock key still exists.
 
 ### Restore appears to stop after closing the browser
 
-Reload Data Management and inspect the durable restore job. Browser and proxy
+Reload Backup and restore and inspect the durable restore job. Browser and proxy
 connections are not required after a job starts.
 
 ### Restore is waiting for mail

@@ -29,7 +29,15 @@ interface MailSyncAcceptance {
   message: string;
 }
 
-const key = ['mail-sync-jobs'] as const;
+export const MAIL_SYNC_JOBS_KEY = mailQueryKeys.syncJobs;
+const key = MAIL_SYNC_JOBS_KEY;
+
+export async function fetchMailSyncStatus({ signal }: { signal?: AbortSignal } = {}) {
+  const response = await api.get<{ accounts: MailSyncJob[] }>('/mail/sync/status', { signal });
+  if (response.error) throw new Error(response.error);
+  if (!Array.isArray(response.data?.accounts)) throw new Error('Invalid mail sync status response');
+  return response.data.accounts;
+}
 const active = (job: MailSyncJob) => job.state === 'queued' || job.state === 'running';
 
 export function useMailSyncJobs(accounts: MailAccount[]) {
@@ -46,12 +54,7 @@ export function useMailSyncJobs(accounts: MailAccount[]) {
   const live = useServerEventsConnected();
   const jobs = useQuery({
     queryKey: key,
-    queryFn: async ({ signal }) => {
-      const response = await api.get<{ accounts: MailSyncJob[] }>('/mail/sync/status', { signal });
-      if (response.error) throw new Error(response.error);
-      if (!Array.isArray(response.data?.accounts)) throw new Error('Invalid mail sync status response');
-      return response.data.accounts;
-    },
+    queryFn: fetchMailSyncStatus,
     enabled: accounts.length > 0 && !isOfflineMode(),
     retry: false,
     // Discover jobs started by the scheduler or another device, even after an

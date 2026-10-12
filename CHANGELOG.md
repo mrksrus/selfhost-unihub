@@ -6,6 +6,60 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.19.2
+
+A new, calmer layout for every page, and groundwork in the API for the
+planned native app. Database upgrade 15 runs at startup; it only formalises
+tables and indexes that existing installations already have.
+
+### Changed
+
+- **One layout for all pages.** On desktop a slim navigation rail replaces the
+  sidebar, and each page has an optional panel next to it (mail folders, task
+  lists, calendars, contact lists, settings sections). On phones the page's
+  own header is the top bar, its panel opens from the button next to the page
+  title, and the bottom bar stays.
+- **Rows instead of cards.** Mail, tasks, contacts, recordings, music and
+  settings show plain rows with one main action each; further actions are in
+  the row's menu or appear once the row is opened.
+- **One place for things that need you.** Mail changes to review, failed mail
+  or calendar syncs and a waiting app update are collected in Attention (rail
+  and More) instead of separate banners.
+- **Calendar** shows the selected day next to the month or week, dots instead
+  of event names on phones, and opens an event only once its calendar is
+  known, so the question about repeating server events is always asked.
+- **Contacts** open in a detail pane with email addresses and phone numbers
+  as links. Deleting a contact or merging duplicates now asks first, and
+  views such as Favorites and Possible duplicates are in the panel.
+- **Settings** has sections instead of tabs: General, Profile, Security,
+  Notifications, Offline reading, Pages and modules, Mail rules, Backup and
+  restore, and Delete data. Preferences save as soon as they change. Admins
+  find Server settings and Users in the same panel.
+- **Today, ToDo, Recordings and Music** use the same rows and panels. The
+  command palette can create a task and lists pages in your order.
+- Less text on screen, sentence-case labels throughout, and the sign-in page
+  shows only the form.
+
+### Fixed
+
+- A mail row no longer shows a stray "0" when the message has no attachment.
+
+### Under the hood
+
+- The API matches routes from its route table instead of hand-written path
+  rules, and declares request size limits next to it.
+- Requests that sign in with an `Authorization: Bearer` header and no
+  session cookie no longer need a CSRF token, so a native client can write.
+  Browser requests are checked as before.
+- Notification delivery goes through a transport interface (Web Push today),
+  ready for a second kind of device.
+- All schema setup runs through the numbered upgrade steps (step 15), not
+  partly at startup and partly after the server is listening.
+- Browser code has one place for device features (`platform.ts`) and typed
+  in-app events; each feature owns its API calls and refresh rules. A test
+  keeps the browser's and server's module lists in sync.
+- framer-motion is no longer a dependency.
+
 ## 0.19.1
 
 The remaining tests, fixture generators, development tools and the PostCSS

@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { db } from '../state';
 import { isSectionRestoreActive } from './restore-locks';
 import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
+import { canRunModule } from './access-policy';
 import * as runtime from './mail-engine/runtime';
 import * as repository from './mail-engine/repository';
 import { publishMailChanged, publishMailOperation } from './server-events';
@@ -168,7 +169,7 @@ async function mutateMessages(userId: string, ids: string[], changes: Record<str
       LEFT JOIN mail_accounts a ON a.id=e.mail_account_id AND a.user_id=e.user_id
       WHERE e.id IN (${placeholders}) AND e.user_id=? ORDER BY e.id FOR UPDATE`, [...ids, userId]);
     if (emails.length !== ids.length) throw fail('Some selected emails are unavailable', 404);
-    if (await isSectionRestoreActive(userId, 'mail') || !await isModuleEnabled(userId, 'mail')) throw fail('Mail is paused');
+    if (!await canRunModule(userId, 'mail')) throw fail('Mail is paused');
     await validate(cx, emails);
     const operationIds: string[] = [], revisions: number[] = [];
     accounts = await queueChanges(cx, userId, emails, changes, { idempotencyKey: key, operationIds, revisions });

@@ -3,8 +3,10 @@ import type { FixtureValue } from './test-types.cts';
 // (src/routes/mail.js) re-export these modules. A test that reloads a facade
 // with stubbed dependencies must evict them all, or the cached modules keep
 // the previous stubs. Each evict function returns a restore function for t.after.
+// access-policy reads module settings and restore locks for the mail workers,
+// so it must reload with the same stubs as they do.
 const MAIL_SERVICE_MODULES = ['mail', 'mail-host-policy', 'mail-folders', 'mail-durable-jobs',
-  'mail-server-delete', 'mail-sync-control', 'mail-send']
+  'mail-server-delete', 'mail-sync-control', 'mail-send', 'access-policy']
   .map(name => require.resolve(`../../dist/src/services/${name}`));
 const MAIL_ROUTE_MODULES = ['mail', 'mail-route-helpers', 'mail-folders', 'mail-accounts', 'mail-drafts',
   'mail-messages', 'mail-operations', 'mail-sync']

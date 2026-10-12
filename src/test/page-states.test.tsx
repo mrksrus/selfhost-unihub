@@ -60,18 +60,23 @@ describe('shared page states', () => {
 
 describe('page error states', () => {
   it('shows a users error instead of an empty table and recovers on retry', async () => {
-    const get = vi.spyOn(api, 'get')
-      .mockResolvedValueOnce({ error: 'Database unavailable' })
-      .mockResolvedValue({ data: { users: [{ id: 'u1', email: 'ada@example.test', full_name: 'Ada Lovelace', role: 'user', is_active: true, created_at: '2026-09-01T12:00:00Z' }] } });
+    let userRequests = 0;
+    const get = vi.spyOn(api, 'get').mockImplementation(async (path: string) => {
+      // The settings panel also loads modules; only the users list fails, once.
+      if (path !== '/admin/users') return { data: {} };
+      userRequests += 1;
+      return userRequests === 1 ? { error: 'Database unavailable' }
+        : { data: { users: [{ id: 'u1', email: 'ada@example.test', full_name: 'Ada Lovelace', role: 'user', is_active: true, created_at: '2026-09-01T12:00:00Z' }] } };
+    });
     renderPage(<AdminUsers />);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Could not load users');
     expect(alert).toHaveTextContent('Database unavailable');
-    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Users' })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
-    expect(await screen.findByText('ada@example.test')).toBeInTheDocument();
+    expect(await screen.findByText(/^ada@example\.test,/)).toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls.filter(([path]) => path === '/admin/users')).toHaveLength(2);
   });
 });
