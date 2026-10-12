@@ -9,7 +9,7 @@ export interface MailAcceptance {
 
 export class UnknownMailAcceptance extends Error {
   constructor(readonly key: string) {
-    super('UniHub has not confirmed whether this change was saved. The same request will be checked again; do not repeat the action with a new key.');
+    super('UniHub keeps checking whether it arrived. No need to do it again.');
   }
 }
 

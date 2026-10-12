@@ -67,7 +67,7 @@ export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requ
     },
     onError: (error: Error, _variables, undo) => {
       undo?.();
-      toast({ title: error instanceof UnknownMailAcceptance ? 'Move outcome unknown — do not resend' : 'Move request rejected', description: error.message, variant: 'destructive' });
+      toast({ title: error instanceof UnknownMailAcceptance ? 'No answer from UniHub yet' : 'Could not move', description: error.message, variant: 'destructive' });
     },
     onSettled: () => { void invalidateMailMoveViews(queryClient); },
   });
@@ -105,7 +105,7 @@ export function useMailBulkActions({ emails, selectedEmail, selectedFolder, requ
     },
     onError: (error: Error, _variables, undo) => {
       undo?.();
-      toast({ title: error instanceof UnknownMailAcceptance ? 'Trash request outcome unknown' : 'Trash request rejected', description: error.message, variant: 'destructive' });
+      toast({ title: error instanceof UnknownMailAcceptance ? 'No answer from UniHub yet' : 'Could not move to Trash', description: error.message, variant: 'destructive' });
     },
     onSettled: () => { void invalidateMailMoveViews(queryClient); },
   });

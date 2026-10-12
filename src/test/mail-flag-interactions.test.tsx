@@ -106,7 +106,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     await screen.findByText(bodyText('a'));
     fireEvent.click(screen.getByRole('button', { name: 'Star message' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledTimes(3));
-    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Star request outcome unknown' })));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'No answer from UniHub yet' })));
     expect(screen.getByRole('button', { name: 'Unstar message' })).toBeEnabled();
     expect(cached('a')?.is_starred).toBe(true);
     expect(vi.mocked(api.put).mock.calls.every(([, , options]) => (options?.headers as Record<string, string>)['Idempotency-Key'] ===
@@ -251,7 +251,7 @@ describe('mail flag interactions with slow HTTP and provider writebacks', { time
     fireEvent.click(screen.getByRole('button', { name: 'Delete selected' }));
     // The open message leaves the folder at once; the rejection restores the row, not the reader.
     expect(screen.queryByText(bodyText('a'))).not.toBeInTheDocument();
-    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Trash request rejected', description: 'Account busy; move not accepted' })));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not move to Trash', description: 'Account busy; move not accepted' })));
     expect(row('a')).toBeInTheDocument();
     expect(cached('a')).toMatchObject({ is_starred: true, folder: 'inbox' });
   });

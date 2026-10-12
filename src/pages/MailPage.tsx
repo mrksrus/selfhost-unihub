@@ -59,7 +59,7 @@ const MailPage = () => {
 
   const { selectedEmail, setSelectedEmail, isReaderLoading, closeReader, loadEmail } = useMailReader(selectedAccount);
   const { flagRequests, requestFlag } = useMailFlags(setSelectedEmail, (kind, message, unknown) => {
-    toast({ title: unknown ? `${kind === 'read' ? 'Read' : 'Star'} request outcome unknown` : kind === 'read' ? 'Failed to update read status' : 'Failed to update star', description: message, variant: 'destructive' });
+    toast({ title: unknown ? 'No answer from UniHub yet' : kind === 'read' ? 'Failed to update read status' : 'Failed to update star', description: message, variant: 'destructive' });
   });
   const { refreshSettledEmail, supersedeRefresh } = useMailReaderRefresh(selectedEmail?.id, setSelectedEmail);
   const accountEditor = useMailAccountEditor();

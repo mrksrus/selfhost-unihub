@@ -20,7 +20,7 @@ function describe(operation: MailWriteback, check: boolean) {
     case 'executing': return 'sending to the server.';
     case 'verifying': return 'confirming with the server.';
     case 'retry_wait': {
-      const due = operation.due_at ? new Date(operation.due_at) : null;
+      const due = operation.available_at ? new Date(operation.available_at) : null;
       return due && !Number.isNaN(due.getTime()) && due.getTime() > Date.now()
         ? `server busy; retry ${formatDistanceToNowStrict(due, { addSuffix: true })}.` : 'server busy; retrying soon.';
     }

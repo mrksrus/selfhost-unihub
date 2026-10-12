@@ -138,7 +138,9 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
     res.setHeader('Vary', 'Origin');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
+  // Every header the client sends: a browser drops a cross-origin request
+  // whose preflight leaves one out, and mail changes then look lost.
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token, Idempotency-Key, X-Background-Sync');
 
   if (req.method === 'OPTIONS') {
     if (req.headers.origin && !allowedOrigin) {

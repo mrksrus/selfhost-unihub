@@ -46,7 +46,7 @@ Removing local mail needs a per-account confirmation (`sync_policy_confirmed_at`
 - **Accounts that were already in Sync mode before 0.13.0 are unconfirmed.** UniHub keeps importing, following flags and moves, merging nothing and removing nothing. Mail the server no longer has stays visible only in **All mail** until you confirm. The account shows how many local messages confirmation would remove; confirm with the account address (below). Then removal runs in the background.
 - **Switching Download → Sync** asks you to type the account's email address. Before saving, UniHub shows how many local messages would be removed: not on the server (known from earlier syncs, and messages UniHub itself deleted on the server), outside the chosen windows, redundant Gmail copies, and local copies of messages also downloaded from the server. Messages deleted on the server since the last sync are not known yet and are removed once Sync sees they are gone. You can first export a backup of this account's mail. The typed address confirms the policy for this account.
 - **New accounts created in Sync mode** are confirmed at creation; they have no local-only mail.
-- **Switching Sync → Download** deletes nothing. UniHub stops sending changes to the server and drops the confirmation; a later switch back asks again.
+- **Switching Sync → Download** deletes nothing. UniHub stops sending changes to the server and drops the confirmation; a later switch back asks again. Changes not yet sent are applied to UniHub's copy; changes already sent stay under review until the account syncs again.
 - **A restore** never brings back a confirmed policy, so restored local copies are not removed until you confirm again.
 
 ### API

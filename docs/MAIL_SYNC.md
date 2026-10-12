@@ -61,6 +61,12 @@ Each account commits once, with an assignment journal and per-account overrides
 for old sender rules targeting disconnected folders. Later syncs refresh the
 server inventory without repeating message moves.
 
+Since 0.19.3 each successful complete LIST also marks mailboxes the server no
+longer lists as `missing` (`retireUnlistedMailboxes`). Views and sync policy
+join active mailboxes only, so their mail leaves the folder views and stays in
+All mail; nothing is deleted, and a later LIST that shows the folder again
+makes it active through `ensureMailbox`.
+
 `emails.mail_account_id` remains the source identity used by IMAP sync;
 `filing_account_id` is an optional local display/recovery account. `is_legacy`
 marks unresolved/pending messages. List/detail/unread queries use the local

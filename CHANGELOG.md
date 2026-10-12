@@ -8,8 +8,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.19.3
 
-Mail actions feel immediate without hiding what the server has confirmed.
-No database or API change.
+Mail actions feel immediate without hiding what the server has confirmed,
+and fixes for cases where UniHub and the mail server slowly drifted apart.
+No database upgrade and no configuration change.
 
 ### Changed
 
@@ -29,6 +30,27 @@ No database or API change.
   for the server". Undo stays for local (Download) accounts.
 - Marking many messages read or starred refreshes the view once, not once
   per message.
+
+### Fixed
+
+- **Read and star changes made on the server after the first sync are
+  picked up.** Each check of read, starred and deleted state now covers all
+  mail up to the moment it starts; before, mail that arrived after the
+  account's first full check was left out of later checks.
+- **Folders deleted or renamed on the server** no longer keep showing their
+  old mail. The mail stays in All mail and comes back into the folder if the
+  folder returns.
+- **Switching an account from Sync to Download** applies changes that had not
+  been sent yet to UniHub's copy, instead of leaving them waiting forever.
+- The unread count next to an account counts each message once and only mail
+  that is in a folder, so it matches the folder counts.
+- An account's "last synced" time updates after every successful sync.
+- The pending changes panel shows when a waiting change is retried again.
+- **Mail actions work when the web app and the API use different
+  addresses.** The API now allows the request headers mail changes send, so
+  the browser no longer drops them and reports that UniHub did not answer.
+- When UniHub does not answer a mail change, the message says so in plain
+  words.
 
 ## 0.19.2
 

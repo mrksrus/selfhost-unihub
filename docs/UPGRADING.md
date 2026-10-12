@@ -5,6 +5,14 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.19.3 Mail stays in step with the server
+
+No database upgrade and no configuration change. Pull and restart. On the
+first sync after the upgrade, folders that no longer exist on the mail server
+leave the folder list views (their mail stays in All mail), and the next
+read/star check covers mail that earlier checks missed, so a few messages
+may change their read or starred state to match the server.
+
 ## 0.19.2 A new layout
 
 Database upgrade 15 runs at startup. It creates the notification tables and

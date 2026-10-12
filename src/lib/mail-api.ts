@@ -185,7 +185,7 @@ export interface MailWriteback {
   can_accept_server_state?: boolean;
   retry_action?: 'check_outcome' | 'retry' | null;
   attempts?: number;
-  due_at?: string | null;
+  available_at?: string | null;
   error: string | null;
   created_at: string;
 }

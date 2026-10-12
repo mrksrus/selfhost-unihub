@@ -112,7 +112,7 @@ describe('toolbar sync control', () => {
   });
 
   it('lists waiting operations in a collapsed line inside the panel', async () => {
-    mount({ operations: [op('q', 'queued'), op('r', 'retry_wait', { due_at: new Date(Date.now() + 4 * 60000 + 5000).toISOString() })] });
+    mount({ operations: [op('q', 'queued'), op('r', 'retry_wait', { available_at: new Date(Date.now() + 4 * 60000 + 5000).toISOString() })] });
     fireEvent.click(syncButton());
     const toggle = await screen.findByRole('button', { name: '2 changes waiting for the server' });
     expect(screen.queryByText(/Star change: server busy/)).not.toBeInTheDocument();

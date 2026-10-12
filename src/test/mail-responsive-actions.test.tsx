@@ -111,7 +111,7 @@ describe('mail actions look done at once while sync state stays visible', { time
     await waitFor(() => expect(api.post).toHaveBeenCalledExactlyOnceWith('/mail/emails/bulk-delete', { email_ids: ['a'] }, expect.objectContaining({ headers: { 'Idempotency-Key': expect.any(String) } })));
     failLists = true;
     await act(async () => { trash.resolve({ error: 'Mail account is busy' }); });
-    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Trash request rejected', description: 'Mail account is busy', variant: 'destructive' })));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Could not move to Trash', description: 'Mail account is busy', variant: 'destructive' })));
     // Rolled back from the snapshot, not from a refetch (the list refresh fails here).
     expect(row('a')).toBeInTheDocument();
     expect(inboxCount()).toBe('2');

@@ -31,9 +31,9 @@ function harness(t: import('node:test').TestContext) {
     res.setHeader = (key: FixtureValue, value: FixtureValue) => sent.set(key.toLowerCase(), value);
     res.getHeader = (key: FixtureValue) => sent.get(key.toLowerCase());
     res.writeHead = (status: FixtureValue, values = {}) => { res.status = status; res.headersSent = true; Object.entries(values).forEach(([key, value]) => res.setHeader(key, value)); };
-    res.end = (value: FixtureValue) => { res.body = JSON.parse(String(value)); };
+    res.end = (value: FixtureValue) => { res.body = value === undefined ? undefined : JSON.parse(String(value)); };
     const running = handleRequest(req as FixtureValue, res); setImmediate(() => req.end(method === 'GET' ? '' : '{}')); await running;
-    return { status: res.status, body: res.body };
+    return { status: res.status, body: res.body, headers: sent };
   }
   return { run, calls };
 }
@@ -77,4 +77,12 @@ test('an invalid bearer token is unauthenticated rather than CSRF-exempt', async
   const result = await run('PUT', '/api/contacts/c1', { authorization: 'Bearer not-a-session' });
   assert.equal(result.status, 401);
   assert.equal(calls.length, 0);
+});
+
+test('a cross-origin preflight allows every header the client sends', async t => {
+  const { run } = harness(t);
+  const result = await run('OPTIONS', '/api/contacts/c1', { 'access-control-request-method': 'PUT' });
+  assert.equal(result.status, 204);
+  const allowed = String(result.headers.get('access-control-allow-headers')).toLowerCase().split(/,\s*/);
+  for (const header of ['content-type', 'x-csrf-token', 'idempotency-key', 'x-background-sync']) assert(allowed.includes(header), header);
 });
