@@ -389,15 +389,17 @@ async function requeue(userId: string, op: OperationRow) {
     await cx.beginTransaction();
     const [[row]] = await cx.execute<OperationRow[]>('SELECT * FROM mail_writebacks WHERE id=? AND user_id=? FOR UPDATE', [op.id, userId]);
     if (!row || moveCheck(row) || !canRetry(row)) { await cx.rollback(); return false; }
-    const [[email]] = await cx.execute<RowDataPacket[]>(`SELECT remote_folder,remote_uid,remote_uidvalidity FROM emails
-      WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`, [row.email_id, userId, row.mail_account_id]);
+    const [[email]] = await cx.execute<RowDataPacket[]>(`SELECT e.remote_folder,e.remote_uid,e.remote_uidvalidity,a.sync_mode FROM emails e
+      JOIN mail_accounts a ON a.id=e.mail_account_id AND a.user_id=e.user_id
+      WHERE e.id=? AND e.user_id=? AND e.mail_account_id=? FOR UPDATE`, [row.email_id, userId, row.mail_account_id]);
     if (email?.remote_folder) {
       let [[occ]] = await cx.execute<RowDataPacket[]>(`SELECT o.id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id=o.mailbox_id
         AND m.user_id=o.user_id AND m.mail_account_id=o.mail_account_id AND m.state='active' AND m.uidvalidity=o.uidvalidity
         WHERE o.email_id=? AND o.user_id=? AND o.mail_account_id=? AND o.presence='present'
         AND BINARY m.remote_name=BINARY ? AND o.uid=? AND o.uidvalidity=? LIMIT 1`,
       [row.email_id, userId, row.mail_account_id, email.remote_folder, email.remote_uid, email.remote_uidvalidity]);
-      if (!occ) {
+      // Only Sync follows the server; in Download mode the folder is the user's own.
+      if (!occ && email.sync_mode === 'sync') {
         // The stored copy is gone; retry on a copy the server still has.
         const live = await repository.repointToLiveOccurrence({ userId, accountId: row.mail_account_id, emailId: row.email_id,
           from: { folder: email.remote_folder, uid: email.remote_uid, uidvalidity: email.remote_uidvalidity } }, cx);

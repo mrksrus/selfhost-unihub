@@ -5,6 +5,10 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.19.4 Following moved mail
+
+No database upgrade and no configuration change. Pull and restart.
+
 ## 0.19.3 Mail stays in step with the server
 
 No database upgrade and no configuration change. Pull and restart. On the

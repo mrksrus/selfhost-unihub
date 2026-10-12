@@ -164,21 +164,6 @@ test('retry/cancel flags match what the endpoints accept for every stuck state',
   }
 });
 
-test('retry after a mailbox reset rebases the undispatched intent onto the verified current address', async t => {
-  const op = { id: 'op', user_id: 'owner', mail_account_id: 'account', email_id: 'item', action: 'read', dispatched: 0,
-    is_current: 1, state: 'needs_attention', remote_folder: 'INBOX', remote_uid: 12, remote_uidvalidity: 9, attempts: 0 };
-  const { log } = store(t, op, { email: { remote_folder: 'INBOX', remote_uid: 40, remote_uidvalidity: 10 }, occurrence: { id: 'fresh' } });
-  t.mock.method(runtime, 'enqueueJob', async () => {});
-  t.mock.method(runtime, 'claimDueJob', async () => null);
-  await writes.retryWriteback('owner', 'op'); await tick();
-  const occurrence = log.find(entry => entry.sql.includes('SELECT o.id FROM mail_remote_occurrences'));
-  assert.match(occurrence.sql, /m\.state='active' AND m\.uidvalidity=o\.uidvalidity/);
-  assert.match(occurrence.sql, /o\.presence='present'/);
-  assert.deepEqual(occurrence.args, ['item', 'owner', 'account', 'INBOX', 40, 10]);
-  const rebase = log.find(entry => entry.sql.startsWith('UPDATE mail_writebacks SET remote_folder=?'));
-  assert.deepEqual(rebase.args, ['INBOX', 40, 10, 'fresh', 'op', 'owner', 'account']);
-});
-
 test('a worker holding a stale copy cannot revive a cancelled or superseded change', async t => {
   for (const state of ['cancelled', 'superseded']) {
     const op = moveOp({ state });

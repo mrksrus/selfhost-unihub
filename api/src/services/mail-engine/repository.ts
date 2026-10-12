@@ -112,7 +112,9 @@ async function retireUnlistedMailboxes({ userId, accountId, listed }: { userId: 
 // server still has. When that copy is gone but the message is present in
 // another active mailbox (moved or archived by another client; on Gmail a
 // removed label), point the item at that copy, preferring a real folder over
-// All Mail. Only an item still holding the dead address is changed.
+// All Mail and then the copy seen most recently (an older copy may already be
+// gone too, its folder just not re-checked yet). Only an item still holding
+// the dead address is changed.
 async function repointToLiveOccurrence({ userId, accountId, emailId, from }: { userId: string; accountId: string; emailId: string;
   from: { folder: string; uid: string | number | bigint; uidvalidity: string | number | bigint } }, cx: SqlExecutor = db) {
   const [[live]] = await cx.execute<RowDataPacket[]>(`SELECT o.id, m.remote_name, o.uid, o.uidvalidity, f.slug FROM mail_remote_occurrences o
@@ -121,7 +123,7 @@ async function repointToLiveOccurrence({ userId, accountId, emailId, from }: { u
     LEFT JOIN mail_folder_remote_boxes b ON b.mail_account_id = m.mail_account_id AND BINARY b.remote_name = BINARY m.remote_name
     LEFT JOIN mail_folders f ON f.id = b.folder_id AND f.user_id = o.user_id
     WHERE o.email_id = ? AND o.user_id = ? AND o.mail_account_id = ? AND o.presence = 'present'
-    ORDER BY (m.special_use <=> 'all'), m.remote_name, o.uid LIMIT 1`, [emailId, userId, accountId]);
+    ORDER BY (m.special_use <=> 'all'), o.observed_at DESC, m.remote_name, o.uid LIMIT 1`, [emailId, userId, accountId]);
   if (!live) return null;
   const [result] = await cx.execute<ResultSetHeader>(`UPDATE emails SET remote_folder = ?, remote_uid = ?, remote_uidvalidity = ?, folder = COALESCE(?, folder)
     WHERE id = ? AND user_id = ? AND mail_account_id = ? AND is_legacy = FALSE

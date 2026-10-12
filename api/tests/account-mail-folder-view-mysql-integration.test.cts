@@ -108,18 +108,47 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
   await t.test('a message moved away on the server is acted on where it is now, not at its old address', async () => {
     const { queueChanges } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
     await pool.execute<ResultSetHeader>("UPDATE emails SET remote_folder='INBOX',remote_uid=11,remote_uidvalidity=17 WHERE id=?",[item]);
+    await pool.execute<ResultSetHeader>("UPDATE mail_remote_mailboxes SET special_use='all' WHERE id=?",[boxes.get('all-mail').id]);
     // Archived on the phone: the INBOX copy is gone, the labelled copies remain.
     await pool.execute<ResultSetHeader>("UPDATE mail_remote_occurrences SET presence='absent' WHERE email_id=? AND mailbox_id=?",[item,boxes.get('inbox').id]);
+    // A copy last seen days ago (its folder not re-checked since) loses to the one seen now.
+    const old = await repository.withTransaction((cx) => repository.ensureMailbox({userId:owner,accountId:account,folderName:'Old',epoch:17},cx),pool);
+    await repository.withTransaction((cx) => repository.upsertOccurrence({userId:owner,accountId:account,mailboxId:old.id,epoch:17,uid:5,emailId:item},cx),pool);
+    await pool.execute<ResultSetHeader>('UPDATE mail_remote_occurrences SET observed_at=UTC_TIMESTAMP() - INTERVAL 2 DAY WHERE mailbox_id=?',[old.id]);
     const row = { id: item, user_id: owner, mail_account_id: account, filing_account_id: null, sync_mode: 'sync', is_active: 1,
       remote_folder: 'INBOX', remote_uid: 11, remote_uidvalidity: 17, is_starred: 0 };
     await repository.withTransaction((cx) => queueChanges(cx, owner, [row as FixtureValue], { star: true }), pool);
     const [[op]] = await pool.execute<RowDataPacket[]>("SELECT remote_folder,remote_uid,source_occurrence_id FROM mail_writebacks WHERE email_id=? AND action='star' AND is_current=TRUE",[item]);
-    assert.equal(op.remote_folder,'Projects/Grüße', 'A real folder is preferred over All Mail');
+    assert.equal(op.remote_folder,'Projects/Grüße', 'The copy seen most recently, and a real folder before All Mail');
     assert(op.source_occurrence_id, 'The change names a copy the server has');
     const [[stored]] = await pool.execute<RowDataPacket[]>('SELECT remote_folder,folder FROM emails WHERE id=?',[item]);
     assert.deepEqual({ ...stored }, { remote_folder: 'Projects/Grüße', folder: 'label' });
     assert.equal(await repository.repointToLiveOccurrence({userId:owner,accountId:account,emailId:item,from:{folder:'INBOX',uid:11,uidvalidity:17}},pool),null,
       'Only an item still holding the dead address moves');
+    // A change already stuck at the dead address: Retry moves it to the live copy.
+    const { retryWriteback } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
+    // Only the queued change is checked here, not the provider worker it would start.
+    t.mock.method(require('../dist/src/services/mail') as typeof import('../src/services/mail'), 'runMailOperationsNow', async () => true);
+    const stick = async () => {
+      await pool.execute<ResultSetHeader>("UPDATE emails SET remote_folder='INBOX',remote_uid=11,remote_uidvalidity=17,folder='inbox' WHERE id=?",[item]);
+      await pool.execute<ResultSetHeader>(`UPDATE mail_writebacks SET state='needs_attention',status='conflict',remote_folder='INBOX',remote_uid=11,
+        source_occurrence_id=NULL WHERE email_id=? AND is_current=TRUE`,[item]);
+      const [[stuck]] = await pool.execute<RowDataPacket[]>("SELECT id FROM mail_writebacks WHERE email_id=? AND is_current=TRUE",[item]);
+      return stuck.id as string;
+    };
+    const retried = await stick();
+    await retryWriteback(owner, retried);
+    const [[requeued]] = await pool.execute<RowDataPacket[]>('SELECT state,remote_folder,source_occurrence_id FROM mail_writebacks WHERE id=?',[retried]);
+    assert.equal(requeued.state,'queued'); assert.equal(requeued.remote_folder,'Projects/Grüße'); assert(requeued.source_occurrence_id);
+    // On an account switched to Download, Retry leaves the local filing alone.
+    const local = await stick();
+    await pool.execute<ResultSetHeader>("UPDATE mail_accounts SET sync_mode='download' WHERE id=?",[account]);
+    await retryWriteback(owner, local);
+    const [[kept]] = await pool.execute<RowDataPacket[]>('SELECT remote_folder,folder FROM emails WHERE id=?',[item]);
+    assert.deepEqual({ ...kept }, { remote_folder: 'INBOX', folder: 'inbox' });
+    await pool.execute<ResultSetHeader>("UPDATE mail_accounts SET sync_mode='sync' WHERE id=?",[account]);
+    await pool.execute<ResultSetHeader>('DELETE FROM mail_remote_occurrences WHERE mailbox_id=?',[old.id]);
+    await pool.execute<ResultSetHeader>('DELETE FROM mail_remote_mailboxes WHERE id=?',[old.id]);
     await pool.execute<ResultSetHeader>("DELETE FROM mail_writebacks WHERE email_id=?",[item]);
     await pool.execute<ResultSetHeader>("DELETE FROM mail_engine_jobs WHERE user_id=?",[owner]);
     await pool.execute<ResultSetHeader>("UPDATE mail_remote_occurrences SET presence='present' WHERE email_id=?",[item]);

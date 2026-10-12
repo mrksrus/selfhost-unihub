@@ -70,9 +70,9 @@ makes it active through `ensureMailbox`.
 An item's provider address (`emails.remote_folder/uid/uidvalidity`) always
 names a copy the server still has: when a presence sweep proves the addressed
 copy absent while another active mailbox still holds the message, the sweep
-re-points the item there (`repointToLiveOccurrence`, a real folder before All
-Mail). Queuing and Retry do the same, so changes are never sent to a dead
-address. After a confirmed move into Trash or Spam on Gmail, the item's other
+re-points the item there (`repointToLiveOccurrence`: a real folder before All
+Mail, then the most recently observed copy). Queuing and Retry do the same
+(Retry only on Sync accounts), so changes are never sent to a dead address. After a confirmed move into Trash or Spam on Gmail, the item's other
 copies are marked absent in the same transaction.
 
 `emails.mail_account_id` remains the source identity used by IMAP sync;

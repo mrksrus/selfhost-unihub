@@ -6,6 +6,20 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.19.4
+
+Two refinements to how UniHub follows mail moved in another app. No
+database upgrade and no configuration change.
+
+### Fixed
+
+- When a message exists in several places on the server, UniHub now acts on
+  the copy it saw most recently. Before, it could pick an older copy that had
+  meanwhile been deleted too, so a star or move failed until that folder was
+  checked again.
+- Retry on an account switched to Download no longer changes the message's
+  folder in UniHub; in Download mode the folder is yours, not the server's.
+
 ## 0.19.3
 
 Mail actions feel immediate without hiding what the server has confirmed,
