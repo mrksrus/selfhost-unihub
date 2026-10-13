@@ -46,7 +46,7 @@ export function TaskRow({ task, actions, timezone, open, onToggle, onEdit, onMov
         <button type="button" disabled={busy}
           aria-label={done ? `Reopen ${task.title}` : `Mark ${task.title} done`}
           onClick={() => actions.setStatus.mutate({ id: task.id, todo_status: done ? null : 'done' })}
-          className={cn('mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-[1.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          className={cn('tap-area mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-[1.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             done ? 'border-accent bg-accent text-accent-foreground' : 'border-muted-foreground/60 text-transparent hover:border-accent hover:text-accent')}>
           <Check aria-hidden="true" className="h-3 w-3" strokeWidth={3} />
         </button>

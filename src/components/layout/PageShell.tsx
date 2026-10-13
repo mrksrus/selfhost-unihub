@@ -86,7 +86,7 @@ export function PageHeader({ title, scope, actions, children, back, hideSearch =
         <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight">{title}</h1>
         {scope && (panel.collapsible ? (
           <button type="button" onClick={panel.open} aria-haspopup="dialog" aria-expanded={panel.isOpen}
-            className="inline-flex h-8 min-w-0 max-w-[50%] shrink items-center gap-1 rounded-full bg-muted px-3 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            className="inline-flex h-8 min-w-0 max-w-[50%] shrink items-center gap-1 rounded-full bg-muted px-3 touch:h-10 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span className="truncate">{scope}</span>
             <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
           </button>
@@ -182,7 +182,7 @@ interface PanelItemProps {
 export function PanelItem({ children, active = false, icon: Icon, color, count, countTone = 'default', countLabel, description, href, onSelect, trailing, title }: PanelItemProps) {
   const panel = usePagePanel();
   const className = cn(
-    'flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    'flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm touch:py-2.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
     active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
   );
   const content = <>

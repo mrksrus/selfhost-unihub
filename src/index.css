@@ -91,6 +91,16 @@
   }
 }
 
+@layer components {
+  /* A small control (icon button, checkbox) keeps its size, but on touch
+     screens its tap area grows to 44px in each direction. The pseudo-element
+     is part of the control for hit testing, so no layout changes. */
+  @media (pointer: coarse) {
+    .tap-area { position: relative; }
+    .tap-area::after { content: ''; position: absolute; inset: calc(50% - 22px); }
+  }
+}
+
 @layer base {
   * {
     @apply border-border;

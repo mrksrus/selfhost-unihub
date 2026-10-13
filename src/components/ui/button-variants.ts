@@ -14,9 +14,10 @@ const buttonVariants = cva(
       },
       size: {
         default: "h-10 px-4 py-2",
-        sm: "h-9 rounded-md px-3",
+        sm: "h-9 rounded-md px-3 touch:h-10",
         lg: "h-11 rounded-md px-8",
-        icon: "h-10 w-10",
+        // Icon buttons made smaller by a page (h-8, h-7) still get a 44px tap area on touch screens.
+        icon: "h-10 w-10 tap-area",
       },
     },
     defaultVariants: {
