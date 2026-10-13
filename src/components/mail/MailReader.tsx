@@ -1,18 +1,10 @@
-import { saveFile } from '@/lib/platform';
-import type { MouseEvent, ReactNode } from 'react';
+import type { ReactNode } from 'react';
 
-import { format } from 'date-fns';
-import { ArrowLeft, CheckCircle2, Download, Forward, ListTodo, Loader2, Mail, Paperclip, Reply, Star, UserPlus } from 'lucide-react';
-import { api } from '@/lib/api';
+import { ArrowLeft, CheckCircle2, Forward, ListTodo, Loader2, Mail, Reply, Star } from 'lucide-react';
 import type { Email, MailAccount, MailFlagKind } from '@/lib/mail-api';
-import { useToast } from '@/hooks/use-toast';
-import { useContactActions } from '@/hooks/use-contact-actions';
 import { Button } from '@/components/ui/button';
-import { LoadingState } from '@/components/ui/page-states';
-import { SafeEmailContent } from '@/components/mail/SafeEmailContent';
 import { MailPendingMark } from '@/components/mail/MailPendingMark';
-import { EmailTasks } from '@/components/mail/EmailTasks';
-import { deriveContactNameFromEmail } from '@/components/mail/mail-page-model';
+import { MailMessageView } from '@/components/mail/MailMessageView';
 
 interface Props {
   /** The open message. The reader hook only sets it for the current selection. */
@@ -41,9 +33,6 @@ interface Props {
 /** Reader pane: full screen on narrow screens, the right column of the split view on wide ones. */
 export function MailReader({ email, loading = false, accounts, location, backLabel, isMobile, isReplying, flagRequests, requestFlag,
   senderInContacts, onBack, onReply, onForward, onAddTask, timezone, inlineCompose }: Props) {
-  const { toast } = useToast();
-  const { create: createContact } = useContactActions();
-
   return (
     <div className="fixed inset-0 z-50 bg-background xl:relative xl:inset-auto xl:z-auto xl:h-full xl:w-[45%] xl:shrink-0 xl:border-l xl:border-border">
       <div className="flex flex-col h-full">
@@ -119,116 +108,9 @@ export function MailReader({ email, loading = false, accounts, location, backLab
 
         {/* Email Content */}
         <div className={`flex-1 overflow-auto p-6 ${!isMobile && isReplying ? 'pb-0' : ''}`}>
-          <div className="max-w-4xl mx-auto space-y-4">
-            <div>
-              <h1 className="text-2xl font-bold mb-4">{email.subject || '(No subject)'}</h1>
-              {email.remote_missing && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">Local copy: this email was not found on the server during the last complete sync. Its content and attachments are kept here.</p>}
-              <div className="space-y-2 text-sm text-muted-foreground">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="min-w-0 break-all">
-                    <span className="font-medium text-foreground">From:</span> {email.from_name ? `${email.from_name} <${email.from_address}>` : email.from_address}
-                  </span>
-                  {!senderInContacts && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-7 gap-1.5"
-                      onClick={() => createContact.mutate({ ...deriveContactNameFromEmail(email), email: email.from_address })}
-                      disabled={createContact.isPending}
-                    >
-                      {createContact.isPending ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <UserPlus className="h-3.5 w-3.5" />
-                      )}
-                      Add contact
-                    </Button>
-                  )}
-                </div>
-                <div>
-                  <span className="font-medium text-foreground">To:</span> {email.to_addresses?.join(', ') || 'N/A'}
-                </div>
-                <div>
-                  <span className="font-medium text-foreground">Date:</span> {format(new Date(email.received_at), 'PPpp')}
-                </div>
-              </div>
-            </div>
-
-            {!loading && email.tasks && <EmailTasks tasks={email.tasks} timezone={timezone} />}
-
-            {loading && <LoadingState label="Loading email…" compact className="border-t border-border" />}
-
-            {/* Attachments */}
-            {!loading && email.attachments && email.attachments.length > 0 && (
-              <div className="border-t border-border pt-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <Paperclip className="h-4 w-4 text-muted-foreground" />
-                  <span className="text-sm font-medium text-foreground">
-                    Attachments ({email.attachments.length})
-                  </span>
-                </div>
-                <div className="space-y-2">
-                  {email.attachments.map((attachment) => {
-                    const sizeKB = attachment.size_bytes ? (attachment.size_bytes / 1024).toFixed(1) : '?';
-                    const handleDownload = async (e: MouseEvent) => {
-                      e.preventDefault();
-                      try {
-                        const { blob, filename } = await api.getBlob(`/mail/attachments/${attachment.id}`);
-                        saveFile(blob, filename || attachment.filename || 'attachment');
-                      } catch (error) {
-                        console.error('Download failed:', error);
-                        const errorWithStatus = error as Error & { status?: number };
-                        let description = 'Could not download attachment. Please try again.';
-
-                        if (errorWithStatus.status === 401) {
-                          description = 'Session expired. Please sign in again and retry.';
-                        } else if (errorWithStatus.status === 404) {
-                          description = 'Attachment not found (it may not be available on disk).';
-                        } else if (errorWithStatus.status && errorWithStatus.status >= 500) {
-                          description = 'Server error while downloading attachment.';
-                        } else if (errorWithStatus.message) {
-                          description = errorWithStatus.message;
-                        }
-
-                        toast({ 
-                          title: 'Download failed', 
-                          description,
-                          variant: 'destructive' 
-                        });
-                      }
-                    };
-
-                    return (
-                      <button
-                        key={attachment.id}
-                        onClick={handleDownload}
-                        className="w-full flex items-center gap-3 p-3 border border-border rounded-lg hover:bg-muted/50 transition-colors group text-left"
-                      >
-                        <Paperclip className="h-5 w-5 text-muted-foreground shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-foreground truncate">
-                            {attachment.filename}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {attachment.content_type} • {sizeKB} KB
-                          </p>
-                        </div>
-                        <Download className="h-4 w-4 text-muted-foreground group-hover:text-accent transition-colors shrink-0" />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {!loading && <div className="border-t border-border pt-4">
-              <SafeEmailContent
-                emailId={email.id}
-                bodyHtml={email.body_html}
-                bodyText={email.body_text}
-              />
-            </div>}
+          <div className="max-w-4xl mx-auto">
+            <MailMessageView email={email} loading={loading} timezone={timezone} senderInContacts={senderInContacts}
+              notice={email.remote_missing && <p className="mb-4 rounded-md border border-border p-3 text-sm text-muted-foreground">Local copy: this email was not found on the server during the last complete sync. Its content and attachments are kept here.</p>} />
           </div>
         </div>
 
