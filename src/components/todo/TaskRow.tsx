@@ -3,6 +3,7 @@ import { Check, ChevronDown, ChevronUp, MapPin, MoreHorizontal, Pencil, Plus, Tr
 import { formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
 import { isOverdue, taskWhen } from '@/lib/tasks';
 import type { TaskActions } from '@/hooks/use-task-actions';
+import { useSourceEmailUnlink } from '@/hooks/use-source-email-unlink';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -32,6 +33,7 @@ interface Props {
  * its subtasks and the remaining actions, so the list stays quiet.
  */
 export function TaskRow({ task, actions, timezone, open, onToggle, onEdit, onMove, calendarColor }: Props) {
+  const unlink = useSourceEmailUnlink();
   const done = task.todo_status === 'done';
   const overdue = !done && isOverdue(task);
   const subtasksDone = task.subtasks.filter(subtask => subtask.is_done).length;
@@ -78,7 +80,7 @@ export function TaskRow({ task, actions, timezone, open, onToggle, onEdit, onMov
       {open && (
         <div id={detailsId} className="space-y-3 pb-3 pl-11 pr-3">
           {task.description && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{task.description}</p>}
-          {task.source_email && <SourceEmailBlock source={task.source_email} timezone={timezone} />}
+          {task.source_email && <SourceEmailBlock source={task.source_email} timezone={timezone} onUnlink={done ? undefined : () => unlink.mutate(task)} unlinking={unlink.isPending} />}
           <Subtasks task={task} actions={actions} readOnly={done} />
           {done ? (
             task.done_at && <p className="text-xs text-muted-foreground">Done {formatEventTime(task.done_at, 'd MMM yyyy, HH:mm', timezone)}</p>

@@ -8,6 +8,7 @@ import { useRecordingUploadRunner } from '@/hooks/use-recording-uploads';
 import NavRail from './NavRail';
 import BottomNav from './BottomNav';
 import GlobalCommandPalette from '@/components/GlobalCommandPalette';
+import { MailPeek } from '@/components/mail/MailPeek';
 import { LoadingState } from '@/components/ui/page-states';
 
 // Global navigation only: the rail on wide windows, the bottom bar on phones.
@@ -44,6 +45,7 @@ const AppLayout = () => {
         </div>
       </main>
       <GlobalCommandPalette />
+      <MailPeek />
       <BottomNav />
     </div>
   );

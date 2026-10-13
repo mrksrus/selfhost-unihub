@@ -52,6 +52,7 @@ beforeEach(() => {
     if (path.startsWith('/calendar/events')) return { data: { events: [task()] } };
     return { data: { modules: [] } };
   });
+  vi.mocked(api.put).mockResolvedValue({ data: { event: task({ source_email: undefined }) } });
   vi.mocked(api.post).mockImplementation(async (path: string, body: unknown) => {
     if (path === '/calendar/calendars') {
       const list = { id: 'list-new', name: (body as { name: string }).name, color: '#8b5cf6', account_id: 'local-account', account_provider: 'local', read_only: false, is_visible: true, auto_todo_enabled: true };
@@ -120,12 +121,20 @@ describe('a task from an email', () => {
     expect(within(block).getByText('Invoice 4711 for October')).toBeInTheDocument();
     expect(within(block).getByText(/Power Co · 10 Oct 2026/)).toBeInTheDocument();
     expect(within(block).getByText('invoice-4711.pdf')).toBeInTheDocument();
-    expect(within(block).getByRole('link', { name: 'Open email' })).toHaveAttribute('href', '/mail?email=email-7');
+    expect(within(block).getByRole('button', { name: 'Show email' })).toBeInTheDocument();
+    fireEvent.click(within(block).getByRole('button', { name: 'Remove the link to the email' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/calendar/events/task-1', { source_email_id: null }));
+    expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Link to the email removed' }));
     cleanup();
     wrap(<Row item={task({ source_email: { ...sourceEmail, available: false } })} />, '/todo');
     const gone = await screen.findByLabelText('From email');
-    expect(within(gone).queryByRole('link', { name: 'Open email' })).not.toBeInTheDocument();
+    expect(within(gone).queryByRole('button', { name: 'Show email' })).not.toBeInTheDocument();
     expect(within(gone).getByText('No longer in UniHub')).toBeInTheDocument();
+    cleanup();
+    wrap(<Row item={task({ source_email: { ...sourceEmail, draft: true, to: 'bob@example.test' } })} />, '/todo');
+    const draft = await screen.findByLabelText('From email');
+    expect(within(draft).getByText(/Draft to bob@example.test/)).toBeInTheDocument();
+    expect(within(draft).getByRole('link', { name: 'Open draft' })).toHaveAttribute('href', '/mail?email=email-7');
   });
 
   it('lists the tasks made from an email in the reader, each leading to its row in ToDo', async () => {
@@ -143,7 +152,7 @@ describe('a task from an email', () => {
   it('opens the linked task on the ToDo page and drops the link from the address', async () => {
     wrap(<TodoPage />, '/todo?task=task-1');
     const details = await screen.findByLabelText('From email');
-    expect(within(details).getByRole('link', { name: 'Open email' })).toBeInTheDocument();
+    expect(within(details).getByRole('button', { name: 'Show email' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Invoice 4711 for October/ })).toHaveAttribute('aria-expanded', 'true');
   });
 });

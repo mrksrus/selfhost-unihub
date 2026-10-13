@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { SourceEmailBlock } from '@/components/todo/SourceEmail';
+import { useSourceEmailUnlink } from '@/hooks/use-source-email-unlink';
 
 /** What the dialog shows: a new event (optionally on a day) or an existing one. */
 export type EventDialogTarget = { kind: 'new'; date?: Date } | { kind: 'edit'; event: CalendarEvent } | null;
@@ -71,6 +72,9 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
   };
   const writable = calendars.filter(calendar => !isReadOnly(calendar.id));
   const readOnly = Boolean(editing && isReadOnly(editing.calendar_id));
+  const unlink = useSourceEmailUnlink();
+  // The open event is a copy from the list; once unlinked, its block goes until the list refreshes.
+  const [unlinkedId, setUnlinkedId] = useState<string | null>(null);
   // A read-only event still shows its own calendar in the picker.
   const options = readOnly && editing?.calendar_id && calendarById.has(editing.calendar_id) ? [calendarById.get(editing.calendar_id)!] : writable;
   const isRemote = (event: CalendarEvent) => isRemoteCalendarAccount(accountOf(event.calendar_id));
@@ -151,7 +155,10 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
             <Button size="sm" variant="outline" disabled={actions.rsvp.isPending} onClick={() => actions.rsvp.mutate({ id: editing.id, status: 'declined' })}>Decline</Button>
           </div>
         )}
-        {editing?.source_email && <SourceEmailBlock source={editing.source_email} timezone={timezone} />}
+        {editing?.source_email && unlinkedId !== editing.id && (
+          <SourceEmailBlock source={editing.source_email} timezone={timezone} unlinking={unlink.isPending}
+            onUnlink={readOnly ? undefined : () => unlink.mutate(editing, { onSuccess: () => setUnlinkedId(editing.id) })} />
+        )}
         <form onSubmit={submit} className="space-y-4">
           <fieldset disabled={readOnly} className="min-w-0 space-y-4">
             <div className="space-y-2">

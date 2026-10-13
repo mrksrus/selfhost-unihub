@@ -752,6 +752,18 @@ export = {
           params.push(body.calendar_id);
         }
       }
+      // The link to the email the task came from: null removes it (and the
+      // kept summary); an email id links again, if the email is still here.
+      if (Object.prototype.hasOwnProperty.call(body, 'source_email_id')) {
+        if (!body.source_email_id) {
+          updates.push('source_email_id = NULL', 'source_email_json = NULL');
+        } else {
+          const sourceEmail = await snapshotSourceEmail(userId, body.source_email_id);
+          if (!sourceEmail) return { error: 'Email not found', status: 404 };
+          updates.push('source_email_id = ?', 'source_email_json = ?');
+          params.push(String(body.source_email_id), JSON.stringify(sourceEmail));
+        }
+      }
 
       const writeback = await pushEventChanges(userId, currentEvent, body, {
         title: body.title?.trim(),

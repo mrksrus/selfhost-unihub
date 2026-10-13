@@ -49,7 +49,7 @@ test('real MySQL: a task made from an email keeps the email, both sides show the
     assert.equal((created as FixtureValue).error, undefined, JSON.stringify(created));
     const source = (created as FixtureValue).event.source_email;
     assert.deepEqual(source, { email_id: email, subject: 'Re: Invoice 4711', from_name: 'Power Co', from_address: 'billing@power.example',
-      received_at: '2026-10-10T08:00:00.000Z', attachments: ['invoice-4711.pdf', 'terms.pdf'], account: 'alex@example.test', available: true });
+      received_at: '2026-10-10T08:00:00.000Z', attachments: ['invoice-4711.pdf', 'terms.pdf'], account: 'alex@example.test', draft: false, to: null, available: true });
   });
 
   await t.test('the email lists its tasks and the list row counts them; the stranger sees neither', async () => {
@@ -63,6 +63,28 @@ test('real MySQL: a task made from an email keeps the email, both sides show the
     assert.equal((strangerList as FixtureValue).emails.length, 0);
     const strangerEvents = await calendar['GET /api/calendar/events'](request('/api/calendar/events?include_todos=true'), stranger);
     assert.equal((strangerEvents as FixtureValue).events.length, 0);
+  });
+
+  await t.test('the link can be removed, and made again while the email is still here', async () => {
+    const events = await calendar['GET /api/calendar/events'](request('/api/calendar/events?include_todos=true'), owner);
+    const [task] = (events as FixtureValue).events;
+    const unlinked = await calendar['PUT /api/calendar/events/:id'](request(`/api/calendar/events/${task.id}`), owner, { source_email_id: null });
+    assert.equal((unlinked as FixtureValue).event.source_email, null);
+    const [[row]] = await pool.query<RowDataPacket[]>('SELECT source_email_id, source_email_json FROM calendar_events WHERE id = ?', [task.id]);
+    assert.equal(row.source_email_id, null); assert.equal(row.source_email_json, null);
+    const relinked = await calendar['PUT /api/calendar/events/:id'](request(`/api/calendar/events/${task.id}`), owner, { source_email_id: email });
+    assert.equal((relinked as FixtureValue).event.source_email.subject, 'Re: Invoice 4711');
+    const refused = await calendar['PUT /api/calendar/events/:id'](request(`/api/calendar/events/${task.id}`), owner, { source_email_id: randomUUID() });
+    assert.equal((refused as FixtureValue).status, 404);
+  });
+
+  await t.test('a draft can be the source too: the task names who it goes to', async () => {
+    const draft = randomUUID();
+    await pool.execute<ResultSetHeader>(`INSERT INTO emails (id,user_id,mail_account_id,subject,from_address,from_name,to_addresses,folder,received_at,is_draft)
+      VALUES (?,?,?,'Electrician quote','alex@example.test','Alex','["sparks@example.test"]','drafts','2026-10-11 08:00:00',TRUE)`, [draft, owner, account]);
+    const created = await calendar['POST /api/calendar/events'](request('/api/calendar/events'), owner, { title: 'Send the quote', is_todo_only: true, source_email_id: draft });
+    assert.equal((created as FixtureValue).event.source_email.draft, true);
+    assert.equal((created as FixtureValue).event.source_email.to, 'sparks@example.test');
   });
 
   await t.test('after the email is deleted the task keeps the email\'s header and says it is gone', async () => {

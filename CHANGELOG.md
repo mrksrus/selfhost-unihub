@@ -26,6 +26,15 @@ fields to tasks and events; nothing else changes.
   row in ToDo; a mail row shows a small task mark when one exists.
 - Offline reading shows the email summary on tasks too. Backups carry the link
   and the summary.
+- **Show email** on a task or event shows the email over the page you are on
+  (a column on the right on wide windows, a sheet on phones) instead of leaving
+  for Mail. You can reply or forward right there, and **Open in Mail** still
+  goes to the full page. **Set aside** (or dragging the sheet down on a phone)
+  shrinks it to a small bar while you copy something from the page; bringing
+  it back keeps a reply you had started.
+- The link from a task or event to its email can be removed (the small
+  unlink icon next to **Show email**); **Undo** in the message that follows
+  links the email again while it is still in UniHub.
 - A draft can become a task too: **Add task** in the compose form (and in a
   draft row's menu) saves the draft and links the task to it; the task shows
   "Draft to …" and **Open draft**.

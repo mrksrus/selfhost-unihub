@@ -266,9 +266,10 @@ function AddTaskFromDraft({ compose, onAddTask }: { compose: MailCompose; onAddT
   );
 }
 
-export function MailInlineCompose({ compose, onAddTask }: { compose: MailCompose; onAddTask?: () => void }) {
+/** Reply editor under a message. `fill` lets it take the whole column (the peek on phones) instead of the lower half. */
+export function MailInlineCompose({ compose, onAddTask, fill = false }: { compose: MailCompose; onAddTask?: () => void; fill?: boolean }) {
   return (
-    <div className="max-h-[52vh] shrink-0 border-t border-border bg-card">
+    <div className={fill ? 'min-h-0 flex-1 bg-card' : 'max-h-[52vh] shrink-0 border-t border-border bg-card'}>
       <div className="mx-auto flex h-full max-w-4xl flex-col p-4">
         <div className="mb-4 flex shrink-0 items-center justify-between">
           <h2 className="text-lg font-semibold">

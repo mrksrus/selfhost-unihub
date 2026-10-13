@@ -350,7 +350,7 @@ export const calendarApi = {
    * A synced recurring event changed for the whole series comes back as
    * `replaced`: its occurrences were rebuilt and the edited id is gone.
    */
-  async updateEvent(id: string, payload: Partial<CalendarEvent>, scope?: RecurrenceScope): Promise<{ event: CalendarEvent | null; replaced: boolean }> {
+  async updateEvent(id: string, payload: Partial<CalendarEvent> & { source_email_id?: string | null }, scope?: RecurrenceScope): Promise<{ event: CalendarEvent | null; replaced: boolean }> {
     const response = await api.put<{ event: CalendarEvent | null; replaced?: boolean }>(`/calendar/events/${id}`, scope ? { ...payload, scope } : payload);
     if (response.error) throw new Error(response.error);
     const event = response.data?.event ?? null;
