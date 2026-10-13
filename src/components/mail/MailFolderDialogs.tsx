@@ -87,7 +87,8 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
       if (selectedFolder === slug) onSelectFolder('inbox');
       const parts = [];
       if (server) parts.push(deleted === 1 ? '1 message was deleted on the server.' : `${deleted} messages were deleted on the server.`);
-      if (moved > 0 || !server) parts.push(moved === 1 ? '1 message moved back to Inbox.' : `${moved} messages moved back to Inbox.`);
+      if (moved > 0 || !server) parts.push(server ? (moved === 1 ? '1 message stayed and was filed again.' : `${moved} messages stayed and were filed again.`)
+        : (moved === 1 ? '1 message moved back to Inbox.' : `${moved} messages moved back to Inbox.`));
       toast({ title: server ? 'Folder deleted on the server' : 'Folder deleted', description: parts.join(' ') });
     },
     onError: (error: Error) => {
@@ -203,7 +204,7 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
           <AlertDialogTitle>Delete {folderToDelete?.display_name || 'this folder'}?</AlertDialogTitle>
           <AlertDialogDescription>
             {onServer
-              ? `This folder is on the mail server (${serverAccounts || 'your account'}), so it can only be deleted together with the server copy. ${count} in it ${count === '1 message' ? 'is' : 'are'} deleted there too; this cannot be undone.`
+              ? `This folder is on the mail server (${serverAccounts || 'your account'}), so it can only be deleted together with the server copy. ${count} in it ${count === '1 message' ? 'goes' : 'go'} with it; a message the server still has elsewhere, a draft or a local copy stays and is filed again. This cannot be undone.`
               : `${count} and the rules filing into it move back to Inbox.`}
           </AlertDialogDescription>
         </AlertDialogHeader>

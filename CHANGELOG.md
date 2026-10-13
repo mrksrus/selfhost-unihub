@@ -69,6 +69,15 @@ fields to tasks and events; nothing else changes.
 - ToDo and Music no longer hide their views and lists in a side panel or
   behind the title. The views (Open, Today, Overdue, …) and the lists are a row
   of chips above the list on every window size.
+- Tasks from emails are offered only the lists that show in ToDo; a task that
+  still lands in a hidden list says so in ToDo with a link to the Calendar.
+  "Tomorrow" is the next calendar day in your timezone, also on the night the
+  clocks change.
+- The email shown over a page asks to save or discard an unsaved reply before
+  it closes, opens the full Mail page or switches to another email, as the
+  Mail page does. Dialogs and menus opened from it show above it.
+- Long PDFs keep only the pages near the view drawn, so a hundred-page file no
+  longer holds every page in memory.
 - On touch screens, small controls are easier to hit: icon buttons, the task
   and message checkboxes, chips, menu and list rows get a larger tap area
   without growing on screen or changing the layout for a mouse.
@@ -91,6 +100,9 @@ fields to tasks and events; nothing else changes.
   502), the app showed the sign-in page. It now says the server is not
   answering, keeps the session and retries on its own. Reloading after
   **Load new version** therefore no longer needs a new sign-in.
+- The waiting screen retries only after the previous check has finished, so a
+  server that answers slowly can still be reached, and the state clears on
+  sign-in and sign-out.
 
 ## 0.19.4
 

@@ -20,9 +20,9 @@ export interface Accent {
 
 export const ACCENTS: readonly Accent[] = [
   { id: 'blue', label: 'Blue', light: '221 83% 53%', dark: '221 83% 53%', darkRing: '213 94% 68%' },
-  { id: 'indigo', label: 'Indigo', light: '243 75% 59%', dark: '239 84% 67%', darkRing: '234 89% 74%' },
-  { id: 'violet', label: 'Violet', light: '262 83% 58%', dark: '258 90% 66%', darkRing: '255 92% 76%' },
-  { id: 'pink', label: 'Pink', light: '333 71% 51%', dark: '330 81% 60%', darkRing: '329 86% 70%' },
+  { id: 'indigo', label: 'Indigo', light: '243 75% 59%', dark: '239 84% 62%', darkRing: '234 89% 74%' },
+  { id: 'violet', label: 'Violet', light: '262 83% 58%', dark: '258 90% 62%', darkRing: '255 92% 76%' },
+  { id: 'pink', label: 'Pink', light: '333 71% 51%', dark: '330 75% 50%', darkRing: '329 86% 70%' },
   { id: 'teal', label: 'Teal', light: '175 84% 28%', dark: '172 66% 50%', darkRing: '171 77% 64%' },
   { id: 'green', label: 'Green', light: '142 72% 29%', dark: '142 71% 45%', darkRing: '142 69% 58%' },
 ];

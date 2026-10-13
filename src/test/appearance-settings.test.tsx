@@ -34,7 +34,7 @@ describe('appearance settings', () => {
 
     fireEvent.click(violet);
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/settings/preferences', expect.objectContaining({ accent_color: 'violet' })));
-    await waitFor(() => expect(document.documentElement.style.getPropertyValue('--primary')).toBe('258 90% 66%'));
+    await waitFor(() => expect(document.documentElement.style.getPropertyValue('--primary')).toBe('258 90% 62%'));
     expect(document.documentElement.style.getPropertyValue('--ring')).toBe('255 92% 76%');
     expect(document.querySelector('link[rel="icon"]')?.getAttribute('href')).toMatch(/^data:image\/svg\+xml/);
     expect(localStorage.getItem('unihub:accent')).toBe('violet');
