@@ -24,11 +24,14 @@ const USER_SETTING_DEFAULTS: Record<string, string> = {
   default_start_page: 'mail',
   /** The account new messages are sent from; empty means the first account. */
   default_mail_account_id: '',
+  /** The accent colour of the app; the choices live in the frontend (src/lib/accent.ts). */
+  accent_color: 'blue',
 };
 
 const USER_SETTING_ALLOWED_VALUES: Record<string, Set<string>> = {
   email_link_behavior: new Set(['mailto', 'internal']),
   default_start_page: new Set(['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'dashboard']),
+  accent_color: new Set(['blue', 'indigo', 'violet', 'pink', 'teal', 'green']),
 };
 
 async function getUserPreferences(userId: string) {

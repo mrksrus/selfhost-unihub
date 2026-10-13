@@ -38,6 +38,12 @@ fields to tasks and events; nothing else changes.
 - A draft can become a task too: **Add task** in the compose form (and in a
   draft row's menu) saves the draft and links the task to it; the task shows
   "Draft to …" and **Open draft**.
+- **Accent colour.** Settings has a new **Appearance** section (the theme
+  choice moved there from General) with six accent colours: Blue, Indigo,
+  Violet, Pink, Teal and Green. The accent colours buttons, links, the
+  selected page, the UniHub mark and the page icon in the browser tab. It is
+  saved with your account, so every device and the app follow; warning and
+  delete colours stay as they are.
 - **Delete a folder on the mail server.** Custom folders can be deleted again
   from the folder dialog. A folder that exists only in UniHub moves its
   messages and rules back to Inbox. A folder on the mail server is deleted

@@ -1,10 +1,11 @@
-import { Archive, Bell, CloudOff, LayoutGrid, ListFilter, Shield, SlidersHorizontal, Trash2, UserRound } from 'lucide-react';
+import { Archive, Bell, CloudOff, LayoutGrid, ListFilter, Palette, Shield, SlidersHorizontal, Trash2, UserRound } from 'lucide-react';
 import type { ModuleId } from '@/lib/modules';
 
-export type SettingsSectionId = 'general' | 'account' | 'security' | 'notifications' | 'offline' | 'pages' | 'mail' | 'backup' | 'delete';
+export type SettingsSectionId = 'general' | 'appearance' | 'account' | 'security' | 'notifications' | 'offline' | 'pages' | 'mail' | 'backup' | 'delete';
 
 export const SETTINGS_SECTIONS: { id: SettingsSectionId; label: string; icon: typeof Bell; module?: ModuleId }[] = [
   { id: 'general', label: 'General', icon: SlidersHorizontal },
+  { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'account', label: 'Profile', icon: UserRound },
   { id: 'security', label: 'Security', icon: Shield },
   { id: 'notifications', label: 'Notifications', icon: Bell },

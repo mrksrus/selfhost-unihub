@@ -11,6 +11,7 @@ import NavRail from './NavRail';
 import BottomNav from './BottomNav';
 import GlobalCommandPalette from '@/components/GlobalCommandPalette';
 import { MailPeek } from '@/components/mail/MailPeek';
+import { PreferenceAccent } from '@/components/theme/PreferenceAccent';
 import { Button } from '@/components/ui/button';
 import { EmptyState, LoadingState } from '@/components/ui/page-states';
 
@@ -58,6 +59,7 @@ const AppLayout = () => {
 
   return (
     <div className="flex h-dvh overflow-hidden bg-background">
+      <PreferenceAccent />
       <div className="hidden md:block">
         <NavRail />
       </div>

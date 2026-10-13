@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query';
 import { api } from '@/lib/api';
+import type { AccentId } from '@/lib/accent';
 
 export type StartPage = 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings' | 'music' | 'dashboard';
 
@@ -8,9 +9,11 @@ export interface UserPreferences {
   default_start_page: StartPage;
   /** The mail account new messages are sent from; '' means the first connected account. */
   default_mail_account_id: string;
+  /** The accent colour of the app; see src/lib/accent.ts. */
+  accent_color: AccentId;
 }
 
-export const DEFAULT_PREFERENCES: UserPreferences = { email_link_behavior: 'mailto', default_start_page: 'mail', default_mail_account_id: '' };
+export const DEFAULT_PREFERENCES: UserPreferences = { email_link_behavior: 'mailto', default_start_page: 'mail', default_mail_account_id: '', accent_color: 'blue' };
 
 export const preferencesQueryKey = ['settings', 'preferences'] as const;
 

@@ -1,16 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useTheme } from 'next-themes';
-import { Monitor, Moon, Sun } from 'lucide-react';
-import { DEFAULT_PREFERENCES, preferencesQueryKey, preferencesQueryOptions, savePreferences, type UserPreferences } from '@/lib/settings-api';
+import { usePreferences } from '@/hooks/use-preferences';
 import { useModules } from '@/hooks/use-modules';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
-import { useToast } from '@/hooks/use-toast';
-import { cn } from '@/lib/utils';
+import type { UserPreferences } from '@/lib/settings-api';
 import { ErrorState } from '@/components/ui/page-states';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
-
-const THEMES = [{ value: 'dark', label: 'Dark', icon: Moon }, { value: 'light', label: 'Light', icon: Sun }, { value: 'system', label: 'System', icon: Monitor }] as const;
 
 const START_PAGES: { value: UserPreferences['default_start_page']; label: string; path: string }[] = [
   { value: 'mail', label: 'Mail', path: '/mail' },
@@ -22,61 +16,18 @@ const START_PAGES: { value: UserPreferences['default_start_page']; label: string
   { value: 'dashboard', label: 'Today', path: '/dashboard' },
 ];
 
-function ThemeSwitch() {
-  const { theme, setTheme } = useTheme();
-  return (
-    <div role="radiogroup" aria-label="Theme" className="inline-flex rounded-md bg-muted p-0.5">
-      {THEMES.map(({ value, label, icon: Icon }) => (
-        <button key={value} type="button" role="radio" aria-checked={theme === value} onClick={() => setTheme(value)}
-          className={cn('inline-flex h-8 items-center gap-1.5 rounded-[5px] px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-            theme === value ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>
-          <Icon aria-hidden="true" className="h-4 w-4" />{label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 export default function GeneralSettings() {
-  const client = useQueryClient();
-  const { toast } = useToast();
   const { canAccess } = useModules();
-  const preferencesQuery = useQuery(preferencesQueryOptions);
   const mailEnabled = canAccess('/mail');
   const senders = (useMailAccounts().data ?? []).filter(account => account.is_active && !account.disconnected_at);
-  const preferences = preferencesQuery.data ?? DEFAULT_PREFERENCES;
-
-  // A choice is saved as soon as it is made; a failure puts the old value back.
-  const save = useMutation({
-    mutationFn: savePreferences,
-    onMutate: async next => {
-      await client.cancelQueries({ queryKey: preferencesQueryKey });
-      const previous = client.getQueryData<UserPreferences>(preferencesQueryKey);
-      client.setQueryData(preferencesQueryKey, next);
-      return { previous };
-    },
-    onError: (error, _next, context) => {
-      if (context?.previous) client.setQueryData(preferencesQueryKey, context.previous);
-      toast({ title: 'Could not save the setting', description: error.message, variant: 'destructive' });
-    },
-    onSuccess: saved => client.setQueryData(preferencesQueryKey, saved),
-  });
-  const change = (patch: Partial<UserPreferences>) => save.mutate({ ...preferences, ...patch });
-  const unavailable = !preferencesQuery.data;
+  const { preferences, change, unavailable, error, refetch, refetching } = usePreferences();
 
   return (
     <>
-      <SettingsSection title="Appearance">
-        <SettingsRow label="Theme">
-          <ThemeSwitch />
-        </SettingsRow>
-      </SettingsSection>
-
       <SettingsSection title="Behaviour">
-        {preferencesQuery.error && (
+        {error && (
           <div className="py-4">
-            <ErrorState title="Could not load your preferences" error={preferencesQuery.error}
-              onRetry={() => void preferencesQuery.refetch()} retrying={preferencesQuery.isFetching} />
+            <ErrorState title="Could not load your preferences" error={error} onRetry={refetch} retrying={refetching} />
           </div>
         )}
         <SettingsRow label="Start page" description="The page UniHub opens on." htmlFor="start-page">

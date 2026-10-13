@@ -6,6 +6,7 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { SETTINGS_SECTIONS, settingsSectionFrom } from '@/components/settings/settings-sections';
 import GeneralSettings from '@/components/settings/GeneralSettings';
+import AppearanceSettings from '@/components/settings/AppearanceSettings';
 import AccountSettings from '@/components/settings/AccountSettings';
 import SecuritySettings from '@/components/settings/SecuritySettings';
 import NotificationSettings from '@/components/pwa/NotificationSettings';
@@ -18,6 +19,7 @@ const BackupSettings = lazy(() => import('@/components/settings/BackupSettings')
 
 const SECTION_VIEWS = {
   general: GeneralSettings,
+  appearance: AppearanceSettings,
   account: AccountSettings,
   security: SecuritySettings,
   notifications: NotificationSettings,
