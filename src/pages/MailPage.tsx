@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { PenSquare, Plus } from 'lucide-react';
 import { captureMailFlagReconciler, type Email } from '@/lib/mail-api';
+import type { TaskSource } from '@/lib/email-tasks';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { useUserTimezone } from '@/contexts/useAuth';
@@ -69,7 +70,7 @@ const MailPage = () => {
   const compose = useMailCompose({ activeMailAccountId, selectedAccount, setSelectedAccount, isMobile });
   const accountRemoval = useMailAccountRemoval(() => setSelectedAccount(ALL_ACCOUNTS));
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
-  const [taskEmail, setTaskEmail] = useState<Email | null>(null);
+  const [taskEmail, setTaskEmail] = useState<TaskSource | null>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const { jobs: syncJobs, requestSync, syncingAccountIds, requestCancel, cancellingAccountIds } = useMailSyncJobs(accounts);
   const writebacks = useMailWritebacks(refreshSettledEmail);
@@ -118,6 +119,18 @@ const MailPage = () => {
     params.delete('review');
     navigate({ pathname: location.pathname, search: params.toString(), hash: location.hash }, { replace: true });
   }, [location.pathname, location.search, location.hash, navigate]);
+
+  // A task from the draft being written: the draft is saved first so the task can lead back to it.
+  const addTaskFromDraft = async () => {
+    let draft: Email | null = null;
+    try { draft = await compose.saveCurrentDraft({ includeAttachments: true, quiet: true }); }
+    catch (error) { toast({ title: 'Could not save the draft', description: error instanceof Error ? error.message : undefined, variant: 'destructive' }); return; }
+    const id = draft?.id ?? compose.activeDraftId;
+    if (!id) { toast({ title: 'Write something first', description: 'The draft is saved so the task can lead back to it.' }); return; }
+    const account = accounts.find(entry => entry.id === compose.activeMailAccountId);
+    setTaskEmail({ id, is_draft: true, subject: compose.composeForm.subject, from_name: account?.display_name ?? null, from_address: account?.email_address ?? '',
+      received_at: new Date().toISOString(), attachments: draft?.attachments ?? compose.existingDraftAttachments });
+  };
 
   const selectedAccountData = accounts.find(a => a.id === selectedAccount);
   const selectedFolderData = folders.find((folder) => folder.id === selectedFolder);
@@ -217,7 +230,7 @@ const MailPage = () => {
           onReply={() => compose.startResponse(selectedEmail, 'reply')}
           onForward={() => compose.startResponse(selectedEmail, 'forward')}
           onAddTask={() => setTaskEmail(selectedEmail)} timezone={timezone}
-          inlineCompose={!isMobile && compose.isReplying && <MailInlineCompose compose={compose} />} />
+          inlineCompose={!isMobile && compose.isReplying && <MailInlineCompose compose={compose} onAddTask={addTaskFromDraft} />} />
       )}
 
       <MailFolderDialogs open={folderDialogOpen} onOpenChange={setFolderDialogOpen} activeMailAccountId={activeMailAccountId}
@@ -225,7 +238,7 @@ const MailPage = () => {
 
       <MailComposeDialogs compose={compose} />
 
-      <MailComposeDialog compose={compose} accounts={accounts} isMobile={isMobile} onSelectAccount={setSelectedAccount} />
+      <MailComposeDialog compose={compose} accounts={accounts} isMobile={isMobile} onSelectAccount={setSelectedAccount} onAddTask={addTaskFromDraft} />
 
     </div>
     </PageShell>

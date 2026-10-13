@@ -11,9 +11,15 @@ export interface SourceEmail {
   /** File names of the attachments, as they were when the task was made. */
   attachments: string[];
   account: string | null;
+  /** The email is a draft the user was writing; `to` is its first recipient. */
+  draft?: boolean;
+  to?: string | null;
   /** The email still exists in UniHub, so it can be opened. */
   available: boolean;
 }
+
+/** What the task dialog needs to know about an email: a message, or a draft from the compose form. */
+export type TaskSource = Pick<Email, 'id' | 'subject' | 'from_name' | 'from_address' | 'received_at' | 'attachments' | 'is_draft'>;
 
 /** A task as the mail reader lists it next to its email. */
 export type EmailTaskSummary = Pick<CalendarEvent, 'id' | 'title' | 'todo_status' | 'start_time' | 'end_time' | 'all_day' | 'is_todo_only' | 'calendar_id'>;
@@ -27,7 +33,9 @@ export function taskTitleFromEmail(email: Pick<Email, 'subject' | 'from_name' | 
 /** Where a task opens its email: the reader, with the message selected. */
 export const emailPath = (source: Pick<SourceEmail, 'email_id'>) => `/mail?email=${encodeURIComponent(source.email_id)}`;
 
-export const senderName = (source: Pick<SourceEmail, 'from_name' | 'from_address'>) => source.from_name || source.from_address;
+/** Who the email is from; a draft is named by who it goes to. */
+export const senderName = (source: Pick<SourceEmail, 'from_name' | 'from_address' | 'draft' | 'to'>) =>
+  source.draft ? `Draft${source.to ? ` to ${source.to}` : ''}` : source.from_name || source.from_address;
 
 /** Lists a task can go to: the user's own calendars, never a server's. */
 export const taskLists = (calendars: CalendarCalendar[]) => calendars.filter(calendar => calendar.account_provider === 'local' && !calendar.read_only);

@@ -40,7 +40,7 @@ export function SourceEmailBlock({ source, timezone, className }: { source: Sour
         )}
       </div>
       {source.available
-        ? <Link to={emailPath(source)} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'shrink-0')}>Open email</Link>
+        ? <Link to={emailPath(source)} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'shrink-0')}>{source.draft ? 'Open draft' : 'Open email'}</Link>
         : <span className="shrink-0 self-center text-xs text-muted-foreground">No longer in UniHub</span>}
     </div>
   );

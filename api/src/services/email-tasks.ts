@@ -16,6 +16,9 @@ export interface SourceEmailSnapshot {
   /** File names of the regular attachments, at most SNAPSHOT_ATTACHMENTS. */
   attachments: string[];
   account: string | null;
+  /** The email is a draft the user is writing; `to` is its first recipient. */
+  draft?: boolean;
+  to?: string | null;
 }
 const SNAPSHOT_ATTACHMENTS = 8;
 
@@ -29,13 +32,13 @@ export const EMAIL_TASK_COUNT_SQL = `(SELECT COUNT(t.id) FROM calendar_events t 
 /** Reads the owned email that a new task points at, or null when it is not the user's. */
 export async function snapshotSourceEmail(userId: string, emailId: unknown, cx: SqlExecutor = db): Promise<SourceEmailSnapshot | null> {
   if (typeof emailId !== 'string' || !/^[0-9a-f-]{36}$/i.test(emailId)) return null;
-  const [[email]] = await cx.execute<RowDataPacket[]>(`SELECT e.subject, e.from_name, e.from_address, e.received_at, a.email_address
+  const [[email]] = await cx.execute<RowDataPacket[]>(`SELECT e.subject, e.from_name, e.from_address, e.received_at, e.is_draft, e.to_addresses, a.email_address
     FROM emails e LEFT JOIN mail_accounts a ON a.id = COALESCE(e.filing_account_id, e.mail_account_id) AND a.user_id = e.user_id
     WHERE e.id = ? AND e.user_id = ?`, [emailId, userId]);
   if (!email) return null;
   const [files] = await cx.execute<RowDataPacket[]>(`SELECT filename FROM email_attachments WHERE email_id = ? AND user_id = ? AND content_id IS NULL
     ORDER BY filename LIMIT ${SNAPSHOT_ATTACHMENTS}`, [emailId, userId]);
-  return {
+  const snapshot: SourceEmailSnapshot = {
     subject: email.subject || null,
     from_name: email.from_name || null,
     from_address: String(email.from_address || ''),
@@ -43,6 +46,18 @@ export async function snapshotSourceEmail(userId: string, emailId: unknown, cx: 
     attachments: files.map(file => String(file.filename || '')).filter(Boolean),
     account: email.email_address || null,
   };
+  if (Number(email.is_draft)) {
+    snapshot.draft = true;
+    snapshot.to = firstRecipient(email.to_addresses);
+  }
+  return snapshot;
+}
+
+function firstRecipient(value: unknown): string | null {
+  try {
+    const list = typeof value === 'string' ? JSON.parse(value) : value;
+    return Array.isArray(list) && typeof list[0] === 'string' && list[0].trim() ? list[0].trim() : null;
+  } catch { return null; }
 }
 
 /** The tasks made from one email, newest last, as the mail reader lists them. */
@@ -74,6 +89,8 @@ export function presentSourceEmail(row: { source_email_id?: string | null; sourc
     received_at: snapshot.received_at ?? null,
     attachments: Array.isArray(snapshot.attachments) ? snapshot.attachments : [],
     account: snapshot.account ?? null,
+    draft: !!snapshot.draft,
+    to: snapshot.to ?? null,
     available: !!Number(row.source_email_present ?? 0),
   };
 }

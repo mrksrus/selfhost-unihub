@@ -62,7 +62,7 @@ describe('ToDo', () => {
     mount('/todo?view=done');
     fireEvent.click(await screen.findByRole('button', { name: 'Reopen Filed taxes' }));
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/calendar/events/Filed taxes/todo-status', expect.objectContaining({ todo_status: null })));
-    fireEvent.click(screen.getByRole('button', { name: /^Overdue/ }));
+    fireEvent.click(screen.getByRole('radio', { name: /^Overdue/ }));
     expect(await screen.findByText('Car service')).toBeInTheDocument();
     expect(screen.queryByText('Order printer ink')).not.toBeInTheDocument();
   });

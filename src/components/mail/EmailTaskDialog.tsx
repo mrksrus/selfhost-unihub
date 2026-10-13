@@ -2,11 +2,10 @@ import { useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Mail, Paperclip, Plus } from 'lucide-react';
 import { calendarApi, calendarQueryKeys, EVENT_COLOR_OPTIONS, formatEventTime, invalidateCalendarQueries, localDatetimeToIso, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
-import { quickDays, rememberTaskList, rememberedTaskList, taskLists, taskTimes, taskTitleFromEmail } from '@/lib/email-tasks';
-import type { Email } from '@/lib/mail-api';
+import { quickDays, rememberTaskList, rememberedTaskList, taskLists, taskTimes, taskTitleFromEmail, type TaskSource } from '@/lib/email-tasks';
 import { useToast } from '@/hooks/use-toast';
-import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
+import { Chip } from '@/components/ui/chips';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,8 +16,8 @@ type When = 'none' | 'today' | 'tomorrow' | 'pick';
 const NEW_LIST = 'new';
 
 interface Props {
-  /** The email to make a task from; null closes the dialog. */
-  email: Email | null;
+  /** The email (or draft) to make a task from; null closes the dialog. */
+  email: TaskSource | null;
   onClose: () => void;
   timezone: string | null;
   /** Called with the new task, so the open message can list it at once. */
@@ -27,20 +26,7 @@ interface Props {
 
 const emptyForm = { title: '', list: '', newList: '', when: 'none' as When, day: '', time: '', remind: true, note: '' };
 
-/** A pill the user picks from a short row of choices. */
-function Chip({ selected, onSelect, children, color, icon: Icon, className }: {
-  selected: boolean; onSelect: () => void; children: React.ReactNode; color?: string; icon?: typeof Plus; className?: string;
-}) {
-  return (
-    <button type="button" role="radio" aria-checked={selected} onClick={onSelect}
-      className={cn('inline-flex h-8 max-w-full items-center gap-1.5 rounded-full border px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-        selected ? 'border-foreground bg-foreground text-background' : 'border-border text-foreground hover:bg-muted', className)}>
-      {color && <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />}
-      {Icon && <Icon aria-hidden="true" className="-ml-1 h-3.5 w-3.5 shrink-0" />}
-      <span className="truncate">{children}</span>
-    </button>
-  );
-}
+
 
 /**
  * Makes a task from an email: a title taken from the subject, the list it goes
@@ -54,7 +40,7 @@ export function EmailTaskDialog({ email, onClose, timezone, onCreated }: Props) 
   const lists = taskLists(calendars.data ?? []);
   const [form, setForm] = useState(emptyForm);
   // Filled while rendering a newly opened email, so the dialog never shows an empty form first.
-  const [formEmail, setFormEmail] = useState<Email | null>(null);
+  const [formEmail, setFormEmail] = useState<TaskSource | null>(null);
   if (email !== formEmail) {
     setFormEmail(email);
     if (email) setForm({ ...emptyForm, title: taskTitleFromEmail(email), list: rememberedTaskList(lists) });
@@ -139,7 +125,7 @@ export function EmailTaskDialog({ email, onClose, timezone, onCreated }: Props) 
               <div className="min-w-0 flex-1">
                 <p className="truncate font-medium">{email.subject || '(No subject)'}</p>
                 <p className="truncate text-xs text-muted-foreground">
-                  {email.from_name || email.from_address} · {received}
+                  {email.is_draft ? 'Draft' : email.from_name || email.from_address} · {received}
                   {attachments > 0 && <span className="ml-2 inline-flex items-center gap-1"><Paperclip aria-hidden="true" className="h-3 w-3" />{attachments}</span>}
                 </p>
               </div>

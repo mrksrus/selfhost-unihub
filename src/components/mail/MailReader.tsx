@@ -79,7 +79,7 @@ export function MailReader({ email, loading = false, accounts, location, backLab
                 <Forward className="h-4 w-4 mr-2" />
                 Forward
               </Button>
-              <Button variant="outline" size="sm" onClick={onAddTask} disabled={loading || !!email.is_draft}>
+              <Button variant="outline" size="sm" onClick={onAddTask} disabled={loading}>
                 <ListTodo className="h-4 w-4 mr-2" />
                 Add task
               </Button>

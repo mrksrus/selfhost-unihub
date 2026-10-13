@@ -9,7 +9,8 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
-import { PageBody, PageHeader, PageShell, PanelGroup, PanelHeader, PanelItem } from '@/components/layout/PageShell';
+import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
+import { Chip, ChipGroup } from '@/components/ui/chips';
 import { RecordingPlayer } from '@/components/recordings/RecordingPlayer';
 
 const EMPTY_RECORDINGS: Recording[] = [];
@@ -98,24 +99,20 @@ const Music = () => {
   const list = view === 'chords' ? withChords : missingChords;
   const error = musicQuery.error || missingChordsQuery.error;
 
-  const panel = (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <PanelHeader title="Music" />
-      <PanelGroup>
-        {(Object.keys(VIEWS) as View[]).map(id => (
-          <PanelItem key={id} icon={VIEWS[id].icon} active={view === id} onSelect={() => selectView(id)}
-            count={(id === 'chords' ? withChords : missingChords).length} countLabel="songs" countTone={id === 'missing' ? 'warning' : 'default'}>
-            {VIEWS[id].label}
-          </PanelItem>
-        ))}
-      </PanelGroup>
-
-    </div>
-  );
-
   return (
-    <PageShell panel={panel} panelLabel="Music lists">
-      <PageHeader title="Music" scope={VIEWS[view].label} />
+    <PageShell>
+      <PageHeader title="Music">
+        <div className="px-4 pb-3 md:px-6">
+          <ChipGroup label="View">
+            {(Object.keys(VIEWS) as View[]).map(id => (
+              <Chip key={id} icon={VIEWS[id].icon} selected={view === id} onSelect={() => selectView(id)}
+                count={(id === 'chords' ? withChords : missingChords).length} countLabel="songs" countTone={id === 'missing' ? 'warning' : 'default'}>
+                {VIEWS[id].label}
+              </Chip>
+            ))}
+          </ChipGroup>
+        </div>
+      </PageHeader>
       <PageBody width="reading">
         {musicQuery.isLoading || missingChordsQuery.isLoading ? <LoadingState label="Loading music…" />
           : error ? <ErrorState title="Could not load music" error={error} onRetry={() => { void musicQuery.refetch(); void missingChordsQuery.refetch(); }} retrying={musicQuery.isFetching || missingChordsQuery.isFetching} />

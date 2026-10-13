@@ -234,15 +234,13 @@ export function MailContextMenu({ target, onClose, requestFlag, movableFolders, 
           <Star className={`h-4 w-4 ${target.email.is_starred ? 'fill-warning text-warning' : ''}`} />
           {target.email.is_starred ? 'Unstar' : 'Star'}
         </button>
-        {!target.email.is_draft && (
-          <button
-            className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
-            onClick={() => { onAddTask(target.email); onClose(); }}
-          >
-            <ListTodo className="h-4 w-4" />
-            Add task
-          </button>
-        )}
+        <button
+          className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
+          onClick={() => { onAddTask(target.email); onClose(); }}
+        >
+          <ListTodo className="h-4 w-4" />
+          Add task
+        </button>
         <div className="border-t border-border my-1" />
         {movableFolders
           .filter((folder) => folder.id !== target.email.folder)

@@ -10,7 +10,8 @@ import { useNotificationEventLink } from '@/hooks/use-notification-event-link';
 import { calendarApi, calendarQueryKeys, formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
-import { NarrowOnly, PageBody, PageHeader, PageShell, PanelGroup, PanelHeader, PanelItem } from '@/components/layout/PageShell';
+import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
+import { Chip, ChipGroup } from '@/components/ui/chips';
 import { TaskRow } from '@/components/todo/TaskRow';
 import { isOverdue } from '@/lib/tasks';
 import { EditTaskDialog, MoveTaskDialog, NewTaskDialog } from '@/components/todo/TaskDialogs';
@@ -116,36 +117,36 @@ const TodoPage = () => {
     : [{ id: view, tasks: groups[view] }];
   const total = sections.reduce((sum, section) => sum + section.tasks.length, 0);
 
-  const panel = (
-    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <PanelHeader title={title} action={<Button size="sm" onClick={() => setCreating(true)}><Plus aria-hidden="true" />New</Button>} />
-      <PanelGroup>
+  // Views and lists stay in sight on every window size; nothing folds away.
+  const filters = (
+    <div className="space-y-2 px-4 pb-3 md:px-6">
+      <ChipGroup label="View">
         {(Object.keys(VIEWS) as View[]).map(id => (
-          <PanelItem key={id} icon={VIEWS[id].icon} active={view === id} onSelect={() => selectView(id)}
+          <Chip key={id} icon={VIEWS[id].icon} selected={view === id} onSelect={() => selectView(id)}
             count={id === 'done' ? null : groups[id].length} countTone={id === 'overdue' ? 'warning' : 'default'} countLabel={id === 'done' ? undefined : 'tasks'}>
             {VIEWS[id].label}
-          </PanelItem>
+          </Chip>
         ))}
-      </PanelGroup>
+      </ChipGroup>
       {calendars.length > 1 && (
-        <PanelGroup label="Calendars" className="border-t border-border pt-3">
-          <PanelItem icon={CalendarDays} active={!calendarId} onSelect={() => setCalendarId(null)}>All calendars</PanelItem>
+        <ChipGroup label="List">
+          <Chip icon={CalendarDays} selected={!calendarId} onSelect={() => setCalendarId(null)}>All lists</Chip>
           {calendars.map(calendar => (
-            <PanelItem key={calendar.id} color={calendar.color} active={calendarId === calendar.id} onSelect={() => setCalendarId(calendar.id)}
+            <Chip key={calendar.id} color={calendar.color} selected={calendarId === calendar.id} onSelect={() => setCalendarId(calendar.id)}
               count={openCount(calendar.id)} countLabel="open tasks">
               {calendar.name}
-            </PanelItem>
+            </Chip>
           ))}
-        </PanelGroup>
+        </ChipGroup>
       )}
     </div>
   );
 
-  const scope = [VIEWS[view].label, calendarId && calendars.find(calendar => calendar.id === calendarId)?.name].filter(Boolean).join(' · ');
-
   return (
-    <PageShell panel={panel} panelLabel="Task lists">
-      <PageHeader title={title} scope={scope} actions={<NarrowOnly><Button size="sm" onClick={() => setCreating(true)} aria-label="New task"><Plus aria-hidden="true" /><span className="hidden sm:inline">New task</span></Button></NarrowOnly>} />
+    <PageShell>
+      <PageHeader title={title} actions={<Button size="sm" onClick={() => setCreating(true)} aria-label="New task"><Plus aria-hidden="true" /><span className="hidden sm:inline">New task</span></Button>}>
+        {filters}
+      </PageHeader>
 
       <PageBody width="reading">
         {tasksQuery.isLoading ? <LoadingState label="Loading tasks…" />

@@ -1,7 +1,7 @@
 import type { RefObject } from 'react';
 import { format } from 'date-fns';
 import {
-  Bold, Image as ImageIcon, Italic, Link as LinkIcon, List, ListOrdered, Loader2, Palette, Paperclip, Send, Underline, X,
+  Bold, Image as ImageIcon, Italic, Link as LinkIcon, List, ListOrdered, ListTodo, Loader2, Palette, Paperclip, Send, Underline, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -256,7 +256,17 @@ function ComposeAttachmentsSection({ compose, inputId }: { compose: MailCompose;
 }
 
 /** Desktop reply/forward editor below the open message. */
-export function MailInlineCompose({ compose }: { compose: MailCompose }) {
+/** "Add task" for the draft being written; the draft is saved first so the task can point at it. */
+function AddTaskFromDraft({ compose, onAddTask }: { compose: MailCompose; onAddTask?: () => void }) {
+  if (!onAddTask) return null;
+  return (
+    <Button type="button" variant="ghost" size="sm" className="mr-auto" onClick={onAddTask} disabled={compose.isDraftSaving || compose.isSending}>
+      <ListTodo aria-hidden="true" />Add task
+    </Button>
+  );
+}
+
+export function MailInlineCompose({ compose, onAddTask }: { compose: MailCompose; onAddTask?: () => void }) {
   return (
     <div className="max-h-[52vh] shrink-0 border-t border-border bg-card">
       <div className="mx-auto flex h-full max-w-4xl flex-col p-4">
@@ -297,7 +307,8 @@ export function MailInlineCompose({ compose }: { compose: MailCompose }) {
             </div>
             <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-inline" />
           </div>
-          <div className="flex shrink-0 justify-end gap-3 border-t border-border pt-3">
+          <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border pt-3">
+            <AddTaskFromDraft compose={compose} onAddTask={onAddTask} />
             <Button type="button" variant="secondary" onClick={() => compose.saveCurrentDraft({ includeAttachments: true })} disabled={compose.isDraftSaving || compose.isSending}>
               {compose.isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Save draft
@@ -332,8 +343,8 @@ export function MailInlineCompose({ compose }: { compose: MailCompose }) {
 }
 
 /** New message dialog, and reply/forward on phones. */
-export function MailComposeDialog({ compose, accounts, isMobile, onSelectAccount }: {
-  compose: MailCompose; accounts: MailAccount[]; isMobile: boolean; onSelectAccount: (accountId: string) => void;
+export function MailComposeDialog({ compose, accounts, isMobile, onSelectAccount, onAddTask }: {
+  compose: MailCompose; accounts: MailAccount[]; isMobile: boolean; onSelectAccount: (accountId: string) => void; onAddTask?: () => void;
 }) {
   return (
     <Dialog open={compose.isComposeOpen} onOpenChange={(open) => {
@@ -396,6 +407,7 @@ export function MailComposeDialog({ compose, accounts, isMobile, onSelectAccount
             <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-dialog" />
           </div>
           <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border bg-background px-4 py-3">
+            <AddTaskFromDraft compose={compose} onAddTask={onAddTask} />
             <Button type="button" variant="secondary" onClick={() => compose.saveCurrentDraft({ includeAttachments: true })} disabled={compose.isDraftSaving || compose.isSending}>
               {compose.isDraftSaving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
               Save draft

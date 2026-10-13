@@ -26,6 +26,15 @@ fields to tasks and events; nothing else changes.
   row in ToDo; a mail row shows a small task mark when one exists.
 - Offline reading shows the email summary on tasks too. Backups carry the link
   and the summary.
+- A draft can become a task too: **Add task** in the compose form (and in a
+  draft row's menu) saves the draft and links the task to it; the task shows
+  "Draft to …" and **Open draft**.
+
+### Changed
+
+- ToDo and Music no longer hide their views and lists in a side panel or
+  behind the title. The views (Open, Today, Overdue, …) and the lists are a row
+  of chips above the list on every window size.
 
 ## 0.19.4
 
