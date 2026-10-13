@@ -48,7 +48,7 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
   const email = query.data;
   const accountId = email?.mail_account_id ?? null;
   // The peek has its own reply editor; it never changes which account the Mail page shows.
-  const compose = useMailCompose({ activeMailAccountId: accountId, selectedAccount: accountId, setSelectedAccount: () => {}, isMobile: false });
+  const compose = useMailCompose({ activeMailAccountId: accountId, selectedAccount: accountId, isMobile: false });
   const writing = compose.isReplying;
 
   // Phones: drag the sheet down to set it aside.

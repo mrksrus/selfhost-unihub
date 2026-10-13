@@ -41,6 +41,11 @@ fields to tasks and events; nothing else changes.
 
 ### Changed
 
+- **Send from.** A new message written from All accounts starts from the
+  account chosen under Settings → General → Mail (the first account until you
+  choose one), so From is never empty. Choosing another account in the From
+  field of a message no longer switches the Mail page to that account. A reply
+  always comes from the account that received the message.
 - ToDo and Music no longer hide their views and lists in a side panel or
   behind the title. The views (Open, Today, Overdue, …) and the lists are a row
   of chips above the list on every window size.

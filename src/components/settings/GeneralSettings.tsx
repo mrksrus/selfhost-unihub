@@ -3,6 +3,7 @@ import { useTheme } from 'next-themes';
 import { Monitor, Moon, Sun } from 'lucide-react';
 import { DEFAULT_PREFERENCES, preferencesQueryKey, preferencesQueryOptions, savePreferences, type UserPreferences } from '@/lib/settings-api';
 import { useModules } from '@/hooks/use-modules';
+import { useMailAccounts } from '@/hooks/use-mail-queries';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { ErrorState } from '@/components/ui/page-states';
@@ -41,6 +42,8 @@ export default function GeneralSettings() {
   const { toast } = useToast();
   const { canAccess } = useModules();
   const preferencesQuery = useQuery(preferencesQueryOptions);
+  const mailEnabled = canAccess('/mail');
+  const senders = (useMailAccounts().data ?? []).filter(account => account.is_active && !account.disconnected_at);
   const preferences = preferencesQuery.data ?? DEFAULT_PREFERENCES;
 
   // A choice is saved as soon as it is made; a failure puts the old value back.
@@ -98,6 +101,21 @@ export default function GeneralSettings() {
           </Select>
         </SettingsRow>
       </SettingsSection>
+
+      {mailEnabled && senders.length > 0 && (
+        <SettingsSection title="Mail">
+          <SettingsRow label="Send from" description="For new messages written from All accounts. A reply comes from the account that received the message." htmlFor="send-from">
+            <Select value={senders.some(account => account.id === preferences.default_mail_account_id) ? preferences.default_mail_account_id : 'first'} disabled={unavailable}
+              onValueChange={value => change({ default_mail_account_id: value === 'first' ? '' : value })}>
+              <SelectTrigger id="send-from" className="w-full sm:w-80"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="first">First account ({senders[0].email_address})</SelectItem>
+                {senders.map(account => <SelectItem key={account.id} value={account.id}>{account.email_address}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </SettingsRow>
+        </SettingsSection>
+      )}
     </>
   );
 }

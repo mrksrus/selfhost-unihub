@@ -6,9 +6,11 @@ export type StartPage = 'mail' | 'calendar' | 'todo' | 'contacts' | 'recordings'
 export interface UserPreferences {
   email_link_behavior: 'mailto' | 'internal';
   default_start_page: StartPage;
+  /** The mail account new messages are sent from; '' means the first connected account. */
+  default_mail_account_id: string;
 }
 
-export const DEFAULT_PREFERENCES: UserPreferences = { email_link_behavior: 'mailto', default_start_page: 'mail' };
+export const DEFAULT_PREFERENCES: UserPreferences = { email_link_behavior: 'mailto', default_start_page: 'mail', default_mail_account_id: '' };
 
 export const preferencesQueryKey = ['settings', 'preferences'] as const;
 

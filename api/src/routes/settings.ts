@@ -22,6 +22,8 @@ type Input = Record<string, unknown>;
 const USER_SETTING_DEFAULTS: Record<string, string> = {
   email_link_behavior: 'mailto',
   default_start_page: 'mail',
+  /** The account new messages are sent from; empty means the first account. */
+  default_mail_account_id: '',
 };
 
 const USER_SETTING_ALLOWED_VALUES: Record<string, Set<string>> = {
@@ -53,6 +55,10 @@ async function setUserPreferences(userId: string, input: Input = {}) {
     const allowedValues = USER_SETTING_ALLOWED_VALUES[key];
     if (allowedValues && !allowedValues.has(normalizedValue)) {
       return { error: `Invalid value for ${key}`, status: 400 };
+    }
+    if (key === 'default_mail_account_id' && normalizedValue) {
+      const [owned] = await db.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE AND disconnected_at IS NULL', [normalizedValue, userId]);
+      if (!owned.length) return { error: 'Choose one of your connected mail accounts', status: 400 };
     }
     updates[key] = normalizedValue;
   }

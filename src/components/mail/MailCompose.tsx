@@ -344,9 +344,10 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
 }
 
 /** New message dialog, and reply/forward on phones. */
-export function MailComposeDialog({ compose, accounts, isMobile, onSelectAccount, onAddTask }: {
-  compose: MailCompose; accounts: MailAccount[]; isMobile: boolean; onSelectAccount: (accountId: string) => void; onAddTask?: () => void;
+export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
+  compose: MailCompose; accounts: MailAccount[]; isMobile: boolean; onAddTask?: () => void;
 }) {
+  const senders = accounts.filter(account => account.is_active && !account.disconnected_at);
   return (
     <Dialog open={compose.isComposeOpen} onOpenChange={(open) => {
       if (open) compose.openCompose();
@@ -365,15 +366,12 @@ export function MailComposeDialog({ compose, accounts, isMobile, onSelectAccount
           <div className="shrink-0 space-y-4 px-4 py-3">
             <div className="space-y-2">
               <Label>From</Label>
-              <Select
-                value={compose.activeMailAccountId || ''}
-                onValueChange={(value) => onSelectAccount(value)}
-              >
-                <SelectTrigger>
+              <Select value={compose.fromAccountId || ''} onValueChange={value => compose.setFromAccount(value)}>
+                <SelectTrigger aria-label="From">
                   <SelectValue placeholder="Select account" />
                 </SelectTrigger>
                 <SelectContent>
-                  {accounts.map((account) => (
+                  {senders.map((account) => (
                     <SelectItem key={account.id} value={account.id}>
                       {account.email_address}
                     </SelectItem>

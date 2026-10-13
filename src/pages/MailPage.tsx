@@ -67,7 +67,7 @@ const MailPage = () => {
   });
   const { refreshSettledEmail, supersedeRefresh } = useMailReaderRefresh(selectedEmail?.id, setSelectedEmail);
   const accountEditor = useMailAccountEditor();
-  const compose = useMailCompose({ activeMailAccountId, selectedAccount, setSelectedAccount, isMobile });
+  const compose = useMailCompose({ activeMailAccountId, selectedAccount, isMobile });
   const accountRemoval = useMailAccountRemoval(() => setSelectedAccount(ALL_ACCOUNTS));
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
   const [taskEmail, setTaskEmail] = useState<TaskSource | null>(null);
@@ -127,7 +127,7 @@ const MailPage = () => {
     catch (error) { toast({ title: 'Could not save the draft', description: error instanceof Error ? error.message : undefined, variant: 'destructive' }); return; }
     const id = draft?.id ?? compose.activeDraftId;
     if (!id) { toast({ title: 'Write something first', description: 'The draft is saved so the task can lead back to it.' }); return; }
-    const account = accounts.find(entry => entry.id === compose.activeMailAccountId);
+    const account = accounts.find(entry => entry.id === compose.fromAccountId);
     setTaskEmail({ id, is_draft: true, subject: compose.composeForm.subject, from_name: account?.display_name ?? null, from_address: account?.email_address ?? '',
       received_at: new Date().toISOString(), attachments: draft?.attachments ?? compose.existingDraftAttachments });
   };
@@ -238,7 +238,7 @@ const MailPage = () => {
 
       <MailComposeDialogs compose={compose} />
 
-      <MailComposeDialog compose={compose} accounts={accounts} isMobile={isMobile} onSelectAccount={setSelectedAccount} onAddTask={addTaskFromDraft} />
+      <MailComposeDialog compose={compose} accounts={accounts} isMobile={isMobile} onAddTask={addTaskFromDraft} />
 
     </div>
     </PageShell>

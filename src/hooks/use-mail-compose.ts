@@ -7,6 +7,8 @@ import { invalidateMailQueries, type Email, type EmailAttachment } from '@/lib/m
 import { contactsQueryOptions } from '@/lib/contacts-api';
 import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { useToast } from '@/hooks/use-toast';
+import { useMailAccounts } from '@/hooks/use-mail-queries';
+import { preferencesQueryOptions } from '@/lib/settings-api';
 import {
   formatRecipient, getContactDisplayName,
   type ComposeAttachment, type ComposeForm, type ComposeMode, type ContactEmailSuggestion,
@@ -30,11 +32,10 @@ const fileToBase64 = (file: File) =>
   });
 
 interface ComposeOptions {
-  /** The real account that sends and owns drafts; virtual views (all, legacy) have none. */
+  /** The account in view, which a new message starts from; virtual views (all, legacy) have none. */
   activeMailAccountId: string | null;
   /** The selected view, including virtual ones. Only restarts the autosave timer. */
   selectedAccount: string | null;
-  setSelectedAccount: (value: string | null) => void;
   isMobile: boolean;
 }
 
@@ -42,11 +43,21 @@ interface ComposeOptions {
  * Compose, reply, forward and draft state. The dialog (new messages and
  * mobile) and the desktop inline reply share this one state.
  */
-export function useMailCompose({ activeMailAccountId, selectedAccount, setSelectedAccount, isMobile }: ComposeOptions) {
+export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile }: ComposeOptions) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [isComposeOpen, setIsComposeOpen] = useState(false);
+  // The account a message is sent from. It starts as the account in view; in a
+  // combined view it is the one chosen in Settings, else the first connected
+  // one. A reply always comes from the account that received the message.
+  // Choosing another account here never changes what the Mail page shows.
+  const { data: accounts = [] } = useMailAccounts();
+  const preferredAccountId = useQuery(preferencesQueryOptions).data?.default_mail_account_id ?? '';
+  const [chosenAccountId, setChosenAccountId] = useState<string | null>(null);
+  const connected = (id: string | null | undefined) => !!id && accounts.some(account => account.id === id && account.is_active && !account.disconnected_at);
+  const fromAccountId = chosenAccountId ?? activeMailAccountId
+    ?? (connected(preferredAccountId) ? preferredAccountId : accounts.find(account => account.is_active && !account.disconnected_at)?.id ?? null);
   const [composeMode, setComposeMode] = useState<ComposeMode>('new');
   const [isReplying, setIsReplying] = useState(false);
   const [composeForm, setComposeForm] = useState<ComposeForm>({
@@ -124,10 +135,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
       subject: draft.subject || '',
       body: draft.body_html || (draft.body_text ? plainTextToHtml(draft.body_text) : ''),
     });
-    setSelectedAccount(draft.mail_account_id);
+    setChosenAccountId(draft.mail_account_id);
     setIsReplying(false);
     setIsComposeOpen(true);
-  }, [setSelectedAccount]);
+  }, []);
 
   const addComposeFiles = (files: FileList | File[]) => {
     const incomingFiles = Array.from(files || []);
@@ -238,6 +249,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
     setDraftSavedAt(null);
     setIsAttachmentDragOver(false);
     setIsReplying(false);
+    setChosenAccountId(null);
   };
 
   const closeComposeFlow = (options: { force?: boolean } = {}) => {
@@ -265,9 +277,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
     setActiveDraftId(null);
     setAttachmentsDirty(false);
     setIsComposeDirty(false);
-    if (!activeMailAccountId) {
-      setSelectedAccount(email.mail_account_id);
-    }
+    setChosenAccountId(email.mail_account_id);
     const quoted = `<p><strong>${mode === 'reply' ? 'Original Message' : 'Forwarded Message'}</strong><br>From: ${escapeHtml(email.from_name || email.from_address)}<br>Date: ${escapeHtml(format(new Date(email.received_at), 'PPpp'))}</p><blockquote>${plainTextToHtml(email.body_text || '')}</blockquote>`;
     setComposeForm({
       to: mode === 'reply' ? email.from_address : '',
@@ -321,7 +331,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
     ), [composeAttachments]);
 
   const saveCurrentDraft = useCallback(async (options: { includeAttachments?: boolean; quiet?: boolean } = {}) => {
-    if (!activeMailAccountId) {
+    if (!fromAccountId) {
       if (!options.quiet) toast({ title: 'Please select an account before saving a draft', variant: 'destructive' });
       return null;
     }
@@ -341,7 +351,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
         existing_attachment_ids?: string[];
         attachments?: AttachmentPayload;
       } = {
-        account_id: activeMailAccountId,
+        account_id: fromAccountId,
         to: composeForm.to,
         subject: composeForm.subject,
         body: composeForm.body || '<p></p>',
@@ -393,12 +403,12 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
     composeForm,
     existingDraftAttachments,
     queryClient,
-    activeMailAccountId,
+    fromAccountId,
     toast,
   ]);
 
   useEffect(() => {
-    if (!isComposeDirty || !activeMailAccountId) return;
+    if (!isComposeDirty || !fromAccountId) return;
     if (!isComposeOpen && !isReplying) return;
     if (!isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length)) return;
 
@@ -418,7 +428,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
     isReplying,
     saveCurrentDraft,
     selectedAccount,
-    activeMailAccountId,
+    fromAccountId,
   ]);
 
   const deleteDraftById = async (draftId: string) => {
@@ -471,7 +481,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
 
   const handleSendEmail = async (e: FormEvent) => {
     e.preventDefault();
-    if (!activeMailAccountId) {
+    if (!fromAccountId) {
       toast({ title: 'Please select an account', variant: 'destructive' });
       return;
     }
@@ -499,7 +509,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
       const attachmentPayload = await buildAttachmentPayload();
 
       sendEmailMutation.mutate({
-        account_id: activeMailAccountId,
+        account_id: fromAccountId,
         to: composeForm.to,
         subject: composeForm.subject.trim() || '(No subject)',
         body: composeForm.body || '<p></p>',
@@ -517,7 +527,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, setSelect
 
   return {
     isComposeOpen, openCompose: () => setIsComposeOpen(true), composeMode, isReplying,
-    composeForm, updateComposeForm, activeMailAccountId,
+    composeForm, updateComposeForm, fromAccountId, setFromAccount: setChosenAccountId,
     focusedRecipientInput, setFocusedRecipientInput, replaceActiveRecipient, contactEmailSuggestions,
     composeAttachments, existingDraftAttachments, isAttachmentDragOver, setIsAttachmentDragOver,
     addComposeFiles, removeComposeAttachment, removeExistingDraftAttachment, handleComposeAttachmentInput,
