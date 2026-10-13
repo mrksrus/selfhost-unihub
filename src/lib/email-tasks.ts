@@ -37,8 +37,10 @@ export const emailPath = (source: Pick<SourceEmail, 'email_id'>) => `/mail?email
 export const senderName = (source: Pick<SourceEmail, 'from_name' | 'from_address' | 'draft' | 'to'>) =>
   source.draft ? `Draft${source.to ? ` to ${source.to}` : ''}` : source.from_name || source.from_address;
 
-/** Lists a task can go to: the user's own calendars, never a server's. */
-export const taskLists = (calendars: CalendarCalendar[]) => calendars.filter(calendar => calendar.account_provider === 'local' && !calendar.read_only);
+/** The user's own writable calendars, never a server's. */
+export const localCalendars = (calendars: CalendarCalendar[]) => calendars.filter(calendar => calendar.account_provider === 'local' && !calendar.read_only);
+/** Lists a task can go to: local calendars that show in ToDo, so the task's link from the email finds it there. */
+export const taskLists = (calendars: CalendarCalendar[]) => localCalendars(calendars).filter(calendar => calendar.auto_todo_enabled);
 
 const LAST_LIST_KEY = 'email-task-list';
 export function rememberTaskList(id: string) {
@@ -52,8 +54,12 @@ export function rememberedTaskList(lists: CalendarCalendar[]) {
 
 /** Day keys ("2026-10-13") for the quick date choices, in the user's time zone. */
 export function quickDays(timezone: string | null, now = new Date()) {
-  const day = (offset: number) => formatEventTime(new Date(now.getTime() + offset * 86_400_000).toISOString(), 'yyyy-MM-dd', timezone);
-  return { today: day(0), tomorrow: day(1) };
+  const today = formatEventTime(now.toISOString(), 'yyyy-MM-dd', timezone);
+  if (!today) return { today, tomorrow: '' };
+  // The next calendar date, not now + 24 h: a day is 23 or 25 hours long when the clocks change.
+  const [year, month, date] = today.split('-').map(Number);
+  const tomorrow = new Date(Date.UTC(year, month - 1, date + 1)).toISOString().slice(0, 10);
+  return { today, tomorrow };
 }
 
 /** The task's calendar times from a day and an optional "HH:mm". A day alone is an all-day task reminded in the morning. */

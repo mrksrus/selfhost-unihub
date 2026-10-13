@@ -1,8 +1,9 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import { DEFAULT_PREFERENCES } from '@/lib/settings-api';
+import { ACCENTS, accentForeground, contrastRatio } from '@/lib/accent';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
 import { PreferenceAccent } from '@/components/theme/PreferenceAccent';
 import AppearanceSettings from '@/components/settings/AppearanceSettings';
@@ -44,6 +45,40 @@ describe('appearance settings', () => {
     vi.mocked(api.get).mockResolvedValue({ data: { preferences: { ...DEFAULT_PREFERENCES, accent_color: 'teal' } } });
     show();
     await waitFor(() => expect(document.documentElement.style.getPropertyValue('--accent')).toBe('172 66% 50%'));
+    // White on the dark theme's bright teal would be illegible; buttons and selected items use black.
+    expect(document.documentElement.style.getPropertyValue('--primary-foreground')).toBe('0 0% 0%');
+    expect(document.documentElement.style.getPropertyValue('--accent-foreground')).toBe('0 0% 0%');
     expect(screen.getByRole('radio', { name: 'Teal' })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('two quick choices keep the later one, whichever save answers last', async () => {
+    const answers: Array<() => void> = [];
+    vi.mocked(api.put).mockImplementation((_path: string, body: unknown) =>
+      new Promise(resolve => { answers.push(() => resolve({ data: { preferences: body } })); }));
+    show();
+    const violet = await screen.findByRole('radio', { name: 'Violet' });
+    await waitFor(() => expect(violet).toBeEnabled());
+
+    fireEvent.click(violet);
+    await waitFor(() => expect(violet).toHaveAttribute('aria-checked', 'true'));
+    fireEvent.click(screen.getByRole('radio', { name: 'Teal' }));
+    await waitFor(() => expect(answers).toHaveLength(2));
+
+    answers[1]();
+    await waitFor(() => expect(document.documentElement.style.getPropertyValue('--primary')).toBe('172 66% 50%'));
+    await act(async () => { answers[0](); await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(screen.getByRole('radio', { name: 'Teal' })).toHaveAttribute('aria-checked', 'true');
+    expect(document.documentElement.style.getPropertyValue('--primary')).toBe('172 66% 50%');
+  });
+});
+
+describe('accent colours', () => {
+  it('every accent keeps text on it legible (WCAG AA, 4.5:1) in both themes', () => {
+    for (const accent of ACCENTS) {
+      for (const dark of [false, true]) {
+        const background = dark ? accent.dark : accent.light;
+        expect(contrastRatio(background, accentForeground(accent.id, dark)), `${accent.id} ${dark ? 'dark' : 'light'}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
   });
 });

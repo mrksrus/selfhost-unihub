@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { AlertCircle, CalendarClock, CalendarDays, CheckCircle2, Inbox, ListTodo, Plus, Sun } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
 import { useModules } from '@/hooks/use-modules';
@@ -56,6 +56,8 @@ const TodoPage = () => {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<CalendarEvent | null>(null);
   const [moving, setMoving] = useState<CalendarEvent | null>(null);
+  // A task linked from an email that ToDo does not list: its list is hidden from ToDo.
+  const [hiddenTask, setHiddenTask] = useState<string | null>(null);
   const actions = useTaskActions();
 
   const tasksQuery = useQuery({
@@ -73,10 +75,16 @@ const TodoPage = () => {
     setParams(next, { replace: true });
   }, [params, setParams]);
   // An email's task list links here; the task opens in the view it belongs to.
+  const { data: taskList, error: tasksError, isFetching: tasksFetching, isFetchedAfterMount: tasksFresh, refetch: refetchTasks } = tasksQuery;
   useEffect(() => {
     const taskId = params.get('task');
-    if (!taskId || !tasksQuery.data) return;
-    const linked = tasksQuery.data.find(task => task.id === taskId);
+    if (!taskId || !taskList) return;
+    const linked = taskList.find(task => task.id === taskId);
+    // A cached list can predate the task; only a fresh answer proves it is not listed.
+    if (!linked && (!tasksFresh || tasksFetching || tasksError)) {
+      if (!tasksFresh && !tasksFetching) void refetchTasks();
+      return;
+    }
     const next = new URLSearchParams(params);
     next.delete('task');
     if (linked) {
@@ -85,8 +93,9 @@ const TodoPage = () => {
       setOpenId(taskId);
       linkedTask.current = taskId;
     }
+    setHiddenTask(linked ? null : taskId);
     setParams(next, { replace: true });
-  }, [params, setParams, tasksQuery.data]);
+  }, [params, setParams, taskList, tasksError, tasksFetching, tasksFresh, refetchTasks]);
   // Once the linked task's row is open, bring it into view.
   const linkedTask = useRef<string | null>(null);
   useEffect(() => {
@@ -105,6 +114,7 @@ const TodoPage = () => {
     if (next === 'open') nextParams.delete('view'); else nextParams.set('view', next);
     setParams(nextParams, { replace: true });
     setOpenId(null);
+    setHiddenTask(null);
   };
 
   const sections: { id: string; label?: string; tone?: 'warning'; tasks: CalendarEvent[] }[] = view === 'open'
@@ -149,6 +159,12 @@ const TodoPage = () => {
       </PageHeader>
 
       <PageBody width="reading">
+        {hiddenTask && (
+          <p className="mb-4 text-sm text-muted-foreground">
+            This task is in a list hidden from ToDo.{' '}
+            <Link to={`/calendar?event=${encodeURIComponent(hiddenTask)}`} className="rounded-sm font-medium text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Open in Calendar</Link>
+          </p>
+        )}
         {tasksQuery.isLoading ? <LoadingState label="Loading tasks…" />
           : tasksQuery.error ? <ErrorState title="Could not load tasks" error={tasksQuery.error} onRetry={() => void tasksQuery.refetch()} retrying={tasksQuery.isFetching} />
           : total === 0 ? (

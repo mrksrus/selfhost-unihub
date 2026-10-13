@@ -2,7 +2,7 @@ import { useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Mail, Paperclip, Plus } from 'lucide-react';
 import { calendarApi, calendarQueryKeys, EVENT_COLOR_OPTIONS, formatEventTime, invalidateCalendarQueries, localDatetimeToIso, type CalendarCalendar, type CalendarEvent } from '@/lib/calendar-api';
-import { quickDays, rememberTaskList, rememberedTaskList, taskLists, taskTimes, taskTitleFromEmail, type TaskSource } from '@/lib/email-tasks';
+import { localCalendars, quickDays, rememberTaskList, rememberedTaskList, taskLists, taskTimes, taskTitleFromEmail, type TaskSource } from '@/lib/email-tasks';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Chip } from '@/components/ui/chips';
@@ -54,10 +54,11 @@ export function EmailTaskDialog({ email, onClose, timezone, onCreated }: Props) 
   const days = quickDays(timezone);
   const dated = form.when !== 'none';
   const chosenDay = form.when === 'today' ? days.today : form.when === 'tomorrow' ? days.tomorrow : form.when === 'pick' ? form.day : '';
-  const localAccount = lists[0]?.account_id;
+  // The local account still takes new lists when all its lists are hidden from ToDo.
+  const localAccount = localCalendars(calendars.data ?? [])[0]?.account_id;
 
   const createList = useMutation({
-    mutationFn: (name: string) => calendarApi.createCalendar({ account_id: localAccount!, name, color: EVENT_COLOR_OPTIONS[lists.length % EVENT_COLOR_OPTIONS.length].value }),
+    mutationFn: (name: string) => calendarApi.createCalendar({ account_id: localAccount!, name, auto_todo_enabled: true, color: EVENT_COLOR_OPTIONS[lists.length % EVENT_COLOR_OPTIONS.length].value }),
     onSuccess: (list: CalendarCalendar) => {
       client.setQueryData<CalendarCalendar[]>(calendarQueryKeys.calendars, previous => [...(previous ?? []), { ...list, account_provider: 'local' }]);
       void client.invalidateQueries({ queryKey: calendarQueryKeys.calendars });

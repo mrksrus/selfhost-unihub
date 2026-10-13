@@ -140,6 +140,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (version !== authVersion.current) return;
     if (saved && saved.user.id !== nextUser.id) await clearOfflineData();
     if (version !== authVersion.current) return;
+    // The server just answered; an earlier outage must not outlive this session.
+    setServerUnavailable(false);
     setOfflineAccount(nextUser.id);
     setOfflineMode(false);
     setIsOffline(false);
@@ -237,6 +239,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
     setSession(null);
     setLoading(false);
+    setServerUnavailable(false);
     try {
       try { await revokeDevicePushSubscription(); } catch { /* Still complete local logout. */ }
       await api.post('/auth/signout');

@@ -44,6 +44,22 @@ describe('a server that gives no answer', () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
+  it('an outage ends with a sign-in; a later sign-out leads to the sign-in page, not the waiting screen', async () => {
+    vi.spyOn(api, 'get').mockResolvedValue({ error: 'Request failed (502 Bad Gateway).', status: 502 });
+    vi.spyOn(api, 'post').mockImplementation(async (path: string) =>
+      path === '/auth/signin' ? { data: { user: { id: 'A', email: 'a@example.com' }, csrfToken: 'token' } } : { data: {} });
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider });
+    await waitFor(() => expect(result.current.serverUnavailable).toBe(true));
+
+    await act(async () => { await result.current.signIn('a@example.com', 'secret'); });
+    expect(result.current.user?.id).toBe('A');
+    expect(result.current.serverUnavailable).toBe(false);
+
+    await act(async () => { await result.current.signOut(); });
+    expect(result.current.user).toBeNull();
+    expect(result.current.serverUnavailable).toBe(false);
+  });
+
   it('a 401 is a sign-out, not an unavailable server', async () => {
     vi.spyOn(api, 'get').mockResolvedValueOnce({ error: 'Unauthorized', status: 401 });
     const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider });

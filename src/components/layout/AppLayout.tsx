@@ -19,10 +19,13 @@ const SERVER_RETRY_MS = 10_000;
 
 /** Shown instead of the sign-in page while the server gives no answer; retries on its own. */
 function ServerUnavailable({ onRetry, retrying }: { onRetry: () => Promise<void>; retrying: boolean }) {
+  // Wait for the pending check to settle before scheduling the next: a new
+  // check aborts the previous one, so a slow server would never get to answer.
   useEffect(() => {
-    const timer = window.setInterval(() => { void onRetry(); }, SERVER_RETRY_MS);
-    return () => window.clearInterval(timer);
-  }, [onRetry]);
+    if (retrying) return;
+    const timer = window.setTimeout(() => { void onRetry(); }, SERVER_RETRY_MS);
+    return () => window.clearTimeout(timer);
+  }, [onRetry, retrying]);
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-6">
       <EmptyState icon={ServerOff} title="UniHub's server is not answering"

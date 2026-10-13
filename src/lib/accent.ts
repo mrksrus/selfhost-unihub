@@ -23,7 +23,7 @@ export const ACCENTS: readonly Accent[] = [
   { id: 'indigo', label: 'Indigo', light: '243 75% 59%', dark: '239 84% 67%', darkRing: '234 89% 74%' },
   { id: 'violet', label: 'Violet', light: '262 83% 58%', dark: '258 90% 66%', darkRing: '255 92% 76%' },
   { id: 'pink', label: 'Pink', light: '333 71% 51%', dark: '330 81% 60%', darkRing: '329 86% 70%' },
-  { id: 'teal', label: 'Teal', light: '175 84% 32%', dark: '172 66% 50%', darkRing: '171 77% 64%' },
+  { id: 'teal', label: 'Teal', light: '175 84% 28%', dark: '172 66% 50%', darkRing: '171 77% 64%' },
   { id: 'green', label: 'Green', light: '142 72% 29%', dark: '142 71% 45%', darkRing: '142 69% 58%' },
 ];
 
@@ -47,15 +47,42 @@ export function storeAccent(id: AccentId) {
   try { localStorage.setItem(STORAGE_KEY, id); } catch { /* Storage may be disabled. */ }
 }
 
-/** '221 83% 53%' to '#2563eb', for places that need a plain colour (theme-color, the icon). */
-export function hslChannelsToHex(channels: string) {
+/** '221 83% 53%' to 0-255 sRGB channels. */
+function hslChannelsToRgb(channels: string) {
   const [h, s, l] = channels.split(/\s+/).map(part => Number.parseFloat(part));
   const sat = s / 100, light = l / 100;
   const chroma = (1 - Math.abs(2 * light - 1)) * sat;
   const x = chroma * (1 - Math.abs(((h / 60) % 2) - 1));
   const m = light - chroma / 2;
   const [r, g, b] = h < 60 ? [chroma, x, 0] : h < 120 ? [x, chroma, 0] : h < 180 ? [0, chroma, x] : h < 240 ? [0, x, chroma] : h < 300 ? [x, 0, chroma] : [chroma, 0, x];
-  return '#' + [r, g, b].map(channel => Math.round((channel + m) * 255).toString(16).padStart(2, '0')).join('');
+  return [r, g, b].map(channel => Math.round((channel + m) * 255));
+}
+
+/** '221 83% 53%' to '#2563eb', for places that need a plain colour (theme-color, the icon). */
+export function hslChannelsToHex(channels: string) {
+  return '#' + hslChannelsToRgb(channels).map(channel => channel.toString(16).padStart(2, '0')).join('');
+}
+
+/** WCAG 2 contrast ratio between two colours given as HSL channels. */
+export function contrastRatio(a: string, b: string) {
+  const luminance = (channels: string) => {
+    const [r, g, b] = hslChannelsToRgb(channels).map(value => {
+      const c = value / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+const WHITE = '0 0% 100%';
+const BLACK = '0 0% 0%';
+
+/** Text and icons on the accent: white as in the stylesheet, black where white would not be legible (WCAG AA). */
+export function accentForeground(id: AccentId, dark: boolean) {
+  const accent = accentById(id);
+  return contrastRatio(dark ? accent.dark : accent.light, WHITE) >= 4.5 ? WHITE : BLACK;
 }
 
 /** The UniHub mark with the accent, as the page icon. */
@@ -75,10 +102,13 @@ export function applyAccent(id: AccentId, dark: boolean) {
   const accent = accentById(id);
   const root = document.documentElement.style;
   if (id === DEFAULT_ACCENT) {
-    for (const name of ['--primary', '--accent', '--ring', '--calendar-color']) root.removeProperty(name);
+    for (const name of ['--primary', '--primary-foreground', '--accent', '--accent-foreground', '--ring', '--calendar-color']) root.removeProperty(name);
   } else {
+    const foreground = accentForeground(id, dark);
     root.setProperty('--primary', dark ? accent.dark : accent.light);
+    root.setProperty('--primary-foreground', foreground);
     root.setProperty('--accent', dark ? accent.dark : accent.light);
+    root.setProperty('--accent-foreground', foreground);
     root.setProperty('--ring', dark ? accent.darkRing : accent.light);
     root.setProperty('--calendar-color', dark ? accent.darkRing : accent.light);
   }

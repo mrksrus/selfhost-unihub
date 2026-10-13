@@ -1,6 +1,6 @@
 import { useTheme } from 'next-themes';
 import { Check, Monitor, Moon, Sun } from 'lucide-react';
-import { ACCENTS, type AccentId } from '@/lib/accent';
+import { ACCENTS, accentForeground, type AccentId } from '@/lib/accent';
 import { usePreferences } from '@/hooks/use-preferences';
 import { cn } from '@/lib/utils';
 import { ErrorState } from '@/components/ui/page-states';
@@ -34,9 +34,9 @@ function AccentPicker({ value, onChange, disabled }: { value: AccentId; onChange
         return (
           <button key={accent.id} type="button" role="radio" aria-checked={selected} aria-label={accent.label} title={accent.label} disabled={disabled}
             onClick={() => onChange(accent.id)}
-            className={cn('tap-area flex h-8 w-8 items-center justify-center rounded-full text-white transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50',
+            className={cn('tap-area flex h-8 w-8 items-center justify-center rounded-full transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50',
               selected ? 'scale-110 ring-2 ring-foreground ring-offset-2 ring-offset-background' : 'hover:scale-105')}
-            style={{ backgroundColor: `hsl(${dark ? accent.dark : accent.light})` }}>
+            style={{ backgroundColor: `hsl(${dark ? accent.dark : accent.light})`, color: `hsl(${accentForeground(accent.id, dark)})` }}>
             {selected && <Check aria-hidden="true" className="h-4 w-4" strokeWidth={3} />}
           </button>
         );

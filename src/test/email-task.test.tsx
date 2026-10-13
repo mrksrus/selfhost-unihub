@@ -3,14 +3,14 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
-import type { CalendarEvent } from '@/lib/calendar-api';
+import { calendarQueryKeys, type CalendarEvent } from '@/lib/calendar-api';
 import type { Email } from '@/lib/mail-api';
 import { EmailTaskDialog } from '@/components/mail/EmailTaskDialog';
 import { EmailTasks } from '@/components/mail/EmailTasks';
 import { TaskRow } from '@/components/todo/TaskRow';
 import TodoPage from '@/pages/TodoPage';
 import { useTaskActions } from '@/hooks/use-task-actions';
-import { taskTimes, taskTitleFromEmail } from '@/lib/email-tasks';
+import { quickDays, taskTimes, taskTitleFromEmail } from '@/lib/email-tasks';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/contexts/useAuth', () => ({ useAuth: () => ({ user: { id: 'owner', timezone: 'UTC' } }), useUserTimezone: () => 'UTC' }));
@@ -21,6 +21,7 @@ const lists = [
   { id: 'list-tasks', name: 'Tasks', color: '#2563eb', account_id: 'local-account', account_provider: 'local', read_only: false, is_visible: true, auto_todo_enabled: true },
   { id: 'list-pay', name: 'Payments', color: '#f59e0b', account_id: 'local-account', account_provider: 'local', read_only: false, is_visible: true, auto_todo_enabled: true },
   { id: 'cal-work', name: 'Work (server)', color: '#22c55e', account_id: 'caldav-account', account_provider: 'caldav', read_only: false, is_visible: true, auto_todo_enabled: true },
+  { id: 'list-archive', name: 'Archive', color: '#64748b', account_id: 'local-account', account_provider: 'local', read_only: false, is_visible: true, auto_todo_enabled: false },
 ];
 const email: Email = {
   id: 'email-7', mail_account_id: 'account-1', subject: 'Re: Fwd: Invoice 4711 for October', from_address: 'billing@power.example', from_name: 'Power Co',
@@ -35,8 +36,8 @@ const task = (patch: Partial<CalendarEvent> = {}): CalendarEvent => ({
   created_at: '2026-10-12T10:00:00.000Z', updated_at: '2026-10-12T10:00:00.000Z', subtasks: [], attendees: [], source_email: sourceEmail, ...patch,
 });
 
-function wrap(ui: React.ReactNode, path = '/mail') {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+function wrap(ui: React.ReactNode, path = '/mail', client = newClient()) {
   return render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[path]}>
     <Routes><Route path="/mail" element={ui} /><Route path="/todo" element={ui} /></Routes>
   </MemoryRouter></QueryClientProvider>);
@@ -73,6 +74,13 @@ describe('a task from an email', () => {
     expect(taskTimes('2026-10-14', '17:45')).toEqual({ start: '2026-10-14T17:45', end: '2026-10-14T18:15', allDay: false });
   });
 
+  it('offers the next calendar day as Tomorrow when the clocks change', () => {
+    // 00:30 in Vienna on the day the clocks go back; that day has 25 hours.
+    expect(quickDays('Europe/Vienna', new Date('2026-10-24T22:30:00Z'))).toEqual({ today: '2026-10-25', tomorrow: '2026-10-26' });
+    // 23:30 the evening before the clocks go forward; the next day has 23 hours.
+    expect(quickDays('Europe/Vienna', new Date('2026-03-28T22:30:00Z'))).toEqual({ today: '2026-03-28', tomorrow: '2026-03-29' });
+  });
+
   it('goes to the chosen list for tomorrow with a reminder and keeps the email', async () => {
     const onCreated = vi.fn(), onClose = vi.fn();
     wrap(<EmailTaskDialog email={email} onClose={onClose} timezone="UTC" onCreated={onCreated} />);
@@ -80,6 +88,8 @@ describe('a task from an email', () => {
     expect(within(dialog).getByLabelText('Title')).toHaveValue('Invoice 4711 for October');
     const listGroup = await within(dialog).findByRole('radiogroup', { name: 'List' });
     expect(within(listGroup).queryByRole('radio', { name: 'Work (server)' })).not.toBeInTheDocument();
+    // A list hidden from ToDo would hide the task the email links to.
+    expect(within(listGroup).queryByRole('radio', { name: 'Archive' })).not.toBeInTheDocument();
     fireEvent.click(within(listGroup).getByRole('radio', { name: 'Payments' }));
     fireEvent.click(within(dialog).getByRole('radio', { name: 'Tomorrow' }));
     expect(within(dialog).getByRole('switch', { name: /Remind me/ })).toBeChecked();
@@ -105,7 +115,7 @@ describe('a task from an email', () => {
     const name = within(dialog).getByLabelText('New list name');
     fireEvent.change(name, { target: { value: 'Reading' } });
     fireEvent.keyDown(name, { key: 'Enter' });
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/calendar/calendars', expect.objectContaining({ account_id: 'local-account', name: 'Reading' })));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/calendar/calendars', expect.objectContaining({ account_id: 'local-account', name: 'Reading', auto_todo_enabled: true })));
     await waitFor(() => expect(within(listGroup).getByRole('radio', { name: 'Reading' })).toBeChecked());
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add task' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/calendar/events', expect.objectContaining({ calendar_id: 'list-new', is_todo_only: true, reminders: null, source_email_id: 'email-7' })));
@@ -149,10 +159,20 @@ describe('a task from an email', () => {
     expect(within(section).getByRole('link', { name: /Read the terms/ })).toHaveTextContent('(done)');
   });
 
-  it('opens the linked task on the ToDo page and drops the link from the address', async () => {
-    wrap(<TodoPage />, '/todo?task=task-1');
+  it('opens the linked task on the ToDo page, waiting for a list older than the task', async () => {
+    const client = newClient();
+    // ToDo was opened before the task existed; its cached list does not have it yet.
+    client.setQueryData(calendarQueryKeys.list({ includeTodos: true, respectAutoTodo: true }), []);
+    wrap(<TodoPage />, '/todo?task=task-1', client);
     const details = await screen.findByLabelText('From email');
     expect(within(details).getByRole('button', { name: 'Show email' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Invoice 4711 for October/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByText(/hidden from ToDo/)).not.toBeInTheDocument();
+  });
+
+  it('says so when the linked task is in a list hidden from ToDo, and leads to the Calendar', async () => {
+    wrap(<TodoPage />, '/todo?task=task-archived');
+    expect(await screen.findByText(/This task is in a list hidden from ToDo/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open in Calendar' })).toHaveAttribute('href', '/calendar?event=task-archived');
   });
 });
