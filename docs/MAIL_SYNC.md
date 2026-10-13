@@ -67,6 +67,18 @@ join active mailboxes only, so their mail leaves the folder views and stays in
 All mail; nothing is deleted, and a later LIST that shows the folder again
 makes it active through `ensureMailbox`.
 
+Deleting a custom folder on the server (`DELETE /api/mail/folders/:slug?server=1`,
+`mail-folder-delete.ts`) stops the account's read jobs, sends IMAP DELETE and
+only then changes local rows, in one transaction. A login or connection failure,
+or a refusal, changes nothing; a DELETE reply with `NONEXISTENT` (or a "does not
+exist" reply for a folder the server no longer lists) counts as deleted. The
+mailbox is retired as above. An item filed there is removed only when its last
+present copy was in that mailbox; one still present in another active mailbox
+(a Gmail label, All Mail) is filed there and re-pointed to that copy. Drafts,
+items without a copy there, Legacy or cross-filed items and items with an
+unsettled writeback stay and move to Drafts or Inbox. A discovery LIST taken
+just before the DELETE can register the folder once more; the next one retires it.
+
 An item's provider address (`emails.remote_folder/uid/uidvalidity`) always
 names a copy the server still has: when a presence sweep proves the addressed
 copy absent while another active mailbox still holds the message, the sweep

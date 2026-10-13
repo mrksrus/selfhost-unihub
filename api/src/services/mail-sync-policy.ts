@@ -421,4 +421,5 @@ export {
   enqueuePrune,
   removeUnreferencedFiles,
   deleteEmailRows,
+  SETTLED_OPERATION_STATES,
 };

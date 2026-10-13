@@ -48,7 +48,10 @@ fields to tasks and events; nothing else changes.
   from the folder dialog. A folder that exists only in UniHub moves its
   messages and rules back to Inbox. A folder on the mail server is deleted
   together with its server copy and the messages in it, after you tick that
-  choice; if the server refuses, nothing changes in UniHub.
+  choice; if the server refuses, nothing changes in UniHub. A message the
+  server still has elsewhere (on Gmail, another label or All Mail) moves to
+  that folder; drafts, mail kept only in UniHub and messages with a change
+  still on its way to the server stay too and move to Drafts or Inbox.
 - **Attachments open in UniHub.** An attachment row in the reader (and in the
   email shown over a task) opens a viewer: images, PDFs (drawn by UniHub, so
   phones without a PDF viewer work too, with selectable text), plain text and
