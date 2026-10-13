@@ -4,7 +4,8 @@ import { prepareFolderReconciliation } from './services/mail-folder-reconciliati
 import http from 'http';
 import { PORT } from './config';
 import { db } from './state';
-import { initDatabase } from './services/database';
+import { initDatabase, poolStats } from './services/database';
+import { everyInterval } from './services/timers';
 import { schedulePeriodicMailWork, runMailServerDeletionPass } from './services/mail';
 import { runDueWritebacks } from './services/mail-writebacks';
 import { pruneFinishedJobs } from './services/mail-engine/runtime';
@@ -19,18 +20,24 @@ import { installShutdownHandler } from './services/server-events';
 import { idleSupervisor } from './services/mail-idle';
 import { getVapidKeys, processNotificationJobs } from './services/notifications';
 
-interface PoolStatistics {
-  _allConnections?: { length: number };
-  _freeConnections?: { length: number };
-  _connectionQueue?: { length: number };
-}
-
 // Wake recent discovery independently of historical backfill. The durable
 // scheduler coalesces due work; this timer is not the authority for its state.
 const MAIL_SYNC_INTERVAL_MS = 30 * 1000;
 const MAIL_SERVER_DELETE_INTERVAL_MS = 60 * 1000;
 let periodicMailSyncRunning = false;
-let periodicMailServerDeleteRunning = false;
+
+// Both are logged with their stack, so a container restart has a cause in its
+// log. A rejected promise nobody awaited does not end the process (Node's
+// default would): whatever produced it has already failed and been reported
+// on its own path. An exception outside any handler leaves unknown state, so
+// the process ends and the container restarts.
+process.on('unhandledRejection', reason => {
+  console.error('[PROCESS] Unhandled promise rejection:', reason instanceof Error ? reason.stack || reason.message : reason);
+});
+process.on('uncaughtException', error => {
+  console.error('[PROCESS] Uncaught exception, exiting:', error.stack || error.message);
+  process.exit(1);
+});
 
 async function start() {
   await initDatabase();
@@ -38,9 +45,8 @@ async function start() {
   // The Web Push identity is generated once, at startup rather than on first delivery.
   await getVapidKeys();
   await prepareFolderReconciliation();
-  const runNotifications = () => processNotificationJobs().catch(error => console.error('[NOTIFICATIONS] Worker failed:', (error as Error).message));
+  const runNotifications = everyInterval('NOTIFICATIONS', 30 * 1000, processNotificationJobs);
   void runNotifications();
-  setInterval(runNotifications, 30 * 1000);
   if (DISABLED_BACKUP_ROUTES.size) {
     await suspendPendingBackupJobs(db);
     console.log('[BACKUP] Creation and restore suspended; existing archives retained.');
@@ -82,7 +88,7 @@ async function start() {
         const job = await schedulePeriodicMailWork(account.id);
         if (job.started) job.promise.then((result: { success?: boolean; error?: unknown } | null | undefined) => {
           if (result?.success === false) console.error(`Failed to sync account ${account.id}:`, result.error || 'Unknown error');
-        });
+        }, (error: unknown) => console.error(`Failed to sync account ${account.id}:`, (error as Error).message));
       }
     } catch (error) {
       console.error('Periodic sync error:', error);
@@ -94,115 +100,54 @@ async function start() {
   // IDLE sessions start after the first pass has started the durable scheduler.
   setImmediate(() => schedulePeriodicMail().catch(error => console.error('[SYNC] Startup pass failed:', (error as Error).message))
     .finally(() => idleSupervisor.start()));
-  setInterval(schedulePeriodicMail, MAIL_SYNC_INTERVAL_MS);
+  everyInterval('SYNC', MAIL_SYNC_INTERVAL_MS, schedulePeriodicMail);
   // Re-enqueues due provider changes (with per-operation backoff) and nudges the
   // durable mail scheduler, which is the only worker that runs them.
-  const runWritebacks = () => runDueWritebacks().catch(error => console.error('[MAIL WRITEBACK] Due pass failed:', (error as Error).message));
-  setImmediate(runWritebacks);
-  setInterval(runWritebacks, 1000);
+  const runWritebacks = everyInterval('MAIL WRITEBACK', 1000, runDueWritebacks);
+  setImmediate(() => { void runWritebacks(); });
 
-  setInterval(async () => {
-    if (periodicMailServerDeleteRunning) {
-      return;
-    }
+  everyInterval('SERVER DELETE', MAIL_SERVER_DELETE_INTERVAL_MS, async () => {
+    const result = await runMailServerDeletionPass();
+    const processed = (result.accounts || []).reduce((sum: number, item: { accountId: string; processed?: number }) => sum + (item.processed || 0), 0);
+    if (processed > 0) console.log(`[SERVER DELETE] Periodic pass processed ${processed} queued message(s)`);
+  });
 
-    periodicMailServerDeleteRunning = true;
-    try {
-      const result = await runMailServerDeletionPass();
-      const processed = (result.accounts || []).reduce((sum: number, item: { accountId: string; processed?: number }) => sum + (item.processed || 0), 0);
-      if (processed > 0) {
-        console.log(`[SERVER DELETE] Periodic pass processed ${processed} queued message(s)`);
-      }
-    } catch (error) {
-      console.error('[SERVER DELETE] Periodic pass error:', (error as Error).message);
-    } finally {
-      periodicMailServerDeleteRunning = false;
-    }
-  }, MAIL_SERVER_DELETE_INTERVAL_MS);
-
-  // Clean up expired sessions every hour to prevent table bloat
-  setInterval(async () => {
-    try {
-      const [result] = await db.execute<ResultSetHeader>(
-        'DELETE FROM sessions WHERE expires_at < UTC_TIMESTAMP()'
-      );
-      if (result.affectedRows > 0) {
-        console.log(`[CLEANUP] Deleted ${result.affectedRows} expired session(s)`);
-      }
-    } catch (error) {
-      console.error('[CLEANUP] Error cleaning expired sessions:', (error as Error).message);
-    }
-  }, 60 * 60 * 1000); // 1 hour
+  // Expired sessions, every hour, so the table does not grow.
+  everyInterval('CLEANUP', 60 * 60 * 1000, async () => {
+    const [result] = await db.execute<ResultSetHeader>('DELETE FROM sessions WHERE expires_at < UTC_TIMESTAMP()');
+    if (result.affectedRows > 0) console.log(`[CLEANUP] Deleted ${result.affectedRows} expired session(s)`);
+  });
 
   // Finished mail engine jobs older than 7 days, in bounded batches.
-  const pruneMailJobs = async () => {
-    try {
-      const { deleted } = await pruneFinishedJobs();
-      if (deleted > 0) console.log(`[CLEANUP] Deleted ${deleted} finished mail engine job(s)`);
-    } catch (error) {
-      console.error('[CLEANUP] Error pruning mail engine jobs:', (error as Error).message);
-    }
-  };
-  setTimeout(pruneMailJobs, 60 * 1000).unref?.();
-  setInterval(pruneMailJobs, 60 * 60 * 1000);
+  const pruneMailJobs = everyInterval('CLEANUP', 60 * 60 * 1000, async () => {
+    const { deleted } = await pruneFinishedJobs();
+    if (deleted > 0) console.log(`[CLEANUP] Deleted ${deleted} finished mail engine job(s)`);
+  });
+  setTimeout(() => { void pruneMailJobs(); }, 60 * 1000).unref?.();
 
   // Each calendar account schedules its own next sync (next_sync_at); this
   // timer only picks up the accounts that are due. A restart interrupts runs.
   const { runCalendarSyncPass } = require('./services/calendar-sync') as typeof import('./services/calendar-sync');
   await db.execute("UPDATE calendar_accounts SET sync_status = 'pending' WHERE sync_status = 'syncing'")
     .catch(error => console.error('[CALENDAR] Could not reset interrupted syncs:', (error as Error).message));
-  const runCalendarSync = () => runCalendarSyncPass().catch((error: Error) => console.error('[CALENDAR] Sync pass failed:', (error as Error).message));
-  setTimeout(runCalendarSync, 20 * 1000).unref?.();
-  setInterval(runCalendarSync, 60 * 1000);
+  const runCalendarSync = everyInterval('CALENDAR', 60 * 1000, runCalendarSyncPass);
+  setTimeout(() => { void runCalendarSync(); }, 20 * 1000).unref?.();
 
-  setInterval(async () => {
-    try {
-      const deleted = await cleanupExpiredRecordingUploads();
-      if (deleted > 0) {
-        console.log(`[CLEANUP] Deleted ${deleted} expired recording upload(s)`);
-      }
-    } catch (error) {
-      console.error('[CLEANUP] Error cleaning expired recording uploads:', (error as Error).message);
+  everyInterval('CLEANUP', 60 * 60 * 1000, async () => {
+    const deleted = await cleanupExpiredRecordingUploads();
+    if (deleted > 0) console.log(`[CLEANUP] Deleted ${deleted} expired recording upload(s)`);
+  });
+
+  // Pool counts every 15 minutes, and every minute while work is queueing for
+  // a connection: a pile-up then shows in the log as it builds, not after it.
+  let poolTicks = 0;
+  everyInterval('DB POOL', 60 * 1000, () => {
+    const stats = poolStats();
+    const busy = stats.queued > 0 || stats.active >= stats.limit / 2;
+    if (busy || poolTicks++ % 15 === 0) {
+      (busy ? console.warn : console.log)(`[DB POOL] Total: ${stats.total}, Active: ${stats.active}, Free: ${stats.free}, Queued: ${stats.queued}${busy ? ' (busy)' : ''}`);
     }
-  }, 60 * 60 * 1000);
-
-  // Database connection pool health check and cleanup every 15 minutes
-  setInterval(async () => {
-    try {
-      // Test connection pool health with a simple query
-      await db.execute('SELECT 1');
-
-      // Get pool statistics (mysql2 pool internal structure)
-      const pool = db.pool as unknown as PoolStatistics;
-      if (pool && pool._allConnections) {
-        const totalConnections = pool._allConnections.length || 0;
-        const freeConnections = pool._freeConnections?.length || 0;
-        const activeConnections = totalConnections - freeConnections;
-        const queuedRequests = pool._connectionQueue?.length || 0;
-
-        console.log(`[DB POOL] Total: ${totalConnections}, Active: ${activeConnections}, Free: ${freeConnections}, Queued: ${queuedRequests}`);
-
-        // If we're using too many connections, log a warning (warn at 80% usage)
-        if (activeConnections > 40) {
-          console.warn(`[DB POOL] ⚠ High connection usage: ${activeConnections}/50 connections in use`);
-        }
-
-        // If we have many idle connections, we can let them timeout naturally
-        if (freeConnections > 8) {
-          console.log(`[DB POOL] Many idle connections (${freeConnections}), will timeout naturally`);
-        }
-      }
-    } catch (error) {
-      console.error('[DB POOL] Health check error:', (error as Error).message);
-      // Try to reconnect if connection is lost
-      try {
-        await db.execute('SELECT 1');
-        console.log('[DB POOL] Reconnection successful');
-      } catch (reconnectError) {
-        console.error('[DB POOL] Reconnection failed:', (reconnectError as Error).message);
-      }
-    }
-  }, 15 * 60 * 1000); // 15 minutes
+  });
 
   console.log('✓ Mail INBOX follow-up every 30 seconds (every 5 minutes while IMAP IDLE is up); folder discovery every 5 minutes');
   console.log(idleSupervisor.options.maxSessions > 0
@@ -211,7 +156,7 @@ async function start() {
   console.log('✓ Expired session cleanup enabled (every hour)');
   console.log('✓ Expired recording upload cleanup enabled (every hour)');
   console.log('✓ Finished mail engine job pruning enabled (every hour, older than 7 days)');
-  console.log('✓ Database connection pool health check enabled (every 15 minutes)');
+  console.log('✓ Database pool counts logged every 15 minutes, every minute while busy');
 }
 
 export {

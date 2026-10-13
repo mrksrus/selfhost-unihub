@@ -14,6 +14,9 @@ export interface AuthContextType {
   user: User | null;
   session: { authenticated: true } | null;
   loading: boolean;
+  /** The server gave no usable answer (restarting, busy, or the proxy failed); not a sign-out. */
+  serverUnavailable: boolean;
+  retrySession: () => Promise<void>;
   isOffline?: boolean;
   offlineSavedAt?: string;
   setUser: (user: User | null) => void;

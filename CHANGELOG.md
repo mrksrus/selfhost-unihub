@@ -38,6 +38,12 @@ fields to tasks and events; nothing else changes.
 - A draft can become a task too: **Add task** in the compose form (and in a
   draft row's menu) saves the draft and links the task to it; the task shows
   "Draft to …" and **Open draft**.
+- **Attachments open in UniHub.** An attachment row in the reader (and in the
+  email shown over a task) opens a viewer: images, PDFs (drawn by UniHub, so
+  phones without a PDF viewer work too, with selectable text), plain text and
+  CSV, HTML without scripts or remote images, audio and video. Previous and
+  next move through a message's attachments; the arrow keys do too. Other file
+  types offer Download, as before.
 
 ### Changed
 
@@ -49,6 +55,28 @@ fields to tasks and events; nothing else changes.
 - ToDo and Music no longer hide their views and lists in a side panel or
   behind the title. The views (Open, Today, Overdue, …) and the lists are a row
   of chips above the list on every window size.
+- On touch screens, small controls are easier to hit: icon buttons, the task
+  and message checkboxes, chips, menu and list rows get a larger tap area
+  without growing on screen or changing the layout for a mouse.
+
+### Fixed
+
+- **A busy server no longer looks like a sign-out, and no longer restarts.**
+  When the database was slow, the API's one-second and thirty-second timers
+  kept starting new runs on top of unfinished ones; each waited for a
+  database connection until the pool (50) was full and every request queued
+  behind them, which showed as "Loading UniHub…" for a long time. Timers now
+  skip a tick while the previous run is still going. A failure in the
+  periodic mail sync could also end the API process unnoticed, which
+  restarted the container; it is handled, and any such failure is now logged
+  with its cause. The container's health check reports a saturated pool as
+  busy (200) rather than as failed, so nothing restarts a server that is
+  merely working through a queue; the pool counts are logged every minute
+  while that lasts.
+- When the server gave no answer (restarting, busy, or the proxy answered
+  502), the app showed the sign-in page. It now says the server is not
+  answering, keeps the session and retries on its own. Reloading after
+  **Load new version** therefore no longer needs a new sign-in.
 
 ## 0.19.4
 

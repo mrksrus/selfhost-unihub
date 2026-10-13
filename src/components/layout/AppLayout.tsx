@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { ServerOff } from 'lucide-react';
 import OfflineBanner from '@/components/offline/OfflineBanner';
 import { Outlet, Navigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
@@ -9,16 +11,38 @@ import NavRail from './NavRail';
 import BottomNav from './BottomNav';
 import GlobalCommandPalette from '@/components/GlobalCommandPalette';
 import { MailPeek } from '@/components/mail/MailPeek';
-import { LoadingState } from '@/components/ui/page-states';
+import { Button } from '@/components/ui/button';
+import { EmptyState, LoadingState } from '@/components/ui/page-states';
+
+const SERVER_RETRY_MS = 10_000;
+
+/** Shown instead of the sign-in page while the server gives no answer; retries on its own. */
+function ServerUnavailable({ onRetry, retrying }: { onRetry: () => Promise<void>; retrying: boolean }) {
+  useEffect(() => {
+    const timer = window.setInterval(() => { void onRetry(); }, SERVER_RETRY_MS);
+    return () => window.clearInterval(timer);
+  }, [onRetry]);
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background p-6">
+      <EmptyState icon={ServerOff} title="UniHub's server is not answering"
+        description="It may be restarting or busy. This page keeps trying; your session is kept."
+        action={<Button variant="outline" disabled={retrying} onClick={() => { void onRetry(); }}>{retrying ? 'Trying…' : 'Try again'}</Button>} />
+    </div>
+  );
+}
 
 // Global navigation only: the rail on wide windows, the bottom bar on phones.
 // Each page renders its own header and panel through PageShell.
 const AppLayout = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, serverUnavailable, retrySession } = useAuth();
   useBackgroundNotificationChecks();
   useCalendarNotifications();
   useMailNotifications();
   useRecordingUploadRunner();
+
+  if (!user && serverUnavailable) {
+    return <ServerUnavailable onRetry={retrySession} retrying={loading} />;
+  }
 
   if (loading) {
     return (

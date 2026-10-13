@@ -1,23 +1,14 @@
 import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
 
-import { db, getDb } from '../state';
+import { db } from '../state';
+import { healthCheck } from '../services/health';
 import { getUserModules } from '../services/module-settings';
 
 interface CountRow { count: number }
 
 export = {
-  'GET /health': async () => {
-    try {
-      if (!getDb()) {
-        return { status: 503, health: 'error', database: 'not_initialized', timestamp: new Date().toISOString() };
-      }
-      await db.execute('SELECT 1');
-      return { health: 'ok', database: 'ok', timestamp: new Date().toISOString() };
-    } catch (error) {
-      return { status: 503, health: 'error', database: 'unavailable', error: (error as Error).message, timestamp: new Date().toISOString() };
-    }
-  },
+  'GET /health': () => healthCheck(),
   // Stats endpoint
   'GET /api/stats': async (req: IncomingMessage, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };

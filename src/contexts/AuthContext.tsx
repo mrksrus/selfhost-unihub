@@ -6,6 +6,9 @@ import { AuthContext, type User } from '@/contexts/auth-context';
 import { onAppEvent } from '@/lib/app-events';
 
 const AUTH_CHANGE_KEY = 'unihub:auth-change';
+// A busy server (a saturated database) can take far longer than this; the
+// page then says so and keeps retrying instead of hanging on the loading screen.
+const SESSION_CHECK_TIMEOUT_MS = 20_000;
 
 function broadcastAuthChange() {
   try { localStorage.setItem(AUTH_CHANGE_KEY, `${Date.now()}:${Math.random()}`); } catch { /* Storage may be disabled. */ }
@@ -15,6 +18,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<{ authenticated: true } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [serverUnavailable, setServerUnavailable] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
   const [offlineSavedAt, setOfflineSavedAt] = useState<string | undefined>();
 
@@ -36,14 +40,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     refreshController.current?.abort();
     const controller = new AbortController();
     refreshController.current = controller;
+    const deadline = window.setTimeout(() => controller.abort(), SESSION_CHECK_TIMEOUT_MS);
     // A cookie may have changed in another tab. Drop the prior user's UI/cache
     // before reading the new identity, never after rendering the new account.
     clearLocalSession();
     setLoading(true);
+    // Whether the identity was settled: a user, a sign-out, or a saved offline
+    // session. A 502 from the proxy while the API restarts, a 5xx, a timeout
+    // or a network failure settles nothing, and must not look like a sign-out.
+    let answered = false;
     try {
       const response = await api.get<{ user: User; csrfToken?: string }>('/auth/me', { signal: controller.signal });
       if (version !== authVersion.current) return;
       if (response.data?.user) {
+        answered = true;
         const saved = await loadOfflineSession();
         if (version !== authVersion.current) return;
         if (saved && saved.user.id !== response.data.user.id) await clearOfflineData();
@@ -53,10 +63,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(response.data.user);
         setSession({ authenticated: true });
       } else if (response.status === 401 || response.status === 403 || (!response.error && !response.data?.user)) {
+        answered = true;
         try { await clearOfflineData(); } finally { void resetBackgroundNotificationState(); }
       } else if (response.error && response.status === undefined) {
         const saved = await loadOfflineSession();
         if (saved && version === authVersion.current) {
+          answered = true;
           setOfflineAccount(saved.user.id);
           setOfflineMode(true);
           setIsOffline(true);
@@ -68,7 +80,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {
       // An aborted/failed identity check leaves private data inaccessible.
     } finally {
-      if (version === authVersion.current) setLoading(false);
+      window.clearTimeout(deadline);
+      if (version === authVersion.current) {
+        setServerUnavailable(!answered);
+        setLoading(false);
+      }
     }
   }, [clearLocalSession]);
 
@@ -234,7 +250,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, loading, isOffline, offlineSavedAt, setUser, signUp, signIn, verifyTwoFactorLogin, signOut }}>
+    <AuthContext.Provider value={{ user, session, loading, serverUnavailable, retrySession: refreshSession, isOffline, offlineSavedAt, setUser, signUp, signIn, verifyTwoFactorLogin, signOut }}>
       {children}
     </AuthContext.Provider>
   );

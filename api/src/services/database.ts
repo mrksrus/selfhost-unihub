@@ -56,6 +56,8 @@ function useUtcSessions(pool: Pool) {
   return pool;
 }
 
+const POOL_CONNECTION_LIMIT = 50;
+
 async function initDatabase() {
   if (isPlaceholderSecret(JWT_SECRET)) {
     console.error('✗ Missing or placeholder JWT_SECRET. Set a strong random JWT secret before starting.');
@@ -86,7 +88,7 @@ async function initDatabase() {
     
     // Pool-specific options only
     waitForConnections: true,
-    connectionLimit: 50, // Maximum number of connections in the pool
+    connectionLimit: POOL_CONNECTION_LIMIT,
     queueLimit: 0, // Unlimited queue (0 = no limit)
     idleTimeout: 300000, // 5 minutes - close idle connections
     maxIdle: 5, // Keep max 5 idle connections
@@ -121,6 +123,20 @@ async function initDatabase() {
   }
 
   await ensureSchema();
+}
+
+interface PoolInternals {
+  _allConnections?: { length: number };
+  _freeConnections?: { length: number };
+  _connectionQueue?: { length: number };
+}
+
+/** Connection counts of the pool: mysql2 keeps them in private fields only. */
+function poolStats() {
+  const pool = (getDb() as unknown as { pool?: PoolInternals } | null)?.pool;
+  const total = pool?._allConnections?.length ?? 0;
+  const free = pool?._freeConnections?.length ?? 0;
+  return { total, active: total - free, free, queued: pool?._connectionQueue?.length ?? 0, limit: POOL_CONNECTION_LIMIT };
 }
 
 // A new database starts from the 0.16.0 baseline (steps 1 to 11, see
@@ -368,6 +384,7 @@ async function createMailPerformanceIndexes(connection: SqlExecutor) {
 }
 
 export {
+  poolStats,
   initDatabase,
   useUtcSessions,
   ensureSchema,
