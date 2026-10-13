@@ -420,4 +420,5 @@ export {
   runPruneSlice,
   enqueuePrune,
   removeUnreferencedFiles,
+  deleteEmailRows,
 };

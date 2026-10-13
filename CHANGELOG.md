@@ -38,6 +38,11 @@ fields to tasks and events; nothing else changes.
 - A draft can become a task too: **Add task** in the compose form (and in a
   draft row's menu) saves the draft and links the task to it; the task shows
   "Draft to …" and **Open draft**.
+- **Delete a folder on the mail server.** Custom folders can be deleted again
+  from the folder dialog. A folder that exists only in UniHub moves its
+  messages and rules back to Inbox. A folder on the mail server is deleted
+  together with its server copy and the messages in it, after you tick that
+  choice; if the server refuses, nothing changes in UniHub.
 - **Attachments open in UniHub.** An attachment row in the reader (and in the
   email shown over a task) opens a viewer: images, PDFs (drawn by UniHub, so
   phones without a PDF viewer work too, with selectable text), plain text and

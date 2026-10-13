@@ -1,6 +1,7 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError, SqlExecutor } from '../types';
 import { folderConnections } from '../services/mail-folder-reconciliation';
+import { deleteMailFolder } from '../services/mail-folder-delete';
 import { folderMembershipSql, membershipCountQuery, unreadMembershipQuery } from '../services/mail-folder-view';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
 import crypto from 'crypto';
@@ -273,21 +274,19 @@ export = {
     }
   },
 
+  // `?server=1` deletes a server folder on the mail server as well, with its
+  // messages; without it only a folder that exists just in UniHub can go.
   'DELETE /api/mail/folders/:slug': async (req: Request, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
       const slug = normalizeMailFolderSlug(req.params.slug);
       if (!slug) return { error: 'Folder is required', status: 400 };
-      const [folders] = await db.execute<RowDataPacket[]>(
-        'SELECT * FROM mail_folders WHERE user_id = ? AND slug = ? LIMIT 1',
-        [userId, slug]
-      );
-      if (!folders.length) return { error: 'Folder not found', status: 404 };
-      if (folders[0].is_system || SYSTEM_MAIL_FOLDER_SET.has(slug)) {
-        return { error: 'System folders cannot be deleted', status: 400 };
-      }
-      return { error: 'Deleting synced custom folders is not supported; keep the folder or delete it in your mail provider.', status: 409 };
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const server = ['1', 'true'].includes(url.searchParams.get('server') || '');
+      const result = await deleteMailFolder({ userId, slug, server });
+      return { deleted: true, ...result, folders: await getMailFolderRowsWithCounts(userId) };
     } catch (error) {
+      if ((error as ApiError).status) return { error: (error as Error).message, status: (error as ApiError).status };
       console.error('Delete mail folder error:', error);
       return { error: 'Failed to delete mail folder', status: 500 };
     }

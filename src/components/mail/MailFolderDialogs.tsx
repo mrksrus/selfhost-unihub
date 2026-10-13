@@ -6,6 +6,7 @@ import { invalidateMailQueries, type MailAccount, type MailFolder } from '@/lib/
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
   AlertDialog,
@@ -30,11 +31,12 @@ interface Props {
   onSelectFolder: (slug: string) => void;
 }
 
-/** Folder management dialog. Provider folders are renamed and deleted at the provider. */
+/** Folder management dialog. Provider folders are renamed at the provider; deleting one here deletes the server copy too. */
 export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, folders, accounts, selectedFolder, onSelectFolder }: Props) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [folderToDelete, setFolderToDelete] = useState<MailFolder | null>(null);
+  const [deleteOnServer, setDeleteOnServer] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [editingFolderSlug, setEditingFolderSlug] = useState<string | null>(null);
   const [editingFolderName, setEditingFolderName] = useState('');
@@ -75,20 +77,30 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
   });
 
   const deleteFolder = useMutation({
-    mutationFn: async (slug: string) => {
-      const response = await api.delete(`/mail/folders/${encodeURIComponent(slug)}`);
+    mutationFn: async ({ slug, server }: { slug: string; server: boolean }) => {
+      const response = await api.delete<{ deletedMessages: number; movedMessages: number }>(`/mail/folders/${encodeURIComponent(slug)}${server ? '?server=1' : ''}`);
       if (response.error) throw new Error(response.error);
-      return slug;
+      return { slug, server, deleted: response.data?.deletedMessages ?? 0, moved: response.data?.movedMessages ?? 0 };
     },
-    onSuccess: (slug) => {
+    onSuccess: ({ slug, server, deleted, moved }) => {
       void invalidateMailQueries(queryClient);
       if (selectedFolder === slug) onSelectFolder('inbox');
-      toast({ title: 'Folder deleted', description: 'Messages and rules were moved back to Inbox.' });
+      const parts = [];
+      if (server) parts.push(deleted === 1 ? '1 message was deleted on the server.' : `${deleted} messages were deleted on the server.`);
+      if (moved > 0 || !server) parts.push(moved === 1 ? '1 message moved back to Inbox.' : `${moved} messages moved back to Inbox.`);
+      toast({ title: server ? 'Folder deleted on the server' : 'Folder deleted', description: parts.join(' ') });
     },
     onError: (error: Error) => {
       toast({ title: 'Failed to delete folder', description: error.message, variant: 'destructive' });
     },
   });
+
+  // A folder is on the server when an account's server folder is connected to it.
+  const serverAccountIds = folderToDelete ? [...new Set([folderToDelete.mail_account_id, ...(folderToDelete.connected_account_ids ?? [])].filter((id): id is string => !!id))] : [];
+  const onServer = serverAccountIds.length > 0;
+  const serverAccounts = serverAccountIds.map(id => accounts.find(account => account.id === id)?.email_address).filter(Boolean).join(', ');
+  const total = folderToDelete?.total_count ?? 0;
+  const count = total === 1 ? '1 message' : `${total} messages`;
 
   return <>
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -96,7 +108,7 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
         <DialogHeader>
           <DialogTitle>Mail folders</DialogTitle>
           <DialogDescription>
-            Select one mail account to create a folder on that account. In Sync mode, new moves to connected server folders also move mail on the server. Download mode, local copies and Legacy mail keep moves local. Existing server folders are connected during sync. Rename or delete provider folders at your mail provider.
+            Select one mail account to create a folder on that account. In Sync mode, new moves to connected server folders also move mail on the server. Download mode, local copies and Legacy mail keep moves local. Existing server folders are connected during sync. A server folder can be deleted here together with its server copy; rename it at your mail provider.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -169,9 +181,10 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
                       type="button"
                       size="icon"
                       variant="ghost"
-                      onClick={() => setFolderToDelete(folder)}
-                      disabled
-                      title="Delete provider folders at your mail provider"
+                      onClick={() => { setDeleteOnServer(false); setFolderToDelete(folder); }}
+                      disabled={folder.is_system}
+                      aria-label={`Delete ${folder.display_name}`}
+                      title={folder.is_system ? 'System folders cannot be deleted' : 'Delete folder'}
                     >
                       <Trash2 className="h-4 w-4" />
                     </Button>
@@ -187,23 +200,32 @@ export function MailFolderDialogs({ open, onOpenChange, activeMailAccountId, fol
     <AlertDialog open={!!folderToDelete} onOpenChange={(open) => !open && setFolderToDelete(null)}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Delete folder?</AlertDialogTitle>
+          <AlertDialogTitle>Delete {folderToDelete?.display_name || 'this folder'}?</AlertDialogTitle>
           <AlertDialogDescription>
-            Messages and routing rules in {folderToDelete?.display_name || 'this folder'} will move back to Inbox.
+            {onServer
+              ? `This folder is on the mail server (${serverAccounts || 'your account'}), so it can only be deleted together with the server copy. ${count} in it ${count === '1 message' ? 'is' : 'are'} deleted there too; this cannot be undone.`
+              : `${count} and the rules filing into it move back to Inbox.`}
           </AlertDialogDescription>
         </AlertDialogHeader>
+        {onServer && (
+          <label className="flex items-start gap-3 rounded-md border border-border p-3 text-sm">
+            <Checkbox checked={deleteOnServer} onCheckedChange={value => setDeleteOnServer(value === true)} className="mt-0.5" />
+            <span>Delete it on the mail server as well, with its messages</span>
+          </label>
+        )}
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            disabled={onServer && !deleteOnServer}
             onClick={() => {
               if (folderToDelete) {
-                deleteFolder.mutate(folderToDelete.slug);
+                deleteFolder.mutate({ slug: folderToDelete.slug, server: onServer });
                 setFolderToDelete(null);
               }
             }}
           >
-            Delete folder
+            {onServer ? 'Delete on server and in UniHub' : 'Delete folder'}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
