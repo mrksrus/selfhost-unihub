@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState, type PointerEvent } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { ChevronDown, ChevronUp, ExternalLink, Forward, Mail, Minimize2, Reply, X } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { Email } from '@/lib/mail-api';
 import { emailPath } from '@/lib/email-tasks';
-import { closeMailPeek, dockMailPeek, expandMailPeek, useMailPeek } from '@/lib/mail-peek';
+import { closeMailPeek, dockMailPeek, expandMailPeek, guardMailPeek, useMailPeek } from '@/lib/mail-peek';
 import { cn } from '@/lib/utils';
 import { useAuth, useUserTimezone } from '@/contexts/useAuth';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -36,6 +36,7 @@ export function MailPeek() {
 
 function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }) {
   const phone = useIsMobile();
+  const navigate = useNavigate();
   const timezone = useUserTimezone();
   const query = useQuery({
     queryKey: ['emails', 'peek', emailId],
@@ -69,8 +70,36 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
     if (dock) dockMailPeek();
   };
 
+  // Leaving this email with an unsaved reply asks to save or discard it first,
+  // as the Mail page does; the next step runs once the reply has closed.
+  const afterReply = useRef<(() => void) | null>(null);
+  const leave = (next: () => void) => {
+    if (!writing || !compose.isDirty) return false;
+    afterReply.current = next;
+    expandMailPeek();
+    compose.closeComposeFlow();
+    return true;
+  };
+  useEffect(() => {
+    if (compose.composeClosePromptOpen || !afterReply.current) return;
+    const next = afterReply.current;
+    afterReply.current = null;
+    // "Keep editing" leaves the reply open, and the step is dropped.
+    if (!writing) next();
+  }, [compose.composeClosePromptOpen, writing]);
+  // Opening another email asks too, instead of replacing this one at once.
+  useEffect(() => {
+    guardMailPeek(leave);
+    return () => guardMailPeek(null);
+  });
+
   const setAside = () => dockMailPeek();
-  const close = () => { if (writing && compose.isDirty) compose.closeComposeFlow(); else closeMailPeek(); };
+  const close = () => { if (!leave(closeMailPeek)) closeMailPeek(); };
+  const mailPath = emailPath({ email_id: emailId });
+  const openInMail = (event: MouseEvent) => {
+    if (leave(() => { navigate(mailPath); closeMailPeek(); })) event.preventDefault();
+    else closeMailPeek();
+  };
   const subject = email?.subject || '(No subject)';
 
   return (
@@ -81,7 +110,8 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
             onInteractOutside={event => event.preventDefault()}
             {...({ inert: docked ? '' : undefined } as object)}
             style={drag ? { transform: `translateY(${drag.offset}px)`, transition: 'none' } : undefined}
-            className={cn('fixed z-[60] flex flex-col bg-card shadow-lg outline-none transition-transform duration-200',
+            // z-[45]: above the page and the phone's bottom bar (z-40), below dialogs and menus (z-50) opened from it.
+            className={cn('fixed z-[45] flex flex-col bg-card shadow-lg outline-none transition-transform duration-200',
               phone
                 ? 'inset-x-0 bottom-0 h-[calc(100dvh-2.5rem-env(safe-area-inset-top,0px))] rounded-t-2xl border-t border-border data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom'
                 : 'inset-y-0 right-0 w-full max-w-xl border-l border-border data-[state=open]:animate-in data-[state=open]:slide-in-from-right',
@@ -102,7 +132,7 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
                   <Forward aria-hidden="true" /><span className="sr-only sm:not-sr-only">Forward</span>
                 </Button>
                 <Button asChild variant="ghost" size="sm">
-                  <Link to={emailPath({ email_id: emailId })} onClick={() => closeMailPeek()} title="Open in Mail">
+                  <Link to={mailPath} onClick={openInMail} title="Open in Mail">
                     <ExternalLink aria-hidden="true" /><span className="sr-only sm:not-sr-only">Open in Mail</span>
                   </Link>
                 </Button>

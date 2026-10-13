@@ -1,10 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import type { Email } from '@/lib/mail-api';
-import { closeMailPeek } from '@/lib/mail-peek';
+import { closeMailPeek, openMailPeek } from '@/lib/mail-peek';
 import { MailPeek } from '@/components/mail/MailPeek';
 import { SourceEmailBlock } from '@/components/todo/SourceEmail';
 
@@ -76,5 +76,28 @@ describe('the email peek', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'account-1', to: 'billing@power.example' })));
     expect(screen.getByTestId('where')).toHaveTextContent('/todo');
     await waitFor(() => expect(within(peek).queryByLabelText('To')).not.toBeInTheDocument());
+  });
+
+  it('asks before an unsaved reply is left for another email or for Mail', async () => {
+    wrap();
+    fireEvent.click(screen.getByRole('button', { name: 'Show email' }));
+    const peek = await screen.findByRole('dialog', { name: 'Email' });
+    await within(peek).findByText('IBAN DE12 3456 7890, 84.20 EUR');
+    fireEvent.click(within(peek).getByRole('button', { name: 'Reply' }));
+    fireEvent.change(await within(peek).findByLabelText('Subject'), { target: { value: 'Re: paid on Friday' } });
+
+    act(() => openMailPeek('email-8'));
+    const prompt = await screen.findByRole('alertdialog', { name: 'Save this draft?' });
+    fireEvent.click(within(prompt).getByRole('button', { name: 'Keep editing' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(within(peek).getByLabelText('Subject')).toHaveValue('Re: paid on Friday');
+    expect(api.get).not.toHaveBeenCalledWith('/mail/emails/email-8', expect.anything());
+
+    fireEvent.click(within(peek).getByRole('link', { name: /Open in Mail/ }));
+    const again = await screen.findByRole('alertdialog', { name: 'Save this draft?' });
+    expect(screen.getByTestId('where')).toHaveTextContent('/todo');
+    fireEvent.click(within(again).getByRole('button', { name: 'Discard' }));
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/mail?email=email-7'));
+    expect(screen.queryByRole('dialog', { name: 'Email' })).not.toBeInTheDocument();
   });
 });

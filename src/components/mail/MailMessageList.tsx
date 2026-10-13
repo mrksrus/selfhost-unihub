@@ -69,7 +69,7 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
                   onContextMenu(email, e.clientX, e.clientY);
                 }}
               >
-                <div className="email-checkbox flex shrink-0 flex-col items-center">
+                <div className="email-checkbox flex shrink-0 flex-col items-center touch:gap-3">
                   <Button variant="ghost" size="icon" className="h-8 w-8" aria-pressed={selected}
                     aria-label={`Select ${email.subject || 'message'}`} onClick={(e) => selection.toggleEmail(email.id, e)}>
                     {selected ? <CheckSquare aria-hidden="true" className="text-accent" /> : <Square aria-hidden="true" className="text-muted-foreground/70" />}

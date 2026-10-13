@@ -350,13 +350,20 @@ function PdfPreview({ blob, zoom, onFitScale, onPages, download }: PdfPreviewPro
   const scale = zoom ?? fitScale;
   useEffect(() => { onFitScale(fitScale); }, [fitScale, onFitScale]);
 
-  // Draw pages as they come near the visible area, and keep the drawn ones.
+  // Draw the pages within a viewport of the visible area and let go of the
+  // others, so a long PDF holds a few canvases rather than one per page.
   useEffect(() => {
     if (!pdf) return;
     if (typeof IntersectionObserver === 'undefined') { setNear(new Set(pdf.sizes.map((_, index) => index))); return; }
     const observer = new IntersectionObserver(entries => {
-      const shown = entries.filter(entry => entry.isIntersecting).map(entry => Number((entry.target as HTMLElement).dataset.page));
-      if (shown.length) setNear(previous => new Set([...previous, ...shown]));
+      setNear(previous => {
+        const next = new Set(previous);
+        for (const entry of entries) {
+          const page = Number((entry.target as HTMLElement).dataset.page);
+          if (entry.isIntersecting) next.add(page); else next.delete(page);
+        }
+        return next;
+      });
     }, { root: scroller.current, rootMargin: '100% 0px' });
     pageElements.current.forEach(element => { if (element) observer.observe(element); });
     return () => observer.disconnect();
@@ -405,7 +412,16 @@ function PdfPage({ pdfjs, pdfDocument, number, scale, size, active }: {
   const [drawn, setDrawn] = useState(false);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      // Far from view: free the drawing (a zero-sized canvas releases its memory
+      // at once on iOS) and show the placeholder; it is drawn again on the way back.
+      const canvas = canvasHolder.current?.querySelector('canvas');
+      if (canvas) { canvas.width = 0; canvas.height = 0; }
+      canvasHolder.current?.replaceChildren();
+      textHolder.current?.replaceChildren();
+      setDrawn(false);
+      return;
+    }
     let cancelled = false;
     let renderTask: RenderTask | null = null;
     let textLayer: PdfTextLayer | null = null;

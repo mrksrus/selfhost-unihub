@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
@@ -46,7 +46,7 @@ beforeEach(() => {
     return { blob: new Blob([file.body], { type: file.type }), filename: file.attachment.filename };
   });
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
 describe('attachment viewer', () => {
   it('shows an image in place and downloads the loaded file from the bar', async () => {
@@ -84,7 +84,18 @@ describe('attachment viewer', () => {
     expect(vi.mocked(api.getBlob).mock.calls.map(([path]) => path)).toEqual(['/mail/attachments/notes', '/mail/attachments/sheet', '/mail/attachments/photo']);
   });
 
-  it('draws a PDF with pdf.js and counts its pages', async () => {
+  it('draws a PDF with pdf.js, counts its pages and draws only those near the view', async () => {
+    // jsdom has no layout: the test says which pages are near the visible area.
+    let near: (pages: number[]) => void = () => {};
+    vi.stubGlobal('IntersectionObserver', class {
+      targets: HTMLElement[] = [];
+      constructor(callback: IntersectionObserverCallback) {
+        near = pages => act(() => callback(this.targets.map(target =>
+          ({ target, isIntersecting: pages.includes(Number(target.dataset.page)) }) as unknown as IntersectionObserverEntry), this as unknown as IntersectionObserver));
+      }
+      observe(target: HTMLElement) { this.targets.push(target); }
+      disconnect() {}
+    });
     const page = {
       getViewport: ({ scale }: { scale: number }) => ({ width: 600 * scale, height: 800 * scale, scale }),
       render: vi.fn(() => ({ promise: Promise.resolve(), cancel() {} })),
@@ -97,6 +108,19 @@ describe('attachment viewer', () => {
     expect(await within(dialog).findByText(/Page 1 of 3/)).toBeInTheDocument();
     const [{ data }] = pdf.getDocument.mock.calls[0] as [{ data: Uint8Array }];
     expect(new TextDecoder().decode(data)).toBe('%PDF-1.7');
-    await waitFor(() => expect(page.render).toHaveBeenCalledTimes(3));
+    const canvasOf = (index: number) => dialog.querySelector(`[data-page="${index}"] canvas`);
+
+    near([0, 1]);
+    await waitFor(() => expect(canvasOf(1)).not.toBeNull());
+    expect(canvasOf(0)).not.toBeNull();
+    expect(canvasOf(2)).toBeNull();
+    // Scrolled on: the first page is let go, the last one drawn; scrolled back, the first is drawn again.
+    near([1, 2]);
+    await waitFor(() => expect(canvasOf(2)).not.toBeNull());
+    expect(canvasOf(0)).toBeNull();
+    near([0, 1]);
+    await waitFor(() => expect(canvasOf(0)).not.toBeNull());
+    expect(canvasOf(2)).toBeNull();
+    expect(page.render).toHaveBeenCalledTimes(4);
   });
 });

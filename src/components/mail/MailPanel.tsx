@@ -62,7 +62,7 @@ export function MailAccountList({ accounts, loading, selectedAccount, legacyCoun
           {accounts.map(account => (
             <PanelItem key={account.id} icon={Inbox} active={selectedAccount === account.id} onSelect={() => onSelect(account.id)}
               description={<AccountState account={account} />}
-              trailing={<>
+              trailing={<span className="flex gap-0.5 touch:gap-4">
                 <Button variant="ghost" size="icon" className="h-7 w-7 bg-card" aria-label={`Edit ${account.email_address}`}
                   onClick={() => onEdit(account)}><Pencil aria-hidden="true" /></Button>
                 <Button variant="ghost" size="icon" className="h-7 w-7 bg-card text-destructive hover:text-destructive"
@@ -71,7 +71,7 @@ export function MailAccountList({ accounts, loading, selectedAccount, legacyCoun
                   onClick={() => onRemove(account)}>
                   {account.disconnected_at ? <Trash2 aria-hidden="true" /> : <X aria-hidden="true" />}
                 </Button>
-              </>}>
+              </span>}>
               {account.display_name || account.email_address}
             </PanelItem>
           ))}

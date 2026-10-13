@@ -18,8 +18,21 @@ function set(next: MailPeekState) {
   listeners.forEach(listener => listener());
 }
 
-/** Shows the email over the page; a docked peek of another email is replaced. */
-export function openMailPeek(emailId: string) { set({ emailId, docked: false }); }
+/**
+ * The open peek can hold back a switch to another email while it has an
+ * unsaved reply: the guard returns true and calls `proceed` once the reply is
+ * saved or discarded.
+ */
+type LeaveGuard = (proceed: () => void) => boolean;
+let leaveGuard: LeaveGuard | null = null;
+export function guardMailPeek(guard: LeaveGuard | null) { leaveGuard = guard; }
+
+/** Shows the email over the page; a peek of another email is replaced. */
+export function openMailPeek(emailId: string) {
+  const open = () => set({ emailId, docked: false });
+  if (state.emailId && state.emailId !== emailId && leaveGuard?.(open)) return;
+  open();
+}
 export function dockMailPeek() { if (state.emailId) set({ ...state, docked: true }); }
 export function expandMailPeek() { if (state.emailId) set({ ...state, docked: false }); }
 export function closeMailPeek() { set({ emailId: null, docked: false }); }

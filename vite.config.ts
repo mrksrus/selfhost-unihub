@@ -79,6 +79,9 @@ export default defineConfig(() => ({
       registerType: "prompt",
       includeAssets: ["favicon.ico", "favicon.svg", "robots.txt"],
       workbox: {
+        // Workbox's default patterns plus mjs: the pdf.js worker is a hashed
+        // .mjs asset, and an open tab must still find it after a deploy.
+        globPatterns: ["**/*.{js,mjs,wasm,css,html}"],
         navigateFallbackDenylist: [
           /^\/api\//,
         ],

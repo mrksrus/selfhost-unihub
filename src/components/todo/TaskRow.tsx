@@ -112,7 +112,7 @@ function Subtasks({ task, actions, readOnly }: { task: CalendarEvent; actions: T
       {task.subtasks.length > 0 && (
         <ul aria-label="Subtasks" className="space-y-0.5">
           {task.subtasks.map((subtask, index) => (
-            <li key={subtask.id} className="group flex min-h-8 items-center gap-2.5">
+            <li key={subtask.id} className="group flex min-h-8 items-center gap-2.5 touch:min-h-11">
               <Checkbox checked={subtask.is_done} disabled={readOnly} aria-label={subtask.title}
                 onCheckedChange={checked => actions.updateSubtask.mutate({ eventId: task.id, subtaskId: subtask.id, update: { is_done: checked === true } })} />
               {editing?.id === subtask.id ? (
@@ -128,7 +128,7 @@ function Subtasks({ task, actions, readOnly }: { task: CalendarEvent; actions: T
               ) : <>
                 <span className={cn('flex-1 text-sm', subtask.is_done && 'text-muted-foreground line-through')}>{subtask.title}</span>
                 {!readOnly && (
-                  <span className="flex opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+                  <span className="flex opacity-0 transition-opacity touch:gap-4 focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
                     <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={`Move ${subtask.title} up`} disabled={index === 0}
                       onClick={() => actions.moveSubtask(task, subtask.id, -1)}><ChevronUp aria-hidden="true" /></Button>
                     <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={`Move ${subtask.title} down`} disabled={index === task.subtasks.length - 1}
