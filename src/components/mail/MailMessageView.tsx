@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { format } from 'date-fns';
 import { Loader2, UserPlus } from 'lucide-react';
 import type { Email, EmailAttachment } from '@/lib/mail-api';
@@ -8,6 +8,7 @@ import { LoadingState } from '@/components/ui/page-states';
 import { SafeEmailContent } from '@/components/mail/SafeEmailContent';
 import { EmailTasks } from '@/components/mail/EmailTasks';
 import { AttachmentList } from '@/components/mail/AttachmentList';
+import { AttachmentViewer } from '@/components/mail/AttachmentViewer';
 import { deriveContactNameFromEmail } from '@/components/mail/mail-page-model';
 
 interface Props {
@@ -17,7 +18,7 @@ interface Props {
   timezone: string | null;
   /** Offers "Add contact" for the sender when false. */
   senderInContacts?: boolean;
-  /** Opens an attachment in place; without it a row downloads. */
+  /** Opens an attachment some other way; without it a row opens the built-in viewer. */
   onOpenAttachment?: (attachment: EmailAttachment) => void;
   /** A notice shown under the subject (e.g. "Local copy"). */
   notice?: ReactNode;
@@ -32,6 +33,10 @@ interface Props {
  */
 export function MailMessageView({ email, loading = false, timezone, senderInContacts = true, onOpenAttachment, notice, compact = false }: Props) {
   const { create: createContact } = useContactActions();
+  // Tied to the message, so another message never opens with this one's attachment.
+  const [viewing, setViewing] = useState<{ emailId: string; attachmentId: string } | null>(null);
+  const openId = viewing?.emailId === email.id ? viewing.attachmentId : null;
+  const openAttachment = onOpenAttachment ?? ((attachment: EmailAttachment) => setViewing({ emailId: email.id, attachmentId: attachment.id }));
   return (
     <div className="space-y-4">
       <div>
@@ -59,7 +64,8 @@ export function MailMessageView({ email, loading = false, timezone, senderInCont
 
       {loading && <LoadingState label="Loading email…" compact className="border-t border-border" />}
 
-      {!loading && email.attachments && <AttachmentList attachments={email.attachments} onOpen={onOpenAttachment} />}
+      {!loading && email.attachments && <AttachmentList attachments={email.attachments} onOpen={openAttachment} />}
+      {!onOpenAttachment && email.attachments && <AttachmentViewer attachments={email.attachments} openId={openId} onClose={() => setViewing(null)} />}
 
       {!loading && (
         <div className="border-t border-border pt-4">
