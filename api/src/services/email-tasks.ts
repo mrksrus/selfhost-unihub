@@ -1,6 +1,8 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../types';
 import { db } from '../state';
+import { isModuleEnabled } from './module-settings';
+import { isSectionRestoreActive } from './restore-locks';
 
 /**
  * A task or event made from an email. The task keeps a snapshot of the email's
@@ -28,6 +30,20 @@ export const sourceEmailPresentSql = (alias = 'calendar_events') => `(${alias}.s
 
 /** SQL (alias emails) counting the tasks made from a message. */
 export const EMAIL_TASK_COUNT_SQL = `(SELECT COUNT(t.id) FROM calendar_events t WHERE t.source_email_id = emails.id AND t.user_id = emails.user_id)`;
+
+/**
+ * Linking a task to an email reads Mail data from a Calendar route, so Mail
+ * must be on and not being restored. Returns the refusal, or null to go on.
+ */
+export async function sourceEmailLinkRefusal(userId: string) {
+  if (!await isModuleEnabled(userId, 'mail')) {
+    return { error: 'Mail is turned off. Enable it in Settings to link an email.', code: 'MODULE_DISABLED', module: 'mail', status: 403 };
+  }
+  if (await isSectionRestoreActive(userId, 'mail')) {
+    return { error: 'Mail is being restored. Link the email when the restore finishes.', code: 'RESTORE_IN_PROGRESS', status: 409 };
+  }
+  return null;
+}
 
 /** Reads the owned email that a new task points at, or null when it is not the user's. */
 export async function snapshotSourceEmail(userId: string, emailId: unknown, cx: SqlExecutor = db): Promise<SourceEmailSnapshot | null> {

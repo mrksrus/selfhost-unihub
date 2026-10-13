@@ -206,6 +206,37 @@ test('an explicit sync cancel wins over a simultaneous interactive yield', async
   } finally { scheduler.stop(); }
 });
 
+test('a slow heartbeat is not overlapped, and a later one still carries cancellation', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const job = { id: 'history', user_id: 'owner', mail_account_id: 'A', mailbox_id: 'box',
+    kind: 'history', priority: 90, worker_generation: 1, state: 'queued' };
+  const heartbeats: ((value: { cancellationRequested: boolean }) => void)[] = [];
+  let started = false, finished: string | undefined;
+  const repo = {
+    withTransaction: (fn: FixtureValue) => fn(), recoverExpiredJobs: async () => {},
+    async claimDueJob() { if (job.state !== 'queued') return null; job.state = 'running'; return { ...job }; },
+    updateJob() { return new Promise(resolve => { heartbeats.push(resolve); }); },
+    async completeJob(input: FixtureValue) { finished = input.state; job.state = input.state; },
+    async enqueueJob() {},
+  };
+  const scheduler = createDurableMailScheduler((_job, signal) => {
+    started = true;
+    return new Promise(resolve => signal.addEventListener('abort', () => resolve({ success: false, cancelled: true }), { once: true }));
+  }, { repository: repo as FixtureValue, concurrency: 1, pollMs: 600000, leaseSeconds: 10 });
+  try {
+    await scheduler.start(); await until(() => started);
+    for (let i = 0; i < 4; i++) { t.mock.timers.tick(4000); await tick(); }
+    assert.equal(heartbeats.length, 1, 'ticks while the database is slow add no waiting heartbeats');
+    heartbeats[0]({ cancellationRequested: false });
+    await tick();
+    t.mock.timers.tick(4000);
+    assert.equal(heartbeats.length, 2, 'the next tick after an answer renews the lease');
+    heartbeats[1]({ cancellationRequested: true });
+    await until(() => finished);
+    assert.equal(finished, 'cancelled');
+  } finally { scheduler.stop(); }
+});
+
 test('sync cancellation selects only read-only jobs, not accepted mutation or outcome checks', async t => {
   const service = require.resolve('../dist/src/services/mail');
   const schedulerPath = require.resolve('../dist/src/services/mail-sync-scheduler');

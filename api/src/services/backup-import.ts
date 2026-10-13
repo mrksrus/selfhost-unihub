@@ -201,6 +201,7 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       );
     }
 
+    let archivedDefaultMailAccountId: string | null = null;
     for (const setting of data.user_settings || []) {
       await checkRestoreCancelled();
       const row = overwriteUserId(setting, userId);
@@ -210,6 +211,11 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
           [row.user_id, row.setting_key]
         );
         if (existingSetting.length) continue;
+      }
+      // Names a mail account, which may get a new ID below; written after them.
+      if (row.setting_key === 'default_mail_account_id' && row.setting_value) {
+        archivedDefaultMailAccountId = String(row.setting_value);
+        continue;
       }
       await writeOwnedRow(connection, userId, 'user_settings',
         ['user_id', 'setting_key', 'setting_value'],
@@ -521,6 +527,23 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
            sync_policy_confirmed_at = NULL WHERE id = ? AND user_id = ?`,
         [row.sync_mode === 'sync' ? 'sync' : 'download', row.sync_mode === 'sync' ? 'pending' : 'idle',
           restoredWindow(row.sync_window_days, null), restoredWindow(row.trash_window_days, DEFAULT_TRASH_WINDOW_DAYS), targetAccountId, userId]
+      );
+    }
+
+    if (archivedDefaultMailAccountId !== null) {
+      // The restored copy of the account, or the same account when it is still
+      // this user's (settings restored without mail); otherwise '' (the first
+      // account) rather than an ID that names nothing.
+      let defaultMailAccountId = mailAccountIdMap.get(archivedDefaultMailAccountId) || '';
+      if (!defaultMailAccountId) {
+        const [owned] = await connection.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? LIMIT 1',
+          [archivedDefaultMailAccountId, userId]);
+        if (owned.length) defaultMailAccountId = archivedDefaultMailAccountId;
+      }
+      await writeOwnedRow(connection, userId, 'user_settings',
+        ['user_id', 'setting_key', 'setting_value'],
+        [userId, 'default_mail_account_id', defaultMailAccountId],
+        ['setting_value']
       );
     }
 

@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import { db } from '../state';
 import { EMAIL_TASK_COUNT_SQL, tasksForEmail } from '../services/email-tasks';
+import { isModuleEnabled } from '../services/module-settings';
 import { toBooleanFlag } from '../services/mail';
 import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL, extractMailRouteId } from './mail-route-helpers';
 
@@ -74,6 +75,8 @@ export = {
       const offset = Number.isFinite(requestedOffset) ? Math.max(requestedOffset, 0) : 0;
       const page = Math.max(1, Math.floor(offset / limit) + 1);
       const whereSql = where.join(' AND ');
+      // Task counts are Calendar data: none while that module is off.
+      const taskCountSql = await isModuleEnabled(userId, 'calendar') ? EMAIL_TASK_COUNT_SQL : '0';
 
       // Use template literals for LIMIT/OFFSET since they're already sanitized integers
       // This avoids parameter binding issues with mysql2
@@ -108,7 +111,7 @@ export = {
           has_attachments,
           received_at,
           created_at,
-          ${EMAIL_TASK_COUNT_SQL} AS task_count
+          ${taskCountSql} AS task_count
         FROM emails
         WHERE ${whereSql}
         ORDER BY received_at DESC, id DESC
@@ -206,7 +209,8 @@ export = {
       }));
 
       // Note: Inline attachments are already embedded in body_html via URL replacement
-      parsedEmail.tasks = await tasksForEmail(userId, id);
+      // The tasks made from this email are Calendar data: none while that module is off.
+      parsedEmail.tasks = await isModuleEnabled(userId, 'calendar') ? await tasksForEmail(userId, id) : [];
 
       return { email: parsedEmail };
     } catch (error) {

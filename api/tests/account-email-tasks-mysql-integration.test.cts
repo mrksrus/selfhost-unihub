@@ -65,6 +65,35 @@ test('real MySQL: a task made from an email keeps the email, both sides show the
     assert.equal((strangerEvents as FixtureValue).events.length, 0);
   });
 
+  await t.test('each side respects the other module: no tasks with Calendar off, no linking with Mail off or restoring', async () => {
+    const { setUserModules } = require('../dist/src/services/module-settings') as typeof import('../src/services/module-settings');
+    const count = async () => (await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM calendar_events WHERE user_id = ?', [owner]))[0][0].n;
+    const before = await count();
+    try {
+      await setUserModules(owner, { modules: { calendar: { enabled: false } } });
+      const detail = await mail['GET /api/mail/emails/:id'](request(`/api/mail/emails/${email}`), owner);
+      assert.deepEqual((detail as FixtureValue).email.tasks, []);
+      const list = await mail['GET /api/mail/emails'](request('/api/mail/emails?folder=inbox'), owner);
+      assert.equal((list as FixtureValue).emails[0].task_count, 0);
+      await setUserModules(owner, { modules: { calendar: { enabled: true }, mail: { enabled: false } } });
+      const mailOff = await calendar['POST /api/calendar/events'](request('/api/calendar/events'), owner, { title: 'Mail is off', is_todo_only: true, source_email_id: email });
+      assert.equal((mailOff as FixtureValue).status, 403);
+      await setUserModules(owner, { modules: { mail: { enabled: true } } });
+      const restoreId = randomUUID();
+      await pool.execute<ResultSetHeader>("INSERT INTO backup_restore_jobs (id, user_id, status, requested_sections) VALUES (?, ?, 'running', ?)", [restoreId, owner, JSON.stringify(['mail'])]);
+      try {
+        const restoring = await calendar['POST /api/calendar/events'](request('/api/calendar/events'), owner, { title: 'Mail is restoring', is_todo_only: true, source_email_id: email });
+        assert.equal((restoring as FixtureValue).status, 409);
+        const [task] = (await pool.query<RowDataPacket[]>('SELECT id FROM calendar_events WHERE user_id = ? AND source_email_id = ?', [owner, email]))[0];
+        const relink = await calendar['PUT /api/calendar/events/:id'](request(`/api/calendar/events/${task.id}`), owner, { source_email_id: email });
+        assert.equal((relink as FixtureValue).status, 409);
+      } finally { await pool.execute<ResultSetHeader>('DELETE FROM backup_restore_jobs WHERE id = ?', [restoreId]); }
+      assert.equal(await count(), before, 'a refused link creates no task');
+    } finally {
+      await setUserModules(owner, { modules: { mail: { enabled: true }, calendar: { enabled: true } } });
+    }
+  });
+
   await t.test('the link can be removed, and made again while the email is still here', async () => {
     const events = await calendar['GET /api/calendar/events'](request('/api/calendar/events?include_todos=true'), owner);
     const [task] = (events as FixtureValue).events;
@@ -91,7 +120,8 @@ test('real MySQL: a task made from an email keeps the email, both sides show the
     await pool.execute<ResultSetHeader>('DELETE FROM email_attachments WHERE email_id=?', [email]);
     await pool.execute<ResultSetHeader>('DELETE FROM emails WHERE id=?', [email]);
     const events = await calendar['GET /api/calendar/events'](request('/api/calendar/events?include_todos=true'), owner);
-    const [task] = (events as FixtureValue).events;
+    // Both tasks start in the same second, so pick by title rather than order.
+    const task = (events as FixtureValue).events.find((event: FixtureValue) => event.title === 'Pay invoice 4711');
     assert.equal(task.source_email.available, false);
     assert.equal(task.source_email.subject, 'Re: Invoice 4711');
     assert.deepEqual(task.source_email.attachments, ['invoice-4711.pdf', 'terms.pdf']);

@@ -25,7 +25,7 @@ function restoreFixture(encrypt: FixtureValue) {
     files: [{ kind: 'recording', id: ids.recording, filename: 'recording.wav', sha256: crypto.createHash('sha256').update(audio).digest('hex'), data_base64: audio.toString('base64') }],
     data: {
       user: { full_name: 'Restored profile', timezone: 'Europe/Vienna' },
-      user_settings: [{ setting_key: 'restore-setting', setting_value: 'restored' }],
+      user_settings: [{ setting_key: 'restore-setting', setting_value: 'restored' }, { setting_key: 'default_mail_account_id', setting_value: ids.account }],
       contacts: [{ id: ids.contact, first_name: 'Restored', last_name: 'Contact', email: 'contact@example.test', notes: 'Original note' }],
       mail_folders: [{ id: ids.folder, slug: 'inbox', display_name: 'Restored Inbox', is_system: true, position: 17 }],
       mail_accounts: [{ id: ids.account, email_address: 'mail@example.test', provider: 'custom', imap_host: '127.0.0.1', imap_port: 993, smtp_host: '127.0.0.1', smtp_port: 587, encrypted_password: encrypt('synthetic-mail-password'), is_active: true }],
@@ -131,7 +131,7 @@ test('MySQL restores colliding backup IDs without changing another user in every
       await assertVictimUnchanged();
       const restored = Object.fromEntries(await Promise.all(tables.map(async table => [table, await rowsFor(table, userId)])));
       for (const table of tables) {
-        assert.equal(restored[table].length, 1, `${table} restored once`);
+        assert.equal(restored[table].length, backup.data[table].length, `${table} restored once`);
         if (backup.data[table][0].id) assert.notEqual(restored[table][0].id, backup.data[table][0].id, `${table} receives a fresh ID`);
         assert.equal(restored[table][0].user_id, userId);
       }
@@ -153,6 +153,14 @@ test('MySQL restores colliding backup IDs without changing another user in every
       assert.deepEqual(await fs.readFile(row('recordings').storage_path), wav());
       assert.equal(row('mail_accounts').is_active, 0, 'Rejected private mail settings cannot activate restored accounts');
       assert.equal(row('mail_accounts').delete_emails_on_server, 0);
+      const defaultAccount = (rows: FixtureValue[]) => rows.find(item => item.setting_key === 'default_mail_account_id')?.setting_value;
+      assert.equal(defaultAccount(restored.user_settings), row('mail_accounts').id, 'The default sending account names the restored account, not the colliding one');
+      // Settings without their account: the first account, not another user's ID.
+      const settingsOnlyUser = crypto.randomUUID();
+      await connection.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash) VALUES (?, ?, ?)', [settingsOnlyUser, settingsOnlyUser + '@example.test', 'synthetic-hash']);
+      const settingsOnly = { app: 'unihub', version: 1, files: [], data: { user_settings: structuredClone(backup.data.user_settings) } };
+      assert.equal((await importBackupForUser(settingsOnlyUser, settingsOnly, { mode: 'apply', conflict_mode: conflictMode })).valid, true);
+      assert.equal(defaultAccount(await rowsFor('user_settings', settingsOnlyUser)), '');
 
       // Deliberate same-owner matching retains conflict semantics on a repeat
       // restore; a second copy must keep its children attached to that copy.

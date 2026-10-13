@@ -78,11 +78,17 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
     const runningJob = { controller, job, finished, cancellationRequested: false };
     running.set(job.id, runningJob);
     let heartbeatError: unknown = null;
+    let heartbeatPending = false;
     const heartbeat = setInterval(() => {
+      // One heartbeat at a time: on a slow database, overlapping ones would
+      // only add waiters for the pool the job itself needs.
+      if (heartbeatPending) return;
+      heartbeatPending = true;
       void repository.updateJob({ jobId: job.id, accountId: job.mail_account_id, workerId,
         generation: Number(job.worker_generation), leaseSeconds }).then(result => {
           if (result.cancellationRequested) { runningJob.cancellationRequested = true; controller.abort(); }
-        }, error => { heartbeatError = error; controller.abort(); });
+        }, error => { heartbeatError = error; controller.abort(); })
+        .finally(() => { heartbeatPending = false; });
     }, Math.max(1000, Math.floor(leaseSeconds * 400)));
     heartbeat.unref?.();
     try {

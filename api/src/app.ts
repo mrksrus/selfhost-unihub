@@ -27,10 +27,11 @@ const MAIL_SERVER_DELETE_INTERVAL_MS = 60 * 1000;
 let periodicMailSyncRunning = false;
 
 // Both are logged with their stack, so a container restart has a cause in its
-// log. A rejected promise nobody awaited does not end the process (Node's
-// default would): whatever produced it has already failed and been reported
-// on its own path. An exception outside any handler leaves unknown state, so
-// the process ends and the container restarts.
+// log. Startup failures exit (server.ts catches start()). A runtime rejection
+// nobody awaited is only logged, not a restart (Node's default would exit):
+// whatever produced it has already failed on its own path. An exception
+// outside any handler leaves unknown state, so the process ends and the
+// container restarts.
 process.on('unhandledRejection', reason => {
   console.error('[PROCESS] Unhandled promise rejection:', reason instanceof Error ? reason.stack || reason.message : reason);
 });

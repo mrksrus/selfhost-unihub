@@ -23,7 +23,9 @@ fields to tasks and events; nothing else changes.
   and **Open email**. If the email is later removed from UniHub, the task
   keeps that summary and says so.
 - The reader lists the tasks made from the open message, each leading to its
-  row in ToDo; a mail row shows a small task mark when one exists.
+  row in ToDo; a mail row shows a small task mark when one exists. Mail shows
+  no tasks while Calendar is turned off, and a task cannot be linked to an
+  email while Mail is turned off or being restored.
 - Offline reading shows the email summary on tasks too. Backups carry the link
   and the summary.
 - **Show email** on a task or event shows the email over the page you are on
@@ -65,7 +67,9 @@ fields to tasks and events; nothing else changes.
   account chosen under Settings → General → Mail (the first account until you
   choose one), so From is never empty. Choosing another account in the From
   field of a message no longer switches the Mail page to that account. A reply
-  always comes from the account that received the message.
+  always comes from the account that received the message. Restoring a
+  backup keeps this choice on the restored account, or returns to the first
+  account when that account is not part of the restore.
 - ToDo and Music no longer hide their views and lists in a side panel or
   behind the title. The views (Open, Today, Overdue, …) and the lists are a row
   of chips above the list on every window size.
@@ -95,7 +99,11 @@ fields to tasks and events; nothing else changes.
   with its cause. The container's health check reports a saturated pool as
   busy (200) rather than as failed, so nothing restarts a server that is
   merely working through a queue; the pool counts are logged every minute
-  while that lasts.
+  while that lasts. A database that stops answering while connections are
+  free, or a pool that stays full for ten minutes without one answer, is
+  still reported as failed (503), and waiting checks share one query instead
+  of each adding one to the queue. A failure during startup ends the process,
+  so the container restarts rather than staying up without serving.
 - When the server gave no answer (restarting, busy, or the proxy answered
   502), the app showed the sign-in page. It now says the server is not
   answering, keeps the session and retries on its own. Reloading after

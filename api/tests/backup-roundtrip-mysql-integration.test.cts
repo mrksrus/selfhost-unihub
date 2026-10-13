@@ -153,6 +153,8 @@ test('production export and restore jobs round-trip every section through encryp
   await pool.execute<ResultSetHeader>('UPDATE mail_folders SET mail_account_id = ?, special_use = ? WHERE id = ?', [mailAccounts[1].id, 'archive', folderIds.research]);
   await pool.execute<ResultSetHeader>('UPDATE emails SET filing_account_id = ? WHERE id = ?', [mailAccounts[1].id, sourceEmails[0].id]);
   await pool.execute<ResultSetHeader>('UPDATE emails SET is_legacy = TRUE WHERE id = ?', [sourceEmails[1].id]);
+  // The default sending account is a mail account ID; restore must remap it.
+  await insert('user_settings', { user_id: sourceUser, setting_key: 'default_mail_account_id', setting_value: mailAccounts[1].id });
   for (const account of mailAccounts) {
     const mappings = await rowsFor('mail_folder_remote_boxes', sourceUser);
     await insert('mail_folder_reconciliations', { mail_account_id: account.id, user_id: sourceUser,
@@ -299,7 +301,9 @@ test('production export and restore jobs round-trip every section through encryp
       assert.deepEqual(order(restored[table]), order(original[table]), `${table}: preserve content`);
     };
     compare('contacts', ['first_name', 'last_name', 'email', 'email2', 'phone', 'notes', 'is_favorite']);
-    compare('user_settings', ['setting_key', 'setting_value']);
+    const plainSettings = (rows: FixtureValue[]) => rows.filter(row => row.setting_key !== 'default_mail_account_id')
+      .map(row => ({ setting_key: row.setting_key, setting_value: row.setting_value })).sort((a, b) => a.setting_key.localeCompare(b.setting_key));
+    assert.deepEqual(plainSettings(restored.user_settings), plainSettings(original.user_settings), 'user_settings: preserve content');
     const modules = await runtime('services/module-settings').getOrderedUserModules(userId);
     assert.deepEqual(modules.map((module: FixtureValue) => module.id), ['recordings', 'mail', 'calendar', 'contacts'], 'Restored module order');
     assert.equal(modules.find((module: FixtureValue) => module.id === 'recordings').visible, false);
@@ -317,6 +321,9 @@ test('production export and restore jobs round-trip every section through encryp
     compare('recording_tags', ['name', 'color']);
     const oldAccountEmail = (id: FixtureValue) => original.mail_accounts.find((row: FixtureValue) => row.id === id)?.email_address || null;
     const newAccountEmail = (id: FixtureValue) => restored.mail_accounts.find((row: FixtureValue) => row.id === id)?.email_address || null;
+    const defaultAccount = (rows: FixtureValue[]) => rows.find(row => row.setting_key === 'default_mail_account_id')?.setting_value;
+    assert.equal(newAccountEmail(defaultAccount(restored.user_settings)), oldAccountEmail(defaultAccount(original.user_settings)),
+      'The default sending account names the restored copy of the same account');
     for (const folder of restored.mail_folders) {
       const old = original.mail_folders.find((row: FixtureValue) => row.slug === folder.slug);
       assert.equal(newAccountEmail(folder.mail_account_id), oldAccountEmail(old.mail_account_id));
