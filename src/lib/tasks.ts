@@ -1,7 +1,7 @@
 import { formatEventTime, type CalendarEvent } from '@/lib/calendar-api';
 
 /** "28 Sep, 18:00", "Today 11:00 to 11:30", "1 Oct" for all-day tasks. */
-export function taskWhen(task: CalendarEvent, timezone: string | null, now = new Date()) {
+export function taskWhen(task: Pick<CalendarEvent, 'is_todo_only' | 'all_day' | 'start_time' | 'end_time'>, timezone: string | null, now = new Date()) {
   if (task.is_todo_only) return 'No date';
   const day = formatEventTime(task.start_time, 'yyyy-MM-dd', timezone);
   const today = formatEventTime(now.toISOString(), 'yyyy-MM-dd', timezone);

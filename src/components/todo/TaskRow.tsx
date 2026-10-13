@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { SourceEmailBlock, SourceEmailHint } from '@/components/todo/SourceEmail';
 
 const statusText: Partial<Record<NonNullable<CalendarEvent['todo_status']>, string>> = {
   changed: 'Changed',
@@ -54,6 +55,7 @@ export function TaskRow({ task, actions, timezone, open, onToggle, onEdit, onMov
             <span className={cn(overdue && 'text-warning')}>{overdue ? `Overdue · ${taskWhen(task, timezone)}` : taskWhen(task, timezone)}</span>
             {task.location && <span className="inline-flex min-w-0 items-center gap-1"><MapPin aria-hidden="true" className="h-3 w-3" /><span className="truncate">{task.location}</span></span>}
             {task.subtasks.length > 0 && <span>{subtasksDone}/{task.subtasks.length} subtasks</span>}
+            {task.source_email && !open && <SourceEmailHint source={task.source_email} />}
             {task.todo_status && statusText[task.todo_status] && <span>{statusText[task.todo_status]}</span>}
             {calendarColor && <span aria-hidden="true" className="h-2 w-2 rounded-full" style={{ backgroundColor: calendarColor }} />}
           </span>
@@ -76,6 +78,7 @@ export function TaskRow({ task, actions, timezone, open, onToggle, onEdit, onMov
       {open && (
         <div id={detailsId} className="space-y-3 pb-3 pl-11 pr-3">
           {task.description && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{task.description}</p>}
+          {task.source_email && <SourceEmailBlock source={task.source_email} timezone={timezone} />}
           <Subtasks task={task} actions={actions} readOnly={done} />
           {done ? (
             task.done_at && <p className="text-xs text-muted-foreground">Done {formatEventTime(task.done_at, 'd MMM yyyy, HH:mm', timezone)}</p>

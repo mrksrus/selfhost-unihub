@@ -67,6 +67,15 @@ function startRestoredAccountSync(userId: string, { mailAccountIds, calendarAcco
   });
 }
 
+// An archive's email link is a UUID or nothing; the snapshot is JSON text.
+function sourceEmailId(value: unknown) {
+  return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value) ? value : null;
+}
+function sourceEmailJson(value: unknown) {
+  if (value == null) return null;
+  try { return JSON.stringify(typeof value === 'string' ? JSON.parse(value) : value); } catch { return null; }
+}
+
 async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
   mode = 'dry-run',
   sections = 'full',
@@ -155,6 +164,8 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     const calendarAccountIdMap = new Map();
     const calendarIdMap = new Map();
     const calendarEventIdMap = new Map();
+    // Email links of restored events, remapped once the mail section is in.
+    const eventsWithSourceEmail = new Map<string, string>();
     const claimedCalendarEventIds = new Set<string>();
     const claimedContactIds = new Set<string>();
     const mailAccountIdMap = new Map();
@@ -331,10 +342,11 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
       claimedCalendarEventIds.add(targetEventId);
       if (!shouldWriteExisting(existingEventId, targetEventId, conflictMode)) continue;
       await writeOwnedRow(connection, userId, 'calendar_events',
-        ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at'],
-        [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at)],
-        ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at']
+        ['id', 'user_id', 'calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json'],
+        [targetEventId, row.user_id, targetCalendarId, row.title || 'Untitled Event', row.description ?? null, normalizeMysqlDateTime(row.start_time), normalizeMysqlDateTime(row.end_time), row.all_day ? 1 : 0, row.location || null, row.color || '#22c55e', row.recurrence || null, row.reminder_minutes ?? null, row.reminders ? (typeof row.reminders === 'string' ? row.reminders : JSON.stringify(row.reminders)) : null, row.todo_status || null, row.is_todo_only ? 1 : 0, normalizeMysqlDateTime(row.done_at), sourceEmailId(row.source_email_id), sourceEmailJson(row.source_email_json)],
+        ['calendar_id', 'title', 'description', 'start_time', 'end_time', 'all_day', 'location', 'color', 'recurrence', 'reminder_minutes', 'reminders', 'todo_status', 'is_todo_only', 'done_at', 'source_email_id', 'source_email_json']
       );
+      if (sourceEmailId(row.source_email_id)) eventsWithSourceEmail.set(targetEventId, row.source_email_id);
     }
 
     for (const subtask of data.calendar_event_subtasks || []) {
@@ -665,6 +677,14 @@ async function importBackupForUser(userId: string, backup: ArchiveEnvelope, {
     });
     if (scopedBackup.source_backup_version! >= 3) {
       await validateRestoredMailDestinations(connection, userId, [...writtenEmailIds].map(id => emailIdMap.get(id)!), checkRestoreCancelled);
+    }
+    // The archive's email id stays when mail was not restored (the task keeps
+    // its own snapshot); a restored email that got a new id is followed.
+    for (const [eventId, archivedEmailId] of eventsWithSourceEmail) {
+      const targetEmailId = emailIdMap.get(archivedEmailId);
+      if (targetEmailId && targetEmailId !== archivedEmailId) {
+        await connection.execute('UPDATE calendar_events SET source_email_id = ? WHERE id = ? AND user_id = ? AND source_email_id = ?', [targetEmailId, eventId, userId, archivedEmailId]);
+      }
     }
 
     await reportRestoreProgress('recordings', 90);

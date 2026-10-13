@@ -6,6 +6,7 @@ import { presentMailFiling } from '../services/mail-filing';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../state';
+import { EMAIL_TASK_COUNT_SQL, tasksForEmail } from '../services/email-tasks';
 import { toBooleanFlag } from '../services/mail';
 import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL, extractMailRouteId } from './mail-route-helpers';
 
@@ -106,7 +107,8 @@ export = {
           is_draft,
           has_attachments,
           received_at,
-          created_at
+          created_at,
+          ${EMAIL_TASK_COUNT_SQL} AS task_count
         FROM emails
         WHERE ${whereSql}
         ORDER BY received_at DESC, id DESC
@@ -133,6 +135,7 @@ export = {
         read_sync_pending: !!email.read_sync_pending,
         star_sync_pending: !!email.star_sync_pending,
         is_draft: !!email.is_draft,
+        task_count: Number(email.task_count) || 0,
       }));
       return {
         emails: parsedEmails,
@@ -203,6 +206,7 @@ export = {
       }));
 
       // Note: Inline attachments are already embedded in body_html via URL replacement
+      parsedEmail.tasks = await tasksForEmail(userId, id);
 
       return { email: parsedEmail };
     } catch (error) {

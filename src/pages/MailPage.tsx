@@ -5,6 +5,7 @@ import { PenSquare, Plus } from 'lucide-react';
 import { captureMailFlagReconciler, type Email } from '@/lib/mail-api';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
+import { useUserTimezone } from '@/contexts/useAuth';
 import { NARROW_QUERY, useIsMobile, useMediaQuery } from '@/hooks/use-mobile';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
 import { useMailAccountSelection, useRememberedMailAccount } from '@/hooks/use-mail-account-selection';
@@ -24,6 +25,7 @@ import { PageShell } from '@/components/layout/PageShell';
 import MailFolderNavigation from '@/components/mail/MailFolderNavigation';
 import { MailLegacyRecovery, MailListToolbar } from '@/components/mail/MailListToolbar';
 import { MailContextMenu, MailMessageList } from '@/components/mail/MailMessageList';
+import { EmailTaskDialog } from '@/components/mail/EmailTaskDialog';
 import { MailReader, MailReaderLoading } from '@/components/mail/MailReader';
 import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/components/mail/MailCompose';
 import { MailAccountDialog } from '@/components/mail/MailAccountDialog';
@@ -39,6 +41,7 @@ import { systemFolders, ALL_ACCOUNTS, LEGACY_ACCOUNT, ALL_MAIL } from '@/compone
  */
 const MailPage = () => {
   const { toast } = useToast();
+  const timezone = useUserTimezone();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const location = useLocation();
@@ -66,6 +69,7 @@ const MailPage = () => {
   const compose = useMailCompose({ activeMailAccountId, selectedAccount, setSelectedAccount, isMobile });
   const accountRemoval = useMailAccountRemoval(() => setSelectedAccount(ALL_ACCOUNTS));
   const [contextMenuEmail, setContextMenuEmail] = useState<{ email: Email; x: number; y: number } | null>(null);
+  const [taskEmail, setTaskEmail] = useState<Email | null>(null);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const { jobs: syncJobs, requestSync, syncingAccountIds, requestCancel, cancellingAccountIds } = useMailSyncJobs(accounts);
   const writebacks = useMailWritebacks(refreshSettledEmail);
@@ -191,8 +195,10 @@ const MailPage = () => {
 
       {contextMenuEmail && (
         <MailContextMenu target={contextMenuEmail} onClose={() => setContextMenuEmail(null)} requestFlag={requestFlag}
-          movableFolders={movableFolders} bulk={bulk} onDeleteDraft={compose.setDraftToDelete} />
+          movableFolders={movableFolders} bulk={bulk} onDeleteDraft={compose.setDraftToDelete} onAddTask={setTaskEmail} />
       )}
+      <EmailTaskDialog email={taskEmail} onClose={() => setTaskEmail(null)} timezone={timezone}
+        onCreated={task => setSelectedEmail(prev => prev && prev.id === task.source_email?.email_id ? { ...prev, tasks: [...(prev.tasks ?? []), task] } : prev)} />
 
       <MailAccountRemovalDialogs removal={accountRemoval} accounts={accounts} />
 
@@ -210,6 +216,7 @@ const MailPage = () => {
           }}
           onReply={() => compose.startResponse(selectedEmail, 'reply')}
           onForward={() => compose.startResponse(selectedEmail, 'forward')}
+          onAddTask={() => setTaskEmail(selectedEmail)} timezone={timezone}
           inlineCompose={!isMobile && compose.isReplying && <MailInlineCompose compose={compose} />} />
       )}
 

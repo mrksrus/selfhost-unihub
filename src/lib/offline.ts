@@ -260,10 +260,20 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
   }
   if (path === '/calendar/accounts') return {data:{accounts:snapshot.calendarAccounts}};
   if (path === '/calendar/calendars') return {data:{calendars:snapshot.calendars.filter(row=>!params.get('account_id')||row.account_id===params.get('account_id'))}};
+  // A task made from an email carries the email's header; the email itself
+  // can be opened only while the snapshot holds it.
+  const withSourceEmail = (row: Row) => {
+    if (!row.source_email_id) return { ...row, source_email: null };
+    let saved: Row = {};
+    try { saved = (typeof row.source_email_json === 'string' ? JSON.parse(row.source_email_json) : row.source_email_json) || {}; } catch { saved = {}; }
+    return { ...row, source_email: { email_id: row.source_email_id, subject: saved.subject ?? null, from_name: saved.from_name ?? null,
+      from_address: saved.from_address ?? '', received_at: saved.received_at ?? null, attachments: Array.isArray(saved.attachments) ? saved.attachments : [],
+      account: saved.account ?? null, available: snapshot.emails.some(email => email.id === row.source_email_id) } };
+  };
   const eventMatch = path.match(/^\/calendar\/events\/([^/]+)$/);
   if (eventMatch) {
     const event = snapshot.events.find(row => row.id === decodeURIComponent(eventMatch[1]));
-    return event ? { data: { event } } : { error: 'This event is not in your offline snapshot.', status: 404 };
+    return event ? { data: { event: withSourceEmail(event) } } : { error: 'This event is not in your offline snapshot.', status: 404 };
   }
   if (path === '/calendar/events') {
     const ids=(params.get('calendar_ids')||'').split(',').map(id=>id.trim()).filter(Boolean);
@@ -279,7 +289,7 @@ export function resolveOfflineEndpoint(snapshot: OfflineSnapshot, endpoint: stri
       if(params.get('range_end')&&Date.parse(text(row.start_time))>Date.parse(params.get('range_end')!))return false;
       return true;
     });
-    return {data:{events:events.sort((a,b)=>Date.parse(text(a.start_time))-Date.parse(text(b.start_time)))}};
+    return {data:{events:events.sort((a,b)=>Date.parse(text(a.start_time))-Date.parse(text(b.start_time))).map(withSourceEmail)}};
   }
   if(path === '/mail/accounts') return {data:{accounts:snapshot.mailAccounts.map(row=>({...row,unread_count:snapshot.emails.filter(email=>viewAccount(email)===row.id&&!truthy(email.is_read)).length}))}};
   if(path === '/mail/emails') {

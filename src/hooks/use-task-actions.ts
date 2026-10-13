@@ -1,8 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
-import { calendarApi, invalidateCalendarQueries, type CalendarEvent, type CalendarSubtask } from '@/lib/calendar-api';
+import { calendarApi, invalidateCalendarQueries, type CalendarEvent, type CalendarSubtask, type NewCalendarEvent } from '@/lib/calendar-api';
 
-export type NewTask = Partial<CalendarEvent> & { title: string };
+export type NewTask = NewCalendarEvent;
 
 /**
  * Every change to a task, with its feedback. Tasks are calendar events, so the

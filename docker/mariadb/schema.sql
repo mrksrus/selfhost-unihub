@@ -197,12 +197,15 @@ CREATE TABLE `calendar_events` (
   `done_at` datetime DEFAULT NULL COMMENT 'Timestamp when task was marked as done',
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `source_email_id` char(36) DEFAULT NULL,
+  `source_email_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`source_email_json`)),
   PRIMARY KEY (`id`),
   KEY `idx_events_user` (`user_id`),
   KEY `idx_events_start` (`start_time`),
   KEY `idx_events_user_time` (`user_id`,`start_time`,`end_time`),
   KEY `idx_events_calendar` (`calendar_id`),
   KEY `idx_events_notification_scan` (`updated_at`,`start_time`),
+  KEY `idx_events_source_email` (`user_id`,`source_email_id`),
   CONSTRAINT `calendar_events_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE,
   CONSTRAINT `fk_calendar_events_calendar_id` FOREIGN KEY (`calendar_id`) REFERENCES `calendar_calendars` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

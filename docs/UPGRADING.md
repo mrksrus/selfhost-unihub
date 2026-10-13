@@ -5,6 +5,13 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.20.0 Tasks from email
+
+Database upgrade 16 runs at startup. It adds `source_email_id` and
+`source_email_json` to `calendar_events` and an index; existing rows are not
+changed. No configuration change. Backups made with 0.20.0 carry the new
+fields; older backups restore as before.
+
 ## 0.19.4 Following moved mail
 
 No database upgrade and no configuration change. Pull and restart.

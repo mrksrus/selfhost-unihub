@@ -60,4 +60,7 @@ export interface CalendarEvent extends CalendarDates, Record<string, unknown> {
   end_time?: Date | string | null;
   done_at?: Date | string | null;
   reminders?: unknown;
+  source_email_id?: string | null;
+  source_email_json?: unknown;
+  source_email_present?: unknown;
 }

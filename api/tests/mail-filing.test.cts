@@ -23,6 +23,7 @@ test('list and detail preserve provider identity while presenting the receiving 
     assert.equal(params.includes('user'), true);
     if (sql.includes('COUNT(*)')) return [[{ total: 1 }]];
     if (sql.includes('FROM email_attachments')) return [[]];
+    if (sql.startsWith('SELECT e.id, e.title, e.todo_status')) return [[]];
     assert.match(sql, /FROM emails/);
     if (sql.includes('FROM emails WHERE id = ? AND user_id = ?')) {
       assert.deepEqual(params, ['message', 'user']);

@@ -1,4 +1,4 @@
-import { CheckCircle2, CheckSquare, ChevronLeft, ChevronRight, Inbox, Mail, Paperclip, Plus, Square, Star, Trash2 } from 'lucide-react';
+import { CheckCircle2, CheckSquare, ChevronLeft, ChevronRight, Inbox, ListTodo, Mail, Paperclip, Plus, Square, Star, Trash2 } from 'lucide-react';
 import type { Email, MailAccount, MailFlagKind } from '@/lib/mail-api';
 import type { MailListView } from '@/hooks/use-mail-list-view';
 import type { MailListSelection } from '@/hooks/use-mail-list-selection';
@@ -97,6 +97,7 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
                     <span className={cn('min-w-0 flex-1 truncate', unread ? 'text-foreground' : 'text-muted-foreground')}>{email.subject || '(No subject)'}</span>
                     {!!email.has_attachments && <Paperclip
  aria-label="Has attachments" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
+                    {!!email.task_count && <ListTodo aria-label={email.task_count === 1 ? 'Has a task' : `Has ${email.task_count} tasks`} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />}
                   </span>
                   <span className="mt-0.5 block truncate pl-4 text-sm text-muted-foreground/80">{email.body_text?.substring(0, 140) || '(No content)'}</span>
                   {(disconnected || email.remote_missing) && <span className="mt-1 flex flex-wrap gap-1.5 pl-4">
@@ -194,10 +195,11 @@ interface ContextMenuProps {
   movableFolders: MailFolderItem[];
   bulk: MailBulkActions;
   onDeleteDraft: (draft: Email) => void;
+  onAddTask: (email: Email) => void;
 }
 
 /** Right-click menu of a message row. */
-export function MailContextMenu({ target, onClose, requestFlag, movableFolders, bulk, onDeleteDraft }: ContextMenuProps) {
+export function MailContextMenu({ target, onClose, requestFlag, movableFolders, bulk, onDeleteDraft, onAddTask }: ContextMenuProps) {
   return (
     <>
       <div
@@ -232,6 +234,15 @@ export function MailContextMenu({ target, onClose, requestFlag, movableFolders, 
           <Star className={`h-4 w-4 ${target.email.is_starred ? 'fill-warning text-warning' : ''}`} />
           {target.email.is_starred ? 'Unstar' : 'Star'}
         </button>
+        {!target.email.is_draft && (
+          <button
+            className="w-full text-left px-3 py-2 text-sm hover:bg-muted rounded-sm flex items-center gap-2"
+            onClick={() => { onAddTask(target.email); onClose(); }}
+          >
+            <ListTodo className="h-4 w-4" />
+            Add task
+          </button>
+        )}
         <div className="border-t border-border my-1" />
         {movableFolders
           .filter((folder) => folder.id !== target.email.folder)

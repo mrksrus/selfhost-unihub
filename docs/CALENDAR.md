@@ -150,6 +150,7 @@ Important fields:
 | `calendar_events` | `is_todo_only` | Standalone ToDo item |
 | `calendar_events` | `todo_status` | `done`, `changed`, `time_moved`, `cancelled`, or null |
 | `calendar_events` | `reminders` | JSON array of reminder offsets in minutes |
+| `calendar_events` | `source_email_id`, `source_email_json` | The email a task or event was made from (0.20.0): the id (no foreign key) and a snapshot of its header, see [Tasks from email](#tasks-from-email) |
 | `calendar_event_external_refs` | `remote_object_id`, `recurrence_id` | Links each local occurrence to its server object; `recurrence_id` is UTC `YYYYMMDDTHHMMSSZ` |
 
 ## Default Calendar
@@ -238,7 +239,33 @@ Event query parameters:
 
 Supported event payload fields include `title`, `description`, `start_time`,
 `end_time`, `all_day`, `location`, `color`, `recurrence`, `reminder_minutes`,
-`reminders`, `is_todo_only`, `calendar_id`, and `attendees`.
+`reminders`, `is_todo_only`, `calendar_id`, `attendees` and, on create,
+`source_email_id`.
+
+## Tasks from email
+
+Since 0.20.0 a task or event can be made from an email (**Add task** in the
+mail reader). `POST /api/calendar/events` with `source_email_id` checks that
+the email belongs to the user and stores, next to the id, a snapshot of the
+email's header in `source_email_json`: subject, sender, date, the file names
+of up to eight regular attachments and the account address. Events are
+returned with `source_email` (`{ email_id, subject, from_name, from_address,
+received_at, attachments, account, available }`); `available` says whether
+the email still exists, so the task keeps its context after the email is
+removed by the user or by Sync policy. There is no foreign key: a
+calendar-only restore does not depend on mail. The mail side shows the link
+too: `GET /api/mail/emails/:id` returns `tasks` and the list returns
+`task_count`.
+
+Lists in the ToDo page are the user's local calendars; **New list** in the
+dialog creates one. A task with a day appears in that calendar and is
+reminded at its time (all-day tasks at 09:00); without a day it is
+`is_todo_only`.
+
+Backups export both fields. On restore the link is written as archived and,
+once the mail section is restored, follows a restored email's new id; a
+calendar-only restore keeps the id and the snapshot. The offline snapshot
+includes both fields, and the app derives `source_email` from them.
 
 ## Notifications and Offline Reading
 

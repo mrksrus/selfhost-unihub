@@ -140,6 +140,10 @@ export interface Email {
   received_at: string;
   has_attachments?: boolean;
   attachments?: EmailAttachment[];
+  /** Tasks made from this email (detail only). */
+  tasks?: import('@/lib/email-tasks').EmailTaskSummary[];
+  /** How many tasks were made from this email (list rows). */
+  task_count?: number;
 }
 
 

@@ -3,6 +3,7 @@ import type { RouteRequest, ApiError, StoredFlag } from '../types';
 import type { CalendarAccount, CalendarCalendar, CalendarEvent, CalendarAttendee, CalendarSubtask } from '../types/calendar';
 import crypto from 'crypto';
 import { db } from '../state';
+import { sourceEmailPresentSql, snapshotSourceEmail } from '../services/email-tasks';
 import {
   CALENDAR_MULTI_ENABLED,
 } from '../config';
@@ -510,7 +511,7 @@ export = {
         .filter(Boolean);
 
       let query = `
-        SELECT e.*, c.auto_todo_enabled, c.is_visible
+        SELECT e.*, c.auto_todo_enabled, c.is_visible, ${sourceEmailPresentSql('e')} AS source_email_present
         FROM calendar_events e
         LEFT JOIN calendar_calendars c ON c.id = e.calendar_id
         WHERE e.user_id = ?`;
@@ -564,7 +565,10 @@ export = {
     if (!body.title?.trim()) return { error: 'Title is required', status: 400 };
 
     try {
-      const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only } = body;
+      const { title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only, source_email_id } = body;
+      // A task made from an email keeps the email's header with it.
+      const sourceEmail = source_email_id ? await snapshotSourceEmail(userId, source_email_id) : null;
+      if (source_email_id && !sourceEmail) return { error: 'Email not found', status: 404 };
       let start = toMysqlDatetime(start_time);
       let end = toMysqlDatetime(end_time);
 
@@ -598,8 +602,9 @@ export = {
         await connection.beginTransaction();
         await connection.execute(
           `INSERT INTO calendar_events
-            (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (id, user_id, calendar_id, title, description, start_time, end_time, all_day, location, color, recurrence, reminder_minutes, reminders, is_todo_only,
+             source_email_id, source_email_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             eventId,
             userId,
@@ -615,6 +620,8 @@ export = {
             reminder_minutes ?? null,
             reminders ? JSON.stringify(reminders) : null,
             !!is_todo_only,
+            sourceEmail ? String(source_email_id) : null,
+            sourceEmail ? JSON.stringify(sourceEmail) : null,
           ]
         );
         if (Array.isArray(body.attendees)) {

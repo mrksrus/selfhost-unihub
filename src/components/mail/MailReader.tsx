@@ -2,7 +2,7 @@ import { saveFile } from '@/lib/platform';
 import type { MouseEvent, ReactNode } from 'react';
 
 import { format } from 'date-fns';
-import { ArrowLeft, CheckCircle2, Download, Forward, Loader2, Mail, Paperclip, Reply, Star, UserPlus } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Download, Forward, ListTodo, Loader2, Mail, Paperclip, Reply, Star, UserPlus } from 'lucide-react';
 import { api } from '@/lib/api';
 import type { Email, MailAccount, MailFlagKind } from '@/lib/mail-api';
 import { useToast } from '@/hooks/use-toast';
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { LoadingState } from '@/components/ui/page-states';
 import { SafeEmailContent } from '@/components/mail/SafeEmailContent';
 import { MailPendingMark } from '@/components/mail/MailPendingMark';
+import { EmailTasks } from '@/components/mail/EmailTasks';
 import { deriveContactNameFromEmail } from '@/components/mail/mail-page-model';
 
 interface Props {
@@ -30,13 +31,16 @@ interface Props {
   onBack: () => void;
   onReply: () => void;
   onForward: () => void;
+  /** Opens the dialog that makes a task from this message. */
+  onAddTask: () => void;
+  timezone: string | null;
   /** Desktop inline reply editor, shown below the message. */
   inlineCompose: ReactNode;
 }
 
 /** Reader pane: full screen on narrow screens, the right column of the split view on wide ones. */
 export function MailReader({ email, loading = false, accounts, location, backLabel, isMobile, isReplying, flagRequests, requestFlag,
-  senderInContacts, onBack, onReply, onForward, inlineCompose }: Props) {
+  senderInContacts, onBack, onReply, onForward, onAddTask, timezone, inlineCompose }: Props) {
   const { toast } = useToast();
   const { create: createContact } = useContactActions();
 
@@ -74,6 +78,10 @@ export function MailReader({ email, loading = false, accounts, location, backLab
               >
                 <Forward className="h-4 w-4 mr-2" />
                 Forward
+              </Button>
+              <Button variant="outline" size="sm" onClick={onAddTask} disabled={loading || !!email.is_draft}>
+                <ListTodo className="h-4 w-4 mr-2" />
+                Add task
               </Button>
             </div>
           </div>
@@ -146,6 +154,8 @@ export function MailReader({ email, loading = false, accounts, location, backLab
                 </div>
               </div>
             </div>
+
+            {!loading && email.tasks && <EmailTasks tasks={email.tasks} timezone={timezone} />}
 
             {loading && <LoadingState label="Loading email…" compact className="border-t border-border" />}
 

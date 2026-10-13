@@ -43,7 +43,7 @@ const BASE_TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Obj
   contacts: table('contacts', 'id user_id first_name last_name email email2 email3 phone phone2 phone3 company job_title notes avatar_url is_favorite created_at updated_at', ["id"], {}),
   calendar_accounts: table('calendar', 'id user_id provider account_email display_name username encrypted_password discovery_url base_url encrypted_access_token encrypted_refresh_token token_expires_at provider_config capabilities is_active sync_status sync_error last_synced_at created_at updated_at', ["id"], {}),
   calendar_calendars: table('calendar', 'id user_id account_id name external_id color is_visible auto_todo_enabled read_only is_primary sync_token created_at updated_at', ["id"], {}),
-  calendar_events: table('calendar', 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at', ["id"], {}),
+  calendar_events: table('calendar', 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json', ["id"], { source_email_id: 'preserve' }, { source_email_id: 16, source_email_json: 16 }),
   calendar_event_subtasks: table('calendar', 'id event_id user_id title is_done position created_at updated_at', ["id"], {}),
   calendar_event_attendees: table('calendar', 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', ["id"], {}),
   calendar_event_external_refs: table('calendar', 'id user_id event_id calendar_id account_id provider external_event_id external_etag external_updated_at last_synced_at created_at updated_at', ["id"], {}),
@@ -86,6 +86,9 @@ const TABLE_POLICIES: Readonly<Record<string, Readonly<TablePolicy>>> = Object.f
 // user_id is always rebound to the authenticated destination, never copied.
 const REFERENCES: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
   calendar_calendars: { account_id: 'calendar_accounts' },
+  // calendar_events.source_email_id is a link across sections (to emails),
+  // so it is preserved as written; the import follows a restored email's new
+  // id afterwards, and a calendar-only restore keeps the task's own snapshot.
   calendar_events: { calendar_id: 'calendar_calendars' },
   calendar_event_subtasks: { event_id: 'calendar_events' },
   calendar_event_attendees: { event_id: 'calendar_events' },

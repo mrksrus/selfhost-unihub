@@ -119,7 +119,12 @@ export interface CalendarEvent {
   updated_at: string;
   subtasks: CalendarSubtask[];
   attendees: CalendarAttendee[];
+  /** The email this task or event was made from, if any. */
+  source_email?: import('@/lib/email-tasks').SourceEmail | null;
 }
+
+/** What creates an event or task; `source_email_id` links it to the email it came from. */
+export type NewCalendarEvent = Partial<CalendarEvent> & { title: string; source_email_id?: string };
 
 export interface CalendarEventFilters {
   includeTodos?: boolean;
@@ -225,7 +230,7 @@ export const calendarApi = {
     return (response.data?.events || []).map(normalizeEvent);
   },
 
-  async createEvent(payload: Partial<CalendarEvent> & { title: string }): Promise<CalendarEvent> {
+  async createEvent(payload: NewCalendarEvent): Promise<CalendarEvent> {
     const response = await api.post<{ event: CalendarEvent }>('/calendar/events', payload);
     if (response.error) throw new Error(response.error);
     const event = response.data?.event;

@@ -246,6 +246,29 @@ async function ensureSchema() {
         }
       },
     },
+    {
+      // 0.20.0: a task or event can come from an email. The link is a plain
+      // id (no foreign key: a calendar-only restore must not depend on mail),
+      // with a snapshot of the email's header so the task keeps its context
+      // after the email is gone.
+      id: 16,
+      name: 'event-source-email',
+      up: async (connection: PoolConnection) => {
+        if (!await hasColumn(connection, 'calendar_events', 'source_email_id')) {
+          await connection.execute('ALTER TABLE calendar_events ADD COLUMN source_email_id char(36) DEFAULT NULL');
+        }
+        if (!await hasColumn(connection, 'calendar_events', 'source_email_json')) {
+          await connection.execute('ALTER TABLE calendar_events ADD COLUMN source_email_json longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(source_email_json))');
+        }
+        if (!await hasIndex(connection, 'calendar_events', 'idx_events_source_email')) {
+          await connection.execute('ALTER TABLE calendar_events ADD KEY idx_events_source_email (user_id, source_email_id)');
+        }
+      },
+      verify: async (connection: PoolConnection) => {
+        await verifyDatabaseInventory(connection, { throughMigration: 16 });
+        if (!await hasIndex(connection, 'calendar_events', 'idx_events_source_email')) throw new Error('Index idx_events_source_email on calendar_events is missing');
+      },
+    },
   ], BASELINE);
 }
 
@@ -269,6 +292,10 @@ async function unmarkedMailCalendars(connection: PoolConnection) {
   return rows.filter(row => ((safeJsonParse(row.provider_config, {}) || {}) as { mailLinked?: unknown }).mailLinked !== true);
 }
 
+async function hasColumn(connection: SqlExecutor, table: string, column: string) {
+  const [present] = await connection.execute<RowDataPacket[]>(`SHOW COLUMNS FROM ${quoteIdentifier(table)} WHERE Field = ?`, [column]);
+  return present.length > 0;
+}
 async function hasIndex(connection: SqlExecutor, table: string, name: string) {
   const [present] = await connection.execute<RowDataPacket[]>(`SHOW INDEX FROM ${quoteIdentifier(table)} WHERE Key_name = ?`, [name]);
   return present.length > 0;

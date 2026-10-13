@@ -42,7 +42,7 @@ const OFFLINE_MAX_BYTES = 32 * 1024 * 1024;
 // future backend-only columns out of the device snapshot.
 const SECTIONS = {
   contacts: { table: 'contacts', columns: 'id user_id first_name last_name email email2 email3 phone phone2 phone3 company job_title notes avatar_url is_favorite', order: 'is_favorite DESC, first_name, last_name, id' },
-  events: { table: 'calendar_events', columns: 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at', order: 'start_time, id' },
+  events: { table: 'calendar_events', columns: 'id user_id calendar_id title description start_time end_time all_day location color recurrence reminder_minutes reminders todo_status is_todo_only done_at created_at updated_at source_email_id source_email_json', order: 'start_time, id' },
   subtasks: { table: 'calendar_event_subtasks', columns: 'id event_id user_id title is_done position created_at updated_at', order: 'position, created_at, id' },
   attendees: { table: 'calendar_event_attendees', columns: 'id user_id event_id email display_name response_status is_organizer optional_attendee comment created_at updated_at', order: 'created_at, id' },
   calendars: { table: 'calendar_calendars', columns: 'id user_id account_id name color is_visible auto_todo_enabled read_only is_primary created_at updated_at', order: 'created_at, id' },

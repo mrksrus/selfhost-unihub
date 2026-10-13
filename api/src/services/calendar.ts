@@ -6,6 +6,7 @@ import type { CalendarAccount, CalendarCalendar, CalendarSubtask, CalendarAttend
 import crypto from 'crypto';
 import { db } from '../state';
 import { getCalendarEventIdFromPath, getCalendarSubtaskIdFromPath } from '../../calendar-route-utils';
+import { sourceEmailPresentSql, presentSourceEmail } from './email-tasks';
 
 const CALENDAR_PROVIDER_DEFAULT_CAPABILITIES = {
   local: {
@@ -222,8 +223,11 @@ function serializeCalendarAttendee(row: CalendarAttendee) {
 }
 
 function serializeCalendarEvent(row: CalendarEvent, subtasks: ReturnType<typeof serializeCalendarSubtask>[] = [], attendees: ReturnType<typeof serializeCalendarAttendee>[] = []) {
+  const { source_email_json, source_email_present, ...stored } = row;
+  void source_email_json;
   return {
-    ...row,
+    ...stored,
+    source_email: presentSourceEmail({ source_email_id: row.source_email_id, source_email_json, source_email_present }),
     all_day: !!row.all_day,
     is_todo_only: !!row.is_todo_only,
     calendar_id: row.calendar_id || null,
@@ -275,7 +279,8 @@ async function getCalendarAttendeesForEvents(userId: string, eventIds: readonly 
 }
 
 async function getCalendarEventWithSubtasks(userId: string, eventId: string) {
-  const [events] = await db.execute<(RowDataPacket & CalendarEvent)[]>('SELECT * FROM calendar_events WHERE id = ? AND user_id = ?', [eventId, userId]);
+  const [events] = await db.execute<(RowDataPacket & CalendarEvent)[]>(`SELECT calendar_events.*, ${sourceEmailPresentSql()} AS source_email_present
+    FROM calendar_events WHERE id = ? AND user_id = ?`, [eventId, userId]);
   if (events.length === 0) return null;
 
   const [subtasks] = await db.execute<(RowDataPacket & CalendarSubtask)[]>(

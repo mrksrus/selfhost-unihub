@@ -18,6 +18,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
+import { SourceEmailBlock } from '@/components/todo/SourceEmail';
 
 /** What the dialog shows: a new event (optionally on a day) or an existing one. */
 export type EventDialogTarget = { kind: 'new'; date?: Date } | { kind: 'edit'; event: CalendarEvent } | null;
@@ -150,6 +151,7 @@ export function EventDialog({ target, onClose, calendars, accounts, actions, tim
             <Button size="sm" variant="outline" disabled={actions.rsvp.isPending} onClick={() => actions.rsvp.mutate({ id: editing.id, status: 'declined' })}>Decline</Button>
           </div>
         )}
+        {editing?.source_email && <SourceEmailBlock source={editing.source_email} timezone={timezone} />}
         <form onSubmit={submit} className="space-y-4">
           <fieldset disabled={readOnly} className="min-w-0 space-y-4">
             <div className="space-y-2">

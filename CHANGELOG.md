@@ -6,6 +6,27 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.20.0
+
+Turn an email into a task. Database upgrade 16 runs at startup and adds two
+fields to tasks and events; nothing else changes.
+
+### Added
+
+- **Add task from an email.** In the reader (and the message's right-click
+  menu) **Add task** makes a task with the subject as its title, in a list of
+  your choice, and keeps the email with it. Lists are your own calendars; a
+  new one can be made right there. Give the task a day, with a reminder, and
+  it shows in the calendar; without a day it waits under No date.
+- **Back to the email.** The task shows the email it came from in ToDo, on
+  Today and in the Calendar event, with its sender, date and attachment names
+  and **Open email**. If the email is later removed from UniHub, the task
+  keeps that summary and says so.
+- The reader lists the tasks made from the open message, each leading to its
+  row in ToDo; a mail row shows a small task mark when one exists.
+- Offline reading shows the email summary on tasks too. Backups carry the link
+  and the summary.
+
 ## 0.19.4
 
 Two refinements to how UniHub follows mail moved in another app. No

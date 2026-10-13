@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
@@ -71,6 +71,28 @@ const TodoPage = () => {
     next.delete('action');
     setParams(next, { replace: true });
   }, [params, setParams]);
+  // An email's task list links here; the task opens in the view it belongs to.
+  useEffect(() => {
+    const taskId = params.get('task');
+    if (!taskId || !tasksQuery.data) return;
+    const linked = tasksQuery.data.find(task => task.id === taskId);
+    const next = new URLSearchParams(params);
+    next.delete('task');
+    if (linked) {
+      if (linked.todo_status === 'done') next.set('view', 'done'); else next.delete('view');
+      setCalendarId(null);
+      setOpenId(taskId);
+      linkedTask.current = taskId;
+    }
+    setParams(next, { replace: true });
+  }, [params, setParams, tasksQuery.data]);
+  // Once the linked task's row is open, bring it into view.
+  const linkedTask = useRef<string | null>(null);
+  useEffect(() => {
+    if (!openId || openId !== linkedTask.current) return;
+    linkedTask.current = null;
+    document.getElementById(`task-${openId}-details`)?.scrollIntoView?.({ block: 'center' });
+  }, [openId]);
 
   const tasks = useMemo(() => (tasksQuery.data ?? []).filter(task => !calendarId || task.calendar_id === calendarId), [tasksQuery.data, calendarId]);
   const groups = useMemo(() => groupTasks(tasks, timezone), [tasks, timezone]);

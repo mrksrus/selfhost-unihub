@@ -14,7 +14,7 @@ for (const [read, star] of [[0, 0], [0, 1], [1, 0], [1, 1], ['0', '0'], ['0', '1
     installDb(t, { execute: async (sql: string, args: FixtureValue) => {
       assert(args.includes('owner'));
       if (sql.includes('COUNT(*)')) return [[{ total: 1 }]];
-      if (sql.includes('FROM email_attachments')) return [[]];
+      if (sql.includes('FROM email_attachments') || sql.startsWith('SELECT e.id, e.title, e.todo_status')) return [[]];
       return [[{ id: 'email', user_id: 'owner', to_addresses: '[]', is_read: read, is_starred: star,
         effective_is_read: read, effective_is_starred: star, read_sync_pending: 0, star_sync_pending: 0 }]];
     } });
