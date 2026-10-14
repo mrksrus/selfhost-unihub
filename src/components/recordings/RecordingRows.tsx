@@ -1,4 +1,4 @@
-import { ChevronDown, Download, FileAudio, Loader2 } from 'lucide-react';
+import { Download, Loader2, MoreHorizontal } from 'lucide-react';
 import { recordingCategoryLabels, type Recording } from '@/lib/recordings-api';
 import type { StoredRecording } from '@/lib/recording-queue';
 import { formatBytes, formatDuration, formatRecordedAt, storedRecordingStatus } from '@/lib/recording-format';
@@ -6,38 +6,51 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { RecordingPlayer } from '@/components/recordings/RecordingPlayer';
+import { PlayButton, RecordingPlayer } from '@/components/recordings/RecordingPlayer';
 
 interface RowProps {
   recording: Recording;
-  open: boolean;
+  playing: boolean;
   exporting: boolean;
   activeTag: string;
-  onToggle: () => void;
+  onPlay: () => void;
   onEdit: () => void;
   onDownload: (mp3: boolean) => void;
   onDelete: () => void;
   onTag: (tag: string) => void;
 }
 
-/** A recording in the library. Opening it shows the player and what can be done with it. */
-export function RecordingRow({ recording, open, exporting, activeTag, onToggle, onEdit, onDownload, onDelete, onTag }: RowProps) {
+/** A recording in the library with its details in view; the player appears for the one being played. */
+export function RecordingRow({ recording, playing, exporting, activeTag, onPlay, onEdit, onDownload, onDelete, onTag }: RowProps) {
   const meta = [formatRecordedAt(recording.recorded_at), formatDuration(recording.duration_seconds),
-    recording.category !== 'none' ? recordingCategoryLabels[recording.category] : null].filter(Boolean).join(' · ');
+    recording.category !== 'none' ? recordingCategoryLabels[recording.category] : null,
+    formatBytes(recording.size_bytes), recording.source === 'recorded' ? 'recorded here' : 'imported'].filter(Boolean);
+  const details = recording.description || (recording.category === 'music' && recording.metadata?.chords) || recording.tags.length > 0;
   return (
-    <li className="border-b border-border">
-      <button type="button" onClick={onToggle} aria-expanded={open}
-        className="flex w-full items-center gap-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-        <FileAudio aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium">{recording.title}</span>
-          <span className="block truncate text-xs text-muted-foreground">{meta}</span>
-        </span>
-        <ChevronDown aria-hidden="true" className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
-      </button>
-      {open && (
-        <div className="space-y-3 pb-4 pl-7">
-          <RecordingPlayer id={recording.id} />
+    <li className="grid grid-cols-[auto_1fr_auto] gap-x-3 border-b border-border py-3">
+      <PlayButton title={recording.title} playing={playing} onToggle={onPlay} />
+      <div className="min-w-0">
+        <p className="break-words font-medium">{recording.title}</p>
+        <p className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          {meta.map(item => <span key={item}>{item}</span>)}
+        </p>
+      </div>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon" className="-my-1 -mr-1 h-8 w-8 text-muted-foreground" disabled={exporting} aria-label={`More actions for ${recording.title}`}>
+            {exporting ? <Loader2 aria-hidden="true" className="animate-spin" /> : <MoreHorizontal aria-hidden="true" />}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onClick={onEdit}>Edit</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onDownload(false)}>Download</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onDownload(true)}>Download as MP3</DropdownMenuItem>
+          <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>Delete</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {(playing || details) && (
+        <div className="col-start-2 mt-2 space-y-2.5">
+          {playing && <RecordingPlayer id={recording.id} autoPlay />}
           {recording.description && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{recording.description}</p>}
           {recording.category === 'music' && recording.metadata?.chords && (
             <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-sm">{recording.metadata.chords}</pre>
@@ -53,22 +66,6 @@ export function RecordingRow({ recording, open, exporting, activeTag, onToggle, 
               ))}
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" onClick={onEdit}>Edit</Button>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" disabled={exporting}>
-                  {exporting ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Download aria-hidden="true" />}Download
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start">
-                <DropdownMenuItem onClick={() => onDownload(false)}>Original file</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onDownload(true)}>As MP3</DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-            <span className="text-xs text-muted-foreground">{formatBytes(recording.size_bytes)}, {recording.source === 'recorded' ? 'recorded here' : 'imported'}</span>
-            <Button variant="ghost" size="sm" className="ml-auto text-destructive hover:text-destructive" onClick={onDelete}>Delete</Button>
-          </div>
         </div>
       )}
     </li>

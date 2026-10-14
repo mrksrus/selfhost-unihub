@@ -7,16 +7,6 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { buttonVariants } from '@/components/ui/button-variants';
 
-/** One quiet mention of the email in a task row's meta line. */
-export function SourceEmailHint({ source }: { source: SourceEmail }) {
-  return (
-    <span className="inline-flex min-w-0 items-center gap-1">
-      <Mail aria-hidden="true" className="h-3 w-3 shrink-0" />
-      <span className="truncate">{senderName(source)}</span>
-    </span>
-  );
-}
-
 /**
  * The email a task came from, kept with the task: subject, sender, date and
  * the attachment names it had. Shows the email over the page while it is still

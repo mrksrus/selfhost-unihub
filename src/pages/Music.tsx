@@ -1,17 +1,16 @@
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ChevronDown, FileAudio, ListMusic, Loader2, Music2 } from 'lucide-react';
+import { ListMusic, Loader2, Music2, Pencil } from 'lucide-react';
 import { recordingsApi, recordingsQueryKeys, type Recording } from '@/lib/recordings-api';
 import { formatDuration, formatRecordedAt } from '@/lib/recording-format';
 import { useToast } from '@/hooks/use-toast';
-import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { EmptyState, ErrorState, LoadingState } from '@/components/ui/page-states';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { Chip, ChipGroup } from '@/components/ui/chips';
-import { RecordingPlayer } from '@/components/recordings/RecordingPlayer';
+import { PlayButton, RecordingPlayer } from '@/components/recordings/RecordingPlayer';
 
 const EMPTY_RECORDINGS: Recording[] = [];
 type View = 'chords' | 'missing';
@@ -20,46 +19,48 @@ const VIEWS: Record<View, { label: string; icon: typeof Music2 }> = {
   missing: { label: 'Missing chords', icon: Music2 },
 };
 
-function SongRow({ recording, open, onToggle, startEditing, saving, onSave }: {
-  recording: Recording; open: boolean; onToggle: () => void; startEditing: boolean; saving: boolean; onSave: (chords: string, done: () => void) => void;
+/**
+ * A song with its chords in view. A song without chords shows the editor
+ * right away, which is what the Missing chords view lists.
+ */
+function SongRow({ recording, playing, onPlay, saving, onSave }: {
+  recording: Recording; playing: boolean; onPlay: () => void; saving: boolean; onSave: (chords: string, done: () => void) => void;
 }) {
   const chords = recording.metadata?.chords || '';
-  const [editing, setEditing] = useState(startEditing);
+  const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(chords);
   const edit = () => { setDraft(chords); setEditing(true); };
   return (
-    <li className="border-b border-border">
-      <button type="button" onClick={onToggle} aria-expanded={open}
-        className="flex w-full items-center gap-3 py-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
-        <FileAudio aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium">{recording.title}</span>
-          <span className="block truncate text-xs text-muted-foreground">
-            {[formatRecordedAt(recording.recorded_at), formatDuration(recording.duration_seconds), ...recording.tags].join(' · ')}
-          </span>
-        </span>
-        <ChevronDown aria-hidden="true" className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} />
-      </button>
-      {open && (
-        <div className="space-y-3 pb-4 pl-7">
-          <RecordingPlayer id={recording.id} />
-          {recording.description && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{recording.description}</p>}
-          {editing ? (
-            <form className="space-y-2" onSubmit={event => { event.preventDefault(); onSave(draft, () => setEditing(false)); }}>
-              <Textarea aria-label={`Chords for ${recording.title}`} value={draft} onChange={event => setDraft(event.target.value)} placeholder="C  G  Am  F" rows={5} className="font-mono" autoFocus />
-              <div className="flex justify-end gap-2">
-                {chords && <Button type="button" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>}
-                <Button type="submit" disabled={saving}>{saving && <Loader2 aria-hidden="true" className="animate-spin" />}Save chords</Button>
-              </div>
-            </form>
-          ) : (
-            <>
-              <pre className="whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-sm">{chords}</pre>
-              <Button variant="outline" size="sm" onClick={edit}>Edit chords</Button>
-            </>
-          )}
-        </div>
-      )}
+    <li className="grid grid-cols-[auto_1fr] gap-x-3 border-b border-border py-3">
+      <PlayButton title={recording.title} playing={playing} onToggle={onPlay} />
+      <div className="min-w-0">
+        <p className="break-words font-medium">{recording.title}</p>
+        <p className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+          <span>{formatRecordedAt(recording.recorded_at)}</span>
+          <span>{formatDuration(recording.duration_seconds)}</span>
+          {recording.tags.map(tag => <span key={tag}>{tag}</span>)}
+        </p>
+      </div>
+      <div className="col-start-2 mt-2 space-y-2.5">
+        {playing && <RecordingPlayer id={recording.id} autoPlay />}
+        {recording.description && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{recording.description}</p>}
+        {editing || !chords.trim() ? (
+          <form className="space-y-2" onSubmit={event => { event.preventDefault(); onSave(draft, () => setEditing(false)); }}>
+            <Textarea aria-label={`Chords for ${recording.title}`} value={draft} onChange={event => setDraft(event.target.value)} placeholder="C  G  Am  F" rows={5} className="font-mono" autoFocus={editing} />
+            <div className="flex justify-end gap-2">
+              {chords.trim() && <Button type="button" variant="ghost" onClick={() => setEditing(false)}>Cancel</Button>}
+              <Button type="submit" disabled={saving}>{saving && <Loader2 aria-hidden="true" className="animate-spin" />}Save chords</Button>
+            </div>
+          </form>
+        ) : (
+          <div className="relative">
+            <pre className="whitespace-pre-wrap rounded-md bg-muted py-3 pl-3 pr-11 font-mono text-sm">{chords}</pre>
+            <Button variant="ghost" size="icon" className="absolute right-1 top-1 h-8 w-8 text-muted-foreground" aria-label={`Edit chords for ${recording.title}`} onClick={edit}>
+              <Pencil aria-hidden="true" />
+            </Button>
+          </div>
+        )}
+      </div>
     </li>
   );
 }
@@ -69,7 +70,7 @@ const Music = () => {
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
   const view: View = params.get('view') === 'missing' ? 'missing' : 'chords';
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [playingId, setPlayingId] = useState<string | null>(null);
 
   const musicQuery = useQuery({
     queryKey: recordingsQueryKeys.list({ category: 'music' }),
@@ -93,7 +94,7 @@ const Music = () => {
   });
 
   const selectView = (next: View) => {
-    setOpenId(null);
+    setPlayingId(null);
     setParams(next === 'chords' ? {} : { view: next }, { replace: true });
   };
   const list = view === 'chords' ? withChords : missingChords;
@@ -124,8 +125,8 @@ const Music = () => {
           ) : (
             <ul className="border-t border-border">
               {list.map(recording => (
-                <SongRow key={`${view}:${recording.id}`} recording={recording} open={openId === recording.id} startEditing={view === 'missing'}
-                  onToggle={() => setOpenId(openId === recording.id ? null : recording.id)} saving={saveChords.isPending}
+                <SongRow key={recording.id} recording={recording} playing={playingId === recording.id}
+                  onPlay={() => setPlayingId(playingId === recording.id ? null : recording.id)} saving={saveChords.isPending}
                   onSave={(chords, done) => saveChords.mutate({ recording, chords }, { onSuccess: done })} />
               ))}
             </ul>

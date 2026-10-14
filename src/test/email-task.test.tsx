@@ -124,7 +124,7 @@ describe('a task from an email', () => {
   it('shows the email on the task with its attachments, and opens it while it still exists', async () => {
     function Row({ item }: { item: CalendarEvent }) {
       const actions = useTaskActions();
-      return <ul><TaskRow task={item} actions={actions} timezone="UTC" open onToggle={() => {}} onEdit={() => {}} onMove={() => {}} /></ul>;
+      return <ul><TaskRow task={item} actions={actions} timezone="UTC" onEdit={() => {}} onMove={() => {}} /></ul>;
     }
     wrap(<Row item={task()} />, '/todo');
     const block = await screen.findByLabelText('From email');
@@ -162,14 +162,16 @@ describe('a task from an email', () => {
     expect(within(section).getByRole('link', { name: /Read the terms/ })).toHaveTextContent('(done)');
   });
 
-  it('opens the linked task on the ToDo page, waiting for a list older than the task', async () => {
+  it('scrolls to the linked task on the ToDo page, waiting for a list older than the task', async () => {
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = function () { scrolled(this.id); };
     const client = newClient();
     // ToDo was opened before the task existed; its cached list does not have it yet.
     client.setQueryData(calendarQueryKeys.list({ includeTodos: true, respectAutoTodo: true }), []);
     wrap(<TodoPage />, '/todo?task=task-1', client);
     const details = await screen.findByLabelText('From email');
     expect(within(details).getByRole('button', { name: 'Show email' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Invoice 4711 for October/ })).toHaveAttribute('aria-expanded', 'true');
+    await waitFor(() => expect(scrolled).toHaveBeenCalledWith('task-task-1'));
     expect(screen.queryByText(/hidden from ToDo/)).not.toBeInTheDocument();
   });
 

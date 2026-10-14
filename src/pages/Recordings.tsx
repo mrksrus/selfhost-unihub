@@ -56,7 +56,7 @@ const Recordings = () => {
   const [details, setDetails] = useState<RecordingDetailsForm>(emptyRecordingDetails);
   const [search, setSearch] = useState(() => params.get('search') || '');
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [playingId, setPlayingId] = useState<string | null>(null);
   const [editing, setEditing] = useState<Recording | null>(null);
   const [editForm, setEditForm] = useState<RecordingDetailsForm>(emptyRecordingDetails);
   const [deleteTarget, setDeleteTarget] = useState<Recording | null>(null);
@@ -404,8 +404,8 @@ const Recordings = () => {
               {(otherStoredRecordings.length > 0 || pendingAudio) && <h2 className="mb-1 text-sm font-medium">Library</h2>}
               <ul className="border-t border-border">
                 {recordings.map(recording => (
-                  <RecordingRow key={recording.id} recording={recording} open={openId === recording.id} exporting={exportingId === recording.id} activeTag={tagFilter}
-                    onToggle={() => setOpenId(openId === recording.id ? null : recording.id)}
+                  <RecordingRow key={recording.id} recording={recording} playing={playingId === recording.id} exporting={exportingId === recording.id} activeTag={tagFilter}
+                    onPlay={() => setPlayingId(playingId === recording.id ? null : recording.id)}
                     onEdit={() => { setEditing(recording); setEditForm(recordingDetailsFrom(recording)); }}
                     onDownload={mp3 => void downloadRecording(recording, mp3)} onDelete={() => setDeleteTarget(recording)}
                     onTag={tag => setFilter('tag', tagFilter === tag ? null : tag)} />

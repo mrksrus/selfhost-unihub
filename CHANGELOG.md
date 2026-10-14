@@ -10,6 +10,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Changed
 
+- Tasks, songs and recordings show everything at once: description, subtasks,
+  the email a task came from, chords and details are on the row, nothing folds
+  away. Press the circle at the start of a song or recording to play it.
 - The reader shows **Cc** under **To**: on received mail (for messages
   downloaded from now on) and on messages you send or save as drafts, which
   also keep their Bcc in your own copy.

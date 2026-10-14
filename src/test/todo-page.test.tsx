@@ -19,7 +19,7 @@ const task = (id: string, patch: Partial<CalendarEvent>): CalendarEvent => ({
   is_todo_only: false, done_at: null, created_at: iso(-hour), updated_at: iso(-hour), subtasks: [], attendees: [], ...patch,
 });
 const tasks = [
-  task('Car service', { start_time: iso(-48 * hour), end_time: iso(-47 * hour) }),
+  task('Car service', { start_time: iso(-48 * hour), end_time: iso(-47 * hour), subtasks: [{ id: 's0', event_id: 'Car service', user_id: 'owner', title: 'Call the garage', is_done: false, position: 0, created_at: iso(-hour), updated_at: iso(-hour) }] }),
   task('Order printer ink', { start_time: iso(72 * hour), end_time: iso(73 * hour) }),
   task('Plan holiday', { is_todo_only: true }),
   task('Filed taxes', { todo_status: 'done', done_at: iso(-hour) }),
@@ -49,6 +49,17 @@ describe('ToDo', () => {
     expect(within(screen.getByRole('region', { name: 'Later' })).getByText('Order printer ink')).toBeInTheDocument();
     expect(within(screen.getByRole('region', { name: 'No date' })).getByText('Plan holiday')).toBeInTheDocument();
     expect(screen.queryByText('Filed taxes')).not.toBeInTheDocument();
+  });
+
+  it('ticks and adds subtasks right on the row', async () => {
+    mount();
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Call the garage' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/calendar/events/Car service/subtasks/s0', { is_done: true }));
+    const add = screen.getByLabelText('Add a subtask to Car service');
+    fireEvent.change(add, { target: { value: 'Book a slot' } });
+    fireEvent.submit(add);
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/calendar/events/Car service/subtasks', { title: 'Book a slot' }));
+    await waitFor(() => expect(add).toHaveValue(''));
   });
 
   it('marks a task done from its checkbox', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { useQuery } from '@tanstack/react-query';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -52,12 +52,13 @@ const TodoPage = () => {
   const [params, setParams] = useSearchParams();
   const view: View = isView(params.get('view')) ? params.get('view') as View : 'open';
   const [calendarId, setCalendarId] = useState<string | null>(null);
-  const [openId, setOpenId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<CalendarEvent | null>(null);
   const [moving, setMoving] = useState<CalendarEvent | null>(null);
   // A task linked from an email that ToDo does not list: its list is hidden from ToDo.
   const [hiddenTask, setHiddenTask] = useState<string | null>(null);
+  // A task linked from an email, scrolled to once its row is on the page.
+  const [linkedTask, setLinkedTask] = useState<string | null>(null);
   const actions = useTaskActions();
 
   const tasksQuery = useQuery({
@@ -90,19 +91,16 @@ const TodoPage = () => {
     if (linked) {
       if (linked.todo_status === 'done') next.set('view', 'done'); else next.delete('view');
       setCalendarId(null);
-      setOpenId(taskId);
-      linkedTask.current = taskId;
+      setLinkedTask(taskId);
     }
     setHiddenTask(linked ? null : taskId);
     setParams(next, { replace: true });
   }, [params, setParams, taskList, tasksError, tasksFetching, tasksFresh, refetchTasks]);
-  // Once the linked task's row is open, bring it into view.
-  const linkedTask = useRef<string | null>(null);
   useEffect(() => {
-    if (!openId || openId !== linkedTask.current) return;
-    linkedTask.current = null;
-    document.getElementById(`task-${openId}-details`)?.scrollIntoView?.({ block: 'center' });
-  }, [openId]);
+    if (!linkedTask) return;
+    setLinkedTask(null);
+    document.getElementById(`task-${linkedTask}`)?.scrollIntoView?.({ block: 'center' });
+  }, [linkedTask]);
 
   const tasks = useMemo(() => (tasksQuery.data ?? []).filter(task => !calendarId || task.calendar_id === calendarId), [tasksQuery.data, calendarId]);
   const groups = useMemo(() => groupTasks(tasks, timezone), [tasks, timezone]);
@@ -113,7 +111,6 @@ const TodoPage = () => {
     const nextParams = new URLSearchParams(params);
     if (next === 'open') nextParams.delete('view'); else nextParams.set('view', next);
     setParams(nextParams, { replace: true });
-    setOpenId(null);
     setHiddenTask(null);
   };
 
@@ -177,9 +174,7 @@ const TodoPage = () => {
               {section.label && <h2 className={section.tone === 'warning' ? 'mb-1 text-sm font-medium text-warning' : 'mb-1 text-sm font-medium text-muted-foreground'}>{section.label}</h2>}
               <ul>
                 {section.tasks.map(task => (
-                  <TaskRow key={task.id} task={task} actions={actions} timezone={timezone} calendarColor={calendarColor(task)}
-                    open={openId === task.id} onToggle={() => setOpenId(openId === task.id ? null : task.id)}
-                    onEdit={setEditing} onMove={setMoving} />
+                  <TaskRow key={task.id} task={task} actions={actions} timezone={timezone} calendarColor={calendarColor(task)} onEdit={setEditing} onMove={setMoving} />
                 ))}
               </ul>
             </section>
