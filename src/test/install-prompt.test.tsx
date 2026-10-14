@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import InstallPrompt from '@/components/pwa/InstallPrompt';
 import { api } from '@/lib/api';
 import { INSTALLED_AT_KEY } from '@/lib/install-prompt';
-import { saveFile, showThemeInApp } from '@/lib/platform';
+import { canInstallAndroidApp, saveFile, showThemeInApp } from '@/lib/platform';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn() } }));
 
@@ -58,6 +58,12 @@ describe('install offer', () => {
     expect(await screen.findByRole('button', { name: 'Install' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Android app' })).not.toBeInTheDocument();
     expect(api.get).not.toHaveBeenCalled();
+  });
+
+  it('does not offer the Android app to phones older than Android 10', () => {
+    expect(canInstallAndroidApp(ANDROID_BROWSER.replace('Android 15', 'Android 9'))).toBe(false);
+    expect(canInstallAndroidApp(ANDROID_BROWSER.replace('Android 15; Pixel 9', 'Android 10; K'))).toBe(true);
+    expect(canInstallAndroidApp(ANDROID_BROWSER)).toBe(true);
   });
 
   it('is never shown inside the Android app', async () => {

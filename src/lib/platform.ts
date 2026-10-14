@@ -33,8 +33,15 @@ export function androidApp(userAgent = typeof navigator === 'undefined' ? '' : n
   return match ? { versionName: match[1], versionCode: Number(match[2]) } : null;
 }
 
-/** An Android browser, where the app can be installed (not the app itself). */
+/**
+ * An Android browser, where the app can be installed (not the app itself).
+ * The app needs Android 10 (android/app/build.gradle.kts, minSdk 29). Newer
+ * Chrome reports every version as "Android 10", so only older versions that
+ * say so are left out; the install steps name the requirement.
+ */
 export function canInstallAndroidApp(userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent) {
+  const version = /Android (\d+)/i.exec(userAgent);
+  if (version && Number(version[1]) < 10) return false;
   return /Android/i.test(userAgent) && !androidApp(userAgent);
 }
 

@@ -19,7 +19,7 @@ The Android app, delivered by your own server. No database upgrade.
   UniHub's own pages, so it always matches the server's version. You sign in
   in the app as in the browser, two-factor codes included, and the status bar
   follows UniHub's light or dark theme. Notifications in the app come in a
-  later release; keep the web app for them until then.
+  later release; keep the web app for them until then. Needs Android 10 or newer.
 - **Settings → General → Install** offers the Android app and the web app at
   any time. Inside the app it shows the app version, the server, a newer app
   when the server has one (also in the attention tray), and **Change server**.

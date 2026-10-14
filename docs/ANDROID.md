@@ -16,7 +16,9 @@ release. Until then, keep the web app or a browser for notifications.
   **Android app** next to the **Web app** (where the browser can install it).
   Choosing the Android app shows **Download** and three steps: open the file,
   allow the browser to install apps if Android asks, then come back and tap
-  **Open in app**. On a computer the card offers only the web app, as before.
+  **Open in app**. The app needs Android 10 or newer; phones that report an
+  older version are not offered it. On a computer the card offers only the web
+  app, as before.
 - **Settings → General → Install** offers the same at any time. On a computer it
   links the download and says to open UniHub on the phone.
 - Downloading counts as installing: the card stops appearing in that browser.

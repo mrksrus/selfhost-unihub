@@ -12,6 +12,7 @@ export function AndroidInstallSteps({ download, onDownload }: { download: Androi
         <li>If asked, allow your browser to install apps.</li>
         <li>Come back and tap <span className="font-medium text-foreground">Open in app</span>.</li>
       </ol>
+      <p className="mt-1 text-xs text-muted-foreground">Needs Android 10 or newer.</p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button size="sm" asChild>
           <a href={download.url} download="unihub.apk" onClick={onDownload}>
