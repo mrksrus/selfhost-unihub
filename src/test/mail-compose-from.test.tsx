@@ -56,7 +56,7 @@ beforeEach(() => {
   vi.mocked(api.get).mockImplementation(async (path: string) => {
     if (path.startsWith('/mail/accounts')) return { data: { accounts } };
     if (path === '/settings/preferences') return { data: { preferences: { default_mail_account_id: 'acc-b' } } };
-    return { data: { contacts: [] } };
+    return { data: { contacts: [{ id: 'c-1', first_name: 'Sparks', last_name: '', email: 'sparks@example.test' }] } };
   });
   vi.mocked(api.post).mockResolvedValue({ data: { message: 'sent' } });
 });
@@ -81,6 +81,28 @@ describe('which account a message is sent from', () => {
     expect(await screen.findByLabelText('To')).toHaveValue('sparks@example.test');
     await fillAndSend('sparks@example.test', 'Thanks', 'compose-body-inline');
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-a' })));
+  });
+
+  it('closes the contact list after a pick until more is typed, and sends a Bcc-only message', async () => {
+    wrap(<Host />);
+    fireEvent.click(screen.getByRole('button', { name: 'New message' }));
+    const toField = await screen.findByLabelText('To');
+    fireEvent.focus(toField);
+    fireEvent.change(toField, { target: { value: 'spa' } });
+    fireEvent.mouseDown(await screen.findByRole('button', { name: /Sparks/ }));
+    expect(toField).toHaveValue('Sparks <sparks@example.test>, ');
+    expect(screen.queryByRole('button', { name: /Sparks/ })).toBeNull();
+    fireEvent.change(toField, { target: { value: 'Sparks <sparks@example.test>, sp' } });
+    expect(screen.getByRole('button', { name: /Sparks/ })).toBeInTheDocument();
+    fireEvent.change(toField, { target: { value: '' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bcc' }));
+    fireEvent.change(screen.getByLabelText('Bcc'), { target: { value: 'hidden@example.test' } });
+    const editor = document.getElementById('compose-body')!;
+    editor.innerHTML = '<p>Quietly</p>';
+    fireEvent.input(editor);
+    fireEvent.click(screen.getByRole('button', { name: /^Send/ }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ to: '', cc: '', bcc: 'hidden@example.test' })));
   });
 
   it('keeps a draft\'s Cc and Bcc when the draft is saved again', async () => {

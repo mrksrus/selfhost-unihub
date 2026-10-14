@@ -1,4 +1,4 @@
-import type { RefObject } from 'react';
+import { useState, type RefObject } from 'react';
 import { format } from 'date-fns';
 import {
   Bold, Image as ImageIcon, Italic, Link as LinkIcon, List, ListOrdered, ListTodo, Loader2, Palette, Paperclip, Send, Underline, X,
@@ -22,14 +22,15 @@ import type { MailAccount } from '@/lib/mail-api';
 import type { MailCompose } from '@/hooks/use-mail-compose';
 import { formatAttachmentSize, getActiveRecipientSearchTerm } from '@/components/mail/mail-page-model';
 
-function RecipientInput({ compose, inputId }: { compose: MailCompose; inputId: string }) {
-  const searchTerm = getActiveRecipientSearchTerm(compose.composeForm.to);
-  const suggestions = compose.contactEmailSuggestions
-    .filter((suggestion) => {
-      const haystack = `${suggestion.name} ${suggestion.email}`.toLowerCase();
-      return !searchTerm || haystack.includes(searchTerm);
-    })
-    .slice(0, 8);
+type RecipientField = 'to' | 'cc' | 'bcc';
+
+function RecipientInput({ compose, field, inputId, autoFocus }: { compose: MailCompose; field: RecipientField; inputId: string; autoFocus?: boolean }) {
+  const searchTerm = getActiveRecipientSearchTerm(compose.composeForm[field]);
+  const suggestions = searchTerm
+    ? compose.contactEmailSuggestions
+      .filter((suggestion) => `${suggestion.name} ${suggestion.email}`.toLowerCase().includes(searchTerm))
+      .slice(0, 8)
+    : [];
   const showSuggestions = compose.focusedRecipientInput === inputId && suggestions.length > 0;
 
   return (
@@ -37,13 +38,25 @@ function RecipientInput({ compose, inputId }: { compose: MailCompose; inputId: s
       <Input
         id={inputId}
         type="text"
+        role="combobox"
+        aria-expanded={showSuggestions}
+        aria-autocomplete="list"
         placeholder="recipient@example.com"
-        value={compose.composeForm.to}
-        onChange={(e) => compose.updateComposeForm({ to: e.target.value })}
+        value={compose.composeForm[field]}
+        onChange={(e) => {
+          compose.updateComposeForm({ [field]: e.target.value });
+          compose.setFocusedRecipientInput(inputId);
+        }}
         onFocus={() => compose.setFocusedRecipientInput(inputId)}
         onBlur={() => window.setTimeout(() => compose.setFocusedRecipientInput((current) => current === inputId ? null : current), 100)}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && showSuggestions) {
+            event.preventDefault();
+            compose.setFocusedRecipientInput(null);
+          }
+        }}
         autoComplete="off"
-        required
+        autoFocus={autoFocus}
       />
       {showSuggestions && (
         <div className="absolute left-0 right-0 top-full z-[80] mt-1 max-h-64 overflow-auto rounded-md border border-border bg-popover p-1 shadow-lg">
@@ -54,7 +67,7 @@ function RecipientInput({ compose, inputId }: { compose: MailCompose; inputId: s
               className="flex w-full flex-col rounded-sm px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
               onMouseDown={(event) => {
                 event.preventDefault();
-                compose.replaceActiveRecipient(suggestion);
+                compose.replaceActiveRecipient(suggestion, field);
                 compose.setFocusedRecipientInput(inputId);
               }}
             >
@@ -67,6 +80,53 @@ function RecipientInput({ compose, inputId }: { compose: MailCompose; inputId: s
         </div>
       )}
     </div>
+  );
+}
+
+/** A dialog closes on Escape; when a recipient list is open, Escape only closes that list. */
+const keepDialogOpenWhileSuggesting = (event: KeyboardEvent) => {
+  if ((event.target as HTMLElement | null)?.getAttribute('aria-expanded') === 'true') event.preventDefault();
+};
+
+/**
+ * To with quiet Cc and Bcc buttons at its right end; each reveals its own row. A field that
+ * already has content (an opened draft) is shown from the start. `idSuffix` keeps ids unique
+ * per form; `rowClassName` lets the inline grid keep To next to Subject.
+ */
+function RecipientRows({ compose, idSuffix = '', rowClassName }: { compose: MailCompose; idSuffix?: string; rowClassName?: string }) {
+  const [revealed, setRevealed] = useState<RecipientField[]>([]);
+  const optional: RecipientField[] = ['cc', 'bcc'];
+  const shown = (field: RecipientField) => revealed.includes(field) || compose.composeForm[field] !== '';
+  const label = (field: RecipientField) => field === 'to' ? 'To' : field === 'cc' ? 'Cc' : 'Bcc';
+  return (
+    <>
+      <div className="space-y-2">
+        <div className="flex h-6 items-center justify-between">
+          <Label htmlFor={`compose-to${idSuffix}`}>To</Label>
+          <div className="-mr-1.5 flex">
+            {optional.filter((field) => !shown(field)).map((field) => (
+              <Button
+                key={field}
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-6 px-1.5 text-xs text-muted-foreground touch:h-6 tap-area"
+                onClick={() => setRevealed((current) => [...current, field])}
+              >
+                {label(field)}
+              </Button>
+            ))}
+          </div>
+        </div>
+        <RecipientInput compose={compose} field="to" inputId={`compose-to${idSuffix}`} />
+      </div>
+      {optional.filter(shown).map((field) => (
+        <div key={field} className={`space-y-2 ${rowClassName ?? ''}`}>
+          <Label htmlFor={`compose-${field}${idSuffix}`}>{label(field)}</Label>
+          <RecipientInput compose={compose} field={field} inputId={`compose-${field}${idSuffix}`} autoFocus={revealed.includes(field)} />
+        </div>
+      ))}
+    </>
   );
 }
 
@@ -287,10 +347,7 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
         </div>
         <form onSubmit={compose.handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="grid shrink-0 gap-3 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="compose-to-inline">To</Label>
-              <RecipientInput compose={compose} inputId="compose-to-inline" />
-            </div>
+            <RecipientRows compose={compose} idSuffix="-inline" rowClassName="md:order-last md:col-span-2" />
             <div className="space-y-2">
               <Label htmlFor="compose-subject-inline">Subject</Label>
               <Input
@@ -353,7 +410,7 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
       if (open) compose.openCompose();
       else compose.closeComposeFlow();
     }}>
-      <DialogContent className={`${isMobile ? 'max-w-full h-[calc(100dvh-5.5rem)] max-h-[calc(100dvh-5.5rem)] translate-y-[-50%] rounded-t-lg rounded-b-none' : 'sm:max-w-3xl max-h-[90dvh]'} !flex flex-col overflow-hidden p-0`}>
+      <DialogContent className={`${isMobile ? 'max-w-full h-[calc(100dvh-5.5rem)] max-h-[calc(100dvh-5.5rem)] translate-y-[-50%] rounded-t-lg rounded-b-none' : 'sm:max-w-3xl max-h-[90dvh]'} !flex flex-col overflow-hidden p-0`} onEscapeKeyDown={keepDialogOpenWhileSuggesting}>
         <DialogHeader className="shrink-0 border-b border-border px-4 py-3 pr-10">
           <DialogTitle>
             {compose.composeMode === 'reply' ? 'Reply' : compose.composeMode === 'forward' ? 'Forward' : 'New Message'}
@@ -379,10 +436,7 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="compose-to">To</Label>
-              <RecipientInput compose={compose} inputId="compose-to" />
-            </div>
+            <RecipientRows compose={compose} />
             <div className="space-y-2">
               <Label htmlFor="compose-subject">Subject</Label>
               <Input 

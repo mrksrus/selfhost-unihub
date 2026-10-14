@@ -495,7 +495,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       return;
     }
     if (!composeForm.to.trim() && !composeForm.cc.trim() && !composeForm.bcc.trim()) {
-      toast({ title: 'Please enter a recipient', variant: 'destructive' });
+      toast({ title: 'Add at least one recipient', variant: 'destructive' });
       return;
     }
     if (isComposeHtmlEmpty(composeForm.body) && composeAttachments.length === 0) {

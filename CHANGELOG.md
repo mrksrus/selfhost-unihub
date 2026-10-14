@@ -10,6 +10,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Added
 
+- The composer has **Cc** and **Bcc**, behind small Cc and Bcc buttons at the
+  right end of To. A message needs at least one recipient in any of the three.
+  The reader shows **Cc** under **To**: on received mail (for messages
+  downloaded from now on) and on messages you send or save as drafts, which
+  also keep their Bcc in your own copy.
 - Contacts can be selected with the mouse: Ctrl/Cmd+click adds one, Shift+click
   adds a range. Escape clears the selection, Delete asks to delete it, and
   **Set company…** writes a company or job title to all selected contacts at
@@ -26,12 +31,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - Tasks, songs and recordings show everything at once: description, subtasks,
   the email a task came from, chords and details are on the row, nothing folds
   away. Press the circle at the start of a song or recording to play it.
-- The reader shows **Cc** under **To**: on received mail (for messages
-  downloaded from now on) and on messages you send or save as drafts, which
-  also keep their Bcc in your own copy.
 
 ### Fixed
 
+- Picking a contact in the composer closes the suggestion list; it opens
+  again when you type. Escape closes it without leaving the field.
 - Deleting more than about 25 selected contacts no longer fails with "Request
   body too large"; up to 5000 can be deleted at once.
 ## 0.21.0
