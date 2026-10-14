@@ -33,7 +33,7 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
     last_uid BIGINT NOT NULL DEFAULT 0, initialized BOOLEAN NOT NULL DEFAULT FALSE, last_synced_at TIMESTAMP NULL,
     PRIMARY KEY(mail_account_id, source_folder)) ENGINE=InnoDB`);
   await connection.execute(`CREATE TEMPORARY TABLE emails (id CHAR(36) PRIMARY KEY, user_id CHAR(36), mail_account_id CHAR(36),
-    message_id VARCHAR(500), subject TEXT, from_address VARCHAR(255), from_name VARCHAR(255), to_addresses JSON,
+    message_id VARCHAR(500), subject TEXT, from_address VARCHAR(255), from_name VARCHAR(255), to_addresses JSON, cc_addresses JSON,
     body_text LONGTEXT, body_html LONGTEXT, has_attachments BOOLEAN, received_at TIMESTAMP NULL, folder VARCHAR(64),
     source_folder VARCHAR(255), imap_uid BIGINT, imap_uidvalidity BIGINT, raw_storage_path TEXT, raw_sha256 CHAR(64),
     is_read BOOLEAN, import_complete BOOLEAN NOT NULL DEFAULT FALSE,
@@ -60,7 +60,7 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
   const args = { db, account: { user_id: userId }, accountId, folderName: 'INBOX', uid: 6, uidValidity: 123,
     messageId: '<valid@example.test>', fullEmail: 'raw', parsed: { subject: 'Imported', text: 'hello', attachments: [
       { filename: 'a.txt', contentType: 'text/plain', content: Buffer.from('hello') },
-    ] }, fromAddress: 'sender@example.test', fromName: 'Sender', toAddresses: ['recipient@example.test'], folder: 'inbox', isRead: false,
+    ] }, fromAddress: 'sender@example.test', fromName: 'Sender', toAddresses: ['recipient@example.test'], ccAddresses: ['copy@example.test'], folder: 'inbox', isRead: false,
     suppressNotifications: true, enqueueDeletion: async () => {}, async archiveRaw({ emailId }: FixtureValue) {
       const rawStoragePath = path.join(root, `${emailId}.eml`);
       await fs.writeFile(rawStoragePath, 'raw');
@@ -68,6 +68,8 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
     },
   };
   await persistImportedMessage(args as FixtureValue);
+  const [[imported]] = await connection.execute<RowDataPacket[]>('SELECT cc_addresses FROM emails WHERE imap_uid = 6');
+  assert.deepEqual(typeof imported.cc_addresses === 'string' ? JSON.parse(imported.cc_addresses) : imported.cc_addresses, ['copy@example.test']);
   assert.deepEqual([...await loadExistingImportedUidSet({ connection, accountId, folderName: 'INBOX', uidValidity: 123, uids: [6] })], [6]);
   const beforeFiles = await fs.readdir(root, { recursive: true });
   await assert.rejects(persistImportedMessage({ ...args, uid: 7, messageId: '<invalid@example.test>', parsed: {

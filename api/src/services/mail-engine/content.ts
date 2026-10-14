@@ -226,11 +226,12 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
     return { processed: 0, deferred: true, reason: 'parse_failure', more: true };
   }
   const address = parsed.from?.value?.[0];
+  const addresses = (field: unknown) => ((field as AddressObject | undefined)?.value || []).map(a => a.address).filter((a): a is string => !!a);
   const { persistImportedMessage } = require('../mail-import') as typeof import('../mail-import');
   const result = await persistImportedMessage({ db, account, accountId: account.id, folderName: folder.folderName,
     uid: row.uid, uidValidity: row.uidvalidity, existingEmail: { id: row.email_id, raw_storage_path: row.raw_storage_path },
     messageId: parsed.messageId || null, fullEmail: raw, parsed, fromAddress: address?.address || 'unknown',
-    fromName: address?.name || null, toAddresses: ((parsed.to as AddressObject | undefined)?.value || []).map(a => a.address).filter(Boolean),
+    fromName: address?.name || null, toAddresses: addresses(parsed.to), ccAddresses: addresses(parsed.cc),
     folder: folder.dbFolderName, isRead: !!row.is_read,
     archiveRaw: data => publishRaw({ root: (require('../mail') as typeof import('../mail')).MAIL_RAW_STORAGE_ROOT, ...data, raw: data.rawEmail as Buffer }),
     enqueueDeletion: (require('../mail') as typeof import('../mail')).recordMailServerMessageForDeletion,

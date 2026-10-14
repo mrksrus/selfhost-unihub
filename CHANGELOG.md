@@ -10,8 +10,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Changed
 
-- Messages you send and drafts you save keep their Cc and Bcc, and the reader
-  shows them under **To**. (Bcc is only in your own copy.)
+- The reader shows **Cc** under **To**: on received mail (for messages
+  downloaded from now on) and on messages you send or save as drafts, which
+  also keep their Bcc in your own copy.
 
 ### Fixed
 

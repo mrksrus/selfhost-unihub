@@ -31,6 +31,7 @@ interface ImportedMessage {
   fromAddress: string;
   fromName: string | null;
   toAddresses: unknown;
+  ccAddresses?: string[];
   folder: string;
   isRead: boolean;
   archiveRaw: (input: { userId: string; emailId: string; messageId: string | null; rawEmail: Buffer | string }) => Promise<RawArchive>;
@@ -42,9 +43,10 @@ interface ImportedMessage {
 // Persist one complete provider message. Existing local read/star/folder choices
 // survive repair; files are staged before a short metadata transaction.
 async function persistImportedMessage({ db, account, accountId, folderName, uid, uidValidity,
-  existingEmail, messageId, fullEmail, parsed, fromAddress, fromName, toAddresses,
+  existingEmail, messageId, fullEmail, parsed, fromAddress, fromName, toAddresses, ccAddresses = [],
   folder, isRead, archiveRaw, enqueueDeletion, suppressNotifications = true, validateOccurrence = null }: ImportedMessage) {
   const emailId = existingEmail?.id || crypto.randomUUID();
+  const storedCc = ccAddresses.length ? JSON.stringify(ccAddresses) : null;
   let staged: StagedAttachment[] = [];
   let archive: RawArchive | undefined;
   let connection: PoolConnection | undefined;
@@ -67,14 +69,14 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
     if (existingEmail) {
       [oldAttachments] = await connection.execute<(RowDataPacket & { id: string; storage_path: string })[]>('SELECT id, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ?', [emailId, account.user_id]);
       const [updated] = await connection.execute<ResultSetHeader>(
-        `UPDATE emails SET message_id = ?, subject = ?, received_at = ?, from_address = ?, from_name = ?, to_addresses = ?,
+        `UPDATE emails SET message_id = ?, subject = ?, received_at = ?, from_address = ?, from_name = ?, to_addresses = ?, cc_addresses = ?,
           body_text = ?, body_html = ?, has_attachments = ?, source_folder = COALESCE(source_folder, ?),
           imap_uid = COALESCE(imap_uid, ?), imap_uidvalidity = COALESCE(imap_uidvalidity, ?),
           raw_storage_path = ?, raw_sha256 = ?, raw_bytes = ?, raw_format = ?, raw_verified = ?,
           content_state = 'complete', import_complete = TRUE
          WHERE id = ? AND user_id = ? AND mail_account_id = ?`,
         [messageId, parsed.subject || '(No subject)', parsed.date || new Date(),
-          fromAddress, fromName, JSON.stringify(toAddresses), parsed.text || null, bodyHtml,
+          fromAddress, fromName, JSON.stringify(toAddresses), storedCc, parsed.text || null, bodyHtml,
           staged.length > 0 ? 1 : 0, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256,
           archive.rawBytes ?? null, exact ? 'exact_octets' : 'legacy_normalized', exact ? 1 : 0,
           emailId, account.user_id, accountId]
@@ -84,12 +86,12 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
     } else {
       await connection.execute(
         `INSERT INTO emails
-          (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html,
+          (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, cc_addresses, body_text, body_html,
            has_attachments, received_at, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256,
            raw_bytes, raw_format, raw_verified, content_state, is_read, import_complete)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete', ?, TRUE)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete', ?, TRUE)`,
         [emailId, account.user_id, accountId, messageId, parsed.subject || '(No subject)', fromAddress, fromName,
-          JSON.stringify(toAddresses), parsed.text || null, bodyHtml, staged.length > 0 ? 1 : 0, parsed.date || new Date(),
+          JSON.stringify(toAddresses), storedCc, parsed.text || null, bodyHtml, staged.length > 0 ? 1 : 0, parsed.date || new Date(),
           folder, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256, archive.rawBytes ?? null,
           exact ? 'exact_octets' : 'legacy_normalized', exact ? 1 : 0, isRead ? 1 : 0]
       );
