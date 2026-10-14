@@ -10,6 +10,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Added
 
+- **Looks** for the dark and the light theme, under Settings → Appearance,
+  chosen per device. Dark: Default, **OLED black** (every surface true black,
+  so those pixels stay off), **Dim** (soft grey, no pure black or white),
+  **High contrast** (7:1 text, strong borders, thick focus outline),
+  **Colour-safe** (warnings, errors and success in colours that stay apart
+  with red-green colour blindness) and **Neon** (deep violet, glowing edges).
+  Light: Default, **Paper** (warm off-white for long reading), **High
+  contrast** and **Colour-safe**. Your accent colour works on top of every
+  look; the Android app's status bar follows the look's page colour.
 - The composer has **Cc** and **Bcc**, behind small Cc and Bcc buttons at the
   right end of To. A message needs at least one recipient in any of the three.
   The reader shows **Cc** under **To**: on received mail (for messages

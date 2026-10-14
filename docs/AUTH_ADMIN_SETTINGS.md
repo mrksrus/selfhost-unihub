@@ -307,7 +307,8 @@ Supported preferences:
 Unknown preference keys are ignored. Invalid values are rejected.
 
 General Settings also contains browser/device preferences: **Appearance**
-(Dark by default, Light or System), **Offline reading**, and **Notifications**.
+(Dark by default, Light or System, and a look per theme such as OLED black or
+High contrast), **Offline reading**, and **Notifications**.
 Theme selection and offline copies belong to the browser profile; notification
 permission and the subscription belong to the device/browser and signed-in
 account. These are separate from the account preferences stored in

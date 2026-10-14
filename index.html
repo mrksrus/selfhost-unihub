@@ -9,8 +9,11 @@
         try { theme = localStorage.getItem('theme') || 'dark'; } catch {}
         const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
         document.documentElement.classList.toggle('dark', dark);
+        document.documentElement.classList.toggle('light', !dark);
         document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
         document.documentElement.style.backgroundColor = dark ? '#000000' : '#f5f7fa';
+        // The look chosen on this device for that theme (src/lib/theme.ts); the stylesheet colours the page from it.
+        try { const look = localStorage.getItem(dark ? 'unihub:theme:dark' : 'unihub:theme:light'); if (look) document.documentElement.dataset.theme = look; } catch {}
       })();
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />

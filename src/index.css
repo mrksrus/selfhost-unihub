@@ -10,8 +10,10 @@
   /* Black, white and blue. Surfaces from back to front: background (page),
      card (navigation rail, context panels, dialogs), muted (selected rows,
      chips). Warning is the attention color (overdue, needs a decision);
-     destructive is reserved for actions that remove something. */
-  :root {
+     destructive is reserved for actions that remove something. The .light
+     and .dark classes also colour a nested element (the look swatches in
+     Appearance settings). */
+  :root, .light {
     --background: 220 14% 97%;
     --foreground: 222 47% 11%;
 
@@ -88,6 +90,158 @@
     --input: 220 6% 24%;
     --ring: 213 94% 68%;
     --calendar-color: 213 94% 68%;
+  }
+
+  /* Looks: alternatives to the default palettes, chosen per device in
+     Appearance settings and listed in src/lib/theme.ts. Each overrides as
+     little as it needs; the accent (src/lib/accent.ts) is written inline on
+     <html> and wins over --primary, --accent, --ring and --calendar-color. */
+
+  /* OLED screens: black pixels are off, so every surface is black and the
+     borders carry the structure. */
+  .dark[data-theme="oled"] {
+    --card: 0 0% 0%;
+    --popover: 0 0% 0%;
+    --secondary: 0 0% 9%;
+    --muted: 0 0% 9%;
+    --muted-foreground: 0 0% 68%;
+    --border: 0 0% 21%;
+    --input: 0 0% 30%;
+  }
+
+  /* No pure black or white; less glare and less OLED smearing in a dark room. */
+  .dark[data-theme="dim"] {
+    --background: 220 8% 12%;
+    --foreground: 220 10% 88%;
+    --card: 220 8% 15%;
+    --card-foreground: 220 10% 88%;
+    --popover: 220 8% 17%;
+    --popover-foreground: 220 10% 88%;
+    --secondary: 220 7% 21%;
+    --secondary-foreground: 220 10% 88%;
+    --muted: 220 7% 21%;
+    --muted-foreground: 220 8% 66%;
+    --destructive: 0 76% 58%;
+    --border: 220 7% 25%;
+    --input: 220 7% 32%;
+  }
+
+  /* Text at 7:1 or more, borders that cannot be missed, a thick outline on focus. */
+  .dark[data-theme="contrast"] {
+    --card: 0 0% 0%;
+    --popover: 0 0% 0%;
+    --primary: 213 94% 68%;
+    --primary-foreground: 0 0% 0%;
+    --secondary: 0 0% 16%;
+    --muted: 0 0% 16%;
+    --muted-foreground: 0 0% 85%;
+    --accent: 213 94% 68%;
+    --accent-foreground: 0 0% 0%;
+    --destructive: 0 100% 74%;
+    --destructive-foreground: 0 0% 0%;
+    --success: 142 70% 64%;
+    --success-foreground: 0 0% 0%;
+    --warning: 48 100% 58%;
+    --info: 199 95% 70%;
+    --info-foreground: 0 0% 0%;
+    --border: 0 0% 60%;
+    --input: 0 0% 72%;
+    --ring: 0 0% 100%;
+  }
+  .light[data-theme="contrast"] {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 0%;
+    --card-foreground: 0 0% 0%;
+    --popover-foreground: 0 0% 0%;
+    --primary: 221 90% 38%;
+    --secondary: 0 0% 90%;
+    --secondary-foreground: 0 0% 0%;
+    --muted: 0 0% 90%;
+    --muted-foreground: 0 0% 26%;
+    --accent: 221 90% 38%;
+    --destructive: 0 85% 34%;
+    --success: 142 80% 21%;
+    --warning: 30 100% 27%;
+    --info: 205 100% 28%;
+    --border: 0 0% 45%;
+    --input: 0 0% 35%;
+    --ring: 0 0% 0%;
+    --calendar-color: 221 90% 38%;
+  }
+  html[data-theme="contrast"] :focus-visible {
+    outline: 3px solid hsl(var(--foreground));
+    outline-offset: 2px;
+  }
+
+  /* Okabe-Ito colours for the meanings: bluish green, orange, vermilion and sky
+     blue differ in lightness as well as hue, so they stay apart with
+     deuteranopia and protanopia. */
+  .dark[data-theme="colour-safe"] {
+    --destructive: 24 100% 50%;
+    --destructive-foreground: 0 0% 0%;
+    --success: 164 100% 38%;
+    --success-foreground: 0 0% 0%;
+    --warning: 41 100% 50%;
+    --info: 202 78% 63%;
+    --info-foreground: 0 0% 0%;
+    --calendar-color: 202 78% 63%;
+  }
+  .light[data-theme="colour-safe"] {
+    --destructive: 22 100% 36%;
+    --success: 164 100% 24%;
+    --warning: 34 100% 31%;
+    --info: 202 100% 32%;
+    --calendar-color: 202 100% 35%;
+  }
+
+  /* Deep violet, magenta edges and a glow under floating surfaces. */
+  .dark[data-theme="neon"] {
+    --background: 258 40% 6%;
+    --foreground: 190 30% 94%;
+    --card: 258 35% 9%;
+    --card-foreground: 190 30% 94%;
+    --popover: 258 35% 11%;
+    --popover-foreground: 190 30% 94%;
+    --secondary: 262 35% 17%;
+    --secondary-foreground: 190 30% 94%;
+    --muted: 262 35% 17%;
+    --muted-foreground: 268 25% 74%;
+    --destructive: 345 100% 64%;
+    --destructive-foreground: 0 0% 0%;
+    --success: 150 100% 48%;
+    --success-foreground: 0 0% 0%;
+    --warning: 52 100% 56%;
+    --info: 188 100% 56%;
+    --info-foreground: 0 0% 0%;
+    --border: 280 55% 27%;
+    --input: 280 55% 37%;
+    --ring: 300 100% 72%;
+    --calendar-color: 300 100% 70%;
+    --shadow-md: 0 0 0 1px hsl(290 80% 40% / 0.5), 0 4px 16px hsl(290 100% 55% / 0.25);
+    --shadow-lg: 0 0 0 1px hsl(290 80% 45% / 0.6), 0 8px 32px hsl(290 100% 60% / 0.35);
+  }
+
+  /* Warm paper and ink for long reading. */
+  .light[data-theme="paper"] {
+    --background: 40 33% 93%;
+    --foreground: 30 20% 14%;
+    --card: 42 40% 97%;
+    --card-foreground: 30 20% 14%;
+    --popover: 42 40% 98%;
+    --popover-foreground: 30 20% 14%;
+    --secondary: 40 25% 88%;
+    --secondary-foreground: 30 20% 22%;
+    --muted: 40 25% 88%;
+    --muted-foreground: 30 10% 38%;
+    --destructive: 0 72% 43%;
+    --success: 142 72% 27%;
+    --warning: 30 90% 34%;
+    --info: 199 89% 34%;
+    --border: 38 20% 80%;
+    --input: 38 20% 73%;
+    --shadow-sm: 0 1px 2px 0 hsl(30 20% 14% / 0.06);
+    --shadow-md: 0 4px 6px -1px hsl(30 20% 14% / 0.1), 0 2px 4px -2px hsl(30 20% 14% / 0.1);
+    --shadow-lg: 0 10px 15px -3px hsl(30 20% 14% / 0.12), 0 4px 6px -4px hsl(30 20% 14% / 0.1);
   }
 }
 

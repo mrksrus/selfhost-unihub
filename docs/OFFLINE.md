@@ -22,7 +22,7 @@ Recordings that are not uploaded yet are kept apart from the snapshot, for their
 
 ## Black, white and blue
 
-New installations default to **Dark**: black page backgrounds, white text and blue accents. **Settings → General → Appearance** also provides Light and System, saved on this browser. Existing calendar colors remain user data; newly created calendar defaults use blue. Success/warning/destructive colors remain meaningful.
+New installations default to **Dark**: black page backgrounds, white text and blue accents. **Settings → General → Appearance** also provides Light and System, saved on this browser. Each theme has alternative **looks** (OLED black, Dim, High contrast, Colour-safe, Neon; Paper, High contrast, Colour-safe for light), also saved on this browser (`unihub:theme:dark` / `unihub:theme:light`); the accent colour is an account preference and applies on top of any look. Existing calendar colors remain user data; newly created calendar defaults use blue. Success/warning/destructive colors remain meaningful.
 
 Dark mode displays HTML mail in a readable text view by default. **Original email appearance** opens the existing sandboxed HTML view for messages whose formatting matters. Remote-content permission is scoped to that message. HTML email artwork may have its own white backgrounds in the original view.
 

@@ -5,6 +5,8 @@
  * in the palette (warning, destructive, success) stays as it is, so an accent
  * never collides with a colour that carries meaning.
  */
+import type { Theme } from '@/lib/theme';
+
 export type AccentId = 'blue' | 'indigo' | 'violet' | 'pink' | 'teal' | 'green';
 
 export interface Accent {
@@ -79,10 +81,28 @@ export function contrastRatio(a: string, b: string) {
 const WHITE = '0 0% 100%';
 const BLACK = '0 0% 0%';
 
-/** Text and icons on the accent: white as in the stylesheet, black where white would not be legible (WCAG AA). */
-export function accentForeground(id: AccentId, dark: boolean) {
+/** The colour with its lightness moved away from `against` until the contrast reaches `min`. */
+function withContrast(channels: string, against: string, min: number) {
+  const [h, s, l] = channels.split(/\s+/).map(part => Number.parseFloat(part));
+  const towardsWhite = against === BLACK;
+  let light = l, result = channels;
+  while (contrastRatio(result, against) < min && (towardsWhite ? light < 100 : light > 0)) {
+    light += towardsWhite ? 1 : -1;
+    result = `${h} ${s}% ${light}%`;
+  }
+  return result;
+}
+
+/** The accent as the page shows it: the theme's variant, and for a High contrast look moved until it stands out from the page. */
+export function accentChannels(id: AccentId, dark: boolean, theme?: Theme) {
   const accent = accentById(id);
-  return contrastRatio(dark ? accent.dark : accent.light, WHITE) >= 4.5 ? WHITE : BLACK;
+  const base = dark ? accent.dark : accent.light;
+  return theme?.minContrast ? withContrast(base, dark ? BLACK : WHITE, theme.minContrast) : base;
+}
+
+/** Text and icons on the accent: white as in the stylesheet, black where white would not be legible (WCAG AA). */
+export function accentForeground(id: AccentId, dark: boolean, theme?: Theme) {
+  return contrastRatio(accentChannels(id, dark, theme), WHITE) >= 4.5 ? WHITE : BLACK;
 }
 
 /** The UniHub mark with the accent, as the page icon. */
@@ -95,23 +115,24 @@ export function accentIconUrl(id: AccentId) {
 
 /**
  * Writes the accent into the page: the colour variables the stylesheet
- * defines for the theme in force, the page icon, and the browser's
- * theme-color (the accent on light, black on dark, as before).
+ * defines for the theme and look in force, and the page icon. The default
+ * accent leaves the stylesheet's own values in charge, so a look can style it.
  */
-export function applyAccent(id: AccentId, dark: boolean) {
+export function applyAccent(id: AccentId, dark: boolean, theme?: Theme) {
   const accent = accentById(id);
   const root = document.documentElement.style;
   if (id === DEFAULT_ACCENT) {
     for (const name of ['--primary', '--primary-foreground', '--accent', '--accent-foreground', '--ring', '--calendar-color']) root.removeProperty(name);
   } else {
-    const foreground = accentForeground(id, dark);
-    root.setProperty('--primary', dark ? accent.dark : accent.light);
+    const channels = accentChannels(id, dark, theme);
+    const foreground = accentForeground(id, dark, theme);
+    const ring = theme?.minContrast ? channels : dark ? accent.darkRing : accent.light;
+    root.setProperty('--primary', channels);
     root.setProperty('--primary-foreground', foreground);
-    root.setProperty('--accent', dark ? accent.dark : accent.light);
+    root.setProperty('--accent', channels);
     root.setProperty('--accent-foreground', foreground);
-    root.setProperty('--ring', dark ? accent.darkRing : accent.light);
-    root.setProperty('--calendar-color', dark ? accent.darkRing : accent.light);
+    root.setProperty('--ring', ring);
+    root.setProperty('--calendar-color', ring);
   }
   document.querySelector('link[rel="icon"][type="image/svg+xml"]')?.setAttribute('href', accentIconUrl(id));
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#000000' : hslChannelsToHex(accent.light));
 }

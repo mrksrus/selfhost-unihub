@@ -3,7 +3,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import { DEFAULT_PREFERENCES } from '@/lib/settings-api';
-import { ACCENTS, accentForeground, contrastRatio } from '@/lib/accent';
+import { ACCENTS, accentChannels, accentForeground, contrastRatio } from '@/lib/accent';
+import { THEMES } from '@/lib/theme';
 import { ThemeProvider } from '@/components/theme/ThemeProvider';
 import { PreferenceAccent } from '@/components/theme/PreferenceAccent';
 import AppearanceSettings from '@/components/settings/AppearanceSettings';
@@ -22,7 +23,7 @@ beforeEach(() => {
   vi.mocked(api.get).mockResolvedValue({ data: { preferences: { ...DEFAULT_PREFERENCES } } });
   vi.mocked(api.put).mockImplementation(async (_path: string, body: unknown) => ({ data: { preferences: body } }));
 });
-afterEach(() => { cleanup(); vi.clearAllMocks(); document.documentElement.removeAttribute('style'); });
+afterEach(() => { cleanup(); vi.clearAllMocks(); document.documentElement.removeAttribute('style'); document.documentElement.removeAttribute('data-theme'); });
 
 describe('appearance settings', () => {
   it('a chosen accent is saved with the account and applied to the page at once', async () => {
@@ -72,12 +73,43 @@ describe('appearance settings', () => {
   });
 });
 
+describe('looks', () => {
+  it('a chosen look is kept on this device and marks the page; the default clears it', async () => {
+    show();
+    const oled = await screen.findByRole('radio', { name: /OLED black/ });
+    expect(screen.getByRole('radio', { name: /^Default/ })).toHaveAttribute('aria-checked', 'true');
+
+    fireEvent.click(oled);
+    await waitFor(() => expect(document.documentElement.getAttribute('data-theme')).toBe('oled'));
+    expect(localStorage.getItem('unihub:theme:dark')).toBe('oled');
+    expect(oled).toHaveAttribute('aria-checked', 'true');
+    expect(document.querySelector('meta[name="theme-color"]')?.getAttribute('content')).toBe('#000000');
+
+    fireEvent.click(screen.getByRole('radio', { name: /^Default/ }));
+    await waitFor(() => expect(document.documentElement.hasAttribute('data-theme')).toBe(false));
+    expect(localStorage.getItem('unihub:theme:dark')).toBeNull();
+  });
+
+  it('a stored look is applied on load, together with the accent it needs', async () => {
+    localStorage.setItem('unihub:theme:dark', 'contrast');
+    localStorage.setItem('unihub:accent', 'indigo');
+    show();
+    await waitFor(() => expect(document.documentElement.getAttribute('data-theme')).toBe('contrast'));
+    // High contrast lifts the accent until it stands out from the black page at 7:1.
+    const primary = document.documentElement.style.getPropertyValue('--primary');
+    expect(primary).not.toBe('239 84% 62%');
+    expect(contrastRatio(primary, '0 0% 0%')).toBeGreaterThanOrEqual(7);
+  });
+});
+
 describe('accent colours', () => {
-  it('every accent keeps text on it legible (WCAG AA, 4.5:1) in both themes', () => {
+  it('every accent keeps text on it legible (WCAG AA, 4.5:1) in both themes and every look', () => {
     for (const accent of ACCENTS) {
-      for (const dark of [false, true]) {
-        const background = dark ? accent.dark : accent.light;
-        expect(contrastRatio(background, accentForeground(accent.id, dark)), `${accent.id} ${dark ? 'dark' : 'light'}`).toBeGreaterThanOrEqual(4.5);
+      for (const theme of THEMES) {
+        const dark = theme.mode === 'dark';
+        const background = accentChannels(accent.id, dark, theme);
+        expect(contrastRatio(background, accentForeground(accent.id, dark, theme)), `${accent.id} ${theme.mode} ${theme.id}`).toBeGreaterThanOrEqual(4.5);
+        if (theme.minContrast) expect(contrastRatio(background, dark ? '0 0% 0%' : '0 0% 100%'), `${accent.id} ${theme.mode} ${theme.id}`).toBeGreaterThanOrEqual(theme.minContrast);
       }
     }
   });
