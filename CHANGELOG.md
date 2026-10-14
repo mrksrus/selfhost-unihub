@@ -6,6 +6,30 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.21.0 (in progress)
+
+The Android app, delivered by your own server. No database upgrade.
+
+### Added
+
+- **Android app.** Each UniHub image now carries a matching Android app. On an
+  Android phone the install card offers **Android app** next to **Web app**:
+  **Download**, open the file, allow the browser to install apps if asked, then
+  **Open in app**, which connects the app to this server. The app shows
+  UniHub's own pages, so it always matches the server's version. Notifications
+  in the app are not there yet.
+- **Settings → General → Install** offers the Android app and the web app at
+  any time. Inside the app it shows the app version, the server, a newer app
+  when the server has one (also in the attention tray), and **Change server**.
+- `GET /api/version` tells apps which server they reached and which Android
+  app it carries, before signing in.
+
+### Changed
+
+- Building the image also builds the Android app (Android SDK and Gradle).
+  `--build-arg UNIHUB_ANDROID=0` leaves it out. See
+  [Android app](docs/ANDROID.md) for the signing key.
+
 ## 0.20.0
 
 Turn an email into a task. Database upgrade 16 runs at startup and adds two

@@ -8,6 +8,8 @@ import { fetchMailSyncStatus, MAIL_SYNC_JOBS_KEY } from '@/hooks/use-mail-sync-j
 import { mailQueryKeys, needsSyncPolicyDecision } from '@/lib/mail-api';
 import { calendarApi, calendarQueryKeys } from '@/lib/calendar-api';
 import { isOfflineMode } from '@/lib/offline';
+import { useAndroidAppUpdate } from '@/lib/install-prompt';
+import { downloadFromServer } from '@/lib/platform';
 
 // Everything that waits for the user's decision, collected in one place (the
 // bell on the rail, the dot on More on phones) instead of a banner per page.
@@ -36,6 +38,7 @@ export function useAttentionItems(): AttentionItem[] {
   const { user, isOffline } = useAuth();
   const { isEnabled } = useModules();
   const update = useAppUpdate();
+  const appUpdate = useAndroidAppUpdate();
   const online = !!user && !isOffline && !isOfflineMode();
   const mailOn = online && isEnabled('mail');
   const calendarOn = online && isEnabled('calendar');
@@ -89,6 +92,14 @@ export function useAttentionItems(): AttentionItem[] {
   }
   const updateItem = appUpdateItem(update);
   if (updateItem) items.push(updateItem);
+  // In the Android app: the server carries a newer app than the one installed.
+  if (appUpdate) items.push({
+    id: 'android-app-update',
+    title: 'Android app update',
+    detail: `Version ${appUpdate.versionName} is ready. Open the download to install it over this one.`,
+    onAction: () => downloadFromServer(appUpdate.url, 'unihub.apk'),
+    actionLabel: 'Download',
+  });
   return items;
 }
 

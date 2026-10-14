@@ -5,6 +5,7 @@ import type { UserPreferences } from '@/lib/settings-api';
 import { ErrorState } from '@/components/ui/page-states';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
+import InstallSettings from '@/components/pwa/InstallSettings';
 
 const START_PAGES: { value: UserPreferences['default_start_page']; label: string; path: string }[] = [
   { value: 'mail', label: 'Mail', path: '/mail' },
@@ -67,6 +68,8 @@ export default function GeneralSettings() {
           </SettingsRow>
         </SettingsSection>
       )}
+
+      <InstallSettings />
     </>
   );
 }

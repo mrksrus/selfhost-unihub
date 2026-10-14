@@ -3,12 +3,14 @@ import type { RowDataPacket } from 'mysql2/promise';
 
 import { db } from '../state';
 import { healthCheck } from '../services/health';
+import { versionInfo } from '../services/app-version';
 import { getUserModules } from '../services/module-settings';
 
 interface CountRow { count: number }
 
 export = {
   'GET /health': () => healthCheck(),
+  'GET /api/version': () => versionInfo(),
   // Stats endpoint
   'GET /api/stats': async (req: IncomingMessage, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };

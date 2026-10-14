@@ -30,7 +30,7 @@ Recordings that are still uploading when UniHub is closed finish in the service 
 
 ## Install prompt
 
-Browsers that support it show an **Install UniHub** card: **Install** opens the browser's install dialog, **Later** asks again after a day (also when the browser dialog is cancelled), and **No** stops asking in that browser. An unanswered card appears at most once a day. The choice is stored in the browser's local storage, so clearing site data resets it. The app can still be installed from the browser menu.
+UniHub shows an **Install UniHub** card where there is something to install: the web app where the browser supports installing it, and on Android phones the [Android app](ANDROID.md) the server carries. **Web app** (or **Install** when it is the only choice) opens the browser's install dialog. **Android app** shows the download and three short steps. **Later** asks again after a day (also when the browser dialog is cancelled), and **No** stops asking in that browser. Downloading the Android app counts as installing. An unanswered card appears at most once a day. The choice is stored in the browser's local storage, so clearing site data resets it. Settings → General → Install offers both at any time, and the web app can still be installed from the browser menu.
 
 ## Server configuration and persistence
 

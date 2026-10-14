@@ -17,6 +17,7 @@ The standard deployment is one app container and one MariaDB container. Nginx se
 | UI primitives, tokens, and theme | src/components/ui/, src/index.css, tailwind.config.ts, src/components/theme/ |
 | Browser API calls and state | src/lib/, src/hooks/, src/contexts/AuthContext.tsx, src/components/SessionQueryProvider.tsx |
 | Offline and PWA behavior | src/lib/offline.ts, src/lib/pwa-update.ts, src/utils/service-worker.ts, workers/sw-custom.ts |
+| Android app and the device boundary | android/ (thin WebView shell), src/lib/platform.ts, src/lib/install-prompt.ts, api/src/services/app-version.ts; docs/ANDROID.md |
 | API startup and request boundary | api/server.ts, api/src/app.ts, api/src/request-handler.ts, api/src/routes/ (routes/mail.ts combines the routes/mail-* area files) |
 | Authentication and outbound connections | api/src/auth.ts, api/src/routes/auth.ts, api/src/services/two-factor.ts, api/src/security/ |
 | Calendar accounts, sync and recurrence | src/lib/calendar-api.ts, api/src/routes/calendar.ts, api/src/services/calendar*.ts, api/src/services/caldav.ts; docs/CALENDAR.md |

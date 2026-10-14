@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- --background in src/index.css (light). -->
+    <color name="background">#F6F7F9</color>
+    <color name="foreground">#0B0F17</color>
+    <color name="muted">#5B6475</color>
+    <color name="accent">#2563EB</color>
+    <color name="destructive">#DC2626</color>
+</resources>

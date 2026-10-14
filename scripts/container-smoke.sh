@@ -126,6 +126,18 @@ console.log("API runs as uid/gid 10001 without capabilities; uploads handed over
 docker exec "$container_name" ffmpeg -version
 docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of ["LICENSE","LICENSING.md","THIRD_PARTY_NOTICES.md","frontend-dependency-notices.txt","alpine-packages.txt","ffmpeg-license.txt"]){if(!fs.statSync("/app/licenses/"+name).size)throw Error("Empty license notice: "+name)}'
 [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}' "$container_name")" == 'PolyForm-Noncommercial-1.0.0' ]]
+# The Android app built into the image: the version handshake offers it and
+# Nginx serves the same bytes as an Android package.
+node --input-type=module <<'NODE'
+import { createHash } from 'node:crypto';
+const version = await (await fetch('http://localhost/api/version')).json();
+if (version.app !== 'unihub' || !version.android) throw new Error(`The image must offer the Android app: ${JSON.stringify(version)}`);
+const apk = await fetch(`http://localhost${version.android.url}`);
+if (apk.status !== 200 || apk.headers.get('content-type') !== 'application/vnd.android.package-archive') throw new Error(`APK download answered ${apk.status} ${apk.headers.get('content-type')}`);
+const bytes = Buffer.from(await apk.arrayBuffer());
+if (bytes.length !== version.android.size || createHash('sha256').update(bytes).digest('hex') !== version.android.sha256) throw new Error('The served APK does not match its metadata');
+console.log(`Android app ${version.android.versionName} offered and served (${bytes.length} bytes)`);
+NODE
 UNIHUB_SMOKE_CONTAINER="$container_name" node "$script_dir/container-smoke.mts"
 docker exec -i -u 10001:10001 -e UNIHUB_API_ROOT=/app/api "$container_name" node --input-type=commonjs-typescript < "$script_dir/../api/tests/helpers/audio-conversion-smoke.cts"
 # Graceful stop: with cap_drop ALL the root supervisor cannot signal the API
@@ -155,4 +167,4 @@ for ((attempt=0; attempt<20; attempt++)); do
 done
 [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] || { echo 'Container stayed running after API death.' >&2; exit 1; }
 [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container_name")" == 1 ]] || { echo 'Container did not report essential service failure.' >&2; exit 1; }
-echo 'Container smoke passed: startup, non-root API and uploads handover, health, authentication, isolation, malformed requests, audio and encrypted backup round-trips, graceful stop, and essential-service recovery.'
+echo 'Container smoke passed: startup, non-root API and uploads handover, health, Android app download, authentication, isolation, malformed requests, audio and encrypted backup round-trips, graceful stop, and essential-service recovery.'

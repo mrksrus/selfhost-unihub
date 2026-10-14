@@ -16,6 +16,7 @@ function handlerHarness(t: import('node:test').TestContext, { userId = 'u1', rou
   stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
     'POST /api/mail/writebacks/:id/accept-server-state': route,
     'POST /api/admin/users/:id/2fa/reset': route,
+    'GET /api/version': async () => ({ app: 'unihub' }),
     'GET /api/modules': route, 'GET /api/contacts/export': route, 'GET /api/offline/snapshot': route || (async (_req: FixtureValue, user: FixtureValue) => ({ snapshot: { userId: user } })),
     'POST /api/parse-test': route || (async () => ({ success: true })) });
   const { handleRequest } = require(paths[0]) as typeof import('../src/request-handler');
@@ -58,6 +59,13 @@ test('unauthenticated offline requests never reach the snapshot service', async 
   const run = handlerHarness(t, { userId: null, route: async () => { called = true; return {}; } });
   assert.equal((await run('GET', '/api/offline/snapshot')).status, 401);
   assert.equal(called, false);
+});
+
+test('the version handshake answers before signing in, so the Android app can recognize the server', async (t) => {
+  const run = handlerHarness(t, { userId: null });
+  const result = await run('GET', '/api/version');
+  assert.equal(result.status, 200);
+  assert.equal(result.body.app, 'unihub');
 });
 
 test('malformed JSON returns 400 without invoking its mutation route', async (t) => {

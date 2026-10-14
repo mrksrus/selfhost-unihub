@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">UniHub</string>
+    <string name="connect_title">Connect to your UniHub</string>
+    <string name="connect_hint">The address you open UniHub at in the browser.</string>
+    <string name="connect_placeholder">hub.example.com</string>
+    <string name="connect_button">Connect</string>
+    <string name="connect_checking">Checking…</string>
+    <string name="connect_invalid">Enter an address like hub.example.com. It must use HTTPS.</string>
+    <string name="connect_not_unihub">No UniHub server answered at this address.</string>
+    <string name="connect_unreachable">Could not reach this address. Check it and your connection.</string>
+    <string name="connect_confirm_title">Connect to %1$s?</string>
+    <string name="connect_confirm_body">UniHub will open this server. Only continue if it is yours or you trust it.</string>
+    <string name="connect_confirm_ok">Connect</string>
+    <string name="cancel">Cancel</string>
+    <string name="error_title">Cannot reach %1$s</string>
+    <string name="error_body">Check your connection. If the server moved, change the address.</string>
+    <string name="retry">Retry</string>
+    <string name="change_server">Change server</string>
+    <string name="download_started">Downloading %1$s</string>
+    <string name="download_saved">Saved %1$s to Downloads</string>
+    <string name="download_failed">Could not save the file</string>
+    <string name="no_app_for_link">No app can open this link</string>
+</resources>

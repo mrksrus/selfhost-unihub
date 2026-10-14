@@ -71,6 +71,7 @@ function bodyLimitFor(routeKey: string, pathname: string) {
 
 const PUBLIC_ROUTE_KEYS = new Set([
   'GET /health',
+  'GET /api/version',
   'GET /api/auth/signup-mode',
   'POST /api/auth/signup',
   'POST /api/auth/signin',

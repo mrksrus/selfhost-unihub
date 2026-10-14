@@ -84,6 +84,8 @@ export default defineConfig(() => ({
         globPatterns: ["**/*.{js,mjs,wasm,css,html}"],
         navigateFallbackDenylist: [
           /^\/api\//,
+          // The Android app download (served by Nginx, not the page).
+          /^\/downloads\//,
         ],
         // /api/events (Server-Sent Events) and file downloads (backups,
         // recordings, attachments) are left out on purpose: no service-worker

@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { api } from '@/lib/api';
 import { calendarQueryKeys, type CalendarEvent } from '@/lib/calendar-api';
 import type { Email } from '@/lib/mail-api';
@@ -148,6 +148,9 @@ describe('a task from an email', () => {
   });
 
   it('lists the tasks made from an email in the reader, each leading to its row in ToDo', async () => {
+    // A fixed "now", so the task's day is shown as a date rather than Today.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-10-01T12:00:00Z') });
+    onTestFinished(() => { vi.useRealTimers(); });
     wrap(<EmailTasks timezone="UTC" tasks={[
       { id: 'task-1', title: 'Invoice 4711 for October', todo_status: null, start_time: '2026-10-14T09:00:00.000Z', end_time: '2026-10-14T09:30:00.000Z', all_day: true, is_todo_only: false, calendar_id: 'list-pay' },
       { id: 'task-2', title: 'Read the terms', todo_status: 'done', start_time: '', end_time: '', all_day: false, is_todo_only: true, calendar_id: 'list-tasks' },

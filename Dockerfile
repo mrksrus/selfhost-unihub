@@ -23,7 +23,33 @@ COPY api/*.ts ./
 COPY api/src ./src
 RUN npm run build
 
-# ── Stage 3: Production image (Nginx + Node.js API) ───────────────
+# ── Stage 3: Build the Android app ────────────────────────────────
+# The app is a thin shell around the server's pages (android/). The APK runs
+# on every phone, so it is built on the build machine's own platform and then
+# served by this image at /downloads/unihub.apk. Build with
+# --build-arg UNIHUB_ANDROID=0 to leave it out; the web page then offers only
+# the web app. Signing: see android/scripts/build-apk.sh.
+FROM --platform=$BUILDPLATFORM eclipse-temurin:17-jdk AS android-builder
+ARG UNIHUB_ANDROID=1
+ENV ANDROID_HOME=/opt/android-sdk
+RUN if [ "$UNIHUB_ANDROID" = 1 ]; then \
+      apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/* \
+      && curl -fsSL -o /tmp/tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+      && echo "2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258  /tmp/tools.zip" | sha256sum -c - \
+      && mkdir -p "$ANDROID_HOME/cmdline-tools" \
+      && unzip -q /tmp/tools.zip -d "$ANDROID_HOME/cmdline-tools" \
+      && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
+      && rm /tmp/tools.zip \
+      && yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null \
+      && "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null; \
+    fi
+WORKDIR /build
+COPY package.json ./
+COPY android ./android
+RUN --mount=type=secret,id=android_keystore --mount=type=secret,id=android_keystore_password \
+    if [ "$UNIHUB_ANDROID" = 1 ]; then bash android/scripts/build-apk.sh /out; else mkdir -p /out; fi
+
+# ── Stage 4: Production image (Nginx + Node.js API) ───────────────
 FROM node:26-alpine
 
 # Install runtime services plus ffmpeg for recording conversion and temporary build deps for native node modules
@@ -54,6 +80,9 @@ COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf
 
 # Copy built frontend assets from Stage 1
 COPY --from=frontend-builder /build/dist /usr/share/nginx/html
+
+# The Android app and its metadata (empty when built with UNIHUB_ANDROID=0)
+COPY --from=android-builder /out/ /app/downloads/
 
 # The Node API runs as this unprivileged user (fixed IDs so bind mounts can be
 # prepared on the host). The supervisor and Nginx master stay root; Nginx drops
