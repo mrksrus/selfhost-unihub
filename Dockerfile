@@ -1,3 +1,6 @@
+# Build the Android app into the image (1) or leave it out (0); see Stage 3.
+ARG UNIHUB_ANDROID=1
+
 # ── Stage 1: Build the React frontend ──────────────────────────────
 FROM node:26-alpine AS frontend-builder
 
@@ -24,30 +27,38 @@ COPY api/src ./src
 RUN npm run build
 
 # ── Stage 3: Build the Android app ────────────────────────────────
-# The app is a thin shell around the server's pages (android/). The APK runs
-# on every phone, so it is built on the build machine's own platform and then
-# served by this image at /downloads/unihub.apk. Build with
-# --build-arg UNIHUB_ANDROID=0 to leave it out; the web page then offers only
-# the web app. Signing: see android/scripts/build-apk.sh.
-FROM --platform=$BUILDPLATFORM eclipse-temurin:17-jdk AS android-builder
-ARG UNIHUB_ANDROID=1
+# The app is a thin shell around the server's pages (android/), served by this
+# image at /downloads/unihub.apk. One APK runs on every phone. Android's build
+# tools (aapt2) exist only for x86-64 Linux, so this stage always runs as
+# linux/amd64: an ARM build machine needs x86-64 emulation (Docker Desktop has
+# it; on Linux: docker run --privileged --rm tonistiigi/binfmt --install amd64).
+# --build-arg UNIHUB_ANDROID=0 skips this stage; the web page then offers only
+# the web app.
+FROM --platform=linux/amd64 eclipse-temurin:17-jdk AS android-1
 ENV ANDROID_HOME=/opt/android-sdk
-RUN if [ "$UNIHUB_ANDROID" = 1 ]; then \
-      apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/* \
-      && curl -fsSL -o /tmp/tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
-      && echo "2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258  /tmp/tools.zip" | sha256sum -c - \
-      && mkdir -p "$ANDROID_HOME/cmdline-tools" \
-      && unzip -q /tmp/tools.zip -d "$ANDROID_HOME/cmdline-tools" \
-      && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
-      && rm /tmp/tools.zip \
-      && yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null \
-      && "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null; \
-    fi
+RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL -o /tmp/tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+    && echo "2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258  /tmp/tools.zip" | sha256sum -c - \
+    && mkdir -p "$ANDROID_HOME/cmdline-tools" \
+    && unzip -q /tmp/tools.zip -d "$ANDROID_HOME/cmdline-tools" \
+    && mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest" \
+    && rm /tmp/tools.zip \
+    && yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null \
+    && "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" >/dev/null
 WORKDIR /build
 COPY package.json ./
 COPY android ./android
+# Signing: see android/scripts/build-apk.sh. Docker's cache ignores secrets, so
+# UNIHUB_ANDROID_KEY names the key (any text, "none" without one): a new value
+# rebuilds the app instead of reusing one signed with another key.
+ARG UNIHUB_ANDROID_KEY=none
 RUN --mount=type=secret,id=android_keystore --mount=type=secret,id=android_keystore_password \
-    if [ "$UNIHUB_ANDROID" = 1 ]; then bash android/scripts/build-apk.sh /out; else mkdir -p /out; fi
+    bash android/scripts/build-apk.sh /out
+
+FROM --platform=$BUILDPLATFORM node:26-alpine AS android-0
+RUN mkdir /out
+
+FROM android-${UNIHUB_ANDROID} AS android-app
 
 # ── Stage 4: Production image (Nginx + Node.js API) ───────────────
 FROM node:26-alpine
@@ -82,7 +93,7 @@ COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf
 COPY --from=frontend-builder /build/dist /usr/share/nginx/html
 
 # The Android app and its metadata (empty when built with UNIHUB_ANDROID=0)
-COPY --from=android-builder /out/ /app/downloads/
+COPY --from=android-app /out/ /app/downloads/
 
 # The Node API runs as this unprivileged user (fixed IDs so bind mounts can be
 # prepared on the host). The supervisor and Nginx master stay root; Nginx drops

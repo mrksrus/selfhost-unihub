@@ -69,15 +69,34 @@ describe('install offer', () => {
 });
 
 describe('messages to the Android app', () => {
-  it('hands the file to the app, because a WebView cannot download blob links', async () => {
+  it('hands the file to the app in confirmed pieces, because a WebView cannot download blob links', async () => {
     useUserAgent(`${ANDROID_BROWSER} UniHubAndroid/0.21.0 (21000)`);
-    const postMessage = vi.fn();
-    window.UniHubAndroid = { postMessage };
+    let listener: ((event: { data: string }) => void) | undefined;
+    const postMessage = vi.fn((raw: string) => {
+      const message = JSON.parse(raw);
+      if (message.type !== 'saveFileAbort') setTimeout(() => listener?.({ data: JSON.stringify({ id: message.id, ok: true }) }), 0);
+    });
+    window.UniHubAndroid = { postMessage, addEventListener: (_type, handler) => { listener = handler; } };
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click');
-    saveFile(new Blob(['hello'], { type: 'text/plain' }), 'note.txt');
-    await vi.waitFor(() => expect(postMessage).toHaveBeenCalled());
-    expect(JSON.parse(postMessage.mock.calls[0][0])).toEqual({ type: 'saveFile', name: 'note.txt', mime: 'text/plain', data: btoa('hello') });
+    await saveFile(new Blob(['hello'], { type: 'text/plain' }), 'note.txt');
+    const sent = postMessage.mock.calls.map(([raw]) => JSON.parse(raw));
+    expect(sent.map(message => message.type)).toEqual(['saveFileStart', 'saveFileChunk', 'saveFileEnd']);
+    expect(sent[0]).toMatchObject({ name: 'note.txt', mime: 'text/plain' });
+    expect(sent[1].data).toBe(btoa('hello'));
+    expect(new Set(sent.map(message => message.id)).size).toBe(1);
     expect(click).not.toHaveBeenCalled();
+  });
+
+  it('rejects and cancels the file when the app refuses a piece', async () => {
+    useUserAgent(`${ANDROID_BROWSER} UniHubAndroid/0.21.0 (21000)`);
+    let listener: ((event: { data: string }) => void) | undefined;
+    const postMessage = vi.fn((raw: string) => {
+      const message = JSON.parse(raw);
+      if (message.type !== 'saveFileAbort') setTimeout(() => listener?.({ data: JSON.stringify({ id: message.id, ok: message.type === 'saveFileStart' }) }), 0);
+    });
+    window.UniHubAndroid = { postMessage, addEventListener: (_type, handler) => { listener = handler; } };
+    await expect(saveFile(new Blob(['hello']), 'note.txt')).rejects.toThrow();
+    expect(JSON.parse(postMessage.mock.calls.at(-1)![0]).type).toBe('saveFileAbort');
   });
 
   it('tells the app the theme only inside the app', () => {

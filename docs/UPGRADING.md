@@ -11,8 +11,8 @@ No database upgrade and no configuration change. The image now serves the
 Android app at `/downloads/unihub.apk`; a reverse proxy that passes every
 path to UniHub needs no change. Images
 you build yourself take longer (the Android SDK is downloaded once per build
-cache); add `--build-arg UNIHUB_ANDROID=0` to leave the app out. See
-[Android app](ANDROID.md).
+cache); add `--build-arg UNIHUB_ANDROID=0` to leave the app out. On an ARM build
+machine the app's build needs x86-64 emulation. See [Android app](ANDROID.md).
 
 ## 0.20.0 Tasks from email
 

@@ -254,7 +254,7 @@ const Recordings = () => {
 
   const downloadStoredRecording = async (item: StoredRecording) => {
     const blob = await readStoredRecordingBlob(item.id).catch(() => null);
-    if (blob) saveFile(blob, item.details.original_filename);
+    if (blob) await saveFile(blob, item.details.original_filename).catch(() => toast({ title: 'Could not save the recording', variant: 'destructive' }));
     else toast({ title: 'The audio of this recording is missing on this device', variant: 'destructive' });
   };
 
@@ -297,7 +297,7 @@ const Recordings = () => {
       setExportingId(recording.id);
       const query = exportMp3 ? 'download=1&format=mp3' : 'download=1';
       const { blob, filename } = await api.getBlob(`/recordings/${recording.id}/file?${query}`);
-      saveFile(blob, filename || recording.original_filename || `${recording.title}.${exportMp3 ? 'mp3' : 'audio'}`);
+      await saveFile(blob, filename || recording.original_filename || `${recording.title}.${exportMp3 ? 'mp3' : 'audio'}`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Download failed';
       toast({ title: exportMp3 ? 'MP3 export failed' : 'Download failed', description: message, variant: 'destructive' });

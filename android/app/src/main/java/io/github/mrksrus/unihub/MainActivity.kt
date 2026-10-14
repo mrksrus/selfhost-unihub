@@ -232,6 +232,7 @@ class MainActivity : Activity() {
             it.destroy()
         }
         webView = null
+        bridge?.close()
         bridge = null
         errorView = null
         root = null

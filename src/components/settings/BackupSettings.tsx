@@ -319,7 +319,8 @@ export default function BackupSettings({ active }: { active: boolean }) {
       [`UniHub backup: ${recoveryDialogJob.id}\nRecovery password: ${recoveryPassword}\n`],
       { type: 'text/plain;charset=utf-8' }
     );
-    saveFile(blob, `unihub-backup-${recoveryDialogJob.id}-recovery-password.txt`);
+    saveFile(blob, `unihub-backup-${recoveryDialogJob.id}-recovery-password.txt`)
+      .catch(() => toast({ title: 'Could not save the file', variant: 'destructive' }));
   };
 
   const handleDeleteBackupJob = async (job: BackupJob) => {

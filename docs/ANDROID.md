@@ -49,7 +49,7 @@ email) a `UniHubAndroid` object that takes JSON messages:
 
 | Message | What the app does |
 | --- | --- |
-| `saveFile` | Saves a file the page made (an attachment, an export) to Downloads. A WebView cannot download `blob:` links. |
+| `saveFileStart`, `saveFileChunk`, `saveFileEnd`, `saveFileAbort` | Saves a file the page made (an attachment, an export, a recording) to Downloads, in pieces of 1.5 MB that the app confirms one by one. A WebView cannot download `blob:` links. |
 | `download` | Downloads a file the server streams (backups, attachments, the app update) with Android's download manager and the app's session. Only the server's own addresses. |
 | `changeServer` | Forgets the server and shows the connect screen. |
 | `theme` | Colours the status and navigation bars like the page (UniHub's own light/dark setting, not the phone's). |
@@ -76,11 +76,17 @@ moved past every app that uses it. The app's version follows the server's:
 
 ## Building
 
-The Dockerfile's `android-builder` stage builds the APK with the Android SDK
+The Dockerfile's `android-1` stage builds the APK with the Android SDK
 and Gradle (`android/scripts/build-apk.sh`) and copies it to
 `/app/downloads/unihub.apk`; Nginx serves it at `/downloads/unihub.apk`. Build
 an image without the app with `--build-arg UNIHUB_ANDROID=0`; the page then
 offers only the web app.
+
+Android's build tools run only on x86-64 Linux, so this stage always builds as
+`linux/amd64`. On an ARM machine (Apple silicon, a Raspberry Pi) Docker needs
+x86-64 emulation: Docker Desktop has it; on Linux install it once with
+`docker run --privileged --rm tonistiigi/binfmt --install amd64`. Images built
+without the app need no emulation.
 
 ### Signing key
 
@@ -111,8 +117,14 @@ encryption key.
   ```sh
   base64 -w0 my-key.jks > /tmp/keystore.b64
   docker build --secret id=android_keystore,src=/tmp/keystore.b64 \
-    --secret id=android_keystore_password,src=/tmp/keystore-password .
+    --secret id=android_keystore_password,src=/tmp/keystore-password \
+    --build-arg UNIHUB_ANDROID_KEY=my-key .
   ```
+
+  `UNIHUB_ANDROID_KEY` is any name for the key; the build stops without it.
+  Docker's build cache does not notice a changed secret, so use a new name
+  whenever the key changes, or a cached app signed with the old key ends up in
+  the image.
 
 ## Development
 

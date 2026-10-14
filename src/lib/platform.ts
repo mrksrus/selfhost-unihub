@@ -18,7 +18,11 @@
 
 export const ANDROID_PACKAGE = 'io.github.mrksrus.unihub';
 
-interface AndroidBridge { postMessage(message: string): void }
+// Replies from the app arrive as "message" events on the same object.
+interface AndroidBridge {
+  postMessage(message: string): void;
+  addEventListener?(type: 'message', listener: (event: { data: string }) => void): void;
+}
 declare global { interface Window { UniHubAndroid?: AndroidBridge } }
 
 export interface AndroidApp { versionName: string; versionCode: number }
@@ -61,11 +65,15 @@ export function showThemeInApp(dark: boolean, background: string) {
   postToApp({ type: 'theme', dark, background });
 }
 
-/** Saves data created in the page (an attachment, an export) as a file on this device. */
-export function saveFile(blob: Blob, filename: string) {
-  if (androidApp() && window.UniHubAndroid) {
+/**
+ * Saves data created in the page (an attachment, an export) as a file on this
+ * device. Rejects when the file could not be handed over.
+ */
+export async function saveFile(blob: Blob, filename: string) {
+  const bridge = androidApp() ? window.UniHubAndroid : undefined;
+  if (bridge) {
     // A WebView cannot download blob: URLs; the app writes the file to Downloads.
-    void blobBase64(blob).then(data => postToApp({ type: 'saveFile', name: filename, mime: blob.type, data }));
+    await sendFileToApp(bridge, blob, filename);
     return;
   }
   const url = URL.createObjectURL(blob);
@@ -74,6 +82,50 @@ export function saveFile(blob: Blob, filename: string) {
   } finally {
     // Revoke after the click has been handled; some browsers read the URL asynchronously.
     setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+}
+
+// Files go to the app in pieces, each confirmed before the next, so a large
+// recording never becomes one huge string or piles up in the app's memory.
+const FILE_CHUNK_BYTES = 1536 * 1024;
+const APP_REPLY_TIMEOUT_MS = 60_000;
+const appReplies = new Map<string, (ok: boolean) => void>();
+let listening: AndroidBridge | null = null;
+
+function askApp(bridge: AndroidBridge, message: { type: string; id: string } & Record<string, unknown>) {
+  if (listening !== bridge) {
+    listening = bridge;
+    bridge.addEventListener?.('message', event => {
+      try {
+        const reply = JSON.parse(event.data) as { id?: string; ok?: boolean };
+        if (reply.id) appReplies.get(reply.id)?.(reply.ok === true);
+      } catch { /* Not a reply. */ }
+    });
+  }
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => settle(false), APP_REPLY_TIMEOUT_MS);
+    function settle(ok: boolean) {
+      clearTimeout(timer);
+      appReplies.delete(message.id);
+      if (ok) resolve(); else reject(new Error('The app could not save the file'));
+    }
+    appReplies.set(message.id, settle);
+    bridge.postMessage(JSON.stringify(message));
+  });
+}
+
+async function sendFileToApp(bridge: AndroidBridge, blob: Blob, filename: string) {
+  const id = crypto.randomUUID();
+  await askApp(bridge, { type: 'saveFileStart', id, name: filename, mime: blob.type });
+  try {
+    for (let offset = 0; offset < blob.size; offset += FILE_CHUNK_BYTES) {
+      const data = await blobBase64(blob.slice(offset, offset + FILE_CHUNK_BYTES));
+      await askApp(bridge, { type: 'saveFileChunk', id, data });
+    }
+    await askApp(bridge, { type: 'saveFileEnd', id });
+  } catch (error) {
+    bridge.postMessage(JSON.stringify({ type: 'saveFileAbort', id }));
+    throw error;
   }
 }
 

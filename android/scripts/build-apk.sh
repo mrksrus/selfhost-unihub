@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Android app for the container image (Dockerfile, android-builder
-# stage). Writes <out>/unihub.apk and <out>/unihub-android.json, which the API
+# Builds the Android app for the container image (Dockerfile, stage android-1). Writes <out>/unihub.apk and <out>/unihub-android.json, which the API
 # reports in GET /api/version.
 #
 # Signing: Android only installs an update signed with the same key as the
@@ -8,7 +7,8 @@
 # secrets android_keystore = base64 of the keystore, android_keystore_password).
 # Without them the APK is signed with a throwaway key, so a phone cannot update
 # it from a later image: uninstall first. Self-hosters who build their own
-# images can pass their own key the same way.
+# images can pass their own key the same way, with UNIHUB_ANDROID_KEY naming it
+# (docs/ANDROID.md).
 set -euo pipefail
 
 out="${1:?usage: build-apk.sh <output directory>}"
@@ -18,6 +18,21 @@ cd "$(dirname "$0")/.."
 version="$(sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' ../package.json | head -n 1)"
 IFS=. read -r major minor patch <<<"$version"
 code=$((major * 1000000 + minor * 1000 + patch))
+
+# The Dockerfile's build cache only notices a new key through UNIHUB_ANDROID_KEY.
+key_name="${UNIHUB_ANDROID_KEY:-none}"
+if [[ -s /run/secrets/android_keystore && "$key_name" == none ]]; then
+  echo 'A signing key was given: also pass --build-arg UNIHUB_ANDROID_KEY=<a name for this key>, so a cached app signed with another key is not reused.' >&2
+  exit 1
+fi
+if [[ -s /run/secrets/android_keystore && ! -s /run/secrets/android_keystore_password ]]; then
+  echo 'A signing key was given without its password (secret android_keystore_password).' >&2
+  exit 1
+fi
+if [[ ! -s /run/secrets/android_keystore && "$key_name" != none ]]; then
+  echo "UNIHUB_ANDROID_KEY is $key_name, but no signing key was given (secret android_keystore)." >&2
+  exit 1
+fi
 
 keystore="$(mktemp -d)/unihub.jks"
 if [[ -s /run/secrets/android_keystore && -s /run/secrets/android_keystore_password ]]; then

@@ -8,7 +8,7 @@ import { MailMessageView } from '@/components/mail/MailMessageView';
 
 const pdf = vi.hoisted(() => ({ getDocument: vi.fn() }));
 vi.mock('@/lib/api', () => ({ api: { getBlob: vi.fn(), get: vi.fn(), post: vi.fn() } }));
-vi.mock('@/lib/platform', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/platform')>()), saveFile: vi.fn() }));
+vi.mock('@/lib/platform', async importOriginal => ({ ...(await importOriginal<typeof import('@/lib/platform')>()), saveFile: vi.fn(async () => {}) }));
 // jsdom cannot run pdf.js; the viewer's use of it is what is checked here.
 vi.mock('pdfjs-dist', () => ({
   GlobalWorkerOptions: {},

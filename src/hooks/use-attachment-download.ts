@@ -9,7 +9,7 @@ export function useAttachmentDownload() {
   return async (attachment: Pick<EmailAttachment, 'id' | 'filename'>) => {
     try {
       const { blob, filename } = await api.getBlob(`/mail/attachments/${attachment.id}`);
-      saveFile(blob, filename || attachment.filename || 'attachment');
+      await saveFile(blob, filename || attachment.filename || 'attachment');
     } catch (error) {
       const status = (error as Error & { status?: number }).status;
       const description = status === 401 ? 'Session expired. Please sign in again and retry.'

@@ -138,7 +138,7 @@ const Contacts = () => {
   const exportAll = async () => {
     try {
       const { blob, filename } = await contactsApi.exportVcf();
-      saveFile(blob, filename || 'contacts.vcf');
+      await saveFile(blob, filename || 'contacts.vcf');
       toast({ title: 'Contacts exported' });
     } catch (error) {
       toast({ title: 'Export failed', description: error instanceof Error ? error.message : undefined, variant: 'destructive' });

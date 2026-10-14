@@ -148,7 +148,7 @@ function ViewerContent({ attachments, initialId }: { attachments: EmailAttachmen
 
   if (!attachment) return null;
   const download = () => {
-    if (current && 'blob' in current) saveFile(current.blob, current.filename || attachment.filename || 'attachment');
+    if (current && 'blob' in current) void saveFile(current.blob, current.filename || attachment.filename || 'attachment').catch(() => fallbackDownload(attachment));
     else void fallbackDownload(attachment);
   };
   const onKeyDown = (event: KeyboardEvent) => {

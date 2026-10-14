@@ -13,10 +13,14 @@ import android.util.Base64
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.widget.Toast
+import androidx.webkit.JavaScriptReplyProxy
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
+import java.io.OutputStream
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /**
  * What the page can ask of the phone. The page side is src/lib/platform.ts:
@@ -33,21 +37,30 @@ class WebBridge(
 ) {
     fun attach(webView: WebView): Boolean {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
-        WebViewCompat.addWebMessageListener(webView, NAME, setOf(origin)) { view, message, sourceOrigin, isMainFrame, _ ->
+        WebViewCompat.addWebMessageListener(webView, NAME, setOf(origin)) { view, message, sourceOrigin, isMainFrame, reply ->
             if (!isMainFrame || !ServerAddress.sameOrigin(origin, sourceOrigin.toString())) return@addWebMessageListener
-            handle(view, message)
+            handle(view, message, reply)
         }
         return true
     }
 
-    private fun handle(view: WebView, message: WebMessageCompat) {
+    /** Stops file transfers; a file that was not finished is deleted. */
+    fun close() {
+        onFiles { open.keys.toList().forEach(::abortFile) }
+        files.shutdown()
+    }
+
+    private fun handle(view: WebView, message: WebMessageCompat, reply: JavaScriptReplyProxy) {
         val data = try {
             JSONObject(message.data ?: return)
         } catch (_: org.json.JSONException) {
             return
         }
         when (data.optString("type")) {
-            "saveFile" -> saveFile(data.optString("name"), data.optString("mime"), data.optString("data"))
+            "saveFileStart" -> fileStep(reply, data) { id -> startFile(id, data.optString("name"), data.optString("mime")) }
+            "saveFileChunk" -> fileStep(reply, data) { id -> writeFile(id, data.optString("data")) }
+            "saveFileEnd" -> fileStep(reply, data) { id -> finishFile(id) }
+            "saveFileAbort" -> data.optString("id").takeIf { validId(it) }?.let { id -> onFiles { abortFile(id) } }
             "download" -> download(data.optString("url"), data.optString("name"), view.settings.userAgentString)
             "openExternal" -> openExternal(activity, data.optString("url"))
             "changeServer" -> onChangeServer()
@@ -55,37 +68,86 @@ class WebBridge(
         }
     }
 
-    /** Saves a file the page made (an attachment it loaded, an export) to Downloads. */
-    private fun saveFile(name: String, mime: String, base64: String) {
-        val fileName = safeFileName(name)
-        Thread {
-            val ok = try {
-                val bytes = Base64.decode(base64, Base64.DEFAULT)
-                val resolver = activity.contentResolver
-                val values = ContentValues().apply {
-                    put(MediaStore.Downloads.DISPLAY_NAME, fileName)
-                    put(MediaStore.Downloads.MIME_TYPE, mime.ifBlank { "application/octet-stream" })
-                    put(MediaStore.Downloads.IS_PENDING, 1)
-                }
-                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("No Downloads")
-                try {
-                    resolver.openOutputStream(uri)!!.use { it.write(bytes) }
-                    values.clear()
-                    values.put(MediaStore.Downloads.IS_PENDING, 0)
-                    resolver.update(uri, values, null, null)
-                } catch (error: Exception) {
-                    resolver.delete(uri, null, null)
-                    throw error
-                }
-                true
-            } catch (_: Exception) {
-                false
-            }
+    // ── Saving a file the page made (an attachment it loaded, an export) ──
+    // The page sends it in pieces (src/lib/platform.ts) and waits for each
+    // reply, so memory stays bounded. Files are written on one thread, in order;
+    // `open` is only touched there.
+
+    private class OpenFile(val name: String, val uri: Uri, val stream: OutputStream)
+
+    private val files = Executors.newSingleThreadExecutor()
+    private val open = HashMap<String, OpenFile>()
+
+    private fun fileStep(reply: JavaScriptReplyProxy, data: JSONObject, step: (String) -> Boolean) {
+        val id = data.optString("id").takeIf { validId(it) } ?: return
+        onFiles {
+            val ok = try { step(id) } catch (_: Exception) { false }
+            if (!ok) abortFile(id)
             activity.runOnUiThread {
-                val text = if (ok) activity.getString(R.string.download_saved, fileName) else activity.getString(R.string.download_failed)
-                Toast.makeText(activity, text, Toast.LENGTH_SHORT).show()
+                try {
+                    reply.postMessage(JSONObject().put("id", id).put("ok", ok).toString())
+                } catch (_: Exception) {
+                    // The page is gone.
+                }
             }
-        }.start()
+        }
+    }
+
+    private fun onFiles(task: () -> Unit) {
+        try {
+            files.execute(task)
+        } catch (_: RejectedExecutionException) {
+            // Closed: the page is gone.
+        }
+    }
+
+    private fun startFile(id: String, name: String, mime: String): Boolean {
+        if (id in open || open.size >= MAX_OPEN_FILES) return false
+        val fileName = safeFileName(name)
+        val resolver = activity.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, mime.ifBlank { "application/octet-stream" })
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
+        val stream = try {
+            resolver.openOutputStream(uri) ?: error("No stream")
+        } catch (error: Exception) {
+            resolver.delete(uri, null, null)
+            throw error
+        }
+        open[id] = OpenFile(fileName, uri, stream)
+        return true
+    }
+
+    private fun writeFile(id: String, base64: String): Boolean {
+        val file = open[id] ?: return false
+        file.stream.write(Base64.decode(base64, Base64.DEFAULT))
+        return true
+    }
+
+    private fun finishFile(id: String): Boolean {
+        val file = open.remove(id) ?: return false
+        try {
+            file.stream.close()
+            val values = ContentValues().apply { put(MediaStore.Downloads.IS_PENDING, 0) }
+            activity.contentResolver.update(file.uri, values, null, null)
+        } catch (error: Exception) {
+            activity.contentResolver.delete(file.uri, null, null)
+            throw error
+        }
+        activity.runOnUiThread {
+            Toast.makeText(activity, activity.getString(R.string.download_saved, file.name), Toast.LENGTH_SHORT).show()
+        }
+        return true
+    }
+
+    // Failures are reported by the page, which may try another way.
+    private fun abortFile(id: String) {
+        val file = open.remove(id) ?: return
+        try { file.stream.close() } catch (_: Exception) { }
+        try { activity.contentResolver.delete(file.uri, null, null) } catch (_: Exception) { }
     }
 
     /**
@@ -112,7 +174,10 @@ class WebBridge(
 
     companion object {
         const val NAME = "UniHubAndroid"
+        private const val MAX_OPEN_FILES = 4
         private val EXTERNAL_SCHEMES = setOf("http", "https", "mailto", "tel")
+
+        private fun validId(id: String) = id.length in 1..64
 
         private fun parseColor(value: String): Int? =
             if (Regex("#[0-9a-fA-F]{6}").matches(value)) Color.parseColor(value) else null
