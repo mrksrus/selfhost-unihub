@@ -114,8 +114,9 @@ function Subtasks({ task, actions, readOnly, autoFocus }: { task: CalendarEvent;
                 </form>
               ) : <>
                 <span className={cn('flex-1 text-sm', subtask.is_done && 'text-muted-foreground line-through')}>{subtask.title}</span>
-                {!readOnly && (
-                  <span className="flex opacity-0 transition-opacity touch:gap-4 focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+                {!readOnly && <>
+                  {/* With a mouse the actions appear on hover; a touch screen gets one menu so the title keeps its width. */}
+                  <span className="flex opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 touch:hidden [@media(hover:none)]:opacity-100">
                     <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={`Move ${subtask.title} up`} disabled={index === 0}
                       onClick={() => actions.moveSubtask(task, subtask.id, -1)}><ChevronUp aria-hidden="true" /></Button>
                     <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={`Move ${subtask.title} down`} disabled={index === task.subtasks.length - 1}
@@ -125,7 +126,20 @@ function Subtasks({ task, actions, readOnly, autoFocus }: { task: CalendarEvent;
                     <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${subtask.title}`}
                       onClick={() => actions.deleteSubtask.mutate({ eventId: task.id, subtaskId: subtask.id })}><Trash2 aria-hidden="true" /></Button>
                   </span>
-                )}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="ghost" size="icon" className="hidden h-8 w-8 text-muted-foreground touch:inline-flex" aria-label={`More actions for ${subtask.title}`}>
+                        <MoreHorizontal aria-hidden="true" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem disabled={index === 0} onClick={() => actions.moveSubtask(task, subtask.id, -1)}>Move up</DropdownMenuItem>
+                      <DropdownMenuItem disabled={index === task.subtasks.length - 1} onClick={() => actions.moveSubtask(task, subtask.id, 1)}>Move down</DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => setEditing({ id: subtask.id, title: subtask.title })}>Rename</DropdownMenuItem>
+                      <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => actions.deleteSubtask.mutate({ eventId: task.id, subtaskId: subtask.id })}>Delete</DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>}
               </>}
             </li>
           ))}
