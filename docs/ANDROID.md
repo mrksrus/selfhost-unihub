@@ -62,7 +62,7 @@ in:
 
 ```json
 { "app": "unihub", "server": "0.21.0", "protocol": 1, "minApp": "0.21.0", "features": [],
-  "android": { "url": "/downloads/unihub.apk", "versionName": "0.21.0", "versionCode": 21000, "size": 6300000, "sha256": "…" } }
+  "android": { "url": "/downloads/unihub.apk", "versionName": "0.21.0", "versionCode": 21000, "size": 117323, "sha256": "…" } }
 ```
 
 `android` is `null` when the image was built without the app. Rules for

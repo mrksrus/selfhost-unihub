@@ -246,11 +246,11 @@ class MainActivity : Activity() {
         errorView = null
     }
 
-    // Targets Android 15, which draws the app behind the status and navigation
-    // bars. Padding keeps UniHub's pages (and the keyboard) clear of them.
+    // From Android 15 on, an app targeting it is drawn behind the status and
+    // navigation bars. Padding keeps UniHub's pages (and the keyboard) clear of
+    // them. Older versions keep the content between the bars by themselves.
     private fun applyInsets(view: View) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
-        window.setDecorFitsSystemWindows(false)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) return
         view.setOnApplyWindowInsetsListener { target, insets ->
             val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
             target.setPadding(bars.left, bars.top, bars.right, bars.bottom)
