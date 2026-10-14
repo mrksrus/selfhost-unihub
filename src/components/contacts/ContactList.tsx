@@ -1,3 +1,4 @@
+import type { MouseEvent } from 'react';
 import { Check, Star } from 'lucide-react';
 import { contactEmails, contactInitials, contactName, contactPhones, type Contact } from '@/lib/contacts-api';
 import { contactLetter, type ContactView, type Duplicates } from '@/lib/contact-views';
@@ -7,7 +8,7 @@ interface RowProps {
   contact: Contact;
   active: boolean;
   selected: boolean;
-  onOpen: () => void;
+  onOpen: (event: MouseEvent) => void;
   onToggleSelect: () => void;
   onToggleFavorite: () => void;
 }
@@ -16,14 +17,14 @@ function ContactRow({ contact, active, selected, onOpen, onToggleSelect, onToggl
   const name = contactName(contact);
   const secondary = [contact.company, contactEmails(contact)[0] || contactPhones(contact)[0]].filter(Boolean).join(' · ');
   return (
-    <li className={cn('group flex items-center gap-3 rounded-md pl-1 pr-1 transition-colors', active ? 'bg-muted' : 'hover:bg-muted/50')}>
-      {/* The avatar is the selection toggle, so rows stay one tap to open. */}
+    <li className={cn('group flex items-center gap-3 rounded-md pl-1 pr-1 transition-colors', selected ? 'bg-accent/10' : active ? 'bg-muted' : 'hover:bg-muted/50')}>
+      {/* The avatar is the selection toggle, so rows stay one tap to open; with a mouse, Ctrl/Cmd+click and Shift+click on the row select too. */}
       <button type="button" onClick={onToggleSelect} aria-pressed={selected} aria-label={`Select ${name}`}
         className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           selected ? 'bg-accent text-accent-foreground' : 'bg-muted text-muted-foreground group-hover:bg-background')}>
         {selected ? <Check aria-hidden="true" className="h-4 w-4" /> : contactInitials(contact)}
       </button>
-      <button type="button" onClick={onOpen} aria-current={active ? 'true' : undefined}
+      <button type="button" onClick={onOpen} onMouseDown={event => { if (event.shiftKey) event.preventDefault(); }} aria-current={active ? 'true' : undefined}
         className="min-w-0 flex-1 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
         <span className="block truncate text-sm font-medium">{name}</span>
         {secondary && <span className="block truncate text-xs text-muted-foreground">{secondary}</span>}
@@ -44,7 +45,7 @@ interface ListProps {
   duplicates: Duplicates;
   activeId: string | null;
   selectedIds: Set<string>;
-  onOpen: (contact: Contact) => void;
+  onOpen: (contact: Contact, event: MouseEvent) => void;
   onToggleSelect: (contact: Contact) => void;
   onToggleFavorite: (contact: Contact) => void;
 }
@@ -68,8 +69,7 @@ export function ContactList({ contacts, view, duplicates, activeId, selectedIds,
           <ul>
             {section.contacts.map(contact => (
               <ContactRow key={contact.id} contact={contact} active={contact.id === activeId} selected={selectedIds.has(contact.id)}
-                onOpen
-={() => onOpen(contact)} onToggleSelect={() => onToggleSelect(contact)} onToggleFavorite={() => onToggleFavorite(contact)} />
+                onOpen={event => onOpen(contact, event)} onToggleSelect={() => onToggleSelect(contact)} onToggleFavorite={() => onToggleFavorite(contact)} />
             ))}
           </ul>
         </section>

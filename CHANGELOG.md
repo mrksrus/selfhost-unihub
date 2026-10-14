@@ -8,6 +8,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.21.1
 
+### Added
+
+- Contacts can be selected with the mouse: Ctrl/Cmd+click adds one, Shift+click
+  adds a range. Escape clears the selection, Delete asks to delete it, and
+  **Set company…** writes a company or job title to all selected contacts at
+  once.
+
 ### Changed
 
 - On wide windows the panel of a page (mail accounts and folders, contact

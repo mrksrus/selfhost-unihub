@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { Download, Plus, Search, Upload, Users, X } from 'lucide-react';
@@ -20,6 +20,7 @@ import { NarrowOnly, PageBody, PageHeader, PageShell, PanelGroup, PanelHeader, P
 import { ContactList } from '@/components/contacts/ContactList';
 import { ContactDetail } from '@/components/contacts/ContactDetail';
 import { ContactDialog, type ContactDialogTarget } from '@/components/contacts/ContactDialog';
+import { BulkEditDialog } from '@/components/contacts/BulkEditDialog';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
@@ -72,6 +73,8 @@ const Contacts = () => {
   const fileInput = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState(() => params.get('search') || params.get('q') || '');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const anchorId = useRef<string | null>(null);
+  const [bulkTargets, setBulkTargets] = useState<Contact[] | null>(null);
   const [dialog, setDialog] = useState<ContactDialogTarget>(null);
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const debouncedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
@@ -112,11 +115,27 @@ const Contacts = () => {
   const selectView = (id: ContactView) => updateParams(next => { next.delete('contact'); if (id === 'all') next.delete('view'); else next.set('view', id); });
   const openContact = (contact: Contact | null) => updateParams(next => { if (contact) next.set('contact', contact.id); else next.delete('contact'); });
 
-  const toggleSelect = (contact: Contact) => setSelectedIds(prev => {
-    const next = new Set(prev);
-    if (next.has(contact.id)) next.delete(contact.id); else next.add(contact.id);
-    return next;
-  });
+  const toggleSelect = (contact: Contact) => {
+    anchorId.current = contact.id;
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(contact.id)) next.delete(contact.id); else next.add(contact.id);
+      return next;
+    });
+  };
+  const clickContact = (contact: Contact, event: MouseEvent) => {
+    if (event.ctrlKey || event.metaKey) return toggleSelect(contact);
+    const from = contacts.findIndex(entry => entry.id === anchorId.current);
+    if (event.shiftKey && from >= 0) {
+      const to = contacts.indexOf(contact);
+      setSelectedIds(prev => new Set([...prev, ...contacts.slice(Math.min(from, to), Math.max(from, to) + 1).map(entry => entry.id)]));
+      return;
+    }
+    // A plain click replaces the selection with the opened contact (as Finder does); the open detail stands for that one item, so no toolbar.
+    anchorId.current = contact.id;
+    setSelectedIds(new Set());
+    openContact(contact);
+  };
   const toggleFavorite = (contact: Contact) => actions.setFavorite.mutate({ id: contact.id, favorite: !contact.is_favorite });
 
   const confirmDelete = (contact: Contact) => setConfirm({
@@ -129,6 +148,22 @@ const Contacts = () => {
       if (activeId && selectedIds.has(activeId)) openContact(null);
       setSelectedIds(new Set());
     } }),
+  });
+  const editSelected = () => setBulkTargets(allContacts.filter(contact => selectedIds.has(contact.id)));
+
+  // With a selection: Escape clears it, Delete asks to delete it. Not while typing or while any dialog is open.
+  const selecting = selectedIds.size > 0;
+  useEffect(() => {
+    if (!selecting) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]')) return;
+      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+      if (event.key === 'Escape') setSelectedIds(new Set());
+      else if (event.key === 'Delete') { event.preventDefault(); confirmDeleteSelected(); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   });
 
   const emailInUniHub = preferences?.email_link_behavior === 'internal'
@@ -163,7 +198,6 @@ const Contacts = () => {
     </div>
   );
 
-  const selecting = selectedIds.size > 0;
   const allSelected = selecting && contacts.every(contact => selectedIds.has(contact.id));
 
   const list = contactsQuery.isLoading ? <LoadingState label="Loading contacts…" />
@@ -181,7 +215,7 @@ const Contacts = () => {
             action={view === 'all' && !debouncedSearch ? <Button variant="outline" onClick={() => setDialog({ kind: 'new' })}><Plus aria-hidden="true" />New contact</Button> : undefined} />
         ) : (
           <ContactList contacts={contacts} view={view} duplicates={duplicates} activeId={activeId} selectedIds={selectedIds}
-            onOpen={openContact} onToggleSelect={toggleSelect} onToggleFavorite={toggleFavorite} />
+            onOpen={clickContact} onToggleSelect={toggleSelect} onToggleFavorite={toggleFavorite} />
         )}
       </>
     );
@@ -196,7 +230,9 @@ const Contacts = () => {
               <Button variant="ghost" size="icon" aria-label="Clear selection" onClick={() => setSelectedIds(new Set())}><X aria-hidden="true" /></Button>
               <span className="text-sm font-medium">{selectedIds.size} selected</span>
               {!allSelected && <Button variant="ghost" size="sm" onClick={() => setSelectedIds(new Set(contacts.map(contact => contact.id)))}>Select all {contacts.length}</Button>}
-              <Button variant="outline" size="sm" className="ml-auto text-destructive hover:text-destructive" onClick={confirmDeleteSelected}>Delete</Button>
+              {/* Bulk editing is a desk job; on phones the toolbar keeps its old width. */}
+              <Button variant="outline" size="sm" className="ml-auto hidden md:inline-flex" onClick={editSelected}>Set company…</Button>
+              <Button variant="outline" size="sm" className="ml-auto text-destructive hover:text-destructive md:ml-0" onClick={confirmDeleteSelected}>Delete</Button>
             </>
           ) : (
             <div className="relative w-full max-w-md">
@@ -226,6 +262,7 @@ const Contacts = () => {
           if (file) actions.importVcf.mutate(file, { onSuccess: () => { setSearch(''); selectView('all'); } });
         }} />
       <ContactDialog target={dialog} onClose={() => setDialog(null)} actions={actions} />
+      <BulkEditDialog contacts={bulkTargets} onClose={() => setBulkTargets(null)} actions={actions} onSaved={() => setSelectedIds(new Set())} />
       <AlertDialog open={!!confirm} onOpenChange={open => { if (!open) setConfirm(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>

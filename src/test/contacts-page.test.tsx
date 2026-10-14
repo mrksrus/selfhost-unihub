@@ -43,6 +43,8 @@ function mount(path = '/contacts', preferences = { email_link_behavior: 'mailto'
 }
 
 beforeEach(() => {
+  // The Radix checkbox measures itself; jsdom has no ResizeObserver.
+  globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} };
   vi.mocked(api.post).mockResolvedValue({ data: {} });
   vi.mocked(api.put).mockResolvedValue({ data: {} });
   vi.mocked(api.delete).mockResolvedValue({ data: {} });
@@ -90,6 +92,32 @@ describe('Contacts', () => {
     fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/contacts/bulk-delete', { ids: ['ada', 'ben'] }));
     expect(state.toast).toHaveBeenCalledWith({ title: '2 contacts deleted' });
+  });
+
+  it('selects with Ctrl+click and Shift+click without opening, and clears with Escape', async () => {
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: /^Ada Example/ }), { ctrlKey: true });
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
+    expect(screen.getByTestId('location').textContent).toBe('/contacts');
+    fireEvent.click(screen.getByRole('button', { name: /^Ben Sample/ }), { shiftKey: true });
+    expect(screen.getByText('3 selected')).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.queryByText('3 selected')).not.toBeInTheDocument();
+  });
+
+  it('sets a company on the selected contacts and sends only the ticked field', async () => {
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Select Ada Example' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select Ben Sample' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Set company…' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Set company for 2 contacts' });
+    expect(within(dialog).getByRole('button', { name: 'Update 2 contacts' })).toBeDisabled();
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Company' }), { target: { value: 'Example Ltd' } });
+    vi.mocked(api.post).mockResolvedValueOnce({ data: { updated: 2 } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update 2 contacts' }));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/contacts/bulk-update', { ids: ['ada', 'ben'], contact: { company: 'Example Ltd' } }));
+    expect(state.toast).toHaveBeenCalledWith({ title: '2 contacts updated' });
+    await waitFor(() => expect(screen.queryByText('2 selected')).not.toBeInTheDocument());
   });
 
   it('prefills a new contact from a link and saves extra addresses in order', async () => {

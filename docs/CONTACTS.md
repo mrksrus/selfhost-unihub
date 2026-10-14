@@ -6,7 +6,7 @@ Contacts are per-user records stored in MariaDB. The current implementation
 supports:
 
 - server-side search and grouping
-- favorites and bulk delete
+- favorites, bulk delete and bulk company/job title update
 - up to three email addresses and three phone numbers per contact
 - vCard 3.0 import/export
 - import-time duplicate skipping
@@ -139,7 +139,7 @@ The contacts page provides:
 - group tabs
 - create/edit dialog
 - favorite toggle
-- bulk selection and delete
+- bulk selection (avatar tap, Ctrl/Cmd+click, Shift+click range), bulk delete and set company/job title
 - vCard import/export
 - duplicate merge actions
 - clickable `mailto:` and `tel:` links
