@@ -5,6 +5,15 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.21.0 The Android app
+
+No database upgrade and no configuration change. The image now serves the
+Android app at `/downloads/unihub.apk`; a reverse proxy that passes every
+path to UniHub needs no change. Images
+you build yourself take longer (the Android SDK is downloaded once per build
+cache); add `--build-arg UNIHUB_ANDROID=0` to leave the app out. See
+[Android app](ANDROID.md).
+
 ## 0.20.0 Tasks from email
 
 Database upgrade 16 runs at startup. It adds `source_email_id` and

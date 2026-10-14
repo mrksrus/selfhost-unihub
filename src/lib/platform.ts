@@ -56,6 +56,11 @@ export function changeAppServer() {
   postToApp({ type: 'changeServer' });
 }
 
+/** In the Android app: colours the status and navigation bars like the page. */
+export function showThemeInApp(dark: boolean, background: string) {
+  postToApp({ type: 'theme', dark, background });
+}
+
 /** Saves data created in the page (an attachment, an export) as a file on this device. */
 export function saveFile(blob: Blob, filename: string) {
   if (androidApp() && window.UniHubAndroid) {

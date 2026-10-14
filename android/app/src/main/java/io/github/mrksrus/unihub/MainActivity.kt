@@ -7,6 +7,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +15,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -46,6 +48,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val saved = ServerAddress.saved(this)
+        if (saved != null) PageTheme.saved(this)?.let { (dark, background) -> applyTheme(dark, background) }
         if (saved != null) showWeb(saved, savedInstanceState) else showConnect()
         connectRequest(intent)?.takeIf { it != saved && savedInstanceState == null }?.let(::confirmConnect)
     }
@@ -80,6 +83,7 @@ class MainActivity : Activity() {
 
     private fun showConnect(prefill: String? = null) {
         destroyWeb()
+        applyTheme(PageTheme.deviceIsDark(this), getColor(R.color.background))
         setContentView(R.layout.activity_connect)
         applyInsets(findViewById(R.id.connect_root))
         val input = findViewById<EditText>(R.id.server_input)
@@ -160,7 +164,11 @@ class MainActivity : Activity() {
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         CookieManager.getInstance().setAcceptCookie(true)
 
-        val pageBridge = WebBridge(this, server, onChangeServer = ::changeServer)
+        PageTheme.saved(this)?.let { (_, background) -> web.setBackgroundColor(background) }
+        val pageBridge = WebBridge(this, server, onChangeServer = ::changeServer, onTheme = { dark, background ->
+            PageTheme.save(this, dark, background)
+            applyTheme(dark, background)
+        })
         pageBridge.attach(web)
         bridge = pageBridge
 
@@ -244,6 +252,28 @@ class MainActivity : Activity() {
     private fun hideError() {
         errorView?.let { root?.removeView(it) }
         errorView = null
+    }
+
+    // UniHub has its own light/dark setting, so the bars follow the page (its
+    // ThemeProvider reports it) rather than the phone. Until the first page has
+    // loaded, the last theme it reported is used.
+    private fun applyTheme(dark: Boolean, background: Int) {
+        window.setBackgroundDrawable(ColorDrawable(background))
+        webView?.setBackgroundColor(background)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            window.insetsController?.setSystemBarsAppearance(if (dark) 0 else light, light)
+        } else {
+            applyLegacyBarIcons(dark)
+        }
+    }
+
+    // Android 10 and 11 (11 ignores the controller while the theme sets the flags).
+    @Suppress("DEPRECATION")
+    private fun applyLegacyBarIcons(dark: Boolean) {
+        val light = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        val decor = window.decorView
+        decor.systemUiVisibility = if (dark) decor.systemUiVisibility and light.inv() else decor.systemUiVisibility or light
     }
 
     // From Android 15 on, an app targeting it is drawn behind the status and

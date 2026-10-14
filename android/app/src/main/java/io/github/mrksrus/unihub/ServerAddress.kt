@@ -48,7 +48,8 @@ object ServerAddress {
         val scheme = uri.scheme?.lowercase() ?: return null
         val host = uri.host?.lowercase()?.takeIf { it.isNotEmpty() } ?: return null
         val shownHost = if (':' in host && !host.startsWith("[")) "[$host]" else host
-        val port = if (uri.port == -1) "" else ":${uri.port}"
+        val defaultPort = if (scheme == "https") 443 else 80
+        val port = if (uri.port == -1 || uri.port == defaultPort) "" else ":${uri.port}"
         return "$scheme://$shownHost$port"
     }
 

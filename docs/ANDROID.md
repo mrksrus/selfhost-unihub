@@ -6,9 +6,9 @@ version and every feature is written once in `src/`. Native code only covers
 what a browser tab cannot do. Each server image carries the matching app and
 offers it for download; there is no app store.
 
-Status (0.21.0, in progress): the app connects to a server and shows UniHub.
-Notifications are not in the app yet (Web Push does not reach a WebView); they
-come with UniHub's own delivery to the app, which is the next step.
+Status (0.21.0): the app connects to a server and shows UniHub. Notifications
+are not in the app yet (Web Push does not reach a WebView); they come in a later
+release. Until then, keep the web app or a browser for notifications.
 
 ## Getting the app
 
@@ -32,7 +32,9 @@ come with UniHub's own delivery to the app, which is the next step.
   against `GET /api/version` (below) before it is saved. HTTPS is required;
   plain HTTP only works for `localhost`, `127.0.0.1` and the emulator's
   `10.0.2.2` (development).
-- The app has its own sign-in, separate from the phone's browser.
+- You sign in inside the app as in the browser, including two-factor codes.
+  The app has its own session, separate from the phone's browser, which lasts
+  like any device's: 21 days from the last use.
 - If the server cannot be reached, the app offers **Retry** and **Change
   server**. Inside the app, Settings → General → App shows the app version,
   the server, an update when the server carries a newer app, and **Change
@@ -50,6 +52,7 @@ email) a `UniHubAndroid` object that takes JSON messages:
 | `saveFile` | Saves a file the page made (an attachment, an export) to Downloads. A WebView cannot download `blob:` links. |
 | `download` | Downloads a file the server streams (backups, attachments, the app update) with Android's download manager and the app's session. Only the server's own addresses. |
 | `changeServer` | Forgets the server and shows the connect screen. |
+| `theme` | Colours the status and navigation bars like the page (UniHub's own light/dark setting, not the phone's). |
 
 Links to other sites, `mailto:` and `tel:` open in the matching phone app. File
 inputs open Android's file picker. Recordings ask for the microphone through
@@ -97,7 +100,9 @@ encryption key.
   ```
 
   Use one password for the keystore and the key; it is
-  `ANDROID_KEYSTORE_PASSWORD`. Keep the `.jks` file out of the repository.
+  `ANDROID_KEYSTORE_PASSWORD`. A PKCS12 file works as well
+  (`openssl pkcs12 -export -name unihub`, alias `unihub`). Keep the key file
+  out of the repository.
 - **Images built without a key** (pull requests from forks, local builds) get a
   throwaway key. Such an app cannot be updated from another image: uninstall
   it first.
@@ -120,6 +125,11 @@ Develop features in the browser as usual. To try the app:
    and cookies working without certificates.
 3. Connect the app to `http://localhost:8080`. In the emulator,
    `http://10.0.2.2:8080` reaches the computer as well.
+
+Every CI run keeps the app it built under **Artifacts** (`unihub-android-app`)
+for trying it on a phone without publishing an image. Runs from this
+repository are signed with the release key, so that app updates an installed
+one.
 
 Debug builds allow inspecting the WebView from `chrome://inspect`. To see the
 install offer in development, point `UNIHUB_DOWNLOADS_DIR` at a folder with

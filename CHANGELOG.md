@@ -6,7 +6,7 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.21.0 (in progress)
+## 0.21.0
 
 The Android app, delivered by your own server. No database upgrade.
 
@@ -16,8 +16,10 @@ The Android app, delivered by your own server. No database upgrade.
   Android phone the install card offers **Android app** next to **Web app**:
   **Download**, open the file, allow the browser to install apps if asked, then
   **Open in app**, which connects the app to this server. The app shows
-  UniHub's own pages, so it always matches the server's version. Notifications
-  in the app are not there yet.
+  UniHub's own pages, so it always matches the server's version. You sign in
+  in the app as in the browser, two-factor codes included, and the status bar
+  follows UniHub's light or dark theme. Notifications in the app come in a
+  later release; keep the web app for them until then.
 - **Settings → General → Install** offers the Android app and the web app at
   any time. Inside the app it shows the app version, the server, a newer app
   when the server has one (also in the attention tray), and **Change server**.

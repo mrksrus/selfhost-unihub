@@ -5,6 +5,7 @@ import android.app.DownloadManager
 import android.content.ActivityNotFoundException
 import android.content.ContentValues
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
@@ -28,6 +29,7 @@ class WebBridge(
     private val activity: Activity,
     private val origin: String,
     private val onChangeServer: () -> Unit,
+    private val onTheme: (dark: Boolean, background: Int) -> Unit,
 ) {
     fun attach(webView: WebView): Boolean {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
@@ -49,6 +51,7 @@ class WebBridge(
             "download" -> download(data.optString("url"), data.optString("name"), view.settings.userAgentString)
             "openExternal" -> openExternal(activity, data.optString("url"))
             "changeServer" -> onChangeServer()
+            "theme" -> parseColor(data.optString("background"))?.let { onTheme(data.optBoolean("dark", true), it) }
         }
     }
 
@@ -110,6 +113,9 @@ class WebBridge(
     companion object {
         const val NAME = "UniHubAndroid"
         private val EXTERNAL_SCHEMES = setOf("http", "https", "mailto", "tel")
+
+        private fun parseColor(value: String): Int? =
+            if (Regex("#[0-9a-fA-F]{6}").matches(value)) Color.parseColor(value) else null
 
         fun safeFileName(name: String): String =
             name.replace(Regex("[\\\\/:*?\"<>|\\u0000-\\u001f]"), "_").trim().trimStart('.').take(200).ifEmpty { "download" }

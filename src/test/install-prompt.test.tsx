@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import InstallPrompt from '@/components/pwa/InstallPrompt';
 import { api } from '@/lib/api';
 import { INSTALLED_AT_KEY } from '@/lib/install-prompt';
-import { saveFile } from '@/lib/platform';
+import { saveFile, showThemeInApp } from '@/lib/platform';
 
 vi.mock('@/lib/api', () => ({ api: { get: vi.fn() } }));
 
@@ -68,7 +68,7 @@ describe('install offer', () => {
   });
 });
 
-describe('saving files in the Android app', () => {
+describe('messages to the Android app', () => {
   it('hands the file to the app, because a WebView cannot download blob links', async () => {
     useUserAgent(`${ANDROID_BROWSER} UniHubAndroid/0.21.0 (21000)`);
     const postMessage = vi.fn();
@@ -78,5 +78,16 @@ describe('saving files in the Android app', () => {
     await vi.waitFor(() => expect(postMessage).toHaveBeenCalled());
     expect(JSON.parse(postMessage.mock.calls[0][0])).toEqual({ type: 'saveFile', name: 'note.txt', mime: 'text/plain', data: btoa('hello') });
     expect(click).not.toHaveBeenCalled();
+  });
+
+  it('tells the app the theme only inside the app', () => {
+    const postMessage = vi.fn();
+    window.UniHubAndroid = { postMessage };
+    useUserAgent(ANDROID_BROWSER);
+    showThemeInApp(false, '#f5f7fa');
+    expect(postMessage).not.toHaveBeenCalled();
+    useUserAgent(`${ANDROID_BROWSER} UniHubAndroid/0.21.0 (21000)`);
+    showThemeInApp(false, '#f5f7fa');
+    expect(JSON.parse(postMessage.mock.calls[0][0])).toEqual({ type: 'theme', dark: false, background: '#f5f7fa' });
   });
 });
