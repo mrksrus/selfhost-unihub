@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- --background in src/index.css (dark, the default). -->
+    <!-- The background colour in src/index.css (dark, the default). -->
     <color name="background">#000000</color>
     <color name="foreground">#F5F7FA</color>
     <color name="muted">#9AA3B2</color>
