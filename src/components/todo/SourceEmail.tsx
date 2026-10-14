@@ -43,7 +43,7 @@ export function SourceEmailBlock({ source, timezone, className, onUnlink, unlink
           ? <Link to={emailPath(source)} className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'ml-7 shrink-0 sm:ml-0 sm:self-center')}>Open draft</Link>
           : <Button type="button" variant="outline" size="sm" className="ml-7 shrink-0 sm:ml-0 sm:self-center" onClick={() => openMailPeek(source.email_id)}>Show email</Button>}
       {onUnlink && (
-        <Button type="button" variant="ghost" size="icon" className="-mr-1 h-8 w-8 shrink-0 text-muted-foreground sm:self-center" disabled={unlinking}
+        <Button type="button" variant="ghost" size="icon-sm" className="-mr-1 shrink-0 text-muted-foreground sm:self-center" disabled={unlinking}
           aria-label="Remove the link to the email" title="Remove the link to the email" onClick={onUnlink}>
           <Unlink2 aria-hidden="true" className="h-4 w-4" />
         </Button>

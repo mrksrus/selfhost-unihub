@@ -36,10 +36,10 @@ interface ChipProps {
 export function Chip({ selected, onSelect, children, color, icon: Icon, count, countLabel, countTone = 'default', className }: ChipProps) {
   return (
     <button type="button" role="radio" aria-checked={selected} onClick={onSelect}
-      className={cn('inline-flex h-8 max-w-full shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm touch:h-10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      className={cn('inline-flex h-8 max-w-full shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm touch:h-10 touch:px-3.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         selected ? 'border-foreground bg-foreground text-background' : 'border-border text-foreground hover:bg-muted', className)}>
       {color && <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />}
-      {Icon && <Icon aria-hidden="true" className="-ml-1 h-3.5 w-3.5 shrink-0" />}
+      {Icon && <Icon aria-hidden="true" className="-ml-1 h-3.5 w-3.5 shrink-0 touch:h-4 touch:w-4" />}
       <span className="truncate">{children}</span>
       {count ? <>
         <span aria-hidden="true" className={cn('text-xs tabular-nums', countTone === 'warning' && !selected ? 'text-warning' : selected ? 'text-background/70' : 'text-muted-foreground')}>{count}</span>

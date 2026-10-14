@@ -37,7 +37,7 @@ export function RecordingRow({ recording, playing, exporting, activeTag, onPlay,
       </div>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon" className="-my-1 -mr-1 h-8 w-8 text-muted-foreground" disabled={exporting} aria-label={`More actions for ${recording.title}`}>
+          <Button variant="ghost" size="icon-sm" className="-my-1 -mr-1 text-muted-foreground" disabled={exporting} aria-label={`More actions for ${recording.title}`}>
             {exporting ? <Loader2 aria-hidden="true" className="animate-spin" /> : <MoreHorizontal aria-hidden="true" />}
           </Button>
         </DropdownMenuTrigger>
@@ -100,7 +100,7 @@ export function DeviceRecordingRow({ item, bytesUploaded, canContinue, canDiscar
           {item.state === 'draft' && <Button size="sm" onClick={onContinue} disabled={!canContinue}>Continue</Button>}
           {item.state === 'failed' && <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>}
           {item.state === 'queued' && item.error && <Button size="sm" variant="outline" onClick={onRetry}>Retry now</Button>}
-          <Button size="icon" variant="ghost" className="h-8 w-8" aria-label={`Download ${item.details.title}`} onClick={onDownload}><Download aria-hidden="true" /></Button>
+          <Button size="icon-sm" variant="ghost" aria-label={`Download ${item.details.title}`} onClick={onDownload}><Download aria-hidden="true" /></Button>
           {canDiscard && <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={onDiscard}>Discard</Button>}
         </div>
       </div>

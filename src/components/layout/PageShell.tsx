@@ -93,7 +93,7 @@ export function PageHeader({ title, scope, actions, children, back, hideSearch =
     <header className={cn('shrink-0 border-b border-border bg-background', className)}>
       <div className="flex h-14 min-w-0 items-center gap-2 px-4 md:px-6">
         {back}
-        <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight">{title}</h1>
+        <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight max-md:max-w-[50%] max-md:shrink-0">{title}</h1>
         {scope && (panel.collapsible ? (
           <button type="button" onClick={panel.open} aria-haspopup="dialog" aria-expanded={panel.isOpen}
             className="inline-flex h-8 min-w-0 max-w-[50%] shrink items-center gap-1 rounded-full bg-muted px-3 touch:h-10 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -153,7 +153,7 @@ export function PanelHeader({ title, action }: { title: ReactNode; action?: Reac
       <h2 className="min-w-0 flex-1 truncate text-base font-semibold">{title}</h2>
       {action}
       {panel.foldable && (
-        <Button variant="ghost" size="icon" className="-mr-2 h-8 w-8 text-muted-foreground" aria-label={foldLabel} title={foldLabel}
+        <Button variant="ghost" size="icon-sm" className="-mr-2 text-muted-foreground" aria-label={foldLabel} title={foldLabel}
           onClick={() => panel.setFolded(!panel.folded)}>
           {panel.folded ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
         </Button>
@@ -203,7 +203,7 @@ interface PanelItemProps {
 export function PanelItem({ children, active = false, icon: Icon, color, count, countTone = 'default', countLabel, description, href, onSelect, trailing, title }: PanelItemProps) {
   const panel = usePagePanel();
   const className = cn(
-    'flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm touch:py-2.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+    'flex w-full min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5 text-left text-sm touch:py-3 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
     active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
   );
   const content = <>
@@ -229,7 +229,7 @@ export function PanelItem({ children, active = false, icon: Icon, color, count, 
   return (
     <div className="group relative">
       {item}
-      <div className="absolute right-1 top-1/2 flex -translate-y-1/2 gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
+      <div className="absolute right-1 top-1/2 flex -translate-y-1/2 gap-0.5 touch:gap-2 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
         {trailing}
       </div>
     </div>

@@ -34,7 +34,7 @@ function LinkRow({ href, icon, label, value, onClick }: { href: string; icon: Re
           <span className="block text-xs text-muted-foreground">{label}</span>
         </span>
       </a>
-      <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+      <Button variant="ghost" size="icon-sm" className="shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
         aria-label={`Copy ${value}`} onClick={() => void copy()}>
         <Copy aria-hidden="true" />
       </Button>

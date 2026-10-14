@@ -33,10 +33,10 @@ export default function MailFolderNavigation({ folders, systemIds, selectedFolde
     <div className="flex items-center justify-between gap-2 px-4 pb-1 pt-3">
       <div className="min-w-0"><h2 className="text-xs font-medium text-muted-foreground">Folders</h2>
         <p className="truncate text-xs text-muted-foreground/80" title={accountLabel}>{accountLabel}</p></div>
-      <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onManage} aria-label="Manage folders"><FolderCog aria-hidden="true" /></Button>
+      <Button variant="ghost" size="icon-xs" className="shrink-0" onClick={onManage} aria-label="Manage folders"><FolderCog aria-hidden="true" /></Button>
     </div>
     {folders.length >= FILTER_FROM && <div className="relative mx-3 mb-1 mt-1"><Search aria-hidden="true" className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
-      <Input className="h-9 pl-8" aria-label="Find a folder" placeholder="Find a folder" value={search} onChange={event => setSearch(event.target.value)} /></div>}
+      <Input className="h-9 pl-8 touch:h-10" aria-label="Find a folder" placeholder="Find a folder" value={search} onChange={event => setSearch(event.target.value)} /></div>}
     <nav aria-label="Mail folders" className="min-h-0 flex-1 overflow-y-auto pb-3">
       <PanelGroup className="py-1">{builtins.map(renderFolder)}</PanelGroup>
       {custom.length > 0 && <PanelGroup className="py-1">

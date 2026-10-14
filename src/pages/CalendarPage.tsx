@@ -25,7 +25,7 @@ function ModeSwitch({ value, onChange, className }: { value: CalendarViewMode; o
     <div role="radiogroup" aria-label="Calendar view" className={cn('inline-flex rounded-md bg-muted p-0.5', className)}>
       {MODES.map(mode => (
         <button key={mode.id} type="button" role="radio" aria-checked={value === mode.id} onClick={() => onChange(mode.id)}
-          className={cn('h-7 rounded-[5px] px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          className={cn('h-7 rounded-[5px] px-3 text-sm touch:h-9 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
             value === mode.id ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>
           {mode.label}
         </button>

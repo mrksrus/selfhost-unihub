@@ -69,12 +69,12 @@ export function MailMessageList({ account, folder, folderLabel, accountLabel, li
                   onContextMenu(email, e.clientX, e.clientY);
                 }}
               >
-                <div className="email-checkbox flex shrink-0 flex-col items-center touch:gap-3">
-                  <Button variant="ghost" size="icon" className="h-8 w-8" aria-pressed={selected}
+                <div className="email-checkbox flex shrink-0 flex-col items-center touch:gap-1">
+                  <Button variant="ghost" size="icon-sm" aria-pressed={selected}
                     aria-label={`Select ${email.subject || 'message'}`} onClick={(e) => selection.toggleEmail(email.id, e)}>
                     {selected ? <CheckSquare aria-hidden="true" className="text-accent" /> : <Square aria-hidden="true" className="text-muted-foreground/70" />}
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-8 w-8"
+                  <Button variant="ghost" size="icon-sm"
                     onClick={(e) => { e.stopPropagation(); requestFlag(email, 'star', !email.is_starred); }}
                     aria-label={email.is_starred ? `Unstar ${email.subject || 'message'}` : `Star ${email.subject || 'message'}`}>
                     <Star aria-hidden="true" className={email.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground/70'} />

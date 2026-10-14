@@ -161,7 +161,7 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
             <ChevronUp aria-hidden="true" className="h-4 w-4 shrink-0 text-muted-foreground" />
             <span className="sr-only">Bring back</span>
           </button>
-          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label="Close" onClick={close}><X aria-hidden="true" className="h-4 w-4" /></Button>
+          <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="Close" onClick={close}><X aria-hidden="true" className="h-4 w-4" /></Button>
         </div>
       )}
       <MailComposeDialogs compose={compose} />

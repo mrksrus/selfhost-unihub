@@ -55,7 +55,7 @@ function SongRow({ recording, playing, onPlay, saving, onSave }: {
         ) : (
           <div className="relative">
             <pre className="whitespace-pre-wrap rounded-md bg-muted py-3 pl-3 pr-11 font-mono text-sm">{chords}</pre>
-            <Button variant="ghost" size="icon" className="absolute right-1 top-1 h-8 w-8 text-muted-foreground" aria-label={`Edit chords for ${recording.title}`} onClick={edit}>
+            <Button variant="ghost" size="icon-sm" className="absolute right-1 top-1 text-muted-foreground" aria-label={`Edit chords for ${recording.title}`} onClick={edit}>
               <Pencil aria-hidden="true" />
             </Button>
           </div>

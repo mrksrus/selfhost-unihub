@@ -76,13 +76,13 @@ function AccentPicker({ value, onChange, disabled }: { value: AccentId; onChange
   const { resolvedTheme } = useTheme();
   const dark = resolvedTheme !== 'light';
   return (
-    <div role="radiogroup" aria-label="Accent colour" className="flex flex-wrap gap-2">
+    <div role="radiogroup" aria-label="Accent colour" className="flex flex-wrap gap-2 touch:gap-3">
       {ACCENTS.map(accent => {
         const selected = accent.id === value;
         return (
           <button key={accent.id} type="button" role="radio" aria-checked={selected} aria-label={accent.label} title={accent.label} disabled={disabled}
             onClick={() => onChange(accent.id)}
-            className={cn('tap-area flex h-8 w-8 items-center justify-center rounded-full transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50',
+            className={cn('tap-area flex h-8 w-8 items-center justify-center rounded-full touch:h-10 touch:w-10 transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50',
               selected ? 'scale-110 ring-2 ring-foreground ring-offset-2 ring-offset-background' : 'hover:scale-105')}
             style={{ backgroundColor: `hsl(${dark ? accent.dark : accent.light})`, color: `hsl(${accentForeground(accent.id, dark)})` }}>
             {selected && <Check aria-hidden="true" className="h-4 w-4" strokeWidth={3} />}

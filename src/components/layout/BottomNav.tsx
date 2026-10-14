@@ -39,12 +39,12 @@ const BottomNav = () => {
             to={item.href}
             aria-label={dot ? `${item.name}, ${attention.length} ${attention.length === 1 ? 'item needs' : 'items need'} attention` : count ? `${item.name}, ${count} unread` : undefined}
             className={cn(
-              'relative flex min-w-0 flex-col items-center justify-center gap-1 px-1 pb-2 pt-2.5 text-[11px] font-medium transition-colors',
+              'relative flex min-w-0 flex-col items-center justify-center gap-1 px-1 pb-2 pt-2.5 text-[11px] font-medium touch:gap-0.5 transition-colors',
               'text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring',
               isActive && 'text-accent'
             )}
           >
-            <item.icon aria-hidden="true" className="h-6 w-6 shrink-0" />
+            <item.icon aria-hidden="true" className="h-6 w-6 shrink-0 touch:h-7 touch:w-7" />
             <span className="max-w-full truncate">{item.name}</span>
             {count > 0 && <span aria-hidden="true" className="absolute left-1/2 top-1 ml-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-semibold tabular-nums text-accent-foreground">{count > 99 ? '99+' : count}</span>}
             {dot && <span aria-hidden="true" className="absolute left-1/2 top-2 ml-2 h-2 w-2 rounded-full bg-warning ring-2 ring-card" />}

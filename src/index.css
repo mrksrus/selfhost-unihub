@@ -246,11 +246,12 @@
 }
 
 @layer components {
-  /* A small control (icon button, checkbox) keeps its size, but on touch
-     screens its tap area grows to 44px in each direction. The pseudo-element
-     is part of the control for hit testing, so no layout changes. Where boxes
-     of neighbours would overlap, the later one wins the taps: give such groups
-     a touch: gap (16px between 28px controls, 12px between 32px). */
+  /* Controls grow about 15% on touch screens through touch: classes (see
+     button-variants.ts); a control that stays smaller than 44px (checkbox,
+     done circle, icon-xs) also gets a 44px tap area from this pseudo-element,
+     which is part of the control for hit testing, so no layout changes. Where
+     boxes of neighbours would overlap, the later one wins the taps: give such
+     groups a touch: gap (8px between 36px controls, 4px between 40px). */
   @media (pointer: coarse) {
     .tap-area { position: relative; }
     .tap-area::after { content: ''; position: absolute; inset: calc(50% - 22px); }

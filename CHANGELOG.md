@@ -31,6 +31,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Changed
 
+- Controls on touch screens are visibly larger, about 15 percent: buttons,
+  inputs, chips, menu rows, checkboxes, the done circle and the bottom bar
+  glyphs, so you can tell what you are about to press. Nothing changes
+  for a mouse.
 - On wide windows the panel of a page (mail accounts and folders, contact
   lists, calendars, settings sections) can be folded away from its header; it
   then opens from the scope in the page title, as on phones. Each page's

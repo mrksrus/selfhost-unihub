@@ -147,7 +147,7 @@ const MailPage = () => {
     <MailPanel onCompose={compose.openCompose}>
       <MailAccountList accounts={accounts} loading={accountsLoading} selectedAccount={selectedAccount} legacyCount={folderView.legacyCount}
         addAccount={<MailAccountDialog editor={accountEditor} touch={isMobile} trigger={
-          <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Add mail account" title="Add mail account">
+          <Button variant="ghost" size="icon-xs" aria-label="Add mail account" title="Add mail account">
             <Plus aria-hidden="true" />
           </Button>
         } />}

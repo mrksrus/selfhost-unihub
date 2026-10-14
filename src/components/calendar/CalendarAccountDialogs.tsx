@@ -122,7 +122,7 @@ export function AddCalendarDialog({ accountId, onClose, data }: { accountId: str
           </div>
           <div className="flex items-center justify-between gap-4">
             <Label htmlFor="new-calendar-color" className="font-normal">Color</Label>
-            <input id="new-calendar-color" type="color" className="h-8 w-14 cursor-pointer rounded border border-input bg-transparent" value={form.color}
+            <input id="new-calendar-color" type="color" className="h-8 w-14 cursor-pointer touch:h-10 rounded border border-input bg-transparent" value={form.color}
               onChange={event => setForm(prev => ({ ...prev, color: event.target.value }))} />
           </div>
           <div className="flex items-center justify-between gap-4">
@@ -156,7 +156,7 @@ export function CalendarSettingsDialog({ calendar, onClose, data }: { calendar: 
         {current && <div className="space-y-4">
           <div className="flex items-center justify-between gap-4">
             <Label htmlFor="calendar-color" className="font-normal">Color</Label>
-            <input id="calendar-color" type="color" className="h-8 w-14 cursor-pointer rounded border border-input bg-transparent" defaultValue={current.color}
+            <input id="calendar-color" type="color" className="h-8 w-14 cursor-pointer touch:h-10 rounded border border-input bg-transparent" defaultValue={current.color}
               onBlur={event => { if (event.target.value !== current.color) data.updateCalendar.mutate({ id: current.id, data: { color: event.target.value } }); }} />
           </div>
           <div className="flex items-center justify-between gap-4">

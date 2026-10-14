@@ -20,7 +20,7 @@ function ContactRow({ contact, active, selected, onOpen, onToggleSelect, onToggl
     <li className={cn('group flex items-center gap-3 rounded-md pl-1 pr-1 transition-colors', selected ? 'bg-accent/10' : active ? 'bg-muted' : 'hover:bg-muted/50')}>
       {/* The avatar is the selection toggle, so rows stay one tap to open; with a mouse, Ctrl/Cmd+click and Shift+click on the row select too. */}
       <button type="button" onClick={onToggleSelect} aria-pressed={selected} aria-label={`Select ${name}`}
-        className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        className={cn('flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-medium touch:h-10 touch:w-10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           selected ? 'bg-accent text-accent-foreground' : 'bg-muted text-muted-foreground group-hover:bg-background')}>
         {selected ? <Check aria-hidden="true" className="h-4 w-4" /> : contactInitials(contact)}
       </button>
@@ -31,9 +31,9 @@ function ContactRow({ contact, active, selected, onOpen, onToggleSelect, onToggl
       </button>
       <button type="button" onClick={onToggleFavorite} aria-pressed={contact.is_favorite}
         aria-label={contact.is_favorite ? `Remove ${name} from favorites` : `Add ${name} to favorites`}
-        className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-opacity focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        className={cn('flex h-8 w-8 shrink-0 items-center justify-center rounded-md touch:h-10 touch:w-10 transition-opacity focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           contact.is_favorite ? 'text-warning' : 'text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100')}>
-        <Star aria-hidden="true" className={cn('h-4 w-4', contact.is_favorite && 'fill-current')} />
+        <Star aria-hidden="true" className={cn('h-4 w-4 touch:h-[18px] touch:w-[18px]', contact.is_favorite && 'fill-current')} />
       </button>
     </li>
   );

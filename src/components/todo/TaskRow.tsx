@@ -45,9 +45,9 @@ export function TaskRow({ task, actions, timezone, onEdit, onMove, calendarColor
       <button type="button" disabled={busy}
         aria-label={done ? `Reopen ${task.title}` : `Mark ${task.title} done`}
         onClick={() => actions.setStatus.mutate({ id: task.id, todo_status: done ? null : 'done' })}
-        className={cn('tap-area mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border-[1.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+        className={cn('tap-area mt-0.5 flex h-5 w-5 items-center justify-center rounded-full border-[1.5px] touch:h-6 touch:w-6 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
           done ? 'border-accent bg-accent text-accent-foreground' : 'border-muted-foreground/60 text-transparent hover:border-accent hover:text-accent')}>
-        <Check aria-hidden="true" className="h-3 w-3" strokeWidth={3} />
+        <Check aria-hidden="true" className="h-3 w-3 touch:h-3.5 touch:w-3.5" strokeWidth={3} />
       </button>
       <div className="min-w-0">
         <p className={cn('break-words font-medium', done && 'text-muted-foreground line-through')}>{task.title}</p>
@@ -62,7 +62,7 @@ export function TaskRow({ task, actions, timezone, onEdit, onMove, calendarColor
       {done ? <span /> : (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="-my-1 -mr-1 h-8 w-8 text-muted-foreground" aria-label={`More actions for ${task.title}`}>
+            <Button variant="ghost" size="icon-sm" className="-my-1 -mr-1 text-muted-foreground" aria-label={`More actions for ${task.title}`}>
               <MoreHorizontal aria-hidden="true" />
             </Button>
           </DropdownMenuTrigger>
@@ -107,7 +107,7 @@ function Subtasks({ task, actions, readOnly, autoFocus }: { task: CalendarEvent;
                   event.preventDefault();
                   actions.updateSubtask.mutate({ eventId: task.id, subtaskId: subtask.id, update: { title: editing.title } }, { onSuccess: () => setEditing(null) });
                 }}>
-                  <Input autoFocus value={editing.title} aria-label="Subtask title" className="h-8"
+                  <Input autoFocus value={editing.title} aria-label="Subtask title" className="h-8 touch:h-10"
                     onChange={event => setEditing({ id: subtask.id, title: event.target.value })}
                     onKeyDown={event => { if (event.key === 'Escape') setEditing(null); }} />
                   <Button type="submit" size="sm">Save</Button>
@@ -117,18 +117,18 @@ function Subtasks({ task, actions, readOnly, autoFocus }: { task: CalendarEvent;
                 {!readOnly && <>
                   {/* With a mouse the actions appear on hover; a touch screen gets one menu so the title keeps its width. */}
                   <span className="flex opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 touch:hidden [@media(hover:none)]:opacity-100">
-                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={`Move ${subtask.title} up`} disabled={index === 0}
+                    <Button type="button" variant="ghost" size="icon-xs" aria-label={`Move ${subtask.title} up`} disabled={index === 0}
                       onClick={() => actions.moveSubtask(task, subtask.id, -1)}><ChevronUp aria-hidden="true" /></Button>
-                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={`Move ${subtask.title} down`} disabled={index === task.subtasks.length - 1}
+                    <Button type="button" variant="ghost" size="icon-xs" aria-label={`Move ${subtask.title} down`} disabled={index === task.subtasks.length - 1}
                       onClick={() => actions.moveSubtask(task, subtask.id, 1)}><ChevronDown aria-hidden="true" /></Button>
-                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7" aria-label={`Rename ${subtask.title}`}
+                    <Button type="button" variant="ghost" size="icon-xs" aria-label={`Rename ${subtask.title}`}
                       onClick={() => setEditing({ id: subtask.id, title: subtask.title })}><Pencil aria-hidden="true" /></Button>
-                    <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" aria-label={`Delete ${subtask.title}`}
+                    <Button type="button" variant="ghost" size="icon-xs" className="text-muted-foreground hover:text-destructive" aria-label={`Delete ${subtask.title}`}
                       onClick={() => actions.deleteSubtask.mutate({ eventId: task.id, subtaskId: subtask.id })}><Trash2 aria-hidden="true" /></Button>
                   </span>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button type="button" variant="ghost" size="icon" className="hidden h-8 w-8 text-muted-foreground touch:inline-flex" aria-label={`More actions for ${subtask.title}`}>
+                      <Button type="button" variant="ghost" size="icon-sm" className="hidden text-muted-foreground touch:inline-flex" aria-label={`More actions for ${subtask.title}`}>
                         <MoreHorizontal aria-hidden="true" />
                       </Button>
                     </DropdownMenuTrigger>

@@ -63,9 +63,9 @@ export function MailAccountList({ accounts, loading, selectedAccount, legacyCoun
             <PanelItem key={account.id} icon={Inbox} active={selectedAccount === account.id} onSelect={() => onSelect(account.id)}
               description={<AccountState account={account} />}
               trailing={<span className="flex gap-0.5 touch:gap-4">
-                <Button variant="ghost" size="icon" className="h-7 w-7 bg-card" aria-label={`Edit ${account.email_address}`}
+                <Button variant="ghost" size="icon-xs" className="bg-card" aria-label={`Edit ${account.email_address}`}
                   onClick={() => onEdit(account)}><Pencil aria-hidden="true" /></Button>
-                <Button variant="ghost" size="icon" className="h-7 w-7 bg-card text-destructive hover:text-destructive"
+                <Button variant="ghost" size="icon-xs" className="bg-card text-destructive hover:text-destructive"
                   title={account.disconnected_at ? 'Delete local data' : 'Disconnect account'}
                   aria-label={account.disconnected_at ? `Delete local data of ${account.email_address}` : `Disconnect ${account.email_address}`}
                   onClick={() => onRemove(account)}>

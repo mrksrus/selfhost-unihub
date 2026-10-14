@@ -54,7 +54,7 @@ interface ToolbarProps {
   onCompose: () => void;
 }
 
-const chip = (on: boolean) => cn('inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+const chip = (on: boolean) => cn('inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm touch:h-10 touch:px-3.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
   on ? 'border-transparent bg-muted text-foreground' : 'border-border text-muted-foreground hover:text-foreground');
 
 /**
@@ -72,51 +72,53 @@ export function MailListToolbar({ emailCount, selection, folderLabel, accountLab
       {folded && <Button size="sm" onClick={onCompose}><PenSquare aria-hidden="true" />Compose</Button>}
       {syncControl}
     </>}>
-      {(account || emailCount > 0) && <div className="flex min-h-12 flex-wrap items-center gap-2 px-4 pb-2 md:px-6">
+      {(account || emailCount > 0) && <div className="flex min-h-12 flex-wrap items-center gap-2 px-4 pb-2 touch:gap-1.5 md:px-6">
         {emailCount > 0 && (
-          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={selection.toggleAll}
+          <Button variant="ghost" size="icon-sm" className="shrink-0" onClick={selection.toggleAll}
             aria-label={allSelected ? 'Deselect all' : 'Select all'} title={allSelected ? 'Deselect all' : 'Select all'}>
             {allSelected ? <CheckSquare aria-hidden="true" className="text-accent" /> : <Square aria-hidden="true" />}
           </Button>
         )}
         {selecting ? <>
           <span className="mr-1 text-sm font-medium">{selectedEmails.size} selected</span>
-          <Button variant="outline" size="sm" aria-label="Mark selected as read" onClick={() => bulk.setRead(selectedIds, true)} disabled={bulk.readPending(selectedIds, true)}>
-            <CheckCircle2 aria-hidden="true" /><span className="hidden sm:inline">Read</span>
-          </Button>
-          <Button variant="outline" size="sm" aria-label="Mark selected as unread" onClick={() => bulk.setRead(selectedIds, false)} disabled={bulk.readPending(selectedIds, false)}>
-            <Mail aria-hidden="true" /><span className="hidden sm:inline">Unread</span>
-          </Button>
-          <Button variant="outline" size="sm" aria-label="Star selected" onClick={() => bulk.star(selectedIds)} disabled={bulk.starPending(selectedIds)}>
-            <Star aria-hidden="true" /><span className="hidden sm:inline">Star</span>
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" aria-label="Move selected"><FolderOpen aria-hidden="true" /><span className="hidden sm:inline">Move</span></Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" className="max-h-[60vh] overflow-y-auto">
-              {moveTargets.map((folder) => (
-                <DropdownMenuItem key={folder.id} onClick={() => bulk.move(selectedIds, folder.id, undefined, folder.label)}>
-                  <folder.icon className="mr-2 h-4 w-4" />Move to {folder.label}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button variant="outline" size="sm" aria-label="Delete selected" onClick={() => bulk.trash(selectedIds)} disabled={bulk.trashPending(selectedIds)}
-            className="text-destructive hover:text-destructive">
-            <Trash2 aria-hidden="true" /><span className="hidden sm:inline">Delete</span>
-          </Button>
+          <div className="flex items-center gap-2 touch:gap-1.5">
+            <Button variant="outline" size="sm" aria-label="Mark selected as read" onClick={() => bulk.setRead(selectedIds, true)} disabled={bulk.readPending(selectedIds, true)}>
+              <CheckCircle2 aria-hidden="true" /><span className="hidden sm:inline">Read</span>
+            </Button>
+            <Button variant="outline" size="sm" aria-label="Mark selected as unread" onClick={() => bulk.setRead(selectedIds, false)} disabled={bulk.readPending(selectedIds, false)}>
+              <Mail aria-hidden="true" /><span className="hidden sm:inline">Unread</span>
+            </Button>
+            <Button variant="outline" size="sm" aria-label="Star selected" onClick={() => bulk.star(selectedIds)} disabled={bulk.starPending(selectedIds)}>
+              <Star aria-hidden="true" /><span className="hidden sm:inline">Star</span>
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" aria-label="Move selected"><FolderOpen aria-hidden="true" /><span className="hidden sm:inline">Move</span></Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="max-h-[60vh] overflow-y-auto">
+                {moveTargets.map((folder) => (
+                  <DropdownMenuItem key={folder.id} onClick={() => bulk.move(selectedIds, folder.id, undefined, folder.label)}>
+                    <folder.icon className="mr-2 h-4 w-4" />Move to {folder.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <Button variant="outline" size="sm" aria-label="Delete selected" onClick={() => bulk.trash(selectedIds)} disabled={bulk.trashPending(selectedIds)}
+              className="text-destructive hover:text-destructive">
+              <Trash2 aria-hidden="true" /><span className="hidden sm:inline">Delete</span>
+            </Button>
+          </div>
         </> : account && <>
           <button type="button" className={chip(list.showUnreadOnly)} aria-pressed={list.showUnreadOnly}
             onClick={() => list.setShowUnreadOnly(!list.showUnreadOnly)}>
             Unread only
           </button>
-          <div className="relative min-w-[180px] flex-1 md:max-w-md">
+          <div className="relative min-w-[160px] flex-1 md:max-w-md">
             <Search aria-hidden="true" className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input type="search" placeholder="Search mail" aria-label="Search mail" value={list.searchQuery}
-              onChange={(e) => list.setSearchQuery(e.target.value)} className="h-9 pl-9 pr-9" />
+              onChange={(e) => list.setSearchQuery(e.target.value)} className="h-9 pl-9 pr-9 touch:h-10" />
             {list.searchQuery && (
-              <Button variant="ghost" size="icon" className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2" aria-label="Clear search"
+              <Button variant="ghost" size="icon-xs" className="absolute right-1 top-1/2 -translate-y-1/2" aria-label="Clear search"
                 onClick={() => list.setSearchQuery('')}><X aria-hidden="true" /></Button>
             )}
           </div>

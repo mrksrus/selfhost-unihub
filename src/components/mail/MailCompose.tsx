@@ -101,16 +101,16 @@ function RecipientRows({ compose, idSuffix = '', rowClassName }: { compose: Mail
   return (
     <>
       <div className="space-y-2">
-        <div className="flex h-6 items-center justify-between">
+        <div className="flex h-6 items-center justify-between touch:h-8">
           <Label htmlFor={`compose-to${idSuffix}`}>To</Label>
-          <div className="-mr-1.5 flex">
+          <div className="-mr-1.5 flex touch:gap-2">
             {optional.filter((field) => !shown(field)).map((field) => (
               <Button
                 key={field}
                 type="button"
                 variant="ghost"
                 size="sm"
-                className="h-6 px-1.5 text-xs text-muted-foreground touch:h-6 tap-area"
+                className="h-6 px-1.5 text-xs text-muted-foreground touch:h-8 touch:px-2 touch:text-sm tap-area"
                 onClick={() => setRevealed((current) => [...current, field])}
               >
                 {label(field)}
@@ -136,24 +136,24 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '' 
   return (
     <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''}`}>
       <div className="flex flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Bold" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'bold')}>
+        <Button type="button" variant="ghost" size="icon-sm" title="Bold" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'bold')}>
           <Bold className="h-4 w-4" />
         </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Italic" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'italic')}>
+        <Button type="button" variant="ghost" size="icon-sm" title="Italic" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'italic')}>
           <Italic className="h-4 w-4" />
         </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Underline" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'underline')}>
+        <Button type="button" variant="ghost" size="icon-sm" title="Underline" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'underline')}>
           <Underline className="h-4 w-4" />
         </Button>
         <div className="h-5 w-px bg-border mx-1" />
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Bullet list" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'insertUnorderedList')}>
+        <Button type="button" variant="ghost" size="icon-sm" title="Bullet list" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'insertUnorderedList')}>
           <List className="h-4 w-4" />
         </Button>
-        <Button type="button" variant="ghost" size="icon" className="h-8 w-8" title="Numbered list" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'insertOrderedList')}>
+        <Button type="button" variant="ghost" size="icon-sm" title="Numbered list" onMouseDown={(e) => e.preventDefault()} onClick={() => compose.applyComposeCommand(editorRef, 'insertOrderedList')}>
           <ListOrdered className="h-4 w-4" />
         </Button>
         <div className="h-5 w-px bg-border mx-1" />
-        <label className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground" title="Text color">
+        <label className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-md touch:h-10 touch:w-10 text-muted-foreground hover:bg-accent hover:text-accent-foreground" title="Text color">
           <Palette className="h-4 w-4" />
           <input
             type="color"
@@ -163,7 +163,7 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '' 
         </label>
         <select
           aria-label="Text size"
-          className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs touch:h-10"
           defaultValue=""
           onChange={(event) => {
             if (event.target.value) compose.applyComposeCommand(editorRef, 'fontSize', event.target.value);
@@ -180,8 +180,7 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '' 
         <Button
           type="button"
           variant="ghost"
-          size="icon"
-          className="h-8 w-8"
+          size="icon-sm"
           title="Insert link"
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => {
@@ -194,8 +193,7 @@ function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '' 
         <Button
           type="button"
           variant="ghost"
-          size="icon"
-          className="h-8 w-8"
+          size="icon-sm"
           title="Insert image URL"
           onMouseDown={(e) => e.preventDefault()}
           onClick={() => {
@@ -282,8 +280,8 @@ function ComposeAttachmentsSection({ compose, inputId }: { compose: MailCompose;
               <Button
                 type="button"
                 variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
+                size="icon-sm"
+                className="shrink-0"
                 onClick={() => compose.removeExistingDraftAttachment(attachment.id)}
                 title="Remove attachment"
               >
@@ -300,8 +298,8 @@ function ComposeAttachmentsSection({ compose, inputId }: { compose: MailCompose;
               <Button
                 type="button"
                 variant="ghost"
-                size="icon"
-                className="h-8 w-8 shrink-0"
+                size="icon-sm"
+                className="shrink-0"
                 onClick={() => compose.removeComposeAttachment(id)}
                 title="Remove attachment"
               >

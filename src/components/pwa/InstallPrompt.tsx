@@ -55,7 +55,7 @@ const InstallPrompt = () => {
             <div className="min-w-0 flex-1">
               <div className="flex items-start justify-between gap-2">
                 <p className="text-sm font-medium text-card-foreground">Android app</p>
-                <Button size="icon" variant="ghost" className="-mr-1 -mt-1 h-7 w-7" onClick={close} aria-label="Close">
+                <Button size="icon-xs" variant="ghost" className="-mr-1 -mt-1" onClick={close} aria-label="Close">
                   <X className="h-4 w-4" />
                 </Button>
               </div>

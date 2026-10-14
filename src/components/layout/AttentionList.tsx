@@ -33,7 +33,7 @@ export function AttentionList({ items, onNavigate, className }: { items: Attenti
               </div>
             </div>
             {item.onDismiss && (
-              <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" aria-label={`Dismiss: ${item.title}`} onClick={item.onDismiss}>
+              <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label={`Dismiss: ${item.title}`} onClick={item.onDismiss}>
                 <X aria-hidden="true" />
               </Button>
             )}

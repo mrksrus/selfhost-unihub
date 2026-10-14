@@ -56,11 +56,12 @@ export function MailReader({ email, loading = false, accounts, location, backLab
             <Button
               variant="ghost"
               size="icon"
+              className="[&_svg]:size-5 touch:[&_svg]:size-5"
               aria-label={backLabel}
               title={backLabel}
               onClick={onBack}
             >
-              <ArrowLeft className="h-5 w-5" />
+              <ArrowLeft />
             </Button>
             <span className="text-xs text-muted-foreground truncate max-w-64">{location}</span>
             <div className="flex flex-wrap items-center gap-2">
@@ -112,10 +113,11 @@ export function MailReader({ email, loading = false, accounts, location, backLab
             <Button
               variant="ghost"
               size="icon"
+              className="[&_svg]:size-5 touch:[&_svg]:size-5"
               aria-label={email.is_starred ? 'Unstar message' : 'Star message'}
               onClick={() => requestFlag(email, 'star', !email.is_starred)}
             >
-              <Star className={`h-5 w-5 ${email.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'}`} />
+              <Star className={email.is_starred ? 'fill-warning text-warning' : 'text-muted-foreground'} />
             </Button>
           </div>
         </div>

@@ -85,7 +85,7 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
                 {account && (
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" aria-label={`Actions for ${name}`}><MoreHorizontal aria-hidden="true" /></Button>
+                      <Button variant="ghost" size="icon-xs" className="shrink-0" aria-label={`Actions for ${name}`}><MoreHorizontal aria-hidden="true" /></Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       {remote && account.is_active && (
@@ -125,7 +125,7 @@ export function CalendarPanel({ data, shownIds, onShow, onNewEvent, onAddAccount
                         <span className={cn('min-w-0 flex-1 truncate', !shown && 'text-muted-foreground')}>{calendar.name}</span>
                         {readOnly && <span className="shrink-0 text-xs text-muted-foreground">Read-only</span>}
                       </label>
-                      <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                      <Button variant="ghost" size="icon-xs" className="shrink-0 opacity-0 focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
                         aria-label={`Settings for ${calendar.name}`} onClick={() => onCalendarSettings(calendar)}>
                         <Settings2 aria-hidden="true" />
                       </Button>

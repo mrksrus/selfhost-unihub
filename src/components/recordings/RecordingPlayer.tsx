@@ -42,11 +42,11 @@ export function RecordingPlayer({ id, autoPlay = false }: { id: string; autoPlay
 export function PlayButton({ title, playing, onToggle }: { title: string; playing: boolean; onToggle: () => void }) {
   return (
     <button type="button" onClick={onToggle} aria-pressed={playing} aria-label={playing ? `Close the player for ${title}` : `Play ${title}`}
-      className={cn('tap-area mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-[1.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+      className={cn('tap-area mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-[1.5px] touch:h-6 touch:w-6 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         playing ? 'border-accent bg-accent text-accent-foreground' : 'border-muted-foreground/60 text-muted-foreground hover:border-accent hover:text-accent')}>
       {playing
-        ? <Square aria-hidden="true" className="h-2 w-2" fill="currentColor" strokeWidth={0} />
-        : <Play aria-hidden="true" className="ml-px h-2.5 w-2.5" fill="currentColor" strokeWidth={0} />}
+        ? <Square aria-hidden="true" className="h-2 w-2 touch:h-2.5 touch:w-2.5" fill="currentColor" strokeWidth={0} />
+        : <Play aria-hidden="true" className="ml-px h-2.5 w-2.5 touch:h-3 touch:w-3" fill="currentColor" strokeWidth={0} />}
     </button>
   );
 }

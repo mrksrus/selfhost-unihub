@@ -16,10 +16,10 @@ function ColorChoice({ value, onChange }: { value: string; onChange: (color: str
   return (
     <fieldset className="space-y-2">
       <legend className="text-sm font-medium">Color</legend>
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {EVENT_COLOR_OPTIONS.map(color => (
           <button key={color.value} type="button" aria-label={color.label} aria-pressed={value === color.value} onClick={() => onChange(color.value)}
-            className={cn('h-8 w-8 rounded-full border-2 transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
+            className={cn('h-8 w-8 rounded-full border-2 touch:h-10 touch:w-10 transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
               value === color.value ? 'scale-110 border-foreground' : 'border-transparent')}
             style={{ backgroundColor: color.value }} />
         ))}

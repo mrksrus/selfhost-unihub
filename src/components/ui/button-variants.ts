@@ -13,11 +13,13 @@ const buttonVariants = cva(
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
-        default: "h-10 px-4 py-2",
+        default: "h-10 px-4 py-2 touch:h-11",
         sm: "h-9 rounded-md px-3 touch:h-10",
-        lg: "h-11 rounded-md px-8",
-        // Icon buttons made smaller by a page (h-8, h-7) still get a 44px tap area on touch screens.
-        icon: "h-10 w-10 tap-area",
+        lg: "h-11 rounded-md px-8 touch:h-12",
+        // Icon buttons grow on touch screens (the glyph too); the smaller ones keep a 44px tap area as well.
+        icon: "h-10 w-10 tap-area touch:h-11 touch:w-11 touch:[&_svg]:size-[18px]",
+        "icon-sm": "h-8 w-8 tap-area touch:h-10 touch:w-10 touch:[&_svg]:size-[18px]",
+        "icon-xs": "h-7 w-7 tap-area touch:h-9 touch:w-9",
       },
     },
     defaultVariants: {

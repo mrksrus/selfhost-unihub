@@ -237,7 +237,7 @@ const Contacts = () => {
           ) : (
             <div className="relative w-full max-w-md">
               <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search contacts" aria-label="Search contacts" className="h-9 pl-9" />
+              <Input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Search contacts" aria-label="Search contacts" className="h-9 pl-9 touch:h-10" />
             </div>
           )}
         </div>

@@ -41,7 +41,7 @@ export function EventLine({ event, timezone, onOpen }: { event: CalendarEvent; t
   return (
     <li>
       <button type="button" onClick={() => onOpen(event)}
-        className="grid w-full grid-cols-[5.5rem_3px_1fr] items-stretch gap-3 border-b border-border py-2.5 text-left hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+        className="grid w-full grid-cols-[5.5rem_3px_1fr] items-stretch gap-3 border-b border-border py-2.5 text-left touch:py-3 hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
         <span className="pt-0.5 text-sm tabular-nums text-muted-foreground">
           {event.all_day ? 'All day' : <>{formatEventTime(event.start_time, 'HH:mm', timezone)}<span className="block text-xs">{formatEventTime(event.end_time, 'HH:mm', timezone)}</span></>}
         </span>
@@ -105,7 +105,7 @@ export function CalendarGrid({ view, events, timezone, onOpen, onNew }: GridProp
                 aria-label={`${format(day, 'EEEE d MMMM')}${list.length ? `, ${list.length} ${list.length === 1 ? 'event' : 'events'}` : ''}`}
                 aria-pressed={selected} aria-current={isToday(day) ? 'date' : undefined}
 
-                className={cn('mb-0.5 flex h-6 min-w-6 items-center justify-center self-start rounded-full px-1.5 text-xs tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                className={cn('mb-0.5 flex h-6 min-w-6 items-center justify-center self-start rounded-full px-1.5 text-xs tabular-nums touch:h-7 touch:min-w-7 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   isToday(day) ? 'bg-accent font-semibold text-accent-foreground' : selected ? 'font-semibold text-foreground' : '')}>
                 {!month ? format(day, 'EEE d') : format(day, 'd')}
               </button>
