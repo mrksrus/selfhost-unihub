@@ -104,7 +104,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/android-signing"
           printf '%s' "$ANDROID_KEYSTORE_BASE64" > "$RUNNER_TEMP/android-signing/keystore"
           printf '%s' "$ANDROID_KEYSTORE_PASSWORD" > "$RUNNER_TEMP/android-signing/password"
-          # Names the key for Docker's build cache (Dockerfile, UNIHUB_ANDROID_KEY).
+          # Names the key for Docker's build cache (Dockerfile, UNIHUB_ANDROID_SIGNER).
           if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
             echo "key=release-$(sha256sum "$RUNNER_TEMP/android-signing/keystore" | cut -c 1-16)" >> "$GITHUB_OUTPUT"
           else
@@ -121,7 +121,7 @@ jobs:
           tags: unihub:ci
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            UNIHUB_ANDROID_KEY=${{ steps.android-key.outputs.key }}
+            UNIHUB_ANDROID_SIGNER=${{ steps.android-key.outputs.key }}
           secret-files: |
             android_keystore=${{ runner.temp }}/android-signing/keystore
             android_keystore_password=${{ runner.temp }}/android-signing/password

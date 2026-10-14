@@ -44,9 +44,14 @@ class WebBridge(
         return true
     }
 
+    /** Deletes unfinished files: the page that was sending them is gone (a reload, another page). */
+    fun cancelFiles() {
+        onFiles { open.keys.toList().forEach(::abortFile) }
+    }
+
     /** Stops file transfers; a file that was not finished is deleted. */
     fun close() {
-        onFiles { open.keys.toList().forEach(::abortFile) }
+        cancelFiles()
         files.shutdown()
     }
 
@@ -73,7 +78,9 @@ class WebBridge(
     // reply, so memory stays bounded. Files are written on one thread, in order;
     // `open` is only touched there.
 
-    private class OpenFile(val name: String, val uri: Uri, val stream: OutputStream)
+    private class OpenFile(val name: String, val uri: Uri, val stream: OutputStream) {
+        var lastUsed = System.currentTimeMillis()
+    }
 
     private val files = Executors.newSingleThreadExecutor()
     private val open = HashMap<String, OpenFile>()
@@ -81,7 +88,9 @@ class WebBridge(
     private fun fileStep(reply: JavaScriptReplyProxy, data: JSONObject, step: (String) -> Boolean) {
         val id = data.optString("id").takeIf { validId(it) } ?: return
         onFiles {
+            expireIdleFiles()
             val ok = try { step(id) } catch (_: Exception) { false }
+            open[id]?.lastUsed = System.currentTimeMillis()
             if (!ok) abortFile(id)
             activity.runOnUiThread {
                 try {
@@ -143,6 +152,13 @@ class WebBridge(
         return true
     }
 
+    // A page waits at most a minute for each reply, so a file untouched for
+    // longer was given up.
+    private fun expireIdleFiles() {
+        val cutoff = System.currentTimeMillis() - IDLE_FILE_MS
+        open.filterValues { it.lastUsed < cutoff }.keys.forEach(::abortFile)
+    }
+
     // Failures are reported by the page, which may try another way.
     private fun abortFile(id: String) {
         val file = open.remove(id) ?: return
@@ -175,6 +191,7 @@ class WebBridge(
     companion object {
         const val NAME = "UniHubAndroid"
         private const val MAX_OPEN_FILES = 4
+        private const val IDLE_FILE_MS = 2 * 60_000L
         private val EXTERNAL_SCHEMES = setOf("http", "https", "mailto", "tel")
 
         private fun validId(id: String) = id.length in 1..64

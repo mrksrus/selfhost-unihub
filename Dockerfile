@@ -49,9 +49,9 @@ WORKDIR /build
 COPY package.json ./
 COPY android ./android
 # Signing: see android/scripts/build-apk.sh. Docker's cache ignores secrets, so
-# UNIHUB_ANDROID_KEY names the key (any text, "none" without one): a new value
+# UNIHUB_ANDROID_SIGNER names the key (any text, "none" without one): a new value
 # rebuilds the app instead of reusing one signed with another key.
-ARG UNIHUB_ANDROID_KEY=none
+ARG UNIHUB_ANDROID_SIGNER=none
 RUN --mount=type=secret,id=android_keystore --mount=type=secret,id=android_keystore_password \
     bash android/scripts/build-apk.sh /out
 

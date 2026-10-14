@@ -44,6 +44,9 @@ class MainActivity : Activity() {
     private var bridge: WebBridge? = null
     private var fileCallback: ValueCallback<Array<Uri>>? = null
     private var pendingPermission: PermissionRequest? = null
+    // Each connect check and screen change gets a new number; an older check's
+    // answer is ignored.
+    private var screenGeneration = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,6 +95,7 @@ class MainActivity : Activity() {
         prefill?.let { input.setText(ServerAddress.host(it)) }
 
         fun submit() {
+            if (!button.isEnabled) return
             val candidate = ServerAddress.parse(input.text.toString())
             if (candidate == null) {
                 error.setText(R.string.connect_invalid)
@@ -101,10 +105,11 @@ class MainActivity : Activity() {
             error.visibility = View.GONE
             button.isEnabled = false
             button.setText(R.string.connect_checking)
+            val attempt = ++screenGeneration
             Thread {
                 val result = ServerAddress.check(candidate)
                 runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (isFinishing || isDestroyed || attempt != screenGeneration) return@runOnUiThread
                     button.isEnabled = true
                     button.setText(R.string.connect_button)
                     when (result) {
@@ -183,6 +188,7 @@ class MainActivity : Activity() {
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 hideError()
+                pageBridge.cancelFiles()
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -227,6 +233,7 @@ class MainActivity : Activity() {
     }
 
     private fun destroyWeb() {
+        screenGeneration++
         webView?.let {
             (it.parent as? ViewGroup)?.removeView(it)
             it.destroy()

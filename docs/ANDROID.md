@@ -118,10 +118,10 @@ encryption key.
   base64 -w0 my-key.jks > /tmp/keystore.b64
   docker build --secret id=android_keystore,src=/tmp/keystore.b64 \
     --secret id=android_keystore_password,src=/tmp/keystore-password \
-    --build-arg UNIHUB_ANDROID_KEY=my-key .
+    --build-arg UNIHUB_ANDROID_SIGNER=my-key .
   ```
 
-  `UNIHUB_ANDROID_KEY` is any name for the key; the build stops without it.
+  `UNIHUB_ANDROID_SIGNER` is any name for the key; the build stops without it.
   Docker's build cache does not notice a changed secret, so use a new name
   whenever the key changes, or a cached app signed with the old key ends up in
   the image.

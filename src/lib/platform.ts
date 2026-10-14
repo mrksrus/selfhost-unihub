@@ -116,8 +116,9 @@ function askApp(bridge: AndroidBridge, message: { type: string; id: string } & R
 
 async function sendFileToApp(bridge: AndroidBridge, blob: Blob, filename: string) {
   const id = crypto.randomUUID();
-  await askApp(bridge, { type: 'saveFileStart', id, name: filename, mime: blob.type });
   try {
+    // A start that times out may still open the file later; the abort closes it.
+    await askApp(bridge, { type: 'saveFileStart', id, name: filename, mime: blob.type });
     for (let offset = 0; offset < blob.size; offset += FILE_CHUNK_BYTES) {
       const data = await blobBase64(blob.slice(offset, offset + FILE_CHUNK_BYTES));
       await askApp(bridge, { type: 'saveFileChunk', id, data });

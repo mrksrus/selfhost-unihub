@@ -7,7 +7,7 @@
 # secrets android_keystore = base64 of the keystore, android_keystore_password).
 # Without them the APK is signed with a throwaway key, so a phone cannot update
 # it from a later image: uninstall first. Self-hosters who build their own
-# images can pass their own key the same way, with UNIHUB_ANDROID_KEY naming it
+# images can pass their own key the same way, with UNIHUB_ANDROID_SIGNER naming it
 # (docs/ANDROID.md).
 set -euo pipefail
 
@@ -19,10 +19,10 @@ version="$(sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' ../package.json | head 
 IFS=. read -r major minor patch <<<"$version"
 code=$((major * 1000000 + minor * 1000 + patch))
 
-# The Dockerfile's build cache only notices a new key through UNIHUB_ANDROID_KEY.
-key_name="${UNIHUB_ANDROID_KEY:-none}"
+# The Dockerfile's build cache only notices a new key through UNIHUB_ANDROID_SIGNER.
+key_name="${UNIHUB_ANDROID_SIGNER:-none}"
 if [[ -s /run/secrets/android_keystore && "$key_name" == none ]]; then
-  echo 'A signing key was given: also pass --build-arg UNIHUB_ANDROID_KEY=<a name for this key>, so a cached app signed with another key is not reused.' >&2
+  echo 'A signing key was given: also pass --build-arg UNIHUB_ANDROID_SIGNER=<a name for this key>, so a cached app signed with another key is not reused.' >&2
   exit 1
 fi
 if [[ -s /run/secrets/android_keystore && ! -s /run/secrets/android_keystore_password ]]; then
@@ -30,7 +30,7 @@ if [[ -s /run/secrets/android_keystore && ! -s /run/secrets/android_keystore_pas
   exit 1
 fi
 if [[ ! -s /run/secrets/android_keystore && "$key_name" != none ]]; then
-  echo "UNIHUB_ANDROID_KEY is $key_name, but no signing key was given (secret android_keystore)." >&2
+  echo "UNIHUB_ANDROID_SIGNER is $key_name, but no signing key was given (secret android_keystore)." >&2
   exit 1
 fi
 

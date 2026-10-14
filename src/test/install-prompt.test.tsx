@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import InstallPrompt from '@/components/pwa/InstallPrompt';
@@ -97,6 +97,18 @@ describe('messages to the Android app', () => {
     window.UniHubAndroid = { postMessage, addEventListener: (_type, handler) => { listener = handler; } };
     await expect(saveFile(new Blob(['hello']), 'note.txt')).rejects.toThrow();
     expect(JSON.parse(postMessage.mock.calls.at(-1)![0]).type).toBe('saveFileAbort');
+  });
+
+  it('cancels the file when the app does not answer the start in time', async () => {
+    useUserAgent(`${ANDROID_BROWSER} UniHubAndroid/0.21.0 (21000)`);
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const postMessage = vi.fn();
+    window.UniHubAndroid = { postMessage, addEventListener: () => {} };
+    const saving = expect(saveFile(new Blob(['hello']), 'note.txt')).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await saving;
+    expect(postMessage.mock.calls.map(([raw]) => JSON.parse(raw).type)).toEqual(['saveFileStart', 'saveFileAbort']);
   });
 
   it('tells the app the theme only inside the app', () => {
