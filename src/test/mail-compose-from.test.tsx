@@ -20,6 +20,11 @@ const received: Email = {
   body_text: 'Here is the quote', body_html: null, folder: 'inbox', is_read: true, is_starred: false, received_at: '2026-10-10T08:00:00.000Z',
 };
 
+const draft: Email = {
+  ...received, id: 'draft-1', folder: 'drafts', is_draft: true, subject: 'Plan', to_addresses: [],
+  cc_addresses: ['copy@example.test', 'second@example.test'], bcc_addresses: ['hidden@example.test'], body_html: '<p>Draft</p>',
+};
+
 /** The Mail page in its combined view: no single account is open. */
 function Host({ activeMailAccountId = null }: { activeMailAccountId?: string | null }) {
   const compose = useMailCompose({ activeMailAccountId, selectedAccount: activeMailAccountId ?? 'all', isMobile: false });
@@ -27,6 +32,7 @@ function Host({ activeMailAccountId = null }: { activeMailAccountId?: string | n
     <div>
       <button type="button" onClick={compose.openCompose}>New message</button>
       <button type="button" onClick={() => compose.startResponse(received, 'reply')}>Reply to Sparks</button>
+      <button type="button" onClick={() => compose.openDraftForCompose(draft)}>Open draft</button>
       <MailComposeDialog compose={compose} accounts={accounts} isMobile={false} />
       {compose.isReplying && <MailInlineCompose compose={compose} />}
     </div>
@@ -75,5 +81,15 @@ describe('which account a message is sent from', () => {
     expect(await screen.findByLabelText('To')).toHaveValue('sparks@example.test');
     await fillAndSend('sparks@example.test', 'Thanks', 'compose-body-inline');
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-a' })));
+  });
+
+  it('keeps a draft\'s Cc and Bcc when the draft is saved again', async () => {
+    vi.mocked(api.put).mockResolvedValue({ data: { draft } });
+    wrap(<Host />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open draft' }));
+    fireEvent.click(await screen.findByRole('button', { name: /Save draft/ }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/drafts/draft-1', expect.objectContaining({
+      account_id: 'acc-a', to: '', cc: 'copy@example.test, second@example.test', bcc: 'hidden@example.test',
+    })));
   });
 });

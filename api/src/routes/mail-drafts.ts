@@ -12,6 +12,7 @@ import {
   deleteStoredAttachmentFiles,
 } from '../services/mail';
 import { saveDraftMutation } from '../services/mail-drafts';
+import { normalizeRecipients, parseStoredRecipients, formatRecipients } from '../services/mail-recipients';
 import { extractMailRouteId } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -25,6 +26,8 @@ interface Input {
   account_id?: string;
   isHtml?: boolean;
   to?: string;
+  cc?: string;
+  bcc?: string;
   subject?: string;
   body?: string;
   body_html?: string;
@@ -34,6 +37,18 @@ interface Input {
 
 const readFile = promisify(fs.readFile);
 const MAIL_DRAFT_FOLDER = 'drafts';
+const RECIPIENT_FIELDS = ['to', 'cc', 'bcc'] as const;
+const MAX_RECIPIENT_FIELD_LENGTH = 10000;
+
+function recipientFieldError(body: Input | undefined) {
+  for (const field of RECIPIENT_FIELDS) {
+    const value = body?.[field];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== 'string') return `${field} must be a string`;
+    if (value.length > MAX_RECIPIENT_FIELD_LENGTH) return `${field} is too long`;
+  }
+  return null;
+}
 
 function htmlToDraftText(value: unknown) {
   return String(value || '')
@@ -48,25 +63,10 @@ function htmlToDraftText(value: unknown) {
     .trim();
 }
 
-function normalizeDraftRecipients(value: unknown) {
-  return String(value || '')
-    .split(',')
-    .map(part => {
-      const trimmed = part.trim();
-      const match = trimmed.match(/^(.+?)\s*<(.+?)>$/);
-      return (match ? match[2] : trimmed).trim();
-    })
-    .filter(Boolean);
-}
-
-function formatDraftRecipients(value: unknown) {
-  const recipients = Array.isArray(value)
-    ? value
-    : typeof value === 'string'
-      ? JSON.parse(value || '[]')
-      : [];
-  return recipients.filter(Boolean).join(', ');
-}
+const draftRecipients = (value: unknown) => {
+  const recipients = normalizeRecipients(value);
+  return recipients.length ? JSON.stringify(recipients) : null;
+};
 
 async function loadMailAccountForDraft(userId: string, accountId: unknown) {
   const normalizedAccountId = String(accountId || '').trim();
@@ -91,7 +91,9 @@ async function loadDraftEmail(userId: string, draftId: string) {
   );
   return {
     ...draft,
-    to_addresses: typeof draft.to_addresses === 'string' ? JSON.parse(draft.to_addresses || '[]') : draft.to_addresses,
+    to_addresses: parseStoredRecipients(draft.to_addresses),
+    cc_addresses: parseStoredRecipients(draft.cc_addresses),
+    bcc_addresses: parseStoredRecipients(draft.bcc_addresses),
     is_read: toBooleanFlag(draft.is_read),
     is_starred: toBooleanFlag(draft.is_starred),
     is_draft: !!draft.is_draft,
@@ -121,6 +123,8 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
+      const invalidRecipients = recipientFieldError(body);
+      if (invalidRecipients) return { error: invalidRecipients, status: 400 };
       const account = await loadMailAccountForDraft(userId, body?.account_id);
       if (!account) return { error: 'Account not found', status: 404 };
 
@@ -129,7 +133,6 @@ export = {
       const draftBody = String(body?.body_html ?? body?.body ?? '');
       const bodyText = isHtml ? htmlToDraftText(draftBody) : draftBody;
       const bodyHtml = isHtml ? draftBody : null;
-      const toAddresses = normalizeDraftRecipients(body?.to);
       const subject = String(body?.subject ?? '');
 
       await ensureDefaultMailFoldersForUser(userId);
@@ -138,8 +141,8 @@ export = {
         mutate: (connection) => connection.execute(
         `INSERT INTO emails
           (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses,
-           body_text, body_html, has_attachments, received_at, folder, is_read, is_draft)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, UTC_TIMESTAMP(), ?, TRUE, TRUE)`,
+           cc_addresses, bcc_addresses, body_text, body_html, has_attachments, received_at, folder, is_read, is_draft)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, UTC_TIMESTAMP(), ?, TRUE, TRUE)`,
         [
           draftId,
           userId,
@@ -148,7 +151,9 @@ export = {
           subject || null,
           account.email_address,
           account.display_name || null,
-          JSON.stringify(toAddresses),
+          JSON.stringify(normalizeRecipients(body?.to)),
+          draftRecipients(body?.cc),
+          draftRecipients(body?.bcc),
           bodyText || null,
           bodyHtml,
           MAIL_DRAFT_FOLDER,
@@ -167,6 +172,8 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
+      const invalidRecipients = recipientFieldError(body);
+      if (invalidRecipients) return { error: invalidRecipients, status: 400 };
       const draftId = extractMailRouteId(req)!;
       const current = await loadDraftEmail(userId, draftId);
       if (!current) return { error: 'Draft not found', status: 404 };
@@ -186,7 +193,15 @@ export = {
       }
       if (body?.to !== undefined) {
         updates.push('to_addresses = ?');
-        params.push(JSON.stringify(normalizeDraftRecipients(body.to)));
+        params.push(JSON.stringify(normalizeRecipients(body.to)));
+      }
+      if (body?.cc !== undefined) {
+        updates.push('cc_addresses = ?');
+        params.push(draftRecipients(body.cc));
+      }
+      if (body?.bcc !== undefined) {
+        updates.push('bcc_addresses = ?');
+        params.push(draftRecipients(body.bcc));
       }
       if (body?.subject !== undefined) {
         updates.push('subject = ?');
@@ -236,8 +251,10 @@ export = {
       const account = await loadMailAccountForDraft(userId, draft.mail_account_id);
       if (!account) return { error: 'Account not found', status: 404 };
 
-      const to = formatDraftRecipients(draft.to_addresses);
-      if (!to) return { error: 'Draft needs at least one recipient before sending', status: 400 };
+      const to = formatRecipients(draft.to_addresses);
+      const cc = formatRecipients(draft.cc_addresses);
+      const bcc = formatRecipients(draft.bcc_addresses);
+      if (!to && !cc && !bcc) return { error: 'Draft needs at least one recipient before sending', status: 400 };
 
       const [attachmentRows] = await db.execute<RowDataPacket[]>(
         'SELECT filename, content_type, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
@@ -261,6 +278,8 @@ export = {
 
       const result = await sendEmail(draft.mail_account_id, {
         to,
+        cc,
+        bcc,
         subject: draft.subject || '(No subject)',
         body: bodyContent,
         isHtml: !!draft.body_html || attachments.length > 0,
@@ -286,8 +305,10 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const { account_id, to, subject, body: emailBody, isHtml, attachments } = body;
-      if (!account_id || !to || !subject || !emailBody) {
+      const { account_id, to, cc, bcc, subject, body: emailBody, isHtml, attachments } = body;
+      const invalidRecipients = recipientFieldError(body);
+      if (invalidRecipients) return { error: invalidRecipients, status: 400 };
+      if (!account_id || !(to?.trim() || cc?.trim() || bcc?.trim()) || !subject || !emailBody) {
         return { error: 'Missing required fields', status: 400 };
       }
       if (attachments !== undefined && !Array.isArray(attachments)) {
@@ -304,7 +325,7 @@ export = {
       // #region agent log
       debugLog('server.js:1440', 'POST /mail/send START', { account_id, to, subject, userId }, 'H5');
       // #endregion
-      const result = await sendEmail(account_id, { to, subject, body: emailBody, isHtml, attachments: attachments || [] });
+      const result = await sendEmail(account_id, { to: to || '', cc, bcc, subject, body: emailBody, isHtml, attachments: attachments || [] });
       // #region agent log
       debugLog('server.js:1441', 'POST /mail/send SUCCESS', { messageId: result.messageId }, 'H5');
       // #endregion

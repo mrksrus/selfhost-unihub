@@ -13,6 +13,7 @@ import { resolveMailConnectionTarget } from '../security/outbound-network';
 import { isModuleEnabled } from './module-settings';
 import { normalizeComposerAttachments } from './mail-attachments';
 import { toBooleanFlag } from './mail-host-policy';
+import { normalizeRecipients } from './mail-recipients';
 
 interface SmtpAccount {
   id: string;
@@ -31,7 +32,23 @@ interface SmtpAccount {
 const writeFile = promisify(fs.writeFile);
 const mkdir = promisify(fs.mkdir);
 
-async function sendEmail(accountId: string, { to, subject, body, isHtml = false, attachments = [] }: { to: string; subject: string; body: string; isHtml?: boolean; attachments?: unknown }) {
+interface OutgoingEmail {
+  /** Comma-separated recipients, as typed in the composer. */
+  to: string;
+  cc?: string;
+  bcc?: string;
+  subject: string;
+  body: string;
+  isHtml?: boolean;
+  attachments?: unknown;
+}
+
+const storedRecipients = (value: string | undefined) => {
+  const recipients = normalizeRecipients(value);
+  return recipients.length ? JSON.stringify(recipients) : null;
+};
+
+async function sendEmail(accountId: string, { to, cc, bcc, subject, body, isHtml = false, attachments = [] }: OutgoingEmail) {
   try {
     const [accounts] = await db.execute<(RowDataPacket & SmtpAccount)[]>(
       'SELECT * FROM mail_accounts WHERE id = ?',
@@ -71,7 +88,9 @@ async function sendEmail(accountId: string, { to, subject, body, isHtml = false,
     if (!await isModuleEnabled(account.user_id, 'mail')) throw new Error('Mail module is disabled');
     const info = await transporter.sendMail({
       from: `${account.display_name || account.email_address} <${account.email_address}>`,
-      to,
+      to: to || undefined,
+      cc: cc || undefined,
+      bcc: bcc || undefined,
       subject,
       text: isHtml ? undefined : body,
       html: isHtml ? body : undefined,
@@ -88,14 +107,9 @@ async function sendEmail(accountId: string, { to, subject, body, isHtml = false,
       const emailId = crypto.randomUUID();
       const messageId = info.messageId || `<${Date.now()}-${emailId}@unihub.local>`;
 
-      // Parse "to" addresses (can be comma-separated)
-      const toAddresses = to.split(',').map(addr => {
-        const match = addr.trim().match(/^(.+?)\s*<(.+?)>$/);
-        return match ? match[2].trim() : addr.trim();
-      });
-
+      // Bcc stays in the sender's own copy only; SMTP never puts it in the message headers.
       await db.execute(
-        'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, body_text, body_html, has_attachments, received_at, folder, is_read) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, body_text, body_html, has_attachments, received_at, folder, is_read) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         [
           emailId,
           account.user_id,
@@ -104,7 +118,9 @@ async function sendEmail(accountId: string, { to, subject, body, isHtml = false,
           subject || '(No subject)',
           account.email_address,
           account.display_name || null,
-          JSON.stringify(toAddresses),
+          JSON.stringify(normalizeRecipients(to)),
+          storedRecipients(cc),
+          storedRecipients(bcc),
           isHtml ? null : body,
           isHtml ? body : null,
           smtpAttachments.length > 0 ? 1 : 0,

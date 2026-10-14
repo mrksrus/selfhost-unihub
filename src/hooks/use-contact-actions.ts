@@ -1,6 +1,6 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
-import { contactsApi, invalidateContactQueries, type ContactInput } from '@/lib/contacts-api';
+import { contactsApi, invalidateContactQueries, type BulkContactChange, type ContactInput } from '@/lib/contacts-api';
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
@@ -33,6 +33,12 @@ export function useContactActions() {
     mutationFn: (ids: string[]) => contactsApi.removeMany(ids),
     onSuccess: deleted => { refresh(); toast({ title: `${plural(deleted, 'contact')} deleted` }); },
     onError: failed('Could not delete the contacts'),
+  });
+
+  const updateMany = useMutation({
+    mutationFn: ({ ids, contact }: { ids: string[]; contact: BulkContactChange }) => contactsApi.updateMany(ids, contact),
+    onSuccess: updated => { refresh(); toast({ title: `${plural(updated, 'contact')} updated` }); },
+    onError: failed('Could not update the contacts'),
   });
 
   const setFavorite = useMutation({
@@ -68,7 +74,7 @@ export function useContactActions() {
     onError: failed('Could not merge duplicates'),
   });
 
-  return { create, update, remove, removeMany, setFavorite, importVcf, previewMerge, mergeDuplicates };
+  return { create, update, remove, removeMany, updateMany, setFavorite, importVcf, previewMerge, mergeDuplicates };
 }
 
 export type ContactActions = ReturnType<typeof useContactActions>;

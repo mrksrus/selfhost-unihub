@@ -56,6 +56,8 @@ export function MailMessageView({ email, loading = false, timezone, senderInCont
             )}
           </div>
           <div><span className="font-medium text-foreground">To:</span> {email.to_addresses?.join(', ') || 'N/A'}</div>
+          {!!email.cc_addresses?.length && <div><span className="font-medium text-foreground">Cc:</span> {email.cc_addresses.join(', ')}</div>}
+          {!!email.bcc_addresses?.length && <div><span className="font-medium text-foreground">Bcc:</span> {email.bcc_addresses.join(', ')}</div>}
           <div><span className="font-medium text-foreground">Date:</span> {format(new Date(email.received_at), 'PPpp')}</div>
         </div>
       </div>

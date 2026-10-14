@@ -56,7 +56,8 @@ test('MySQL offline queries match application schema, include every contact and 
     await connection.execute<ResultSetHeader>(`INSERT INTO contacts (id, user_id, first_name, notes) VALUES ${ids.map(() => '(?, ?, ?, ?)').join(',')}`,
       ids.flatMap((id, row) => [id, userId, `Contact ${index + row}`, 'Complete notes']));
   }
-  await connection.execute<ResultSetHeader>('INSERT INTO contacts (id, user_id, first_name) VALUES (?, ?, ?)', [crypto.randomUUID(), otherUser, 'Other user']);
+  const otherContact = crypto.randomUUID();
+  await connection.execute<ResultSetHeader>('INSERT INTO contacts (id, user_id, first_name) VALUES (?, ?, ?)', [otherContact, otherUser, 'Other user']);
   const calendarAccount = crypto.randomUUID(), calendarId = crypto.randomUUID(), eventId = crypto.randomUUID();
   await connection.execute<ResultSetHeader>('INSERT INTO calendar_accounts (id, user_id, provider, display_name, encrypted_password) VALUES (?, ?, ?, ?, ?)', [calendarAccount, userId, 'caldav', 'Private calendar', 'secret-calendar']);
   await connection.execute<ResultSetHeader>('INSERT INTO calendar_calendars (id, user_id, account_id, name) VALUES (?, ?, ?, ?)', [calendarId, userId, calendarAccount, 'Calendar']);
@@ -131,4 +132,19 @@ test('MySQL offline queries match application schema, include every contact and 
   const refreshed = await createOfflineSnapshot(userId);
   assert.equal(refreshed.contacts.length, 2104);
   assert.ok(!refreshed.contacts.some((row: FixtureValue) => row.id === contactIds[0]));
+
+  // Bulk contact changes touch only the caller's contacts and only the allowed fields.
+  const contactRoutes = require('../dist/src/routes/contacts') as typeof import('../src/routes/contacts');
+  const bulk = (contact: FixtureValue) => contactRoutes['POST /api/contacts/bulk-update']({} as FixtureValue, userId, { ids: [contactIds[1], contactIds[2], otherContact], contact });
+  assert.equal((await bulk({ company: ' Example Ltd ', job_title: null })).updated, 2);
+  assert.equal((await bulk({ notes: 'Not allowed' })).status, 400);
+  const [companies] = await connection.execute<RowDataPacket[]>('SELECT id, company, notes FROM contacts WHERE id IN (?, ?, ?)', [contactIds[1], contactIds[2], otherContact]);
+  assert.deepEqual(companies.map(row => [row.id, row.company, row.notes]).sort(), [
+    [contactIds[1], 'Example Ltd', 'Complete notes'], [contactIds[2], 'Example Ltd', 'Complete notes'], [otherContact, null, null]].sort());
+
+  // Cc and Bcc of a draft are stored in the real columns and come back in the email detail.
+  const created = await mailRoutes['POST /api/mail/drafts']({} as FixtureValue, userId, {
+    account_id: accountId, to: '', cc: 'Copy <copy@example.test>', bcc: 'hidden@example.test', subject: 'Cc only', body: '<p>Hi</p>' });
+  const draftDetail = await mailRoutes['GET /api/mail/emails/:id'](request('/api/mail/emails/' + (created.draft as FixtureValue).id) as FixtureValue, userId);
+  assert.deepEqual([draftDetail.email!.cc_addresses, draftDetail.email!.bcc_addresses], [['copy@example.test'], ['hidden@example.test']]);
 });

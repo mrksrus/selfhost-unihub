@@ -28,8 +28,21 @@ interface Input {
   job_title?: string;
   notes?: string;
   ids?: unknown;
+  contact?: unknown;
   vcf_data?: unknown;
   is_favorite?: unknown;
+}
+
+// Bounds one SQL statement; the bulk body limits in request-handler.ts fit this many IDs.
+const BULK_MAX_IDS = 5000;
+const BULK_UPDATE_FIELDS = new Set(['company', 'job_title']);
+const MAX_FIELD_LENGTH = 255;
+
+function bulkIdsError(ids: unknown) {
+  if (!Array.isArray(ids) || ids.length === 0) return 'ids array is required';
+  if (ids.length > BULK_MAX_IDS) return `At most ${BULK_MAX_IDS} contacts at a time`;
+  if (!ids.every(id => typeof id === 'string' && id.length > 0 && id.length <= 64)) return 'ids must be contact IDs';
+  return null;
 }
 
 export = {
@@ -166,20 +179,51 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     const { ids } = body;
-    if (!Array.isArray(ids) || ids.length === 0) {
-      return { error: 'ids array is required', status: 400 };
-    }
+    const idsError = bulkIdsError(ids);
+    if (idsError) return { error: idsError, status: 400 };
 
     try {
-      const placeholders = ids.map(() => '?').join(',');
+      const placeholders = (ids as string[]).map(() => '?').join(',');
       const [result] = await db.execute<ResultSetHeader>(
         `DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders})`,
-        [userId, ...ids]
+        [userId, ...(ids as string[])]
       );
       const deleted = result.affectedRows || 0;
       return { message: `${deleted} contact(s) deleted`, deleted };
     } catch (error) {
       return { error: 'Failed to delete contacts', status: 500 };
+    }
+  },
+
+  'POST /api/contacts/bulk-update': async (req: Request, userId: string | null, body: Input) => {
+    if (!userId) return { error: 'Unauthorized', status: 401 };
+
+    const { ids, contact } = body;
+    const idsError = bulkIdsError(ids);
+    if (idsError) return { error: idsError, status: 400 };
+    if (!contact || typeof contact !== 'object' || Array.isArray(contact)) return { error: 'contact object is required', status: 400 };
+    const entries = Object.entries(contact);
+    if (entries.length === 0) return { error: 'Nothing to update', status: 400 };
+    const columns: string[] = [];
+    const values: (string | null)[] = [];
+    for (const [field, value] of entries) {
+      if (!BULK_UPDATE_FIELDS.has(field)) return { error: `${field} cannot be changed for many contacts at once`, status: 400 };
+      if (value !== null && typeof value !== 'string') return { error: `${field} must be text`, status: 400 };
+      const trimmed = value?.trim() || null;
+      if (trimmed && trimmed.length > MAX_FIELD_LENGTH) return { error: `${field} is too long`, status: 400 };
+      columns.push(`${field} = ?`);
+      values.push(trimmed);
+    }
+
+    try {
+      const placeholders = (ids as string[]).map(() => '?').join(',');
+      const [result] = await db.execute<ResultSetHeader>(
+        `UPDATE contacts SET ${columns.join(', ')} WHERE user_id = ? AND id IN (${placeholders})`,
+        [...values, userId, ...(ids as string[])]
+      );
+      return { updated: result.affectedRows || 0 };
+    } catch (error) {
+      return { error: 'Failed to update contacts', status: 500 };
     }
   },
 

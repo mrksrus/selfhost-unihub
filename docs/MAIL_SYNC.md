@@ -631,6 +631,11 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 the `sent` folder. Drafts are app-local rows in the `drafts` folder with
 `is_draft = true`; they are not synchronized to provider draft folders.
 
+Send and draft requests take `to`, `cc` and `bcc` as comma-separated strings;
+at least one of them needs a recipient. The Sent copy and drafts keep all three
+(`to_addresses`, `cc_addresses`, `bcc_addresses`), and the email detail returns
+them as arrays. Bcc is never part of the delivered message, only of your copy.
+
 Compose attachment limits:
 
 - maximum 20 attachments

@@ -6,6 +6,17 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.21.1
+
+### Changed
+
+- Messages you send and drafts you save keep their Cc and Bcc, and the reader
+  shows them under **To**. (Bcc is only in your own copy.)
+
+### Fixed
+
+- Deleting more than about 25 selected contacts no longer fails with "Request
+  body too large"; up to 5000 can be deleted at once.
 ## 0.21.0
 
 The Android app, delivered by your own server. No database upgrade.

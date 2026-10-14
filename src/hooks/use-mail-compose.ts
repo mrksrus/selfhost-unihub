@@ -15,6 +15,9 @@ import {
 } from '@/components/mail/mail-page-model';
 
 type AttachmentPayload = Array<{ filename: string; contentType: string; size: number; dataBase64: string }>;
+type RecipientField = 'to' | 'cc' | 'bcc';
+
+const EMPTY_COMPOSE_FORM: ComposeForm = { to: '', cc: '', bcc: '', subject: '', body: '' };
 
 const fileToBase64 = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -60,11 +63,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     ?? (connected(preferredAccountId) ? preferredAccountId : accounts.find(account => account.is_active && !account.disconnected_at)?.id ?? null);
   const [composeMode, setComposeMode] = useState<ComposeMode>('new');
   const [isReplying, setIsReplying] = useState(false);
-  const [composeForm, setComposeForm] = useState<ComposeForm>({
-    to: '',
-    subject: '',
-    body: '',
-  });
+  const [composeForm, setComposeForm] = useState<ComposeForm>(EMPTY_COMPOSE_FORM);
   const [composeReturnTo, setComposeReturnTo] = useState<string | null>(null);
   const [focusedRecipientInput, setFocusedRecipientInput] = useState<string | null>(null);
   const [composeAttachments, setComposeAttachments] = useState<ComposeAttachment[]>([]);
@@ -87,6 +86,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       const returnTo = sanitizeReturnTo(params.get('returnTo'));
       setComposeMode('new');
       setComposeForm({
+        ...EMPTY_COMPOSE_FORM,
         to: params.get('to') || '',
         subject: params.get('subject') || '',
         body: params.get('body') ? plainTextToHtml(params.get('body') || '') : '',
@@ -132,6 +132,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setDraftSavedAt(draft.received_at || new Date().toISOString());
     setComposeForm({
       to: draft.to_addresses?.join(', ') || '',
+      cc: draft.cc_addresses?.join(', ') || '',
+      bcc: draft.bcc_addresses?.join(', ') || '',
       subject: draft.subject || '',
       body: draft.body_html || (draft.body_text ? plainTextToHtml(draft.body_text) : ''),
     });
@@ -223,22 +225,22 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     updateComposeBodyFromEditor(editorRef);
   };
 
-  const replaceActiveRecipient = (suggestion: ContactEmailSuggestion) => {
+  const replaceActiveRecipient = (suggestion: ContactEmailSuggestion, field: RecipientField = 'to') => {
     setComposeForm(prev => {
-      const parts = prev.to.split(',');
+      const parts = prev[field].split(',');
       parts[parts.length - 1] = ` ${formatRecipient(suggestion)}`;
       const nextValue = parts
         .map((part, index) => (index === 0 ? part.trimStart() : part.trim()))
         .filter(Boolean)
         .join(', ');
-      return { ...prev, to: `${nextValue}, ` };
+      return { ...prev, [field]: `${nextValue}, ` };
     });
     setIsComposeDirty(true);
   };
 
   const resetComposeState = () => {
     setComposeMode('new');
-    setComposeForm({ to: '', subject: '', body: '' });
+    setComposeForm(EMPTY_COMPOSE_FORM);
     setFocusedRecipientInput(null);
     setComposeAttachments([]);
     setExistingDraftAttachments([]);
@@ -280,6 +282,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setChosenAccountId(email.mail_account_id);
     const quoted = `<p><strong>${mode === 'reply' ? 'Original Message' : 'Forwarded Message'}</strong><br>From: ${escapeHtml(email.from_name || email.from_address)}<br>Date: ${escapeHtml(format(new Date(email.received_at), 'PPpp'))}</p><blockquote>${plainTextToHtml(email.body_text || '')}</blockquote>`;
     setComposeForm({
+      ...EMPTY_COMPOSE_FORM,
       to: mode === 'reply' ? email.from_address : '',
       subject: `${mode === 'reply' ? 'Re' : 'Fwd'}: ${email.subject || ''}`,
       body: `<p><br></p><hr>${quoted}`,
@@ -295,6 +298,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     mutationFn: async (data: {
       account_id: string;
       to: string;
+      cc: string;
+      bcc: string;
       subject: string;
       body: string;
       isHtml?: boolean;
@@ -345,6 +350,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       const payload: {
         account_id: string;
         to: string;
+        cc: string;
+        bcc: string;
         subject: string;
         body: string;
         isHtml: boolean;
@@ -353,6 +360,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       } = {
         account_id: fromAccountId,
         to: composeForm.to,
+        cc: composeForm.cc,
+        bcc: composeForm.bcc,
         subject: composeForm.subject,
         body: composeForm.body || '<p></p>',
         isHtml: true,
@@ -485,7 +494,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       toast({ title: 'Please select an account', variant: 'destructive' });
       return;
     }
-    if (!composeForm.to.trim()) {
+    if (!composeForm.to.trim() && !composeForm.cc.trim() && !composeForm.bcc.trim()) {
       toast({ title: 'Please enter a recipient', variant: 'destructive' });
       return;
     }
@@ -511,6 +520,8 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       sendEmailMutation.mutate({
         account_id: fromAccountId,
         to: composeForm.to,
+        cc: composeForm.cc,
+        bcc: composeForm.bcc,
         subject: composeForm.subject.trim() || '(No subject)',
         body: composeForm.body || '<p></p>',
         isHtml: true,

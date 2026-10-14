@@ -69,6 +69,8 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
           fromAddress,
           fromName,
           toAddresses,
+          ccAddresses,
+          bccAddresses,
           bodyText,
           bodyHtml,
           folder,
@@ -82,6 +84,8 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
           from_address: fromAddress,
           from_name: fromName,
           to_addresses: toAddresses,
+          cc_addresses: ccAddresses,
+          bcc_addresses: bccAddresses,
           body_text: bodyText,
           body_html: bodyHtml,
           folder,
@@ -171,6 +175,8 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
           email.from_name = params[index++];
         }
         if (sql.includes('to_addresses = ?')) email.to_addresses = params[index++];
+        if (sql.includes(' cc_addresses = ?')) email.cc_addresses = params[index++];
+        if (sql.includes('bcc_addresses = ?')) email.bcc_addresses = params[index++];
         if (sql.includes('subject = ?')) email.subject = params[index++];
         if (sql.includes('body_text = ?')) {
           email.body_text = params[index++];
@@ -325,11 +331,16 @@ test('send draft sends stored content and removes the local draft', async (t) =>
     {
       account_id: 'account-1',
       to: 'reader@example.test',
+      cc: 'Copy <copy@example.test>',
       subject: 'Ready',
       body: '<p>Send me</p>',
       isHtml: true,
     }
   );
+  assert.deepEqual(created.draft!.cc_addresses, ['copy@example.test']);
+  const updated = await routes['PUT /api/mail/drafts/:id'](
+    { url: `/api/mail/drafts/${(created.draft! as FixtureValue).id}` } as FixtureValue, 'user-1', { bcc: 'hidden@example.test' });
+  assert.deepEqual(updated.draft!.bcc_addresses, ['hidden@example.test']);
 
   const sent = await routes['POST /api/mail/drafts/:id/send'](
     { url: `/api/mail/drafts/${(created.draft! as FixtureValue).id}/send`, headers: { host: 'localhost' } } as FixtureValue,
@@ -339,6 +350,8 @@ test('send draft sends stored content and removes the local draft', async (t) =>
   assert.equal(sent.success, true);
   assert.equal(sentPayload.accountId, 'account-1');
   assert.equal(sentPayload.payload.to, 'reader@example.test');
+  assert.equal(sentPayload.payload.cc, 'copy@example.test');
+  assert.equal(sentPayload.payload.bcc, 'hidden@example.test');
   assert.equal(sentPayload.payload.subject, 'Ready');
   assert.equal(sentPayload.payload.body, '<p>Send me</p>');
   assert.equal(state.emails.has((created.draft! as FixtureValue).id), false);

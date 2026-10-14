@@ -42,6 +42,9 @@ const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
   'GET /api/modules': 16384,
   'PUT /api/modules': 16384,
   'POST /api/contacts/import': 500000, // vCard import can be large
+  // A contact selection: up to 5000 IDs of ~39 bytes each
+  'POST /api/contacts/bulk-delete': 250000,
+  'POST /api/contacts/bulk-update': 250000,
   'POST /api/recordings/uploads/:id/chunk': 1200 * 1024, // Recording chunks are base64 encoded JSON.
   'POST /api/recordings/uploads/start': 50000,
   'POST /api/backup/import': BACKUP_UPLOAD_MAX_SIZE,

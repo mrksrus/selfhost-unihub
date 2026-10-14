@@ -38,6 +38,9 @@ export async function fetchAllContacts(signal?: AbortSignal): Promise<Contact[]>
 
 export type ContactInput = Pick<Contact, 'first_name'> & Partial<Omit<Contact, 'id' | 'is_favorite' | 'avatar_url'>>;
 
+/** The fields that can be set on many contacts at once; null clears a field. */
+export type BulkContactChange = Partial<Pick<Contact, 'company' | 'job_title'>>;
+
 export interface MergePreviewGroup {
   key: string;
   size: number;
@@ -74,6 +77,7 @@ export const contactsApi = {
   update: (id: string, contact: Partial<ContactInput>) => send(api.put(`/contacts/${id}`, contact)),
   remove: (id: string) => send(api.delete(`/contacts/${id}`)),
   removeMany: async (ids: string[]) => (await send(api.post<{ deleted: number }>('/contacts/bulk-delete', { ids })))?.deleted ?? ids.length,
+  updateMany: async (ids: string[], contact: BulkContactChange) => (await send(api.post<{ updated: number }>('/contacts/bulk-update', { ids, contact })))?.updated ?? ids.length,
   setFavorite: (id: string, isFavorite: boolean) => send(api.put(`/contacts/${id}/favorite`, { is_favorite: isFavorite })),
   importVcf: async (vcf: string) => (await send(api.post<ImportResult>('/contacts/import', { vcf_data: vcf })))!,
   exportVcf: () => api.getBlob('/contacts/export'),

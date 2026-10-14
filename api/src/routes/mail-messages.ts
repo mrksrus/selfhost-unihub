@@ -3,6 +3,7 @@ import type { RouteRequest, ApiError } from '../types';
 import { FILING_ACCOUNT_SQL } from '../services/mail-folder-reconciliation';
 import { folderMembershipSql, pendingMoveSql } from '../services/mail-folder-view';
 import { presentMailFiling } from '../services/mail-filing';
+import { parseStoredRecipients } from '../services/mail-recipients';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../state';
@@ -183,7 +184,9 @@ export = {
       // Parse JSON fields
       const parsedEmail: Record<string, unknown> = {
         ...presentMailFiling(storedEmail),
-        to_addresses: typeof email.to_addresses === 'string' ? JSON.parse(email.to_addresses || '[]') : email.to_addresses,
+        to_addresses: parseStoredRecipients(email.to_addresses),
+        cc_addresses: parseStoredRecipients(email.cc_addresses),
+        bcc_addresses: parseStoredRecipients(email.bcc_addresses),
         is_read: toBooleanFlag(effective_is_read),
         is_starred: toBooleanFlag(effective_is_starred),
         read_sync_pending: !!email.read_sync_pending,

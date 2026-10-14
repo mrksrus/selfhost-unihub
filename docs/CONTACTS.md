@@ -50,6 +50,7 @@ require `X-CSRF-Token`.
 | DELETE | `/api/contacts/:id` | Delete contact owned by the current user |
 | PUT | `/api/contacts/:id/favorite` | Set favorite status |
 | POST | `/api/contacts/bulk-delete` | Delete multiple contacts by ID |
+| POST | `/api/contacts/bulk-update` | Set `company` and/or `job_title` on multiple contacts (`{ ids, contact }`) |
 | POST | `/api/contacts/merge-duplicates/preview` | Preview duplicate groups and merge targets |
 | POST | `/api/contacts/merge-duplicates` | Merge detected duplicate groups |
 | GET | `/api/contacts/export` | Download `contacts.vcf` |

@@ -11,17 +11,21 @@ function mailFixture(t: import('node:test').TestContext, { active = 1, disconnec
   const mailPath = require.resolve('../dist/src/services/mail');
   const paths = [state, nodemailer, encryption, network, settings, mailPath];
   const original = new Map(paths.map(p => [p, require.cache[p]]));
-  let sends = 0, inserts = 0;
+  let sends = 0, inserts = 0, delivered: FixtureValue = null, sentCopy: FixtureValue = null;
   const account = { id: 'account-1', user_id: 'user-1', email_address: 'sender@example.test',
     smtp_host: 'smtp.example.test', smtp_port: 587, encrypted_password: 'vault-ciphertext',
     is_active: active, disconnected_at: disconnected, allow_self_signed: 0 };
   const stubs = [
-    [state, { db: { async execute(sql: string) {
+    [state, { db: { async execute(sql: string, params: FixtureValue[]) {
       if (sql.includes('FROM mail_accounts')) return [[account]];
-      if (sql.includes('INSERT INTO emails')) { inserts++; if (failCopy) throw Error('storage offline'); return [{ affectedRows: 1 }]; }
+      if (sql.includes('INSERT INTO emails')) {
+        inserts++; if (failCopy) throw Error('storage offline');
+        sentCopy = { cc: params[8], bcc: params[9] };
+        return [{ affectedRows: 1 }];
+      }
       return [[]];
     } } }],
-    [nodemailer, { createTransport: () => ({ async sendMail() { sends++; return { messageId: '<delivered@example.test>' }; } }) }],
+    [nodemailer, { createTransport: () => ({ async sendMail(message: FixtureValue) { sends++; delivered = message; return { messageId: '<delivered@example.test>' }; } }) }],
     [encryption, { decrypt: () => 'test-placeholder' }],
     [network, { normalizeNetworkHost: (x: FixtureValue) => x, isTrustedMailHost: () => true, isPublicNetworkAddress: () => true,
       resolveNetworkHost: async () => [], resolveMailConnectionTarget: async () => ({ address: '127.0.0.1', hostname: 'smtp.example.test' }) }],
@@ -31,8 +35,8 @@ function mailFixture(t: import('node:test').TestContext, { active = 1, disconnec
   t.after(require('./helpers/mail-service-modules.cts').evictMailServiceModules());
   const { sendEmail } = require(mailPath) as typeof import('../src/services/mail');
   t.after(() => { for (const [p, entry] of original) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
-  return { send: () => sendEmail(account.id, { to: 'receiver@example.test', subject: 'Fixture', body: 'hello' }),
-    get sends() { return sends; }, get inserts() { return inserts; } };
+  return { send: (recipients: FixtureValue = {}) => sendEmail(account.id, { to: 'receiver@example.test', subject: 'Fixture', body: 'hello', ...recipients }),
+    get sends() { return sends; }, get inserts() { return inserts; }, get delivered() { return delivered; }, get sentCopy() { return sentCopy; } };
 }
 
 test('inactive and disconnected accounts cannot dispatch SMTP', async t => {
@@ -51,10 +55,14 @@ test('SMTP success plus local Sent-copy failure is not reported as overall send 
   assert.equal(result.messageId, '<delivered@example.test>');
   assert.match(result.message!, /Do not resend/);
 });
-test('successful local Sent copy is separately confirmed', async t => {
+test('successful local Sent copy is separately confirmed and keeps Cc and Bcc', async t => {
   const h = mailFixture(t);
-  const result = await h.send();
+  const result = await h.send({ cc: 'Copy <copy@example.test>, other@example.test', bcc: 'hidden@example.test' });
   assert.equal(h.sends, 1);
+  assert.equal(h.delivered.cc, 'Copy <copy@example.test>, other@example.test');
+  assert.equal(h.delivered.bcc, 'hidden@example.test');
+  assert.deepEqual(JSON.parse(h.sentCopy.cc), ['copy@example.test', 'other@example.test']);
+  assert.deepEqual(JSON.parse(h.sentCopy.bcc), ['hidden@example.test']);
   assert.equal(result.sent_copy_state, 'confirmed');
   assert.match(result.sent_copy_id!, /^[0-9a-f-]{36}$/i);
 });

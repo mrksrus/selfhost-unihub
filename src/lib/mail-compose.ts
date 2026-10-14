@@ -33,12 +33,14 @@ export const isComposeHtmlEmpty = (value: string) =>
     .trim();
 
 export const isComposeMeaningful = (
-  form: { to: string; subject: string; body: string },
+  form: { to: string; cc: string; bcc: string; subject: string; body: string },
   newAttachmentsCount: number,
   existingAttachmentsCount = 0
 ) =>
   Boolean(
     form.to.trim() ||
+    form.cc.trim() ||
+    form.bcc.trim() ||
     form.subject.trim() ||
     !isComposeHtmlEmpty(form.body) ||
     newAttachmentsCount > 0 ||

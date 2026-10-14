@@ -129,6 +129,10 @@ export interface Email {
   from_address: string;
   from_name: string | null;
   to_addresses: string[];
+  /** Detail only. */
+  cc_addresses?: string[];
+  /** Detail only; set on your own sent copies and drafts. */
+  bcc_addresses?: string[];
   body_text: string | null;
   body_html: string | null;
   folder: string;

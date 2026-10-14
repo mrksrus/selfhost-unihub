@@ -10,9 +10,10 @@ describe('mail compose boundaries', () => {
     expect(sanitizeReturnTo('/contacts?search=alice')).toBe('/contacts?search=alice');
   });
   it('treats an attachment as a draft even with an empty editor', () => {
-    const form = { to: '', subject: '', body: '<p><br>&nbsp;</p>' };
+    const form = { to: '', cc: '', bcc: '', subject: '', body: '<p><br>&nbsp;</p>' };
     expect(isComposeMeaningful(form, 0)).toBe(false);
     expect(isComposeMeaningful(form, 0, 1)).toBe(true);
+    expect(isComposeMeaningful({ ...form, cc: 'copy@example.com' }, 0)).toBe(true);
     expect(validateComposeAttachments(Array.from({ length: 20 }, () => ({ filename: 'old', size: 1 })), [new File(['x'], 'new.txt')])).toContain('at most 20');
   });
 });

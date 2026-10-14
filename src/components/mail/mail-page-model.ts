@@ -88,6 +88,8 @@ export interface ComposeAttachment {
 
 export interface ComposeForm {
   to: string;
+  cc: string;
+  bcc: string;
   subject: string;
   body: string;
 }
