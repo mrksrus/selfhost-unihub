@@ -46,7 +46,7 @@ const Settings = () => {
   const View = section === 'backup' ? null : SECTION_VIEWS[section];
 
   return (
-    <PageShell panel={<SettingsPanel active={section} />} panelLabel="Settings sections">
+    <PageShell panel={<SettingsPanel active={section} />} panelLabel="Settings sections" panelId="settings">
       <PageHeader title="Settings" scope={label} />
       <PageBody width="reading">
         {View && <View />}

@@ -95,7 +95,7 @@ const CalendarPage = () => {
   );
 
   return (
-    <PageShell panel={panel} panelLabel="Calendars">
+    <PageShell panel={panel} panelLabel="Calendars" panelId="calendar">
       <PageHeader title={title} scope={scope} actions={<>
         <div className="hidden items-center gap-1 md:flex">
           <ModeSwitch value={view.viewMode} onChange={view.setViewMode} className="mr-2" />

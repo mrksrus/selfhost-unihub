@@ -10,6 +10,12 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Changed
 
+- On wide windows the panel of a page (mail accounts and folders, contact
+  lists, calendars, settings sections) can be folded away from its header; it
+  then opens from the scope in the page title, as on phones. Each page's
+  choice is remembered on the device.
+- The mail reader can be dragged wider or narrower at its left edge on wide
+  windows (double-click resets it); the width is remembered on the device.
 - Tasks, songs and recordings show everything at once: description, subtasks,
   the email a task came from, chords and details are on the row, nothing folds
   away. Press the circle at the start of a song or recording to play it.

@@ -187,7 +187,7 @@ const Contacts = () => {
     );
 
   return (
-    <PageShell panel={panel} panelLabel="Contact lists">
+    <PageShell panel={panel} panelLabel="Contact lists" panelId="contacts">
       <PageHeader title="Contacts" scope={CONTACT_VIEWS[view].label} className={active ? 'hidden lg:block' : undefined}
         actions={<NarrowOnly><Button size="icon" aria-label="New contact" onClick={() => setDialog({ kind: 'new' })}><Plus aria-hidden="true" /></Button></NarrowOnly>}>
         <div className="flex h-12 items-center gap-2 px-4 md:px-6">

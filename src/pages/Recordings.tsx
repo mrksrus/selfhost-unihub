@@ -333,7 +333,7 @@ const Recordings = () => {
   );
 
   return (
-    <PageShell panel={panel} panelLabel="Recording lists">
+    <PageShell panel={panel} panelLabel="Recording lists" panelId="recordings">
       <PageHeader title="Recordings" scope={scope}
         actions={!busy && !pendingAudio && <NarrowOnly><Button size="sm" aria-label="Record" onClick={() => void capture.start()}><Mic aria-hidden="true" /><span className="hidden sm:inline">Record</span></Button></NarrowOnly>}>
         <div className="flex h-12 items-center gap-2 px-4 md:px-6">

@@ -1,7 +1,9 @@
-import type { ReactNode } from 'react';
+import { useRef, type CSSProperties, type ReactNode } from 'react';
 
 import { ArrowLeft, CheckCircle2, Forward, ListTodo, Loader2, Mail, Reply, Star } from 'lucide-react';
 import type { Email, MailAccount, MailFlagKind } from '@/lib/mail-api';
+import { useResizableWidth } from '@/hooks/use-resizable-width';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { MailPendingMark } from '@/components/mail/MailPendingMark';
 import { MailMessageView } from '@/components/mail/MailMessageView';
@@ -30,11 +32,23 @@ interface Props {
   inlineCompose: ReactNode;
 }
 
-/** Reader pane: full screen on narrow screens, the right column of the split view on wide ones. */
+/**
+ * Reader pane: full screen on narrow screens, the right column of the split
+ * view on wide ones, where its left edge can be dragged to change its share
+ * of the page (remembered in this browser); the list keeps at least 20rem.
+ */
 export function MailReader({ email, loading = false, accounts, location, backLabel, isMobile, isReplying, flagRequests, requestFlag,
   senderInContacts, onBack, onReply, onForward, onAddTask, timezone, inlineCompose }: Props) {
+  const pane = useRef<HTMLDivElement>(null);
+  const width = useResizableWidth('unihub:mail:reader-width', { element: pane, defaultValue: 0.45, min: 0.3, max: 0.7 });
   return (
-    <div className="fixed inset-0 z-50 bg-background xl:relative xl:inset-auto xl:z-auto xl:h-full xl:w-[45%] xl:shrink-0 xl:border-l xl:border-border">
+    <div ref={pane} style={{ '--reader-width': `${(width.value * 100).toFixed(1)}%` } as CSSProperties}
+      className="fixed inset-0 z-50 bg-background xl:relative xl:inset-auto xl:z-auto xl:h-full xl:w-[var(--reader-width)] xl:max-w-[calc(100%-20rem)] xl:shrink-0 xl:border-l xl:border-border">
+      {/* The handle straddles the border; a thin accent line shows it while hovered, dragged or focused. */}
+      <div {...width.handle} aria-label="Reader width" title="Drag to resize, double-click to reset"
+        className={cn('absolute inset-y-0 -left-1 z-10 hidden w-2 cursor-col-resize touch-none select-none xl:block focus-visible:outline-none',
+          "before:absolute before:inset-y-0 before:left-[3px] before:w-0.5 before:rounded-full before:bg-accent before:opacity-0 before:transition-opacity before:content-['']",
+          'hover:before:opacity-100 active:before:opacity-100 focus-visible:before:opacity-100')} />
       <div className="flex flex-col h-full">
         {/* Header */}
         <div className="shrink-0 border-b border-border p-3 sm:p-4 flex flex-wrap items-center justify-between gap-3">
@@ -74,7 +88,7 @@ export function MailReader({ email, loading = false, accounts, location, backLab
               </Button>
             </div>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center gap-2 ml-auto">
+          <div className="flex min-w-0 flex-wrap items-center gap-2 ml-auto">
             {accounts.find(account => account.id === email.mail_account_id)?.disconnected_at && <span className="text-xs text-muted-foreground">Disconnected · retained locally; provider presence unverified</span>}
             {email.remote_missing && <span className="text-xs text-muted-foreground">Local copy · provider presence unverified</span>}
             <MailPendingMark email={email} saving={flagRequests.has(`read:${email.id}`) || flagRequests.has(`star:${email.id}`)} className="h-8 w-8" />

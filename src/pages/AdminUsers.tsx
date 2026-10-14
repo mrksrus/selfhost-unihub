@@ -195,7 +195,7 @@ const AdminUsers = () => {
     );
 
   return (
-    <PageShell panel={<SettingsPanel active="admin-users" />} panelLabel="Settings sections">
+    <PageShell panel={<SettingsPanel active="admin-users" />} panelLabel="Settings sections" panelId="settings">
       <PageHeader title="Settings" scope="Users" />
       <PageBody width="reading">
         {user?.role !== 'admin' ? <p className="text-sm text-muted-foreground">Only admins can see this page.</p> : (

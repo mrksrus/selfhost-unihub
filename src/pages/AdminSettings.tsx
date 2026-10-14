@@ -200,7 +200,7 @@ const AdminSettings = () => {
   );
 
   return (
-    <PageShell panel={<SettingsPanel active="admin-settings" />} panelLabel="Settings sections">
+    <PageShell panel={<SettingsPanel active="admin-settings" />} panelLabel="Settings sections" panelId="settings">
       <PageHeader title="Settings" scope="Server settings" />
       <PageBody width="reading">{body}</PageBody>
     </PageShell>

@@ -1,10 +1,11 @@
 import { useCallback, useMemo, useState, type ComponentType, type ReactNode } from 'react';
 import { PanelContext, usePagePanel } from '@/components/layout/page-panel';
 import { Link } from 'react-router-dom';
-import { ChevronDown, Search } from 'lucide-react';
+import { ChevronDown, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { emitAppEvent } from '@/lib/app-events';
 import { NARROW_QUERY, useMediaQuery } from '@/hooks/use-mobile';
+import { usePersistedFlag } from '@/hooks/use-persisted-flag';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/ui/sheet';
 
@@ -16,28 +17,37 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@/components/
 //
 // A page with scope (mail accounts and folders, task lists, settings sections)
 // passes it as `panel`. New features add their own panel instead of a second
-// sidebar inside the page.
+// sidebar inside the page. On wide windows the panel can be folded away from
+// its header; it then opens as a sheet like on narrow windows, and the choice
+// is remembered in this browser per `panelId`.
 
 interface PageShellProps {
   /** Scope for this page: lists, accounts, folders, sections. */
   panel?: ReactNode;
   /** Accessible name of the panel, e.g. "Accounts and folders". */
   panelLabel?: string;
+  /** Remembers whether the panel is folded away: pages sharing a panel share the id. */
+  panelId?: string;
   children: ReactNode;
 }
 
-export function PageShell({ panel, panelLabel = 'Page navigation', children }: PageShellProps) {
+export function PageShell({ panel, panelLabel = 'Page navigation', panelId = 'page', children }: PageShellProps) {
   const narrow = useMediaQuery(NARROW_QUERY);
+  const [storedFolded, storeFolded] = usePersistedFlag(`unihub:panel:${panelId}`);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const collapsible = !!panel && narrow;
+  const foldable = !!panel && !narrow;
+  const folded = foldable && storedFolded;
+  const collapsible = !!panel && (narrow || folded);
   const open = useCallback(() => setSheetOpen(true), []);
   const close = useCallback(() => setSheetOpen(false), []);
-  const state = useMemo(() => ({ collapsible, isOpen: sheetOpen, open, close }), [collapsible, sheetOpen, open, close]);
+  const setFolded = useCallback((next: boolean) => { storeFolded(next); setSheetOpen(false); }, [storeFolded]);
+  const state = useMemo(() => ({ collapsible, isOpen: sheetOpen, open, close, foldable, folded, setFolded }),
+    [collapsible, sheetOpen, open, close, foldable, folded, setFolded]);
 
   return (
     <PanelContext.Provider value={state}>
       <div className="flex h-full min-h-0 w-full">
-        {panel && !narrow && (
+        {foldable && !folded && (
           <aside aria-label={panelLabel} className="flex w-64 shrink-0 flex-col border-r border-border bg-card min-h-0">
             {panel}
           </aside>
@@ -130,13 +140,24 @@ export function NarrowOnly({ children }: { children: ReactNode }) {
   return usePagePanel().collapsible ? <>{children}</> : null;
 }
 
-/** The top row of a context panel: its name and one main action. Leaves room for the sheet's close button. */
+/**
+ * The top row of a context panel: its name, one main action and, on wide
+ * windows, the button that folds the column away or brings it back. Leaves
+ * room for the sheet's close button.
+ */
 export function PanelHeader({ title, action }: { title: ReactNode; action?: ReactNode }) {
   const panel = usePagePanel();
+  const foldLabel = panel.folded ? 'Keep panel open' : 'Hide panel';
   return (
-    <div className={cn('flex h-14 shrink-0 items-center justify-between gap-2 px-4', panel.collapsible && 'pr-12')}>
-      <h2 className="truncate text-base font-semibold">{title}</h2>
+    <div className={cn('flex h-14 shrink-0 items-center gap-2 px-4', panel.collapsible && 'pr-12')}>
+      <h2 className="min-w-0 flex-1 truncate text-base font-semibold">{title}</h2>
       {action}
+      {panel.foldable && (
+        <Button variant="ghost" size="icon" className="-mr-2 h-8 w-8 text-muted-foreground" aria-label={foldLabel} title={foldLabel}
+          onClick={() => panel.setFolded(!panel.folded)}>
+          {panel.folded ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
+        </Button>
+      )}
     </div>
   );
 }

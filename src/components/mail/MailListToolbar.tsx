@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { CheckCircle2, CheckSquare, FolderOpen, Mail, Search, Square, Star, Trash2, X } from 'lucide-react';
+import { CheckCircle2, CheckSquare, FolderOpen, Mail, PenSquare, Search, Square, Star, Trash2, X } from 'lucide-react';
 import type { MailAccount, MailFolder } from '@/lib/mail-api';
 import type { MailListView } from '@/hooks/use-mail-list-view';
 import type { MailListSelection } from '@/hooks/use-mail-list-selection';
@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { PageHeader } from '@/components/layout/PageShell';
+import { usePagePanel } from '@/components/layout/page-panel';
 import { cn } from '@/lib/utils';
 import type { MailFolderItem } from '@/components/mail/mail-page-model';
 
@@ -49,6 +50,8 @@ interface ToolbarProps {
   /** Folders the checked messages can move to. */
   moveTargets: MailFolderItem[];
   syncControl: ReactNode;
+  /** Compose moves into the header while the panel (which offers it) is folded away. */
+  onCompose: () => void;
 }
 
 const chip = (on: boolean) => cn('inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full border px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -59,12 +62,16 @@ const chip = (on: boolean) => cn('inline-flex h-8 shrink-0 items-center gap-1.5 
  * filter and search, or with the actions for checked messages.
  */
 export function MailListToolbar({ emailCount, selection, folderLabel, accountLabel, account, list, bulk,
-  moveTargets, syncControl }: ToolbarProps) {
+  moveTargets, syncControl, onCompose }: ToolbarProps) {
   const { selectedEmails, selectedIds } = selection;
   const selecting = selectedEmails.size > 0;
   const allSelected = emailCount > 0 && selectedEmails.size === emailCount;
+  const { folded } = usePagePanel();
   return (
-    <PageHeader title={folderLabel} scope={accountLabel} actions={syncControl}>
+    <PageHeader title={folderLabel} scope={accountLabel} actions={<>
+      {folded && <Button size="sm" onClick={onCompose}><PenSquare aria-hidden="true" />Compose</Button>}
+      {syncControl}
+    </>}>
       {(account || emailCount > 0) && <div className="flex min-h-12 flex-wrap items-center gap-2 px-4 pb-2 md:px-6">
         {emailCount > 0 && (
           <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={selection.toggleAll}

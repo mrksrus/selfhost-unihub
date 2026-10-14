@@ -112,9 +112,10 @@ Main routes:
 - `/admin/settings`
 
 Pages use one layout. On wide windows a page has an optional context panel
-(folders, lists, sections) next to its content; on narrow windows the panel
-opens as a sheet from the scope button in the page header, and the header is
-the phone's top bar. A page's view, filters and open item live in the address
+(folders, lists, sections) next to its content, which can be folded away from
+its header (remembered in the browser per page); on narrow windows, or while
+folded, the panel opens as a sheet from the scope button in the page header,
+and on phones the header is the top bar. A page's view, filters and open item live in the address
 (`?view=`, `?section=`, `?contact=`), so links from Today, notifications and
 the command palette open the same state. Links ending in `?action=new` open
 the page's form for a new item.

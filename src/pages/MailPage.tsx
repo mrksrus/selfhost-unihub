@@ -173,12 +173,12 @@ const MailPage = () => {
   );
 
   return (
-    <PageShell panel={panel} panelLabel="Accounts and folders">
+    <PageShell panel={panel} panelLabel="Accounts and folders" panelId="mail">
     <div className="relative flex h-full min-h-0 overflow-hidden">
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         <MailListToolbar emailCount={emails.length}
           selection={selection} folderLabel={folderLabel} accountLabel={accountLabel} account={selectedAccount} list={list}
-          bulk={bulk} moveTargets={movableFolders.filter(folder => folder.id !== selectedFolder)}
+          bulk={bulk} moveTargets={movableFolders.filter(folder => folder.id !== selectedFolder)} onCompose={compose.openCompose}
           syncControl={
             <MailSyncControl accounts={accounts}
               viewAccountIds={activeMailAccountId ? [activeMailAccountId] : accounts.filter(account => account.is_active).map(account => account.id)}
