@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useState, type ComponentType, type ReactNode } from 'react';
+import { useCallback, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { PanelContext, usePagePanel } from '@/components/layout/page-panel';
 import { Link } from 'react-router-dom';
 import { ChevronDown, PanelLeftClose, PanelLeftOpen, Search } from 'lucide-react';
@@ -40,8 +41,20 @@ export function PageShell({ panel, panelLabel = 'Page navigation', panelId = 'pa
   const collapsible = !!panel && (narrow || folded);
   const open = useCallback(() => setSheetOpen(true), []);
   const close = useCallback(() => setSheetOpen(false), []);
-  const setFolded = useCallback((next: boolean) => { storeFolded(next); setSheetOpen(false); }, [storeFolded]);
-  const state = useMemo(() => ({ collapsible, isOpen: sheetOpen, open, close, foldable, folded, setFolded }),
+  const scopeRef = useRef<HTMLButtonElement>(null);
+  const foldRef = useRef<HTMLButtonElement>(null);
+  const setFolded = useCallback((next: boolean) => {
+    flushSync(() => { storeFolded(next); setSheetOpen(false); });
+    // "Hide panel" left with the column; the scope button now opens the panel.
+    if (next) scopeRef.current?.focus();
+  }, [storeFolded]);
+  // The sheet has no trigger of its own: return focus to the scope button that
+  // opened it, or, once "Keep panel open" removed that button, to the column's fold button.
+  const restoreFocus = useCallback((event: Event) => {
+    event.preventDefault();
+    (scopeRef.current ?? foldRef.current)?.focus();
+  }, []);
+  const state = useMemo(() => ({ collapsible, isOpen: sheetOpen, open, close, foldable, folded, setFolded, scopeRef, foldRef }),
     [collapsible, sheetOpen, open, close, foldable, folded, setFolded]);
 
   return (
@@ -54,7 +67,7 @@ export function PageShell({ panel, panelLabel = 'Page navigation', panelId = 'pa
         )}
         {collapsible && (
           <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-            <SheetContent side="left" aria-label={panelLabel}
+            <SheetContent side="left" aria-label={panelLabel} onCloseAutoFocus={restoreFocus}
               className="flex w-[85vw] max-w-xs flex-col gap-0 bg-card p-0 pt-[env(safe-area-inset-top,0px)]">
               <SheetTitle className="sr-only">{panelLabel}</SheetTitle>
               <SheetDescription className="sr-only">Choose what this page shows.</SheetDescription>
@@ -95,7 +108,7 @@ export function PageHeader({ title, scope, actions, children, back, hideSearch =
         {back}
         <h1 className="min-w-0 truncate text-lg font-semibold tracking-tight max-md:max-w-[50%] max-md:shrink-0">{title}</h1>
         {scope && (panel.collapsible ? (
-          <button type="button" onClick={panel.open} aria-haspopup="dialog" aria-expanded={panel.isOpen}
+          <button ref={panel.scopeRef} type="button" onClick={panel.open} aria-haspopup="dialog" aria-expanded={panel.isOpen}
             className="inline-flex h-8 min-w-0 max-w-[50%] shrink items-center gap-1 rounded-full bg-muted px-3 touch:h-10 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span className="truncate">{scope}</span>
             <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
@@ -153,7 +166,7 @@ export function PanelHeader({ title, action }: { title: ReactNode; action?: Reac
       <h2 className="min-w-0 flex-1 truncate text-base font-semibold">{title}</h2>
       {action}
       {panel.foldable && (
-        <Button variant="ghost" size="icon-sm" className="-mr-2 text-muted-foreground" aria-label={foldLabel} title={foldLabel}
+        <Button ref={panel.foldRef} variant="ghost" size="icon-sm" className="-mr-2 text-muted-foreground" aria-label={foldLabel} title={foldLabel}
           onClick={() => panel.setFolded(!panel.folded)}>
           {panel.folded ? <PanelLeftOpen aria-hidden="true" /> : <PanelLeftClose aria-hidden="true" />}
         </Button>

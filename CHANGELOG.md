@@ -53,6 +53,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   body too large"; up to 5000 can be deleted at once.
 - A recipient written as "Doe, Jane" <jane@example.com> is kept as one
   address; a saved draft no longer turns it into two broken ones.
+- When a page's panel opens as a sheet, closing it puts keyboard focus back
+  on the scope button in the page title instead of losing it; folding or
+  pinning the panel keeps focus on the button that replaces the one you pressed.
 
 ## 0.21.0
 

@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react';
+import { createContext, useContext, type RefObject } from 'react';
 
 interface PanelState {
   /** The panel exists and opens as a sheet: on narrow windows, or folded away on wide ones. */
@@ -13,9 +13,15 @@ interface PanelState {
   /** The column is folded away (wide windows only); the panel then opens as a sheet. */
   folded: boolean;
   setFolded: (folded: boolean) => void;
+  /** The header's scope button (opens the sheet) and the panel header's fold button, for returning keyboard focus. */
+  scopeRef: RefObject<HTMLButtonElement>;
+  foldRef: RefObject<HTMLButtonElement>;
 }
 
-export const PanelContext = createContext<PanelState>({ collapsible: false, isOpen: false, open: () => {}, close: () => {}, foldable: false, folded: false, setFolded: () => {} });
+export const PanelContext = createContext<PanelState>({
+  collapsible: false, isOpen: false, open: () => {}, close: () => {}, foldable: false, folded: false, setFolded: () => {},
+  scopeRef: { current: null }, foldRef: { current: null },
+});
 
 /** Lets panel items close the sheet after a choice, and the panel header fold the column. */
 export const usePagePanel = () => useContext(PanelContext);

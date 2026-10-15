@@ -90,6 +90,16 @@ describe('looks', () => {
     expect(localStorage.getItem('unihub:theme:dark')).toBeNull();
   });
 
+  it('switching to light gives the page and the browser bar the light background', async () => {
+    document.documentElement.className = 'dark';
+    document.head.insertAdjacentHTML('beforeend', '<style>.dark { --background: 0 0% 0%; } .light { --background: 0 0% 100%; }</style>');
+    show();
+    fireEvent.click(await screen.findByRole('radio', { name: 'Light' }));
+    await waitFor(() => expect(document.documentElement).toHaveClass('light'));
+    expect(document.querySelector('meta[name="theme-color"]')).toHaveAttribute('content', '#ffffff');
+    expect(document.documentElement.style.backgroundColor).toBe('rgb(255, 255, 255)');
+  });
+
   it('a stored look is applied on load, together with the accent it needs', async () => {
     localStorage.setItem('unihub:theme:dark', 'contrast');
     localStorage.setItem('unihub:accent', 'indigo');

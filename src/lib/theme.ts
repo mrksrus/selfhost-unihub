@@ -53,9 +53,13 @@ export function storeTheme(mode: ThemeMode, id: string) {
   } catch { /* Storage may be disabled. */ }
 }
 
-/** Marks the page with the look so the stylesheet's `[data-theme]` blocks apply. */
+/** Marks the page with the mode and look so the stylesheet's `.dark`/`.light` and `[data-theme]` blocks apply. */
 export function applyTheme(mode: ThemeMode, id: string) {
   const root = document.documentElement;
+  // next-themes sets the same class, but only after this runs on a mode switch;
+  // without it the background below would still be the previous mode's.
+  root.classList.remove(mode === 'dark' ? 'light' : 'dark');
+  root.classList.add(mode);
   if (id === DEFAULT_THEME) root.removeAttribute('data-theme');
   else root.setAttribute('data-theme', id);
   // The page colour as the stylesheet resolves it for this look; the plain
