@@ -12,7 +12,7 @@ import {
   deleteStoredAttachmentFiles,
 } from '../services/mail';
 import { saveDraftMutation } from '../services/mail-drafts';
-import { normalizeRecipients, parseStoredRecipients, formatRecipients } from '../services/mail-recipients';
+import { normalizeRecipients, parseStoredRecipients } from '../services/mail-recipients';
 import { extractMailRouteId } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -46,6 +46,7 @@ function recipientFieldError(body: Input | undefined) {
     if (value === undefined || value === null) continue;
     if (typeof value !== 'string') return `${field} must be a string`;
     if (value.length > MAX_RECIPIENT_FIELD_LENGTH) return `${field} is too long`;
+    if (/[\r\n]/.test(value)) return `${field} must be on one line`;
   }
   return null;
 }
@@ -251,10 +252,10 @@ export = {
       const account = await loadMailAccountForDraft(userId, draft.mail_account_id);
       if (!account) return { error: 'Account not found', status: 404 };
 
-      const to = formatRecipients(draft.to_addresses);
-      const cc = formatRecipients(draft.cc_addresses);
-      const bcc = formatRecipients(draft.bcc_addresses);
-      if (!to && !cc && !bcc) return { error: 'Draft needs at least one recipient before sending', status: 400 };
+      const to = parseStoredRecipients(draft.to_addresses);
+      const cc = parseStoredRecipients(draft.cc_addresses);
+      const bcc = parseStoredRecipients(draft.bcc_addresses);
+      if (!to.length && !cc.length && !bcc.length) return { error: 'Draft needs at least one recipient before sending', status: 400 };
 
       const [attachmentRows] = await db.execute<RowDataPacket[]>(
         'SELECT filename, content_type, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',

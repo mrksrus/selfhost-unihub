@@ -57,10 +57,10 @@ test('SMTP success plus local Sent-copy failure is not reported as overall send 
 });
 test('successful local Sent copy is separately confirmed and keeps Cc and Bcc', async t => {
   const h = mailFixture(t);
-  const result = await h.send({ cc: 'Copy <copy@example.test>, other@example.test', bcc: 'hidden@example.test' });
+  const result = await h.send({ cc: '"Doe, Jane" <copy@example.test>, other@example.test', bcc: 'hidden@example.test' });
   assert.equal(h.sends, 1);
-  assert.equal(h.delivered.cc, 'Copy <copy@example.test>, other@example.test');
-  assert.equal(h.delivered.bcc, 'hidden@example.test');
+  assert.deepEqual(h.delivered.cc, ['copy@example.test', 'other@example.test']);
+  assert.deepEqual(h.delivered.bcc, ['hidden@example.test']);
   assert.deepEqual(JSON.parse(h.sentCopy.cc), ['copy@example.test', 'other@example.test']);
   assert.deepEqual(JSON.parse(h.sentCopy.bcc), ['hidden@example.test']);
   assert.equal(result.sent_copy_state, 'confirmed');

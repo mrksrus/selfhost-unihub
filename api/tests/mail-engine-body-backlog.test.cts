@@ -21,7 +21,7 @@ function stub<T>(t: import('node:test').TestContext, entries: FixtureValue, targ
 function backlog(t: import('node:test').TestContext, count: number, { fetchRawMessage }: FixtureValue = {}) {
   const queued = Array.from({ length: count }, (_, i) => ({ occurrence_id: `occ-${i}`, uid: count - i, uidvalidity: 7,
     email_id: `email-${i}`, import_complete: 0, is_read: 0 }));
-  const persisted: FixtureValue[] = [], reports: FixtureValue[] = [], marked: FixtureValue[] = [], fetches: FixtureValue[] = [];
+  const persisted: FixtureValue[] = [], imported: FixtureValue[] = [], reports: FixtureValue[] = [], marked: FixtureValue[] = [], fetches: FixtureValue[] = [];
   const db = { async execute(sql: string, params: FixtureValue) {
     if (sql.includes('SELECT o.id AS occurrence_id')) return [queued.slice(0, 1)];
     if (sql.includes('UPDATE emails SET content_state = ?')) {
@@ -40,13 +40,13 @@ function backlog(t: import('node:test').TestContext, count: number, { fetchRawMe
         if (fetchRawMessage) return fetchRawMessage(address, options);
         return { raw: Buffer.from('From: a@example.test\r\nSubject: Hi\r\n\r\nBody') }; } }],
     [require.resolve('../dist/src/services/mail-import'), { async persistImportedMessage(input: FixtureValue) {
-      persisted.push(input.uid); queued.shift(); return { emailId: input.existingEmail.id }; } }],
+      persisted.push(input.uid); imported.push(input); queued.shift(); return { emailId: input.existingEmail.id }; } }],
     [require.resolve('../dist/src/services/mail'), { MAIL_RAW_STORAGE_ROOT: '/nonexistent', recordMailServerMessageForDeletion: async () => {} }],
   ], engine('content'));
   const run = (options = {}) => content.processBodySlice({ db: db as FixtureValue, connection: {} as FixtureValue, account: { id: accountId, user_id: userId },
     folder: { folderName: 'INBOX', dbFolderName: 'inbox' }, mailboxId: 'box',
     job: { id: 'job', lease_owner: 'worker', worker_generation: 1 } as FixtureValue, report: (change: FixtureValue) => reports.push(change), ...options });
-  return { content, queued, persisted, reports, marked, fetches, run };
+  return { content, queued, persisted, imported, reports, marked, fetches, run };
 }
 
 test('a body job imports a batch of messages, newest first, and continues while work remains', async t => {
@@ -61,6 +61,15 @@ test('a body job imports a batch of messages, newest first, and continues while 
   assert.equal(last.processed, 30 - h.content.BODY_SLICE_MESSAGES);
   assert.equal(last.more, false, 'an exhausted mailbox ends the chain in the same job');
   assert.equal(h.queued.length, 0);
+});
+
+test('a body job keeps Cc group members and every repeated Cc header', async t => {
+  const raw = Buffer.from('From: s@example.test\r\nTo: Crew: t@example.test;\r\nCc: Team: a@example.test, b@example.test;\r\n'
+    + 'Cc: c@example.test\r\nSubject: Hi\r\n\r\nBody');
+  const h = backlog(t, 1, { fetchRawMessage: async () => ({ raw }) });
+  await h.run();
+  assert.deepEqual(h.imported[0].toAddresses, ['t@example.test']);
+  assert.deepEqual(h.imported[0].ccAddresses, ['a@example.test', 'b@example.test', 'c@example.test']);
 });
 
 test('a body job hands the lease back when its time budget is spent', async t => {

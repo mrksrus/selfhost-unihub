@@ -33,22 +33,23 @@ const writeFile = promisify(fs.writeFile);
 const mkdir = promisify(fs.mkdir);
 
 interface OutgoingEmail {
-  /** Comma-separated recipients, as typed in the composer. */
-  to: string;
-  cc?: string;
-  bcc?: string;
+  /** Recipients as typed in the composer ("Name <a@example.com>, b@example.com") or a stored list. */
+  to: string | string[];
+  cc?: string | string[];
+  bcc?: string | string[];
   subject: string;
   body: string;
   isHtml?: boolean;
   attachments?: unknown;
 }
 
-const storedRecipients = (value: string | undefined) => {
-  const recipients = normalizeRecipients(value);
-  return recipients.length ? JSON.stringify(recipients) : null;
-};
+const storedRecipients = (recipients: string[]) => recipients.length ? JSON.stringify(recipients) : null;
 
-async function sendEmail(accountId: string, { to, cc, bcc, subject, body, isHtml = false, attachments = [] }: OutgoingEmail) {
+async function sendEmail(accountId: string, { subject, body, isHtml = false, attachments = [], ...recipients }: OutgoingEmail) {
+  // SMTP and the Sent copy get the same parsed bare addresses, whichever route sent.
+  const to = normalizeRecipients(recipients.to);
+  const cc = normalizeRecipients(recipients.cc);
+  const bcc = normalizeRecipients(recipients.bcc);
   try {
     const [accounts] = await db.execute<(RowDataPacket & SmtpAccount)[]>(
       'SELECT * FROM mail_accounts WHERE id = ?',
@@ -88,9 +89,9 @@ async function sendEmail(accountId: string, { to, cc, bcc, subject, body, isHtml
     if (!await isModuleEnabled(account.user_id, 'mail')) throw new Error('Mail module is disabled');
     const info = await transporter.sendMail({
       from: `${account.display_name || account.email_address} <${account.email_address}>`,
-      to: to || undefined,
-      cc: cc || undefined,
-      bcc: bcc || undefined,
+      to: to.length ? to : undefined,
+      cc: cc.length ? cc : undefined,
+      bcc: bcc.length ? bcc : undefined,
       subject,
       text: isHtml ? undefined : body,
       html: isHtml ? body : undefined,
@@ -118,7 +119,7 @@ async function sendEmail(accountId: string, { to, cc, bcc, subject, body, isHtml
           subject || '(No subject)',
           account.email_address,
           account.display_name || null,
-          JSON.stringify(normalizeRecipients(to)),
+          JSON.stringify(to),
           storedRecipients(cc),
           storedRecipients(bcc),
           isHtml ? null : body,

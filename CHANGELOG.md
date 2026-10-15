@@ -51,6 +51,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   again when you type. Escape closes it without leaving the field.
 - Deleting more than about 25 selected contacts no longer fails with "Request
   body too large"; up to 5000 can be deleted at once.
+- A recipient written as "Doe, Jane" <jane@example.com> is kept as one
+  address; a saved draft no longer turns it into two broken ones.
+
 ## 0.21.0
 
 The Android app, delivered by your own server. No database upgrade.

@@ -1,6 +1,6 @@
 import type { FileHandle } from 'node:fs/promises';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
-import type { AddressObject } from 'mailparser';
+import type { AddressObject, EmailAddress } from 'mailparser';
 import type { StoredFlag } from '../../types';
 import type { ClaimedJob } from '../../types/mail-engine';
 import type { ProtocolConnection } from '../../types/imap-protocol';
@@ -139,6 +139,13 @@ async function fetchRawBounded(transport: typeof import('./transport'), connecti
   } finally { clearTimeout(timer); }
 }
 
+/** mailparser gives one AddressObject, or an array for repeated headers; group members nest under .group. */
+function parsedAddresses(field: AddressObject | AddressObject[] | undefined): string[] {
+  const flatten = (entries: EmailAddress[]): string[] =>
+    entries.flatMap(entry => entry.group ? flatten(entry.group) : entry.address ? [entry.address] : []);
+  return (Array.isArray(field) ? field : field ? [field] : []).flatMap(object => flatten(object.value || []));
+}
+
 // One body job imports up to BODY_SLICE_MESSAGES messages, each committed on
 // its own, before it hands the account lease back. A job per message made a
 // large backlog wait out every other stream's continuation, one message at a
@@ -226,12 +233,11 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
     return { processed: 0, deferred: true, reason: 'parse_failure', more: true };
   }
   const address = parsed.from?.value?.[0];
-  const addresses = (field: unknown) => ((field as AddressObject | undefined)?.value || []).map(a => a.address).filter((a): a is string => !!a);
   const { persistImportedMessage } = require('../mail-import') as typeof import('../mail-import');
   const result = await persistImportedMessage({ db, account, accountId: account.id, folderName: folder.folderName,
     uid: row.uid, uidValidity: row.uidvalidity, existingEmail: { id: row.email_id, raw_storage_path: row.raw_storage_path },
     messageId: parsed.messageId || null, fullEmail: raw, parsed, fromAddress: address?.address || 'unknown',
-    fromName: address?.name || null, toAddresses: addresses(parsed.to), ccAddresses: addresses(parsed.cc),
+    fromName: address?.name || null, toAddresses: parsedAddresses(parsed.to), ccAddresses: parsedAddresses(parsed.cc),
     folder: folder.dbFolderName, isRead: !!row.is_read,
     archiveRaw: data => publishRaw({ root: (require('../mail') as typeof import('../mail')).MAIL_RAW_STORAGE_ROOT, ...data, raw: data.rawEmail as Buffer }),
     enqueueDeletion: (require('../mail') as typeof import('../mail')).recordMailServerMessageForDeletion,

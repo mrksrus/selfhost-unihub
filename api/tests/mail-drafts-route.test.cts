@@ -35,6 +35,9 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
         user_id: 'user-1',
         email_address: 'sender@example.test',
         display_name: 'Sender',
+        is_active: 1,
+        smtp_host: 'smtp.example.test',
+        encrypted_password: 'vault-ciphertext',
       }],
     ]),
     emails: new Map(),
@@ -58,6 +61,10 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
         const account = state.accounts.get(params[0]);
         return [[account && account.user_id === params[1] ? account : null].filter(Boolean)];
       }
+
+      if (sql.includes('SELECT * FROM mail_accounts WHERE id = ?')) return [[state.accounts.get(params[0])].filter(Boolean)];
+      // The Sent copy written by the real sendEmail; mail-engine-send covers its contents.
+      if (sql.includes('INSERT INTO emails') && !sql.includes('is_draft')) return [{ affectedRows: 1 }];
 
       if (sql.includes('INSERT INTO emails')) {
         const [
@@ -226,7 +233,7 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
   t.after(require('./helpers/mail-service-modules.cts').evictMailRouteModules());
   process.env.MAIL_ATTACHMENT_UPLOAD_ROOT = uploadRoot;
   setRequireStub(statePath, { db });
-  setRequireStub(encryptionPath, { encrypt: (value: FixtureValue) => `encrypted:${value}` });
+  setRequireStub(encryptionPath, { encrypt: (value: FixtureValue) => `encrypted:${value}`, decrypt: () => 'test-placeholder' });
   setRequireStub(caldavPath, { createCalDavAccountForMail: async () => ({ success: true }) });
   setRequireStub(mailServicePath, {
     DEFAULT_MAIL_SYNC_FETCH_LIMIT: 'all',
@@ -349,12 +356,55 @@ test('send draft sends stored content and removes the local draft', async (t) =>
 
   assert.equal(sent.success, true);
   assert.equal(sentPayload.accountId, 'account-1');
-  assert.equal(sentPayload.payload.to, 'reader@example.test');
-  assert.equal(sentPayload.payload.cc, 'copy@example.test');
-  assert.equal(sentPayload.payload.bcc, 'hidden@example.test');
+  assert.deepEqual(sentPayload.payload.to, ['reader@example.test']);
+  assert.deepEqual(sentPayload.payload.cc, ['copy@example.test']);
+  assert.deepEqual(sentPayload.payload.bcc, ['hidden@example.test']);
   assert.equal(sentPayload.payload.subject, 'Ready');
   assert.equal(sentPayload.payload.body, '<p>Send me</p>');
   assert.equal(state.emails.has((created.draft! as FixtureValue).id), false);
+});
+
+// The real sendEmail with only the SMTP transport, DNS policy and module settings stubbed.
+function loadRealSendEmail(t: import('node:test').TestContext) {
+  const delivered: FixtureValue[] = [];
+  const stubs: [string, FixtureValue][] = [
+    [require.resolve('nodemailer'), { createTransport: () => ({ async sendMail(message: FixtureValue) {
+      delivered.push(message); return { messageId: '<delivered@example.test>' }; } }) }],
+    [require.resolve('../dist/src/security/outbound-network'), {
+      resolveMailConnectionTarget: async () => ({ address: '127.0.0.1', hostname: 'smtp.example.test' }) }],
+    [require.resolve('../dist/src/services/module-settings'), { isModuleEnabled: async () => true }],
+  ];
+  const sendPath = require.resolve('../dist/src/services/mail-send');
+  const saved = [...stubs.map(([p]) => p), sendPath].map(p => [p, require.cache[p]] as const);
+  for (const [p, exports] of stubs) setRequireStub(p, exports);
+  delete require.cache[sendPath];
+  t.after(() => { for (const [p, entry] of saved) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
+  const { sendEmail } = require(sendPath) as typeof import('../src/services/mail-send');
+  return { sendEmail, delivered };
+}
+
+test('a quoted recipient name with a comma stays one address from draft to SMTP', async (t) => {
+  let real: ReturnType<typeof loadRealSendEmail>;
+  const { routes } = await createDraftRouteHarness(t, {
+    sendEmail: (...args: Parameters<typeof real.sendEmail>) => real.sendEmail(...args),
+  });
+  real = loadRealSendEmail(t);
+
+  const created = await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' } as FixtureValue, 'user-1', {
+    account_id: 'account-1', to: 'reader@example.test', cc: '"Doe, Jane" <jane@example.test>', body: '<p>Hi</p>', isHtml: true,
+  });
+  assert.deepEqual(created.draft!.cc_addresses, ['jane@example.test']);
+
+  const draftId = (created.draft! as FixtureValue).id;
+  const sent = await routes['POST /api/mail/drafts/:id/send']({ url: `/api/mail/drafts/${draftId}/send` } as FixtureValue, 'user-1');
+  assert.equal(sent.success, true);
+  assert.equal(real.delivered.length, 1);
+  assert.deepEqual([real.delivered[0].to, real.delivered[0].cc, real.delivered[0].bcc], [['reader@example.test'], ['jane@example.test'], undefined]);
+
+  const multiline = await routes['PUT /api/mail/drafts/:id']({ url: `/api/mail/drafts/${draftId}` } as FixtureValue, 'user-1', {
+    bcc: 'a@example.test\r\nX-Injected: yes',
+  });
+  assert.equal(multiline.status, 400);
 });
 
 test('invalid replacement leaves original draft and attachment intact', async (t) => {
