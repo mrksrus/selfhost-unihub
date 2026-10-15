@@ -270,7 +270,9 @@ class MainActivity : Activity() {
         webView?.setBackgroundColor(background)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             val light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-            window.insetsController?.setSystemBarsAppearance(if (dark) 0 else light, light)
+            // This runs before setContentView. window.insetsController throws
+            // until the window has its views; reading decorView creates them.
+            window.decorView.windowInsetsController?.setSystemBarsAppearance(if (dark) 0 else light, light)
         } else {
             applyLegacyBarIcons(dark)
         }

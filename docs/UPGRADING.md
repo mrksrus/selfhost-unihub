@@ -5,6 +5,13 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.21.4 The Android app opens again
+
+No database upgrade and no configuration change. Pull and restart. On an
+Android phone, download the app again from the install card or Settings →
+General → Install and install it over the old one; the 0.21.0 app closes
+right away on Android 12 and newer.
+
 ## 0.21.3 The in-app update applies again
 
 No database upgrade and no configuration change. Pull and restart. The first

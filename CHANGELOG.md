@@ -6,6 +6,20 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.21.4
+
+### Fixed
+
+- **The Android app opens again.** On Android 12 and newer, the app closed
+  as soon as it started, and "Open in app" seemed to do nothing because it
+  started the same crash. The app set the colour of the status bar icons
+  before its window was ready, which these Android versions do not allow.
+  Install the app again from the install card or Settings → General →
+  Install; it updates the installed one.
+- Every build now starts the app on Android emulators (Android 10 and 16)
+  and checks the first start, "Open in app" and a start with a saved server
+  before an image is published.
+
 ## 0.21.3
 
 ### Fixed

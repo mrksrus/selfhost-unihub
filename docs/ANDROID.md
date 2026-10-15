@@ -140,6 +140,11 @@ Develop features in the browser as usual. To try the app:
 3. Connect the app to `http://localhost:8080`. In the emulator,
    `http://10.0.2.2:8080` reaches the computer as well.
 
+CI starts the built app on Android emulators (`android/scripts/launch-test.sh`):
+a first start, "Open in app" with the app closed, and a start with a saved
+server whose page reported a theme. It fails on any crash. To run it locally,
+start an emulator and pass the APK.
+
 Every CI run keeps the app it built under **Artifacts** (`unihub-android-app`)
 for trying it on a phone without publishing an image. Runs from this
 repository are signed with the release key, so that app updates an installed
