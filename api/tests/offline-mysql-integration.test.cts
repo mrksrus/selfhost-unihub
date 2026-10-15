@@ -146,5 +146,5 @@ test('MySQL offline queries match application schema, include every contact and 
   const created = await mailRoutes['POST /api/mail/drafts']({} as FixtureValue, userId, {
     account_id: accountId, to: '', cc: 'Copy <copy@example.test>', bcc: 'hidden@example.test', subject: 'Cc only', body: '<p>Hi</p>' });
   const draftDetail = await mailRoutes['GET /api/mail/emails/:id'](request('/api/mail/emails/' + (created.draft as FixtureValue).id) as FixtureValue, userId);
-  assert.deepEqual([draftDetail.email!.cc_addresses, draftDetail.email!.bcc_addresses], [['copy@example.test'], ['hidden@example.test']]);
+  assert.deepEqual([draftDetail.email!.cc_addresses, draftDetail.email!.bcc_addresses], [['Copy <copy@example.test>'], ['hidden@example.test']]);
 });

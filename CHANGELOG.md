@@ -6,6 +6,15 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.21.2
+
+### Fixed
+
+- Recipients keep their display name: a message to `Jane Doe <jane@example.com>`
+  now arrives with "Jane Doe" in its To or Cc header again, and drafts and the
+  Sent copy show the name too. 0.21.1 had reduced every recipient to the bare
+  address.
+
 ## 0.21.1
 
 ### Added

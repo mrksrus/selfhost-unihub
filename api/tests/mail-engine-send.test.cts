@@ -55,13 +55,17 @@ test('SMTP success plus local Sent-copy failure is not reported as overall send 
   assert.equal(result.messageId, '<delivered@example.test>');
   assert.match(result.message!, /Do not resend/);
 });
-test('successful local Sent copy is separately confirmed and keeps Cc and Bcc', async t => {
+test('successful local Sent copy is separately confirmed and keeps Cc and Bcc with their names', async t => {
   const h = mailFixture(t);
   const result = await h.send({ cc: '"Doe, Jane" <copy@example.test>, other@example.test', bcc: 'hidden@example.test' });
   assert.equal(h.sends, 1);
-  assert.deepEqual(h.delivered.cc, ['copy@example.test', 'other@example.test']);
+  assert.deepEqual(h.delivered.cc, ['"Doe, Jane" <copy@example.test>', 'other@example.test']);
   assert.deepEqual(h.delivered.bcc, ['hidden@example.test']);
-  assert.deepEqual(JSON.parse(h.sentCopy.cc), ['copy@example.test', 'other@example.test']);
+  const MailComposer = require('nodemailer/lib/mail-composer');
+  const mime = String(await new MailComposer(h.delivered).compile().build());
+  assert.match(mime, /^Cc: "Doe, Jane" <copy@example.test>, other@example.test$/m);
+  assert.doesNotMatch(mime, /^Bcc:/m);
+  assert.deepEqual(JSON.parse(h.sentCopy.cc), ['"Doe, Jane" <copy@example.test>', 'other@example.test']);
   assert.deepEqual(JSON.parse(h.sentCopy.bcc), ['hidden@example.test']);
   assert.equal(result.sent_copy_state, 'confirmed');
   assert.match(result.sent_copy_id!, /^[0-9a-f-]{36}$/i);

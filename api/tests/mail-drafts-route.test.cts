@@ -344,7 +344,7 @@ test('send draft sends stored content and removes the local draft', async (t) =>
       isHtml: true,
     }
   );
-  assert.deepEqual(created.draft!.cc_addresses, ['copy@example.test']);
+  assert.deepEqual(created.draft!.cc_addresses, ['Copy <copy@example.test>']);
   const updated = await routes['PUT /api/mail/drafts/:id'](
     { url: `/api/mail/drafts/${(created.draft! as FixtureValue).id}` } as FixtureValue, 'user-1', { bcc: 'hidden@example.test' });
   assert.deepEqual(updated.draft!.bcc_addresses, ['hidden@example.test']);
@@ -357,7 +357,7 @@ test('send draft sends stored content and removes the local draft', async (t) =>
   assert.equal(sent.success, true);
   assert.equal(sentPayload.accountId, 'account-1');
   assert.deepEqual(sentPayload.payload.to, ['reader@example.test']);
-  assert.deepEqual(sentPayload.payload.cc, ['copy@example.test']);
+  assert.deepEqual(sentPayload.payload.cc, ['Copy <copy@example.test>']);
   assert.deepEqual(sentPayload.payload.bcc, ['hidden@example.test']);
   assert.equal(sentPayload.payload.subject, 'Ready');
   assert.equal(sentPayload.payload.body, '<p>Send me</p>');
@@ -393,13 +393,13 @@ test('a quoted recipient name with a comma stays one address from draft to SMTP'
   const created = await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' } as FixtureValue, 'user-1', {
     account_id: 'account-1', to: 'reader@example.test', cc: '"Doe, Jane" <jane@example.test>', body: '<p>Hi</p>', isHtml: true,
   });
-  assert.deepEqual(created.draft!.cc_addresses, ['jane@example.test']);
+  assert.deepEqual(created.draft!.cc_addresses, ['"Doe, Jane" <jane@example.test>']);
 
   const draftId = (created.draft! as FixtureValue).id;
   const sent = await routes['POST /api/mail/drafts/:id/send']({ url: `/api/mail/drafts/${draftId}/send` } as FixtureValue, 'user-1');
   assert.equal(sent.success, true);
   assert.equal(real.delivered.length, 1);
-  assert.deepEqual([real.delivered[0].to, real.delivered[0].cc, real.delivered[0].bcc], [['reader@example.test'], ['jane@example.test'], undefined]);
+  assert.deepEqual([real.delivered[0].to, real.delivered[0].cc, real.delivered[0].bcc], [['reader@example.test'], ['"Doe, Jane" <jane@example.test>'], undefined]);
 
   const multiline = await routes['PUT /api/mail/drafts/:id']({ url: `/api/mail/drafts/${draftId}` } as FixtureValue, 'user-1', {
     bcc: 'a@example.test\r\nX-Injected: yes',

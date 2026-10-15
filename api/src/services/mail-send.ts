@@ -46,7 +46,7 @@ interface OutgoingEmail {
 const storedRecipients = (recipients: string[]) => recipients.length ? JSON.stringify(recipients) : null;
 
 async function sendEmail(accountId: string, { subject, body, isHtml = false, attachments = [], ...recipients }: OutgoingEmail) {
-  // SMTP and the Sent copy get the same parsed bare addresses, whichever route sent.
+  // SMTP and the Sent copy get the same parsed recipients, names kept, whichever route sent.
   const to = normalizeRecipients(recipients.to);
   const cc = normalizeRecipients(recipients.cc);
   const bcc = normalizeRecipients(recipients.bcc);
