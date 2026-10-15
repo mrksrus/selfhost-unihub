@@ -36,7 +36,7 @@ cat > "$work/site/index.html" <<'HTML'
   }
 </script>
 HTML
-python3 -m http.server "$port" --bind 0.0.0.0 --directory "$work/site" 2> "$work/stub.log" &
+python3 -m http.server "$port" --bind 0.0.0.0 --directory "$work/site" 2>> "$work/stub.log" &
 stub_pid=$!
 
 fail() {
@@ -73,6 +73,13 @@ wait_for_request() {
   fail "the page did not request $1"
 }
 
+# The page ran its script. The bridge (WebMessageListener) needs a recent
+# WebView, which the oldest emulator images may lack; from Android 12 on, the
+# theme path is the one to test.
+wait_for_page() {
+  if (( sdk >= 31 )); then wait_for_request 'GET /theme-posted'; else wait_for_request 'GET /(theme-posted|no-bridge)'; fi
+}
+
 sdk="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
 echo "Android API $sdk"
 adb install -r "$apk" >/dev/null
@@ -80,22 +87,20 @@ adb install -r "$apk" >/dev/null
 echo 'First start: the connect screen'
 adb logcat -c -b all
 adb shell am start -W -n "$package/.MainActivity" >/dev/null
-expect_running 'first start'
 wait_for_text 'Connect to your UniHub'
+expect_running 'first start'
 
 echo 'Open in app with the app closed: asks before connecting'
 adb shell am force-stop "$package"
 adb logcat -c -b all
 adb shell am start -W -a android.intent.action.VIEW -d "'unihub://connect?server=$server'" >/dev/null
-expect_running 'open in app'
 wait_for_text 'Connect to 10.0.2.2?'
+expect_running 'open in app'
 bounds="$(screen | grep -o 'resource-id="android:id/button1"[^>]*bounds="[^"]*"' | grep -o 'bounds="[^"]*"' | head -n 1 || true)"
 read -r x1 y1 x2 y2 <<<"$(sed 's/[^0-9]/ /g' <<<"$bounds")"
 [[ -n "${y2:-}" ]] || fail 'no Connect button in the dialog'
 adb shell input tap $(((x1 + x2) / 2)) $(((y1 + y2) / 2))
-# The bridge (WebMessageListener) needs a recent WebView; the oldest emulator
-# images may lack it. From Android 12 on the theme path is the one to test.
-if (( sdk >= 31 )); then wait_for_request 'GET /theme-posted'; else wait_for_request 'GET /(theme-posted|no-bridge)'; fi
+wait_for_page
 expect_running 'connected'
 
 echo 'Start with the saved server and theme'
@@ -103,7 +108,7 @@ adb shell am force-stop "$package"
 : > "$work/stub.log"
 adb logcat -c -b all
 adb shell am start -W -n "$package/.MainActivity" >/dev/null
+wait_for_page
 expect_running 'start with a saved server'
-wait_for_request 'GET / '
 
 echo 'The app starts and connects.'
