@@ -113,7 +113,7 @@ export function appUpdateItem(update: ReturnType<typeof useAppUpdate>): Attentio
     onAction: update.apply,
     actionLabel: update.updating ? 'Updating…' : 'Refresh now',
     busy: update.updating,
-    error: update.failed ? 'The update could not be applied. Check your connection and try again.' : undefined,
+    error: update.failed ? 'The update could not be applied yet: another UniHub tab, the Android app or a running request still uses the old version. Close them and try again.' : undefined,
     onDismiss: update.dismiss,
   };
 }

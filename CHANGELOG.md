@@ -6,6 +6,22 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.21.3
+
+### Fixed
+
+- **The in-app update applies again.** Since 0.19.2, "Refresh now" on the
+  "UniHub update ready" notice often ended in "The update could not be
+  applied". Every request to the server passed through the app's service
+  worker, and the browser would not switch to the new version while any such
+  request was still open, even one the page had already given up on. Requests
+  to the server no longer pass through the worker, so only a running recording
+  upload can delay the switch. The first update after installing 0.21.3 may
+  still fail once, because the worker already installed in the browser has the
+  old behaviour: close every UniHub tab and the Android app, or restart the
+  browser, and open UniHub again. The failure notice now says what is holding
+  the update back instead of blaming the connection.
+
 ## 0.21.2
 
 ### Fixed

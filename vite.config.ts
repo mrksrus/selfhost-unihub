@@ -87,17 +87,16 @@ export default defineConfig(() => ({
           // The Android app download (served by Nginx, not the page).
           /^\/downloads\//,
         ],
-        // /api/events (Server-Sent Events) and file downloads (backups,
-        // recordings, attachments) are left out on purpose: no service-worker
-        // route answers them, so the browser streams them straight from the
-        // network and a worker stop cannot cut the stream. Browsers can also
-        // resume such downloads. The pattern is copied into the worker, so it
-        // must not use outside names.
-        runtimeCaching: [{
-          urlPattern: ({ url }) => url.pathname.startsWith('/api/') && url.pathname !== '/api/events'
-            && !/^\/api\/(backup\/jobs\/[^/]+\/download|recordings\/[^/]+\/file|mail\/attachments\/[^/]+)$/.test(url.pathname),
-          handler: 'NetworkOnly',
-        }],
+        // No route answers /api/ requests. The browser sends them straight to
+        // the network, so a slow or stalled API request (a long sync, a request
+        // cut off by a container restart) does not keep the old worker alive.
+        // A worker only stops after all its fetch events have finished, and
+        // Chrome kept waiting for such requests even after the page had given
+        // them up, so "Refresh now" timed out and the update never applied.
+        // This also leaves /api/events (Server-Sent Events) and file downloads
+        // (backups, recordings, attachments) streaming outside the worker.
+        // The precache route never matches /api/ URLs, and navigateFallbackDenylist
+        // keeps them from being answered with index.html.
         // Inject custom service worker code. Recording uploads come first so
         // their sync handler is registered before the catch-all in sw-custom.js.
         importScripts: [`/${RECORDING_UPLOADS_WORKER}`, '/sw-custom.js'],

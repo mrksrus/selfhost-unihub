@@ -382,9 +382,7 @@ with a bounded timeout and retry if activation fails. Routes load
 lazily; Workbox still precaches the offline-capable chunks, so startup savings do
 not imply smaller total installation downloads.
 
-The service worker does not cache API responses; API GET routes use NetworkOnly.
-`/api/events` is excluded from that route so the event stream bypasses the
-worker entirely.
+The service worker does not handle API requests at all: no route matches `/api/`, so the browser sends them straight to the network and an open request cannot delay a worker update (see `vite.config.ts`).
 The custom worker removes obsolete API caches on activation and owns Web Push
 display, persistent per-user deduplication and same-origin click navigation.
 Mail, calendar and to-do notification links open the referenced item after
