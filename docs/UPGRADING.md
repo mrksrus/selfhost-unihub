@@ -5,6 +5,23 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.21.3 The in-app update applies again
+
+No database upgrade and no configuration change. Pull and restart. The first
+update to 0.21.3 may still end in "The update could not be applied", because
+the service worker already installed in each browser has the old behaviour.
+Close every UniHub tab and the Android app, or restart the browser, and open
+UniHub again. Later updates apply normally.
+
+## 0.21.2 Recipients keep their display name
+
+No database upgrade and no configuration change. Pull and restart.
+
+## 0.21.1 Looks, Cc and Bcc, selectable contacts
+
+No database upgrade and no configuration change. Pull and restart. Mail
+downloaded before 0.21.1 has no stored Cc; mail downloaded from now on keeps it.
+
 ## 0.21.0 The Android app
 
 No database upgrade and no configuration change. The image now serves the
