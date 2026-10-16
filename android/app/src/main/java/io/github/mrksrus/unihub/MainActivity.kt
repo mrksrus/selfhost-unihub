@@ -173,6 +173,7 @@ class MainActivity : Activity() {
         destroyWeb()
         origin = server
         val frame = FrameLayout(this)
+        ContactsSync.webViewCreating(this)
         val web = WebView(this)
         frame.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(frame)
@@ -267,6 +268,7 @@ class MainActivity : Activity() {
         webView?.let {
             (it.parent as? ViewGroup)?.removeView(it)
             it.destroy()
+            ContactsSync.webViewDestroyed(this)
         }
         webView = null
         bridge?.close()
@@ -352,14 +354,15 @@ class MainActivity : Activity() {
         contactsChecking = true
         val generation = screenGeneration
         Thread {
-            val offer = ContactsSync.check(server)
+            val offer = ContactsSync.check(this, server)
             runOnUiThread {
                 contactsChecking = false
-                if (isFinishing || isDestroyed || generation != screenGeneration || ServerAddress.saved(this) != server) {
+                if (isFinishing || isDestroyed) {
                     finishContacts(null)
                     return@runOnUiThread
                 }
-                then(offer)
+                if (generation != screenGeneration || ServerAddress.saved(this) != server) finishContacts(null) else then(offer)
+                // Also after a check for a server the app has left.
                 if (contactsOfferPending) {
                     contactsOfferPending = false
                     origin?.let(::offerContacts)
@@ -503,13 +506,7 @@ class MainActivity : Activity() {
 
     // Leaving the app is when contacts were most likely edited, or the
     // person signed out: the phone's copy follows.
-    override fun onResume() {
-        super.onResume()
-        ContactsSync.appOpen = true
-    }
-
     override fun onPause() {
-        ContactsSync.appOpen = false
         super.onPause()
         CookieManager.getInstance().flush()
         ContactsSync.requestSync(this)
