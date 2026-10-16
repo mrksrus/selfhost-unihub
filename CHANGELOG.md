@@ -19,7 +19,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   Notifications turns them on and off and shows their state, and the ongoing
   "Connected" notification Android requires has a **Turn off** action and can
   be hidden. Notifications that arrive while the phone is offline are shown
-  when it reconnects; the lock screen shows only "New notification". Update
+  when it reconnects. When the phone is set to hide sensitive content on the
+  lock screen, it shows only "New notification" there. Update
   the server and install the app again from Settings → General → Install.
 
 ## 0.22.0

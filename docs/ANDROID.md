@@ -139,8 +139,10 @@ connection to it, and no Google, Apple or other push service sees anything.
   /api/notifications/android/ack`); one not acknowledged within two minutes is
   sent again, and the app shows each one once. While the phone is offline its
   notifications wait on the server until they expire (a day for mail, two hours
-  after a reminder was due) and arrive together when it connects. The lock
-  screen shows only "New notification" until the phone is unlocked; channels
+  after a reminder was due) and are sent as soon as it connects, up to 200 at a
+  time every 30 seconds. They are marked private: when the phone is set to
+  hide sensitive content on the lock screen (Android's setting, not UniHub's),
+  it shows only "New notification" there until unlocked. Channels
   for mail, reminders and events, recordings, and account notices can each be
   silenced in Android's settings. Tapping one opens its page in the app.
 - **Session.** The connection uses the app's WebView session cookie, like
@@ -242,7 +244,7 @@ start an emulator and pass the APK.
 server that encrypts like UniHub with its own implementation: the question
 after signing in, turning them on from the page (or from the question where
 the WebView has no message bridge, as on the Android 10 emulator), a
-notification shown with its text and a content-free lock screen version,
+notification shown with its text and a content-free version for the lock screen,
 acknowledged, opened by a tap, not shown twice, received with the app in the
 background, a reconnect after an app update, sign-out removing them, signing in
 again, and turning off from the page and from the ongoing notification.

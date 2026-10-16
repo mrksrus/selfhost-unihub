@@ -181,6 +181,14 @@ describe('notifications in the Android app', () => {
     expect(app.sent).toHaveLength(0);
   });
 
+  it('tells a new app on an old WebView, which the page cannot reach, how notifications work there', () => {
+    useUserAgent(APP_WITH_NOTIFICATIONS);
+    mount();
+    expect(screen.getByText(/update Android System WebView/)).toBeInTheDocument();
+    expect(screen.queryByText(/browser that supports notifications/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Turn on' })).not.toBeInTheDocument();
+  });
+
   it('keeps the browser path in a browser', () => {
     useUserAgent(DESKTOP);
     mount();

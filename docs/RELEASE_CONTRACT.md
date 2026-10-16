@@ -160,8 +160,8 @@ These are not covered yet; do not report them as passing.
   notifications are checked against a stub server on the emulators and the real
   server's side by `android-notifications-mysql-integration.test.cts`, not the
   app and the real server together, nor battery-saving behaviour of real
-  phones (Doze, manufacturer task killers). The app does
-  not read the handshake's `protocol`, `minApp` or `features` yet.
+  phones (Doze, manufacturer task killers). The app reads `features` (from
+  0.22.1, for notifications) but not `protocol` or `minApp` yet.
 - **Server upgrades.** Starting an earlier release with data, then updating its
   image and checking migrations, reads, writes and a backup, is not automated.
 - **Restores across versions.** Only frozen 0.9.23/0.10.3 archives and

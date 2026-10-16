@@ -370,15 +370,20 @@ class NotificationService : Service() {
             if (!AppNotifications.wantedOn(context, origin)) return false
             if (AppSession.cookie(origin)?.contains("auth-token=") != true) return false
             if (!connected) start(context)
+            // Signing in again or coming back to this server brings the check back too.
+            scheduleWatchdog(context)
             return true
         }
 
+        // Scheduling again would restart its 15 minutes, so only when there is none.
         fun scheduleWatchdog(context: Context) {
+            val scheduler = context.getSystemService(JobScheduler::class.java)
+            if (scheduler.getPendingJob(WATCHDOG_JOB) != null) return
             val job = JobInfo.Builder(WATCHDOG_JOB, ComponentName(context, Watchdog::class.java))
                 .setPeriodic(TimeUnit.MINUTES.toMillis(15))
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                 .build()
-            context.getSystemService(JobScheduler::class.java).schedule(job)
+            scheduler.schedule(job)
         }
     }
 }

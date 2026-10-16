@@ -64,9 +64,15 @@ object AppNotifications {
         return prefs(context).all.any { (key, value) -> key.startsWith("enabled:$origin:") && value == true }
     }
 
-    /** Remembers who is signed in on this server (see wantedOn). */
-    fun noteUser(context: Context, origin: String, user: String) {
-        if (prefs(context).getString("user:$origin", null) != user) prefs(context).edit().putString("user:$origin", user).apply()
+    /**
+     * Remembers who is signed in on this server (see wantedOn). Another user
+     * than before (a shared phone) first removes what was shown for the last one.
+     */
+    fun noteUser(context: Context, origin: String, user: String) = synchronized(this) {
+        val previous = prefs(context).getString("user:$origin", null)
+        if (previous == user) return@synchronized
+        if (previous != null) clearShown(context)
+        prefs(context).edit().putString("user:$origin", user).commit()
     }
 
     private fun setEnabled(context: Context, origin: String, user: String, on: Boolean) {
@@ -145,7 +151,16 @@ object AppNotifications {
         connection.instanceFollowRedirects = false
         try {
             if (connection.responseCode != 200) throw IOException("HTTP ${connection.responseCode}")
-            val text = connection.inputStream.use { String(it.readBytes().take(64 * 1024).toByteArray(), Charsets.UTF_8) }
+            val text = connection.inputStream.use { input ->
+                val buffer = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(8192)
+                while (buffer.size() < 64 * 1024) {
+                    val read = input.read(chunk)
+                    if (read < 0) break
+                    buffer.write(chunk, 0, read)
+                }
+                buffer.toString(Charsets.UTF_8.name())
+            }
             val features = JSONObject(text).optJSONArray("features") ?: return false
             return (0 until features.length()).any { features.optString(it) == FEATURE }
         } finally {

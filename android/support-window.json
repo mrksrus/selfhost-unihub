@@ -7,8 +7,13 @@
   ],
   "releases": [
     {
+      "version": "0.22.1",
+      "apk": { "versionCode": 22001, "sha256": null, "signing": "release" },
+      "shell": "supported"
+    },
+    {
       "version": "0.22.0",
-      "apk": { "versionCode": 22000, "sha256": null, "signing": "release" },
+      "apk": { "versionCode": 22000, "sha256": "8fdcc0f57ed57d58efada9d9ea6cfd1b27f9212d4278f2f2bd0aacde9cea58d6", "signing": "release" },
       "shell": "supported"
     },
     {
@@ -26,21 +31,10 @@
         "fixedIn": "0.21.4",
         "upgrade": "Install the app again from the server's install card or Settings > General > Install; it installs over the old one."
       }
-    },
-    {
-      "version": "0.21.2",
-      "apk": { "versionCode": 21002, "sha256": "645e6a66e720f16f3170bc868b8f0791dc8cdcbc62619a3f07c6aee541605dd4", "signing": "release" },
-      "shell": "broken",
-      "broken": {
-        "fromApi": 31,
-        "symptom": "Closes as soon as it starts: the status bar icon colour is set before the window exists.",
-        "fixedIn": "0.21.4",
-        "upgrade": "Install the app again from the server's install card or Settings > General > Install; it installs over the old one."
-      }
     }
   ],
   "handshake": {
-    "shellReads": ["app"],
-    "note": "Every shell in the window only checks that GET /api/version answers app = \"unihub\". None reads protocol, minApp or features yet, so the server must keep app = \"unihub\" and must not raise minApp above the oldest shell here."
+    "shellReads": ["app", "features"],
+    "note": "Every shell in the window checks that GET /api/version answers app = \"unihub\". The 0.22.1 shell also reads features: it offers notifications only while they list android-notifications. None reads protocol or minApp yet, so the server must keep app = \"unihub\", keep listing android-notifications while a shell in the window uses it, and must not raise minApp above the oldest shell here."
   }
 }

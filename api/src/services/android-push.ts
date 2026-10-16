@@ -17,8 +17,8 @@ import { hash, normalizeKeys } from './notification-rules';
 // dispatcher (notifications.ts) encrypts each notification for the device's
 // keys exactly as Web Push does and writes it to that stream; the delivery
 // stays pending until the app acknowledges it, and is sent again after
-// ACK_WAIT_MS without one. While the phone is offline its deliveries wait
-// until they expire; connecting sends them at once.
+// ACK_WAIT_MS without one. While the phone is offline the dispatcher leaves its
+// deliveries alone until they expire; connecting sends them at once.
 //
 // The streams live in this API process, as the browser event stream does
 // (server-events.ts): UniHub runs one API process.
@@ -134,6 +134,9 @@ function sendToDevice(userId: string, deviceId: string, eventId: string, body: B
   return new Date(Date.now() + (written ? ACK_WAIT_MS : OFFLINE_RETRY_MS));
 }
 
+/** The devices whose stream is open in this process. */
+function connectedDevices() { return [...latest.keys()]; }
+
 function closeAndroidStreams() { devices.closeAll({ reason: 'shutdown' }); }
 
 export {
@@ -142,6 +145,7 @@ export {
   acknowledge,
   attachStream,
   sendToDevice,
+  connectedDevices,
   closeAndroidStreams,
   devices as androidStreams,
 };

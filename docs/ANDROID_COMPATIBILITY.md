@@ -22,9 +22,11 @@ these releases, newest first:
 | `handshake.shellReads` | Which fields of `GET /api/version` the apps in the window read. |
 
 App version, server release and handshake `protocol` are separate numbers. The
-apps in today's window read only `app` from the handshake, so the server must
-keep answering `app: "unihub"`, and `minApp` must not refuse the oldest app in
-the window. Removing support for an app is a product decision: change the
+apps in today's window read `app` from the handshake, and the 0.22.1 app also
+`features` (it offers notifications only while they list
+`android-notifications`), so the server must keep answering `app: "unihub"`,
+keep listing that feature while such an app is in the window, and `minApp`
+must not refuse the oldest app in the window. Removing support for an app is a product decision: change the
 window and `minApp` together, on purpose.
 
 ## Checks
@@ -62,18 +64,22 @@ published.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.22.0. The CI table is the
+As recorded in `android/support-window.json` for 0.22.1. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.22.1 | starts and connects | starts and connects | starts and connects |
 | 0.22.0 | starts and connects | starts and connects | starts and connects |
 | 0.21.4 | starts and connects | starts and connects | starts and connects |
 | 0.21.3 | starts and connects | closes on start | closes on start |
-| 0.21.2 | starts and connects | closes on start | closes on start |
 
-The 0.22.0 app also puts contacts on the phone; `android/scripts/contacts-test.sh`
-checks that on each emulator against a stub server. Older apps do not have it.
+The 0.22.0 and 0.22.1 apps also put contacts on the phone;
+`android/scripts/contacts-test.sh` checks that on each emulator against a stub
+server. The 0.22.1 app also shows notifications;
+`android/scripts/notifications-test.sh` checks that the same way. Older apps
+have neither; Settings → Notifications tells someone in an older app to update
+it.
 
 **Android 17 emulator: not run.** The current Android 17 system image
 (`android-37.0`, google_apis x86_64, revision 6) crashes its own
