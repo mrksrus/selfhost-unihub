@@ -7,6 +7,11 @@
   ],
   "releases": [
     {
+      "version": "0.22.0",
+      "apk": { "versionCode": 22000, "sha256": null, "signing": "release" },
+      "shell": "supported"
+    },
+    {
       "version": "0.21.4",
       "apk": { "versionCode": 21004, "sha256": "7420d4308319f9a0e3d151279668652c9bf761a608b26fb6cb66916102cda2b1", "signing": "release" },
       "shell": "supported"
@@ -25,17 +30,6 @@
     {
       "version": "0.21.2",
       "apk": { "versionCode": 21002, "sha256": "645e6a66e720f16f3170bc868b8f0791dc8cdcbc62619a3f07c6aee541605dd4", "signing": "release" },
-      "shell": "broken",
-      "broken": {
-        "fromApi": 31,
-        "symptom": "Closes as soon as it starts: the status bar icon colour is set before the window exists.",
-        "fixedIn": "0.21.4",
-        "upgrade": "Install the app again from the server's install card or Settings > General > Install; it installs over the old one."
-      }
-    },
-    {
-      "version": "0.21.1",
-      "apk": { "versionCode": 21001, "sha256": "75ade081e9b4eed5a7ade2449b7bdd5ec57f4091449f40df712a331a6e7d5d5a", "signing": "release" },
       "shell": "broken",
       "broken": {
         "fromApi": 31,

@@ -22,6 +22,7 @@ shown before publishing and how.
 | A full backup moves to a fresh, independent installation | `scripts/recovery-fresh-install.mts --image unihub:ci` | `npm --prefix api run build && node scripts/recovery-fresh-install.mts --local` |
 | An open web app updates without losing work, and earlier releases in the support window update to this one | `scripts/pwa-update-check.mts` | `npm run build && node scripts/pwa-update-check.mts --local` |
 | The Android apps of the support window behave as recorded on Android 10, 16 and 17, and updating keeps the saved server | `scripts/android-support-window.mts`, then `android/scripts/window-test.sh` on each emulator | an emulator and `adb` ([Android compatibility](ANDROID_COMPATIBILITY.md)) |
+| The candidate app's contacts reach the phone and follow the server, a session end and a server change | `android/scripts/contacts-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#contacts-on-the-phone)) |
 | A published image carries the release-signed Android app | Check and keep the Android app | — |
 
 ## Required acceptance beyond the current CI

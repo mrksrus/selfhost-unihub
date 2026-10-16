@@ -431,6 +431,26 @@ missing real-server pairings remain verification gaps.
 Evidence: `docs/ANDROID.md`, `api/src/services/app-version.ts`,
 `src/lib/platform.ts`, CHANGELOG 0.21.4.
 
+#### P-22 The Android app puts UniHub contacts in the phone's contacts
+
+Accepted, in source; emulator-tested against a stub server, not yet on a real
+phone with a real server. Pinned 2026-10-16 (requested for 0.22.0).
+
+The Android app can make the signed-in user's UniHub contacts known to the
+phone, so the Phone app, WhatsApp and other apps show their names. It is done
+natively in the app; the server and web pages stay unchanged, so a release of
+it changes only the Android app in the image.
+
+How it is built (agent's choices within that request, open to maintainer
+change): opt-in once per server, a read-only one-way copy in a "UniHub"
+Android account, names/numbers/emails/company/job title but never notes,
+emptied on sign-out, session end or a disabled Contacts module, deleted on a
+server change or account removal.
+
+Evidence: `android/app/src/main/java/io/github/mrksrus/unihub/ContactsSync.kt`,
+`ContactsServices.kt`, `MainActivity.kt`, `android/scripts/contacts-test.sh`,
+`docs/ANDROID.md` (Contacts on the phone), CHANGELOG 0.22.0.
+
 ## Open decisions and conflicts
 
 Open proposals do not override accepted decisions.
