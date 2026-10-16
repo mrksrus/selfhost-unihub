@@ -235,8 +235,15 @@ jobs:
             bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
             bash android/scripts/contacts-test.sh android-app/unihub.apk
 
-      # The system image is named android-37.0 (stable channel).
+      # The system image is named android-37.0 (stable channel). That image
+      # (google_apis x86_64, revision 6) is broken as of 2026-10-16: its
+      # surfaceflinger aborts right after boot ("!rcEnc->featureInfo()->
+      # hasReadColorBufferDma") with every -gpu mode, so the system restarts
+      # and installs fail before any app runs. The step still runs and reports,
+      # but does not block a release until a working image ships; Android 17 is
+      # checked on a real phone meanwhile (docs/ANDROID_COMPATIBILITY.md).
       - name: Start the Android apps on Android 17
+        continue-on-error: true
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: '37.0'

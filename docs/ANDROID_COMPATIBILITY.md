@@ -75,6 +75,14 @@ evidence; this table is what it is checked against.
 The 0.22.0 app also puts contacts on the phone; `android/scripts/contacts-test.sh`
 checks that on each emulator against a stub server. Older apps do not have it.
 
+**Android 17 emulator: not run.** The current Android 17 system image
+(`android-37.0`, google_apis x86_64, revision 6) crashes its own
+surfaceflinger right after boot with every GPU mode, so the system restarts
+and no app can be installed or started. The CI step still runs but does not
+block a release; until a working image ships, the Android 17 column above is
+confirmed on a real Android 17 phone and recorded with the release, not by
+the emulator.
+
 0.21.1 to 0.21.3 close on Android 12 (API 31) and newer: the app set the status
 bar icon colour before its window existed (CHANGELOG 0.21.4; the emulators
 confirm it on 16 and 17, not on 12 to 15). Users of those apps install the
