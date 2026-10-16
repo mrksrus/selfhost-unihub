@@ -55,16 +55,21 @@ class Stub(BaseHTTPRequestHandler):
         session = 'auth-token=' + read('session')
         signed_in = user != '' and session in (self.headers.get('Cookie') or '').split('; ')
         set_session = ('Set-Cookie', session + '; HttpOnly; SameSite=Strict; Path=/')
-        if url.path in ('/', '/auth'):
+        # Like servers up to 0.21.4, a page load (here also the heartbeat)
+        # hands out the current CSRF cookie.
+        set_csrf = ('Set-Cookie', 'csrf-token=%s; HttpOnly; SameSite=Strict; Path=/' % read('csrf'))
+        sent = dict(c.split('=', 1) for c in (self.headers.get('Cookie') or '').split('; ') if '=' in c)
+        if url.path in ('/', '/auth', '/heartbeat'):
             with open(os.path.join(state, 'page-cookies'), 'a') as f:
                 f.write((self.headers.get('Cookie') or '') + '\n')
+        if url.path in ('/', '/auth'):
             # The heartbeat hands the page a new session when the test changes
             # it, and moves the page to another address (/auth: signing in).
             script = 'setInterval(() => fetch("/heartbeat").then(r => r.text()).then(go => { if (go && go !== location.pathname) history.pushState({}, "", go) }), 1000)'
             self.answer(200, '<!doctype html><title>UniHub contacts test</title><p>UniHub<script>%s</script>' % script,
-                        [('Content-Type', 'text/html')] + ([set_session] if user else []))
+                        [('Content-Type', 'text/html')] + ([set_session, set_csrf, ('Set-Cookie', 'renewed=no; Path=/')] if user else []))
         elif url.path == '/heartbeat':
-            self.answer(200, read('goto'), [set_session] if user else [])
+            self.answer(200, read('goto'), [set_session, set_csrf] if user else [])
         elif not url.path.startswith('/api/'):
             self.answer(404, 'not found')
         elif not signed_in:
@@ -73,7 +78,9 @@ class Stub(BaseHTTPRequestHandler):
             # A renewed session: the same cookie again, and a marker to find
             # out whether the WebView got it.
             renew = read('renew')
-            cookies = [set_session, ('Set-Cookie', 'renewed=%s; Path=/' % renew)] if renew else []
+            # The server sends the session and the request's CSRF cookie again.
+            csrf = [('Set-Cookie', 'csrf-token=%s; HttpOnly; SameSite=Strict; Path=/' % sent['csrf-token'])] if 'csrf-token' in sent else []
+            cookies = [set_session, ('Set-Cookie', 'renewed=%s; Path=/' % renew)] + csrf if renew else []
             self.answer(200, json.dumps({'user': {'id': user, 'email': 'tester@example.com'}}), [('Content-Type', 'application/json')] + cookies)
         elif url.path == '/api/contacts':
             contacts = json.loads(read('contacts.json'))
@@ -104,6 +111,7 @@ contact() { # id first last phone email company notes
 }
 echo test-session > "$work/state/session"
 : > "$work/state/goto"
+echo csrf-1 > "$work/state/csrf"
 set_server() { echo "$1" > "$work/state/user"; printf '[%s]\n' "$2" > "$work/state/contacts.json"; : > "$work/state/mode"; : > "$work/state/renew"; }
 # How /api/contacts misbehaves: error (HTTP 500), empty-more, no-has-more.
 set_mode() { echo "$1" > "$work/state/mode"; }
@@ -275,6 +283,32 @@ expect_page_cookie 'auth-token=test-session-2' 'the newer session'
 adb logcat -d -s UniHubContacts | grep -q 'renewal dropped' || fail 'the kept renewal was not dropped for the newer session'
 grep -q 'renewed=stale' "$work/state/page-cookies" && fail 'the kept renewal replaced the newer session'
 expect_name +15550100 'Ada Later' 'sync with the newer session'
+
+echo 'A held renewal keeps a CSRF cookie the page got since'
+echo /auth > "$work/state/goto"
+back_to_app
+sleep 4
+echo held > "$work/state/renew"
+before="$(synced)"
+leave_app
+for _ in $(seq 1 40); do (( $(synced) > before )) && break; sleep 1; done
+(( $(synced) > before )) || fail 'no sync after leaving the app'
+: > "$work/state/renew"
+# The page loads again and gets a new CSRF cookie, then leaves /auth.
+echo csrf-2 > "$work/state/csrf"
+echo / > "$work/state/goto"
+back_to_app
+sleep 4
+leave_app
+sleep 2
+: > "$work/state/page-cookies"
+adb shell am force-stop "$package"
+back_to_app
+for _ in $(seq 1 30); do grep 'renewed=held' "$work/state/page-cookies" | grep -q 'csrf-token=csrf-2' && break; sleep 1; done
+grep 'renewed=held' "$work/state/page-cookies" | grep -q 'csrf-token=csrf-2' \
+  || fail "the renewal was not applied with the page's newer CSRF cookie: $(tail -n 3 "$work/state/page-cookies" | tr '\n' ' ')"
+grep -q 'csrf-token=csrf-1' "$work/state/page-cookies" && fail 'the renewal brought back an older CSRF cookie'
+echo / > "$work/state/goto"
 
 echo 'Another user signs in: only their contacts, even if their listing fails'
 set_server user-2 "$(contact c-dee '"Dee"' '"Other"' '"+15550103"' null null null)"
