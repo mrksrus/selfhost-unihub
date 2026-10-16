@@ -52,16 +52,27 @@ class Stub(BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         query = urllib.parse.parse_qs(url.query)
         user = read('user')
-        signed_in = user != '' and 'auth-token=test-session' in (self.headers.get('Cookie') or '')
+        session = 'auth-token=' + read('session')
+        signed_in = user != '' and session in (self.headers.get('Cookie') or '').split('; ')
+        set_session = ('Set-Cookie', session + '; HttpOnly; SameSite=Strict; Path=/')
         if url.path == '/':
-            cookie = [('Set-Cookie', 'auth-token=test-session; HttpOnly; SameSite=Strict; Path=/')] if user else []
-            self.answer(200, '<!doctype html><title>UniHub contacts test</title><p>UniHub', [('Content-Type', 'text/html')] + cookie)
+            with open(os.path.join(state, 'page-cookies'), 'a') as f:
+                f.write((self.headers.get('Cookie') or '') + '\n')
+            # The heartbeat hands the page a new session when the test changes it.
+            self.answer(200, '<!doctype html><title>UniHub contacts test</title><p>UniHub<script>setInterval(() => fetch("/heartbeat"), 1000)</script>',
+                        [('Content-Type', 'text/html')] + ([set_session] if user else []))
+        elif url.path == '/heartbeat':
+            self.answer(200, 'ok', [set_session] if user else [])
         elif not url.path.startswith('/api/'):
             self.answer(404, 'not found')
         elif not signed_in:
             self.answer(401, json.dumps({'error': 'Unauthorized', 'status': 401}), [('Content-Type', 'application/json')])
         elif url.path == '/api/auth/me':
-            self.answer(200, json.dumps({'user': {'id': user, 'email': 'tester@example.com'}}), [('Content-Type', 'application/json')])
+            # A renewed session: the same cookie again, and a marker to find
+            # out whether the WebView got it.
+            renew = read('renew')
+            cookies = [set_session, ('Set-Cookie', 'renewed=%s; Path=/' % renew)] if renew else []
+            self.answer(200, json.dumps({'user': {'id': user, 'email': 'tester@example.com'}}), [('Content-Type', 'application/json')] + cookies)
         elif url.path == '/api/contacts':
             contacts = json.loads(read('contacts.json'))
             limit, offset = int(query.get('limit', ['2000'])[0]), int(query.get('offset', ['0'])[0])
@@ -89,7 +100,8 @@ contact() { # id first last phone email company notes
   printf '{"id":"%s","user_id":"u","first_name":%s,"last_name":%s,"email":%s,"email2":null,"email3":null,"phone":%s,"phone2":null,"phone3":null,"company":%s,"job_title":null,"notes":%s,"avatar_url":null,"is_favorite":0}' \
     "$1" "$2" "$3" "$5" "$4" "$6" "$7"
 }
-set_server() { echo "$1" > "$work/state/user"; printf '[%s]\n' "$2" > "$work/state/contacts.json"; : > "$work/state/mode"; }
+echo test-session > "$work/state/session"
+set_server() { echo "$1" > "$work/state/user"; printf '[%s]\n' "$2" > "$work/state/contacts.json"; : > "$work/state/mode"; : > "$work/state/renew"; }
 # How /api/contacts misbehaves: error (HTTP 500), empty-more, no-has-more.
 set_mode() { echo "$1" > "$work/state/mode"; }
 
@@ -140,6 +152,27 @@ unihub_rows() {
 }
 
 has_account() { adb shell dumpsys account 2>/dev/null | grep -q "Account {name=[^,]*, type=$package}"; }
+
+synced() { adb logcat -d -s UniHubContacts 2>/dev/null | grep -c 'Synced' || true; }
+
+kill_app() { # Android only kills a cached process, so wait for the last sync to end.
+  for _ in $(seq 1 15); do
+    adb shell am kill "$package"
+    sleep 2
+    adb shell pidof "$package" >/dev/null || return 0
+  done
+  fail 'the app is still running'
+}
+
+# The page's next load sends the cookie the server renewed during a sync.
+# A fresh start loads the page (a restored activity would not).
+expect_page_cookie() {
+  : > "$work/state/page-cookies"
+  adb shell am force-stop "$package"
+  back_to_app
+  for _ in $(seq 1 30); do grep -q "$1" "$work/state/page-cookies" && return 0; sleep 1; done
+  fail "the WebView did not get the renewed session cookie ($2): $(tr '\n' ' ' < "$work/state/page-cookies")"
+}
 
 postponed() { adb logcat -d -s UniHubContacts 2>/dev/null | grep -c 'Sync postponed' || true; }
 
@@ -198,17 +231,39 @@ for mode in error empty-more no-has-more; do
 done
 set_mode ''
 
-echo 'A sync from Android with the app closed (the periodic one)'
-# Android only kills a cached process, so wait for the last sync to end.
-for _ in $(seq 1 15); do
-  adb shell am kill "$package"
-  sleep 2
-  adb shell pidof "$package" >/dev/null || break
-done
-adb shell pidof "$package" >/dev/null && fail 'the app is still running'
+echo 'A sync from Android with the app closed (the periodic one) renews the session'
+kill_app
 set_server user-1 "$(contact c-ada '"Ada"' '"Later"' '"+15550100"' null null null),$(contact c-cy '"Cy"' '"Sample"' '"+15550102"' null null null)"
+echo closed > "$work/state/renew"
 adb shell requestsync -n 10.0.2.2 -t "$package" -a com.android.contacts -f >/dev/null
 expect_name +15550100 'Ada Later' 'synced without the app open'
+expect_page_cookie 'renewed=closed' 'sync with the app closed'
+
+echo 'A renewal while the WebView exists waits for the next start'
+echo open > "$work/state/renew"
+before="$(synced)"
+leave_app
+for _ in $(seq 1 40); do (( $(synced) > before )) && break; sleep 1; done
+(( $(synced) > before )) || fail 'no sync after leaving the app'
+kill_app
+: > "$work/state/renew"
+expect_page_cookie 'renewed=open' 'sync with the WebView alive'
+
+echo 'A kept renewal never replaces a newer session'
+echo stale > "$work/state/renew"
+before="$(synced)"
+leave_app
+for _ in $(seq 1 40); do (( $(synced) > before )) && break; sleep 1; done
+(( $(synced) > before )) || fail 'no sync after leaving the app'
+: > "$work/state/renew"
+# The page signs in again (a new session cookie) while the renewal waits.
+echo test-session-2 > "$work/state/session"
+back_to_app
+sleep 4
+leave_app # the app keeps its cookies when it is left
+expect_page_cookie 'auth-token=test-session-2' 'the newer session'
+grep -q 'renewed=stale' "$work/state/page-cookies" && fail 'the kept renewal replaced the newer session'
+expect_name +15550100 'Ada Later' 'sync with the newer session'
 
 echo 'Another user signs in: only their contacts, even if their listing fails'
 set_server user-2 "$(contact c-dee '"Dee"' '"Other"' '"+15550103"' null null null)"

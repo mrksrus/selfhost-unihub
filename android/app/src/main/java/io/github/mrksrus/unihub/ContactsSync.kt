@@ -47,6 +47,7 @@ object ContactsSync {
     private const val KEY_USER = "user"
     private const val PREFS = "contacts"
     private const val KEY_OFFERED = "offered"
+    private const val KEY_RENEWAL = "renewal"
     private const val PERIOD_SECONDS = 6 * 60 * 60L
     private const val PAGE = 2000
     // Bounds one sync; the server lists at most 2000 per page.
@@ -58,10 +59,6 @@ object ContactsSync {
     private const val BATCH = 300
     // Changes when the mapping below changes, so every contact is rewritten.
     private const val FORMAT = "1"
-
-    /** Whether the app is in the foreground, where the page can sign in (MainActivity). */
-    @Volatile
-    var appOpen = false
 
     val PERMISSIONS = arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
 
@@ -126,14 +123,14 @@ object ContactsSync {
     enum class Offer { SignedOut, Unavailable, Empty, Ready }
 
     /** Whether the app's session can read contacts on this server. Blocks; call off the main thread. */
-    fun check(origin: String): Offer {
+    fun check(context: Context, origin: String): Offer {
         val session = cookie(origin) ?: return Offer.SignedOut
         val current = Current { sessionOf(cookie(origin)) == sessionOf(session) }
         return try {
-            val me = get(origin, "/api/auth/me?background=1", session, current)
+            val me = get(context, origin, "/api/auth/me?background=1", session, current)
             if (me.status == 401) return Offer.SignedOut
             if (me.status != 200) return Offer.Unavailable
-            val page = get(origin, "/api/contacts?limit=1", session, current)
+            val page = get(context, origin, "/api/contacts?limit=1", session, current)
             when {
                 page.status == 401 -> Offer.SignedOut
                 page.status != 200 -> Offer.Unavailable
@@ -176,7 +173,7 @@ object ContactsSync {
                 sessionOf(cookie(origin)) == sessionOf(session)
         }
         try {
-            val me = get(origin, "/api/auth/me?background=1", session, current)
+            val me = get(context, origin, "/api/auth/me?background=1", session, current)
             if (me.status == 401) {
                 current.check()
                 clear(manager, account, provider, result, "the session ended")
@@ -191,7 +188,7 @@ object ContactsSync {
                 deleteAll(account, provider, result)
                 manager.setUserData(account, KEY_USER, user)
             }
-            when (val listing = fetch(origin, session, current)) {
+            when (val listing = fetch(context, origin, session, current)) {
                 is Listing.Gone -> {
                     current.check()
                     clear(manager, account, provider, result, listing.why)
@@ -234,11 +231,11 @@ object ContactsSync {
 
     // Complete or an exception: a page without has_more, or an empty page
     // that claims more, is not a listing to delete by.
-    private fun fetch(origin: String, session: String, current: Current): Listing {
+    private fun fetch(context: Context, origin: String, session: String, current: Current): Listing {
         val contacts = LinkedHashMap<String, PhoneContact>()
         var offset = 0
         while (true) {
-            val page = get(origin, "/api/contacts?limit=$PAGE&offset=$offset", session, current)
+            val page = get(context, origin, "/api/contacts?limit=$PAGE&offset=$offset", session, current)
             if (page.status == 401) return Listing.Gone("the session ended")
             if (page.status == 403 && page.json()?.optString("code") == "MODULE_DISABLED") return Listing.Gone("the Contacts module is off")
             page.expectOk()
@@ -444,12 +441,62 @@ object ContactsSync {
     private fun sessionOf(cookies: String?): String? =
         cookies?.split(';')?.map { it.trim() }?.firstOrNull { it.startsWith("auth-token=") } ?: cookies
 
+    // ── The session's expiry ───────────────────────────────────────────
+    // The server extends a session at most once a day and sends its cookie
+    // again. The WebView must get that expiry, or the app would sign out 21
+    // days after its own last renewal while syncs keep renewing the session.
+    // Writing the cookie must not undo a sign-in, and only a WebView signs
+    // in: so a renewal is kept until no WebView exists (a sync with the app
+    // closed, or just before MainActivity makes one), and then written only
+    // if it is still the WebView's session. The lock keeps a WebView from
+    // being made while it is written.
+
+    private val webLock = Any()
+    private var webViews = 0
+
+    /** MainActivity is about to make a WebView. */
+    fun webViewCreating(context: Context) = synchronized(webLock) {
+        applyRenewal(context)
+        webViews++
+    }
+
+    /** MainActivity destroyed its WebView. */
+    fun webViewDestroyed(context: Context) = synchronized(webLock) {
+        webViews = maxOf(0, webViews - 1)
+        applyRenewal(context)
+    }
+
+    private fun keepRenewal(context: Context, origin: String, session: String, cookies: List<String>) = synchronized(webLock) {
+        val renewal = JSONObject().put("origin", origin).put("session", sessionOf(session)).put("cookies", JSONArray(cookies))
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_RENEWAL, renewal.toString()).commit()
+        applyRenewal(context)
+    }
+
+    // Holds webLock.
+    private fun applyRenewal(context: Context) {
+        if (webViews > 0) return
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val saved = prefs.getString(KEY_RENEWAL, null) ?: return
+        prefs.edit().remove(KEY_RENEWAL).commit()
+        try {
+            val renewal = JSONObject(saved)
+            val origin = renewal.getString("origin")
+            if (sessionOf(cookie(origin)) != renewal.getString("session")) return
+            val cookies = renewal.getJSONArray("cookies")
+            val manager = CookieManager.getInstance()
+            for (index in 0 until cookies.length()) manager.setCookie(origin, cookies.getString(index))
+            manager.flush()
+        } catch (_: org.json.JSONException) {
+            // Nothing usable was kept.
+        }
+    }
+
     private class Response(val status: Int, val body: String) {
         fun json(): JSONObject? = try { JSONObject(body) } catch (_: org.json.JSONException) { null }
         fun expectOk() { if (status != 200) throw IOException("HTTP $status") }
     }
 
-    private fun get(origin: String, path: String, session: String, current: Current): Response {
+    private fun get(context: Context, origin: String, path: String, session: String, current: Current): Response {
         val connection = URL(origin + path).openConnection() as HttpURLConnection
         connection.connectTimeout = 15_000
         connection.readTimeout = 60_000
@@ -461,16 +508,8 @@ object ContactsSync {
         connection.setRequestProperty("User-Agent", "UniHubAndroid/${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         try {
             val status = connection.responseCode
-            // The server extends a session at most once a day and sends its
-            // cookie again. The WebView must keep that expiry, or the app
-            // would sign out 21 days after its own last renewal while syncs
-            // keep renewing the session. A sign-in replaces the cookie only
-            // while the app is open, so the old one is written back only
-            // while it is not, and only if it is still the WebView's session.
-            connection.headerFields["Set-Cookie"]?.takeIf { !appOpen && current.valid() }?.let { cookies ->
-                val manager = CookieManager.getInstance()
-                cookies.forEach { manager.setCookie(origin, it) }
-                manager.flush()
+            connection.headerFields["Set-Cookie"]?.takeIf { it.isNotEmpty() && current.valid() }?.let { cookies ->
+                keepRenewal(context, origin, session, cookies)
             }
             val stream = (if (status >= 400) connection.errorStream else connection.inputStream)
                 ?: return Response(status, "")
