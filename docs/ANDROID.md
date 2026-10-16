@@ -244,7 +244,9 @@ start an emulator and pass the APK.
 server that encrypts like UniHub with its own implementation: the question
 after signing in, turning them on from the page (or from the question where
 the WebView has no message bridge, as on the Android 10 emulator), a
-notification shown with its text and a content-free version for the lock screen,
+notification shown with its text, a locked phone set to hide sensitive content
+showing only "New notification" (Android 11 and newer; the Android 10 image
+cannot unlock again after a PIN),
 acknowledged, opened by a tap, not shown twice, received with the app in the
 background, a reconnect after an app update, sign-out removing them, signing in
 again, and turning off from the page and from the ongoing notification.

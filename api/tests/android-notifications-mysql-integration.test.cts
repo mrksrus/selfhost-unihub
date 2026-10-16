@@ -118,6 +118,9 @@ test('Android notification devices: registration, encrypted stream delivery, ack
 
     // Registration validates the keys and binds the device to this session.
     await owner('POST', '/notifications/android/devices', { keys: { p256dh: 'short', auth: 'short' } }, 400);
+    // 65 bytes with the uncompressed prefix, but not a point on the curve: encrypting for it would fail at every pass.
+    const offCurve = Buffer.alloc(65, 1); offCurve[0] = 4;
+    await owner('POST', '/notifications/android/devices', { keys: { p256dh: offCurve.toString('base64url'), auth: crypto.randomBytes(16).toString('base64url') } }, 400);
     const phone = deviceKeys();
     const registered = await owner('POST', '/notifications/android/devices', { keys: phone.keys });
     assert.match(registered.device, /^[0-9a-f-]{36}$/);
@@ -179,6 +182,24 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     await notifications.processNotificationJobs();
     assert.equal((await stream.next('notification')).id, second.eventId);
     await owner('POST', '/notifications/android/ack', { device: registered.device, ids: [second.eventId] });
+
+    // A stored key that cannot be encrypted for (not one registration accepts)
+    // removes that device and holds up no one else in the same pass.
+    const broken = await other('POST', '/notifications/android/devices', { keys: deviceKeys().keys });
+    await pool.execute('UPDATE push_subscriptions SET p256dh = ? WHERE id = ?', [offCurve.toString('base64url'), broken.device]);
+    const brokenStream = await other.stream(broken.device);
+    assert.equal(brokenStream.status, 200);
+    await notifications.enqueueEvent({ userId: ids.other, dedupeKey: 'test:broken-key', kind: 'test', title: 'Broken key', url: '/settings', expiresAt: new Date(Date.now() + 3600000) });
+    const alongside = await newMail('Alongside a broken device');
+    await notifications.processNotificationJobs();
+    assert.equal((await stream.next('notification'))?.id, alongside.eventId, 'the other device still gets its notification');
+    // Connecting started a pass of its own; one more covers rows that came due after it.
+    await new Promise(resolve => setTimeout(resolve, 200));
+    await notifications.processNotificationJobs();
+    const [[gone]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS total FROM push_subscriptions WHERE id = ?', [broken.device]);
+    assert.equal(Number(gone.total), 0, 'the unusable device is removed');
+    await owner('POST', '/notifications/android/ack', { device: registered.device, ids: [alongside.eventId] });
+    brokenStream.close();
 
     // While the phone is away its notification waits, and goes out as soon as it connects.
     stream.close();

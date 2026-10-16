@@ -67,6 +67,9 @@ async function ownDevice(userId: string, sessionToken: string | null, deviceId: 
  */
 async function registerDevice(userId: string, sessionToken: string | null, input: { keys?: unknown; replaces?: unknown } | null | undefined) {
   const keys = normalizeKeys((input?.keys || null) as Parameters<typeof normalizeKeys>[0]);
+  // A key that is not a point on P-256 could never be encrypted for.
+  try { const ecdh = crypto.createECDH('prime256v1'); ecdh.generateKeys(); ecdh.computeSecret(Buffer.from(keys.p256dh, 'base64url')); }
+  catch { throw badRequest('Invalid push subscription key'); }
   const session = await sessionId(userId, sessionToken);
   if (typeof input?.replaces === 'string' && UUID.test(input.replaces)) {
     await db.execute("DELETE FROM push_subscriptions WHERE id = ? AND user_id = ? AND transport = 'android'", [input.replaces, userId]);

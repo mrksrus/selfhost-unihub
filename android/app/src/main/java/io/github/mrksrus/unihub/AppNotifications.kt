@@ -318,7 +318,9 @@ object AppNotifications {
         val channel = channelFor(payload.optString("kind"))
         val title = payload.optString("title").take(120).ifEmpty { "UniHub" }
         val text = payload.optString("body").take(400)
-        // The lock screen shows that something arrived, not what.
+        // Private: a lock screen set to hide sensitive content shows this
+        // instead. Android ignores an app's own lock screen setting for its
+        // channels (they keep "no override"), so the phone's setting decides.
         val public = android.app.Notification.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(context.getString(R.string.app_name))

@@ -119,7 +119,12 @@ http.createServer(async (req, res) => {
     if (path === '/_control/signin') { state.user = 'user-1'; state.session = 'session-2'; return json(res, 200, {}); }
     // ── The page ──
     if (path === '/_page/hello') { state.bridge = url.searchParams.get('bridge') === 'true'; return json(res, 200, {}); }
-    if (path === '/_page/next') { const action = state.enable; state.enable = null; res.writeHead(200); return res.end(action || ''); }
+    if (path === '/_page/next') {
+      const action = state.enable; state.enable = null;
+      // Signed out: the page's next answer clears the session cookie, as UniHub's sign-out does.
+      res.writeHead(200, state.user ? {} : { 'Set-Cookie': ['auth-token=; Max-Age=0; Path=/', 'csrf-token=; Max-Age=0; Path=/'] });
+      return res.end(action || '');
+    }
     if (path === '/_page/reply') { state.replies.push(await body(req)); return json(res, 200, {}); }
     if (!path.startsWith('/api/')) {
       state.pages.push(req.url);
@@ -224,6 +229,19 @@ expand_notification() { # notification text, action text
   sleep 1
 }
 
+# Awake and past any lock screen (Android 10 keeps a swipe one after a PIN is removed).
+locked_screen() { adb shell dumpsys window 2>/dev/null | tr -d '\r' | contains 'isKeyguardShowing=true' || adb shell dumpsys window 2>/dev/null | tr -d '\r' | contains 'mDreamingLockscreen=true'; }
+unlock() {
+  for _ in $(seq 1 5); do
+    adb shell input keyevent KEYCODE_WAKEUP
+    adb shell wm dismiss-keyguard >/dev/null 2>&1 || true
+    adb shell input keyevent 82
+    sleep 1
+    locked_screen || return 0
+  done
+  fail 'the lock screen does not go away'
+}
+
 state() { curl -s "$control/state"; }
 # An expression over the stub's state, e.g. 'acks.length'.
 field() { state | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);console.log(JSON.stringify(new Function(...Object.keys(v),'return ('+process.argv[1]+')')(...Object.values(v))))})" "$1"; }
@@ -245,7 +263,8 @@ send() { # id title body url
 shown() { adb shell dumpsys notification --noredact 2>/dev/null | tr -d '\r' | grep -A40 "pkg=$package" | grep -c "android.title=String ($1)" || true; }
 expect_shown() { for _ in $(seq 1 30); do (( $(shown "$1") > 0 )) && return 0; sleep 1; done; fail "\"$1\" is not shown ($2)"; }
 expect_not_shown() { (( $(shown "$1") == 0 )) || fail "\"$1\" is shown ($2)"; }
-service_running() { adb shell dumpsys activity services "$package" 2>/dev/null | contains 'NotificationService'; }
+# The connection itself, not its watchdog job (NotificationService$Watchdog).
+service_running() { adb shell dumpsys activity services "$package" 2>/dev/null | contains '/.NotificationService}'; }
 
 sdk="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
 echo "Android API $sdk"
@@ -258,6 +277,7 @@ if (( sdk >= 33 )); then adb shell pm grant "$package" android.permission.POST_N
 adb shell dumpsys deviceidle whitelist +"$package" >/dev/null
 adb logcat -c -b all
 adb shell cmd statusbar collapse >/dev/null 2>&1 || true
+unlock
 
 echo 'Connect and sign in; the app asks once'
 adb shell am start -W -a android.intent.action.VIEW -d "'unihub://connect?server=$server'" >/dev/null
@@ -305,6 +325,29 @@ send "$first" 'New Email' 'Alex Example: Quarterly numbers' "/mail?email=e-1"
 wait_for "acks.length > $before" 'a repeated notification was not acknowledged'
 sleep 1
 expect_not_shown 'New Email' 'a repeated notification'
+
+if (( sdk >= 30 )); then
+echo 'A locked phone set to hide sensitive content shows that it arrived, not what it says'
+# A PIN makes the lock screen secure. Android ignores an app's own lock screen
+# setting for its channels, so the phone's setting decides.
+send 55555555-5555-4555-8555-555555555555 'While locked' 'Board meeting moved' '/mail?email=e-2'
+expect_shown 'While locked' 'before locking'
+adb shell settings put secure lock_screen_allow_private_notifications 0
+adb shell locksettings set-pin 1357 >/dev/null
+adb shell input keyevent KEYCODE_SLEEP
+sleep 2
+adb shell input keyevent KEYCODE_WAKEUP
+sleep 3
+locked="$(screen)"
+adb shell locksettings clear --old 1357 >/dev/null
+adb shell settings put secure lock_screen_allow_private_notifications 1
+unlock
+[[ "$locked" == *'New notification'* ]] || fail "the lock screen does not show the content-free version (on screen: $(grep -o 'text="[^"]\+"' <<<"$locked" | tr '\n' ' '))"
+[[ "$locked" == *'Board meeting moved'* || "$locked" == *'While locked'* ]] && fail 'the lock screen shows what the notification says'
+else
+  # The Android 10 image keeps its PIN screen after the PIN is removed.
+  echo 'Lock screen: not run on Android 10 (the emulator image cannot unlock again)'
+fi
 
 echo 'With the app in the background, a notification still arrives'
 adb shell input keyevent KEYCODE_HOME
