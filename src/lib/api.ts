@@ -97,7 +97,7 @@ class ApiClient {
   }
 
   // A write refused in offline mode checks whether the API is back, using a
-  // public route without side effects (/auth/me would rotate the CSRF cookie).
+  // public route without side effects (/auth/me needs a session and sets cookies).
   private probeConnection() {
     if (isBrowserOffline()) return;
     void this.get('/auth/signup-mode').catch(() => {});

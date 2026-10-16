@@ -45,3 +45,8 @@ android/app/build
 android/local.properties
 *.jks
 *.keystore
+
+# Development-only browser runner, downloads, fixtures and reference pictures.
+tools/ui-regression
+.agents
+.claude

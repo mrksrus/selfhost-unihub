@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="600" viewBox="0 0 640 600" font-family="Inter, system-ui, sans-serif" font-size="12">
+  <title>UniHub phone layout reference: top bar, chip row, always-visible task rows, bottom bar, dark and light default</title>
+  <desc>Schematic of the approved arrangement below 768 pixels with a coarse pointer. Not a screenshot; fixture labels only.</desc>
+  <!-- Dark default -->
+  <g id="dark">
+    <rect x="20" y="10" width="260" height="560" rx="18" fill="#000000" stroke="#26292b"/>
+    <rect x="20" y="10" width="260" height="22" fill="#000000"/>
+    <text x="150" y="26" fill="#9ca3af" font-size="9" text-anchor="middle">status bar follows the look (safe area)</text>
+    <!-- top bar -->
+    <rect x="20" y="32" width="260" height="40" fill="#000000" stroke="#26292b"/>
+    <text x="34" y="57" fill="#ffffff" font-size="15" font-weight="600">ToDo</text>
+    <rect x="236" y="42" width="20" height="20" rx="4" fill="none" stroke="#6b7280"/>
+    <rect x="200" y="42" width="30" height="20" rx="4" fill="#2563eb"/><text x="215" y="56" fill="#ffffff" text-anchor="middle" font-size="14">+</text>
+    <!-- chip row -->
+    <g font-size="10">
+      <rect x="32" y="80" width="48" height="24" rx="12" fill="#ffffff"/><text x="56" y="96" fill="#000000" text-anchor="middle">Open 7</text>
+      <rect x="86" y="80" width="54" height="24" rx="12" fill="none" stroke="#26292b"/><text x="113" y="96" fill="#ffffff" text-anchor="middle">Today 2</text>
+      <rect x="146" y="80" width="64" height="24" rx="12" fill="none" stroke="#26292b"/><text x="178" y="96" fill="#ffffff" text-anchor="middle">Overdue <tspan fill="#f59e0b">1</tspan></text>
+      <rect x="216" y="80" width="54" height="24" rx="12" fill="none" stroke="#26292b"/><text x="243" y="96" fill="#ffffff" text-anchor="middle">Later 3</text>
+    </g>
+    <text x="150" y="118" fill="#6b7280" font-size="9" text-anchor="middle">chips scroll sideways, never a disclosure</text>
+    <!-- rows -->
+    <text x="32" y="140" fill="#f59e0b" font-weight="500">Overdue</text>
+    <rect x="32" y="146" width="236" height="1" fill="#26292b"/>
+    <circle cx="44" cy="164" r="7" fill="none" stroke="#6b7280" stroke-width="1.5"/>
+    <text x="60" y="168" fill="#ffffff" font-weight="500">Pay invoice 4711</text>
+    <text x="60" y="183" fill="#f59e0b" font-size="10">Overdue · Mon 12 Oct</text>
+    <rect x="60" y="192" width="190" height="34" rx="4" fill="#0c0d0e" stroke="#26292b"/>
+    <text x="68" y="206" fill="#9ca3af" font-size="10">From Jane Doe · Invoice 4711 for October</text>
+    <text x="68" y="219" fill="#9ca3af" font-size="10">invoice-4711.pdf</text>
+    <rect x="252" y="156" width="16" height="16" rx="3" fill="none" stroke="#3b4044"/>
+    <rect x="32" y="236" width="236" height="1" fill="#26292b"/>
+    <text x="32" y="258" fill="#9ca3af" font-weight="500">Today</text>
+    <rect x="32" y="264" width="236" height="1" fill="#26292b"/>
+    <circle cx="44" cy="282" r="7" fill="none" stroke="#6b7280" stroke-width="1.5"/>
+    <text x="60" y="286" fill="#ffffff" font-weight="500">Book the holiday cabin</text>
+    <text x="60" y="301" fill="#9ca3af" font-size="10">Today, 18:00</text>
+    <text x="60" y="318" fill="#9ca3af" font-size="10">Two nights, check the cancellation terms first.</text>
+    <g font-size="10"><rect x="60" y="326" width="10" height="10" rx="2" fill="none" stroke="#6b7280"/><text x="76" y="334" fill="#d1d5db">Compare two offers</text>
+    <rect x="60" y="342" width="10" height="10" rx="2" fill="#2563eb"/><text x="76" y="350" fill="#6b7280" text-decoration="line-through">Pick the dates</text></g>
+    <rect x="252" y="274" width="16" height="16" rx="3" fill="none" stroke="#3b4044"/>
+    <rect x="32" y="362" width="236" height="1" fill="#26292b"/>
+    <circle cx="44" cy="380" r="7" fill="#2563eb"/><text x="44" y="384" fill="#ffffff" font-size="9" text-anchor="middle">✓</text>
+    <text x="60" y="384" fill="#6b7280" font-weight="500" text-decoration="line-through">Read the article about sleep</text>
+    <text x="60" y="399" fill="#6b7280" font-size="10">Done 15 Oct 2026, 09:12</text>
+    <rect x="32" y="410" width="236" height="1" fill="#26292b"/>
+    <!-- tap area hint -->
+    <rect x="22" y="142" width="44" height="44" rx="4" fill="none" stroke="#2563eb" stroke-dasharray="3 3"/>
+    <text x="100" y="140" fill="#60a5fa" font-size="8">44 px tap area</text>
+    <!-- bottom bar -->
+    <rect x="20" y="508" width="260" height="62" fill="#0c0d0e" stroke="#26292b"/>
+    <g font-size="9" text-anchor="middle">
+      <rect x="40" y="518" width="16" height="16" rx="3" fill="#6b7280"/><text x="48" y="548" fill="#9ca3af">Mail</text>
+      <rect x="92" y="518" width="16" height="16" rx="3" fill="#6b7280"/><text x="100" y="548" fill="#9ca3af">Calendar</text>
+      <rect x="144" y="518" width="16" height="16" rx="3" fill="#2563eb"/><text x="152" y="548" fill="#2563eb">ToDo</text>
+      <rect x="196" y="518" width="16" height="16" rx="3" fill="#6b7280"/><text x="204" y="548" fill="#9ca3af">Contacts</text>
+      <rect x="248" y="518" width="16" height="16" rx="3" fill="#6b7280"/><text x="256" y="548" fill="#9ca3af">More</text>
+      <circle cx="262" cy="518" r="3" fill="#f59e0b"/>
+    </g>
+    <text x="150" y="590" fill="#9ca3af" text-anchor="middle">Dark default, coarse pointer</text>
+  </g>
+  <!-- Light default -->
+  <g id="light" transform="translate(320 0)">
+    <rect x="20" y="10" width="260" height="560" rx="18" fill="#f5f7fa" stroke="#dde1e7"/>
+    <text x="150" y="26" fill="#5d6370" font-size="9" text-anchor="middle">status bar follows the look (safe area)</text>
+    <rect x="20" y="32" width="260" height="40" fill="#f5f7fa" stroke="#dde1e7"/>
+    <text x="34" y="57" fill="#0f1729" font-size="15" font-weight="600">ToDo</text>
+    <rect x="236" y="42" width="20" height="20" rx="4" fill="none" stroke="#5d6370"/>
+    <rect x="200" y="42" width="30" height="20" rx="4" fill="#2563eb"/><text x="215" y="56" fill="#ffffff" text-anchor="middle" font-size="14">+</text>
+    <g font-size="10">
+      <rect x="32" y="80" width="48" height="24" rx="12" fill="#0f1729"/><text x="56" y="96" fill="#f5f7fa" text-anchor="middle">Open 7</text>
+      <rect x="86" y="80" width="54" height="24" rx="12" fill="none" stroke="#dde1e7"/><text x="113" y="96" fill="#0f1729" text-anchor="middle">Today 2</text>
+      <rect x="146" y="80" width="64" height="24" rx="12" fill="none" stroke="#dde1e7"/><text x="178" y="96" fill="#0f1729" text-anchor="middle">Overdue <tspan fill="#b8600a">1</tspan></text>
+      <rect x="216" y="80" width="54" height="24" rx="12" fill="none" stroke="#dde1e7"/><text x="243" y="96" fill="#0f1729" text-anchor="middle">Later 3</text>
+    </g>
+    <text x="150" y="118" fill="#5d6370" font-size="9" text-anchor="middle">chips scroll sideways, never a disclosure</text>
+    <text x="32" y="140" fill="#b8600a" font-weight="500">Overdue</text>
+    <rect x="32" y="146" width="236" height="1" fill="#dde1e7"/>
+    <circle cx="44" cy="164" r="7" fill="none" stroke="#8a909b" stroke-width="1.5"/>
+    <text x="60" y="168" fill="#0f1729" font-weight="500">Pay invoice 4711</text>
+    <text x="60" y="183" fill="#b8600a" font-size="10">Overdue · Mon 12 Oct</text>
+    <rect x="60" y="192" width="190" height="34" rx="4" fill="#ffffff" stroke="#dde1e7"/>
+    <text x="68" y="206" fill="#5d6370" font-size="10">From Jane Doe · Invoice 4711 for October</text>
+    <text x="68" y="219" fill="#5d6370" font-size="10">invoice-4711.pdf</text>
+    <rect x="252" y="156" width="16" height="16" rx="3" fill="none" stroke="#c9cfd8"/>
+    <rect x="32" y="236" width="236" height="1" fill="#dde1e7"/>
+    <text x="32" y="258" fill="#5d6370" font-weight="500">Today</text>
+    <rect x="32" y="264" width="236" height="1" fill="#dde1e7"/>
+    <circle cx="44" cy="282" r="7" fill="none" stroke="#8a909b" stroke-width="1.5"/>
+    <text x="60" y="286" fill="#0f1729" font-weight="500">Book the holiday cabin</text>
+    <text x="60" y="301" fill="#5d6370" font-size="10">Today, 18:00</text>
+    <text x="60" y="318" fill="#5d6370" font-size="10">Two nights, check the cancellation terms first.</text>
+    <g font-size="10"><rect x="60" y="326" width="10" height="10" rx="2" fill="none" stroke="#8a909b"/><text x="76" y="334" fill="#374151">Compare two offers</text>
+    <rect x="60" y="342" width="10" height="10" rx="2" fill="#2563eb"/><text x="76" y="350" fill="#8a909b" text-decoration="line-through">Pick the dates</text></g>
+    <rect x="252" y="274" width="16" height="16" rx="3" fill="none" stroke="#c9cfd8"/>
+    <rect x="32" y="362" width="236" height="1" fill="#dde1e7"/>
+    <circle cx="44" cy="380" r="7" fill="#2563eb"/><text x="44" y="384" fill="#ffffff" font-size="9" text-anchor="middle">✓</text>
+    <text x="60" y="384" fill="#8a909b" font-weight="500" text-decoration="line-through">Read the article about sleep</text>
+    <text x="60" y="399" fill="#8a909b" font-size="10">Done 15 Oct 2026, 09:12</text>
+    <rect x="32" y="410" width="236" height="1" fill="#dde1e7"/>
+    <rect x="22" y="142" width="44" height="44" rx="4" fill="none" stroke="#2563eb" stroke-dasharray="3 3"/>
+    <text x="100" y="140" fill="#2563eb" font-size="8">44 px tap area</text>
+    <rect x="20" y="508" width="260" height="62" fill="#ffffff" stroke="#dde1e7"/>
+    <g font-size="9" text-anchor="middle">
+      <rect x="40" y="518" width="16" height="16" rx="3" fill="#8a909b"/><text x="48" y="548" fill="#5d6370">Mail</text>
+      <rect x="92" y="518" width="16" height="16" rx="3" fill="#8a909b"/><text x="100" y="548" fill="#5d6370">Calendar</text>
+      <rect x="144" y="518" width="16" height="16" rx="3" fill="#2563eb"/><text x="152" y="548" fill="#2563eb">ToDo</text>
+      <rect x="196" y="518" width="16" height="16" rx="3" fill="#8a909b"/><text x="204" y="548" fill="#5d6370">Contacts</text>
+      <rect x="248" y="518" width="16" height="16" rx="3" fill="#8a909b"/><text x="256" y="548" fill="#5d6370">More</text>
+      <circle cx="262" cy="518" r="3" fill="#b8600a"/>
+    </g>
+    <text x="150" y="590" fill="#5d6370" text-anchor="middle">Light default, coarse pointer</text>
+  </g>
+</svg>

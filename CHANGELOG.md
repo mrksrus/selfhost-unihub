@@ -6,6 +6,25 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## Unreleased
+
+### Added
+
+- Pinned the existing interface with twelve synthetic desktop/phone reference
+  screens and browser checks for themes, visible rows, panel preferences,
+  keyboard focus and touch targets. Initial references preserve the current
+  appearance; the documented ToDo overflow and recording-tag touch defects
+  remain open bugs. Future baseline changes require an intentional decision.
+
+### Fixed
+
+- **A second tab can save after another tab reloads.** With UniHub open in
+  two tabs, loading or refreshing one of them (for example with "Refresh now"
+  on the update notice) made the other tab's next save fail, so a contact
+  typed there could not be added until that tab was reloaded too. Opening a
+  page now keeps the security token the other tabs already use; signing in
+  still issues a new one, and signing out removes it.
+
 ## 0.21.4
 
 ### Fixed
