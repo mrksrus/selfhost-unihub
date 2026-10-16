@@ -439,6 +439,10 @@ object ContactsSync {
 
     // The session cookie (api/src/config.ts, AUTH_COOKIE_NAME) among them;
     // the CSRF cookie may change without the session changing.
+    private fun cookieValues(cookies: String?): Map<String, String> =
+        cookies.orEmpty().split(';').map { it.trim() }.filter { '=' in it }
+            .associate { it.substringBefore('=') to it.substringAfter('=') }
+
     private fun sessionOf(cookies: String?): String? =
         cookies?.split(';')?.map { it.trim() }?.firstOrNull { it.startsWith("auth-token=") } ?: cookies
 
@@ -470,7 +474,7 @@ object ContactsSync {
     fun renewSession(context: Context) = synchronized(webLock) { applyRenewal(context) }
 
     private fun keepRenewal(context: Context, origin: String, session: String, cookies: List<String>) = synchronized(webLock) {
-        val renewal = JSONObject().put("origin", origin).put("session", sessionOf(session)).put("cookies", JSONArray(cookies))
+        val renewal = JSONObject().put("origin", origin).put("session", sessionOf(session)).put("sent", session).put("cookies", JSONArray(cookies))
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_RENEWAL, renewal.toString()).commit()
         applyRenewal(context)
     }
@@ -489,9 +493,18 @@ object ContactsSync {
                 Log.i(TAG, "Session renewal dropped: the app has another session")
                 return
             }
+            // Each cookie only extends the value the sync sent: one the page
+            // got since (servers up to 0.21.4 rotate the CSRF cookie on
+            // every page load) stays.
+            val sent = cookieValues(renewal.getString("sent"))
+            val now = cookieValues(cookie(origin))
             val cookies = renewal.getJSONArray("cookies")
             val manager = CookieManager.getInstance()
-            for (index in 0 until cookies.length()) manager.setCookie(origin, cookies.getString(index))
+            for (index in 0 until cookies.length()) {
+                val header = cookies.getString(index)
+                val name = header.substringBefore('=').trim()
+                if (name in sent && now[name] == sent[name]) manager.setCookie(origin, header)
+            }
             manager.flush()
             Log.i(TAG, "Session renewal given to the app")
         } catch (_: org.json.JSONException) {
