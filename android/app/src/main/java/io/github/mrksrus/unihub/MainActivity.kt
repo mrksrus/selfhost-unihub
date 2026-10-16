@@ -173,7 +173,6 @@ class MainActivity : Activity() {
         destroyWeb()
         origin = server
         val frame = FrameLayout(this)
-        ContactsSync.webViewCreating(this)
         val web = WebView(this)
         frame.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         setContentView(frame)
@@ -211,12 +210,14 @@ class MainActivity : Activity() {
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                ContactsSync.pageShown(this@MainActivity, url)
                 hideError()
                 pageBridge.cancelFiles()
             }
 
             // Also after signing in, which changes the page without loading one.
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+                ContactsSync.pageShown(this@MainActivity, url)
                 offerContacts(server)
             }
 
@@ -268,7 +269,7 @@ class MainActivity : Activity() {
         webView?.let {
             (it.parent as? ViewGroup)?.removeView(it)
             it.destroy()
-            ContactsSync.webViewDestroyed(this)
+            ContactsSync.pageShown(this, null)
         }
         webView = null
         bridge?.close()
@@ -506,6 +507,11 @@ class MainActivity : Activity() {
 
     // Leaving the app is when contacts were most likely edited, or the
     // person signed out: the phone's copy follows.
+    override fun onResume() {
+        super.onResume()
+        ContactsSync.renewSession(this)
+    }
+
     override fun onPause() {
         super.onPause()
         CookieManager.getInstance().flush()

@@ -157,6 +157,7 @@ object ContactsSync {
             clear(manager, account, provider, result, "the app is on another server")
             return
         }
+        renewSession(context)
         val session = cookie(origin)
         if (session == null) {
             clear(manager, account, provider, result, "signed out")
@@ -445,26 +446,28 @@ object ContactsSync {
     // The server extends a session at most once a day and sends its cookie
     // again. The WebView must get that expiry, or the app would sign out 21
     // days after its own last renewal while syncs keep renewing the session.
-    // Writing the cookie must not undo a sign-in, and only a WebView signs
-    // in: so a renewal is kept until no WebView exists (a sync with the app
-    // closed, or just before MainActivity makes one), and then written only
-    // if it is still the WebView's session. The lock keeps a WebView from
-    // being made while it is written.
+    // Writing the cookie must not undo a sign-in. UniHub opens a new session
+    // only from its /auth page (sign-in, sign-up, two-factor codes), so a
+    // renewal is kept and written only while no page of this process is on
+    // /auth and none has been for SIGN_IN_GRACE_MS, which outlasts a sign-in
+    // request still under way. It is written only if the cookie is still that
+    // session. The lock orders the write with page changes.
 
+    private const val SIGN_IN_GRACE_MS = 5 * 60_000L
     private val webLock = Any()
-    private var webViews = 0
+    private var onAuthPage = false
+    private var leftAuthPageAt = 0L
 
-    /** MainActivity is about to make a WebView. */
-    fun webViewCreating(context: Context) = synchronized(webLock) {
-        applyRenewal(context)
-        webViews++
-    }
-
-    /** MainActivity destroyed its WebView. */
-    fun webViewDestroyed(context: Context) = synchronized(webLock) {
-        webViews = maxOf(0, webViews - 1)
+    /** MainActivity: the WebView shows this address now (null: the WebView is gone). */
+    fun pageShown(context: Context, url: String?) = synchronized(webLock) {
+        val auth = url != null && Uri.parse(url).path.let { it == "/auth" || it?.startsWith("/auth/") == true }
+        if (onAuthPage && !auth) leftAuthPageAt = android.os.SystemClock.elapsedRealtime()
+        onAuthPage = auth
         applyRenewal(context)
     }
+
+    /** Writes a kept renewal if that is safe now. */
+    fun renewSession(context: Context) = synchronized(webLock) { applyRenewal(context) }
 
     private fun keepRenewal(context: Context, origin: String, session: String, cookies: List<String>) = synchronized(webLock) {
         val renewal = JSONObject().put("origin", origin).put("session", sessionOf(session)).put("cookies", JSONArray(cookies))
@@ -474,18 +477,23 @@ object ContactsSync {
 
     // Holds webLock.
     private fun applyRenewal(context: Context) {
-        if (webViews > 0) return
+        if (onAuthPage) return
+        if (leftAuthPageAt != 0L && android.os.SystemClock.elapsedRealtime() - leftAuthPageAt < SIGN_IN_GRACE_MS) return
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val saved = prefs.getString(KEY_RENEWAL, null) ?: return
         prefs.edit().remove(KEY_RENEWAL).commit()
         try {
             val renewal = JSONObject(saved)
             val origin = renewal.getString("origin")
-            if (sessionOf(cookie(origin)) != renewal.getString("session")) return
+            if (sessionOf(cookie(origin)) != renewal.getString("session")) {
+                Log.i(TAG, "Session renewal dropped: the app has another session")
+                return
+            }
             val cookies = renewal.getJSONArray("cookies")
             val manager = CookieManager.getInstance()
             for (index in 0 until cookies.length()) manager.setCookie(origin, cookies.getString(index))
             manager.flush()
+            Log.i(TAG, "Session renewal given to the app")
         } catch (_: org.json.JSONException) {
             // Nothing usable was kept.
         }

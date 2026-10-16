@@ -89,7 +89,9 @@ are unchanged, and it works with any server the app supports.
   `GET /api/contacts` with the app's own WebView session cookie, so it needs no
   password of its own. A sync uses the session like the open app does, so
   while syncing is on the app's session keeps being renewed (21 days from the
-  last use, see [authentication](AUTH_ADMIN_SETTINGS.md)).
+  last use, see [authentication](AUTH_ADMIN_SETTINGS.md)). The app passes a
+  renewed cookie on to its pages, except while a page is signing in (the
+  `/auth` page and five minutes after), so it never replaces a new session.
 - **Removal.** Signing out in the app, a session that ended (for example
   signed out on every device), or the Contacts module turned off empties the
   account at the next sync; signing in again fills it. Another user signing in
