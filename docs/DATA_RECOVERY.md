@@ -89,6 +89,14 @@ snapshot for whole-server recovery or rollback.
 
 ## Focused verification
 
+Every release also runs the [fresh-install recovery gate](RELEASE_CONTRACT.md#what-the-recovery-check-proves):
+`node scripts/recovery-fresh-install.mts --image unihub:ci` in CI, or
+`npm --prefix api run build && node scripts/recovery-fresh-install.mts --local`
+locally. It exports all supported sections, destroys the source installation,
+imports into a separate database/storage/key set, restarts, compares restored
+files and ownership, and reconnects credentials to controlled provider peers.
+The integration tests below remain required; they do not substitute for that gate.
+
 Run `npm --prefix api run test:recovery` before releasing a data/recovery change.
 This gate checks connectivity, MariaDB and an empty disposable `_test` database,
 forces historical upgrade checks on, runs backup/inventory/migration tests

@@ -182,13 +182,25 @@ function clearAuthCookie(res: ServerResponse) {
   appendSetCookie(res, `${AUTH_COOKIE_NAME}=; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
 }
 
+// The CSRF cookie this browser already holds, if it has the form the server
+// issues (generateCsrfToken). Read like validateCsrfToken reads it: the first
+// csrf-token cookie, undecoded.
+function getCsrfCookie(req: Pick<IncomingMessage, 'headers'>) {
+  const token = req.headers.cookie
+    ?.split(';')
+    .find(c => c.trim().startsWith('csrf-token='))
+    ?.split('=')[1];
+  return token && /^[a-f0-9]{64}$/.test(token) ? token : null;
+}
+
 // Re-send both cookies with a fresh expiry after verifyToken renewed the session.
 function refreshSessionCookies(req: AuthRequest, res: ServerResponse) {
   if (!req.sessionRenewed) return;
   const cookies = parseCookies(req);
   if (cookies[AUTH_COOKIE_NAME] !== req.sessionRenewed) return;
   setAuthCookie(res, req.sessionRenewed);
-  if (/^[a-f0-9]{64}$/.test(cookies['csrf-token'] || '')) setCsrfCookie(res, cookies['csrf-token']);
+  const csrfToken = getCsrfCookie(req);
+  if (csrfToken) setCsrfCookie(res, csrfToken);
 }
 
 // JWT verification + session check. The session row is the authority on
@@ -289,6 +301,7 @@ export {
   validateCsrfToken,
   appendSetCookie,
   parseCookies,
+  getCsrfCookie,
   getAuthCredential,
   getAuthTokenFromRequest,
   setCsrfCookie,

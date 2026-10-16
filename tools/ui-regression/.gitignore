@@ -1,0 +1,6 @@
+node_modules/
+# Pinned browser download (scripts/install-browser.mts), build output and run results.
+.browsers/
+.build/
+test-results/
+report/

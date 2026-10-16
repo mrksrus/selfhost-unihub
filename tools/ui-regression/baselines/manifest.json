@@ -1,0 +1,126 @@
+{
+  "schema": 1,
+  "status": "Initial current-code baseline, captured on request of the maintainer on 2026-10-16 to pin the interface as it is. Synthetic fixture data in a headless browser; not a real device, installation or production check.",
+  "render": {
+    "playwright": "1.64.0",
+    "browser": "chromium-headless-shell 156.0.8078.4",
+    "browserArgs": [
+      "--font-render-hinting=none",
+      "--disable-lcd-text",
+      "--force-color-profile=srgb",
+      "--disable-gpu",
+      "--disable-skia-runtime-opts",
+      "--num-raster-threads=1",
+      "--disable-partial-raster"
+    ],
+    "platform": "linux-x64",
+    "fonts": {
+      "@fontsource/inter": "5.3.0",
+      "@fontsource/jetbrains-mono": "5.3.0"
+    },
+    "fontconfig": "isolated",
+    "deviceScaleFactor": 1
+  },
+  "baselines": {
+    "composer-phone-dark.png": {
+      "sha256": "dbacf1075e4ae3dcef469ddcd84038f58abc785568a15d798269bb493ff8d487",
+      "bytes": 38149
+    },
+    "composer-phone-light.png": {
+      "sha256": "0ca31c95181a987411ea9f0eb541958608ee6104a3c4f54902957cf617ad507c",
+      "bytes": 40486
+    },
+    "mail-reader-wide-dark.png": {
+      "sha256": "1eb86d4f05ecedf3a6fcbeaaa7436f5936508de32b7576ce2acb8c5b10eb59a0",
+      "bytes": 208640
+    },
+    "mail-reader-wide-light.png": {
+      "sha256": "9b74f5d9a41611c5e134daeca0161efe3494a50033fe3748e104404dc14b5e76",
+      "bytes": 216735
+    },
+    "recordings-phone-dark.png": {
+      "sha256": "30b8530f865fd11b7e05379b33d2bb208fef68a34c36933b94d1f77df017952b",
+      "bytes": 48752
+    },
+    "recordings-phone-light.png": {
+      "sha256": "6e9a87d9bdb1f55b76d07c9ee08518de9d64bd6899493b48a61a61a8a9be0a12",
+      "bytes": 50768
+    },
+    "settings-appearance-wide-dark.png": {
+      "sha256": "85561d231f6ff02060b211eb6ac568d5dcd5b7ff76a6bf7cf1c01256ff544b7a",
+      "bytes": 109720
+    },
+    "settings-appearance-wide-light.png": {
+      "sha256": "856cc5a7a62e730278c6b6f523864453f6d8e84dde4d02ba3934178ae07a9815",
+      "bytes": 102509
+    },
+    "todo-phone-dark.png": {
+      "sha256": "e23e434100003d860b002c2ea00184f61e24469ab8eb3fa47fc792684ce98cd3",
+      "bytes": 65728
+    },
+    "todo-phone-light.png": {
+      "sha256": "f45e76617e1d6d924b38d89cadc1610eee67e851f79a9321914dfabfbb2980dc",
+      "bytes": 71064
+    },
+    "todo-wide-dark.png": {
+      "sha256": "3e6e4e96a59238bb0a39ff8162d5f0f4a48c9c36f36de38ffc08936aa05e618a",
+      "bytes": 101187
+    },
+    "todo-wide-light.png": {
+      "sha256": "263f4d2158d43832d7eac67d2cfefbf33050527c8ab7eb443ce69d78dc5730b2",
+      "bytes": 104940
+    }
+  },
+  "approvals": [
+    {
+      "date": "2026-10-16T11:54:40.785Z",
+      "reason": "Initial current-code baseline of the twelve docs/UI_ACCEPTANCE.md reference screens, requested by the maintainer on 2026-10-16 to pin the interface as it is. Pins current appearance including known defects UIR-1 and UIR-2; not a design approval of them.",
+      "source": {
+        "commit": "04db73b446ad11688a56bbedcafda9e24df7cac8",
+        "branch": "chore/project-workflows-20261016",
+        "dirty": false,
+        "digest": "0b1c437417f1e27aae8857345fd579fcf349293a0454fb4d58736efe062069f0"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.7.0",
+        "ci": false
+      },
+      "added": [
+        "composer-phone-dark.png",
+        "composer-phone-light.png",
+        "mail-reader-wide-dark.png",
+        "mail-reader-wide-light.png",
+        "recordings-phone-dark.png",
+        "recordings-phone-light.png",
+        "settings-appearance-wide-dark.png",
+        "settings-appearance-wide-light.png",
+        "todo-phone-dark.png",
+        "todo-phone-light.png",
+        "todo-wide-dark.png",
+        "todo-wide-light.png"
+      ],
+      "changed": [],
+      "removed": []
+    }
+  ]
+}

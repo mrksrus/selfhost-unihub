@@ -2,6 +2,12 @@
 
 UniHub is a self-hosted PWA for mail, contacts, calendars, tasks and recordings, accessible through one UniHub login across devices. People trust it with private data. Favor correct ownership, recoverability, and clear behavior over clever abstractions. These are project defaults; the task and the maintainer's instructions take priority.
 
+## Accepted decisions and verification
+
+Before changing behavior, read [PROJECT-PREFERENCES.md](PROJECT-PREFERENCES.md). Use the shared `project-preferences` skill when available to preserve accepted choices, record new durable user decisions and surface genuinely unresolved conflicts. Explicit new user direction may supersede an old choice; general design freedom does not. Use the canonical project file across local worktrees when a user registry is available. In a scoped/read-only task, propose any update outside that scope rather than editing it.
+
+For frontend work, read [UI acceptance](docs/UI_ACCEPTANCE.md) before applying frontend-design. Preserve accepted tokens, components and interactions during ordinary changes. For feature acceptance and releases, use [unihub-verify](.agents/skills/unihub-verify/SKILL.md) and the [release contract](docs/RELEASE_CONTRACT.md); use focused checks for ordinary changes and full required gates before publishing. A missing required runtime check is not a pass. Keep model routing in user-wide guidance rather than copying model IDs here.
+
 ## How the app fits together
 
     React/TypeScript PWA -> Nginx -> Node HTTP API -> MariaDB
@@ -56,7 +62,7 @@ For feature details, follow the corresponding file in docs/ rather than treating
 - Change only the needed layers, but follow a behavior through all affected layers: UI, API, database, workers, offline snapshot, backup/restore, and documentation. Avoid dependencies and abstractions that solve no current requirement. Comments should explain a constraint or reason that the code alone does not show.
 - Database schema: database-baseline.ts is the frozen 0.16.0 starting schema of new databases (upgrade steps 1 to 11), never change it; every schema change is a new numbered migration in database.ts, then regenerate `docker/mariadb/schema.sql` with `scripts/local-db.sh schema-dump`.
 - Tests should prove observable behavior and important failure paths with synthetic data. Do not copy a real mailbox, database, contact list, or server volume into a test fixture.
-- Keep a test only if a real failure would make it fail: lost, duplicated or wrongly shown data, a security or privacy boundary, a recovery or concurrency rule, or a user-visible flow. Prefer the real thing: the disposable test MariaDB (`*-mysql-integration.test.cts`), the real request handler, the installed IMAP wire peer, and rendered components with only the network mocked. Do not add tests that assert SQL text, config-file text, which queries run, labels or layout, or a helper already exercised by a path test; extend an existing scenario instead of adding a near-duplicate. When a fake database fixture breaks on a harmless query change, prefer moving that case to a real-database test over patching the fixture.
+- Keep a test only if a real failure would make it fail: lost, duplicated or wrongly shown data, a security or privacy boundary, a recovery or concurrency rule, or a user-visible flow. Prefer the real thing: the disposable test MariaDB (`*-mysql-integration.test.cts`), the real request handler, the installed IMAP wire peer, and rendered components with only the network mocked. Reject brittle SQL/config text, incidental labels/layout and duplicate helper assertions. Approved visual baselines, non-overlapping hit-target geometry, keyboard focus and pinned UI behavior are legitimate regression checks under docs/UI_ACCEPTANCE.md. Extend an existing scenario instead of adding a near-duplicate. When a fake database fixture breaks on a harmless query change, prefer moving that case to a real-database test over patching the fixture.
 
 ## Code Review Rules
 

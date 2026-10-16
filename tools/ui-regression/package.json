@@ -1,0 +1,22 @@
+{
+  "name": "unihub-ui-regression",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Development-only rendered-UI regression checks for UniHub. Never shipped with the app.",
+  "type": "module",
+  "scripts": {
+    "browsers": "node scripts/install-browser.mts",
+    "verify": "node scripts/run.mts",
+    "update": "node scripts/run.mts --update",
+    "typecheck": "node ../../node_modules/typescript/bin/tsc -p ."
+  },
+  "devDependencies": {
+    "@fontsource/inter": "5.3.0",
+    "@fontsource/jetbrains-mono": "5.3.0",
+    "@playwright/test": "1.64.0"
+  },
+  "engines": {
+    "node": ">=26"
+  },
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

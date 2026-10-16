@@ -56,6 +56,13 @@ applies. Tests: `api/tests/request-csrf.test.cts`.
 The frontend stores the CSRF token in memory via `src/lib/api.ts`; it does not
 store auth tokens in localStorage.
 
+Tabs share the browser's CSRF cookie. `/api/auth/me` returns that existing
+token, issuing one only when it is missing or malformed, so opening or
+reloading a tab does not invalidate another tab's unsaved work. Sign-in,
+sign-up and completed two-factor login issue a new token. Sign-out, password
+change and account deletion clear it. Writes still require the matching
+cookie and header.
+
 The background-sync exception remains for older clients. The current service
 worker does not poll mail; the server schedules mail discovery and sends Web
 Push notifications.
@@ -250,7 +257,7 @@ Then sign in with the password and set up 2FA again.
 | --- | --- | --- |
 | POST | `/api/auth/signin` | Sign in |
 | POST | `/api/auth/signout` | Delete current session and clear cookies |
-| GET | `/api/auth/me` | Return current user and refresh CSRF token |
+| GET | `/api/auth/me` | Return current user and existing CSRF token, issuing one if missing or malformed |
 | PUT | `/api/auth/password` | Change password, delete all sessions, clear cookies |
 | PUT | `/api/auth/profile` | Update full name and timezone |
 

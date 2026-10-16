@@ -15,6 +15,7 @@ import {
   getSessionExpiry,
   setAuthCookie,
   setCsrfCookie,
+  getCsrfCookie,
   getAuthTokenFromRequest,
   clearAuthCookie,
   clearCsrfCookie,
@@ -498,8 +499,12 @@ export = {
         return { user: users[0] };
       }
 
-      // Refresh CSRF token on regular /auth/me calls to prevent stale tokens.
-      const csrfToken = generateCsrfToken();
+      // Hand the page the browser's existing CSRF token rather than a new one:
+      // every open tab of this session holds the token in memory, and rotating
+      // the shared cookie here would make the other tabs' writes fail. Sign-in
+      // issues a new token; sign-out, a password change and account deletion
+      // clear it.
+      const csrfToken = getCsrfCookie(req) || generateCsrfToken();
       setCsrfCookie(res, csrfToken);
 
       return { user: users[0], csrfToken };

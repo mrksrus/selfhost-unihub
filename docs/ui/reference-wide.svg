@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1480" height="520" viewBox="0 0 1480 520" font-family="Inter, system-ui, sans-serif" font-size="12">
+  <title>UniHub wide layout reference: rail, context panel, list and resizable reader, dark and light default</title>
+  <desc>Schematic of the approved arrangement at 1440 pixels and wider. Not a screenshot; fixture labels only.</desc>
+  <!-- Dark default -->
+  <g id="dark">
+    <rect x="10" y="10" width="720" height="450" fill="#000000" stroke="#26292b"/>
+    <rect x="10" y="10" width="36" height="450" fill="#0c0d0e" stroke="#26292b"/>
+    <rect x="18" y="20" width="20" height="20" rx="5" fill="#2563eb"/>
+    <rect x="12" y="52" width="2" height="22" rx="1" fill="#2563eb"/>
+    <g fill="#6b7280"><rect x="22" y="56" width="12" height="12" rx="2" fill="#ffffff"/><rect x="22" y="86" width="12" height="12" rx="2"/><rect x="22" y="116" width="12" height="12" rx="2"/><rect x="22" y="146" width="12" height="12" rx="2"/></g>
+    <g fill="#6b7280"><rect x="22" y="380" width="12" height="12" rx="2"/><rect x="22" y="410" width="12" height="12" rx="2"/><circle cx="28" cy="442" r="8" fill="#1a1c1e" stroke="#26292b"/></g>
+    <!-- context panel -->
+    <rect x="46" y="10" width="128" height="450" fill="#0c0d0e" stroke="#26292b"/>
+    <text x="56" y="38" fill="#ffffff" font-weight="600">Accounts</text>
+    <rect x="156" y="27" width="12" height="12" rx="2" fill="none" stroke="#6b7280"/>
+    <text x="56" y="62" fill="#9ca3af">alex@example.com</text>
+    <rect x="50" y="78" width="120" height="20" rx="4" fill="#1a1c1e"/>
+    <text x="58" y="92" fill="#ffffff">Inbox</text><text x="150" y="92" fill="#60a5fa" text-anchor="end">12</text>
+    <text x="58" y="116" fill="#9ca3af">Drafts</text>
+    <text x="58" y="138" fill="#9ca3af">Sent</text>
+    <text x="58" y="160" fill="#9ca3af">Archive</text>
+    <text x="58" y="182" fill="#9ca3af">Trash</text>
+    <!-- header -->
+    <rect x="174" y="10" width="556" height="38" fill="#000000" stroke="#26292b"/>
+    <text x="186" y="34" fill="#ffffff" font-size="14" font-weight="600">Mail</text>
+    <text x="222" y="34" fill="#9ca3af">alex@example.com / Inbox</text>
+    <rect x="662" y="20" width="60" height="18" rx="4" fill="#2563eb"/><text x="692" y="33" fill="#ffffff" text-anchor="middle">Compose</text>
+    <!-- list -->
+    <g fill="#9ca3af">
+      <rect x="180" y="60" width="240" height="1" fill="#26292b"/>
+      <text x="186" y="80" fill="#ffffff" font-weight="500">Jane Doe</text><text x="186" y="96">Invoice 4711 for October</text>
+      <rect x="180" y="106" width="240" height="1" fill="#26292b"/>
+      <text x="186" y="126" fill="#ffffff" font-weight="500">Example Shop</text><text x="186" y="142">Receipt for your purchase</text>
+      <rect x="180" y="152" width="240" height="1" fill="#26292b"/>
+      <text x="186" y="172" fill="#ffffff" font-weight="500">Team</text><text x="186" y="188">Notes from the planning call</text>
+      <rect x="180" y="198" width="240" height="1" fill="#26292b"/>
+      <text x="186" y="218" fill="#ffffff" font-weight="500">Sam Example</text><text x="186" y="234">A very long subject line that is truncated at the …</text>
+      <rect x="180" y="244" width="240" height="1" fill="#26292b"/>
+    </g>
+    <!-- reader with drag handle -->
+    <rect x="430" y="48" width="300" height="412" fill="#000000" stroke="#26292b"/>
+    <rect x="429" y="48" width="2" height="412" fill="#2563eb"/>
+    <text x="434" y="42" fill="#60a5fa" font-size="10">reader 30 to 70 %, remembered per browser</text>
+    <rect x="440" y="62" width="48" height="16" rx="3" fill="none" stroke="#3b4044"/><text x="464" y="74" fill="#ffffff" text-anchor="middle" font-size="10">Reply</text>
+    <rect x="494" y="62" width="56" height="16" rx="3" fill="none" stroke="#3b4044"/><text x="522" y="74" fill="#ffffff" text-anchor="middle" font-size="10">Forward</text>
+    <rect x="556" y="62" width="60" height="16" rx="3" fill="none" stroke="#3b4044"/><text x="586" y="74" fill="#ffffff" text-anchor="middle" font-size="10">Add task</text>
+    <text x="440" y="104" fill="#ffffff" font-size="14" font-weight="600">Invoice 4711 for October</text>
+    <text x="440" y="122" fill="#9ca3af">Jane Doe &lt;jane@example.com&gt;</text>
+    <text x="440" y="138" fill="#9ca3af">To: Alex Example &lt;alex@example.com&gt;</text>
+    <rect x="440" y="150" width="280" height="1" fill="#26292b"/>
+    <g fill="#d1d5db"><rect x="440" y="164" width="260" height="6" rx="3"/><rect x="440" y="178" width="280" height="6" rx="3"/><rect x="440" y="192" width="200" height="6" rx="3"/></g>
+    <rect x="440" y="212" width="130" height="22" rx="4" fill="#1a1c1e"/><text x="448" y="227" fill="#9ca3af" font-size="10">invoice-4711.pdf</text>
+    <text x="20" y="490" fill="#9ca3af">Dark default: page black, surfaces dark grey, accent blue, warning amber, destructive red.</text>
+  </g>
+  <!-- Light default -->
+  <g id="light" transform="translate(740 0)">
+    <rect x="10" y="10" width="720" height="450" fill="#f5f7fa" stroke="#dde1e7"/>
+    <rect x="10" y="10" width="36" height="450" fill="#ffffff" stroke="#dde1e7"/>
+    <rect x="18" y="20" width="20" height="20" rx="5" fill="#2563eb"/>
+    <rect x="12" y="52" width="2" height="22" rx="1" fill="#2563eb"/>
+    <g fill="#5d6370"><rect x="22" y="56" width="12" height="12" rx="2" fill="#0f1729"/><rect x="22" y="86" width="12" height="12" rx="2"/><rect x="22" y="116" width="12" height="12" rx="2"/><rect x="22" y="146" width="12" height="12" rx="2"/></g>
+    <g fill="#5d6370"><rect x="22" y="380" width="12" height="12" rx="2"/><rect x="22" y="410" width="12" height="12" rx="2"/><circle cx="28" cy="442" r="8" fill="#eaedf1" stroke="#dde1e7"/></g>
+    <rect x="46" y="10" width="128" height="450" fill="#ffffff" stroke="#dde1e7"/>
+    <text x="56" y="38" fill="#0f1729" font-weight="600">Accounts</text>
+    <rect x="156" y="27" width="12" height="12" rx="2" fill="none" stroke="#5d6370"/>
+    <text x="56" y="62" fill="#5d6370">alex@example.com</text>
+    <rect x="50" y="78" width="120" height="20" rx="4" fill="#eaedf1"/>
+    <text x="58" y="92" fill="#0f1729">Inbox</text><text x="150" y="92" fill="#2563eb" text-anchor="end">12</text>
+    <text x="58" y="116" fill="#5d6370">Drafts</text>
+    <text x="58" y="138" fill="#5d6370">Sent</text>
+    <text x="58" y="160" fill="#5d6370">Archive</text>
+    <text x="58" y="182" fill="#5d6370">Trash</text>
+    <rect x="174" y="10" width="556" height="38" fill="#f5f7fa" stroke="#dde1e7"/>
+    <text x="186" y="34" fill="#0f1729" font-size="14" font-weight="600">Mail</text>
+    <text x="222" y="34" fill="#5d6370">alex@example.com / Inbox</text>
+    <rect x="662" y="20" width="60" height="18" rx="4" fill="#2563eb"/><text x="692" y="33" fill="#ffffff" text-anchor="middle">Compose</text>
+    <g fill="#5d6370">
+      <rect x="180" y="60" width="240" height="1" fill="#dde1e7"/>
+      <text x="186" y="80" fill="#0f1729" font-weight="500">Jane Doe</text><text x="186" y="96">Invoice 4711 for October</text>
+      <rect x="180" y="106" width="240" height="1" fill="#dde1e7"/>
+      <text x="186" y="126" fill="#0f1729" font-weight="500">Example Shop</text><text x="186" y="142">Receipt for your purchase</text>
+      <rect x="180" y="152" width="240" height="1" fill="#dde1e7"/>
+      <text x="186" y="172" fill="#0f1729" font-weight="500">Team</text><text x="186" y="188">Notes from the planning call</text>
+      <rect x="180" y="198" width="240" height="1" fill="#dde1e7"/>
+      <text x="186" y="218" fill="#0f1729" font-weight="500">Sam Example</text><text x="186" y="234">A very long subject line that is truncated at the …</text>
+      <rect x="180" y="244" width="240" height="1" fill="#dde1e7"/>
+    </g>
+    <rect x="430" y="48" width="300" height="412" fill="#f5f7fa" stroke="#dde1e7"/>
+    <rect x="429" y="48" width="2" height="412" fill="#2563eb"/>
+    <text x="434" y="42" fill="#2563eb" font-size="10">reader 30 to 70 %, remembered per browser</text>
+    <rect x="440" y="62" width="48" height="16" rx="3" fill="#ffffff" stroke="#c9cfd8"/><text x="464" y="74" fill="#0f1729" text-anchor="middle" font-size="10">Reply</text>
+    <rect x="494" y="62" width="56" height="16" rx="3" fill="#ffffff" stroke="#c9cfd8"/><text x="522" y="74" fill="#0f1729" text-anchor="middle" font-size="10">Forward</text>
+    <rect x="556" y="62" width="60" height="16" rx="3" fill="#ffffff" stroke="#c9cfd8"/><text x="586" y="74" fill="#0f1729" text-anchor="middle" font-size="10">Add task</text>
+    <text x="440" y="104" fill="#0f1729" font-size="14" font-weight="600">Invoice 4711 for October</text>
+    <text x="440" y="122" fill="#5d6370">Jane Doe &lt;jane@example.com&gt;</text>
+    <text x="440" y="138" fill="#5d6370">To: Alex Example &lt;alex@example.com&gt;</text>
+    <rect x="440" y="150" width="280" height="1" fill="#dde1e7"/>
+    <g fill="#9aa1ad"><rect x="440" y="164" width="260" height="6" rx="3"/><rect x="440" y="178" width="280" height="6" rx="3"/><rect x="440" y="192" width="200" height="6" rx="3"/></g>
+    <rect x="440" y="212" width="130" height="22" rx="4" fill="#eaedf1"/><text x="448" y="227" fill="#5d6370" font-size="10">invoice-4711.pdf</text>
+    <text x="20" y="490" fill="#5d6370">Light default: light grey page, white surfaces, same blue accent; warning and success darkened for white.</text>
+  </g>
+</svg>
