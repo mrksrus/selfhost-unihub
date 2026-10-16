@@ -85,13 +85,24 @@ else
   adb install "$old_apk" >/dev/null
   saved=0
   if [[ "$old_expectation" == launch ]]; then
-    # Connect the old app to a server, as its user did.
-    adb shell am start -W -a android.intent.action.VIEW -d "'unihub://connect?server=$server'" >/dev/null
-    for _ in $(seq 1 20); do adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true; adb shell cat /sdcard/window.xml 2>/dev/null | grep -q 'Connect to 10.0.2.2?' && break; sleep 1; done
-    bounds="$(adb shell cat /sdcard/window.xml 2>/dev/null | grep -o 'resource-id="android:id/button1"[^>]*bounds="[^"]*"' | grep -o 'bounds="[^"]*"' | head -n 1 || true)"
-    read -r x1 y1 x2 y2 <<<"$(sed 's/[^0-9]/ /g' <<<"$bounds")"
-    if [[ -n "${y2:-}" ]]; then adb shell input tap $(((x1 + x2) / 2)) $(((y1 + y2) / 2)); fi
-    for _ in $(seq 1 30); do grep -q 'GET /page-loaded' "$work/stub.log" && { saved=1; break; }; sleep 1; done
+    # Connect the old app to a server, as its user did. A screen dump can come
+    # back empty while the dialog draws, so a missed tap is tried again.
+    for _ in 1 2 3; do
+      adb shell am force-stop "$package"
+      adb shell am start -W -a android.intent.action.VIEW -d "'unihub://connect?server=$server'" >/dev/null
+      bounds=
+      for _ in $(seq 1 20); do
+        adb shell uiautomator dump /sdcard/window.xml >/dev/null 2>&1 || true
+        bounds="$(adb shell cat /sdcard/window.xml 2>/dev/null | grep -q 'Connect to 10.0.2.2?' \
+          && adb shell cat /sdcard/window.xml 2>/dev/null | grep -o 'resource-id="android:id/button1"[^>]*bounds="[^"]*"' | grep -o 'bounds="[^"]*"' | head -n 1 || true)"
+        [[ -n "$bounds" ]] && break
+        sleep 1
+      done
+      read -r x1 y1 x2 y2 <<<"$(sed 's/[^0-9]/ /g' <<<"$bounds")"
+      if [[ -n "${y2:-}" ]]; then adb shell input tap $(((x1 + x2) / 2)) $(((y1 + y2) / 2)); fi
+      for _ in $(seq 1 30); do grep -q 'GET /page-loaded' "$work/stub.log" && { saved=1; break; }; sleep 1; done
+      [[ "$saved" == 1 ]] && break
+    done
     adb shell am force-stop "$package"
   fi
   : > "$work/stub.log"
