@@ -15,7 +15,9 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
@@ -103,9 +105,16 @@ class NotificationService : Service() {
         super.onDestroy()
     }
 
-    // A start that came in meanwhile keeps the service (stopSelf with its id).
+    // On the main thread, like onStartCommand, so a start cannot fall between
+    // the check and stopSelf. A start that came first already replaced the
+    // stopped run, and then this one does nothing.
+    private val main = Handler(Looper.getMainLooper())
     private fun finish(run: Run) {
         run.stopped = true
+        main.post { stopIfCurrent(run) }
+    }
+
+    private fun stopIfCurrent(run: Run) {
         if (current !== run) return
         open?.disconnect()
         stopForeground(STOP_FOREGROUND_REMOVE)

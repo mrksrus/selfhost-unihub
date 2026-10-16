@@ -92,7 +92,14 @@ const androidTransport: NotificationTransport<AndroidTarget> = {
   async ready() {},
   async send(target, message) {
     const webPush = require('web-push') as typeof import('web-push');
-    const { cipherText } = webPush.encrypt(target.p256dh, target.auth, messageBody(message), 'aes128gcm');
+    let cipherText: Buffer;
+    try {
+      ({ cipherText } = webPush.encrypt(target.p256dh, target.auth, messageBody(message), 'aes128gcm'));
+    } catch {
+      // Keys that cannot be encrypted for never will be (registration checks
+      // them; this covers anything stored otherwise): the device goes.
+      return { sent: false, targetGone: true, retry: false, nextAttempt: null, error: 'Device key is not usable' };
+    }
     // Loaded when used, as web-push is: whatever imports the dispatcher need not hold the stream bus.
     const { sendToDevice } = require('./android-push') as typeof import('./android-push');
     return { sent: false, awaiting: true, nextAttempt: sendToDevice(target.userId, target.id, message.eventId, cipherText) };
