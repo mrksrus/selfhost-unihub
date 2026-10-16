@@ -55,14 +55,16 @@ class Stub(BaseHTTPRequestHandler):
         session = 'auth-token=' + read('session')
         signed_in = user != '' and session in (self.headers.get('Cookie') or '').split('; ')
         set_session = ('Set-Cookie', session + '; HttpOnly; SameSite=Strict; Path=/')
-        if url.path == '/':
+        if url.path in ('/', '/auth'):
             with open(os.path.join(state, 'page-cookies'), 'a') as f:
                 f.write((self.headers.get('Cookie') or '') + '\n')
-            # The heartbeat hands the page a new session when the test changes it.
-            self.answer(200, '<!doctype html><title>UniHub contacts test</title><p>UniHub<script>setInterval(() => fetch("/heartbeat"), 1000)</script>',
+            # The heartbeat hands the page a new session when the test changes
+            # it, and moves the page to another address (/auth: signing in).
+            script = 'setInterval(() => fetch("/heartbeat").then(r => r.text()).then(go => { if (go && go !== location.pathname) history.pushState({}, "", go) }), 1000)'
+            self.answer(200, '<!doctype html><title>UniHub contacts test</title><p>UniHub<script>%s</script>' % script,
                         [('Content-Type', 'text/html')] + ([set_session] if user else []))
         elif url.path == '/heartbeat':
-            self.answer(200, 'ok', [set_session] if user else [])
+            self.answer(200, read('goto'), [set_session] if user else [])
         elif not url.path.startswith('/api/'):
             self.answer(404, 'not found')
         elif not signed_in:
@@ -101,6 +103,7 @@ contact() { # id first last phone email company notes
     "$1" "$2" "$3" "$5" "$4" "$6" "$7"
 }
 echo test-session > "$work/state/session"
+: > "$work/state/goto"
 set_server() { echo "$1" > "$work/state/user"; printf '[%s]\n' "$2" > "$work/state/contacts.json"; : > "$work/state/mode"; : > "$work/state/renew"; }
 # How /api/contacts misbehaves: error (HTTP 500), empty-more, no-has-more.
 set_mode() { echo "$1" > "$work/state/mode"; }
@@ -239,7 +242,7 @@ adb shell requestsync -n 10.0.2.2 -t "$package" -a com.android.contacts -f >/dev
 expect_name +15550100 'Ada Later' 'synced without the app open'
 expect_page_cookie 'renewed=closed' 'sync with the app closed'
 
-echo 'A renewal while the WebView exists waits for the next start'
+echo 'A renewal while the app is open reaches the WebView'
 echo open > "$work/state/renew"
 before="$(synced)"
 leave_app
@@ -249,19 +252,27 @@ kill_app
 : > "$work/state/renew"
 expect_page_cookie 'renewed=open' 'sync with the WebView alive'
 
-echo 'A kept renewal never replaces a newer session'
+echo 'A renewal waits while the page signs in, and never replaces the new session'
+echo /auth > "$work/state/goto"
+back_to_app
+sleep 4
 echo stale > "$work/state/renew"
 before="$(synced)"
 leave_app
 for _ in $(seq 1 40); do (( $(synced) > before )) && break; sleep 1; done
 (( $(synced) > before )) || fail 'no sync after leaving the app'
 : > "$work/state/renew"
-# The page signs in again (a new session cookie) while the renewal waits.
+given="$(adb logcat -d -s UniHubContacts | grep -c 'renewal given' || true)"
+# The sign-in answers with a new session cookie, then the page leaves /auth.
 echo test-session-2 > "$work/state/session"
+echo / > "$work/state/goto"
 back_to_app
 sleep 4
 leave_app # the app keeps its cookies when it is left
+sleep 3
+(( $(adb logcat -d -s UniHubContacts | grep -c 'renewal given' || true) == given )) || fail 'a renewal was written while the page was signing in'
 expect_page_cookie 'auth-token=test-session-2' 'the newer session'
+adb logcat -d -s UniHubContacts | grep -q 'renewal dropped' || fail 'the kept renewal was not dropped for the newer session'
 grep -q 'renewed=stale' "$work/state/page-cookies" && fail 'the kept renewal replaced the newer session'
 expect_name +15550100 'Ada Later' 'sync with the newer session'
 
