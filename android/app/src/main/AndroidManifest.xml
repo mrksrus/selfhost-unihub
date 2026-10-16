@@ -39,11 +39,11 @@
             </intent-filter>
         </activity>
 
-        <!-- Android binds these itself; another app can at most start a sync
-             or open the app's question. -->
+        <!-- Only Android binds these. Another app must not reach the sync
+             adapter: older Android versions let a caller hand it any provider. -->
         <service
             android:name=".AuthenticatorService"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="android.accounts.AccountAuthenticator" />
             </intent-filter>
@@ -53,7 +53,7 @@
         </service>
         <service
             android:name=".ContactsSyncService"
-            android:exported="true">
+            android:exported="false">
             <intent-filter>
                 <action android:name="android.content.SyncAdapter" />
             </intent-filter>

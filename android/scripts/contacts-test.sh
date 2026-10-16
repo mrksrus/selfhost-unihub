@@ -66,7 +66,16 @@ class Stub(BaseHTTPRequestHandler):
             contacts = json.loads(read('contacts.json'))
             limit, offset = int(query.get('limit', ['2000'])[0]), int(query.get('offset', ['0'])[0])
             page = contacts[offset:offset + limit]
-            self.answer(200, json.dumps({'contacts': page, 'has_more': offset + limit < len(contacts), 'offset': offset}), [('Content-Type', 'application/json')])
+            listing = {'contacts': page, 'has_more': offset + limit < len(contacts), 'offset': offset}
+            mode = read('mode')
+            if mode == 'error':
+                self.answer(500, json.dumps({'error': 'Failed to get contacts'}), [('Content-Type', 'application/json')])
+                return
+            if mode == 'empty-more':
+                listing = {'contacts': [], 'has_more': True, 'offset': offset}
+            if mode == 'no-has-more':
+                listing = {'contacts': page[:1], 'offset': offset}
+            self.answer(200, json.dumps(listing), [('Content-Type', 'application/json')])
         else:
             self.answer(404, json.dumps({'error': 'Not found'}))
 
@@ -80,7 +89,9 @@ contact() { # id first last phone email company notes
   printf '{"id":"%s","user_id":"u","first_name":%s,"last_name":%s,"email":%s,"email2":null,"email3":null,"phone":%s,"phone2":null,"phone3":null,"company":%s,"job_title":null,"notes":%s,"avatar_url":null,"is_favorite":0}' \
     "$1" "$2" "$3" "$5" "$4" "$6" "$7"
 }
-set_server() { echo "$1" > "$work/state/user"; printf '[%s]\n' "$2" > "$work/state/contacts.json"; }
+set_server() { echo "$1" > "$work/state/user"; printf '[%s]\n' "$2" > "$work/state/contacts.json"; : > "$work/state/mode"; }
+# How /api/contacts misbehaves: error (HTTP 500), empty-more, no-has-more.
+set_mode() { echo "$1" > "$work/state/mode"; }
 
 set_server user-1 "$(contact c-ada '"Ada"' '"Example"' '"+15550100"' '"ada@example.com"' '"Example Labs"' '"private note 7f3a"'),$(contact c-ben '"Ben"' '"Sample"' '"+15550101"' null null null),$(contact c-notes null null null null null '"only a note"')"
 python3 "$work/stub.py" "$port" "$work/state" 2>> "$work/stub.log" &
@@ -130,6 +141,16 @@ unihub_rows() {
 
 has_account() { adb shell dumpsys account 2>/dev/null | grep -q "Account {name=[^,]*, type=$package}"; }
 
+postponed() { adb logcat -d -s UniHubContacts 2>/dev/null | grep -c 'Sync postponed' || true; }
+
+# A sync that must not change anything: wait for it to give up.
+expect_postponed() {
+  local before="$(postponed)"
+  leave_app
+  for _ in $(seq 1 40); do (( $(postponed) > before )) && return 0; sleep 1; done
+  fail "no sync gave up ($1)"
+}
+
 # Leaving the app asks for a sync.
 leave_app() {
   adb shell input keyevent KEYCODE_HOME
@@ -167,6 +188,16 @@ expect_name +15550100 'Ada Changed' 'renamed'
 expect_name +15550101 '' 'deleted on the server'
 expect_name +15550102 'Cy Sample' 'added on the server'
 
+echo 'A failed or incomplete listing keeps the copy'
+for mode in error empty-more no-has-more; do
+  set_mode "$mode"
+  back_to_app
+  expect_postponed "$mode"
+  expect_name +15550100 'Ada Changed' "after $mode"
+  expect_name +15550102 'Cy Sample' "after $mode"
+done
+set_mode ''
+
 echo 'A sync from Android with the app closed (the periodic one)'
 # Android only kills a cached process, so wait for the last sync to end.
 for _ in $(seq 1 15); do
@@ -179,12 +210,17 @@ set_server user-1 "$(contact c-ada '"Ada"' '"Later"' '"+15550100"' null null nul
 adb shell requestsync -n 10.0.2.2 -t "$package" -a com.android.contacts -f >/dev/null
 expect_name +15550100 'Ada Later' 'synced without the app open'
 
-echo 'Another user signs in: only their contacts'
+echo 'Another user signs in: only their contacts, even if their listing fails'
 set_server user-2 "$(contact c-dee '"Dee"' '"Other"' '"+15550103"' null null null)"
+set_mode error
+back_to_app
+expect_postponed 'second user, listing fails'
+expect_name +15550100 '' 'first user after the second signed in'
+[[ "$(unihub_rows)" == 0 ]] || fail "the first user's contacts stayed while the second user's listing failed"
+set_mode ''
 back_to_app
 leave_app
 expect_name +15550103 'Dee Other' 'second user'
-expect_name +15550100 '' 'first user after the second signed in'
 [[ "$(unihub_rows)" == 1 ]] || fail "expected only the second user's contact, found $(unihub_rows)"
 
 echo 'The session ends: the phone keeps none'

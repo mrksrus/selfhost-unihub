@@ -124,11 +124,12 @@ object ContactsSync {
     /** Whether the app's session can read contacts on this server. Blocks; call off the main thread. */
     fun check(origin: String): Offer {
         val session = cookie(origin) ?: return Offer.SignedOut
+        val current = Current { sessionOf(cookie(origin)) == sessionOf(session) }
         return try {
-            val me = get(origin, "/api/auth/me?background=1", session)
+            val me = get(origin, "/api/auth/me?background=1", session, current)
             if (me.status == 401) return Offer.SignedOut
             if (me.status != 200) return Offer.Unavailable
-            val page = get(origin, "/api/contacts?limit=1", session)
+            val page = get(origin, "/api/contacts?limit=1", session, current)
             when {
                 page.status == 401 -> Offer.SignedOut
                 page.status != 200 -> Offer.Unavailable
@@ -160,29 +161,60 @@ object ContactsSync {
             clear(manager, account, provider, result, "signed out")
             return
         }
-        val listing = try {
-            fetch(origin, session)
+        // An answer counts only while this is still the app's server, session
+        // and account, and Android has not cancelled the sync. It is checked
+        // again before every write, since signing out or another sign-in can
+        // happen while a request is under way.
+        val current = Current {
+            !Thread.currentThread().isInterrupted &&
+                account in manager.getAccountsByType(ACCOUNT_TYPE) &&
+                ServerAddress.saved(context) == origin &&
+                sessionOf(cookie(origin)) == sessionOf(session)
+        }
+        try {
+            val me = get(origin, "/api/auth/me?background=1", session, current)
+            if (me.status == 401) {
+                current.check()
+                clear(manager, account, provider, result, "the session ended")
+                return
+            }
+            me.expectOk()
+            val user = JSONObject(me.body).getJSONObject("user").getString("id")
+            current.check()
+            // Another person's contacts go before this one's are loaded, so a
+            // failed listing cannot leave them on the phone.
+            if (manager.getUserData(account, KEY_USER) != user) {
+                deleteAll(account, provider, result)
+                manager.setUserData(account, KEY_USER, user)
+            }
+            when (val listing = fetch(origin, session, current)) {
+                is Listing.Gone -> {
+                    current.check()
+                    clear(manager, account, provider, result, listing.why)
+                }
+                is Listing.Complete -> {
+                    current.check()
+                    makeVisible(account, provider)
+                    apply(account, provider, listing.contacts, result, current)
+                    Log.i(TAG, "Synced ${listing.contacts.size} contacts: ${result.stats.numInserts} added, ${result.stats.numUpdates} changed, ${result.stats.numDeletes} removed")
+                }
+            }
+        } catch (_: Stale) {
+            Log.i(TAG, "Sync stopped: the session, server or account changed")
         } catch (error: IOException) {
             Log.w(TAG, "Sync postponed: ${error.javaClass.simpleName}")
             result.stats.numIoExceptions++
-            return
         } catch (_: org.json.JSONException) {
             Log.w(TAG, "Sync postponed: unexpected answer")
             result.stats.numParseExceptions++
-            return
         }
-        when (listing) {
-            is Listing.Gone -> clear(manager, account, provider, result, listing.why)
-            is Listing.Complete -> {
-                if (manager.getUserData(account, KEY_USER) != listing.user) {
-                    deleteAll(account, provider, result)
-                    manager.setUserData(account, KEY_USER, listing.user)
-                }
-                makeVisible(account, provider)
-                apply(account, provider, listing.contacts, result)
-                Log.i(TAG, "Synced ${listing.contacts.size} contacts: ${result.stats.numInserts} added, ${result.stats.numUpdates} changed, ${result.stats.numDeletes} removed")
-            }
-        }
+    }
+
+    private class Stale : Exception()
+
+    private fun interface Current {
+        fun valid(): Boolean
+        fun check() { if (!valid()) throw Stale() }
     }
 
     private fun clear(manager: AccountManager, account: Account, provider: ContentProviderClient, result: SyncResult, why: String) {
@@ -192,32 +224,32 @@ object ContactsSync {
     }
 
     private sealed interface Listing {
-        class Complete(val user: String, val contacts: List<PhoneContact>) : Listing
+        class Complete(val contacts: List<PhoneContact>) : Listing
         class Gone(val why: String) : Listing
     }
 
-    private fun fetch(origin: String, session: String): Listing {
-        val me = get(origin, "/api/auth/me?background=1", session)
-        if (me.status == 401) return Listing.Gone("the session ended")
-        me.expectOk()
-        val user = JSONObject(me.body).getJSONObject("user").getString("id")
+    // Complete or an exception: a page without has_more, or an empty page
+    // that claims more, is not a listing to delete by.
+    private fun fetch(origin: String, session: String, current: Current): Listing {
         val contacts = LinkedHashMap<String, PhoneContact>()
         var offset = 0
         while (true) {
-            val page = get(origin, "/api/contacts?limit=$PAGE&offset=$offset", session)
+            val page = get(origin, "/api/contacts?limit=$PAGE&offset=$offset", session, current)
             if (page.status == 401) return Listing.Gone("the session ended")
             if (page.status == 403 && page.json()?.optString("code") == "MODULE_DISABLED") return Listing.Gone("the Contacts module is off")
             page.expectOk()
             val json = JSONObject(page.body)
             val rows = json.getJSONArray("contacts")
+            val more = json.get("has_more") as? Boolean ?: throw org.json.JSONException("has_more is not a boolean")
             for (index in 0 until rows.length()) {
                 PhoneContact.from(rows.getJSONObject(index))?.let { contacts[it.id] = it }
             }
-            if (!json.optBoolean("has_more") || rows.length() == 0) break
+            if (!more) break
+            if (rows.length() == 0) throw org.json.JSONException("An empty page with more to come")
             offset += rows.length()
             if (offset >= MAX_CONTACTS) throw IOException("More than $MAX_CONTACTS contacts")
         }
-        return Listing.Complete(user, contacts.values.toList())
+        return Listing.Complete(contacts.values.toList())
     }
 
     // ── The phone's side ───────────────────────────────────────────────
@@ -246,12 +278,13 @@ object ContactsSync {
         return rows.groupBy({ it.first }, { it.second })
     }
 
-    private fun apply(account: Account, provider: ContentProviderClient, contacts: List<PhoneContact>, result: SyncResult) {
+    private fun apply(account: Account, provider: ContentProviderClient, contacts: List<PhoneContact>, result: SyncResult, current: Current) {
         val existing = local(account, provider)
         val wanted = contacts.associateBy { it.id }
         val ops = ArrayList<ContentProviderOperation>()
         fun flush() {
             if (ops.isEmpty()) return
+            current.check()
             provider.applyBatch(ArrayList(ops))
             ops.clear()
         }
@@ -402,12 +435,17 @@ object ContactsSync {
     private fun cookie(origin: String): String? =
         CookieManager.getInstance().getCookie(origin)?.takeIf { it.isNotBlank() }
 
+    // The session cookie (api/src/config.ts, AUTH_COOKIE_NAME) among them;
+    // the CSRF cookie may change without the session changing.
+    private fun sessionOf(cookies: String?): String? =
+        cookies?.split(';')?.map { it.trim() }?.firstOrNull { it.startsWith("auth-token=") } ?: cookies
+
     private class Response(val status: Int, val body: String) {
         fun json(): JSONObject? = try { JSONObject(body) } catch (_: org.json.JSONException) { null }
         fun expectOk() { if (status != 200) throw IOException("HTTP $status") }
     }
 
-    private fun get(origin: String, path: String, session: String): Response {
+    private fun get(origin: String, path: String, session: String, current: Current): Response {
         val connection = URL(origin + path).openConnection() as HttpURLConnection
         connection.connectTimeout = 15_000
         connection.readTimeout = 60_000
@@ -420,8 +458,9 @@ object ContactsSync {
         try {
             val status = connection.responseCode
             // The server extends a session in use and sends its cookie again;
-            // the WebView keeps the new expiry.
-            connection.headerFields["Set-Cookie"]?.let { cookies ->
+            // the WebView keeps the new expiry, unless it has another session
+            // by now.
+            connection.headerFields["Set-Cookie"]?.takeIf { current.valid() }?.let { cookies ->
                 val manager = CookieManager.getInstance()
                 cookies.forEach { manager.setCookie(origin, it) }
                 manager.flush()

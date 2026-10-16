@@ -14,6 +14,8 @@ import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
@@ -54,6 +56,7 @@ class MainActivity : Activity() {
     private var screenGeneration = 0
     private var contactsChecking = false
     private var contactsCheckedAt = 0L
+    private val contactsRecheck = Handler(Looper.getMainLooper())
     private var contactsServer: String? = null
     // Set when Android's settings opened the app to add the account.
     private var contactsResponse: AccountAuthenticatorResponse? = null
@@ -257,6 +260,7 @@ class MainActivity : Activity() {
 
     private fun destroyWeb() {
         screenGeneration++
+        contactsRecheck.removeCallbacksAndMessages(null)
         webView?.let {
             (it.parent as? ViewGroup)?.removeView(it)
             it.destroy()
@@ -287,11 +291,18 @@ class MainActivity : Activity() {
 
     // ── Contacts on the phone (ContactsSync) ───────────────────────────
 
-    // Once per server, when the person is signed in and has contacts.
+    // Once per server, when the person is signed in and has contacts. Checks
+    // at most every few seconds; one skipped for that runs later, so signing
+    // in right after a check still brings the question.
     private fun offerContacts(server: String) {
         if (contactsChecking || ContactsSync.account(this) != null || ContactsSync.offered(this, server)) return
         val now = SystemClock.elapsedRealtime()
-        if (contactsCheckedAt != 0L && now - contactsCheckedAt < CONTACTS_CHECK_INTERVAL_MS) return
+        val wait = if (contactsCheckedAt == 0L) 0L else contactsCheckedAt + CONTACTS_CHECK_INTERVAL_MS - now
+        if (wait > 0) {
+            contactsRecheck.removeCallbacksAndMessages(null)
+            contactsRecheck.postDelayed({ if (origin == server) offerContacts(server) }, wait)
+            return
+        }
         contactsCheckedAt = now
         checkContacts(server) { offer ->
             if (offer == ContactsSync.Offer.Ready && ContactsSync.account(this) == null && !ContactsSync.offered(this, server)) {

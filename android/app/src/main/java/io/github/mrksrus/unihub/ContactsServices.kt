@@ -12,6 +12,7 @@ import android.content.Intent
 import android.content.SyncResult
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.ContactsContract
 import android.util.Log
 
 /** Android runs the contact sync (ContactsSync) through this service. */
@@ -22,6 +23,8 @@ class ContactsSyncService : Service() {
 
     private class Adapter(context: Context) : AbstractThreadedSyncAdapter(context, true, false) {
         override fun onPerformSync(account: Account, extras: Bundle, authority: String, provider: ContentProviderClient, result: SyncResult) {
+            // Only Android's own contacts provider receives contacts.
+            if (authority != ContactsContract.AUTHORITY || account.type != ContactsSync.ACCOUNT_TYPE) return
             try {
                 ContactsSync.sync(context, account, provider, result)
             } catch (_: SecurityException) {
