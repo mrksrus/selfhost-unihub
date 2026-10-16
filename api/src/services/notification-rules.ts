@@ -46,12 +46,17 @@ function normalizeSubscription(input: SubscriptionInput | null | undefined) {
   const providers = ['fcm.googleapis.com', 'push.services.mozilla.com', 'notify.windows.com', 'push.apple.com'];
   if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443') || url.hash ||
       !providers.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) throw new Error('Unsupported push service endpoint');
-  const keys = input.keys || {};
+  return { endpoint: url.toString(), keys: normalizeKeys(input.keys) };
+}
+// The device's encryption keys (RFC 8291): an uncompressed P-256 public key
+// and a 16-byte authentication secret, both base64url.
+function normalizeKeys(input: SubscriptionInput['keys']) {
+  const keys = input || {};
   for (const [key, length] of [['p256dh', 65], ['auth', 16]] as const) {
     if (typeof keys[key] !== 'string' || !/^[A-Za-z0-9_-]+={0,2}$/.test(keys[key]) || Buffer.from(keys[key], 'base64url').length !== length) throw new Error('Invalid push subscription keys');
   }
   if (Buffer.from(keys.p256dh as string, 'base64url')[0] !== 4) throw new Error('Invalid push subscription key');
-  return { endpoint: url.toString(), keys: { p256dh: keys.p256dh as string, auth: keys.auth } };
+  return { p256dh: keys.p256dh as string, auth: keys.auth as string };
 }
 function retryDisposition(error: { statusCode?: unknown } | null | undefined, attempts: number, now = Date.now()) {
   const status = Number(error?.statusCode);
@@ -68,5 +73,6 @@ export {
   reminderIsCurrent,
   hash,
   normalizeSubscription,
+  normalizeKeys,
   retryDisposition,
 };

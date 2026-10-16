@@ -222,6 +222,7 @@ jobs:
           script: |
             bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
             bash android/scripts/contacts-test.sh android-app/unihub.apk
+            bash android/scripts/notifications-test.sh android-app/unihub.apk
 
       - name: Start the Android apps on Android 16
         uses: reactivecircus/android-emulator-runner@v2
@@ -234,6 +235,7 @@ jobs:
           script: |
             bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
             bash android/scripts/contacts-test.sh android-app/unihub.apk
+            bash android/scripts/notifications-test.sh android-app/unihub.apk
 
       # The system image is named android-37.0 (stable channel). That image
       # (google_apis x86_64, revision 6) is broken as of 2026-10-16: its
@@ -254,6 +256,7 @@ jobs:
           script: |
             bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
             bash android/scripts/contacts-test.sh android-app/unihub.apk
+            bash android/scripts/notifications-test.sh android-app/unihub.apk
 
       - name: Keep the release evidence
         if: always()

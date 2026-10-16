@@ -451,6 +451,46 @@ Evidence: `android/app/src/main/java/io/github/mrksrus/unihub/ContactsSync.kt`,
 `ContactsServices.kt`, `MainActivity.kt`, `android/scripts/contacts-test.sh`,
 `docs/ANDROID.md` (Contacts on the phone), CHANGELOG 0.22.0.
 
+#### P-23 Notifications reach phones without a third-party push service
+
+Accepted, in source for Android; emulator-tested against a stub server, not
+yet on a real phone with a real server. iOS not started. Pinned 2026-10-16
+(requested for 0.22.1).
+
+UniHub is meant to be fully self-hosted company communication, later with
+messaging and calls, so notification content must not depend on trusting
+Google's or Apple's push services, and people must not have to install and set
+up a separate push app (such as ntfy) to get them.
+
+- **Android: UniHub is the app's own push server.** The app keeps its own
+  connection to the user's server; no push service, no extra app, no setup
+  beyond turning notifications on.
+- **One message format: Web Push encryption (RFC 8291).** Every notification
+  is encrypted for the device's keys, as for a browser, so other routes can
+  carry the same message later. A UnifiedPush distributor (ntfy and others)
+  is planned as an optional route for people who already run one, never as a
+  requirement; it is not in 0.22.1 because it cannot be tested without a
+  distributor app yet.
+- **iOS, later: APNs through Apple's approved distribution** (App Store,
+  TestFlight or Business Manager, not the EU alternative-marketplace route).
+  iOS cannot keep a connection of its own, so Apple's push service carries
+  only encrypted or content-free pushes; the phone decrypts or fetches from
+  UniHub. Local Push Connectivity on company Wi-Fi is a possible addition.
+
+How it is built on Android (agent's choices within that request, open to
+maintainer change): asked once per server after sign-in and switchable in
+Settings → Notifications; a foreground service with a silent ongoing
+notification that has a Turn off action; the lock screen shows only "New
+notification"; while notifications are on, the connection keeps the app's
+session in use; delivery is acknowledged by the phone and sent again until it
+is.
+
+Evidence: `api/src/services/android-push.ts`, `notification-transports.ts`,
+`android/app/src/main/java/io/github/mrksrus/unihub/AppNotifications.kt`,
+`NotificationService.kt`, `PushCrypto.kt`, `android/scripts/notifications-test.sh`,
+`api/tests/android-notifications-mysql-integration.test.cts`,
+`docs/ANDROID.md` (Notifications), CHANGELOG 0.22.1.
+
 ## Open decisions and conflicts
 
 Open proposals do not override accepted decisions.

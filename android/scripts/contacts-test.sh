@@ -128,7 +128,7 @@ stub_pid=$!
 
 fail() {
   echo "Contacts test failed: $1" >&2
-  adb logcat -d -s UniHubContacts >&2 || true
+  adb logcat -d -s UniHubContacts UniHubSession >&2 || true
   adb logcat -d -b crash >&2 || true
   exit 1
 }
@@ -170,7 +170,7 @@ unihub_rows() {
 
 has_account() { adb shell dumpsys account 2>/dev/null | grep -q "Account {name=[^,]*, type=$package}"; }
 
-synced() { adb logcat -d -s UniHubContacts 2>/dev/null | grep -c 'Synced' || true; }
+synced() { adb logcat -d -s UniHubContacts UniHubSession 2>/dev/null | grep -c 'Synced' || true; }
 
 kill_app() { # Android only kills a cached process, so wait for the last sync to end.
   for _ in $(seq 1 15); do
@@ -191,7 +191,7 @@ expect_page_cookie() {
   fail "the WebView did not get the renewed session cookie ($2): $(tr '\n' ' ' < "$work/state/page-cookies")"
 }
 
-postponed() { adb logcat -d -s UniHubContacts 2>/dev/null | grep -c 'Sync postponed' || true; }
+postponed() { adb logcat -d -s UniHubContacts UniHubSession 2>/dev/null | grep -c 'Sync postponed' || true; }
 
 # A sync that must not change anything: wait for it to give up.
 expect_postponed() {
@@ -276,7 +276,7 @@ leave_app
 for _ in $(seq 1 40); do (( $(synced) > before )) && break; sleep 1; done
 (( $(synced) > before )) || fail 'no sync after leaving the app'
 : > "$work/state/renew"
-given="$(adb logcat -d -s UniHubContacts | grep -c 'renewal given' || true)"
+given="$(adb logcat -d -s UniHubContacts UniHubSession | grep -c 'renewal given' || true)"
 # The sign-in answers with a new session cookie, then the page leaves /auth.
 echo test-session-2 > "$work/state/session"
 echo / > "$work/state/goto"
@@ -284,9 +284,9 @@ back_to_app
 sleep 4
 leave_app # the app keeps its cookies when it is left
 sleep 3
-(( $(adb logcat -d -s UniHubContacts | grep -c 'renewal given' || true) == given )) || fail 'a renewal was written while the page was signing in'
+(( $(adb logcat -d -s UniHubContacts UniHubSession | grep -c 'renewal given' || true) == given )) || fail 'a renewal was written while the page was signing in'
 expect_page_cookie 'auth-token=test-session-2' 'the newer session'
-adb logcat -d -s UniHubContacts | grep -q 'renewal dropped' || fail 'the kept renewal was not dropped for the newer session'
+adb logcat -d -s UniHubContacts UniHubSession | grep -q 'renewal dropped' || fail 'the kept renewal was not dropped for the newer session'
 grep -q 'renewed=stale' "$work/state/page-cookies" && fail 'the kept renewal replaced the newer session'
 expect_name +15550100 'Ada Later' 'sync with the newer session'
 

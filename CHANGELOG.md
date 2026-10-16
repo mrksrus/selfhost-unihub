@@ -6,6 +6,22 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.22.1
+
+### Added
+
+- **Notifications in the Android app.** The app now shows UniHub's
+  notifications (new mail, new events and tasks, reminders, recording and
+  sign-in notices) like any phone app, also while it is closed. Your server
+  sends them straight to the app over the app's own connection: no Google,
+  Apple or other push service is involved, and each notification is encrypted
+  for your phone. After signing in, the app asks once; Settings →
+  Notifications turns them on and off and shows their state, and the ongoing
+  "Connected" notification Android requires has a **Turn off** action and can
+  be hidden. Notifications that arrive while the phone is offline are shown
+  when it reconnects; the lock screen shows only "New notification". Update
+  the server and install the app again from Settings → General → Install.
+
 ## 0.22.0
 
 ### Added

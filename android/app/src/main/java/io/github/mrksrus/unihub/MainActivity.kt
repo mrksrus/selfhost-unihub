@@ -17,6 +17,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.Settings
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -37,6 +38,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.TextView
 import android.widget.Toast
+import org.json.JSONObject
 
 /**
  * The app is a thin shell: it opens the user's UniHub server in a WebView, so
@@ -62,12 +64,22 @@ class MainActivity : Activity() {
     private var contactsServer: String? = null
     // Set when Android's settings opened the app to add the account.
     private var contactsResponse: AccountAuthenticatorResponse? = null
+    // The page's "turn on" while Android asks for the notification permission,
+    // and the page's answer that waits for Android's background question.
+    private var notificationsAnswer: ((JSONObject) -> Unit)? = null
+    private var notificationsServer: String? = null
+    private var backgroundAnswer: (() -> Unit)? = null
+    // One question at a time: contacts or notifications.
+    private var questionOpen = false
+    private var notificationsChecking = false
+    private var notificationsCheckedAt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val saved = ServerAddress.saved(this)
         if (saved != null) PageTheme.saved(this)?.let { (dark, background) -> applyTheme(dark, background) }
-        if (saved != null) showWeb(saved, savedInstanceState) else showConnect()
+        val opened = notificationPath(intent, saved)?.takeIf { savedInstanceState == null }
+        if (saved != null) showWeb(saved, savedInstanceState, opened) else showConnect()
         connectRequest(intent)?.takeIf { it != saved && savedInstanceState == null }?.let(::confirmConnect)
         if (savedInstanceState == null && intent?.action == ACTION_SHOW_CONTACTS) contactsFromSettings(intent)
     }
@@ -76,6 +88,15 @@ class MainActivity : Activity() {
         super.onNewIntent(intent)
         connectRequest(intent)?.takeIf { it != origin }?.let(::confirmConnect)
         if (intent.action == ACTION_SHOW_CONTACTS) contactsFromSettings(intent)
+        val server = origin
+        notificationPath(intent, server)?.let { path -> if (server != null) webView?.loadUrl(server + path) }
+    }
+
+    /** The page a tapped notification leads to, if it came from this server. */
+    private fun notificationPath(intent: Intent?, server: String?): String? {
+        if (intent?.action != ACTION_OPEN_NOTIFICATION || server == null) return null
+        if (intent.getStringExtra(EXTRA_ORIGIN) != server) return null
+        return intent.getStringExtra(EXTRA_PATH)?.takeIf { it.startsWith("/") && !it.startsWith("//") }
     }
 
     /** The server from an "Open in app" link: unihub://connect?server=https://… */
@@ -155,21 +176,25 @@ class MainActivity : Activity() {
     }
 
     // Contacts on the phone belong to one server; another server's are removed.
+    // Notifications stay set up per server and come back with it.
     private fun useServer(server: String) {
+        if (ServerAddress.saved(this) != server) NotificationService.stop(this)
         ServerAddress.save(this, server)
         if (ContactsSync.account(this)?.let { ContactsSync.origin(this, it) } != server) ContactsSync.turnOff(this)
+        NotificationService.startIfWanted(this)
     }
 
     private fun changeServer() {
         val current = origin
         ServerAddress.clear(this)
+        NotificationService.stop(this)
         showConnect(prefill = current)
     }
 
     // ── The server's pages ─────────────────────────────────────────────
 
     @SuppressLint("SetJavaScriptEnabled")
-    private fun showWeb(server: String, savedInstanceState: Bundle?) {
+    private fun showWeb(server: String, savedInstanceState: Bundle?, path: String? = null) {
         destroyWeb()
         origin = server
         val frame = FrameLayout(this)
@@ -196,7 +221,7 @@ class MainActivity : Activity() {
         val pageBridge = WebBridge(this, server, onChangeServer = ::changeServer, onTheme = { dark, background ->
             PageTheme.save(this, dark, background)
             applyTheme(dark, background)
-        })
+        }, onNotifications = { action, answer -> notifications(server, action, answer) })
         pageBridge.attach(web)
         bridge = pageBridge
 
@@ -219,6 +244,8 @@ class MainActivity : Activity() {
             override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
                 ContactsSync.pageShown(this@MainActivity, url)
                 offerContacts(server)
+                offerNotifications(server)
+                resumeNotifications()
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -259,7 +286,7 @@ class MainActivity : Activity() {
             pageBridge.download(url, URLUtil.guessFileName(url, contentDisposition, mimeType), userAgent)
         }
 
-        if (savedInstanceState?.let { web.restoreState(it) } == null) web.loadUrl(server)
+        if (savedInstanceState?.let { web.restoreState(it) } == null) web.loadUrl(server + (path ?: ""))
     }
 
     private fun destroyWeb() {
@@ -301,7 +328,7 @@ class MainActivity : Activity() {
     // at most every few seconds; one skipped for that runs later, so signing
     // in right after a check still brings the question.
     private fun offerContacts(server: String) {
-        if (ContactsSync.account(this) != null || ContactsSync.offered(this, server)) return
+        if (questionOpen || ContactsSync.account(this) != null || ContactsSync.offered(this, server)) return
         if (contactsChecking) {
             contactsOfferPending = true
             return
@@ -374,6 +401,7 @@ class MainActivity : Activity() {
 
     private fun askContacts(server: String) {
         ContactsSync.markOffered(this, server)
+        questionOpen = true
         AlertDialog.Builder(this)
             .setTitle(R.string.contacts_title)
             .setMessage(R.string.contacts_body)
@@ -387,6 +415,7 @@ class MainActivity : Activity() {
             }
             .setNegativeButton(R.string.contacts_not_now) { _, _ -> finishContacts(null) }
             .setOnCancelListener { finishContacts(null) }
+            .setOnDismissListener { questionClosed() }
             .show()
     }
 
@@ -411,6 +440,150 @@ class MainActivity : Activity() {
         } else {
             response.onError(AccountManager.ERROR_CODE_CANCELED, "Not added")
         }
+    }
+
+    // ── Notifications (AppNotifications, NotificationService) ──────────
+
+    // Signing in again, or a connection Android ended, brings the connection
+    // back; at most once a minute from page changes.
+    private var notificationsResumedAt = 0L
+    private fun resumeNotifications() {
+        val now = SystemClock.elapsedRealtime()
+        if (notificationsResumedAt != 0L && now - notificationsResumedAt < 60_000) return
+        notificationsResumedAt = now
+        NotificationService.startIfWanted(this)
+    }
+
+    private fun questionClosed() {
+        questionOpen = false
+        origin?.let { offerContacts(it); offerNotifications(it) }
+    }
+
+    // Asked once per server after signing in, when the server can send them,
+    // like the contacts question. Settings → Notifications turns them on and
+    // off at any time; this also works where the page cannot reach the app
+    // (an old WebView without its message bridge).
+    private fun offerNotifications(server: String) {
+        if (questionOpen || notificationsChecking || AppNotifications.offered(this, server)) return
+        if (AppSession.cookie(server)?.contains("auth-token=") != true) return
+        val now = SystemClock.elapsedRealtime()
+        if (notificationsCheckedAt != 0L && now - notificationsCheckedAt < CONTACTS_CHECK_INTERVAL_MS) return
+        notificationsCheckedAt = now
+        notificationsChecking = true
+        val generation = screenGeneration
+        Thread {
+            val ready = AppNotifications.canOffer(this, server)
+            runOnUiThread {
+                notificationsChecking = false
+                if (isFinishing || isDestroyed || generation != screenGeneration || ServerAddress.saved(this) != server) return@runOnUiThread
+                if (ready && !questionOpen && !AppNotifications.offered(this, server)) askNotifications(server)
+            }
+        }.start()
+    }
+
+    private fun askNotifications(server: String) {
+        AppNotifications.markOffered(this, server)
+        questionOpen = true
+        AlertDialog.Builder(this)
+            .setTitle(R.string.notifications_title)
+            .setMessage(getString(R.string.notifications_body, ServerAddress.host(server)))
+            .setPositiveButton(R.string.notifications_ok) { _, _ ->
+                startNotifications(server) { result ->
+                    runOnUiThread {
+                        if (result.optBoolean("ok")) toast(R.string.notifications_on)
+                        else Toast.makeText(this, result.optString("error"), Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+            .setNegativeButton(R.string.contacts_not_now, null)
+            .setOnDismissListener { questionClosed() }
+            .show()
+    }
+
+    private fun answer(state: JSONObject? = null, error: String? = null) = JSONObject().apply {
+        put("ok", error == null)
+        state?.let { put("state", it) }
+        error?.let { put("error", it) }
+    }
+
+    /** Settings → Notifications in the page: status, enable, disable, background. */
+    private fun notifications(server: String, action: String, reply: (JSONObject) -> Unit) {
+        fun later(task: () -> JSONObject) = Thread {
+            val result = try { task() } catch (error: AppNotifications.Problem) { answer(error = error.message) }
+            reply(result)
+        }.start()
+        when (action) {
+            "status" -> later { answer(AppNotifications.currentState(this, server)) }
+            "disable" -> later {
+                AppNotifications.turnOff(this, server)
+                answer(AppNotifications.currentState(this, server))
+            }
+            "background" -> askBackground { later { answer(AppNotifications.currentState(this, server)) } }
+            "enable" -> startNotifications(server, reply)
+            else -> reply(answer(error = getString(R.string.notifications_unknown)))
+        }
+    }
+
+    // Android's permission first (Android 13+), then registering.
+    private fun startNotifications(server: String, reply: (JSONObject) -> Unit) {
+        if (AppNotifications.needsPermission(this)) {
+            notificationsAnswer?.invoke(answer(error = getString(R.string.notifications_superseded)))
+            notificationsAnswer = reply
+            notificationsServer = server
+            AppNotifications.markAsked(this)
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+        } else {
+            enableNotifications(server, reply)
+        }
+    }
+
+    private fun enableNotifications(server: String, reply: (JSONObject) -> Unit) {
+        if (!getSystemService(android.app.NotificationManager::class.java).areNotificationsEnabled()) {
+            openNotificationSettings()
+            reply(answer(error = getString(R.string.notifications_blocked)))
+            return
+        }
+        Thread {
+            try {
+                AppNotifications.turnOn(this, server)
+            } catch (error: AppNotifications.Problem) {
+                reply(answer(error = error.message))
+                return@Thread
+            }
+            // The page hears back once Android's background question is answered.
+            runOnUiThread {
+                askBackground {
+                    Thread { reply(answer(AppNotifications.currentState(this, server))) }.start()
+                }
+            }
+        }.start()
+    }
+
+    // Android's question whether UniHub may run in the background, which keeps
+    // its connection open while the phone sleeps. `then` runs once it is
+    // answered (or at once, when there is nothing to ask).
+    @SuppressLint("BatteryLife")
+    private fun askBackground(then: () -> Unit) {
+        if (isFinishing || AppNotifications.backgroundAllowed(this)) {
+            then()
+            return
+        }
+        backgroundAnswer?.invoke()
+        backgroundAnswer = then
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")), REQUEST_BACKGROUND)
+        } catch (_: Exception) {
+            try { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) } catch (_: Exception) { }
+            backgroundAnswer = null
+            then()
+        }
+    }
+
+    private fun openNotificationSettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+        } catch (_: Exception) { }
     }
 
     private fun toast(text: Int) = Toast.makeText(this, text, Toast.LENGTH_LONG).show()
@@ -461,11 +634,32 @@ class MainActivity : Activity() {
             fileCallback = null
             return
         }
+        if (requestCode == REQUEST_BACKGROUND) {
+            backgroundAnswer?.invoke()
+            backgroundAnswer = null
+            return
+        }
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (requestCode == REQUEST_NOTIFICATIONS) {
+            val reply = notificationsAnswer ?: return
+            val server = notificationsServer
+            notificationsAnswer = null
+            notificationsServer = null
+            when {
+                server == null || server != origin -> reply(answer(error = getString(R.string.notifications_superseded)))
+                grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED -> enableNotifications(server, reply)
+                else -> {
+                    // Android no longer asks: only its settings can allow them now.
+                    if (!shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) openNotificationSettings()
+                    reply(answer(error = getString(R.string.notifications_blocked)))
+                }
+            }
+            return
+        }
         if (requestCode == REQUEST_CONTACTS) {
             val server = contactsServer ?: return
             contactsServer = null
@@ -510,6 +704,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         ContactsSync.renewSession(this)
+        if (origin != null) NotificationService.startIfWanted(this)
     }
 
     override fun onPause() {
@@ -521,14 +716,23 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         destroyWeb()
         finishContacts(null)
+        notificationsAnswer?.invoke(answer(error = getString(R.string.notifications_superseded)))
+        notificationsAnswer = null
+        backgroundAnswer?.invoke()
+        backgroundAnswer = null
         super.onDestroy()
     }
 
     companion object {
         const val ACTION_SHOW_CONTACTS = "io.github.mrksrus.unihub.SHOW_CONTACTS"
+        const val ACTION_OPEN_NOTIFICATION = "io.github.mrksrus.unihub.OPEN_NOTIFICATION"
+        const val EXTRA_ORIGIN = "origin"
+        const val EXTRA_PATH = "path"
         private const val REQUEST_FILE = 1
         private const val REQUEST_MICROPHONE = 2
         private const val REQUEST_CONTACTS = 3
+        private const val REQUEST_NOTIFICATIONS = 4
+        private const val REQUEST_BACKGROUND = 5
         private const val CONTACTS_CHECK_INTERVAL_MS = 15_000L
     }
 }

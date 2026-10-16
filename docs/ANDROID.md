@@ -6,10 +6,10 @@ version and every feature is written once in `src/`. Native code only covers
 what a browser tab cannot do. Each server image carries the matching app and
 offers it for download; there is no app store.
 
-Status (0.22.0): the app connects to a server, shows UniHub and can put the
-user's contacts on the phone. Notifications are not in the app yet (Web Push
-does not reach a WebView); they come in a later release. Until then, keep the
-web app or a browser for notifications.
+Status (0.22.1): the app connects to a server, shows UniHub, can put the
+user's contacts on the phone and shows UniHub's notifications, received over
+its own connection to the server (no push service; see
+[Notifications](#notifications)). Apps before 0.22.1 have no notifications.
 
 ## Getting the app
 
@@ -56,6 +56,7 @@ email) a `UniHubAndroid` object that takes JSON messages:
 | `download` | Downloads a file the server streams (backups, attachments, the app update) with Android's download manager and the app's session. Only the server's own addresses. |
 | `changeServer` | Forgets the server and shows the connect screen. |
 | `theme` | Colours the status and navigation bars like the page (UniHub's own light/dark setting, not the phone's). |
+| `notifications` (`action`: `status`, `enable`, `disable`, `background`; with an `id`) | Settings → Notifications: reads or changes this phone's notifications and answers with the same `id`, `ok`, an `error` or the `state` (`enabled`, `endpoint`, `permission`, `background`, `connected`). From 0.22.1; the page sends it only to apps with version code 22001 or later. |
 
 Links to other sites, `mailto:` and `tel:` open in the matching phone app. File
 inputs open Android's file picker. Recordings ask for the microphone through
@@ -102,6 +103,55 @@ are unchanged, and it works with any server the app supports.
 Android keeps the copy on the phone and other apps with the contacts
 permission can read it (WhatsApp, for example, uploads phone numbers to find
 its users). That is the reason it is a question, not a default.
+
+## Notifications
+
+From 0.22.1 the app shows UniHub's notifications (new mail, new events and
+tasks, reminders, recording and sign-in notices) like any phone app, also
+while it is closed. The server is the app's own push server: the app keeps one
+connection to it, and no Google, Apple or other push service sees anything.
+
+- **Turning them on.** Once signed in, the app asks once per server: **Turn
+  on** or **Not now**. Settings → Notifications turns them on and off at any
+  time and shows the state, as in a browser. Android then asks to allow
+  notifications (Android 13 and newer) and whether UniHub may run in the
+  background. Without the second, Android may pause the connection while the
+  phone sleeps and notifications arrive late; Settings shows **Allow in
+  background** until it is allowed.
+- **The connection.** A foreground service holds
+  `GET /api/notifications/android/stream`. Android requires it to show an
+  ongoing notification, "Connected to <server>", in a silent channel; it can be
+  hidden in Android's notification settings, and its **Turn off** action turns
+  notifications off. The server sends a heartbeat every 45 seconds. The app
+  replaces a connection that is silent for two minutes or changes network,
+  reconnects with a growing pause after failures (at most five minutes), and
+  at least every twelve hours. It starts again after the phone restarts and
+  after an app update; a check every 15 minutes starts it if the phone ended
+  it, which Android only allows to an app that may run in the background.
+- **Encrypted for this phone.** Turning them on makes a key pair on the phone
+  and registers its public half with the server (`POST
+  /api/notifications/android/devices`), bound to the app's session like a
+  browser's push subscription. The server encrypts every notification for it
+  exactly as Web Push does (RFC 8291), so the same message could later travel
+  through another route, such as a UnifiedPush distributor, without anything
+  in it being readable on the way. The private key never leaves the phone.
+- **Delivery.** The app shows a notification and acknowledges it (`POST
+  /api/notifications/android/ack`); one not acknowledged within two minutes is
+  sent again, and the app shows each one once. While the phone is offline its
+  notifications wait on the server until they expire (a day for mail, two hours
+  after a reminder was due) and arrive together when it connects. The lock
+  screen shows only "New notification" until the phone is unlocked; channels
+  for mail, reminders and events, recordings, and account notices can each be
+  silenced in Android's settings. Tapping one opens its page in the app.
+- **Session.** The connection uses the app's WebView session cookie, like
+  [contacts](#contacts-on-the-phone), and its requests keep that session in use,
+  so the app stays signed in while notifications are on. Signing out in the
+  app, signing out every device, or an ended session closes the connection
+  within a heartbeat, removes the shown notifications and stops the service;
+  signing in again as the same user resumes it. Another user on the same phone
+  gets them only after turning them on.
+- **Another server.** Notifications belong to a server: connecting the app
+  to another server stops them, and connecting back resumes them.
 
 ## Version handshake
 
@@ -187,6 +237,15 @@ CI starts the built app on Android emulators (`android/scripts/launch-test.sh`):
 a first start, "Open in app" with the app closed, and a start with a saved
 server whose page reported a theme. It fails on any crash. To run it locally,
 start an emulator and pass the APK.
+
+`android/scripts/notifications-test.sh` checks notifications against a stub
+server that encrypts like UniHub with its own implementation: the question
+after signing in, turning them on from the page (or from the question where
+the WebView has no message bridge, as on the Android 10 emulator), a
+notification shown with its text and a content-free lock screen version,
+acknowledged, opened by a tap, not shown twice, received with the app in the
+background, a reconnect after an app update, sign-out removing them, signing in
+again, and turning off from the page and from the ongoing notification.
 
 `android/scripts/contacts-test.sh` checks contacts on the phone against a
 stub server with synthetic contacts: accepting the question, the phone's

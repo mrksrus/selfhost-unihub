@@ -5,7 +5,9 @@
 // "not available").
 //
 // Already wrapped elsewhere, one place each:
-// - notifications, push subscription and service worker messages: utils/service-worker.ts
+// - browser notifications, push subscription and service worker messages:
+//   utils/service-worker.ts (the Android app's own notifications are
+//   `appNotifications` below; Web Push does not work in its WebView)
 // - app updates: lib/pwa-update.ts and the update item in hooks/use-attention.ts
 // - install offer: lib/install-prompt.ts and components/pwa/InstallPrompt.tsx
 // - offline copy on this device: lib/offline.ts
@@ -96,25 +98,35 @@ export async function saveFile(blob: Blob, filename: string) {
 // recording never becomes one huge string or piles up in the app's memory.
 const FILE_CHUNK_BYTES = 1536 * 1024;
 const APP_REPLY_TIMEOUT_MS = 60_000;
-const appReplies = new Map<string, (ok: boolean) => void>();
+
+// A question to the app carries an id; the app answers with the same id, `ok`
+// and, depending on the question, more fields.
+interface AppReply { id?: string; ok?: boolean; error?: string; [key: string]: unknown }
+const appReplies = new Map<string, (reply: AppReply | null) => void>();
 let listening: AndroidBridge | null = null;
 
-function askApp(bridge: AndroidBridge, message: { type: string; id: string } & Record<string, unknown>) {
+/**
+ * Posts a message with an id and resolves with the app's reply once `ok` is
+ * true. Rejects with the app's `error` text, or `failure`, when the app says
+ * no or does not answer in time.
+ */
+function askApp(bridge: AndroidBridge, message: { type: string; id: string } & Record<string, unknown>, { timeoutMs = APP_REPLY_TIMEOUT_MS, failure }: { timeoutMs?: number; failure: string }) {
   if (listening !== bridge) {
     listening = bridge;
     bridge.addEventListener?.('message', event => {
       try {
-        const reply = JSON.parse(event.data) as { id?: string; ok?: boolean };
-        if (reply.id) appReplies.get(reply.id)?.(reply.ok === true);
+        const reply = JSON.parse(event.data) as AppReply;
+        if (reply && typeof reply === 'object' && reply.id) appReplies.get(reply.id)?.(reply);
       } catch { /* Not a reply. */ }
     });
   }
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => settle(false), APP_REPLY_TIMEOUT_MS);
-    function settle(ok: boolean) {
+  return new Promise<AppReply>((resolve, reject) => {
+    const timer = setTimeout(() => settle(null), timeoutMs);
+    function settle(reply: AppReply | null) {
       clearTimeout(timer);
       appReplies.delete(message.id);
-      if (ok) resolve(); else reject(new Error('The app could not save the file'));
+      if (reply?.ok === true) resolve(reply);
+      else reject(new Error(typeof reply?.error === 'string' && reply.error ? reply.error : failure));
     }
     appReplies.set(message.id, settle);
     bridge.postMessage(JSON.stringify(message));
@@ -123,18 +135,90 @@ function askApp(bridge: AndroidBridge, message: { type: string; id: string } & R
 
 async function sendFileToApp(bridge: AndroidBridge, blob: Blob, filename: string) {
   const id = crypto.randomUUID();
+  const failure = 'The app could not save the file';
   try {
     // A start that times out may still open the file later; the abort closes it.
-    await askApp(bridge, { type: 'saveFileStart', id, name: filename, mime: blob.type });
+    await askApp(bridge, { type: 'saveFileStart', id, name: filename, mime: blob.type }, { failure });
     for (let offset = 0; offset < blob.size; offset += FILE_CHUNK_BYTES) {
       const data = await blobBase64(blob.slice(offset, offset + FILE_CHUNK_BYTES));
-      await askApp(bridge, { type: 'saveFileChunk', id, data });
+      await askApp(bridge, { type: 'saveFileChunk', id, data }, { failure });
     }
-    await askApp(bridge, { type: 'saveFileEnd', id });
+    await askApp(bridge, { type: 'saveFileEnd', id }, { failure });
   } catch (error) {
     bridge.postMessage(JSON.stringify({ type: 'saveFileAbort', id }));
     throw error;
   }
+}
+
+// ── Notifications in the app ──────────────────────────────────────
+// Web Push does not reach a WebView, so from 0.22.1 the app holds its own
+// connection to the server and shows notifications itself. The page only asks
+// the app to turn that on or off and reads its state; the server side uses the
+// same /api/notifications routes with the endpoint the app reports.
+
+/** The first app (versionCode) that answers "notifications" messages. Older apps ignore them silently. */
+export const APP_NOTIFICATIONS_MIN_VERSION_CODE = 22001;
+
+export interface AppNotificationState {
+  /** On for this server and the signed-in user on this phone. */
+  enabled: boolean;
+  /** "unihub-android:<device id>" while registered; the endpoint for /api/notifications/status and /test. */
+  endpoint: string | null;
+  /** Android's permission to show notifications. */
+  permission: 'granted' | 'denied' | 'default';
+  /** Whether Android lets the app keep its connection in the background (battery optimisation exemption). */
+  background: 'allowed' | 'restricted';
+  /** The app currently holds a connection to the server. */
+  connected: boolean;
+}
+
+export interface AppNotifications {
+  /** The current state, without any prompt. */
+  status(): Promise<AppNotificationState>;
+  /** Asks for the permission if needed, registers this phone and starts the connection; may take as long as the system dialogs. */
+  enable(): Promise<AppNotificationState>;
+  /** Unregisters, stops the connection and removes shown notifications. */
+  disable(): Promise<AppNotificationState>;
+  /** Asks Android to let the app run in the background; answers once the person has answered Android. */
+  background(): Promise<AppNotificationState>;
+}
+
+// Turning on and the background question wait for Android's dialogs.
+const DIALOG_REPLY_TIMEOUT_MS = 120_000;
+
+/** Native notifications of the Android app, or null in a browser or in an app older than 0.22.1. */
+export function appNotifications(): AppNotifications | null {
+  const app = androidApp();
+  const bridge = app && app.versionCode >= APP_NOTIFICATIONS_MIN_VERSION_CODE ? window.UniHubAndroid : undefined;
+  if (!bridge) return null;
+  const ask = async (action: 'status' | 'enable' | 'disable' | 'background', timeoutMs?: number) => {
+    const reply = await askApp(bridge, { type: 'notifications', id: crypto.randomUUID(), action }, { timeoutMs, failure: 'The app did not answer. Try again.' });
+    return readNotificationState(reply.state);
+  };
+  return {
+    status: () => ask('status'),
+    enable: () => ask('enable', DIALOG_REPLY_TIMEOUT_MS),
+    disable: () => ask('disable'),
+    background: () => ask('background', DIALOG_REPLY_TIMEOUT_MS),
+  };
+}
+
+/** In an Android app older than 0.22.1, which has no notifications of its own yet. */
+export function appNeedsUpdateForNotifications() {
+  const app = androidApp();
+  return !!app && app.versionCode < APP_NOTIFICATIONS_MIN_VERSION_CODE;
+}
+
+function readNotificationState(value: unknown): AppNotificationState {
+  const state = value as Partial<AppNotificationState> | null | undefined;
+  if (!state || typeof state !== 'object' || typeof state.enabled !== 'boolean') throw new Error('The app sent an unexpected answer. Update the app and try again.');
+  return {
+    enabled: state.enabled,
+    endpoint: typeof state.endpoint === 'string' && state.endpoint ? state.endpoint : null,
+    permission: state.permission === 'granted' || state.permission === 'denied' ? state.permission : 'default',
+    background: state.background === 'restricted' ? 'restricted' : 'allowed',
+    connected: state.connected === true,
+  };
 }
 
 /**

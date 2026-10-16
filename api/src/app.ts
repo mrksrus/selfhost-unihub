@@ -19,6 +19,7 @@ import { handleRequest } from './request-handler';
 import { installShutdownHandler } from './services/server-events';
 import { idleSupervisor } from './services/mail-idle';
 import { getVapidKeys, processNotificationJobs } from './services/notifications';
+import { closeAndroidStreams } from './services/android-push';
 
 // Wake recent discovery independently of historical backfill. The durable
 // scheduler coalesces due work; this timer is not the authority for its state.
@@ -67,7 +68,7 @@ async function start() {
     });
   });
 
-  installShutdownHandler({ server, onShutdown: [() => idleSupervisor.stop()] });
+  installShutdownHandler({ server, onShutdown: [() => idleSupervisor.stop(), closeAndroidStreams] });
   server.listen(PORT, () => {
     console.log(`✓ UniHub API server running on port ${PORT}`);
   });

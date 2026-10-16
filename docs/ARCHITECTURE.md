@@ -52,7 +52,7 @@ background jobs and do not depend on the proxy connection after job creation.
 | `api/src/services/mail-idle.ts` | IMAP IDLE supervisor: one read-only INBOX session per eligible account; changes become ordinary durable jobs |
 | `api/src/services/offline.ts` | Owner-scoped, size-bounded offline snapshots |
 | `api/src/services/caldav.ts`, `calendar-sync.ts`, `calendar-ical.ts`, `calendar-accounts.ts` | CalDAV discovery and requests, the sync engine and writeback, iCalendar parsing and recurrence expansion, calendars of mail accounts |
-| `api/src/services/notifications.ts`, `notification-transports.ts` | Durable notification events, delivery state and reminder worker; delivery transports keyed by target kind (today `webpush`, which owns the VAPID identity) |
+| `api/src/services/notifications.ts`, `notification-transports.ts`, `android-push.ts` | Durable notification events, delivery state and reminder worker; delivery transports keyed by the subscription's transport (`webpush`, which owns the VAPID identity, and `android`, the app's own connection) |
 | `api/src/services/access-policy.ts` | `canRunModule` (module enabled, background allowed, no restore of its section) and the per-user blocked-module map used by workers |
 | `api/src/security/encryption.ts` | AES-256-GCM helpers |
 | `api/src/security/client-ip.ts`, `login-limits.ts` | Explicit proxy trust and separate IP/account attempt budgets |
@@ -390,10 +390,15 @@ owner-scoped loading. The API persists encrypted VAPID identity, session-bound
 subscriptions, a transactional notification outbox and indexed reminder
 schedules in MariaDB. One job loop processes notifications every 30 seconds:
 `notifications.ts` selects due deliveries, revalidates their source and records
-outcomes; the transport map in `notification-transports.ts` (`webpush` today)
-does the sending and classifies failures. A native client transport (UniHub as
-its own push server over a long-lived connection) is a second map entry plus an
-expand-only migration for its target table.
+outcomes; the transport map in `notification-transports.ts` does the sending
+and classifies failures. `webpush` sends to a browser's push service. `android`
+(`android-push.ts`, upgrade step 17) makes UniHub the Android app's own push
+server: the phone registers RFC 8291 keys as a push subscription with
+`transport = 'android'`, holds a Server-Sent Events stream to the API (its own
+bus, 45-second heartbeat, session and device checked at every heartbeat), and
+acknowledges each encrypted notification; the delivery stays pending until
+then and is sent again after two minutes, or as soon as an offline phone
+connects. See [Android](ANDROID.md#notifications).
 
 Opt-in offline reading uses a separate versioned IndexedDB snapshot with explicit account/epoch ownership. It contains the latest 100 full emails, all contacts and events, bounded to 32 MiB; it is not an authentication-response cache. Account changes and explicit clearing invalidate pending saves across tabs. See [PWA](PWA.md) and [Offline reading](OFFLINE.md).
 

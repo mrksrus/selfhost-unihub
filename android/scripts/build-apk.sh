@@ -48,7 +48,7 @@ else
 fi
 export UNIHUB_KEYSTORE="$keystore" UNIHUB_KEYSTORE_PASSWORD UNIHUB_KEY_ALIAS=unihub
 
-./gradlew --no-daemon --console=plain assembleRelease
+./gradlew --no-daemon --console=plain testReleaseUnitTest assembleRelease
 rm -f "$keystore"
 
 mkdir -p "$out"

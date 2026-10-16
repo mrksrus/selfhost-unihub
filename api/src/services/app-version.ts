@@ -13,7 +13,9 @@ import packageJson = require('../../package.json');
 //   once no supported app needs what is being removed ("expand, then contract").
 const PROTOCOL = 1;
 const MIN_APP = '0.21.0';
-const FEATURES: string[] = [];
+// android-notifications (0.22.1): POST /api/notifications/android/devices,
+// GET /api/notifications/android/stream and POST /api/notifications/android/ack.
+const FEATURES: string[] = ['android-notifications'];
 
 // Written by android/scripts/build-apk.sh next to the APK in the image.
 const DOWNLOADS_DIR = process.env.UNIHUB_DOWNLOADS_DIR || '/app/downloads';

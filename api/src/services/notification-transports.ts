@@ -4,22 +4,24 @@ import type { SqlExecutor } from '../types';
 import { db } from '../state';
 import { encrypt, decrypt } from '../security/encryption';
 import { pushAgent } from './push-transport';
+import { sendToDevice } from './android-push';
 import { asUtcDate, hash, retryDisposition } from './notification-rules';
 
-// Delivery transports, keyed by the kind of target a delivery row points at.
+// Delivery transports, keyed by the kind of target a delivery row points at
+// (push_subscriptions.transport).
 //
 // The dispatcher in notifications.ts selects due deliveries, revalidates
 // their source and records the outcome; a transport only knows how to reach
-// one kind of device and how to classify that device's failures. Today every
-// target is a browser push subscription (push_subscriptions, Web Push with
-// VAPID). A native Android client will instead hold a long-lived connection to
-// this API (the same model as the browser event stream in server-events.ts)
-// and UniHub will be its own push server: that becomes a second entry here,
-// 'android', plus an expand-only migration for its target table and a target
-// kind on notification_deliveries. Nothing in the dispatcher changes.
+// one kind of device and how to classify that device's failures.
+// - 'webpush': a browser's push subscription, reached through the browser's
+//   push service (Web Push with VAPID).
+// - 'android': the Android app, reached over its own connection to this API
+//   (android-push.ts). The payload is encrypted the same way (RFC 8291), so a
+//   later route through a UnifiedPush distributor carries the same message.
 interface VapidKeys { publicKey: string; privateKey: string; subject: string }
 interface WebPushTarget { kind: 'webpush'; id: string; endpoint: string; p256dh: string; auth: string }
-type DeliveryTarget = WebPushTarget;
+interface AndroidTarget { kind: 'android'; id: string; userId: string; p256dh: string; auth: string }
+type DeliveryTarget = WebPushTarget | AndroidTarget;
 interface DeliveryMessage {
   eventId: string;
   kind: string;
@@ -28,6 +30,9 @@ interface DeliveryMessage {
 }
 type DeliveryOutcome =
   | { sent: true }
+  // Handed to the device, which acknowledges it (android-push.ts); until then
+  // the delivery stays pending and is looked at again at nextAttempt.
+  | { sent: false; awaiting: true; nextAttempt: Date }
   // targetGone: the device no longer exists; the dispatcher discards the target.
   | { sent: false; targetGone: boolean; retry: boolean; nextAttempt: Date | null; error: string };
 interface NotificationTransport<T extends DeliveryTarget = DeliveryTarget> {
@@ -65,7 +70,7 @@ const webPushTransport: NotificationTransport<WebPushTarget> = {
     const keys = await getVapidKeys();
     const webPush = require('web-push') as typeof import('web-push');
     try {
-      await webPush.sendNotification({ endpoint: target.endpoint, keys: { p256dh: target.p256dh, auth: target.auth } }, JSON.stringify({ ...message.payload, notificationId: message.eventId }),
+      await webPush.sendNotification({ endpoint: target.endpoint, keys: { p256dh: target.p256dh, auth: target.auth } }, messageBody(message),
         { agent: pushAgent, vapidDetails: keys, TTL: Math.max(0, Math.min(86400, Math.floor((asUtcDate(message.expiresAt).getTime() - Date.now()) / 1000))), urgency: message.kind === 'reminder' ? 'high' : 'normal', timeout: 10000, topic: hash(message.payload.dedupeKey).slice(0, 32) });
       return { sent: true };
     } catch (error) {
@@ -79,9 +84,27 @@ const webPushTransport: NotificationTransport<WebPushTarget> = {
   },
 };
 
+// The payload of a delivery as both transports send it.
+function messageBody(message: DeliveryMessage) {
+  return JSON.stringify({ ...message.payload, notificationId: message.eventId });
+}
+
+const androidTransport: NotificationTransport<AndroidTarget> = {
+  async ready() {},
+  async send(target, message) {
+    const webPush = require('web-push') as typeof import('web-push');
+    const { cipherText } = webPush.encrypt(target.p256dh, target.auth, messageBody(message), 'aes128gcm');
+    return { sent: false, awaiting: true, nextAttempt: sendToDevice(target.userId, target.id, message.eventId, cipherText) };
+  },
+  async discardTarget(connection, target) {
+    await connection.execute('DELETE FROM push_subscriptions WHERE id = ?', [target.id]);
+  },
+};
+
 const NOTIFICATION_TRANSPORTS: { readonly [K in DeliveryTarget['kind']]: NotificationTransport<Extract<DeliveryTarget, { kind: K }>> } = Object.freeze({
   webpush: webPushTransport,
+  android: androidTransport,
 });
 
 export { NOTIFICATION_TRANSPORTS, getVapidKeys };
-export type { DeliveryTarget, DeliveryMessage, DeliveryOutcome, NotificationTransport, VapidKeys, WebPushTarget };
+export type { AndroidTarget, DeliveryTarget, DeliveryMessage, DeliveryOutcome, NotificationTransport, VapidKeys, WebPushTarget };
