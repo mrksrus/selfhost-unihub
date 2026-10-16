@@ -850,6 +850,7 @@ CREATE TABLE `push_subscriptions` (
   `auth` varchar(64) NOT NULL,
   `created_at` timestamp NULL DEFAULT current_timestamp(),
   `updated_at` timestamp NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  `transport` varchar(16) NOT NULL DEFAULT 'webpush',
   PRIMARY KEY (`id`),
   UNIQUE KEY `endpoint_hash` (`endpoint_hash`),
   KEY `session_id` (`session_id`),

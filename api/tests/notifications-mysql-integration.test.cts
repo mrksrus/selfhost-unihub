@@ -46,8 +46,10 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   await connection.execute<ResultSetHeader>("INSERT INTO users (id, email, role) VALUES (?, 'admin@example.com', 'admin')", [userId]);
   await connection.execute<ResultSetHeader>('INSERT INTO sessions VALUES (?, ?, ?, ?)', [sessionId, userId, 'test-session', new Date(Date.now() + 10 * 86400000)]);
   const service = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');
-  // The same DDL as upgrade step 15, on this connection's temporary tables.
-  await (require('../dist/src/services/database') as typeof import('../src/services/database')).createNotificationTables(executor as FixtureValue);
+  // The same DDL as upgrade steps 15 and 17, on this connection's temporary tables.
+  const database = require('../dist/src/services/database') as typeof import('../src/services/database');
+  await database.createNotificationTables(executor as FixtureValue);
+  await database.addPushTransport(executor as FixtureValue);
   const keys = await service.getVapidKeys();
   const keyBytes = Buffer.alloc(65, 1); keyBytes[0] = 4;
   const subscription = { endpoint: 'https://fcm.googleapis.com/fcm/send/mysql-test', keys: { p256dh: keyBytes.toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } };

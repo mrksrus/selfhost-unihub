@@ -23,6 +23,7 @@ shown before publishing and how.
 | An open web app updates without losing work, and earlier releases in the support window update to this one | `scripts/pwa-update-check.mts` | `npm run build && node scripts/pwa-update-check.mts --local` |
 | The Android apps of the support window behave as recorded on Android 10, 16 and 17 (17 on a real phone while its emulator image is broken, see [Android compatibility](ANDROID_COMPATIBILITY.md)), and updating keeps the saved server | `scripts/android-support-window.mts`, then `android/scripts/window-test.sh` on each emulator | an emulator and `adb` ([Android compatibility](ANDROID_COMPATIBILITY.md)) |
 | The candidate app's contacts reach the phone and follow the server, a session end and a server change | `android/scripts/contacts-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#contacts-on-the-phone)) |
+| The candidate app receives, shows, acknowledges and opens notifications over its own connection, survives an app update and stops on sign-out | `android/scripts/notifications-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#notifications)) |
 | A published image carries the release-signed Android app | Check and keep the Android app | — |
 
 ## Required acceptance beyond the current CI
@@ -155,7 +156,11 @@ These are not covered yet; do not report them as passing.
 - **Android with a real server.** The emulator runs load a stub page. Signing
   in, two-factor codes, downloads and uploads, the file picker, the microphone
   and logout in the app are not tested, nor are older apps against the real
-  candidate server or the candidate app against older servers. The app does
+  candidate server or the candidate app against older servers. The app's
+  notifications are checked against a stub server on the emulators and the real
+  server's side by `android-notifications-mysql-integration.test.cts`, not the
+  app and the real server together, nor battery-saving behaviour of real
+  phones (Doze, manufacturer task killers). The app does
   not read the handshake's `protocol`, `minApp` or `features` yet.
 - **Server upgrades.** Starting an earlier release with data, then updating its
   image and checking migrations, reads, writes and a backup, is not automated.

@@ -31,4 +31,21 @@
     <string name="contacts_sign_in_first">Open UniHub and sign in first</string>
     <string name="contacts_unavailable">UniHub could not read your contacts. Check that the Contacts module is on and try again.</string>
     <string name="contacts_already_on">UniHub contacts are already on this phone</string>
+    <string name="notifications_title">Get notifications on this phone?</string>
+    <string name="notifications_body">New mail, reminders and other notices from %1$s, also while UniHub is closed. The app keeps its own connection to your server for this; no other service is involved. Turn them off in Settings at any time.</string>
+    <string name="notifications_ok">Turn on</string>
+    <string name="notifications_on">UniHub notifications are on</string>
+    <string name="connection_turn_off">Turn off</string>
+    <string name="channel_mail">New mail</string>
+    <string name="channel_calendar">Reminders and events</string>
+    <string name="channel_recordings">Recordings</string>
+    <string name="channel_account">Account and tests</string>
+    <string name="channel_connection">Connection</string>
+    <string name="channel_connection_description">Shown while UniHub keeps its connection for notifications. You can hide it.</string>
+    <string name="connection_title">Connected to %1$s</string>
+    <string name="connection_text">For notifications</string>
+    <string name="notification_hidden">New notification</string>
+    <string name="notifications_blocked">Allow notifications for UniHub in Android\'s settings, then turn them on again.</string>
+    <string name="notifications_superseded">Try again.</string>
+    <string name="notifications_unknown">This app does not know that request.</string>
 </resources>

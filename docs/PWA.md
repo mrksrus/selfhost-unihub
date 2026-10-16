@@ -1,6 +1,6 @@
 # Installation, notifications, and offline access
 
-UniHub uses Web Push for new unread mail, new calendar/to-do items, and calendar reminders. The API sends notifications through the device browser's push service. The page does not need to remain open while the device has connectivity and allows notifications.
+UniHub uses Web Push for new unread mail, new calendar/to-do items, and calendar reminders. The API sends notifications through the device browser's push service. The page does not need to remain open while the device has connectivity and allows notifications. The Android app (0.22.1 and later) receives the same notifications over its own connection to the server instead; see [Android notifications](ANDROID.md#notifications).
 
 ## Enable notifications
 

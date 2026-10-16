@@ -7,7 +7,7 @@ import { isModuleBackgroundEnabled } from './module-settings';
 import { getActiveRestoreSectionsByUser } from './restore-locks';
 import { blockedBackgroundModulesByUser } from './access-policy';
 import { NOTIFICATION_TRANSPORTS, getVapidKeys } from './notification-transports';
-import type { DeliveryTarget } from './notification-transports';
+import type { DeliveryTarget, NotificationTransport } from './notification-transports';
 import {
   REMINDER_GRACE_MS,
   EXCLUDED_MAIL_FOLDERS,
@@ -46,6 +46,7 @@ interface DueDelivery extends EventRow {
   endpoint: string;
   p256dh: string;
   auth: string;
+  transport: string;
 }
 type BlockedModules = ReadonlyMap<string, ReadonlySet<string>>;
 
@@ -94,8 +95,10 @@ async function deviceStatus(userId: string, endpoint: unknown) {
   const [devices] = await db.execute<RowDataPacket[]>(`SELECT p.id, s.expires_at FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id
     WHERE p.user_id = ? AND p.endpoint_hash = ? AND s.expires_at > UTC_TIMESTAMP()`, [userId, hash(endpoint)]);
   if (!devices.length) return { subscribed: false };
-  const [[summary]] = await db.execute<RowDataPacket[]>(`SELECT MAX(CASE WHEN status = 'sent' THEN delivered_at END) AS last_sent_at,
-    SUM(status = 'pending') AS pending FROM notification_deliveries WHERE subscription_id = ?`, [devices[0].id]);
+  // An app that was offline holds pending deliveries until they expire; those no longer wait.
+  const [[summary]] = await db.execute<RowDataPacket[]>(`SELECT MAX(CASE WHEN d.status = 'sent' THEN d.delivered_at END) AS last_sent_at,
+    SUM(d.status = 'pending' AND e.expires_at > UTC_TIMESTAMP()) AS pending FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
+    WHERE d.subscription_id = ?`, [devices[0].id]);
   const [failures] = await db.execute<RowDataPacket[]>(`SELECT d.last_error, e.created_at FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
     WHERE d.subscription_id = ? AND d.last_error IS NOT NULL ORDER BY e.created_at DESC LIMIT 1`, [devices[0].id]);
   const iso = (value: unknown) => value ? asUtcDate(value).toISOString() : null;
@@ -269,7 +272,7 @@ async function selectDueDeliveries(connection: SqlExecutor, now: Date, activeRes
       excludedParams.push(...users);
     }
   }
-  const [rows] = await connection.execute<(RowDataPacket & DueDelivery)[]>(`SELECT d.*, e.user_id, e.kind, e.source_id, e.payload, e.expires_at, p.endpoint, p.p256dh, p.auth
+  const [rows] = await connection.execute<(RowDataPacket & DueDelivery)[]>(`SELECT d.*, e.user_id, e.kind, e.source_id, e.payload, e.expires_at, p.endpoint, p.p256dh, p.auth, p.transport
     FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
     JOIN push_subscriptions p ON p.id = d.subscription_id JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id JOIN users u ON u.id = p.user_id
     WHERE d.status = 'pending' AND d.available_at <= ? AND e.expires_at > ? AND s.expires_at > UTC_TIMESTAMP() AND u.is_active = TRUE
@@ -277,10 +280,14 @@ async function selectDueDeliveries(connection: SqlExecutor, now: Date, activeRes
     ORDER BY d.available_at LIMIT 25`, [now, now, ...excludedParams]);
   return rows;
 }
-// Every delivery row targets a browser push subscription today; a later
-// target kind column selects the transport per row.
+// The subscription's transport selects how the delivery is sent.
 function deliveryTarget(row: DueDelivery): DeliveryTarget {
+  if (row.transport === 'android') return { kind: 'android', id: row.subscription_id, userId: row.user_id, p256dh: row.p256dh, auth: row.auth };
   return { kind: 'webpush', id: row.subscription_id, endpoint: row.endpoint, p256dh: row.p256dh, auth: row.auth };
+}
+// TypeScript cannot relate a target's kind to its transport by itself.
+function transportFor<T extends DeliveryTarget>(target: T) {
+  return NOTIFICATION_TRANSPORTS[target.kind] as unknown as NotificationTransport<T>;
 }
 async function deliverPending(connection: SqlExecutor, now: Date, activeRestores: BlockedModules = new Map()) {
   const rows = await selectDueDeliveries(connection, now, activeRestores);
@@ -302,12 +309,16 @@ async function deliverPending(connection: SqlExecutor, now: Date, activeRestores
     const attempts = Number(row.attempts) + 1;
     await connection.execute('UPDATE notification_deliveries SET attempts = ?, available_at = ? WHERE event_id = ? AND subscription_id = ?', [attempts, new Date(Date.now() + 60000), row.event_id, row.subscription_id]);
     const target = deliveryTarget(row);
-    const outcome = await NOTIFICATION_TRANSPORTS[target.kind].send(target, { eventId: row.event_id, kind: row.kind, payload, expiresAt: row.expires_at }, attempts);
+    const outcome = await transportFor(target).send(target, { eventId: row.event_id, kind: row.kind, payload, expiresAt: row.expires_at }, attempts);
     if (outcome.sent) {
       await connection.execute("UPDATE notification_deliveries SET status = 'sent', delivered_at = UTC_TIMESTAMP(), last_error = NULL WHERE event_id = ? AND subscription_id = ?", [row.event_id, row.subscription_id]);
       delivered++;
+    } else if ('awaiting' in outcome) {
+      // The acknowledgement may already have arrived; it is never undone here.
+      await connection.execute("UPDATE notification_deliveries SET available_at = ?, last_error = NULL WHERE event_id = ? AND subscription_id = ? AND status = 'pending'",
+        [outcome.nextAttempt, row.event_id, row.subscription_id]);
     } else if (outcome.targetGone) {
-      await NOTIFICATION_TRANSPORTS[target.kind].discardTarget(connection, target);
+      await transportFor(target).discardTarget(connection, target);
     } else {
       await connection.execute('UPDATE notification_deliveries SET status = ?, available_at = ?, last_error = ? WHERE event_id = ? AND subscription_id = ?',
         [outcome.retry ? 'pending' : 'failed', outcome.nextAttempt || now, outcome.error, row.event_id, row.subscription_id]);

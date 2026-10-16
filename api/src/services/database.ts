@@ -285,6 +285,17 @@ async function ensureSchema() {
         if (!await hasIndex(connection, 'calendar_events', 'idx_events_source_email')) throw new Error('Index idx_events_source_email on calendar_events is missing');
       },
     },
+    {
+      // 0.22.1: the Android app receives notifications over its own
+      // connection to this server. A device is a push subscription whose
+      // transport says how it is reached (notification-transports.ts).
+      id: 17,
+      name: 'android-notification-devices',
+      up: addPushTransport,
+      verify: async (connection: PoolConnection) => {
+        await verifyDatabaseInventory(connection, { throughMigration: 17 });
+      },
+    },
   ], BASELINE);
 }
 
@@ -367,6 +378,14 @@ async function createNotificationTables(connection: SqlExecutor) {
   }
 }
 
+// 'webpush' (a browser's push service) or 'android' (the app's connection to
+// this server). Upgrade step 17.
+async function addPushTransport(connection: SqlExecutor) {
+  if (!await hasColumn(connection, 'push_subscriptions', 'transport')) {
+    await connection.execute("ALTER TABLE push_subscriptions ADD COLUMN transport VARCHAR(16) NOT NULL DEFAULT 'webpush'");
+  }
+}
+
 // Mail list and unread-count indexes. The baseline creates them for new
 // databases; upgrade step 15 adds any that an older start could not create.
 const MAIL_PERFORMANCE_INDEXES: readonly [string, string][] = [
@@ -389,5 +408,6 @@ export {
   useUtcSessions,
   ensureSchema,
   createNotificationTables,
+  addPushTransport,
   createMailPerformanceIndexes,
 };

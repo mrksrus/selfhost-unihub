@@ -5,6 +5,16 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.22.1 Notifications in the Android app
+
+One automatic database upgrade (step 17 adds a `transport` column to
+`push_subscriptions`); browser notifications keep working unchanged. Pull and
+restart, then install the app again on each phone from Settings → General →
+Install. If another reverse proxy sits in front of UniHub's Nginx, let
+`/api/notifications/android/stream` through unbuffered with a read timeout
+above 45 seconds, as for `/api/events`
+([Android notifications](ANDROID.md#notifications)).
+
 ## 0.22.0 Contacts on the phone
 
 No database upgrade and no configuration change. Pull and restart. On the

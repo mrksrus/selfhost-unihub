@@ -34,6 +34,8 @@ class WebBridge(
     private val origin: String,
     private val onChangeServer: () -> Unit,
     private val onTheme: (dark: Boolean, background: Int) -> Unit,
+    // Settings → Notifications (AppNotifications). The answer is the reply's JSON.
+    private val onNotifications: (action: String, answer: (JSONObject) -> Unit) -> Unit,
 ) {
     fun attach(webView: WebView): Boolean {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) return false
@@ -70,6 +72,17 @@ class WebBridge(
             "openExternal" -> openExternal(activity, data.optString("url"))
             "changeServer" -> onChangeServer()
             "theme" -> parseColor(data.optString("background"))?.let { onTheme(data.optBoolean("dark", true), it) }
+            "notifications" -> data.optString("id").takeIf { validId(it) }?.let { id ->
+                onNotifications(data.optString("action")) { answer ->
+                    activity.runOnUiThread {
+                        try {
+                            reply.postMessage(answer.put("id", id).toString())
+                        } catch (_: Exception) {
+                            // The page is gone.
+                        }
+                    }
+                }
+            }
         }
     }
 
