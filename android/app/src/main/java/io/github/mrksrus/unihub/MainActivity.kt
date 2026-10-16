@@ -55,6 +55,8 @@ class MainActivity : Activity() {
     // answer is ignored.
     private var screenGeneration = 0
     private var contactsChecking = false
+    // An offer that came in while a check was running is looked at again.
+    private var contactsOfferPending = false
     private var contactsCheckedAt = 0L
     private val contactsRecheck = Handler(Looper.getMainLooper())
     private var contactsServer: String? = null
@@ -261,6 +263,7 @@ class MainActivity : Activity() {
     private fun destroyWeb() {
         screenGeneration++
         contactsRecheck.removeCallbacksAndMessages(null)
+        contactsOfferPending = false
         webView?.let {
             (it.parent as? ViewGroup)?.removeView(it)
             it.destroy()
@@ -295,7 +298,11 @@ class MainActivity : Activity() {
     // at most every few seconds; one skipped for that runs later, so signing
     // in right after a check still brings the question.
     private fun offerContacts(server: String) {
-        if (contactsChecking || ContactsSync.account(this) != null || ContactsSync.offered(this, server)) return
+        if (ContactsSync.account(this) != null || ContactsSync.offered(this, server)) return
+        if (contactsChecking) {
+            contactsOfferPending = true
+            return
+        }
         val now = SystemClock.elapsedRealtime()
         val wait = if (contactsCheckedAt == 0L) 0L else contactsCheckedAt + CONTACTS_CHECK_INTERVAL_MS - now
         if (wait > 0) {
@@ -353,6 +360,10 @@ class MainActivity : Activity() {
                     return@runOnUiThread
                 }
                 then(offer)
+                if (contactsOfferPending) {
+                    contactsOfferPending = false
+                    origin?.let(::offerContacts)
+                }
             }
         }.start()
     }
@@ -492,7 +503,13 @@ class MainActivity : Activity() {
 
     // Leaving the app is when contacts were most likely edited, or the
     // person signed out: the phone's copy follows.
+    override fun onResume() {
+        super.onResume()
+        ContactsSync.appOpen = true
+    }
+
     override fun onPause() {
+        ContactsSync.appOpen = false
         super.onPause()
         CookieManager.getInstance().flush()
         ContactsSync.requestSync(this)

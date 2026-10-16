@@ -59,6 +59,10 @@ object ContactsSync {
     // Changes when the mapping below changes, so every contact is rewritten.
     private const val FORMAT = "1"
 
+    /** Whether the app is in the foreground, where the page can sign in (MainActivity). */
+    @Volatile
+    var appOpen = false
+
     val PERMISSIONS = arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
 
     fun hasPermission(context: Context) =
@@ -457,10 +461,13 @@ object ContactsSync {
         connection.setRequestProperty("User-Agent", "UniHubAndroid/${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
         try {
             val status = connection.responseCode
-            // The server extends a session in use and sends its cookie again;
-            // the WebView keeps the new expiry, unless it has another session
-            // by now.
-            connection.headerFields["Set-Cookie"]?.takeIf { current.valid() }?.let { cookies ->
+            // The server extends a session at most once a day and sends its
+            // cookie again. The WebView must keep that expiry, or the app
+            // would sign out 21 days after its own last renewal while syncs
+            // keep renewing the session. A sign-in replaces the cookie only
+            // while the app is open, so the old one is written back only
+            // while it is not, and only if it is still the WebView's session.
+            connection.headerFields["Set-Cookie"]?.takeIf { !appOpen && current.valid() }?.let { cookies ->
                 val manager = CookieManager.getInstance()
                 cookies.forEach { manager.setCookie(origin, it) }
                 manager.flush()
