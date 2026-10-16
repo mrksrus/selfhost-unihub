@@ -63,13 +63,19 @@ class Stub(BaseHTTPRequestHandler):
             with open(os.path.join(state, 'page-cookies'), 'a') as f:
                 f.write((self.headers.get('Cookie') or '') + '\n')
         if url.path in ('/', '/auth'):
+            # The marker a renewal changes; set once, so a page load that
+            # answers after a renewal was written does not undo it.
+            marker = [] if 'renewed' in sent else [('Set-Cookie', 'renewed=no; Path=/')]
+            csrf = [] if 'csrf-token' in sent else [set_csrf]
             # The heartbeat hands the page a new session when the test changes
             # it, and moves the page to another address (/auth: signing in).
             script = 'setInterval(() => fetch("/heartbeat").then(r => r.text()).then(go => { if (go && go !== location.pathname) history.pushState({}, "", go) }), 1000)'
             self.answer(200, '<!doctype html><title>UniHub contacts test</title><p>UniHub<script>%s</script>' % script,
-                        [('Content-Type', 'text/html')] + ([set_session, set_csrf, ('Set-Cookie', 'renewed=no; Path=/')] if user else []))
+                        [('Content-Type', 'text/html')] + ([set_session] + csrf + marker if user else []))
         elif url.path == '/heartbeat':
-            self.answer(200, read('goto'), [set_session, set_csrf] if user else [])
+            # A new CSRF token reaches the page once, as a rotation would.
+            rotate = [set_csrf] if sent.get('csrf-token') != read('csrf') else []
+            self.answer(200, read('goto'), [set_session] + rotate if user else [])
         elif not url.path.startswith('/api/'):
             self.answer(404, 'not found')
         elif not signed_in:
