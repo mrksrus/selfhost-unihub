@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 import { settingsHref } from '@/components/settings/settings-sections';
 import { api } from '@/lib/api';
-import { appNeedsUpdateForNotifications, appNotifications, type AppNotifications, type AppNotificationState } from '@/lib/platform';
+import { appNeedsUpdateForNotifications, appNotifications, appWithoutBridge, type AppNotifications, type AppNotificationState } from '@/lib/platform';
 import { enablePushSubscription, initServiceWorker, notificationSupport, pushEnabledForUser, requestNotificationPermission, revokeDevicePushSubscription, sendTestPush, setPushEnabledForUser } from '@/utils/service-worker';
 
 export interface DeviceNotificationStatus {
@@ -38,6 +38,7 @@ export default function NotificationSettings() {
   const app = useMemo(appNotifications, []);
   if (appNeedsUpdateForNotifications()) return <AppUpdateNeeded />;
   if (app) return <AppNotificationSettings app={app} />;
+  if (appWithoutBridge()) return <AppWithoutBridge />;
   return <BrowserNotificationSettings />;
 }
 
@@ -47,6 +48,13 @@ function AppUpdateNeeded() {
     <SettingsRow label="This device" description="Notifications need a newer app. The update is under Settings → General → App.">
       <Button variant="outline" asChild><Link to={settingsHref('general')}>Open General</Link></Button>
     </SettingsRow>
+  </SettingsSection>;
+}
+
+/** The app cannot be reached from this page (an old WebView); it asks about notifications itself after sign-in. */
+function AppWithoutBridge() {
+  return <SettingsSection title={SECTION_TITLE} description={SECTION_DESCRIPTION}>
+    <SettingsRow label="This device" description="This page cannot reach the app: update Android System WebView from the Play Store. Until then, the app asks about notifications once after sign-in, and its ongoing “Connected” notification has Turn off." />
   </SettingsSection>;
 }
 

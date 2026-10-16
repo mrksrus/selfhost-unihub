@@ -65,12 +65,15 @@ for (const release of window.releases) {
 }
 
 // The candidate server must keep serving the oldest app in the window.
-const { versionInfo } = createRequire(import.meta.url)(path.join(repo, 'api/dist/src/services/app-version.js')) as { versionInfo(dir?: string): { app: string; minApp: string; protocol: number } };
+const { versionInfo } = createRequire(import.meta.url)(path.join(repo, 'api/dist/src/services/app-version.js')) as { versionInfo(dir?: string): { app: string; minApp: string; protocol: number; features: string[] } };
 const handshake = versionInfo(path.join(repo, 'android'));
 const oldest = window.releases.filter(release => release.shell !== 'unavailable').map(release => release.version).sort(compare)[0];
 if (handshake.app !== 'unihub') problems.push(`GET /api/version must answer app = "unihub" (apps in the window read only that)`);
 if (compare(handshake.minApp, oldest) > 0) problems.push(`minApp ${handshake.minApp} would refuse ${oldest}, which is still in the support window`);
-if (JSON.stringify(window.handshake.shellReads) !== JSON.stringify(['app'])) problems.push('A shell now reads more of the handshake: extend this check for it');
+// From 0.22.1 the app offers notifications only while the server lists them.
+const usesNotifications = window.releases.some(release => release.shell !== 'unavailable' && compare(release.version, '0.22.1') >= 0);
+if (usesNotifications && !handshake.features.includes('android-notifications')) problems.push('features must list android-notifications: an app in the window turns notifications on only then');
+if (JSON.stringify(window.handshake.shellReads) !== JSON.stringify(['app', 'features'])) problems.push('A shell now reads more of the handshake: extend this check for it');
 
 for (const release of window.releases) {
   for (const emulator of window.emulators) {

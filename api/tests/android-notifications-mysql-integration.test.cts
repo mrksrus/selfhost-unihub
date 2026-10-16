@@ -185,9 +185,9 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     await new Promise(resolve => setTimeout(resolve, 100));
     const third = await newMail('While offline');
     await notifications.processNotificationJobs();
-    const parked = await delivery(third.eventId);
+    const [[parked]] = await pool.query<RowDataPacket[]>('SELECT status, attempts FROM notification_deliveries WHERE event_id = ?', [third.eventId]);
     assert.equal(parked.status, 'pending');
-    assert.ok(new Date(parked.available_at).getTime() > Date.now() + 5 * 60000);
+    assert.equal(Number(parked.attempts), 0, 'an offline phone\'s delivery is not even attempted');
     const again = await owner.stream(registered.device);
     assert.equal(again.status, 200);
     const late = await again.next('notification');

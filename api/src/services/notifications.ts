@@ -272,12 +272,17 @@ async function selectDueDeliveries(connection: SqlExecutor, now: Date, activeRes
       excludedParams.push(...users);
     }
   }
+  // An Android device is reached only while its stream is open here; an
+  // offline phone's deliveries wait unselected (connecting makes them due), so
+  // they never fill the batch ahead of other devices.
+  const live = (require('./android-push') as typeof import('./android-push')).connectedDevices();
   const [rows] = await connection.execute<(RowDataPacket & DueDelivery)[]>(`SELECT d.*, e.user_id, e.kind, e.source_id, e.payload, e.expires_at, p.endpoint, p.p256dh, p.auth, p.transport
     FROM notification_deliveries d JOIN notification_events e ON e.id = d.event_id
     JOIN push_subscriptions p ON p.id = d.subscription_id JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id JOIN users u ON u.id = p.user_id
     WHERE d.status = 'pending' AND d.available_at <= ? AND e.expires_at > ? AND s.expires_at > UTC_TIMESTAMP() AND u.is_active = TRUE
     ${exclusions.length ? `AND ${exclusions.join(' AND ')}` : ''}
-    ORDER BY d.available_at LIMIT 25`, [now, now, ...excludedParams]);
+    AND (p.transport <> 'android'${live.length ? ` OR p.id IN (${live.map(() => '?').join(', ')})` : ''})
+    ORDER BY d.available_at LIMIT ${BATCH}`, [now, now, ...excludedParams, ...live]);
   return rows;
 }
 // The subscription's transport selects how the delivery is sent.
@@ -289,9 +294,25 @@ function deliveryTarget(row: DueDelivery): DeliveryTarget {
 function transportFor<T extends DeliveryTarget>(target: T) {
   return NOTIFICATION_TRANSPORTS[target.kind] as unknown as NotificationTransport<T>;
 }
+// Further batches while the last was full, for up to MAX_BATCHES batches and
+// BATCH_TIME_MS: a phone that comes back with a backlog gets it within a pass
+// or two instead of 25 per 30 seconds, and a slow push service still cannot
+// hold one pass for long.
+const BATCH = 25;
+const MAX_BATCHES = 8;
+const BATCH_TIME_MS = 20 * 1000;
 async function deliverPending(connection: SqlExecutor, now: Date, activeRestores: BlockedModules = new Map()) {
-  const rows = await selectDueDeliveries(connection, now, activeRestores);
-  if (!rows.length) return 0;
+  let delivered = 0;
+  const started = Date.now();
+  for (let batch = 0; batch < MAX_BATCHES && Date.now() - started < BATCH_TIME_MS; batch++) {
+    const rows = await selectDueDeliveries(connection, now, activeRestores);
+    if (!rows.length) break;
+    delivered += await deliverBatch(connection, now, rows);
+    if (rows.length < BATCH) break;
+  }
+  return delivered;
+}
+async function deliverBatch(connection: SqlExecutor, now: Date, rows: DueDelivery[]) {
   for (const kind of new Set(rows.map(row => deliveryTarget(row).kind))) await NOTIFICATION_TRANSPORTS[kind].ready();
   let delivered = 0;
   for (const row of rows) {
@@ -303,7 +324,7 @@ async function deliverPending(connection: SqlExecutor, now: Date, activeRestores
     // A restore may have started since the snapshot the rows were selected with.
     if (moduleId && (!await isModuleBackgroundEnabled(row.user_id, moduleId, connection) || (await getActiveRestoreSectionsByUser(connection, row.user_id)).get(row.user_id)?.has(moduleId))) continue;
     if (!current) {
-      await connection.execute("UPDATE notification_deliveries SET status = 'cancelled' WHERE event_id = ? AND subscription_id = ?", [row.event_id, row.subscription_id]);
+      await connection.execute("UPDATE notification_deliveries SET status = 'cancelled' WHERE event_id = ? AND subscription_id = ? AND status = 'pending'", [row.event_id, row.subscription_id]);
       continue;
     }
     const attempts = Number(row.attempts) + 1;

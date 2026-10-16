@@ -203,6 +203,16 @@ export function appNotifications(): AppNotifications | null {
   };
 }
 
+/**
+ * In a 0.22.1+ app whose WebView is too old for the message bridge (WebView
+ * before about 80, never updated): the page cannot reach the app, which asks
+ * about notifications itself after sign-in instead.
+ */
+export function appWithoutBridge() {
+  const app = androidApp();
+  return !!app && app.versionCode >= APP_NOTIFICATIONS_MIN_VERSION_CODE && !window.UniHubAndroid;
+}
+
 /** In an Android app older than 0.22.1, which has no notifications of its own yet. */
 export function appNeedsUpdateForNotifications() {
   const app = androidApp();

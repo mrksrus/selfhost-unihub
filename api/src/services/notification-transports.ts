@@ -4,7 +4,6 @@ import type { SqlExecutor } from '../types';
 import { db } from '../state';
 import { encrypt, decrypt } from '../security/encryption';
 import { pushAgent } from './push-transport';
-import { sendToDevice } from './android-push';
 import { asUtcDate, hash, retryDisposition } from './notification-rules';
 
 // Delivery transports, keyed by the kind of target a delivery row points at
@@ -94,6 +93,8 @@ const androidTransport: NotificationTransport<AndroidTarget> = {
   async send(target, message) {
     const webPush = require('web-push') as typeof import('web-push');
     const { cipherText } = webPush.encrypt(target.p256dh, target.auth, messageBody(message), 'aes128gcm');
+    // Loaded when used, as web-push is: whatever imports the dispatcher need not hold the stream bus.
+    const { sendToDevice } = require('./android-push') as typeof import('./android-push');
     return { sent: false, awaiting: true, nextAttempt: sendToDevice(target.userId, target.id, message.eventId, cipherText) };
   },
   async discardTarget(connection, target) {

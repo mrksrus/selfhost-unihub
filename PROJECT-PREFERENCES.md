@@ -480,7 +480,8 @@ up a separate push app (such as ntfy) to get them.
 How it is built on Android (agent's choices within that request, open to
 maintainer change): asked once per server after sign-in and switchable in
 Settings → Notifications; a foreground service with a silent ongoing
-notification that has a Turn off action; the lock screen shows only "New
+notification that has a Turn off action; notifications are marked private,
+so a phone set to hide sensitive content on the lock screen shows only "New
 notification"; while notifications are on, the connection keeps the app's
 session in use; delivery is acknowledged by the phone and sent again until it
 is.
