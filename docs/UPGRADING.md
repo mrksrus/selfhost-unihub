@@ -7,10 +7,10 @@ version-specific upgrade guidance. Preserve existing data and keys when upgradin
 
 ## 0.22.0 Contacts on the phone
 
-No database upgrade and no configuration change. Pull and restart. Only the
-Android app is new: on the phone, download it from the install card or
-Settings → General → Install and install it over the old one. It then offers
-to show your contacts in the phone's contacts ([Android](ANDROID.md#contacts-on-the-phone)).
+No database upgrade and no configuration change. Pull and restart. On the
+phone, download the app from the install card or Settings → General → Install
+and install it over the old one. It then offers to show your contacts in the
+phone's contacts ([Android](ANDROID.md#contacts-on-the-phone)).
 
 ## 0.21.4 The Android app opens again
 

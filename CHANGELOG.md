@@ -16,10 +16,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   Android's Settings → Accounts → Add account → UniHub asks again. The phone
   gets names, phone numbers, email addresses, company and job title, never
   notes, as a read-only copy that follows UniHub: changes arrive when you
-  leave the app and every few hours. Signing out, another user signing in, or
-  turning off the Contacts module empties it; removing the UniHub account in
-  Android's settings or connecting the app to another server deletes it. Only
-  the Android app changed: install it again from Settings → General → Install.
+  leave the app and every few hours. Signing out or turning off the Contacts
+  module empties it, another user signing in replaces it; removing the UniHub account in
+  Android's settings or connecting the app to another server deletes it. The
+  server needs nothing new for it: install the app again from Settings →
+  General → Install.
 
 - Pinned the existing interface with twelve synthetic desktop/phone reference
   screens and browser checks for themes, visible rows, panel preferences,
