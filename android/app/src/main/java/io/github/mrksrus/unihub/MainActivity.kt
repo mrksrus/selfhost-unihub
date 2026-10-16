@@ -1,6 +1,9 @@
 package io.github.mrksrus.unihub
 
 import android.Manifest
+import android.accounts.Account
+import android.accounts.AccountAuthenticatorResponse
+import android.accounts.AccountManager
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
@@ -11,6 +14,7 @@ import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
@@ -30,6 +34,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.Toast
 
 /**
  * The app is a thin shell: it opens the user's UniHub server in a WebView, so
@@ -47,6 +52,11 @@ class MainActivity : Activity() {
     // Each connect check and screen change gets a new number; an older check's
     // answer is ignored.
     private var screenGeneration = 0
+    private var contactsChecking = false
+    private var contactsCheckedAt = 0L
+    private var contactsServer: String? = null
+    // Set when Android's settings opened the app to add the account.
+    private var contactsResponse: AccountAuthenticatorResponse? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,11 +64,13 @@ class MainActivity : Activity() {
         if (saved != null) PageTheme.saved(this)?.let { (dark, background) -> applyTheme(dark, background) }
         if (saved != null) showWeb(saved, savedInstanceState) else showConnect()
         connectRequest(intent)?.takeIf { it != saved && savedInstanceState == null }?.let(::confirmConnect)
+        if (savedInstanceState == null && intent?.action == ACTION_SHOW_CONTACTS) contactsFromSettings(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         connectRequest(intent)?.takeIf { it != origin }?.let(::confirmConnect)
+        if (intent.action == ACTION_SHOW_CONTACTS) contactsFromSettings(intent)
     }
 
     /** The server from an "Open in app" link: unihub://connect?server=https://… */
@@ -75,7 +87,7 @@ class MainActivity : Activity() {
             .setTitle(getString(R.string.connect_confirm_title, ServerAddress.host(requested)))
             .setMessage(R.string.connect_confirm_body)
             .setPositiveButton(R.string.connect_confirm_ok) { _, _ ->
-                ServerAddress.save(this, requested)
+                useServer(requested)
                 showWeb(requested, null)
             }
             .setNegativeButton(R.string.cancel, null)
@@ -114,7 +126,7 @@ class MainActivity : Activity() {
                     button.setText(R.string.connect_button)
                     when (result) {
                         ServerAddress.Check.Ok -> {
-                            ServerAddress.save(this, candidate)
+                            useServer(candidate)
                             showWeb(candidate, null)
                         }
                         ServerAddress.Check.NotUniHub -> {
@@ -135,6 +147,12 @@ class MainActivity : Activity() {
             val enter = event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN
             if (actionId == EditorInfo.IME_ACTION_GO || enter) { submit(); true } else false
         }
+    }
+
+    // Contacts on the phone belong to one server; another server's are removed.
+    private fun useServer(server: String) {
+        ServerAddress.save(this, server)
+        if (ContactsSync.account(this)?.let { ContactsSync.origin(this, it) } != server) ContactsSync.turnOff(this)
     }
 
     private fun changeServer() {
@@ -189,6 +207,11 @@ class MainActivity : Activity() {
             override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                 hideError()
                 pageBridge.cancelFiles()
+            }
+
+            // Also after signing in, which changes the page without loading one.
+            override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+                offerContacts(server)
             }
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -262,6 +285,110 @@ class MainActivity : Activity() {
         errorView = null
     }
 
+    // ── Contacts on the phone (ContactsSync) ───────────────────────────
+
+    // Once per server, when the person is signed in and has contacts.
+    private fun offerContacts(server: String) {
+        if (contactsChecking || ContactsSync.account(this) != null || ContactsSync.offered(this, server)) return
+        val now = SystemClock.elapsedRealtime()
+        if (contactsCheckedAt != 0L && now - contactsCheckedAt < CONTACTS_CHECK_INTERVAL_MS) return
+        contactsCheckedAt = now
+        checkContacts(server) { offer ->
+            if (offer == ContactsSync.Offer.Ready && ContactsSync.account(this) == null && !ContactsSync.offered(this, server)) {
+                askContacts(server)
+            }
+        }
+    }
+
+    // "Add account" in Android's settings.
+    private fun contactsFromSettings(intent: Intent) {
+        finishContacts(null)
+        contactsResponse = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(AccountManager.KEY_ACCOUNT_AUTHENTICATOR_RESPONSE, AccountAuthenticatorResponse::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra(AccountManager.KEY_ACCOUNT_AUTHENTICATOR_RESPONSE)
+        }
+        val server = ServerAddress.saved(this)
+        val existing = ContactsSync.account(this)
+        when {
+            server == null -> {
+                toast(R.string.contacts_connect_first)
+                finishContacts(null)
+            }
+            existing != null && ContactsSync.origin(this, existing) == server -> {
+                toast(R.string.contacts_already_on)
+                finishContacts(existing)
+            }
+            else -> checkContacts(server) { offer ->
+                when (offer) {
+                    ContactsSync.Offer.SignedOut -> { toast(R.string.contacts_sign_in_first); finishContacts(null) }
+                    ContactsSync.Offer.Unavailable -> { toast(R.string.contacts_unavailable); finishContacts(null) }
+                    else -> askContacts(server)
+                }
+            }
+        }
+    }
+
+    private fun checkContacts(server: String, then: (ContactsSync.Offer) -> Unit) {
+        contactsChecking = true
+        val generation = screenGeneration
+        Thread {
+            val offer = ContactsSync.check(server)
+            runOnUiThread {
+                contactsChecking = false
+                if (isFinishing || isDestroyed || generation != screenGeneration || ServerAddress.saved(this) != server) {
+                    finishContacts(null)
+                    return@runOnUiThread
+                }
+                then(offer)
+            }
+        }.start()
+    }
+
+    private fun askContacts(server: String) {
+        ContactsSync.markOffered(this, server)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.contacts_title)
+            .setMessage(R.string.contacts_body)
+            .setPositiveButton(R.string.contacts_ok) { _, _ ->
+                if (ContactsSync.hasPermission(this)) {
+                    showContacts(server)
+                } else {
+                    contactsServer = server
+                    requestPermissions(ContactsSync.PERMISSIONS, REQUEST_CONTACTS)
+                }
+            }
+            .setNegativeButton(R.string.contacts_not_now) { _, _ -> finishContacts(null) }
+            .setOnCancelListener { finishContacts(null) }
+            .show()
+    }
+
+    private fun showContacts(server: String) {
+        if (ServerAddress.saved(this) != server) {
+            finishContacts(null)
+            return
+        }
+        val account = ContactsSync.turnOn(this, server)
+        toast(R.string.contacts_on)
+        finishContacts(account)
+    }
+
+    private fun finishContacts(account: Account?) {
+        val response = contactsResponse ?: return
+        contactsResponse = null
+        if (account != null) {
+            response.onResult(Bundle().apply {
+                putString(AccountManager.KEY_ACCOUNT_NAME, account.name)
+                putString(AccountManager.KEY_ACCOUNT_TYPE, account.type)
+            })
+        } else {
+            response.onError(AccountManager.ERROR_CODE_CANCELED, "Not added")
+        }
+    }
+
+    private fun toast(text: Int) = Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+
     // UniHub has its own light/dark setting, so the bars follow the page (its
     // ThemeProvider reports it) rather than the phone. Until the first page has
     // loaded, the last theme it reported is used.
@@ -313,6 +440,17 @@ class MainActivity : Activity() {
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (requestCode == REQUEST_CONTACTS) {
+            val server = contactsServer ?: return
+            contactsServer = null
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                showContacts(server)
+            } else {
+                toast(R.string.contacts_denied)
+                finishContacts(null)
+            }
+            return
+        }
         if (requestCode != REQUEST_MICROPHONE) return
         val request = pendingPermission ?: return
         pendingPermission = null
@@ -341,18 +479,25 @@ class MainActivity : Activity() {
         webView?.saveState(outState)
     }
 
+    // Leaving the app is when contacts were most likely edited, or the
+    // person signed out: the phone's copy follows.
     override fun onPause() {
         super.onPause()
         CookieManager.getInstance().flush()
+        ContactsSync.requestSync(this)
     }
 
     override fun onDestroy() {
         destroyWeb()
+        finishContacts(null)
         super.onDestroy()
     }
 
-    private companion object {
-        const val REQUEST_FILE = 1
-        const val REQUEST_MICROPHONE = 2
+    companion object {
+        const val ACTION_SHOW_CONTACTS = "io.github.mrksrus.unihub.SHOW_CONTACTS"
+        private const val REQUEST_FILE = 1
+        private const val REQUEST_MICROPHONE = 2
+        private const val REQUEST_CONTACTS = 3
+        private const val CONTACTS_CHECK_INTERVAL_MS = 15_000L
     }
 }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Download only: contacts apps show UniHub's contacts as read-only. -->
+<sync-adapter xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accountType="io.github.mrksrus.unihub"
+    android:allowParallelSyncs="false"
+    android:contentAuthority="com.android.contacts"
+    android:isAlwaysSyncable="true"
+    android:supportsUploading="false"
+    android:userVisible="true" />

@@ -62,15 +62,18 @@ published.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.21.4. The CI table is the
+As recorded in `android/support-window.json` for 0.22.0. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.22.0 | starts and connects | starts and connects | starts and connects |
 | 0.21.4 | starts and connects | starts and connects | starts and connects |
 | 0.21.3 | starts and connects | closes on start | closes on start |
 | 0.21.2 | starts and connects | closes on start | closes on start |
-| 0.21.1 | starts and connects | closes on start | closes on start |
+
+The 0.22.0 app also puts contacts on the phone; `android/scripts/contacts-test.sh`
+checks that on each emulator against a stub server. Older apps do not have it.
 
 0.21.1 to 0.21.3 close on Android 12 (API 31) and newer: the app set the status
 bar icon colour before its window existed (CHANGELOG 0.21.4; the emulators

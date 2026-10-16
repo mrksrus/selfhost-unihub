@@ -6,9 +6,10 @@ version and every feature is written once in `src/`. Native code only covers
 what a browser tab cannot do. Each server image carries the matching app and
 offers it for download; there is no app store.
 
-Status (0.21.0): the app connects to a server and shows UniHub. Notifications
-are not in the app yet (Web Push does not reach a WebView); they come in a later
-release. Until then, keep the web app or a browser for notifications.
+Status (0.22.0): the app connects to a server, shows UniHub and can put the
+user's contacts on the phone. Notifications are not in the app yet (Web Push
+does not reach a WebView); they come in a later release. Until then, keep the
+web app or a browser for notifications.
 
 ## Getting the app
 
@@ -59,6 +60,46 @@ email) a `UniHubAndroid` object that takes JSON messages:
 Links to other sites, `mailto:` and `tel:` open in the matching phone app. File
 inputs open Android's file picker. Recordings ask for the microphone through
 Android's permission prompt.
+
+## Contacts on the phone
+
+From 0.22.0 the app can show the signed-in user's UniHub contacts in the
+phone's own contacts, so the Phone app's caller name, WhatsApp, Messages and
+other apps find them. It is entirely in the app: the server and the web pages
+are unchanged, and it works with any server the app supports.
+
+- **Turning it on.** Once signed in, with at least one contact, the app asks
+  once per server: **Show contacts** or **Not now**. Android then asks for
+  access to contacts. Later, Android's Settings → Accounts (Passwords &
+  accounts on some phones) → Add account → UniHub asks again.
+- **What the phone gets.** Each contact's first and last name, its phone
+  numbers (as mobile, like the vCard export), email addresses, company and job
+  title. Notes stay in UniHub: every app allowed to read the phone's contacts
+  could read them. A contact with none of these is left out.
+- **One direction.** The contacts belong to a "UniHub" account on the phone,
+  named after the server, and contacts apps show them as read-only. Edit them
+  in UniHub; the phone follows. Android merges a UniHub contact with the same
+  person from another account (Google, the SIM) into one entry as usual.
+- **Keeping up.** Android syncs the account about every six hours, and the app
+  asks for a sync each time it is left (the moment edits or a sign-out most
+  likely happened). Turning off sync for the account in Android's settings
+  stops both and keeps the last copy. A sync that fails or gets an incomplete
+  answer changes nothing; only a complete listing adds, changes and removes.
+- **Session.** The sync asks `GET /api/auth/me?background=1` and
+  `GET /api/contacts` with the app's own WebView session cookie, so it needs no
+  password of its own. A sync uses the session like the open app does, so
+  while syncing is on the app's session keeps being renewed (21 days from the
+  last use, see [authentication](AUTH_ADMIN_SETTINGS.md)).
+- **Removal.** Signing out in the app, a session that ended (for example
+  signed out on every device), or the Contacts module turned off empties the
+  account at the next sync; signing in again fills it. Another user signing in
+  replaces the contacts with theirs. Connecting the app to another server,
+  removing the UniHub account in Android's settings, or uninstalling the app
+  removes the account and Android deletes its contacts.
+
+Android keeps the copy on the phone and other apps with the contacts
+permission can read it (WhatsApp, for example, uploads phone numbers to find
+its users). That is the reason it is a question, not a default.
 
 ## Version handshake
 
@@ -144,6 +185,14 @@ CI starts the built app on Android emulators (`android/scripts/launch-test.sh`):
 a first start, "Open in app" with the app closed, and a start with a saved
 server whose page reported a theme. It fails on any crash. To run it locally,
 start an emulator and pass the APK.
+
+`android/scripts/contacts-test.sh` checks contacts on the phone against a
+stub server with synthetic contacts: accepting the question, the phone's
+number lookup (what the Phone app uses) finding the names, notes staying off
+the phone, changes and deletions on the server, a sync started by Android with
+the app closed, another user, a session that ended, signing in again and
+moving to another server. CI runs it on every emulator after the support
+window.
 
 Every CI run keeps the app it built under **Artifacts** (`unihub-android-app`)
 for trying it on a phone without publishing an image. Runs from this

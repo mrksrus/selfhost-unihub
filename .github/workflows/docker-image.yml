@@ -219,7 +219,9 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          script: bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
+          script: |
+            bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
+            bash android/scripts/contacts-test.sh android-app/unihub.apk
 
       - name: Start the Android apps on Android 16
         uses: reactivecircus/android-emulator-runner@v2
@@ -229,7 +231,9 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          script: bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
+          script: |
+            bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
+            bash android/scripts/contacts-test.sh android-app/unihub.apk
 
       # The system image is named android-37.0 (stable channel).
       - name: Start the Android apps on Android 17
@@ -240,7 +244,9 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          script: bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
+          script: |
+            bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
+            bash android/scripts/contacts-test.sh android-app/unihub.apk
 
       - name: Keep the release evidence
         if: always()
