@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Download only: contacts apps show UniHub's contacts as read-only. -->
+<!-- Both ways: contacts apps can add, edit and delete UniHub's contacts, and
+     Android asks for a sync when they do (ContactsSync). -->
 <sync-adapter xmlns:android="http://schemas.android.com/apk/res/android"
     android:accountType="io.github.mrksrus.unihub"
     android:allowParallelSyncs="false"
     android:contentAuthority="com.android.contacts"
     android:isAlwaysSyncable="true"
-    android:supportsUploading="false"
+    android:supportsUploading="true"
     android:userVisible="true" />

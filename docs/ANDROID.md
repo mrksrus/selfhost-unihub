@@ -64,44 +64,80 @@ Android's permission prompt.
 
 ## Contacts on the phone
 
-From 0.22.0 the app can show the signed-in user's UniHub contacts in the
+From 0.22.0 the app can keep the signed-in user's UniHub contacts in the
 phone's own contacts, so the Phone app's caller name, WhatsApp, Messages and
-other apps find them. It is entirely in the app: the server and the web pages
-are unchanged, and it works with any server the app supports.
+other apps find them. From 0.22.3 this works both ways. It is entirely in the
+app: the server and the web pages are unchanged, and it works with any server
+the app supports.
 
 - **Turning it on.** Once signed in, with at least one contact, the app asks
   once per server: **Show contacts** or **Not now**. Android then asks for
   access to contacts. Later, Android's Settings → Accounts (Passwords &
   accounts on some phones) → Add account → UniHub asks again.
-- **What the phone gets.** Each contact's first and last name, its phone
-  numbers (as mobile, like the vCard export), email addresses, company and job
-  title. Notes stay in UniHub: every app allowed to read the phone's contacts
-  could read them. A contact with none of these is left out.
-- **One direction.** The contacts belong to a "UniHub" account on the phone,
-  named after the server, and contacts apps show them as read-only. Edit them
-  in UniHub; the phone follows. Android merges a UniHub contact with the same
-  person from another account (Google, the SIM) into one entry as usual.
-- **Keeping up.** Android syncs the account about every six hours, and the app
-  asks for a sync each time it is left (the moment edits or a sign-out most
-  likely happened). Turning off sync for the account in Android's settings
-  stops both and keeps the last copy. A sync that fails or gets an incomplete
-  answer changes nothing; only a complete listing adds, changes and removes.
+- **What is shared.** Each contact's first and last name, phone numbers, email
+  addresses, company and job title. New numbers from UniHub are labelled
+  mobile, like the vCard export. Notes stay in UniHub: every app allowed to
+  read the phone's contacts could read them. A UniHub contact with none of
+  these is left off the phone.
+- **Both ways.** The contacts belong to a "UniHub" account on the phone, named
+  after the server. Contacts apps can add, edit and delete contacts there; the
+  next sync does the same in UniHub, and UniHub's changes come to the phone.
+  Contacts that Android moves into the account count as added, for example
+  when the phone offers to move its own contacts after you pick UniHub as the
+  place to save them. A contact added on the phone that has the same email
+  address or phone number as one in UniHub is joined to it instead of being
+  added twice. Each side then fills in what the other lacks. A field changed
+  on both sides since the last sync takes UniHub's value. Numbers and
+  addresses are merged one by one, so adding one on each side keeps both.
+- **What stays on the phone.** UniHub keeps three numbers and three addresses
+  per contact; any more stay on the phone. So do the parts of a contact UniHub
+  has no place for: a middle name, prefix or suffix, a photo, postal
+  addresses, birthdays, the phone's own notes and its labels for numbers and
+  addresses. Removing the UniHub account removes these with it (see
+  Removal). A contact added on the phone without a first name gets one in
+  UniHub (its last name, company, address or number), because UniHub
+  requires it.
+- **Deleting.** A contact deleted on the phone is deleted in UniHub, unless
+  UniHub changed it since the last sync; then it comes back with the change.
+  Deleting ten or more contacts at once (and at least a quarter of them) is
+  not passed on unasked. Android shows its "Too many deletions" notification
+  instead, where they can be deleted in UniHub or brought back on the phone.
+  A contact deleted in UniHub disappears from the phone, unless it was changed
+  on the phone since; then it is added to UniHub again.
+- **Keeping up.** Android syncs the account about every six hours and shortly
+  after a contacts app changes it. The app also asks for a sync each time it is
+  left (the moment edits or a sign-out most likely happened). Turning off sync
+  for the account in Android's settings stops all of these and keeps the
+  phone's copy as it is. A sync that fails or gets an incomplete listing
+  changes nothing; a contact UniHub refuses is tried again at the next sync.
+  A sync never writes over a contact that was edited on the phone while it
+  ran; that edit goes with the next sync.
 - **Session.** The sync asks `GET /api/auth/me?background=1` and
-  `GET /api/contacts` with the app's own WebView session cookie, so it needs no
-  password of its own. A sync uses the session like the open app does, so
-  while syncing is on the app's session keeps being renewed (21 days from the
-  last use, see [authentication](AUTH_ADMIN_SETTINGS.md)). The app passes a
-  renewed cookie on to its pages, except while a page is signing in (the
-  `/auth` page and five minutes after), so it never replaces a new session.
+  `GET /api/contacts`, and writes with `POST /api/contacts`, `PUT` and
+  `DELETE /api/contacts/<id>` like the contacts page, using the app's own
+  WebView session cookie and its CSRF token. It needs no password of its own.
+  A `PUT` sends the contact's UniHub notes back unchanged. A sync uses the
+  session like the open app does, so while syncing is on the app's session
+  keeps being renewed (21 days from the last use, see
+  [authentication](AUTH_ADMIN_SETTINGS.md)). The app passes a renewed cookie
+  on to its pages, except while a page is signing in (the `/auth` page and
+  five minutes after), so it never replaces a new session.
 - **Removal.** Signing out in the app, a session that ended (for example
-  signed out on every device), or the Contacts module turned off empties the
-  account at the next sync; signing in again fills it. Another user signing in
-  replaces the contacts with theirs. Connecting the app to another server,
+  signed out on every device), or the Contacts module turned off removes
+  UniHub's contacts from the phone at the next sync; signing in again brings
+  them back. Contacts the phone had not sent yet stay and go to UniHub when
+  the same user signs in again. Another user signing in replaces the contacts
+  with theirs; contacts the previous user had not sent yet stay on the phone
+  and are never sent to the other user. Connecting the app to another server,
   removing the UniHub account in Android's settings, or uninstalling the app
-  removes the account and Android deletes its contacts.
+  removes the account and Android deletes its contacts, including what only
+  the phone kept.
+- **Updating from 0.22.0 or 0.22.1.** The read-only copies those versions
+  wrote become ordinary synced contacts at the first sync after the update.
+  Nothing is sent to UniHub for them until they are edited on the phone.
 
-Android keeps the copy on the phone and other apps with the contacts
-permission can read it (WhatsApp, for example, uploads phone numbers to find
+Android keeps the contacts on the phone and other apps with the contacts
+permission can read them (WhatsApp, for example, uploads phone numbers to find
 its users). That is the reason it is a question, not a default.
 
 ## Notifications
@@ -252,12 +288,17 @@ background, a reconnect after an app update, sign-out removing them, signing in
 again, and turning off from the page and from the ongoing notification.
 
 `android/scripts/contacts-test.sh` checks contacts on the phone against a
-stub server with synthetic contacts: accepting the question, the phone's
-number lookup (what the Phone app uses) finding the names, notes staying off
-the phone, changes and deletions on the server, a sync started by Android with
-the app closed, another user, a session that ended, signing in again and
-moving to another server. CI runs it on every emulator after the support
-window.
+stub server with synthetic contacts that also takes writes like the contacts
+API: accepting the question, the phone's number lookup (what the Phone app
+uses) finding the names, notes staying off the phone, changes and deletions
+on the server, contacts added, edited and deleted on the phone reaching the
+server with its notes kept, a phone contact joined to the same person in
+UniHub, many deletions waiting for an answer (undone, then confirmed), a
+contact not yet sent surviving a sign-out, a sync started by Android with the
+app closed, another user, a session that ended, signing in again and moving
+to another server. Given the previous release's app, it starts there and
+checks that updating keeps the contacts and sends nothing back. CI runs it on
+every emulator after the support window.
 
 Every CI run keeps the app it built under **Artifacts** (`unihub-android-app`)
 for trying it on a phone without publishing an image. Runs from this

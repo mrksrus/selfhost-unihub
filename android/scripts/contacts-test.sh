@@ -2,18 +2,23 @@
 # Shows that the app puts UniHub's contacts on the phone and keeps them in step,
 # on a running emulator:
 #
-#   contacts-test.sh <unihub.apk>
+#   contacts-test.sh <unihub.apk> [<previous release's unihub.apk>]
+#
+# With the previous release's app, the test starts with that app and its
+# contacts on the phone, then updates to <unihub.apk>.
 #
 # A stub server on this machine answers like UniHub (a session cookie,
-# /api/auth/me and /api/contacts with synthetic contacts). The app is
-# connected, the contacts question is accepted, and the phone's own lookup
-# (what the Phone app and WhatsApp use) must find the names. Then contacts
-# change on the server, another user signs in, the session ends, and the app
-# moves to another server; the phone must follow each time. CI runs it on every
+# /api/auth/me and /api/contacts with synthetic contacts, which it also adds,
+# changes and deletes like the real API). The app is connected, the contacts
+# question is accepted, and the phone's own lookup (what the Phone app and
+# WhatsApp use) must find the names. Then contacts change on the server and
+# on the phone (as a contacts app would), another user signs in, the session
+# ends, and the app moves to another server; both sides must follow each time. CI runs it on every
 # emulator after window-test.sh (.github/workflows/docker-image.yml).
 set -euo pipefail
 
-apk="${1:?usage: contacts-test.sh <unihub.apk>}"
+apk="${1:?usage: contacts-test.sh <unihub.apk> [<previous unihub.apk>]}"
+previous="${2:-}"
 package=io.github.mrksrus.unihub
 port=8097
 server="http://10.0.2.2:$port"
@@ -30,13 +35,16 @@ trap cleanup EXIT
 # The stub reads the signed-in user and the contacts from files, so each step
 # below changes the server by writing them.
 cat > "$work/stub.py" <<'PY'
-import json, os, sys, urllib.parse
+import json, os, sys, threading, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 state = sys.argv[2]
 def read(name):
     with open(os.path.join(state, name)) as f:
         return f.read().strip()
+lock = threading.Lock()
+created = [0]
+FIELDS = ('first_name', 'last_name', 'email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'company', 'job_title', 'notes')
 
 class Stub(BaseHTTPRequestHandler):
     def answer(self, status, body, headers=()):
@@ -104,6 +112,54 @@ class Stub(BaseHTTPRequestHandler):
             self.answer(200, json.dumps(listing), [('Content-Type', 'application/json')])
         else:
             self.answer(404, json.dumps({'error': 'Not found'}))
+
+    # Writes like api/src/routes/contacts.ts: the CSRF cookie must match the
+    # header, PUT replaces every field, a missing field becomes null.
+    def write(self, method):
+        url = urllib.parse.urlparse(self.path)
+        sent = dict(c.split('=', 1) for c in (self.headers.get('Cookie') or '').split('; ') if '=' in c)
+        session = 'auth-token=' + read('session')
+        if read('user') == '' or session not in (self.headers.get('Cookie') or '').split('; '):
+            return self.answer(401, json.dumps({'error': 'Unauthorized'}), [('Content-Type', 'application/json')])
+        if not sent.get('csrf-token') or sent.get('csrf-token') != self.headers.get('X-CSRF-Token'):
+            return self.answer(403, json.dumps({'error': 'CSRF token validation failed'}), [('Content-Type', 'application/json')])
+        if read('mode') == 'write-error':
+            return self.answer(500, json.dumps({'error': 'Failed'}), [('Content-Type', 'application/json')])
+        length = int(self.headers.get('Content-Length') or 0)
+        body = json.loads(self.rfile.read(length) or b'{}')
+        with lock:
+            path = os.path.join(state, 'contacts.json')
+            contacts = json.loads(read('contacts.json'))
+            parts = url.path.split('/')
+            if method == 'POST' and url.path == '/api/contacts':
+                if not (body.get('first_name') or '').strip():
+                    return self.answer(400, json.dumps({'error': 'First name is required'}), [('Content-Type', 'application/json')])
+                created[0] += 1
+                contact = {'id': 'n-%d' % created[0], 'user_id': 'u', 'avatar_url': None, 'is_favorite': 0}
+                contact.update({k: body.get(k) or None for k in FIELDS})
+                contacts.append(contact)
+                answer = {'contact': contact}
+            elif method == 'PUT' and len(parts) == 4:
+                found = [c for c in contacts if c['id'] == parts[3]]
+                for c in found:
+                    c.update({k: body.get(k) or None for k in FIELDS})
+                    c['first_name'] = (body.get('first_name') or '').strip()
+                answer = {'contact': found[0]} if found else {}
+            elif method == 'DELETE' and len(parts) == 4:
+                contacts = [c for c in contacts if c['id'] != parts[3]]
+                answer = {'message': 'Contact deleted'}
+            else:
+                return self.answer(404, json.dumps({'error': 'Not found'}))
+            with open(path + '.tmp', 'w') as f:
+                json.dump(contacts, f)
+            os.replace(path + '.tmp', path)
+        with open(os.path.join(state, 'writes'), 'a') as f:
+            f.write('%s %s\n' % (method, url.path))
+        self.answer(200, json.dumps(answer), [('Content-Type', 'application/json')])
+
+    def do_POST(self): self.write('POST')
+    def do_PUT(self): self.write('PUT')
+    def do_DELETE(self): self.write('DELETE')
 
     def log_message(self, format, *args):
         sys.stderr.write('%s\n' % (format % args))
@@ -208,24 +264,134 @@ leave_app() {
 }
 back_to_app() { adb shell am start -W -n "$package/.MainActivity" >/dev/null; sleep 2; }
 
+# ── The phone's side, as a contacts app changes it (no sync adapter flag) ──
+contacts_uri=content://com.android.contacts
+sync_now() { adb shell requestsync -n 10.0.2.2 -t "$package" -a com.android.contacts -f "$@" >/dev/null; }
+first_id() { tr -d '\r' | sed -n 's/.*_id=\([0-9]*\).*/\1/p' | head -n 1; }
+
+phone_add() { # given family number: a new contact in the UniHub account; prints its ID
+  adb shell content insert --uri $contacts_uri/raw_contacts --bind account_type:s:$package --bind account_name:s:10.0.2.2
+  local id
+  id="$(adb shell content query --uri $contacts_uri/raw_contacts --projection _id \
+    --where "\"account_type='$package' AND sourceid IS NULL AND deleted=0\"" --sort "\"_id DESC\"" | first_id)"
+  [[ -n "$id" ]] || fail 'the new phone contact was not saved'
+  # Row by row, so a sync can come in between: the number first, so the
+  # contact can be recognised at every step (a contacts app saves all at once).
+  phone_add_number "$id" "$3"
+  [[ -n "$1$2" ]] && adb shell content insert --uri $contacts_uri/data --bind raw_contact_id:i:$id \
+    --bind mimetype:s:vnd.android.cursor.item/name --bind data2:s:"$1" --bind data3:s:"$2"
+  echo "$id"
+}
+phone_add_number() { # raw contact, number
+  adb shell content insert --uri $contacts_uri/data --bind raw_contact_id:i:$1 \
+    --bind mimetype:s:vnd.android.cursor.item/phone_v2 --bind data1:s:"'$2'" --bind data2:i:7
+}
+phone_add_email() { # raw contact, address
+  adb shell content insert --uri $contacts_uri/data --bind raw_contact_id:i:$1 \
+    --bind mimetype:s:vnd.android.cursor.item/email_v2 --bind data1:s:"$2" --bind data2:i:1
+}
+raw_for() { # the UniHub contact on the phone with this UniHub ID
+  adb shell content query --uri $contacts_uri/raw_contacts --projection _id \
+    --where "\"account_type='$package' AND sourceid='$1' AND deleted=0\"" | first_id
+}
+raws_for() { # how many phone contacts stand for this UniHub ID
+  adb shell content query --uri $contacts_uri/raw_contacts --projection _id \
+    --where "\"account_type='$package' AND sourceid='$1' AND deleted=0\"" 2>/dev/null | grep -c '^Row' || true
+}
+unlinked_rows() {
+  adb shell content query --uri $contacts_uri/raw_contacts --projection _id \
+    --where "\"account_type='$package' AND sourceid IS NULL AND deleted=0\"" 2>/dev/null | grep -c '^Row' || true
+}
+phone_set_family() { # raw contact, family name
+  local data
+  data="$(adb shell content query --uri $contacts_uri/data --projection _id \
+    --where "\"raw_contact_id=$1 AND mimetype='vnd.android.cursor.item/name'\"" | first_id)"
+  adb shell content update --uri $contacts_uri/data --bind data3:s:"$2" --where "_id=$data"
+}
+phone_delete() { adb shell content delete --uri $contacts_uri/raw_contacts --where "_id=$1"; }
+
+# ── The server's side ──
+# A Python expression over the server's contacts (`contacts`, and `by` ID).
+server_check() {
+  python3 -c 'import json, sys
+contacts = json.load(open(sys.argv[1])); by = {c["id"]: c for c in contacts}
+sys.exit(0 if eval(sys.argv[2]) else 1)' "$work/state/contacts.json" "$1"
+}
+expect_server() { # expression, what it means
+  for i in $(seq 1 45); do
+    server_check "$1" && return 0
+    (( i % 10 == 0 )) && sync_now
+    sleep 1
+  done
+  fail "UniHub does not have $2: $(cat "$work/state/contacts.json")"
+}
+server_edit() { # Python statements changing `contacts`
+  python3 -c 'import json, sys
+contacts = json.load(open(sys.argv[1])); by = {c["id"]: c for c in contacts}
+exec(sys.argv[2])
+json.dump(contacts, open(sys.argv[1], "w"))' "$work/state/contacts.json" "$1"
+}
+
 sdk="$(adb shell getprop ro.build.version.sdk | tr -d '\r')"
 echo "Android API $sdk"
-adb uninstall "$package" >/dev/null 2>&1 || true
-adb install "$apk" >/dev/null
-# Android's own permission screen differs between versions; grant beforehand.
-adb shell pm grant "$package" android.permission.READ_CONTACTS
-adb shell pm grant "$package" android.permission.WRITE_CONTACTS
-adb logcat -c -b all
 
-echo 'Connect, then accept the question'
-adb shell am start -W -a android.intent.action.VIEW -d "'unihub://connect?server=$server'" >/dev/null
-tap_button 'Connect to 10.0.2.2?' android:id/button1
-tap_button 'Show UniHub contacts on this phone?' android:id/button1
-for _ in $(seq 1 20); do has_account && break; sleep 1; done
-has_account || fail 'no UniHub account after accepting'
-expect_name +15550100 'Ada Example' 'first sync'
-expect_name +15550101 'Ben Sample' 'first sync'
-[[ "$(unihub_rows)" == 2 ]] || fail "expected 2 UniHub contacts on the phone, found $(unihub_rows) (a contact with only a note has nothing to show)"
+fresh_install() { # apk
+  adb uninstall "$package" >/dev/null 2>&1 || true
+  # Android removes an earlier run's contacts shortly after its account.
+  for _ in $(seq 1 30); do
+    adb shell content query --uri content://com.android.contacts/raw_contacts --projection _id \
+      --where "\"account_type='$package'\"" 2>/dev/null | grep -q '^Row' || break
+    sleep 1
+  done
+  adb install "$1" >/dev/null
+  # Android's own permission screen differs between versions; grant beforehand.
+  adb shell pm grant "$package" android.permission.READ_CONTACTS
+  adb shell pm grant "$package" android.permission.WRITE_CONTACTS
+  adb logcat -c -b all
+}
+
+connect_and_accept() {
+  adb shell am start -W -a android.intent.action.VIEW -d "'unihub://connect?server=$server'" >/dev/null
+  tap_button 'Connect to 10.0.2.2?' android:id/button1
+  tap_button 'Show UniHub contacts on this phone?' android:id/button1
+  for _ in $(seq 1 20); do has_account && break; sleep 1; done
+  has_account || fail 'no UniHub account after accepting'
+  expect_name +15550100 'Ada Example' 'first sync'
+  expect_name +15550101 'Ben Sample' 'first sync'
+  [[ "$(unihub_rows)" == 2 ]] || fail "expected 2 UniHub contacts on the phone, found $(unihub_rows) (a contact with only a note has nothing to show)"
+}
+
+updated=
+if [[ -n "$previous" ]]; then
+  echo 'Connect with the previous release, then accept the question'
+  fresh_install "$previous"
+  connect_and_accept
+  : > "$work/state/writes"
+  if adb install -r "$apk" >/dev/null 2>&1; then
+    echo 'Updating keeps the contacts and sends nothing back'
+    updated=1
+    back_to_app
+    leave_app
+    for _ in $(seq 1 40); do
+      [[ "$(adb shell content query --uri content://com.android.contacts/raw_contacts --projection sync1 \
+        --where "\"account_type='$package' AND deleted=0 AND sync1='2'\"" 2>/dev/null | grep -c '^Row' || true)" == 2 ]] && break
+      sleep 1
+    done
+    [[ "$(unihub_rows)" == 2 && "$(unlinked_rows)" == 0 ]] || fail "after the update the phone has $(unihub_rows) UniHub contacts, $(unlinked_rows) unlinked"
+    adb logcat -d -s UniHubContacts | grep -q 'Synced' || fail 'no sync after the update'
+    [[ -s "$work/state/writes" ]] && fail "the update sent the read-only copies back to UniHub: $(cat "$work/state/writes")"
+    expect_name +15550100 'Ada Example' 'after the update'
+    back_to_app
+  else
+    # Phones only take an update with the same signature (pull requests from forks).
+    echo 'Updating from the previous release: not run (the apps are signed differently)'
+  fi
+fi
+if [[ -z "$updated" ]]; then
+  echo 'Connect, then accept the question'
+  fresh_install "$apk"
+  connect_and_accept
+fi
 if adb shell content query --uri content://com.android.contacts/data --projection data1 \
     --where "\"data1 LIKE '%7f3a%'\"" 2>/dev/null | grep -q '^Row'; then
   fail 'a note reached the phone'
@@ -247,6 +413,95 @@ for mode in error empty-more no-has-more; do
   expect_name +15550102 'Cy Sample' "after $mode"
 done
 set_mode ''
+
+echo 'A contact added on the phone reaches UniHub'
+set_server user-1 "$(contact c-ada '"Ada"' '"Changed"' '"+15550100"' '"ada@example.com"' null '"private note 7f3a"'),$(contact c-cy '"Cy"' '"Sample"' '"+15550102"' null null null)"
+: > "$work/state/writes"
+eve="$(phone_add Eve Phone +15550104)"
+sync_now
+expect_server 'any(c["first_name"] == "Eve" and c["last_name"] == "Phone" and c["phone"] == "+15550104" for c in contacts)' 'the contact added on the phone'
+for _ in $(seq 1 20); do [[ "$(unlinked_rows)" == 0 ]] && break; sleep 1; done
+[[ "$(unlinked_rows)" == 0 ]] || fail 'the added contact is not linked to its UniHub contact'
+expect_name +15550104 'Eve Phone' 'added on the phone'
+sleep 5
+server_check 'len(contacts) == 3' || fail "the added contact reached UniHub more than once: $(cat "$work/state/contacts.json")"
+
+echo 'An edit on the phone reaches UniHub and keeps the note'
+ada="$(raw_for c-ada)"
+[[ -n "$ada" ]] || fail 'no phone contact for Ada'
+phone_set_family "$ada" Phoned
+phone_add_number "$ada" '+1 555 0105'
+sync_now
+expect_server 'by["c-ada"]["last_name"] == "Phoned" and by["c-ada"]["phone2"] == "+1 555 0105" and by["c-ada"]["notes"] == "private note 7f3a"' "the phone's edit, with UniHub's note"
+expect_name +15550100 'Ada Phoned' 'edited on the phone'
+
+echo 'A deletion on the phone deletes in UniHub'
+phone_delete "$(raw_for c-cy)"
+sync_now
+expect_server '"c-cy" not in by and len(contacts) == 2' 'Cy deleted'
+expect_name +15550102 '' 'deleted on the phone'
+
+echo 'A phone contact of someone already in UniHub joins them'
+joined="$(phone_add Ada '' '+1 555-0100')"
+phone_add_email "$joined" ada@example.org
+sync_now
+expect_server 'len(contacts) == 2 and by["c-ada"]["email2"] == "ada@example.org"' 'the address of the joined contact, and no duplicate'
+for _ in $(seq 1 20); do [[ "$(raws_for c-ada)" == 2 ]] && break; sleep 1; done
+[[ "$(raws_for c-ada)" == 2 ]] || fail "the joined phone contact is not linked to Ada ($(raws_for c-ada) linked)"
+
+echo 'A change in UniHub reaches the phone and keeps what UniHub does not hold'
+server_edit 'by["c-ada"]["first_name"] = "Adelaide"'
+back_to_app
+leave_app
+expect_name +15550100 'Adelaide Phoned' 'renamed in UniHub after the phone added to it'
+expect_name +15550105 'Adelaide Phoned' 'the number the phone added stays'
+
+echo 'Many deletions on the phone wait for an answer'
+many=""
+for n in 10 11 12 13 14 15 16 17 18 19 20 21; do many+=",$(contact c-m$n '"Many"' "\"$n\"" "\"+155502$n\"" null null null)"; done
+server_edit "contacts.extend(json.loads('[${many#,}]'))"
+sync_now
+expect_name +15550221 'Many 21' 'the many contacts arrived'
+for n in 10 11 12 13 14 15 16 17 18 19 20 21; do phone_delete "$(raw_for c-m$n)"; done
+before="$(adb logcat -d -s UniHubContacts | grep -c 'waiting for confirmation' || true)"
+sync_now
+for _ in $(seq 1 40); do (( $(adb logcat -d -s UniHubContacts | grep -c 'waiting for confirmation' || true) > before )) && break; sleep 1; done
+(( $(adb logcat -d -s UniHubContacts | grep -c 'waiting for confirmation' || true) > before )) || fail 'deleting 12 contacts on the phone did not wait for an answer'
+server_check 'len(contacts) == 14' || fail "contacts were deleted in UniHub without an answer: $(cat "$work/state/contacts.json")"
+echo '  undo on the phone'
+# What Android's "Too many deletions" notification does: one sync with the
+# answer. Android may run a pending sync first, so ask until it ran.
+for _ in $(seq 1 9); do
+  sync_now --dd --ib --ex
+  for _ in $(seq 1 10); do adb logcat -d -s UniHubContacts | grep -q 'Undoing 12 deletions' && break 2; sleep 1; done
+done
+expect_name +15550221 'Many 21' 'restored after undoing the deletions'
+server_check 'len(contacts) == 14' || fail 'undoing the deletions changed UniHub'
+for n in 10 11 12 13 14 15 16 17 18 19 20 21; do phone_delete "$(raw_for c-m$n)"; done
+echo '  delete them after all'
+for _ in $(seq 1 9); do
+  sync_now --od --ib --ex
+  for _ in $(seq 1 10); do server_check 'len(contacts) == 2' && break 2; sleep 1; done
+done
+expect_server 'len(contacts) == 2' 'the confirmed deletions'
+expect_name +15550221 '' 'confirmed deletion'
+
+echo 'Signing out keeps what the phone has not sent yet'
+set_mode write-error
+fay="$(phone_add Fay Pending +15550106)"
+back_to_app
+expect_postponed 'UniHub refuses writes'
+set_server '' '[]'
+back_to_app
+leave_app
+expect_name +15550100 '' 'signed out'
+expect_name +15550106 'Fay Pending' 'not sent yet when the session ended'
+set_server user-1 "$(contact c-ada '"Ada"' '"Again"' '"+15550100"' null null null)"
+back_to_app
+leave_app
+expect_server 'any(c["first_name"] == "Fay" for c in contacts)' 'the contact kept over the sign-out'
+expect_name +15550100 'Ada Again' 'signed in again'
+grep -q '^POST' "$work/state/writes" || fail 'no contact was added in UniHub'
 
 echo 'A sync from Android with the app closed (the periodic one) renews the session'
 kill_app

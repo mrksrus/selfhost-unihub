@@ -26,7 +26,7 @@ class ContactsSyncService : Service() {
             // Only Android's own contacts provider receives contacts.
             if (authority != ContactsContract.AUTHORITY || account.type != ContactsSync.ACCOUNT_TYPE) return
             try {
-                ContactsSync.sync(context, account, provider, result)
+                ContactsSync.sync(context, account, extras, provider, result)
             } catch (_: SecurityException) {
                 // The contacts permission was taken back in Android's settings.
                 Log.w("UniHubContacts", "No contacts permission")

@@ -431,25 +431,41 @@ missing real-server pairings remain verification gaps.
 Evidence: `docs/ANDROID.md`, `api/src/services/app-version.ts`,
 `src/lib/platform.ts`, CHANGELOG 0.21.4.
 
-#### P-22 The Android app puts UniHub contacts in the phone's contacts
+#### P-22 The Android app keeps UniHub contacts in the phone's contacts, both ways
 
-Accepted, in source; emulator-tested against a stub server, not yet on a real
-phone with a real server. Pinned 2026-10-16 (requested for 0.22.0).
+Accepted, in source; emulator-tested against a stub server (Android 16) and
+in Google Contacts on the emulator, not yet on a real phone with a real
+server. Pinned 2026-10-16 (requested for 0.22.0); changed to both ways
+2026-10-17 (requested for 0.22.3), replacing the one-way copy (see
+[Superseded decisions](#superseded-decisions)).
 
-The Android app can make the signed-in user's UniHub contacts known to the
+The Android app makes the signed-in user's UniHub contacts known to the
 phone, so the Phone app, WhatsApp and other apps show their names. It is done
 natively in the app; the server and web pages stay unchanged, so a release of
 it changes only the Android app in the image.
 
+Changes on the phone reach UniHub as well: contacts added, edited or deleted
+in the phone's UniHub account, including device contacts Android moves into
+it, are added, changed or deleted in UniHub. The maintainer expects local
+changes made in the app to reach the server in general; contacts are the
+only data the app keeps outside its pages, which write to the server directly.
+
 How it is built (agent's choices within that request, open to maintainer
-change): opt-in once per server, a read-only one-way copy in a "UniHub"
-Android account, names/numbers/emails/company/job title but never notes,
-emptied on sign-out, session end or a disabled Contacts module, deleted on a
-server change or account removal.
+change): opt-in once per server; a "UniHub" Android account editable in
+contacts apps; names/numbers/emails/company/job title shared, never notes
+(UniHub's notes stay off the phone, the phone's notes stay off UniHub); a
+field changed on both sides takes UniHub's value, numbers and addresses merge
+one by one; a phone contact with the same address or number as a UniHub
+contact is joined to it, not duplicated; ten or more deletions at once wait
+for the person's answer in Android's "Too many deletions" notification;
+UniHub's contacts leave the phone on sign-out, session end or a disabled
+Contacts module, while contacts not yet sent stay for the same user; the
+account and its contacts are deleted on a server change or account removal.
 
 Evidence: `android/app/src/main/java/io/github/mrksrus/unihub/ContactsSync.kt`,
-`ContactsServices.kt`, `MainActivity.kt`, `android/scripts/contacts-test.sh`,
-`docs/ANDROID.md` (Contacts on the phone), CHANGELOG 0.22.0.
+`ContactCard.kt` (merge rules, `ContactMergeTest`), `ContactsServices.kt`,
+`res/xml/contacts.xml`, `android/scripts/contacts-test.sh`, `docs/ANDROID.md`
+(Contacts on the phone), CHANGELOG 0.22.0 and 0.22.3.
 
 #### P-23 Notifications reach phones without a third-party push service
 
@@ -551,5 +567,32 @@ Open proposals do not override accepted decisions.
 
 ## Superseded decisions
 
-None recorded. When a decision above is replaced, move its old text here with
-its ID, the date it was superseded and a pointer to the replacement.
+When a decision above is replaced, move its old text here with its ID, the
+date it was superseded and a pointer to the replacement.
+
+- **P-22 as pinned 2026-10-16: a read-only, one-way copy.** Superseded
+  2026-10-17 by the maintainer's request that contacts sync both ways (phone
+  changes, including device contacts moved into the UniHub account, reach
+  UniHub). Replaced by [P-22](#p-22-the-android-app-keeps-unihub-contacts-in-the-phones-contacts-both-ways).
+  The old text:
+
+> #### P-22 The Android app puts UniHub contacts in the phone's contacts
+>
+> Accepted, in source; emulator-tested against a stub server, not yet on a real
+> phone with a real server. Pinned 2026-10-16 (requested for 0.22.0).
+>
+> The Android app can make the signed-in user's UniHub contacts known to the
+> phone, so the Phone app, WhatsApp and other apps show their names. It is done
+> natively in the app; the server and web pages stay unchanged, so a release of
+> it changes only the Android app in the image.
+>
+> How it is built (agent's choices within that request, open to maintainer
+> change): opt-in once per server, a read-only one-way copy in a "UniHub"
+> Android account, names/numbers/emails/company/job title but never notes,
+> emptied on sign-out, session end or a disabled Contacts module, deleted on a
+> server change or account removal.
+>
+> Evidence: `android/app/src/main/java/io/github/mrksrus/unihub/ContactsSync.kt`,
+> `ContactsServices.kt`, `MainActivity.kt`, `android/scripts/contacts-test.sh`,
+> `docs/ANDROID.md` (Contacts on the phone), CHANGELOG 0.22.0.
+
