@@ -61,7 +61,7 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
     messageId: '<valid@example.test>', fullEmail: 'raw', parsed: { subject: 'Imported', text: 'hello', attachments: [
       { filename: 'a.txt', contentType: 'text/plain', content: Buffer.from('hello') },
     ] }, fromAddress: 'sender@example.test', fromName: 'Sender', toAddresses: ['recipient@example.test'], ccAddresses: ['copy@example.test'], folder: 'inbox', isRead: false,
-    suppressNotifications: true, enqueueDeletion: async () => {}, async archiveRaw({ emailId }: FixtureValue) {
+    enqueueDeletion: async () => {}, async archiveRaw({ emailId }: FixtureValue) {
       const rawStoragePath = path.join(root, `${emailId}.eml`);
       await fs.writeFile(rawStoragePath, 'raw');
       return { rawStoragePath, rawSha256: 'a'.repeat(64) };

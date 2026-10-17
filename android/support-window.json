@@ -1,34 +1,68 @@
 {
   "policy": "The Android app of the current release and of the three releases published before it. docs/ANDROID_COMPATIBILITY.md explains the fields; scripts/android-support-window.mts checks them.",
   "emulators": [
-    { "android": "10", "api": 29, "imageApiLevel": "29", "why": "oldest Android the app supports (minSdk 29)" },
-    { "android": "16", "api": 36, "imageApiLevel": "36", "why": "current Android" },
-    { "android": "17", "api": 37, "imageApiLevel": "37.0", "why": "reported crash on a Pixel with Android 17 (0.21.3)" }
+    {
+      "android": "10",
+      "api": 29,
+      "imageApiLevel": "29",
+      "why": "oldest Android the app supports (minSdk 29)"
+    },
+    {
+      "android": "16",
+      "api": 36,
+      "imageApiLevel": "36",
+      "why": "current Android"
+    },
+    {
+      "android": "17",
+      "api": 37,
+      "imageApiLevel": "37.0",
+      "why": "reported crash on a Pixel with Android 17 (0.21.3)"
+    }
   ],
   "releases": [
     {
+      "version": "0.22.4",
+      "apk": {
+        "versionCode": 22004,
+        "sha256": null,
+        "signing": "release"
+      },
+      "shell": "supported"
+    },
+    {
       "version": "0.22.3",
-      "apk": { "versionCode": 22003, "sha256": null, "signing": "release" },
+      "apk": {
+        "versionCode": 22003,
+        "sha256": "635a431f3e5c0ef09249a88f2d741348981d3271787230d15d11e8c3fc524a19",
+        "signing": "release"
+      },
       "shell": "supported"
     },
     {
       "version": "0.22.2",
-      "apk": { "versionCode": 22002, "sha256": "ff6fea7f20dca509b448ef61d01842cfab8ce98f86b203f01bf27be5b599ad38", "signing": "release" },
+      "apk": {
+        "versionCode": 22002,
+        "sha256": "ff6fea7f20dca509b448ef61d01842cfab8ce98f86b203f01bf27be5b599ad38",
+        "signing": "release"
+      },
       "shell": "supported"
     },
     {
       "version": "0.22.1",
-      "apk": { "versionCode": 22001, "sha256": "513a5dbaed514207b729e14a0b5a3ddb190e3ca1eeb7c7400b9f62385907ad0b", "signing": "release" },
-      "shell": "supported"
-    },
-    {
-      "version": "0.22.0",
-      "apk": { "versionCode": 22000, "sha256": "8fdcc0f57ed57d58efada9d9ea6cfd1b27f9212d4278f2f2bd0aacde9cea58d6", "signing": "release" },
+      "apk": {
+        "versionCode": 22001,
+        "sha256": "513a5dbaed514207b729e14a0b5a3ddb190e3ca1eeb7c7400b9f62385907ad0b",
+        "signing": "release"
+      },
       "shell": "supported"
     }
   ],
   "handshake": {
-    "shellReads": ["app", "features"],
+    "shellReads": [
+      "app",
+      "features"
+    ],
     "note": "Every shell in the window checks that GET /api/version answers app = \"unihub\". Shells from 0.22.1 also read features: they offer notifications only while they list android-notifications. None reads protocol or minApp yet, so the server must keep app = \"unihub\", keep listing android-notifications while a shell in the window uses it, and must not raise minApp above the oldest shell here."
   }
 }

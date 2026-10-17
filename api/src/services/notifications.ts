@@ -35,6 +35,7 @@ interface EventInput {
   expiresAt: Date;
   data?: Record<string, unknown>;
   endpointHash?: string | null;
+  held?: boolean;
 }
 interface EventRow { kind: string; source_id: string | null; user_id: string }
 interface DueDelivery extends EventRow {
@@ -117,39 +118,77 @@ async function deviceStatus(userId: string, endpoint: unknown) {
 function notificationModule(kind: string) {
   return kind === 'mail' ? 'mail' : ['calendar', 'todo', 'reminder'].includes(kind) ? 'calendar' : kind === 'recording' ? 'recordings' : null;
 }
-async function enqueueEvent({ userId, dedupeKey, kind, sourceId = null, title, body, url, expiresAt, data = {}, endpointHash = null }: EventInput, connection: SqlExecutor = db) {
-  const moduleId = notificationModule(kind);
-  if (moduleId && !await isModuleBackgroundEnabled(userId, moduleId, connection)) return null;
+// The user's devices that can still be reached: subscriptions of live sessions.
+async function subscribedDevices(userId: string, connection: SqlExecutor, endpointHash: string | null = null) {
   const [devices] = await connection.execute<RowDataPacket[]>(`SELECT p.id FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id
     JOIN users u ON u.id = p.user_id WHERE p.user_id = ? AND s.expires_at > UTC_TIMESTAMP() AND u.is_active = TRUE
     ${endpointHash ? 'AND p.endpoint_hash = ?' : ''}`, endpointHash ? [userId, endpointHash] : [userId]);
+  return devices as { id: string }[];
+}
+async function queueDeliveries(eventId: string, devices: { id: string }[], connection: SqlExecutor) {
+  for (const device of devices) await connection.execute(`INSERT IGNORE INTO notification_deliveries (event_id, subscription_id, available_at) VALUES (?, ?, UTC_TIMESTAMP())`, [eventId, device.id]);
+}
+// A held event is recorded without deliveries; releasing it later (mail) fills
+// in its payload and queues the deliveries then.
+async function enqueueEvent({ userId, dedupeKey, kind, sourceId = null, title, body, url, expiresAt, data = {}, endpointHash = null, held = false }: EventInput, connection: SqlExecutor = db) {
+  const moduleId = notificationModule(kind);
+  if (moduleId && !await isModuleBackgroundEnabled(userId, moduleId, connection)) return null;
+  const devices = await subscribedDevices(userId, connection, endpointHash);
   if (!devices.length) return null;
   const eventId = crypto.randomUUID();
-  const payload = { version: 1, userId, dedupeKey, kind, title: String(title || 'UniHub').slice(0, 120), body: String(body || '').slice(0, 400), url, ...data };
+  const payload = { version: 1, userId, dedupeKey, kind, title: String(title || 'UniHub').slice(0, 120), body: String(body || '').slice(0, 400), url, ...data, ...(held ? { held: true } : {}) };
   const [insert] = await connection.execute<ResultSetHeader>(`INSERT IGNORE INTO notification_events (id, user_id, event_key, kind, source_id, payload, expires_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`, [eventId, userId, hash(dedupeKey), kind, sourceId, JSON.stringify(payload), expiresAt]);
   if (!insert.affectedRows) return null;
-  for (const device of devices) await connection.execute(`INSERT INTO notification_deliveries (event_id, subscription_id, available_at) VALUES (?, ?, UTC_TIMESTAMP())`, [eventId, device.id]);
+  if (!held) await queueDeliveries(eventId, devices, connection);
   return eventId;
 }
-async function enqueueMailNotification({ userId, emailId, suppressNotifications = false }: { userId: string; emailId: string; suppressNotifications?: boolean }, connection: SqlExecutor = db): Promise<string | null> {
-  if (suppressNotifications) return null;
+function mailNotificationText(email: RowDataPacket) {
+  return { title: 'New Email', body: `${email.from_name || email.from_address || 'Unknown sender'}: ${email.subject || '(No subject)'}`,
+    url: `/mail?email=${encodeURIComponent(email.id)}` };
+}
+async function announceableMail(userId: string, emailId: string, connection: SqlExecutor) {
+  const [rows] = await connection.execute<RowDataPacket[]>('SELECT id, subject, from_name, from_address, folder, is_draft, is_read FROM emails WHERE id = ? AND user_id = ?', [emailId, userId]);
+  const email = rows[0];
+  return !email || email.is_draft || email.is_read || EXCLUDED_MAIL_FOLDERS.has(email.folder) ? null : email;
+}
+// The mail engine records an arrival before it downloads the message, so the
+// sender and subject are not known yet. With `held`, the event is created in
+// the same transaction as the arrival (fixing which messages count as new) and
+// nothing is sent until the import releases it (releaseMailNotification). A
+// message whose content never arrives expires unsent.
+async function enqueueMailNotification({ userId, emailId, held = false }: { userId: string; emailId: string; held?: boolean }, connection: SqlExecutor = db): Promise<string | null> {
   if (connection === db) {
     const transaction = await db.getConnection();
     try {
       await transaction.beginTransaction();
-      const eventId = await enqueueMailNotification({ userId, emailId }, transaction);
+      const eventId = await enqueueMailNotification({ userId, emailId, held }, transaction);
       await transaction.commit();
       return eventId;
     } catch (error) { await transaction.rollback(); throw error; }
     finally { transaction.release(); }
   }
-  const [rows] = await connection.execute<RowDataPacket[]>('SELECT id, subject, from_name, from_address, folder, is_draft, is_read FROM emails WHERE id = ? AND user_id = ?', [emailId, userId]);
-  const email = rows[0];
-  if (!email || email.is_draft || email.is_read || EXCLUDED_MAIL_FOLDERS.has(email.folder)) return null;
-  return enqueueEvent({ userId, dedupeKey: `mail:${email.id}`, kind: 'mail', sourceId: email.id, title: 'New Email',
-    body: `${email.from_name || email.from_address || 'Unknown sender'}: ${email.subject || '(No subject)'}`, url: `/mail?email=${encodeURIComponent(email.id)}`,
-    data: { emailId: email.id }, expiresAt: new Date(Date.now() + 86400000) }, connection);
+  const email = await announceableMail(userId, emailId, connection);
+  if (!email) return null;
+  return enqueueEvent({ userId, dedupeKey: `mail:${email.id}`, kind: 'mail', sourceId: email.id, ...mailNotificationText(email),
+    data: { emailId: email.id }, expiresAt: new Date(Date.now() + 86400000), held }, connection);
+}
+// Called by the import that brings the message content, in its transaction:
+// the held event gets the real sender and subject and its deliveries. A message
+// read or filed away before its content arrived stays unsent; an event that
+// was already released is left alone.
+async function releaseMailNotification({ userId, emailId }: { userId: string; emailId: string }, connection: SqlExecutor): Promise<string | null> {
+  const [events] = await connection.execute<RowDataPacket[]>("SELECT id, payload FROM notification_events WHERE user_id = ? AND kind = 'mail' AND source_id = ? FOR UPDATE", [userId, emailId]);
+  const event = events[0];
+  if (!event || jsonValue(event.payload).held !== true) return null;
+  const email = await announceableMail(userId, emailId, connection);
+  if (!email) return null;
+  const { held: _held, ...stored } = jsonValue(event.payload);
+  const text = mailNotificationText(email);
+  const payload = { ...stored, title: text.title.slice(0, 120), body: text.body.slice(0, 400), url: text.url };
+  await connection.execute('UPDATE notification_events SET payload = ? WHERE id = ? AND user_id = ?', [JSON.stringify(payload), event.id, userId]);
+  await queueDeliveries(event.id, await subscribedDevices(userId, connection), connection);
+  return event.id;
 }
 async function enqueueCalendarNotification({ userId, eventId }: { userId: string; eventId: string }, connection: SqlExecutor = db): Promise<string | null> {
   if (connection === db) {
@@ -432,6 +471,7 @@ export {
   subscriptionStatus,
   deviceStatus,
   enqueueMailNotification,
+  releaseMailNotification,
   enqueueCalendarNotification,
   enqueueTestNotification,
   enqueueEvent,

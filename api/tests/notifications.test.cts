@@ -93,7 +93,7 @@ test('outbox duplicates do not fan out new deliveries and use the caller transac
       if (keys.has(values[2])) return [{ affectedRows: 0 }];
       keys.add(values[2]); return [{ affectedRows: 1 }];
     }
-    if (sql.startsWith('INSERT INTO notification_deliveries')) { deliveries.push(values); return [{}]; }
+    if (sql.startsWith('INSERT IGNORE INTO notification_deliveries')) { deliveries.push(values); return [{}]; }
     throw new Error(sql);
   } };
   const service: FixtureValue = loadService({ execute() { throw new Error('Must use caller transaction'); } });
@@ -102,21 +102,44 @@ test('outbox duplicates do not fan out new deliveries and use the caller transac
   assert.equal(await service.enqueueEvent(event, connection), null);
   assert.equal(deliveries.length, 2);
 });
-test('new mail enqueue trusts committed ID and not old sender date; excludes historical imports and drafts', async () => {
+test('new mail is held at discovery without deliveries and released once with the imported sender and subject', async () => {
   const writes: FixtureValue[] = [];
+  let emailRow: FixtureValue = { id: 'new-1', subject: '(Loading message)', folder: 'inbox', from_address: 'unknown', is_read: 0, is_draft: 0 };
+  let event: FixtureValue = null;
   const connection = { async execute(sql: string, values: FixtureValue) {
-    if (sql.startsWith('SELECT id, subject')) return [[{ id: 'new-1', subject: 'Old sender date, new import', folder: 'inbox', from_address: 'sender@example.com' }]];
+    if (sql.startsWith('SELECT id, subject')) return [[emailRow]];
     if (sql.includes('FROM user_settings')) return [[]];
     if (sql.startsWith('SELECT p.id')) return [[{ id: 'device-1' }]];
+    if (sql.startsWith('SELECT id, payload FROM notification_events')) return [event ? [event] : []];
+    if (sql.startsWith('INSERT IGNORE INTO notification_events')) event = { id: values[0], payload: values[5] };
+    if (sql.startsWith('UPDATE notification_events SET payload')) event.payload = values[0];
     writes.push({ sql, values }); return [{ affectedRows: 1 }];
   } };
   const service: FixtureValue = loadService({});
-  assert.equal(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1', suppressNotifications: true }, connection), null);
-  assert.equal(writes.length, 0);
-  assert.ok(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1' }, connection));
-  const payload = JSON.parse(writes.find(call => call.sql.includes('notification_events')).values[5]);
+  const deliveries = () => writes.filter(call => call.sql.includes('notification_deliveries')).length;
+  assert.equal(await service.releaseMailNotification({ userId: 'u1', emailId: 'new-1' }, connection), null, 'nothing was held');
+  assert.ok(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1', held: true }, connection));
+  assert.equal(JSON.parse(event.payload).held, true);
+  assert.equal(deliveries(), 0, 'the sender and subject are not known yet');
+  emailRow = { ...emailRow, subject: 'Old sender date, new import', from_address: 'sender@example.com' };
+  assert.equal(await service.releaseMailNotification({ userId: 'u1', emailId: 'new-1' }, connection), event.id);
+  const payload = JSON.parse(event.payload);
+  assert.equal(payload.held, undefined);
+  assert.equal(payload.body, 'sender@example.com: Old sender date, new import');
   assert.equal(payload.url, '/mail?email=new-1');
   assert.equal(payload.dedupeKey, 'mail:new-1');
+  assert.equal(deliveries(), 1);
+  assert.equal(await service.releaseMailNotification({ userId: 'u1', emailId: 'new-1' }, connection), null, 'released once');
+  assert.equal(deliveries(), 1);
+  // Read (on another device) before its content arrived: never sent.
+  event = null; writes.length = 0;
+  emailRow = { ...emailRow, is_read: 1 };
+  assert.equal(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1', held: true }, connection), null);
+  emailRow = { ...emailRow, is_read: 0 };
+  assert.ok(await service.enqueueMailNotification({ userId: 'u1', emailId: 'new-1', held: true }, connection));
+  emailRow = { ...emailRow, is_read: 1 };
+  assert.equal(await service.releaseMailNotification({ userId: 'u1', emailId: 'new-1' }, connection), null);
+  assert.equal(deliveries(), 0);
 });
 test('calendar, todo and due reminder payloads link to the exact event without changing delivery keys', async () => {
   const now = new Date();

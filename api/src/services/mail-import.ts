@@ -36,15 +36,16 @@ interface ImportedMessage {
   isRead: boolean;
   archiveRaw: (input: { userId: string; emailId: string; messageId: string | null; rawEmail: Buffer | string }) => Promise<RawArchive>;
   enqueueDeletion: (input: { connection: PoolConnection; userId: string; accountId: string; emailId: string; sourceFolder: string; imapUid: number; imapUidValidity: string | number | bigint; rawStoragePath: string; rawSha256: string; rawBytes?: number; rawFormat?: string; rawVerified: true }) => Promise<unknown>;
-  suppressNotifications?: boolean;
   validateOccurrence?: ((connection: PoolConnection, emailId: string) => Promise<unknown>) | null;
 }
 
 // Persist one complete provider message. Existing local read/star/folder choices
-// survive repair; files are staged before a short metadata transaction.
+// survive repair; files are staged before a short metadata transaction. The
+// notification for a new message is held by the engine's discovery scan and
+// released here, once the sender and subject are known.
 async function persistImportedMessage({ db, account, accountId, folderName, uid, uidValidity,
   existingEmail, messageId, fullEmail, parsed, fromAddress, fromName, toAddresses, ccAddresses = [],
-  folder, isRead, archiveRaw, enqueueDeletion, suppressNotifications = true, validateOccurrence = null }: ImportedMessage) {
+  folder, isRead, archiveRaw, enqueueDeletion, validateOccurrence = null }: ImportedMessage) {
   const emailId = existingEmail?.id || crypto.randomUUID();
   const storedCc = ccAddresses.length ? JSON.stringify(ccAddresses) : null;
   let staged: StagedAttachment[] = [];
@@ -83,6 +84,7 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
       );
       if (updated.affectedRows !== 1) throw new Error('Archived item changed before body commit');
       await connection.execute('DELETE FROM email_attachments WHERE email_id = ? AND user_id = ?', [emailId, account.user_id]);
+      await (require('./notifications') as typeof import('./notifications')).releaseMailNotification({ userId: account.user_id, emailId }, connection);
     } else {
       await connection.execute(
         `INSERT INTO emails
@@ -101,9 +103,6 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
       await enqueueDeletion({ connection, userId: account.user_id, accountId, emailId, sourceFolder: folderName,
         imapUid: uid, imapUidValidity: uidValidity, rawStoragePath: archive.rawStoragePath,
         rawSha256: archive.rawSha256, rawBytes: archive.rawBytes, rawFormat: archive.rawFormat, rawVerified: true });
-    }
-    if (!existingEmail && !suppressNotifications) {
-      await (require('./notifications') as typeof import('./notifications')).enqueueMailNotification({ userId: account.user_id, emailId, suppressNotifications }, connection);
     }
     commitAttempted = true;
     await connection.commit();
