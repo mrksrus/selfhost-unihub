@@ -124,9 +124,16 @@ class ContactMergeTest {
     @Test
     fun aContactWithoutFirstNameIsRecognisedByTheOneUniHubGaveIt() {
         // A creation whose answer was lost must find its contact, not add it again.
-        for (onPhone in listOf(ContactCard(company = "Example Labs"), ContactCard(last = "Example"), ContactCard(title = "Engineer", company = "Example Labs"))) {
-            val inUniHub = onPhone.withFirstName().forServer()
-            assertTrue("$onPhone", onPhone.withFirstName().identity().any { it in inUniHub.identity() })
+        for (onPhone in listOf(
+            ContactCard(company = "Example Labs"),
+            ContactCard(last = "Example"),
+            ContactCard(title = "Engineer", company = "Example Labs"),
+            ContactCard("Ada", "E".repeat(120)),
+        )) {
+            val sent = onPhone.withFirstName().forServer()
+            // What the server answers: the same, as it stores it.
+            val inUniHub = ContactCard(sent.first.trim(), sent.last.trim(), sent.phones, sent.emails, sent.company, sent.title)
+            assertTrue("$onPhone", sent.identity().any { it in inUniHub.identity() })
         }
     }
 }

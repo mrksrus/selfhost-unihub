@@ -131,11 +131,14 @@ the app supports.
   signed out on every device), or the Contacts module turned off removes
   UniHub's contacts from the phone at the next sync; signing in again brings
   them back. A contact the phone had not sent yet, or one holding something
-  UniHub does not keep (a photo, an address, a fourth number), stays and syncs
-  again when the same user signs in. Another user signing in replaces the
-  contacts with theirs; what stayed of the previous user is never sent to the
-  other user. Contacts saved on the phone belong to the user who last used
-  the app (recorded when contacts are turned on). Connecting the app to another server,
+  UniHub does not keep (a photo, an address, a label chosen on the phone, a
+  fourth number), stays and syncs again when the same user signs in. Another
+  user signing in replaces the contacts with theirs; what stayed of the
+  previous user is never sent to the other user. Contacts saved on the phone
+  belong to the user who last used the app (recorded when contacts are turned
+  on). Contacts saved while no user was known (an app from 0.22.0 or 0.22.1
+  that was signed out when it was updated) stay on the phone and are sent to
+  no one. Connecting the app to another server,
   removing the UniHub account in Android's settings, or uninstalling the app
   removes the account and Android deletes its contacts, including what only
   the phone kept.

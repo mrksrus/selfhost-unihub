@@ -51,6 +51,9 @@ object ContactsSync {
     // Who last used the account: contacts saved on the phone without a known
     // user are theirs. Set when contacts are turned on; a sign-out keeps it.
     private const val KEY_LAST_USER = "lastUser"
+    // The owner of contacts saved while no user was known (an account signed
+    // out before 0.22.3): they stay on the phone and go to no one.
+    private const val UNKNOWN_OWNER = "unknown"
     private const val PREFS = "contacts"
     private const val KEY_OFFERED = "offered"
     private const val KEY_CHECKED = "checked:"
@@ -201,12 +204,15 @@ object ContactsSync {
             me.expectOk()
             val user = JSONObject(me.body).getJSONObject("user").getString("id")
             current.check()
+            // Contacts saved on the phone while another user was the last one
+            // are theirs, never this user's. An account from 0.22.0 or 0.22.1
+            // knows only the user whose contacts it holds, and after a
+            // sign-out not even that: then they belong to no one.
+            val last = manager.getUserData(account, KEY_LAST_USER) ?: manager.getUserData(account, KEY_USER)
+            if (last != user) claimUnowned(account, provider, last ?: UNKNOWN_OWNER)
+            manager.setUserData(account, KEY_LAST_USER, user)
             // Another person's contacts go before this one's are loaded, so a
             // failed listing cannot leave them on the phone.
-            // Contacts saved on the phone while another user was the last one
-            // are theirs, never this user's.
-            manager.getUserData(account, KEY_LAST_USER)?.takeIf { it != user }?.let { claimUnowned(account, provider, it) }
-            manager.setUserData(account, KEY_LAST_USER, user)
             val previous = manager.getUserData(account, KEY_USER)
             if (previous != user) {
                 if (previous != null) clear(manager, account, provider, result, "another user signed in")
@@ -478,13 +484,13 @@ object ContactsSync {
 
             // New on the phone (saved to the UniHub account or moved there
             // from the phone's own contacts): the same person in UniHub is
-            // joined, anyone else is added. A contact without a first name is
-            // recognised by the one UniHub gives it, so a creation whose
-            // answer was lost is not repeated.
+            // joined, anyone else is added. A contact is recognised as it was
+            // sent (with the first name UniHub requires, cut to its lengths),
+            // so a creation whose answer was lost is not repeated.
             remote.values.forEach(::index)
             for (row in unlinked) {
                 val card = row.card()
-                val match = card.withFirstName().identity().firstNotNullOfOrNull { identities[it] }?.let { remote[it] }
+                val match = card.withFirstName().forServer().identity().firstNotNullOfOrNull { identities[it] }?.let { remote[it] }
                 when {
                     // Nothing UniHub keeps (only an address, say): it stays the phone's own.
                     card.isEmpty -> if (row.owner == null) batch += updateRow(account, row.id) { put(RawContacts.SYNC4, user) }
@@ -671,7 +677,8 @@ object ContactsSync {
         var title = ""
         val phones = ArrayList<Pair<Long, String>>()
         val emails = ArrayList<Pair<Long, String>>()
-        // Anything UniHub does not keep: a photo, an address, a middle name, a second name or company.
+        // Anything UniHub does not keep: a photo, an address, a middle name, a
+        // label, a department, a second name or company.
         var own = false
 
         fun card() = ContactCard(first, last, phones.map { it.second }, emails.map { it.second }, company, title)
@@ -723,10 +730,20 @@ object ContactsSync {
                         row.nameRow = id; row.first = text(11); row.last = text(12)
                         if ((13..18).any { text(it).isNotEmpty() }) row.own = true
                     } else row.own = true
-                    Phone.CONTENT_ITEM_TYPE -> text(10).takeIf { it.isNotEmpty() }?.let { row.phones += id to it }
-                    Email.CONTENT_ITEM_TYPE -> text(10).takeIf { it.isNotEmpty() }?.let { row.emails += id to it }
-                    // COMPANY is data1, TITLE data4.
-                    Organization.CONTENT_ITEM_TYPE -> if (row.orgRow == null) { row.orgRow = id; row.company = text(10); row.title = text(13) } else row.own = true
+                    // A label other than the one the sync gives (TYPE data2, LABEL data3) is the phone's own.
+                    Phone.CONTENT_ITEM_TYPE -> text(10).takeIf { it.isNotEmpty() }?.let {
+                        row.phones += id to it
+                        if (text(11) != Phone.TYPE_MOBILE.toString() || text(12).isNotEmpty()) row.own = true
+                    }
+                    Email.CONTENT_ITEM_TYPE -> text(10).takeIf { it.isNotEmpty() }?.let {
+                        row.emails += id to it
+                        if (text(11) != Email.TYPE_OTHER.toString() || text(12).isNotEmpty()) row.own = true
+                    }
+                    // COMPANY is data1, TITLE data4; type, label, department and the rest are the phone's own.
+                    Organization.CONTENT_ITEM_TYPE -> if (row.orgRow == null) {
+                        row.orgRow = id; row.company = text(10); row.title = text(13)
+                        if (text(11) != Organization.TYPE_WORK.toString() || text(12).isNotEmpty() || (14..18).any { text(it).isNotEmpty() }) row.own = true
+                    } else row.own = true
                     // Group memberships are the contacts app's bookkeeping, and an
                     // empty row (a photo row without a picture) holds nothing.
                     else -> if (mime !in shared && mime != ContactsContract.CommonDataKinds.GroupMembership.CONTENT_ITEM_TYPE &&
