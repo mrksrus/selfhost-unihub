@@ -487,15 +487,20 @@ For each selected folder:
    succeeds; it is a status timestamp, not the import cursor.
 
 A first account import, new-folder baseline, UIDVALIDITY reset, and repairs do not
-produce historical notification floods: only a `recent` pass over a mailbox that
-already has a `recent` cursor announces the messages it records for the first
-time (not a MOVE destination the user asked for, nor another Gmail label of a
-known message). The announcement is a held notification event written in the
-same transaction as the message's placeholder row; the body import that brings
-the sender and subject releases it, in its own transaction, by filling in the
-text and queuing the deliveries (`releaseMailNotification`). A message read or
-filed away before its content arrived, or whose content never arrives, is not
-sent and expires with the event.
+produce historical notification floods. A mailbox's first `recent` pass is its
+baseline (an empty mailbox records a cursor at UID 0); from then on a message
+observed in that mailbox for the first time with a UID above the `recent`
+cursor is new mail, whichever stream sees it first (`recent`, or a `flags`,
+`presence` or `history` sweep that met it earlier), except a MOVE destination
+the user asked for. The announcement is a held notification event written in
+the same transaction as the message's row, one per message (a second copy, such
+as another Gmail label, hits the event's dedupe key); the body import that
+brings the sender and subject releases it, in its own transaction, by filling in
+the text and queuing the deliveries (`releaseMailNotification`). Only mail filed
+in an announceable folder is announced: a message read or filed away (Sent,
+Drafts, Trash, Archive, which on Gmail includes a message whose All Mail copy
+was seen before its INBOX copy) before its content arrived, or whose content
+never arrives, is not sent and expires with the event.
 
 Existing installations receive `import_complete = FALSE` on older rows and no
 preexisting per-folder checkpoint. The first upgraded sync therefore scans and
