@@ -64,19 +64,20 @@ published.
 
 ## Current window
 
-As recorded in `android/support-window.json` for 0.22.1. The CI table is the
+As recorded in `android/support-window.json` for 0.22.3. The CI table is the
 evidence; this table is what it is checked against.
 
 | App | Android 10 | Android 16 | Android 17 |
 | --- | --- | --- | --- |
+| 0.22.3 | starts and connects | starts and connects | starts and connects |
+| 0.22.2 | starts and connects | starts and connects | starts and connects |
 | 0.22.1 | starts and connects | starts and connects | starts and connects |
 | 0.22.0 | starts and connects | starts and connects | starts and connects |
-| 0.21.4 | starts and connects | starts and connects | starts and connects |
-| 0.21.3 | starts and connects | closes on start | closes on start |
 
-The 0.22.0 and 0.22.1 apps also put contacts on the phone;
+All four apps put contacts on the phone; from 0.22.3 they sync both ways.
 `android/scripts/contacts-test.sh` checks that on each emulator against a stub
-server. The 0.22.1 app also shows notifications;
+server, starting from the previous release's app and updating to the
+candidate. The apps from 0.22.1 on also show notifications;
 `android/scripts/notifications-test.sh` checks that the same way. Older apps
 have neither; Settings → Notifications tells someone in an older app to update
 it.
