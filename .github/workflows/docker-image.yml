@@ -27,7 +27,9 @@ jobs:
       contents: read
       packages: write
     outputs:
-      promoted: ${{ steps.promote.outputs.promoted }}
+      # Whether a tested image exists for this content. If it does and
+      # publishing it fails, this run fails instead of building anew.
+      found: ${{ steps.candidate.outputs.found }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -49,30 +51,53 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Publish the image a pull request tested
-        id: promote
-        env:
-          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+      # The candidate tag is resolved once to its digest, and that digest is
+      # published, so a later push of the tag cannot change what goes out.
+      - name: Find the image a pull request tested
+        id: candidate
         run: |
-          candidate="$REGISTRY/$IMAGE_NAME:candidate-$(git rev-parse 'HEAD^{tree}')"
-          if ! docker buildx imagetools inspect "$candidate" >/dev/null 2>&1; then
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          candidate="$REGISTRY/$IMAGE_NAME:candidate-$tree"
+          if ! digest="$(docker buildx imagetools inspect "$candidate" --format '{{.Manifest.Digest}}' 2>/dev/null)" || [ -z "$digest" ]; then
             echo "No tested image for this content ($candidate); the full build and tests run."
-            echo "promoted=false" >> "$GITHUB_OUTPUT"
+            echo "found=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          run="$(docker buildx imagetools inspect "$REGISTRY/$IMAGE_NAME@$digest" --format '{{index .Image.Config.Labels "io.github.mrksrus.unihub.tested-run"}}' 2>/dev/null || true)"
+          {
+            echo "found=true"
+            echo "digest=$digest"
+            echo "run=$run"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Publishing the tested image"
+            echo "- Content (git tree): \`$tree\`"
+            echo "- Image: \`$REGISTRY/$IMAGE_NAME@$digest\`"
+            if [ -n "$run" ]; then
+              echo "- Tested in: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/${run%%/*} (attempt ${run##*/})"
+            else
+              echo "- Tested in: unknown run (the image has no tested-run label)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the image a pull request tested
+        if: steps.candidate.outputs.found == 'true'
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
           args=()
           while IFS= read -r tag; do
             [ -n "$tag" ] && args+=(--tag "$tag")
           done <<< "$IMAGE_TAGS"
-          docker buildx imagetools create "${args[@]}" "$candidate"
-          docker buildx imagetools inspect "$candidate" --format '{{json .Manifest.Digest}}'
-          echo "Published $candidate as: $(tr '\n' ' ' <<< "$IMAGE_TAGS")"
-          echo "promoted=true" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools create "${args[@]}" "$REGISTRY/$IMAGE_NAME@$DIGEST"
+          echo "- Published as: $(tr '\n' ' ' <<< "$IMAGE_TAGS")" >> "$GITHUB_STEP_SUMMARY"
 
   build-and-push:
     needs: promote
-    # Also when promote was skipped (pull requests, manual runs) or failed.
-    if: ${{ !cancelled() && needs.promote.outputs.promoted != 'true' }}
+    # Pull requests and manual runs skip promote; a push builds and tests only
+    # when no tested image exists for its content (or promote could not look).
+    if: ${{ !cancelled() && needs.promote.outputs.found != 'true' }}
     runs-on: ubuntu-latest
     # The image build includes the Android app (Android SDK and Gradle), which
     # is then started on three emulators with the apps of earlier releases.
@@ -201,7 +226,11 @@ jobs:
           load: true
           push: false
           tags: unihub:ci
-          labels: ${{ steps.meta.outputs.labels }}
+          # The run that tests this image, so a published image leads back to
+          # its evidence (promote above).
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            io.github.mrksrus.unihub.tested-run=${{ github.run_id }}/${{ github.run_attempt }}
           build-args: |
             UNIHUB_ANDROID_SIGNER=${{ steps.android-key.outputs.key }}
           secret-files: |

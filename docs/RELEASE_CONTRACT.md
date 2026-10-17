@@ -16,7 +16,11 @@ and the release tag publish that image unchanged under `latest`, the version
 and the commit, without building or testing again. When no tested image has
 exactly the released content (a direct push, or `main` moved after the
 pull request's run), the release run builds and runs every check itself
-before publishing.
+before publishing. The release run's summary names the published digest and the run
+that tested it (the image's `io.github.mrksrus.unihub.tested-run` label);
+that run holds the release evidence (`unihub-release-evidence`, kept 30 days,
+and the emulator logs). Record what the release needs from it with the
+release.
 
 Feature details stay in their own documents; this page lists what must be
 shown before publishing and how.
