@@ -298,6 +298,14 @@ raws_for() { # how many phone contacts stand for this UniHub ID
   adb shell content query --uri $contacts_uri/raw_contacts --projection _id \
     --where "\"account_type='$package' AND sourceid='$1' AND deleted=0\"" 2>/dev/null | grep -c '^Row' || true
 }
+linked_rows() { # UniHub's contacts on the phone (contacts not yet sent have no UniHub ID)
+  adb shell content query --uri $contacts_uri/raw_contacts --projection _id \
+    --where "\"account_type='$package' AND sourceid IS NOT NULL AND deleted=0\"" 2>/dev/null | grep -c '^Row' || true
+}
+phone_data_count() { # raw contact, mimetype
+  adb shell content query --uri $contacts_uri/data --projection _id \
+    --where "\"raw_contact_id=$1 AND mimetype='$2'\"" 2>/dev/null | grep -c '^Row' || true
+}
 unlinked_rows() {
   adb shell content query --uri $contacts_uri/raw_contacts --projection _id \
     --where "\"account_type='$package' AND sourceid IS NULL AND deleted=0\"" 2>/dev/null | grep -c '^Row' || true
@@ -370,15 +378,18 @@ if [[ -n "$previous" ]]; then
   if adb install -r "$apk" >/dev/null 2>&1; then
     echo 'Updating keeps the contacts and sends nothing back'
     updated=1
+    adb logcat -c -b all
     back_to_app
     leave_app
-    for _ in $(seq 1 40); do
-      [[ "$(adb shell content query --uri content://com.android.contacts/raw_contacts --projection sync1 \
-        --where "\"account_type='$package' AND deleted=0 AND sync1='2'\"" 2>/dev/null | grep -c '^Row' || true)" == 2 ]] && break
-      sleep 1
-    done
+    converted() {
+      adb shell content query --uri content://com.android.contacts/raw_contacts --projection sync1 \
+        --where "\"account_type='$package' AND deleted=0 AND sync1='2'\"" 2>/dev/null | grep -c '^Row' || true
+    }
+    for _ in $(seq 1 40); do [[ "$(converted)" == 2 ]] && break; sleep 1; done
+    [[ "$(converted)" == 2 ]] || fail "the update did not take over the previous app's contacts ($(converted) of 2)"
     [[ "$(unihub_rows)" == 2 && "$(unlinked_rows)" == 0 ]] || fail "after the update the phone has $(unihub_rows) UniHub contacts, $(unlinked_rows) unlinked"
-    adb logcat -d -s UniHubContacts | grep -q 'Synced' || fail 'no sync after the update'
+    # This version's log line names what went to UniHub; the previous one's does not.
+    adb logcat -d -s UniHubContacts | grep -q 'Synced.*to UniHub' || fail 'no sync by the updated app'
     [[ -s "$work/state/writes" ]] && fail "the update sent the read-only copies back to UniHub: $(cat "$work/state/writes")"
     expect_name +15550100 'Ada Example' 'after the update'
     back_to_app
@@ -486,22 +497,44 @@ done
 expect_server 'len(contacts) == 2' 'the confirmed deletions'
 expect_name +15550221 '' 'confirmed deletion'
 
-echo 'Signing out keeps what the phone has not sent yet'
+echo 'A contact deleted on the phone comes back when UniHub changed its note'
+eve_id="$(python3 -c 'import json, sys; print([c["id"] for c in json.load(open(sys.argv[1])) if c["first_name"] == "Eve"][0])' "$work/state/contacts.json")"
+server_edit "by['$eve_id']['notes'] = 'a note written meanwhile'"
+phone_delete "$(raw_for "$eve_id")"
+sync_now
+expect_name +15550104 'Eve Phone' 'deleted on the phone after its note changed in UniHub'
+server_check "by['$eve_id']['notes'] == 'a note written meanwhile'" || fail 'the contact with the newer note was deleted in UniHub'
+eve="$(raw_for "$eve_id")"
+[[ -n "$eve" ]] || fail 'Eve was not brought back'
+(( $(phone_data_count "$eve" vnd.android.cursor.item/phone_v2) == 1 )) || fail "bringing Eve back duplicated her number ($(phone_data_count "$eve" vnd.android.cursor.item/phone_v2))"
+
+echo 'Signing out keeps what the phone has not sent yet, and what UniHub does not hold'
+adb shell content insert --uri $contacts_uri/data --bind raw_contact_id:i:$eve \
+  --bind mimetype:s:vnd.android.cursor.item/postal-address_v2 --bind data1:s:"'1 Example Street'"
+sync_now
+sleep 5
 set_mode write-error
 fay="$(phone_add Fay Pending +15550106)"
 back_to_app
 expect_postponed 'UniHub refuses writes'
+cp "$work/state/contacts.json" "$work/state/before-sign-out.json"
 set_server '' '[]'
 back_to_app
 leave_app
 expect_name +15550100 '' 'signed out'
 expect_name +15550106 'Fay Pending' 'not sent yet when the session ended'
-set_server user-1 "$(contact c-ada '"Ada"' '"Again"' '"+15550100"' null null null)"
+expect_name +15550104 'Eve Phone' 'with a postal address only the phone holds'
+echo user-1 > "$work/state/user"
+cp "$work/state/before-sign-out.json" "$work/state/contacts.json"
+server_edit 'by["c-ada"]["last_name"] = "Again"'
 back_to_app
 leave_app
 expect_server 'any(c["first_name"] == "Fay" for c in contacts)' 'the contact kept over the sign-out'
-expect_name +15550100 'Ada Again' 'signed in again'
+expect_name +15550100 'Adelaide Again' 'signed in again'
 grep -q '^POST' "$work/state/writes" || fail 'no contact was added in UniHub'
+for _ in $(seq 1 20); do [[ "$(raws_for "$eve_id")" == 1 ]] && break; sleep 1; done
+[[ "$(raws_for "$eve_id")" == 1 ]] || fail "Eve is on the phone $(raws_for "$eve_id") times after signing in again"
+(( $(phone_data_count "$eve" vnd.android.cursor.item/postal-address_v2) == 1 )) || fail "Eve's postal address was lost"
 
 echo 'A sync from Android with the app closed (the periodic one) renews the session'
 kill_app
@@ -571,26 +604,33 @@ grep 'renewed=held' "$work/state/page-cookies" | grep -q 'csrf-token=csrf-2' \
 grep -q 'csrf-token=csrf-1' "$work/state/page-cookies" && fail 'the renewal brought back an older CSRF cookie'
 echo / > "$work/state/goto"
 
-echo 'Another user signs in: only their contacts, even if their listing fails'
+echo "Another user signs in: only their contacts, even if their listing fails, and never the first user's"
+set_mode write-error
+phone_add Gus Pending +15550107 >/dev/null
+back_to_app
+expect_postponed 'the first user has a contact not yet sent'
 set_server user-2 "$(contact c-dee '"Dee"' '"Other"' '"+15550103"' null null null)"
 set_mode error
 back_to_app
 expect_postponed 'second user, listing fails'
 expect_name +15550100 '' 'first user after the second signed in'
-[[ "$(unihub_rows)" == 0 ]] || fail "the first user's contacts stayed while the second user's listing failed"
+[[ "$(linked_rows)" == 0 ]] || fail "the first user's contacts stayed while the second user's listing failed"
 set_mode ''
 back_to_app
 leave_app
 expect_name +15550103 'Dee Other' 'second user'
-[[ "$(unihub_rows)" == 1 ]] || fail "expected only the second user's contact, found $(unihub_rows)"
+[[ "$(linked_rows)" == 1 ]] || fail "expected only the second user's contact, found $(linked_rows)"
+sleep 5
+server_check 'not any(c["first_name"] == "Gus" for c in contacts)' || fail "the first user's contact went to the second user"
+expect_name +15550107 'Gus Pending' "the first user's contact not yet sent stays on the phone"
 
 echo 'The session ends: the phone keeps none'
 set_server '' '[]'
 back_to_app
 leave_app
 expect_name +15550103 '' 'signed out'
-for _ in $(seq 1 20); do [[ "$(unihub_rows)" == 0 ]] && break; sleep 1; done
-[[ "$(unihub_rows)" == 0 ]] || fail 'contacts stayed after the session ended'
+for _ in $(seq 1 20); do [[ "$(linked_rows)" == 0 ]] && break; sleep 1; done
+[[ "$(linked_rows)" == 0 ]] || fail "UniHub's contacts stayed after the session ended"
 has_account || fail 'the account should stay, so contacts come back after signing in'
 
 echo 'Signing in again brings them back'

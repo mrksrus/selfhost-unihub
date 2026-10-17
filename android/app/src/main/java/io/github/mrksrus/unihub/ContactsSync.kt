@@ -46,9 +46,15 @@ object ContactsSync {
     private const val AUTHORITY = ContactsContract.AUTHORITY
     private const val TAG = "UniHubContacts"
     private const val KEY_ORIGIN = "origin"
+    // Whose UniHub contacts are on the phone now (none after a sign-out).
     private const val KEY_USER = "user"
+    // Who last used the account: contacts saved on the phone without a known
+    // user are theirs. Set when contacts are turned on; a sign-out keeps it.
+    private const val KEY_LAST_USER = "lastUser"
     private const val PREFS = "contacts"
     private const val KEY_OFFERED = "offered"
+    private const val KEY_CHECKED = "checked:"
+    private const val KEY_PRINT_KEY = "printKey"
     private const val PERIOD_SECONDS = 6 * 60 * 60L
     private const val PAGE = 2000
     // Bounds one sync; the server lists at most 2000 per page.
@@ -61,6 +67,8 @@ object ContactsSync {
     private const val FORMAT = "2"
     // Deletions on the phone from this many on (and a quarter of all) wait for the person's answer.
     private const val MANY_DELETIONS = 10
+    // How old the listing may be that a change or deletion in UniHub is checked against.
+    private const val FRESH_MS = 5_000L
 
     val PERMISSIONS = arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
 
@@ -97,7 +105,11 @@ object ContactsSync {
             manager.removeAccountExplicitly(existing)
         }
         val account = Account(ServerAddress.host(origin), ACCOUNT_TYPE)
-        manager.addAccountExplicitly(account, null, Bundle().apply { putString(KEY_ORIGIN, origin) })
+        val user = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_CHECKED + origin, null)
+        manager.addAccountExplicitly(account, null, Bundle().apply {
+            putString(KEY_ORIGIN, origin)
+            putString(KEY_LAST_USER, user)
+        })
         ContentResolver.setIsSyncable(account, AUTHORITY, 1)
         ContentResolver.setSyncAutomatically(account, AUTHORITY, true)
         ContentResolver.addPeriodicSync(account, AUTHORITY, Bundle.EMPTY, PERIOD_SECONDS)
@@ -132,6 +144,9 @@ object ContactsSync {
             val me = get(context, origin, "/api/auth/me?background=1", session, current)
             if (me.status == 401) return Offer.SignedOut
             if (me.status != 200) return Offer.Unavailable
+            // turnOn() records who turned contacts on.
+            val user = JSONObject(me.body).getJSONObject("user").getString("id")
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_CHECKED + origin, user).apply()
             val page = get(context, origin, "/api/contacts?limit=1", session, current)
             when {
                 page.status == 401 -> Offer.SignedOut
@@ -188,6 +203,10 @@ object ContactsSync {
             current.check()
             // Another person's contacts go before this one's are loaded, so a
             // failed listing cannot leave them on the phone.
+            // Contacts saved on the phone while another user was the last one
+            // are theirs, never this user's.
+            manager.getUserData(account, KEY_LAST_USER)?.takeIf { it != user }?.let { claimUnowned(account, provider, it) }
+            manager.setUserData(account, KEY_LAST_USER, user)
             val previous = manager.getUserData(account, KEY_USER)
             if (previous != user) {
                 if (previous != null) clear(manager, account, provider, result, "another user signed in")
@@ -201,7 +220,7 @@ object ContactsSync {
                 is Listing.Complete -> {
                     current.check()
                     makeVisible(account, provider)
-                    val sent = Reconcile(Server(context, origin, session, current), user, account, provider, result, extras).run(listing.contacts)
+                    val sent = Reconcile(Server(context, origin, session, current, printKey(context)), user, account, provider, result, extras).run(listing.contacts)
                     Log.i(TAG, "Synced ${listing.contacts.size} contacts: ${result.stats.numInserts} added, ${result.stats.numUpdates} changed, ${result.stats.numDeletes} removed on the phone; $sent")
                 }
             }
@@ -217,19 +236,22 @@ object ContactsSync {
     }
 
     /**
-     * Takes the server's contacts off the phone. A contact the phone has not
-     * sent yet (new, or changed since the last sync) stays, marked as the
-     * previous user's, and goes to UniHub when that user signs in again.
+     * Takes the server's contacts off the phone: the copies that hold nothing
+     * beyond the UniHub contact. A contact the phone has not sent yet (new,
+     * or changed since the last sync), or one with something UniHub does not
+     * keep (a photo, an address, a fourth number), stays, marked as the
+     * previous user's, and syncs again when that user signs in.
      */
     private fun clear(manager: AccountManager, account: Account, provider: ContentProviderClient, result: SyncResult, why: String) {
-        val previous = manager.getUserData(account, KEY_USER)
+        val previous = manager.getUserData(account, KEY_USER) ?: manager.getUserData(account, KEY_LAST_USER)
         val ops = Batch(provider, current = null)
         var kept = 0
         for (row in readRows(account, provider)) {
             when {
                 row.owner != null && row.owner != previous -> kept++
-                row.deleted || (row.source != null && !row.changedOnPhone()) -> {
-                    ops += deleteRow(account, row.id)
+                row.deleted -> ops += deleteRow(account, row.id)
+                row.source != null && row.isCopy() -> {
+                    ops.checked(listOf(assertUnchanged(account, row), deleteRow(account, row.id)))
                     result.stats.numDeletes++
                 }
                 else -> {
@@ -241,7 +263,26 @@ object ContactsSync {
         }
         ops.flush()
         manager.setUserData(account, KEY_USER, null)
-        Log.i(TAG, "Removed UniHub's contacts from the phone: $why" + if (kept > 0) " ($kept not yet sent stay)" else "")
+        Log.i(TAG, "Removed UniHub's contacts from the phone: $why" + if (kept > 0) " ($kept with the phone's own changes stay)" else "")
+    }
+
+    private fun claimUnowned(account: Account, provider: ContentProviderClient, user: String) {
+        val ops = Batch(provider, current = null)
+        for (row in readRows(account, provider)) if (row.owner == null) {
+            ops += updateRow(account, row.id) { put(RawContacts.SYNC4, user) }
+            ops.flushIfFull()
+        }
+        ops.flush()
+    }
+
+    // A key of this installation for fingerprints of server contacts (Server
+    // print), so a contact's notes cannot be guessed from what the phone keeps.
+    private fun printKey(context: Context): ByteArray {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.getString(KEY_PRINT_KEY, null)?.let { return android.util.Base64.decode(it, android.util.Base64.NO_WRAP) }
+        val key = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
+        prefs.edit().putString(KEY_PRINT_KEY, android.util.Base64.encodeToString(key, android.util.Base64.NO_WRAP)).commit()
+        return key
     }
 
     private sealed interface Listing {
@@ -275,7 +316,22 @@ object ContactsSync {
 
     /** A contact on the server: its whole answer, to send back what the phone does not change (notes), and the shared part. */
     private class ServerContact(val id: String, val json: JSONObject, val card: ContactCard) {
+        /**
+         * A fingerprint of everything the server keeps of the contact, notes
+         * included, so the phone notices a change it does not share without
+         * keeping the notes. Keyed per installation (printKey).
+         */
+        fun print(key: ByteArray): String {
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"))
+            val fields = JSONArray(FIELDS.map { if (json.isNull(it)) JSONObject.NULL else json.optString(it) })
+            return mac.doFinal(fields.toString().toByteArray()).joinToString("") { "%02x".format(it) }
+        }
+
         companion object {
+            // What PUT /api/contacts/:id writes.
+            val FIELDS = listOf("first_name", "last_name", "email", "email2", "email3", "phone", "phone2", "phone3", "company", "job_title", "notes")
+
             private fun JSONObject.text(name: String): String =
                 if (isNull(name)) "" else optString(name).trim().take(MAX_VALUE)
 
@@ -296,9 +352,25 @@ object ContactsSync {
     // ── Writing to the server ──────────────────────────────────────────
     // The existing contacts API (api/src/routes/contacts.ts), so the app
     // works with servers from 0.22.0 on. PUT replaces the whole contact; it
-    // gets the server's own notes back unchanged.
+    // gets the server's own notes back unchanged. The API has no conditional
+    // write, so a change or deletion is sent only if the contact is still as
+    // listed a few seconds before (unchanged()); an edit made in UniHub in
+    // that moment can be overwritten, as between two open web pages.
 
-    private class Server(val context: Context, val origin: String, val session: String, val current: Current) {
+    private class Server(val context: Context, val origin: String, val session: String, val current: Current, val key: ByteArray) {
+        private var fresh: MutableMap<String, String>? = null
+        private var freshAt = 0L
+
+        /** Whether the server still has the contact as listed (read again at most every FRESH_MS). */
+        fun unchanged(contact: ServerContact): Boolean {
+            val now = android.os.SystemClock.elapsedRealtime()
+            val known = fresh?.takeIf { now - freshAt <= FRESH_MS } ?: when (val listing = fetch(context, origin, session, current)) {
+                is Listing.Complete -> listing.contacts.associate { it.id to it.print(key) }.toMutableMap()
+                is Listing.Gone -> throw IOException(listing.why)
+            }.also { fresh = it; freshAt = now }
+            return known[contact.id] == contact.print(key)
+        }
+
         /** The contact as the server saved it, or null when the server refused this one (it is tried again next sync). */
         fun save(existing: ServerContact?, card: ContactCard): ServerContact? {
             val body = JSONObject()
@@ -313,11 +385,14 @@ object ContactsSync {
             else send("PUT", "/api/contacts/" + Uri.encode(existing.id), body)
             if (response == null) return null
             // A contact deleted meanwhile answers without one; the next listing tells.
-            return response.json()?.optJSONObject("contact")?.let { ServerContact.from(it) }
+            val saved = response.json()?.optJSONObject("contact")?.let { ServerContact.from(it) } ?: return null
+            fresh?.put(saved.id, saved.print(key))
+            return saved
         }
 
         /** Whether the server deleted it (or never had it). */
-        fun delete(id: String): Boolean = send("DELETE", "/api/contacts/" + Uri.encode(id), null) != null
+        fun delete(id: String): Boolean =
+            (send("DELETE", "/api/contacts/" + Uri.encode(id), null) != null).also { if (it) fresh?.remove(id) }
 
         // A refused request (4xx) skips this contact; anything else postpones the sync.
         private fun send(method: String, path: String, body: JSONObject?): AppSession.Response? {
@@ -357,6 +432,12 @@ object ContactsSync {
         private var updated = 0
         private var deleted = 0
 
+        private fun print(contact: ServerContact) = contact.print(server.key)
+
+        // Whether UniHub changed the contact since the last sync, notes included.
+        private fun changedInUniHub(row: Row, contact: ServerContact) =
+            row.serverBase(contact)?.sameAs(contact.card) != true || (!row.legacy && row.serverPrint != print(contact))
+
         fun run(contacts: List<ServerContact>): String {
             contacts.forEach { remote[it.id] = it }
             // Another user's contacts that were not sent yet stay untouched.
@@ -372,7 +453,7 @@ object ContactsSync {
                 val contact = row.source?.let { remote[it] }
                 when {
                     contact == null || (live[contact.id] ?: 0) > 0 -> batch += deleteRow(account, row.id)
-                    row.serverBase(contact)?.sameAs(contact.card) != true -> restore(row, contact)
+                    changedInUniHub(row, contact) -> restore(row, contact)
                     else -> deletions += row to contact
                 }
                 batch.flushIfFull()
@@ -384,9 +465,10 @@ object ContactsSync {
                 when {
                     contact != null -> merge(row, contact, link = false)
                     // Deleted in UniHub: gone from the phone too, unless the
-                    // phone changed it since; then it goes back as new.
+                    // phone changed it since; then it goes back as new. What
+                    // UniHub does not keep (a photo, say) goes with it.
                     row.source != null && !row.changedOnPhone() -> {
-                        batch += deleteRow(account, row.id)
+                        batch.checked(listOf(assertUnchanged(account, row), deleteRow(account, row.id)))
                         result.stats.numDeletes++
                     }
                     else -> unlinked += row
@@ -396,11 +478,13 @@ object ContactsSync {
 
             // New on the phone (saved to the UniHub account or moved there
             // from the phone's own contacts): the same person in UniHub is
-            // joined, anyone else is added.
+            // joined, anyone else is added. A contact without a first name is
+            // recognised by the one UniHub gives it, so a creation whose
+            // answer was lost is not repeated.
             remote.values.forEach(::index)
             for (row in unlinked) {
                 val card = row.card()
-                val match = card.identity().firstNotNullOfOrNull { identities[it] }?.let { remote[it] }
+                val match = card.withFirstName().identity().firstNotNullOfOrNull { identities[it] }?.let { remote[it] }
                 when {
                     // Nothing UniHub keeps (only an address, say): it stays the phone's own.
                     card.isEmpty -> if (row.owner == null) batch += updateRow(account, row.id) { put(RawContacts.SYNC4, user) }
@@ -434,7 +518,14 @@ object ContactsSync {
             else ContactMerge.merge(phone, phoneBase, contact.card, serverBase)
             val phoneChanges = !merged.phone.sameAs(phone)
             val serverChanges = !merged.server.sameAs(contact.card)
-            if (!link && !phoneChanges && !serverChanges && row.owner == user && phoneBase?.sameAs(phone) == true && serverBase?.sameAs(contact.card) == true) return
+            if (!link && !phoneChanges && !serverChanges && row.owner == user && row.serverPrint == print(contact) &&
+                phoneBase?.sameAs(phone) == true && serverBase?.sameAs(contact.card) == true
+            ) return
+            // Changed in UniHub since it was listed: the next sync merges that first.
+            if (serverChanges && !server.unchanged(contact)) {
+                result.stats.numSkippedEntries++
+                return
+            }
 
             // The phone first, and only if nobody edited the contact since it
             // was read; the server after. Should the server's write fail, the
@@ -453,7 +544,7 @@ object ContactsSync {
                 index(saved)
                 updated++
             }
-            val state = updateRow(account, row.id) { link(saved.id, merged.phone, saved.card) }
+            val state = updateRow(account, row.id) { link(saved, merged.phone) }
             if (phoneOps.isEmpty()) batch += state else if (!batch.applyAlone(phoneOps + state)) return
             if (phoneChanges) result.stats.numUpdates++
         }
@@ -465,7 +556,9 @@ object ContactsSync {
             index(saved)
             covered += saved.id
             created++
-            batch += updateRow(account, row.id) { link(saved.id, card, saved.card) }
+            // At once: a later failure in this sync must not lose the link.
+            batch += updateRow(account, row.id) { link(saved, card) }
+            batch.flush()
         }
 
         /** Undoes a deletion on the phone, with UniHub's changes since. */
@@ -474,7 +567,7 @@ object ContactsSync {
             val merged = row.serverBase(contact)?.let { ContactMerge.merge(row.card(), row.card(), contact.card, it) } ?: MergedContact(contact.card, contact.card)
             val ops = arrayListOf(assertUnchanged(account, row), updateRow(account, row.id) { put(RawContacts.DELETED, 0) })
             ops += writeCard(account, row, merged.phone)
-            ops += updateRow(account, row.id) { link(contact.id, merged.phone, contact.card) }
+            ops += updateRow(account, row.id) { link(contact, merged.phone) }
             if (batch.applyAlone(ops)) result.stats.numInserts++
         }
 
@@ -491,25 +584,31 @@ object ContactsSync {
                 return
             }
             // A joined contact has more than one phone contact; deleting it deletes all.
-            val contacts = deletions.map { it.second.id }.distinct()
+            val contacts = deletions.map { it.second }.distinctBy { it.id }
             if (!extras.getBoolean(ContentResolver.SYNC_EXTRAS_OVERRIDE_TOO_MANY_DELETIONS) &&
                 contacts.size >= MANY_DELETIONS && contacts.size * 4 >= remote.size
             ) {
                 Log.w(TAG, "${contacts.size} contacts deleted on the phone: waiting for confirmation")
                 result.tooManyDeletions = true
                 result.stats.numDeletes = contacts.size.toLong()
-                covered += contacts
+                covered += contacts.map { it.id }
                 return
             }
-            for (id in contacts) {
-                if (!server.delete(id)) {
-                    covered += id
+            for (contact in contacts) {
+                val rows = deletions.filter { it.second.id == contact.id }.map { it.first }
+                // Changed in UniHub since it was listed: it comes back instead.
+                if (!server.unchanged(contact)) {
+                    rows.forEach { restore(it, contact) }
+                    continue
+                }
+                if (!server.delete(contact.id)) {
+                    covered += contact.id
                     result.stats.numSkippedEntries++
                     continue
                 }
-                remote.remove(id)
+                remote.remove(contact.id)
                 deleted++
-                deletions.filter { it.second.id == id }.forEach { (row, _) -> batch += deleteRow(account, row.id) }
+                rows.forEach { batch += deleteRow(account, it.id) }
                 batch.flushIfFull()
             }
         }
@@ -519,7 +618,7 @@ object ContactsSync {
             batch += ContentProviderOperation.newInsert(syncUri(RawContacts.CONTENT_URI, account))
                 .withValue(RawContacts.ACCOUNT_NAME, account.name)
                 .withValue(RawContacts.ACCOUNT_TYPE, account.type)
-                .withValues(ContentValues().apply { link(contact.id, contact.card, contact.card) })
+                .withValues(ContentValues().apply { link(contact, contact.card) })
                 .build()
             for (values in dataRows(contact.card)) {
                 batch += ContentProviderOperation.newInsert(syncUri(ContactsContract.Data.CONTENT_URI, account))
@@ -530,11 +629,11 @@ object ContactsSync {
         }
 
         // A phone contact's link to its UniHub contact and the state both sides had after this sync.
-        private fun ContentValues.link(id: String, phone: ContactCard, server: ContactCard) {
-            put(RawContacts.SOURCE_ID, id)
+        private fun ContentValues.link(contact: ServerContact, phone: ContactCard) {
+            put(RawContacts.SOURCE_ID, contact.id)
             put(RawContacts.SYNC1, FORMAT)
             put(RawContacts.SYNC2, encode(phone))
-            put(RawContacts.SYNC3, encode(server))
+            put(RawContacts.SYNC3, encode(contact.card, print(contact)))
             put(RawContacts.SYNC4, user)
             put(RawContacts.DIRTY, 0)
         }
@@ -561,6 +660,7 @@ object ContactsSync {
         private val sync1: String?,
         private val phoneState: ContactCard?,
         private val serverState: ContactCard?,
+        val serverPrint: String?,
         val owner: String?,
     ) {
         var nameRow: Long? = null
@@ -571,12 +671,14 @@ object ContactsSync {
         var title = ""
         val phones = ArrayList<Pair<Long, String>>()
         val emails = ArrayList<Pair<Long, String>>()
+        // Anything UniHub does not keep: a photo, an address, a middle name, a second name or company.
+        var own = false
 
         fun card() = ContactCard(first, last, phones.map { it.second }, emails.map { it.second }, company, title)
 
         // 0.22.0 and 0.22.1 wrote read-only copies of the server's contact:
         // while that contact has not changed, both sides were the same.
-        private val legacy get() = serverState == null && sync1 != null && sync1.length == 64
+        val legacy get() = serverState == null && sync1 != null && sync1.length == 64
         private fun legacyBase(contact: ServerContact) = contact.card.takeIf { legacyHash(it) == sync1 }
 
         fun phoneBase(contact: ServerContact): ContactCard? = if (legacy) legacyBase(contact) else phoneState
@@ -584,42 +686,52 @@ object ContactsSync {
 
         /** Whether the phone changed it since the last sync. A 0.22.0 copy was read-only. */
         fun changedOnPhone(): Boolean = !legacy && phoneState?.sameAs(card()) != true
+
+        /** Holds nothing beyond its UniHub contact, so removing it loses nothing. */
+        fun isCopy(): Boolean = !own && !changedOnPhone() && (legacy || serverState?.sameAs(card()) == true)
     }
 
+    // Through RawContactsEntity: unlike the Data view, it shows a sync
+    // adapter the data of contacts deleted on the phone, which a restore needs.
     private fun readRows(account: Account, provider: ContentProviderClient): List<Row> {
         val rows = LinkedHashMap<Long, Row>()
+        val shared = setOf(StructuredName.CONTENT_ITEM_TYPE, Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE, Organization.CONTENT_ITEM_TYPE)
         provider.query(
-            syncUri(RawContacts.CONTENT_URI, account),
-            arrayOf(RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.DELETED, RawContacts.VERSION, RawContacts.SYNC1, RawContacts.SYNC2, RawContacts.SYNC3, RawContacts.SYNC4),
+            syncUri(ContactsContract.RawContactsEntity.CONTENT_URI, account),
+            arrayOf(
+                RawContacts._ID, RawContacts.SOURCE_ID, RawContacts.DELETED, RawContacts.VERSION,
+                RawContacts.SYNC1, RawContacts.SYNC2, RawContacts.SYNC3, RawContacts.SYNC4,
+                ContactsContract.RawContactsEntity.DATA_ID, ContactsContract.Data.MIMETYPE,
+                "data1", "data2", "data3", "data4", "data5", "data6", "data7", "data8", "data9", "data14", "data15",
+            ),
             "${RawContacts.ACCOUNT_NAME} = ? AND ${RawContacts.ACCOUNT_TYPE} = ?",
             arrayOf(account.name, account.type),
-            null,
+            "${RawContacts._ID}, ${ContactsContract.RawContactsEntity.DATA_ID}",
         )?.use { c ->
+            fun text(column: Int) = c.getString(column)?.trim()?.take(MAX_VALUE).orEmpty()
             while (c.moveToNext()) {
-                rows[c.getLong(0)] = Row(c.getLong(0), c.getString(1), c.getInt(2) != 0, c.getString(3), c.getString(4), decode(c.getString(5)), decode(c.getString(6)), c.getString(7))
-            }
-        }
-        val mimeTypes = listOf(StructuredName.CONTENT_ITEM_TYPE, Phone.CONTENT_ITEM_TYPE, Email.CONTENT_ITEM_TYPE, Organization.CONTENT_ITEM_TYPE)
-        for (ids in rows.keys.chunked(500)) {
-            provider.query(
-                syncUri(ContactsContract.Data.CONTENT_URI, account),
-                arrayOf(ContactsContract.Data._ID, ContactsContract.Data.RAW_CONTACT_ID, ContactsContract.Data.MIMETYPE, "data1", "data2", "data3", "data4"),
-                "${ContactsContract.Data.RAW_CONTACT_ID} IN (${ids.joinToString(",")}) AND ${ContactsContract.Data.MIMETYPE} IN (${mimeTypes.joinToString(",") { "?" }})",
-                mimeTypes.toTypedArray(),
-                ContactsContract.Data._ID,
-            )?.use { c ->
-                fun text(column: Int) = c.getString(column)?.trim()?.take(MAX_VALUE).orEmpty()
-                while (c.moveToNext()) {
-                    val row = rows[c.getLong(1)] ?: continue
-                    val id = c.getLong(0)
-                    when (c.getString(2)) {
-                        // GIVEN_NAME is data2, FAMILY_NAME data3.
-                        StructuredName.CONTENT_ITEM_TYPE -> if (row.nameRow == null) { row.nameRow = id; row.first = text(4); row.last = text(5) }
-                        Phone.CONTENT_ITEM_TYPE -> text(3).takeIf { it.isNotEmpty() }?.let { row.phones += id to it }
-                        Email.CONTENT_ITEM_TYPE -> text(3).takeIf { it.isNotEmpty() }?.let { row.emails += id to it }
-                        // COMPANY is data1, TITLE data4.
-                        Organization.CONTENT_ITEM_TYPE -> if (row.orgRow == null) { row.orgRow = id; row.company = text(3); row.title = text(6) }
-                    }
+                val raw = c.getLong(0)
+                val row = rows.getOrPut(raw) {
+                    val server = decodeServer(c.getString(6))
+                    Row(raw, c.getString(1), c.getInt(2) != 0, c.getString(3), c.getString(4), decode(c.getString(5)), server?.first, server?.second, c.getString(7))
+                }
+                if (c.isNull(8)) continue
+                val id = c.getLong(8)
+                when (val mime = c.getString(9)) {
+                    // GIVEN_NAME is data2, FAMILY_NAME data3; prefix, middle, suffix and phonetic parts data4 to data9.
+                    StructuredName.CONTENT_ITEM_TYPE -> if (row.nameRow == null) {
+                        row.nameRow = id; row.first = text(11); row.last = text(12)
+                        if ((13..18).any { text(it).isNotEmpty() }) row.own = true
+                    } else row.own = true
+                    Phone.CONTENT_ITEM_TYPE -> text(10).takeIf { it.isNotEmpty() }?.let { row.phones += id to it }
+                    Email.CONTENT_ITEM_TYPE -> text(10).takeIf { it.isNotEmpty() }?.let { row.emails += id to it }
+                    // COMPANY is data1, TITLE data4.
+                    Organization.CONTENT_ITEM_TYPE -> if (row.orgRow == null) { row.orgRow = id; row.company = text(10); row.title = text(13) } else row.own = true
+                    // Group memberships are the contacts app's bookkeeping, and an
+                    // empty row (a photo row without a picture) holds nothing.
+                    else -> if (mime !in shared && mime != ContactsContract.CommonDataKinds.GroupMembership.CONTENT_ITEM_TYPE &&
+                        ((10..18).any { text(it).isNotEmpty() } || !c.isNull(19) || !c.isNull(20))
+                    ) row.own = true
                 }
             }
         }
@@ -705,22 +817,40 @@ object ContactsSync {
     /** Operations applied in transactions of up to BATCH; a contact's rows always share one. */
     private class Batch(val provider: ContentProviderClient, val current: Current?) {
         private val ops = ArrayList<ContentProviderOperation>()
+        // Groups starting with an assertUnchanged(): one that fails is left out, the rest apply.
+        private val checked = ArrayList<List<ContentProviderOperation>>()
         val size get() = ops.size
 
         operator fun plusAssign(op: ContentProviderOperation) { ops += op }
 
-        fun flushIfFull() { if (ops.size >= BATCH) flush() }
+        fun checked(group: List<ContentProviderOperation>) { checked += group }
+
+        fun flushIfFull() { if (ops.size >= BATCH || checked.size >= BATCH / 2) flush() }
 
         fun flush() {
-            if (ops.isEmpty()) return
-            current?.check()
-            provider.applyBatch(ArrayList(ops))
-            ops.clear()
+            if (ops.isNotEmpty()) {
+                current?.check()
+                provider.applyBatch(ArrayList(ops))
+                ops.clear()
+            }
+            if (checked.isNotEmpty()) {
+                current?.check()
+                try {
+                    provider.applyBatch(ArrayList(checked.flatten()))
+                } catch (_: OperationApplicationException) {
+                    checked.forEach { applyAlone(it) }
+                }
+                checked.clear()
+            }
         }
 
         /** One contact's changes on their own; false if the contact changed meanwhile (the next sync sees the edit). */
         fun applyAlone(contactOps: List<ContentProviderOperation>): Boolean {
-            flush()
+            if (ops.isNotEmpty()) {
+                current?.check()
+                provider.applyBatch(ArrayList(ops))
+                ops.clear()
+            }
             current?.check()
             return try {
                 provider.applyBatch(ArrayList(contactOps))
@@ -732,15 +862,20 @@ object ContactsSync {
         }
     }
 
-    private fun encode(card: ContactCard): String =
-        JSONArray(listOf(card.first, card.last, JSONArray(card.phones), JSONArray(card.emails), card.company, card.title)).toString()
+    private fun encode(card: ContactCard, print: String? = null): String =
+        JSONArray(listOf(card.first, card.last, JSONArray(card.phones), JSONArray(card.emails), card.company, card.title))
+            .apply { if (print != null) put(print) }.toString()
 
-    private fun decode(text: String?): ContactCard? {
+    private fun decode(text: String?): ContactCard? = decodeServer(text)?.first
+
+    // The server's state also carries its print (ServerContact.print).
+    private fun decodeServer(text: String?): Pair<ContactCard, String?>? {
         if (text == null) return null
         return try {
             val array = JSONArray(text)
             fun list(index: Int) = array.getJSONArray(index).let { list -> List(list.length()) { list.getString(it) } }
-            ContactCard(array.getString(0), array.getString(1), list(2), list(3), array.getString(4), array.getString(5))
+            ContactCard(array.getString(0), array.getString(1), list(2), list(3), array.getString(4), array.getString(5)) to
+                array.optString(6).takeIf { it.isNotEmpty() }
         } catch (_: org.json.JSONException) {
             null
         }

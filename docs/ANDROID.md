@@ -98,7 +98,8 @@ the app supports.
   UniHub (its last name, company, address or number), because UniHub
   requires it.
 - **Deleting.** A contact deleted on the phone is deleted in UniHub, unless
-  UniHub changed it since the last sync; then it comes back with the change.
+  UniHub changed it since the last sync, even only its note; then it comes
+  back with the change.
   Deleting ten or more contacts at once (and at least a quarter of them) is
   not passed on unasked. Android shows its "Too many deletions" notification
   instead, where they can be deleted in UniHub or brought back on the phone.
@@ -111,7 +112,11 @@ the app supports.
   phone's copy as it is. A sync that fails or gets an incomplete listing
   changes nothing; a contact UniHub refuses is tried again at the next sync.
   A sync never writes over a contact that was edited on the phone while it
-  ran; that edit goes with the next sync.
+  ran; that edit goes with the next sync. A change or deletion goes to UniHub
+  only if the contact is still as UniHub listed it a few seconds before;
+  otherwise the next sync merges the newer version first. The API has no
+  conditional write, so an edit made in UniHub in that very moment can still
+  be overwritten, as between two open web pages.
 - **Session.** The sync asks `GET /api/auth/me?background=1` and
   `GET /api/contacts`, and writes with `POST /api/contacts`, `PUT` and
   `DELETE /api/contacts/<id>` like the contacts page, using the app's own
@@ -125,10 +130,12 @@ the app supports.
 - **Removal.** Signing out in the app, a session that ended (for example
   signed out on every device), or the Contacts module turned off removes
   UniHub's contacts from the phone at the next sync; signing in again brings
-  them back. Contacts the phone had not sent yet stay and go to UniHub when
-  the same user signs in again. Another user signing in replaces the contacts
-  with theirs; contacts the previous user had not sent yet stay on the phone
-  and are never sent to the other user. Connecting the app to another server,
+  them back. A contact the phone had not sent yet, or one holding something
+  UniHub does not keep (a photo, an address, a fourth number), stays and syncs
+  again when the same user signs in. Another user signing in replaces the
+  contacts with theirs; what stayed of the previous user is never sent to the
+  other user. Contacts saved on the phone belong to the user who last used
+  the app (recorded when contacts are turned on). Connecting the app to another server,
   removing the UniHub account in Android's settings, or uninstalling the app
   removes the account and Android deletes its contacts, including what only
   the phone kept.

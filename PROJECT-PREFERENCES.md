@@ -459,8 +459,10 @@ one by one; a phone contact with the same address or number as a UniHub
 contact is joined to it, not duplicated; ten or more deletions at once wait
 for the person's answer in Android's "Too many deletions" notification;
 UniHub's contacts leave the phone on sign-out, session end or a disabled
-Contacts module, while contacts not yet sent stay for the same user; the
-account and its contacts are deleted on a server change or account removal.
+Contacts module, while contacts not yet sent or holding phone-only data stay
+for the same user and are never sent to another; contacts saved on the phone
+belong to the user who last used the app; the account and its contacts are
+deleted on a server change or account removal.
 
 Evidence: `android/app/src/main/java/io/github/mrksrus/unihub/ContactsSync.kt`,
 `ContactCard.kt` (merge rules, `ContactMergeTest`), `ContactsServices.kt`,
@@ -595,4 +597,3 @@ date it was superseded and a pointer to the replacement.
 > Evidence: `android/app/src/main/java/io/github/mrksrus/unihub/ContactsSync.kt`,
 > `ContactsServices.kt`, `MainActivity.kt`, `android/scripts/contacts-test.sh`,
 > `docs/ANDROID.md` (Contacts on the phone), CHANGELOG 0.22.0.
-
