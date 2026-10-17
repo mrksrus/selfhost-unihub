@@ -110,6 +110,13 @@ test('Android notification devices: registration, encrypted stream delivery, ack
       assert.ok(eventId, 'the mail notification is queued for the device');
       return { emailId, eventId };
     }
+    // A device's connect starts a pass of its own in the background; a pass
+    // that meets it running is skipped, so run until one really ran.
+    const pass = async () => { for (;;) {
+      const result = await notifications.processNotificationJobs();
+      if (!('skipped' in result)) return result;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    } };
     const delivery = async (eventId: string) => (await pool.query<RowDataPacket[]>('SELECT status, delivered_at, available_at FROM notification_deliveries WHERE event_id = ?', [eventId]))[0][0];
 
     const owner = session(), other = session();
@@ -140,7 +147,7 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     // A new email reaches the phone encrypted for its keys; the delivery
     // stays pending until the app acknowledges it.
     const first = await newMail('Quarterly numbers');
-    await notifications.processNotificationJobs();
+    await pass();
     const frame = await stream.next('notification');
     assert.ok(frame, 'the notification is written to the stream');
     assert.equal(frame.id, first.eventId);
@@ -168,18 +175,18 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     const status = await owner('GET', `/notifications/status?endpoint=${encodeURIComponent(registered.endpoint)}`);
     assert.equal(status.pending, 0);
     assert.ok(status.lastSentAt);
-    await notifications.processNotificationJobs();
+    await pass();
     assert.equal(await stream.next('notification', 300), null, 'an acknowledged notification is not sent again');
 
     // Without an acknowledgement the notification is sent again later.
     const second = await newMail('Unacknowledged');
-    await notifications.processNotificationJobs();
+    await pass();
     assert.equal((await stream.next('notification')).id, second.eventId);
     const waiting = await delivery(second.eventId);
     assert.equal(waiting.status, 'pending');
     assert.ok(new Date(waiting.available_at).getTime() > Date.now() + 60000, 'the next attempt waits for the acknowledgement');
     await pool.execute('UPDATE notification_deliveries SET available_at = UTC_TIMESTAMP() - INTERVAL 1 SECOND WHERE event_id = ?', [second.eventId]);
-    await notifications.processNotificationJobs();
+    await pass();
     assert.equal((await stream.next('notification')).id, second.eventId);
     await owner('POST', '/notifications/android/ack', { device: registered.device, ids: [second.eventId] });
 
@@ -191,11 +198,11 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     assert.equal(brokenStream.status, 200);
     await notifications.enqueueEvent({ userId: ids.other, dedupeKey: 'test:broken-key', kind: 'test', title: 'Broken key', url: '/settings', expiresAt: new Date(Date.now() + 3600000) });
     const alongside = await newMail('Alongside a broken device');
-    await notifications.processNotificationJobs();
+    await pass();
     assert.equal((await stream.next('notification'))?.id, alongside.eventId, 'the other device still gets its notification');
     // Connecting started a pass of its own; one more covers rows that came due after it.
     await new Promise(resolve => setTimeout(resolve, 200));
-    await notifications.processNotificationJobs();
+    await pass();
     const [[gone]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS total FROM push_subscriptions WHERE id = ?', [broken.device]);
     assert.equal(Number(gone.total), 0, 'the unusable device is removed');
     await owner('POST', '/notifications/android/ack', { device: registered.device, ids: [alongside.eventId] });
@@ -205,7 +212,7 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     stream.close();
     await new Promise(resolve => setTimeout(resolve, 100));
     const third = await newMail('While offline');
-    await notifications.processNotificationJobs();
+    await pass();
     const [[parked]] = await pool.query<RowDataPacket[]>('SELECT status, attempts FROM notification_deliveries WHERE event_id = ?', [third.eventId]);
     assert.equal(parked.status, 'pending');
     assert.equal(Number(parked.attempts), 0, 'an offline phone\'s delivery is not even attempted');
