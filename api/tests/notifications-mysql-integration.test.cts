@@ -185,6 +185,10 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   const newerId = crypto.randomUUID();
   await connection.execute<ResultSetHeader>("INSERT INTO recording_uploads VALUES (?, ?, 'New take', 1000, 300, ?, UTC_TIMESTAMP() - INTERVAL 11 MINUTE)",
     [newerId, userId, new Date(Date.now() + 86400000)]);
+  // Queued and sent in one pass unless the pass crossed a second boundary
+  // before queuing (the cutoff is captured first, the outbox uses SQL time);
+  // then the next pass sends it. Either way exactly once.
+  await service.processNotificationJobs();
   await service.processNotificationJobs();
   assert.equal(sent.filter(item => item.tag === `recording-upload:${newerId}`).length, 1);
   await connection.execute<ResultSetHeader>('DELETE FROM recording_uploads');
