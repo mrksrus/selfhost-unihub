@@ -201,8 +201,13 @@ user and one session.
   IPC disconnect of the unprivileged API) the API sends `end` with reason
   `shutdown`, closes every stream and stops accepting connections, then lets the
   signal end the process.
-- **Proxy.** Nginx proxies `location = /api/events` with `proxy_buffering off`,
-  no gzip and a one-hour read timeout; the API also sends `X-Accel-Buffering: no`.
+- **Proxy.** Nginx proxies `location = /api/events` (and the Android app's
+  `/api/notifications/android/stream`) with `proxy_buffering off`, no gzip and a
+  one-hour read timeout. The API sends `X-Accel-Buffering: no`, and Nginx passes
+  it on (`proxy_pass_header`; it drops `X-Accel-*` headers otherwise) so that an
+  Nginx-based reverse proxy in front, such as Nginx Proxy Manager, does not
+  buffer the stream either. Without it, such a proxy held back an HTTP/1.1
+  stream over TLS (the Android app's connection) until its buffer filled.
   The service worker has no route for `/api/events`, so the browser reads the
   stream from the network directly and nothing is cached.
 
