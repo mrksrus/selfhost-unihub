@@ -155,17 +155,14 @@ async function mappedMoveFor(executor: SqlExecutor, { userId, accountId, folderN
   return { operationId: op.id, emailId: op.email_id, mapping };
 }
 
-// The item an observed UID belongs to; `created` only when it is a message
-// this account has not seen under any address (not a known Gmail message or a
-// MOVE destination the user asked for).
-async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId, folder, epoch, item, gmail, mapped = null }: Identity & { folder: Folder; item: Item; gmail: boolean; mapped?: Mapping | null }): Promise<{ emailId: string; created: boolean }> {
+async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId, folder, epoch, item, gmail, mapped = null }: Identity & { folder: Folder; item: Item; gmail: boolean; mapped?: Mapping | null }) {
   const [known] = await executor.execute<RowDataPacket[]>(`SELECT o.email_id FROM mail_remote_occurrences o
     WHERE o.user_id = ? AND o.mail_account_id = ? AND o.mailbox_id = ? AND o.uidvalidity = ? AND o.uid = ? LIMIT 1`,
   [userId, accountId, mailboxId, epoch, item.uid]);
-  if (known.length) return { emailId: known[0].email_id, created: false };
+  if (known.length) return known[0].email_id;
   if (gmail && item.gmailMsgId && /^[0-9]+$/.test(String(item.gmailMsgId))) {
     const [mapped] = await executor.execute<RowDataPacket[]>('SELECT email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ? AND gmail_msgid = ? LIMIT 1', [accountId, userId, String(item.gmailMsgId)]);
-    if (mapped.length) return { emailId: mapped[0].email_id, created: false };
+    if (mapped.length) return mapped[0].email_id;
   }
   if (mapped) {
     if (gmail && item.gmailMsgId && /^[0-9]+$/.test(String(item.gmailMsgId))) {
@@ -175,9 +172,9 @@ async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId,
       const [[bound]] = await executor.execute<RowDataPacket[]>(`SELECT email_id FROM mail_gmail_messages
         WHERE mail_account_id = ? AND user_id = ? AND gmail_msgid = ? LIMIT 1`,
       [accountId, userId, String(item.gmailMsgId)]);
-      if (bound?.email_id !== mapped.emailId) return { emailId: bound.email_id, created: false };
+      if (bound?.email_id !== mapped.emailId) return bound.email_id;
     }
-    return { emailId: mapped.emailId, created: false };
+    return mapped.emailId;
   }
   const id = crypto.randomUUID();
   await executor.execute(`INSERT INTO emails (id,user_id,mail_account_id,message_id,subject,from_address,to_addresses,folder,
@@ -195,10 +192,10 @@ async function ensureItem(executor: SqlExecutor, { userId, accountId, mailboxId,
     const [mapped] = await executor.execute<RowDataPacket[]>('SELECT email_id FROM mail_gmail_messages WHERE mail_account_id = ? AND user_id = ? AND gmail_msgid = ? LIMIT 1', [accountId, userId, String(item.gmailMsgId)]);
     if (mapped[0].email_id !== id) {
       await executor.execute('DELETE FROM emails WHERE id = ? AND user_id = ? AND mail_account_id = ?', [id, userId, accountId]);
-      return { emailId: mapped[0].email_id, created: false };
+      return mapped[0].email_id;
     }
   }
-  return { emailId: id, created: true };
+  return id;
 }
 
 async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper, window, items, snapshot, gmail, job, sweepGeneration = 0, saveCoverage = true, announce = false }: CommitInput) {
@@ -208,6 +205,15 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
     // A reset in another worker invalidates the selection before any cursor write.
     const [epochs] = await executor.execute<RowDataPacket[]>('SELECT uidvalidity FROM mail_remote_mailboxes WHERE id = ? AND user_id = ? AND mail_account_id = ? FOR UPDATE', [mailbox.id, userId, accountId]);
     if (!epochs.length || uint32(epochs[0].uidvalidity) !== epoch) throw new Error('Mailbox epoch changed; window not committed');
+    // New mail: a message observed in this mailbox for the first time, above
+    // what its 'recent' stream has covered, whichever stream sees it first.
+    // Until the mailbox's first recent pass has run there is no boundary and
+    // everything is history. The announcement is a held notification in the
+    // arrival's own transaction, sent once the content is imported; one per
+    // message, so a second copy (another Gmail label, a sweep that ran after
+    // recent) is ignored by the event's dedupe key.
+    const recentCursor = announce ? await repository.loadCursor({ userId, accountId, mailboxId: mailbox.id, stream: 'recent', epoch }, executor) : null;
+    const arrivalsAbove = recentCursor ? Number(recentCursor.covered_through) : null;
     let inserted = 0, updated = 0, skipped = 0;
     for (const item of items) {
       const started = snapshot.get(item.uid);
@@ -220,13 +226,10 @@ async function commitWindow({ db, account, folder, mailbox, stream, epoch, upper
       // destination and a further Gmail label of a known message still count.
       if (!current && !mapped && outsideWindow(account, mailbox, item.internalDate)
         && !await knownGmailMessage(executor, { userId, accountId, gmail, item })) { skipped++; continue; }
-      const { emailId, created } = current ? { emailId: current.email_id, created: false }
-        : await ensureItem(executor, { userId, accountId, mailboxId: mailbox.id, folder, epoch, item, gmail, mapped });
-      // New mail is announced here, in the arrival's own transaction, and sent
-      // once its content is imported (a held notification). Baseline scans
-      // (announce = false) record history without announcing it.
-      if (announce && created) await (require('../notifications') as typeof import('../notifications'))
-        .enqueueMailNotification({ userId, emailId, held: true }, executor);
+      const emailId = current?.email_id || await ensureItem(executor, { userId, accountId, mailboxId: mailbox.id, folder, epoch, item, gmail, mapped });
+      // A MOVE destination is the user's own change, not an arrival.
+      if (!current && !mapped && arrivalsAbove !== null && item.uid > arrivalsAbove)
+        await (require('../notifications') as typeof import('../notifications')).enqueueMailNotification({ userId, emailId, held: true }, executor);
       const revision = Number(current?.observation_revision || 0) + 1;
       if (!Number.isSafeInteger(revision)) throw new RangeError('Observation revision exhausted');
       const occurrence = await repository.upsertOccurrence({ userId, accountId, mailboxId: mailbox.id, epoch,
@@ -367,21 +370,29 @@ async function scanMailboxSlice({ db, connection, account, folder, stream = 'rec
   const window = targetUid === null
     ? windowFor(stream, cursor, upper, Math.min(WINDOW, Math.max(1, maxWindow)))
     : { start: targetUid, end: targetUid };
-  if (!window) return { stream, mailboxId: mailbox.id, processed: 0, inserted: 0,
-    covered: false, more: false, upper, currentUpper: remoteUpper };
+  if (!window) {
+    // An empty mailbox has nothing to record, but its first 'recent' pass
+    // still has to leave the boundary behind that makes later mail new mail.
+    if (stream === 'recent' && targetUid === null && !cursor && upper === 0) {
+      await repository.withTransaction(async executor => {
+        if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id, workerId: job.lease_owner,
+          generation: job.worker_generation }, executor);
+        await repository.saveCursor({ userId: account.user_id, accountId: account.id, mailboxId: mailbox.id, stream, epoch,
+          windowStart: 0, windowEnd: 0, coveredThrough: 0, coverage: { bounded: true, observed: 0, upper: 0 }, complete: true }, executor);
+      }, db);
+    }
+    return { stream, mailboxId: mailbox.id, processed: 0, inserted: 0, covered: false, more: false, upper, currentUpper: remoteUpper };
+  }
   const snapshot = await snapshotRevisions(db, { userId: account.user_id, accountId: account.id,
     mailboxId: mailbox.id, epoch, start: window.start, end: window.end });
   const reply = await transport.fetchMetadataWindow(connection, { folder: folder.folderName, uidvalidity: epoch,
     startUid: window.start, endUid: window.end, maxMessages: maxWindow, maxBytes: 1024 * 1024 }, { signal });
   cancelled(signal);
   const items = validateWindowReply(reply, window, epoch);
-  // Only arrivals after a mailbox's first 'recent' pass are new mail: that
-  // pass, a new folder and a UIDVALIDITY reset (no cursor yet) are baselines,
-  // and the history, flags and presence streams visit older messages.
-  const announce = stream === 'recent' && targetUid === null && cursor !== null;
   const result = await commitWindow({ db, account, folder, mailbox, stream, epoch, upper, window, items, snapshot,
     gmail: gmailCapable(selected, connection), job, sweepGeneration: Number(cursor?.sweep_generation || 0),
-    saveCoverage: targetUid === null, announce });
+    // A targeted observation settles the user's own MOVE; it announces nothing.
+    saveCoverage: targetUid === null, announce: targetUid === null });
   await report({ phase: targetUid === null ? stream : 'reconcile', processed: items.length, total: null,
     coverage: targetUid === null ? { [stream]: { mailboxId: mailbox.id, epoch, through: window.end, upper } } : undefined });
   return { stream, mailboxId: mailbox.id, epoch, processed: items.length,

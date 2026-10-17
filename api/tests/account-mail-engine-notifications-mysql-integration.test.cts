@@ -17,17 +17,17 @@ const one = async (db: FixtureValue, sql: string, params: FixtureValue[] = []) =
 const rows = async (db: FixtureValue, sql: string, params: FixtureValue[] = []) => (await db.execute(sql, params))[0];
 const decode = (value: FixtureValue) => typeof value === 'string' ? JSON.parse(value) : value;
 
-// One INBOX whose messages the test adds; every message has the same synthetic body.
+// One INBOX per login whose messages the test adds; every message has the same synthetic body.
 async function startPeer() {
   const sockets = new Set<import('node:net').Socket>(), errors: FixtureValue[] = [];
-  const mail = new Map<number, { flags: string[]; modseq: number; subject: string }>();
-  let nextUid = 1;
+  const boxes = new Map<string, { mail: Map<number, { flags: string[]; modseq: number; subject: string }>; nextUid: number }>();
+  const box = (login: string) => { if (!boxes.has(login)) boxes.set(login, { mail: new Map(), nextUid: 1 }); return boxes.get(login)!; };
   const server = net.createServer(socket => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
     socket.on('error', () => {});
     socket.write('* OK synthetic notification peer\r\n');
-    let input = '', chain = Promise.resolve();
+    let input = '', chain = Promise.resolve(), login = '';
     const send = (value: string) => { if (!socket.destroyed) socket.write(value); };
     socket.on('data', chunk => {
       input += chunk.toString('latin1');
@@ -41,7 +41,9 @@ async function startPeer() {
           const ok = (suffix?: string) => send(`${tag} OK ${suffix || 'done'}\r\n`);
           if (cmd === 'CAPABILITY') { send('* CAPABILITY IMAP4rev1 UIDPLUS MOVE CONDSTORE ENABLE\r\n'); ok(); return; }
           if (cmd === 'ENABLE CONDSTORE') { send('* ENABLED CONDSTORE\r\n'); ok(); return; }
-          if (cmd.startsWith('LSUB ') || cmd.startsWith('LOGIN ')) { ok(); return; }
+          if (cmd.startsWith('LOGIN ')) { login = /LOGIN "?([a-z]+)"? /.exec(cmd)?.[1] || ''; assert(login); ok(); return; }
+          if (cmd.startsWith('LSUB ')) { ok(); return; }
+          const { mail, nextUid } = box(login);
           if (cmd.startsWith('LIST ')) { send('* LIST (\\Noselect) "/" ""\r\n'); ok(); return; }
           const selected = /^(SELECT|EXAMINE) "?INBOX"?$/.exec(cmd);
           if (selected) {
@@ -69,8 +71,8 @@ async function startPeer() {
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', () => resolve()));
   return {
-    errors, mail,
-    arrive(subject: string, flags: string[] = []) { const uid = nextUid++; mail.set(uid, { flags, modseq: 19, subject }); return uid; },
+    errors,
+    arrive(login: string, subject: string, flags: string[] = []) { const b = box(login); const uid = b.nextUid++; b.mail.set(uid, { flags, modseq: 19, subject }); return uid; },
     port: (server.address() as import('node:net').AddressInfo).port,
     async close() { for (const socket of sockets) socket.destroy(); await new Promise(r => server.close(r)); assert.deepEqual(errors, []); },
   };
@@ -130,19 +132,24 @@ test('real MariaDB + IMAP wire peer: new mail is announced after its content arr
     const keyBytes = Buffer.alloc(65, 1); keyBytes[0] = 4;
     await notifications.subscribe(userId, 'owner-session', { endpoint: 'https://fcm.googleapis.com/fcm/send/owner-browser',
       keys: { p256dh: keyBytes.toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } });
-    await pool.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active)
-      VALUES (?,?,?,'custom','sync',TRUE)`, [accountId, userId, 'owner@example.test']);
+    const freshId = crypto.randomUUID();
+    for (const [id, address] of [[accountId, 'owner@example.test'], [freshId, 'fresh@example.test']]) {
+      await pool.execute<ResultSetHeader>(`INSERT INTO mail_accounts (id,user_id,email_address,provider,sync_mode,is_active)
+        VALUES (?,?,?,'custom','sync',TRUE)`, [id, userId, address]);
+    }
     const account = { id: accountId, user_id: userId, sync_mode: 'sync' };
     const folder = { folderName: 'INBOX', dbFolderName: 'inbox' };
-    imap = guardImapConnection(await connectImap({ imap: { host: '127.0.0.1', port: peer.port, user: 'owner', password: 'fixture-only',
+    const connect = async (login: string) => guardImapConnection(await connectImap({ imap: { host: '127.0.0.1', port: peer!.port, user: login, password: 'fixture-only',
       tls: false, keepalive: false, connTimeout: 1000, authTimeout: 1000, socketTimeout: 30000 } }), { timeoutMs: 30000 });
+    imap = await connect('owner');
     const scan = (stream = 'recent') => scanMailboxSlice({ db: pool, connection: imap, account, folder, stream });
-    const events = () => rows(pool, `SELECT e.source_id, e.payload, (SELECT COUNT(*) FROM notification_deliveries d WHERE d.event_id = e.id) AS deliveries
-      FROM notification_events e WHERE e.user_id = ? AND e.kind = 'mail' ORDER BY e.created_at`, [userId]);
-    const emailFor = (uid: number) => one(pool, 'SELECT e.id, e.subject, e.is_read, e.import_complete FROM emails e WHERE e.mail_account_id = ? AND e.remote_uid = ?', [accountId, uid]);
+    const events = (ofAccount = accountId) => rows(pool, `SELECT e.source_id, e.payload, (SELECT COUNT(*) FROM notification_deliveries d WHERE d.event_id = e.id) AS deliveries
+      FROM notification_events e JOIN emails m ON m.id = e.source_id AND m.user_id = e.user_id
+      WHERE e.user_id = ? AND e.kind = 'mail' AND m.mail_account_id = ? ORDER BY e.created_at`, [userId, ofAccount]);
+    const emailFor = (uid: number, ofAccount = accountId) => one(pool, 'SELECT e.id, e.subject, e.is_read, e.import_complete FROM emails e WHERE e.mail_account_id = ? AND e.remote_uid = ?', [ofAccount, uid]);
 
     // The mailbox already holds mail when the account is added: a baseline.
-    for (const subject of ['history one', 'history two', 'history three']) peer.arrive(subject);
+    for (const subject of ['history one', 'history two', 'history three']) peer.arrive('owner', subject);
     const baseline = await scan();
     assert.equal(baseline.inserted, 3);
     const bodies = await processBodySlice({ db: pool, connection: imap, account, folder, mailboxId: baseline.mailboxId });
@@ -153,7 +160,7 @@ test('real MariaDB + IMAP wire peer: new mail is announced after its content arr
     assert.deepEqual(await events(), [], 'nor by the sweeps that revisit it');
 
     // New mail: one unread, one the provider already shows as read.
-    const unread = peer.arrive('Dinner on Friday?'), read = peer.arrive('already read elsewhere', ['\\Seen']);
+    const unread = peer.arrive('owner', 'Dinner on Friday?'), read = peer.arrive('owner', 'already read elsewhere', ['\\Seen']);
     const arrival = await scan();
     assert.equal(arrival.inserted, 2);
     const held = await events();
@@ -181,7 +188,7 @@ test('real MariaDB + IMAP wire peer: new mail is announced after its content arr
     assert.equal(sent.length, 1, 'later passes over the same mail announce nothing again');
 
     // Read in the browser between arrival and download: stays unsent.
-    const quick = peer.arrive('read before download');
+    const quick = peer.arrive('owner', 'read before download');
     await scan();
     assert.equal((await events()).length, 2);
     await pool.execute<ResultSetHeader>('UPDATE emails SET is_read = TRUE WHERE mail_account_id = ? AND remote_uid = ?', [accountId, quick]);
@@ -192,5 +199,35 @@ test('real MariaDB + IMAP wire peer: new mail is announced after its content arr
     assert.equal(Number(quiet.deliveries), 0);
     assert.equal(decode(quiet.payload).held, true, 'left held; it expires with the event');
     assert.equal(sent.length, 1);
+
+    // Mail that a flags sweep meets before the recent pass is new mail too, once.
+    const swept = peer.arrive('owner', 'seen by the sweep first');
+    await scan('flags');
+    const sweptId = (await emailFor(swept)).id;
+    const bySweep = (await events()).filter((e: FixtureValue) => e.source_id === sweptId);
+    assert.equal(bySweep.length, 1, 'held by the sweep');
+    assert.equal(decode(bySweep[0].payload).held, true);
+    await scan();
+    await processBodySlice({ db: pool, connection: imap, account, folder, mailboxId: arrival.mailboxId });
+    await notifications.processNotificationJobs();
+    assert.deepEqual(sent.slice(1).map(item => item.body), ['Fixture Sender: seen by the sweep first']);
+    assert.equal((await events()).filter((e: FixtureValue) => e.source_id === sweptId).length, 1, 'one event although two streams saw it');
+
+    // An account whose INBOX is empty when it is added: its first message is new mail.
+    const fresh = { id: freshId, user_id: userId, sync_mode: 'sync' };
+    const freshImap = await connect('fresh');
+    try {
+      const empty = await scanMailboxSlice({ db: pool, connection: freshImap, account: fresh, folder, stream: 'recent' });
+      assert.equal(empty.processed, 0);
+      const first = peer.arrive('fresh', 'first ever');
+      const seen = await scanMailboxSlice({ db: pool, connection: freshImap, account: fresh, folder, stream: 'recent' });
+      assert.equal(seen.inserted, 1);
+      assert.equal((await events(freshId)).length, 1, 'the empty first pass was the baseline');
+      await processBodySlice({ db: pool, connection: freshImap, account: fresh, folder, mailboxId: empty.mailboxId });
+      await notifications.processNotificationJobs();
+      assert.equal(sent.at(-1)?.body, 'Fixture Sender: first ever');
+      assert.equal(sent.at(-1)?.url, `/mail?email=${(await emailFor(first, freshId)).id}`);
+    } finally { closeImapConnection(freshImap); }
+    assert.equal(sent.length, 3);
     assert.deepEqual(peer.errors, []);
   });

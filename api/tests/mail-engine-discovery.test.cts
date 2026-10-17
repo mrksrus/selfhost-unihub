@@ -344,20 +344,19 @@ test('manual first observation has no redundant replay when there is no covered 
   assert.equal(h.cursors.get('flags').sweep_generation, 0);
 });
 
-test('arrivals after a mailbox\'s first recent pass hold a notification; baselines, history and known messages do not', async t => {
+test('arrivals after a mailbox\'s first recent pass hold a notification; baselines, history and sweeps of old mail do not', async t => {
   const h = fixture(t, { uids: [1, 2, 3] });
   await h.scan('recent');
   assert.equal(h.announced.length, 0, 'the first pass over a mailbox is a baseline');
-  await h.scan('history');
+  await h.scan('history'); await h.scan('flags');
+  assert.equal(h.announced.length, 0, 'sweeps over the baseline announce nothing');
   h.remotes.set(4, { uid: 4, flags: [], modseq: null, gmailMsgId: null });
   h.remotes.set(5, { uid: 5, flags: ['\\Seen'], modseq: null, gmailMsgId: null });
   await h.scan('recent');
   const ids = [...h.occurrences.values()].filter(o => o.uid >= 4).map(o => o.email_id);
-  assert.deepEqual(h.announced.map(a => a.emailId).sort(), ids.sort(), 'each arrival is announced, read or not; delivery rechecks');
+  assert.deepEqual(h.announced.map(a => a.emailId).sort(), ids.sort(), 'each arrival is announced, read or not; the service decides');
   assert.ok(h.announced.every(a => a.held === true && a.userId === account.user_id), 'as a held event in the owner\'s name');
-  await h.scan('recent');
-  await h.scan('flags');
-  await h.scan('presence');
+  await h.scan('recent'); await h.scan('flags'); await h.scan('presence');
   assert.equal(h.announced.length, 2, 'later passes over the same messages announce nothing');
   h.setEpoch(124);
   h.remotes.set(6, { uid: 6, flags: [], modseq: null, gmailMsgId: null });
@@ -368,12 +367,34 @@ test('arrivals after a mailbox\'s first recent pass hold a notification; baselin
   assert.equal(h.announced.length, 3);
 });
 
-test('a Gmail label of a known message and a MOVE destination are not new mail', async t => {
+test('an empty mailbox gets its baseline from the first recent pass, so its first message is new mail', async t => {
+  const h = fixture(t, { uids: [] });
+  await h.scan('recent');
+  assert.equal(h.cursors.get('recent')?.covered_through, 0, 'nothing to record, but the boundary is kept');
+  await h.scan('recent');
+  assert.equal(h.saves.length, 1, 'and not written again');
+  h.remotes.set(1, { uid: 1, flags: [], modseq: null, gmailMsgId: null });
+  await h.scan('recent');
+  assert.equal(h.announced.length, 1);
+});
+
+test('a sweep that sees an arrival before recent announces it once, and recent does not repeat it', async t => {
+  const h = fixture(t, { uids: [1] });
+  await h.scan('recent');
+  h.remotes.set(2, { uid: 2, flags: [], modseq: null, gmailMsgId: null });
+  await h.scan('flags');
+  assert.equal(h.announced.length, 1, 'the flags sweep met the arrival first');
+  await h.scan('recent'); await h.scan('presence'); await h.scan('history');
+  assert.equal(h.announced.length, 1);
+  assert.equal(h.announced[0].emailId, h.occurrences.get(2).email_id);
+});
+
+test('another Gmail label of a known message is offered to the service (one event per message); a MOVE destination is not', async t => {
   const h = fixture(t, { uids: [1], gmail: true });
   await h.scan('recent');
   h.remotes.set(2, { uid: 2, flags: [], modseq: null, gmailMsgId: '999' });
   await h.scan('recent');
-  assert.equal(h.announced.length, 0, 'the account already holds Gmail message 999');
+  assert.deepEqual(h.announced.map(a => a.emailId), [h.occurrences.get(1).email_id], 'the known message, under its own id');
   const other = fixture(t, { uids: [1] });
   await other.scan('recent');
   other.setMappedMove({ destinationUid: 2, row: { id: 'op', email_id: 'moved', remote_uid: 9, remote_uidvalidity: 123,
