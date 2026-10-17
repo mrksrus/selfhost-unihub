@@ -8,6 +8,16 @@ the required automated checks and the manual acceptance checks below pass.
 A green workflow is necessary but does not establish checks it cannot run.
 A missing required check blocks release; it never counts as passed.
 
+The checks run on the pull request, before merging: a release is prepared
+there (version, changelog, support window) so that the tested content is the
+released content. The pull request's run keeps the image it tested as
+`candidate-<tree>` (the git tree of the tested merge), and the push to `main`
+and the release tag publish that image unchanged under `latest`, the version
+and the commit, without building or testing again. When no tested image has
+exactly the released content (a direct push, or `main` moved after the
+pull request's run), the release run builds and runs every check itself
+before publishing.
+
 Feature details stay in their own documents; this page lists what must be
 shown before publishing and how.
 

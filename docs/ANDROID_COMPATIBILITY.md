@@ -85,9 +85,10 @@ it.
 **Android 17 emulator: not run.** The current Android 17 system image
 (`android-37.0`, google_apis x86_64, revision 6) crashes its own
 surfaceflinger right after boot with every GPU mode, so the system restarts
-and no app can be installed or started. The CI step still runs but does not
-block a release; until a working image ships, the Android 17 column above is
-confirmed on a real Android 17 phone and recorded with the release, not by
+and no app can be installed or started. The CI step runs only when the
+repository variable `UNIHUB_ANDROID17` is `true` (to try a new image) and does
+not block a release; until a working image ships, the Android 17 column above
+is confirmed on a real Android 17 phone and recorded with the release, not by
 the emulator.
 
 0.21.1 to 0.21.3 close on Android 12 (API 31) and newer: the app set the status
