@@ -23,7 +23,7 @@ data class ContactCard(
             phones.map(::phoneKey).toSet() == other.phones.map(::phoneKey).toSet() &&
             emails.map(::emailKey).toSet() == other.emails.map(::emailKey).toSet()
 
-    /** What the server can keep (docker/mariadb/schema.sql, table contacts). */
+    /** What the server can keep (docker/mariadb/schema.sql, table contacts), trimmed as the server's contact is read back. */
     fun forServer(): ContactCard = ContactCard(
         cut(first, 100),
         cut(last, 100),
@@ -61,7 +61,7 @@ data class ContactCard(
         private fun cut(value: String, max: Int): String {
             if (value.length <= max) return value
             val end = if (Character.isHighSurrogate(value[max - 1])) max - 1 else max
-            return value.substring(0, end)
+            return value.substring(0, end).trim()
         }
     }
 }

@@ -122,6 +122,13 @@ class ContactMergeTest {
     }
 
     @Test
+    fun aFourthNumberStillFindsThePersonInUniHub() {
+        val onPhone = ContactCard("Ada", "", listOf("+15550101", "+15550102", "+15550103", "+15550100"))
+        val keys = onPhone.withFirstName().let { it.identity() + it.forServer().identity() }
+        assertTrue(keys.any { it in ada.identity() })
+    }
+
+    @Test
     fun aContactWithoutFirstNameIsRecognisedByTheOneUniHubGaveIt() {
         // A creation whose answer was lost must find its contact, not add it again.
         for (onPhone in listOf(
@@ -129,6 +136,8 @@ class ContactMergeTest {
             ContactCard(last = "Example"),
             ContactCard(title = "Engineer", company = "Example Labs"),
             ContactCard("Ada", "E".repeat(120)),
+            // Cut right after a space, which the server trims.
+            ContactCard("Abc ".repeat(25) + "Tail", "Example"),
         )) {
             val sent = onPhone.withFirstName().forServer()
             // What the server answers: the same, as it stores it.

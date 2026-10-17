@@ -484,13 +484,15 @@ object ContactsSync {
 
             // New on the phone (saved to the UniHub account or moved there
             // from the phone's own contacts): the same person in UniHub is
-            // joined, anyone else is added. A contact is recognised as it was
-            // sent (with the first name UniHub requires, cut to its lengths),
-            // so a creation whose answer was lost is not repeated.
+            // joined, anyone else is added. A contact is recognised by all its
+            // numbers and addresses, and also as it was sent (with the first
+            // name UniHub requires, cut to its lengths), so a creation whose
+            // answer was lost is not repeated.
             remote.values.forEach(::index)
             for (row in unlinked) {
                 val card = row.card()
-                val match = card.withFirstName().forServer().identity().firstNotNullOfOrNull { identities[it] }?.let { remote[it] }
+                val named = card.withFirstName()
+                val match = (named.identity() + named.forServer().identity()).firstNotNullOfOrNull { identities[it] }?.let { remote[it] }
                 when {
                     // Nothing UniHub keeps (only an address, say): it stays the phone's own.
                     card.isEmpty -> if (row.owner == null) batch += updateRow(account, row.id) { put(RawContacts.SYNC4, user) }
@@ -794,7 +796,9 @@ object ContactsSync {
         if (card.company != row.company || card.title != row.title) {
             val organization = organizationValues(card)
             val existing = row.orgRow
-            if (existing != null) add(update(existing, organization)) else if (card.company.isNotEmpty() || card.title.isNotEmpty()) add(insert(organization))
+            // The type the person chose stays; a new row is a work one.
+            if (existing != null) add(update(existing, organization.apply { remove(Organization.TYPE) }))
+            else if (card.company.isNotEmpty() || card.title.isNotEmpty()) add(insert(organization))
         }
         fun entries(have: List<Pair<Long, String>>, want: List<String>, key: (String) -> String, values: (String) -> ContentValues) {
             val wanted = want.map(key).toSet()
