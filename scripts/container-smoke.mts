@@ -20,13 +20,14 @@ assert(email && password);
 class Session {
   cookies = new Map<string, string>();
   csrf: string | null = null;
+  cookieHeader() { return [...this.cookies].map(([key, value]) => `${key}=${value}`).join('; '); }
   request(method: string, path: string, body: unknown, options: RequestOptions & { binary: true }): Promise<BinaryResult>;
   request<T = unknown>(method: string, path: string, body?: unknown, options?: RequestOptions & { binary?: false }): Promise<JsonResult<T>>;
   async request(method: string, path: string, body?: unknown, { expected = 200, authenticated = true, headers = {}, binary = false, rawBody = false }: RequestOptions = {}): Promise<JsonResult<unknown> | BinaryResult> {
     const response = await fetch(base + path, {
       method,
       headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...(authenticated && this.cookies.size ? { Cookie: [...this.cookies].map(([key, value]) => `${key}=${value}`).join('; ') } : {}),
+        ...(authenticated && this.cookies.size ? { Cookie: this.cookieHeader() } : {}),
         ...(authenticated && this.csrf && !['GET', 'HEAD'].includes(method) ? { 'X-CSRF-Token': this.csrf } : {}), ...headers },
       body: body === undefined ? undefined : rawBody ? body as NonNullable<Parameters<typeof fetch>[1]>['body'] : JSON.stringify(body), signal: AbortSignal.timeout(30000),
     });
@@ -104,6 +105,18 @@ try {
   const userId = me.data.user.id;
   assert.equal(me.data.user.email, email);
   assert.equal((await primary.request<{ publicKey: string }>('GET', '/api/notifications/config')).data.publicKey.length, 87);
+  // A reverse proxy in front of the image (Nginx Proxy Manager) holds back an
+  // event stream unless the response tells it not to buffer.
+  const phoneKey = crypto.createECDH('prime256v1'); phoneKey.generateKeys();
+  const phone = await primary.request<{ device: string }>('POST', '/api/notifications/android/devices', { keys: { p256dh: phoneKey.getPublicKey('base64url'), auth: crypto.randomBytes(16).toString('base64url') } });
+  for (const path of ['/api/events', `/api/notifications/android/stream?device=${phone.data.device}`]) {
+    const stream = new AbortController();
+    const response = await fetch(base + path, { headers: { Accept: 'text/event-stream', Cookie: primary.cookieHeader() }, signal: stream.signal });
+    assert.equal(response.status, 200, `${path} status`);
+    assert.match(response.headers.get('content-type')!, /^text\/event-stream/);
+    assert.equal(response.headers.get('x-accel-buffering'), 'no', `${path} must tell a proxy in front not to buffer it`);
+    stream.abort();
+  }
   // The same operation without a CSRF token must be rejected even with valid auth cookies.
   const savedCsrf = primary.csrf; primary.csrf = null;
   await primary.request('POST', '/api/recordings/uploads/start', {}, { expected: 403 });

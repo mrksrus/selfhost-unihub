@@ -5,6 +5,16 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.22.2 Streams behind your own reverse proxy
+
+No database upgrade and no configuration change. Pull and restart. UniHub's
+Nginx now passes `X-Accel-Buffering: no` on `/api/events` and
+`/api/notifications/android/stream`, so an Nginx-based reverse proxy in front
+(Nginx Proxy Manager, plain Nginx) no longer buffers them and needs no custom
+location for them; one added for 0.22.1 does no harm. Another kind of proxy
+must still pass these two paths unbuffered, with a read timeout above 45
+seconds.
+
 ## 0.22.1 Notifications in the Android app
 
 One automatic database upgrade (step 17 adds a `transport` column to

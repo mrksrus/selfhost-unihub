@@ -6,6 +6,21 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.22.2
+
+Live updates and app notifications behind your own reverse proxy. No database
+upgrade.
+
+### Fixed
+
+- **Notifications in the Android app stayed "waiting" behind Nginx Proxy
+  Manager** and other Nginx-based reverse proxies. Such a proxy held back the
+  app's notification stream until its buffer filled, and could hold back the
+  pages' live updates the same way. UniHub now tells the proxy not to buffer
+  either stream, so notifications arrive at once without a custom location in
+  the proxy. A custom location you added for 0.22.1 can stay or go. Update the
+  server; the app needs no update.
+
 ## 0.22.1
 
 ### Added
