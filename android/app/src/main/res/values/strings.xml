@@ -22,7 +22,7 @@
     <string name="download_failed">Could not save the file</string>
     <string name="no_app_for_link">No app can open this link</string>
     <string name="contacts_title">Show UniHub contacts on this phone?</string>
-    <string name="contacts_body">Phone, WhatsApp and other apps can then show their names. The phone keeps a read-only copy that follows UniHub. To stop, remove the UniHub account in the phone\'s settings under Accounts.</string>
+    <string name="contacts_body">Phone, WhatsApp and other apps can then show their names. They stay in step both ways: contacts you add, change or delete in the phone\'s UniHub account change in UniHub too. To stop, remove the UniHub account in the phone\'s settings under Accounts.</string>
     <string name="contacts_ok">Show contacts</string>
     <string name="contacts_not_now">Not now</string>
     <string name="contacts_on">UniHub contacts are being added to this phone</string>

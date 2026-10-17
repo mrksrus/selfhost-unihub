@@ -204,7 +204,7 @@ jobs:
       # the support window, on the oldest Android it supports, a current one and
       # Android 17, where a phone reported the crash fixed in 0.21.4. Apps known
       # to be broken must still fail as recorded; updating from the previous
-      # release's app must keep the saved server.
+      # release's app must keep the saved server, and its contacts on the phone.
       - name: Enable KVM for the Android emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -221,7 +221,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
             bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
-            bash android/scripts/contacts-test.sh android-app/unihub.apk
+            bash android/scripts/contacts-test.sh android-app/unihub.apk "$(f="android-window/$(cat android-window/upgrade-from)/unihub.apk"; [ -f "$f" ] && echo "$f")"
             bash android/scripts/notifications-test.sh android-app/unihub.apk
 
       - name: Start the Android apps on Android 16
@@ -234,7 +234,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
             bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
-            bash android/scripts/contacts-test.sh android-app/unihub.apk
+            bash android/scripts/contacts-test.sh android-app/unihub.apk "$(f="android-window/$(cat android-window/upgrade-from)/unihub.apk"; [ -f "$f" ] && echo "$f")"
             bash android/scripts/notifications-test.sh android-app/unihub.apk
 
       # The system image is named android-37.0 (stable channel). That image
@@ -255,7 +255,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
             bash android/scripts/window-test.sh android-window android-app/unihub.apk android-app/unihub-android.json
-            bash android/scripts/contacts-test.sh android-app/unihub.apk
+            bash android/scripts/contacts-test.sh android-app/unihub.apk "$(f="android-window/$(cat android-window/upgrade-from)/unihub.apk"; [ -f "$f" ] && echo "$f")"
             bash android/scripts/notifications-test.sh android-app/unihub.apk
 
       - name: Keep the release evidence

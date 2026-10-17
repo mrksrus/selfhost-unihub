@@ -6,6 +6,37 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.22.3
+
+Contacts on the phone sync both ways. Install the app again from Settings →
+General → Install; the server is unchanged.
+
+### Changed
+
+- **Contacts you add, change or delete on the phone now reach UniHub.**
+  Contacts apps can edit UniHub's contacts on the phone, and a contact saved
+  in the phone's UniHub account is added to UniHub. That includes the phone's
+  own contacts when Android offers to move them into the account after you
+  choose UniHub as the place to save contacts. A phone contact with the same
+  email address or number as one in UniHub is joined to it, not added twice.
+  When both sides changed the same detail, UniHub's version is kept. Notes
+  still stay in UniHub, and a change from the phone keeps them. Photos,
+  addresses, birthdays and more than three numbers or addresses stay on the
+  phone. Deleting many contacts on the phone at once waits for Android's
+  "Too many deletions" question.
+
+### Fixed
+
+- **Contacts moved into the UniHub account were deleted.** The 0.22.0 and
+  0.22.1 apps removed every contact in the UniHub account that did not come
+  from UniHub, so contacts Android moved there from the phone were deleted at
+  the next sync instead of being added. If that happened on your phone,
+  restore them from a backup of the phone's contacts; after the update, moving
+  them in again adds them to UniHub.
+- **Signing out keeps the phone's own contacts.** Signing out still removes
+  UniHub's contacts from the phone, but no longer a contact the phone has not
+  sent yet or one with details only the phone holds.
+
 ## 0.22.2
 
 Live updates and app notifications behind your own reverse proxy. No database

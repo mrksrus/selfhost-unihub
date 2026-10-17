@@ -5,6 +5,18 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.22.3 Contacts on the phone sync both ways
+
+No database upgrade and no server change. Pull and restart, then install the
+app again from Settings → General → Install. At the first sync after the
+update, the contacts the previous app put on the phone become ordinary synced
+contacts; nothing is sent to UniHub for them until they are changed on the
+phone. From then on, contacts added, edited or deleted in the phone's UniHub
+account change in UniHub too ([Android](ANDROID.md#contacts-on-the-phone)).
+Contacts the 0.22.0 or 0.22.1 app deleted after Android moved them into the
+UniHub account cannot be recovered by the update; restore them from a backup
+of the phone's contacts.
+
 ## 0.22.2 Streams behind your own reverse proxy
 
 No database upgrade and no configuration change. Pull and restart. UniHub's

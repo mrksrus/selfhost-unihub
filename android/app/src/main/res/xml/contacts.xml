@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What contacts apps offer when editing a UniHub contact: what UniHub keeps
+     (ContactCard), plus the photo, which Android's contacts apps require.
+     Android's editor requires every name part; UniHub keeps the first and
+     last name, the rest stays on the phone. UniHub keeps three numbers and
+     three addresses. -->
+<ContactsAccountType xmlns:android="http://schemas.android.com/apk/res/android">
+    <EditSchema>
+        <DataKind
+            kind="name"
+            maxOccurs="1"
+            supportsDisplayName="true"
+            supportsMiddleName="true"
+            supportsPhoneticFamilyName="true"
+            supportsPhoneticGivenName="true"
+            supportsPhoneticMiddleName="true"
+            supportsPrefix="true"
+            supportsSuffix="true" />
+        <DataKind kind="photo" maxOccurs="1" />
+        <DataKind kind="phone" maxOccurs="3">
+            <Type type="mobile" />
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="main" />
+            <Type type="other" />
+        </DataKind>
+        <DataKind kind="email" maxOccurs="3">
+            <Type type="home" />
+            <Type type="work" />
+            <Type type="other" />
+        </DataKind>
+        <DataKind kind="organization" maxOccurs="1" />
+    </EditSchema>
+</ContactsAccountType>
