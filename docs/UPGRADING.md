@@ -5,6 +5,13 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.22.4 New mail is announced again
+
+No database upgrade, no configuration change and no app update. Pull and
+restart. Mail that arrives from then on is announced on every device with
+notifications turned on; mail already in UniHub is not announced after the
+update.
+
 ## 0.22.3 Contacts on the phone sync both ways
 
 No database upgrade and no server change. Pull and restart, then install the

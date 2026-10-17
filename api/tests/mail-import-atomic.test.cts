@@ -7,7 +7,7 @@ const os = (require('node:os') as typeof import('node:os'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const { persistImportedMessage } = require('../dist/src/services/mail-import') as typeof import('../src/services/mail-import');
 
-async function fixture(t: import('node:test').TestContext, { failAttachment = false, failCommit = false, existingEmail = null }: FixtureValue = {}) {
+async function fixture(t: import('node:test').TestContext, { failAttachment = false, failCommit = false, existingEmail = null, heldNotification = false }: FixtureValue = {}) {
   const root = await fs.mkdtemp(path.join(process.env.TMPDIR || os.tmpdir(), 'mail-import-'));
   const previousRoot = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT;
   process.env.MAIL_ATTACHMENT_UPLOAD_ROOT = root;
@@ -29,6 +29,9 @@ async function fixture(t: import('node:test').TestContext, { failAttachment = fa
       assert.equal((sql.match(/\?/g) || []).length, params.length, 'prepared SQL parameter count');
       if (failAttachment && sql.includes('INSERT INTO email_attachments')) throw new Error('Injected attachment insert failure');
       if (sql.includes('SELECT id, storage_path')) return [[]];
+      if (sql.includes('FROM notification_events')) return [heldNotification ? [{ id: 'event-1', payload: JSON.stringify({ kind: 'mail', held: true }) }] : []];
+      if (sql.includes('FROM emails WHERE id = ?')) return [[{ id: params[0], subject: 'Subject', from_name: 'Sender', from_address: 'sender@example.test', folder: 'inbox', is_draft: 0, is_read: 0 }]];
+      if (sql.includes('FROM push_subscriptions p')) return [[{ id: 'device-1' }]];
       return [{ affectedRows: 1 }];
     },
   };
@@ -38,7 +41,6 @@ async function fixture(t: import('node:test').TestContext, { failAttachment = fa
     fullEmail: Buffer.from([0x52, 0x61, 0x77, 0xff]), parsed: { subject: 'Subject', text: 'text', html: '<img src="cid:pic">',
       attachments: [{ filename: 'pic.png', contentType: 'image/png', cid: 'pic', content: Buffer.from('image') }] },
     fromAddress: 'sender@example.test', fromName: 'Sender', toAddresses: ['recipient@example.test'], folder: 'inbox', isRead: false,
-    suppressNotifications: true,
     async archiveRaw({ emailId, rawEmail }: FixtureValue) {
       const rawStoragePath = path.join(root, `${emailId}.eml`);
       await fs.writeFile(rawStoragePath, rawEmail);
@@ -95,4 +97,21 @@ test('uncertain COMMIT retains staged files that committed metadata may referenc
   assert.equal(h.committed, true);
   assert.equal((await fs.readdir(path.join(h.root, 'u1'))).length, 1);
   assert.equal((await fs.readdir(h.root)).filter(name => name.endsWith('.eml')).length, 1);
+});
+
+test('the import releases the notification held at discovery inside its own transaction', async (t) => {
+  const h = await fixture(t, { existingEmail: { id: 'existing', import_complete: false }, heldNotification: true });
+  await persistImportedMessage(h.args as FixtureValue);
+  const release = h.calls.findIndex(sql => sql.includes('UPDATE notification_events SET payload'));
+  const delivery = h.calls.findIndex(sql => sql.includes('INSERT IGNORE INTO notification_deliveries'));
+  const commit = h.calls.indexOf('commit');
+  assert.ok(release > 0 && release < commit, 'the held event is filled in before COMMIT');
+  assert.ok(delivery > release && delivery < commit, 'its deliveries are queued in the same transaction');
+  assert.ok(h.calls.indexOf('begin') < release, 'and only after the transaction began');
+});
+
+test('an import without a held notification sends nothing', async (t) => {
+  const h = await fixture(t, { existingEmail: { id: 'existing', import_complete: false } });
+  await persistImportedMessage(h.args as FixtureValue);
+  assert.ok(!h.calls.some(sql => sql.includes('notification_deliveries') || sql.includes('UPDATE notification_events')));
 });

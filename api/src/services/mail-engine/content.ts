@@ -241,7 +241,6 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
     folder: folder.dbFolderName, isRead: !!row.is_read,
     archiveRaw: data => publishRaw({ root: (require('../mail') as typeof import('../mail')).MAIL_RAW_STORAGE_ROOT, ...data, raw: data.rawEmail as Buffer }),
     enqueueDeletion: (require('../mail') as typeof import('../mail')).recordMailServerMessageForDeletion,
-    suppressNotifications: true,
     validateOccurrence: async (cx, emailId) => {
       if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id,
         workerId: job.lease_owner, generation: job.worker_generation }, cx);

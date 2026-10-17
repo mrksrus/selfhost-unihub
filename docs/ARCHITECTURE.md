@@ -316,8 +316,9 @@ or positions. A sync/backfill routing context loads rule precedence and target
 folder membership once for that operation.
 
 An imported message stages its raw source and attachments before opening a short
-metadata transaction. The transaction marks the message complete and inserts
-attachment, server-deletion and eligible notification rows together. Failures
+metadata transaction. The transaction marks the message complete, inserts the
+attachment and server-deletion rows and releases the "New Email" notification
+that the discovery scan held for a new arrival, all together. Failures
 retain the folder checkpoint for retry. Existing local read/star/folder changes
 survive content repair. Draft replacements follow the same stage/commit/cleanup
 ordering. See [Mail Sync](MAIL_SYNC.md) for upgrade and recovery behavior.

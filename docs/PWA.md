@@ -22,7 +22,7 @@ Every push shows something. A push the worker cannot display (malformed, or for 
 
 Subscriptions stay tied to sessions on purpose: if a device is lost, its notifications (which include mail senders and event titles) stop when its session is signed out or ends.
 
-Mail notifications follow successful IMAP ingestion. New INBOX mail is usually noticed within seconds (IDLE) or at most about 30 seconds; other folders within about 5 minutes. Web Push does not make that discovery instantaneous. First account/folder imports and UIDVALIDITY resets establish a baseline without notifying every historical message. Already-read messages, drafts, sent mail, trash, and archive do not generate alerts.
+Mail notifications follow successful IMAP ingestion. New INBOX mail is usually noticed within seconds (IDLE) or at most about 30 seconds; other folders within about 5 minutes. The notification goes out once the message content has been downloaded, so it names the sender and subject, and the delivery pass runs every 30 seconds. First account/folder imports and UIDVALIDITY resets establish a baseline without notifying every historical message. Already-read messages, drafts, sent mail, trash, and archive do not generate alerts.
 
 The server checks due calendar reminders every 30 seconds. It persists delivery state, retries transient push failures, and catches up within a two-hour reminder window after restart. Edited, deleted, hidden, done, or cancelled events are rechecked before delivery. Recurrence retains the calendar's existing behavior: notifications concern stored event occurrences; this change does not introduce recurrence expansion.
 

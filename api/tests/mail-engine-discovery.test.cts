@@ -12,10 +12,11 @@ function fixture(t: import('node:test').TestContext, { uids = [1], epoch = 123, 
   const transportPath = require.resolve('../dist/src/services/mail-engine/transport');
   const reconcilePath = require.resolve('../dist/src/services/mail-engine/reconciliation');
   const syncPath = require.resolve('../dist/src/services/mail-engine/sync');
-  const original = new Map([repoPath, runtimePath, transportPath, reconcilePath, syncPath].map(p => [p, require.cache[p]]));
+  const notificationsPath = require.resolve('../dist/src/services/notifications');
+  const original = new Map([repoPath, runtimePath, transportPath, reconcilePath, syncPath, notificationsPath].map(p => [p, require.cache[p]]));
   const remotes = new Map<number, FixtureValue>(uids.map((uid: FixtureValue) => [uid, { uid, flags: [], modseq: null, gmailMsgId: gmail ? '999' : null }]));
   const occurrences = new Map(), emails = new Map(), cursors = new Map(), gmailIds = new Map();
-  const saves: FixtureValue[] = [], absences: FixtureValue[] = [], bodyJobs: FixtureValue[] = [], reconciled: FixtureValue[] = [], queries: FixtureValue[] = [];
+  const saves: FixtureValue[] = [], absences: FixtureValue[] = [], bodyJobs: FixtureValue[] = [], reconciled: FixtureValue[] = [], queries: FixtureValue[] = [], announced: FixtureValue[] = [];
   let currentEpoch = epoch, storedEpoch = epoch, incomplete = false, started: FixtureValue = null, duringFetch: FixtureValue = null, mappedOperation: FixtureValue = null;
   let nextUid = Math.max(0, ...uids) + 1;
   const db = { async execute(sql: string, params: FixtureValue[] = []) {
@@ -112,12 +113,14 @@ function fixture(t: import('node:test').TestContext, { uids = [1], epoch = 123, 
         mapping.sourceUids[0] === op.remote_uid && mapping.destinationUids[0] === dest.uid &&
         mapping.uidvalidity === dest.uidvalidity;
     } };
-  for (const [p, exports] of [[repoPath, repository], [runtimePath, runtime], [transportPath, transport], [reconcilePath, reconciliation]] as const)
+  const notifications = { async enqueueMailNotification(input: FixtureValue, executor: FixtureValue) {
+    assert.equal(executor, db, 'announced in the window transaction'); announced.push(input); return 'event'; } };
+  for (const [p, exports] of [[repoPath, repository], [runtimePath, runtime], [transportPath, transport], [reconcilePath, reconciliation], [notificationsPath, notifications]] as const)
     require.cache[p] = { id: p, filename: p, loaded: true, exports } as NodeJS.Module;
   delete require.cache[syncPath];
   const sync = require(syncPath) as typeof import('../src/services/mail-engine/sync');
   t.after(() => { for (const [p, entry] of original) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
-  return { sync, db, remotes, occurrences, emails, cursors, saves, absences, bodyJobs, reconciled, queries,
+  return { sync, db, remotes, occurrences, emails, cursors, saves, absences, bodyJobs, reconciled, queries, announced,
     get started() { return started; }, setIncomplete(value: FixtureValue) { incomplete = value; }, onFetch(fn: FixtureValue) { duringFetch = fn; },
     setEpoch(next: FixtureValue) { currentEpoch = next; }, setMappedMove(value: FixtureValue) { mappedOperation = value; },
     async scan(stream = 'recent', selectedFolder = folder, manualRefresh = false) {
@@ -339,4 +342,44 @@ test('manual first observation has no redundant replay when there is no covered 
   assert.equal(result.more, false);
   assert.equal((result as With<typeof result, 'refreshPending'>).refreshPending, false);
   assert.equal(h.cursors.get('flags').sweep_generation, 0);
+});
+
+test('arrivals after a mailbox\'s first recent pass hold a notification; baselines, history and known messages do not', async t => {
+  const h = fixture(t, { uids: [1, 2, 3] });
+  await h.scan('recent');
+  assert.equal(h.announced.length, 0, 'the first pass over a mailbox is a baseline');
+  await h.scan('history');
+  h.remotes.set(4, { uid: 4, flags: [], modseq: null, gmailMsgId: null });
+  h.remotes.set(5, { uid: 5, flags: ['\\Seen'], modseq: null, gmailMsgId: null });
+  await h.scan('recent');
+  const ids = [...h.occurrences.values()].filter(o => o.uid >= 4).map(o => o.email_id);
+  assert.deepEqual(h.announced.map(a => a.emailId).sort(), ids.sort(), 'each arrival is announced, read or not; delivery rechecks');
+  assert.ok(h.announced.every(a => a.held === true && a.userId === account.user_id), 'as a held event in the owner\'s name');
+  await h.scan('recent');
+  await h.scan('flags');
+  await h.scan('presence');
+  assert.equal(h.announced.length, 2, 'later passes over the same messages announce nothing');
+  h.setEpoch(124);
+  h.remotes.set(6, { uid: 6, flags: [], modseq: null, gmailMsgId: null });
+  await h.scan('recent');
+  assert.equal(h.announced.length, 2, 'a UIDVALIDITY reset starts a new baseline');
+  h.remotes.set(7, { uid: 7, flags: [], modseq: null, gmailMsgId: null });
+  await h.scan('recent');
+  assert.equal(h.announced.length, 3);
+});
+
+test('a Gmail label of a known message and a MOVE destination are not new mail', async t => {
+  const h = fixture(t, { uids: [1], gmail: true });
+  await h.scan('recent');
+  h.remotes.set(2, { uid: 2, flags: [], modseq: null, gmailMsgId: '999' });
+  await h.scan('recent');
+  assert.equal(h.announced.length, 0, 'the account already holds Gmail message 999');
+  const other = fixture(t, { uids: [1] });
+  await other.scan('recent');
+  other.setMappedMove({ destinationUid: 2, row: { id: 'op', email_id: 'moved', remote_uid: 9, remote_uidvalidity: 123,
+    evidence_json: { kind: 'move_outcome', completion: 'ok', mappingStatus: 'valid',
+      mapping: { sourceUids: [9], destinationUids: [2], uidvalidity: 123 } } } });
+  other.remotes.set(2, { uid: 2, flags: [], modseq: null, gmailMsgId: null });
+  await other.scan('recent');
+  assert.equal(other.announced.length, 0, 'the user moved this message here themselves');
 });

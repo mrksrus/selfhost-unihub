@@ -6,6 +6,22 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.22.4
+
+New mail is announced again. No database upgrade and no app update; the
+server does it.
+
+### Fixed
+
+- **No notification for new mail.** Since the durable mail engine of 0.11, the
+  server recorded a new message without ever queuing its "New Email"
+  notification, so neither a browser nor the Android app heard about new mail
+  while reminders, event and sign-in notices worked. A message that arrives
+  after a folder's first pass is now announced as soon as its content is
+  downloaded, with the sender and subject. The first import of an account or
+  folder, a UIDVALIDITY reset, older history and messages the server already
+  shows as read stay quiet, as do Sent, Drafts, Trash and Archive.
+
 ## 0.22.3
 
 Contacts on the phone sync both ways. Install the app again from Settings →
