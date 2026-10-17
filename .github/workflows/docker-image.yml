@@ -13,7 +13,91 @@ env:
   IMAGE_NAME: mrksrus/selfhost-unihub
 
 jobs:
+  # A release publishes what a pull request already tested. A pull request
+  # from this repository keeps its tested image as candidate-<tree> (the git
+  # tree of the tested merge). A push to main or a release tag with exactly
+  # that content only adds its tags to that image: no rebuild, no second test
+  # run. Without such an image (a direct push, or main moved after the test)
+  # build-and-push builds and tests it here before publishing.
+  promote:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      # Whether a tested image exists for this content. If it does and
+      # publishing it fails, this run fails instead of building anew.
+      found: ${{ steps.candidate.outputs.found }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=sha,prefix=
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The candidate tag is resolved once to its digest, and that digest is
+      # published, so a later push of the tag cannot change what goes out.
+      - name: Find the image a pull request tested
+        id: candidate
+        run: |
+          tree="$(git rev-parse 'HEAD^{tree}')"
+          candidate="$REGISTRY/$IMAGE_NAME:candidate-$tree"
+          if ! digest="$(docker buildx imagetools inspect "$candidate" --format '{{.Manifest.Digest}}' 2>/dev/null)" || [ -z "$digest" ]; then
+            echo "No tested image for this content ($candidate); the full build and tests run."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          run="$(docker buildx imagetools inspect "$REGISTRY/$IMAGE_NAME@$digest" --format '{{index .Image.Config.Labels "io.github.mrksrus.unihub.tested-run"}}' 2>/dev/null || true)"
+          {
+            echo "found=true"
+            echo "digest=$digest"
+            echo "run=$run"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Publishing the tested image"
+            echo "- Content (git tree): \`$tree\`"
+            echo "- Image: \`$REGISTRY/$IMAGE_NAME@$digest\`"
+            if [ -n "$run" ]; then
+              echo "- Tested in: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/${run%%/*} (attempt ${run##*/})"
+            else
+              echo "- Tested in: unknown run (the image has no tested-run label)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the image a pull request tested
+        if: steps.candidate.outputs.found == 'true'
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && args+=(--tag "$tag")
+          done <<< "$IMAGE_TAGS"
+          docker buildx imagetools create "${args[@]}" "$REGISTRY/$IMAGE_NAME@$DIGEST"
+          echo "- Published as: $(tr '\n' ' ' <<< "$IMAGE_TAGS")" >> "$GITHUB_STEP_SUMMARY"
+
   build-and-push:
+    needs: promote
+    # Pull requests and manual runs skip promote; a push builds and tests only
+    # when no tested image exists for its content (or promote could not look).
+    if: ${{ !cancelled() && needs.promote.outputs.found != 'true' }}
     runs-on: ubuntu-latest
     # The image build includes the Android app (Android SDK and Gradle), which
     # is then started on three emulators with the apps of earlier releases.
@@ -142,7 +226,11 @@ jobs:
           load: true
           push: false
           tags: unihub:ci
-          labels: ${{ steps.meta.outputs.labels }}
+          # The run that tests this image, so a published image leads back to
+          # its evidence (promote above).
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            io.github.mrksrus.unihub.tested-run=${{ github.run_id }}/${{ github.run_attempt }}
           build-args: |
             UNIHUB_ANDROID_SIGNER=${{ steps.android-key.outputs.key }}
           secret-files: |
@@ -241,10 +329,13 @@ jobs:
       # (google_apis x86_64, revision 6) is broken as of 2026-10-16: its
       # surfaceflinger aborts right after boot ("!rcEnc->featureInfo()->
       # hasReadColorBufferDma") with every -gpu mode, so the system restarts
-      # and installs fail before any app runs. The step still runs and reports,
-      # but does not block a release until a working image ships; Android 17 is
+      # and installs fail before any app runs. Waiting for its boot timeout
+      # cost eleven minutes a run, so the step runs only with the repository
+      # variable UNIHUB_ANDROID17 set to true (try a new image that way); it
+      # does not block a release until a working image ships. Android 17 is
       # checked on a real phone meanwhile (docs/ANDROID_COMPATIBILITY.md).
       - name: Start the Android apps on Android 17
+        if: vars.UNIHUB_ANDROID17 == 'true'
         continue-on-error: true
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -268,7 +359,7 @@ jobs:
           retention-days: 30
 
       - name: Log in to Container Registry
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+        if: (github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -285,3 +376,16 @@ jobs:
             docker tag unihub:ci "$tag"
             docker push "$tag"
           done <<< "$IMAGE_TAGS"
+
+      # Kept for the release that merges exactly this content (promote above).
+      # Only with the release-signed app: a published image must carry it.
+      - name: Keep the tested image for its release
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          if ! grep -q '"signing":"release"' android-app/unihub-android.json; then
+            echo "The app is not release-signed; this image cannot be published, so it is not kept."
+            exit 0
+          fi
+          candidate="$REGISTRY/$IMAGE_NAME:candidate-$(git rev-parse 'HEAD^{tree}')"
+          docker tag unihub:ci "$candidate"
+          docker push "$candidate"

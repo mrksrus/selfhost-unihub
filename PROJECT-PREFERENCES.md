@@ -510,6 +510,22 @@ Evidence: `api/src/services/android-push.ts`, `notification-transports.ts`,
 `api/tests/android-notifications-mysql-integration.test.cts`,
 `docs/ANDROID.md` (Notifications), CHANGELOG 0.22.1.
 
+#### P-24 A release publishes the image its pull request tested
+
+Accepted, in source; first exercised by the release after 0.22.3. Pinned
+2026-10-17 (maintainer's direction, for every project of theirs: tests belong
+to the coding and review loop, not to publication).
+
+The full checks run on the release's pull request, which carries the version,
+changelog and support window, so the tested content is the released content.
+Merging and tagging publish that tested image under `latest`, the version and
+the commit without building or testing again. Only when the released content
+differs from what was tested does the release run build and test it itself.
+The broken Android 17 emulator step stays off until a working image ships.
+
+Evidence: `.github/workflows/docker-image.yml` (`promote` job, "Keep the
+tested image for its release"), `docs/RELEASE_CONTRACT.md`.
+
 ## Open decisions and conflicts
 
 Open proposals do not override accepted decisions.

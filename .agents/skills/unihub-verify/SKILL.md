@@ -34,8 +34,12 @@ substitute a weaker check silently.
 
 ## A release
 
-Run or confirm, for the exact commit, every row of the release contract. The
-CI workflow `.github/workflows/docker-image.yml` must be green on that commit.
+Run or confirm, for the exact content, every row of the release contract.
+Prepare the release in the pull request (version, changelog, support window),
+so the pull request's green run of `.github/workflows/docker-image.yml` tests
+the released content and the merge and tag only publish that tested image
+(the `promote` job). If the merged tree differs from the tested one, the
+release run builds and tests it instead and must be green.
 Also complete the contract's required acceptance beyond CI, especially actual
 Android/server pairings and any cross-version data upgrade/import checks.
 These are currently manual gates. Missing evidence blocks release even when

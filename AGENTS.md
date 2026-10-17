@@ -104,7 +104,7 @@ Every review must end with an explicit verdict for the reviewed commit. When not
 - For UI changes, inspect the actual result at desktop and mobile widths in dark and light themes. For PWA, offline, push, or updates, verify the relevant browser state and consult docs/PWA.md and docs/OFFLINE.md. Report what was and was not verified.
 - Update the relevant feature documentation when a user-visible behavior or cross-component contract changes. Keep this file short and revise a stale rule instead of appending a conflicting one.
 - Add a CHANGELOG.md entry under the upcoming version for every user-visible change.
-- For release or deployment work, follow .github/workflows/docker-image.yml: API test:ci without skips, frontend tests/lint/build, then the built-image smoke test in scripts/container-smoke.sh. Keep local, CI, container and real-provider/device verification separate; report failures and skips. Documentation-only edits need link/path and diff checks, not an application test run.
+- For release or deployment work, follow .github/workflows/docker-image.yml: API test:ci without skips, frontend tests/lint/build, then the built-image smoke test in scripts/container-smoke.sh. These run on the release's pull request, which carries the version change; merging and tagging publish the image it tested (docs/RELEASE_CONTRACT.md). Keep local, CI, container and real-provider/device verification separate; report failures and skips. Documentation-only edits need link/path and diff checks, not an application test run.
 
 ## Private data and checks before committing
 
