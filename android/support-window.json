@@ -13,7 +13,7 @@
     },
     {
       "version": "0.22.2",
-      "apk": { "versionCode": 22002, "sha256": "PENDING-0.22.2", "signing": "release" },
+      "apk": { "versionCode": 22002, "sha256": "ff6fea7f20dca509b448ef61d01842cfab8ce98f86b203f01bf27be5b599ad38", "signing": "release" },
       "shell": "supported"
     },
     {
