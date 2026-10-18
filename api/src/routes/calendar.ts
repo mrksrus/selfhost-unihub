@@ -68,6 +68,7 @@ const {
   serializeCalendarEvent,
   parseDatetimeToMillis,
   replaceEventAttendees,
+  applyLocalEventUpdate,
   getCalendarEventWithSubtasks,
   getCalendarEventIdFromReq,
   normalizeResponseStatus,
@@ -748,6 +749,11 @@ export = {
       }
       if (Object.prototype.hasOwnProperty.call(body, 'calendar_id')) {
         if (!body.calendar_id) {
+          // Without its calendar a synced event would keep its server link
+          // but be edited locally only, until the next sync overwrote it.
+          if (await calendarSync.hasEventLink(userId, id)) {
+            return { error: 'This event is synced with a calendar server. Move it to another calendar or delete it instead.', status: 400 };
+          }
           updates.push('calendar_id = NULL');
         } else {
           const [calRows] = await db.execute<CalendarRecordRow[]>('SELECT id FROM calendar_calendars WHERE id = ? AND user_id = ?', [body.calendar_id, userId]);
@@ -783,16 +789,9 @@ export = {
       });
       if (writeback.error) return writeback;
 
-      if (updates.length > 0) {
-        params.push(id, userId);
-        await db.execute(`UPDATE calendar_events SET ${updates.join(', ')} WHERE id = ? AND user_id = ?`, params);
-      }
-      if (Array.isArray(body.attendees)) {
-        await replaceEventAttendees(userId, id, body.attendees);
-      }
-
-      const updatedEvent = await getCalendarEventWithSubtasks(userId, id);
-      // Changing the time of a whole series replaces its occurrences.
+      // Changing the time of a whole series replaces its occurrences, and
+      // with them the edited id: then there is no local row left to update.
+      const updatedEvent = await applyLocalEventUpdate(userId, id, { sets: updates, params }, body.attendees);
       return { event: updatedEvent, ...(updatedEvent ? {} : { replaced: true }), ...(writeback.scope ? { scope: writeback.scope } : {}) };
     } catch (error) {
       console.error('Update event error:', error);

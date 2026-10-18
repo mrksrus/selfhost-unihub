@@ -20,9 +20,9 @@ function icsDate(ms: number) {
   return new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
 }
 
-function eventIcs(uid: FixtureValue, title: FixtureValue, startMs: FixtureValue) {
+function eventIcs(uid: FixtureValue, title: FixtureValue, startMs: FixtureValue, extra: string[] = []) {
   return ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//UniHub test//EN', 'BEGIN:VEVENT', `UID:${uid}`, 'DTSTAMP:20261001T000000Z',
-    `DTSTART:${icsDate(startMs)}`, `DTEND:${icsDate(startMs + 3600000)}`, `SUMMARY:${title}`, 'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n');
+    `DTSTART:${icsDate(startMs)}`, `DTEND:${icsDate(startMs + 3600000)}`, `SUMMARY:${title}`, ...extra, 'END:VEVENT', 'END:VCALENDAR', ''].join('\r\n');
 }
 
 test('calendar sync keeps unreadable entries, refuses unlinked writes, honours the calendar gate and links only mail calendars',
@@ -172,6 +172,44 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
       // A linked event is still deleted on the server.
       await calendarSync.pushEventDelete({ userId, event: { ...event, calendar_id: workCalendar.id } as FixtureValue, scope: 'occurrence' });
       assert.deepEqual(serverWrites, [['delete', `${BASE}${href}`]]);
+    });
+
+    await t.test('a series time change with an attendee answers replaced, after the server write, without a false error', async () => {
+      const userId = crypto.randomUUID();
+      await connection.execute<ResultSetHeader>('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)', [userId, 'series@example.test', 'synthetic-hash']);
+      const accountId = await insertCalDav(userId, 'series@example.test', current);
+      const href = `${CALENDAR_HREF}standup.ics`;
+      const start = Date.now() + 3 * 86400000;
+      remote.ctag = 'series-1';
+      remote.objects.set(href, { etag: '"s1"', ics: eventIcs('standup@example.test', 'Standup', start, ['RRULE:FREQ=DAILY;COUNT=3']) });
+      try {
+        await calendarSync.syncCalendarAccount(accountId, { userId });
+        const [occurrences] = await connection.execute<RowDataPacket[]>("SELECT id, start_time FROM calendar_events WHERE user_id = ? AND title = 'Standup' ORDER BY start_time", [userId]);
+        assert.equal(occurrences.length, 3);
+        const edited = occurrences[1];
+        await connection.execute<ResultSetHeader>(
+          "INSERT INTO calendar_event_attendees (id, user_id, event_id, email) VALUES (?, ?, ?, 'guest@example.test')",
+          [crypto.randomUUID(), userId, edited.id]
+        );
+        const routes = require('../dist/src/routes/calendar') as typeof import('../src/routes/calendar');
+        const movedStart = new Date(edited.start_time).getTime() + 3600000;
+        serverWrites.length = 0;
+        const result: FixtureValue = await routes['PUT /api/calendar/events/:id'](
+          { url: `/api/calendar/events/${edited.id}`, headers: { host: 'localhost' } } as FixtureValue, userId,
+          { start_time: new Date(movedStart).toISOString(), end_time: new Date(movedStart + 3600000).toISOString(), attendees: [{ email: 'guest@example.test' }], scope: 'series' }
+        );
+        assert.deepEqual(serverWrites, [['put', `${BASE}${href}`]]);
+        assert.deepEqual(result, { event: null, replaced: true, scope: 'series' });
+        const [rebuilt] = await connection.execute<RowDataPacket[]>("SELECT id, start_time FROM calendar_events WHERE user_id = ? AND title = 'Standup' ORDER BY start_time", [userId]);
+        assert.equal(rebuilt.length, 3);
+        assert.ok(rebuilt.every(row => !occurrences.some(old => old.id === row.id)), 'every occurrence row was replaced');
+        assert.deepEqual(rebuilt.map(row => new Date(row.start_time).getTime()), occurrences.map(row => new Date(row.start_time).getTime() + 3600000));
+        const [attendees] = await connection.execute<RowDataPacket[]>('SELECT event_id FROM calendar_event_attendees WHERE user_id = ?', [userId]);
+        assert.deepEqual(attendees, [], 'no attendee row is written for the vanished id');
+      } finally {
+        remote.objects.delete(href);
+        remote.ctag = 'series-2';
+      }
     });
 
     await t.test('an owed first sync waits for the module, not for background sync', async () => {

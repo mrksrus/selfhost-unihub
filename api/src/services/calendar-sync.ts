@@ -854,12 +854,18 @@ async function loadEventLink(userId: string, eventId: string) {
   return { recurrenceId: row.recurrence_id || '', object: { id: row.object_id, href: row.href, etag: row.etag, ics: row.ics } };
 }
 
+// Whether the event is tied to a server copy, with or without the stored
+// object (an import from before 0.17 has only the reference).
+async function hasEventLink(userId: string, eventId: string) {
+  const [rows] = await db.execute<RowDataPacket[]>('SELECT id FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ? LIMIT 1', [eventId, userId]);
+  return rows.length > 0;
+}
+
 // An event imported before 0.17 has a server reference but no server copy
 // yet; the next sync replaces it. A change made now would be undone by that
 // sync, so it is refused until then.
 async function assertNotPendingLink(ctx: BaseContext, userId: string, eventId: string) {
-  const [legacy] = await db.execute<RowDataPacket[]>('SELECT id FROM calendar_event_external_refs WHERE event_id = ? AND user_id = ? LIMIT 1', [eventId, userId]);
-  if (!legacy.length) return;
+  if (!(await hasEventLink(userId, eventId))) return;
   assertWritable(ctx);
   throw syncError('This event is still being synced. Try again in a moment.', 409, 'CALENDAR_SYNC_PENDING');
 }
@@ -1071,6 +1077,7 @@ export {
   deleteCalendarsWithEvents,
   reconcileCalendarList,
   describeEventWrite,
+  hasEventLink,
   pushCreatedEvent,
   pushEventUpdate,
   pushEventDelete,

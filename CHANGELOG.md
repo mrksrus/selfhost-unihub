@@ -64,6 +64,16 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **Plain-text drafts with attachments are sent as text.** A text draft with an
   attachment was sent as HTML, collapsing line breaks and treating `<` as
   markup; only an empty body with attachments still uses the HTML placeholder.
+- **Changing the time of a whole series with attendees no longer reports an
+  error.** The server accepted the change and the occurrences were rebuilt, but
+  the attendee rows were then written for the replaced occurrence id and the
+  edit answered "Failed to update event". The local update is skipped once the
+  occurrences are rebuilt, and the dialog's "Series updated" answer is returned.
+- **A synced event can no longer lose its calendar.** An update with
+  `calendar_id: null` on an event linked to a calendar server (reachable
+  through the API, not the dialog) detached it locally, so later edits stayed
+  local until the next sync overwrote them. It is now refused with a message;
+  move or delete the event instead.
 
 ### Internal
 
