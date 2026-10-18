@@ -1,12 +1,13 @@
 import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
-import type { ApiError, RouteRequest, RouteResponse } from './types';
+import type { ApiError, RouteRequest } from './types';
+import type { RouteTable } from './http/route';
 
 import { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import routes = require('./routes');
-import { verifyToken, validateCsrfToken, refreshSessionCookies } from './auth';
+import { verifyToken, validateCsrfToken, refreshSessionCookies, isAdmin } from './auth';
 import {
   parseBody,
   parseRawBodyToFile,
@@ -16,85 +17,18 @@ import {
 import { parseSingleByteRange, fileValidators, rangeAllowed } from './http/range';
 import { clientError } from './http/errors';
 import { compileRouteMatcher } from './http/route-matcher';
-import { getModuleForPath } from './services/module-catalog';
+import { DEFAULT_BODY_LIMIT } from './http/route';
 import { isModuleEnabled } from './services/module-settings';
 import { getActiveRestoreSections } from './services/restore-locks';
-import { getRestoreSectionForWrite } from './services/backup-catalog';
-import {
-  BACKUP_UPLOAD_MAX_SIZE,
-  MAIL_COMPOSE_REQUEST_MAX_SIZE,
-} from './config';
 
-// Bodies are untrusted at dispatch. Each route retains its existing validation.
-type RouteTable = Record<string, (req: RouteRequest, userId: string | null | undefined, body: unknown, res: ServerResponse) => Promise<RouteResponse>>;
+// Every route is a spec (http/route.ts); the boundary reads policy from it and
+// nothing else. Bodies are untrusted at dispatch; each route keeps its validation.
+const routeTable = routes as RouteTable;
 
 const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
 // Compiled once from the route table: every key with a :param segment becomes a
 // segment matcher, so adding a route needs no change here.
-const matchRoute = compileRouteMatcher(Object.keys(routes));
-
-// Request body limits in bytes. The default covers the small JSON documents
-// most routes take, with room for the ordinary text their validators accept
-// (names, titles, patterns); the routes below carry files, archives, imports,
-// bulk selections, or text columns sized well beyond that.
-const DEFAULT_BODY_LIMIT = 16384;
-const BODY_LIMIT_BY_PATH_PREFIX: readonly [string, number][] = [
-  ['/api/notifications/', 16384],
-];
-const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
-  'GET /api/modules': 16384,
-  'PUT /api/modules': 16384,
-  // Credentials: a passphrase may be up to 1024 characters, so the JSON needs
-  // more than a bare id but nowhere near the default.
-  'POST /api/auth/signin': 4096,
-  'POST /api/auth/signup': 4096,
-  'PUT /api/auth/password': 4096,
-  'PUT /api/admin/users/:id/password': 4096,
-  // Contact notes are a TEXT column
-  'POST /api/contacts': 65536,
-  'PUT /api/contacts/:id': 65536,
-  'POST /api/contacts/import': 500000, // vCard import can be large
-  // A contact selection: up to 5000 IDs of ~39 bytes each
-  'POST /api/contacts/bulk-delete': 250000,
-  'POST /api/contacts/bulk-update': 250000,
-  'POST /api/recordings/uploads/:id/chunk': 1200 * 1024, // Recording chunks are base64 encoded JSON.
-  // Chord sheets (metadata.chords, 10000 characters), a TEXT description and tags
-  'PUT /api/recordings/:id': 262144,
-  'POST /api/recordings/uploads/start': 50000,
-  'POST /api/backup/import': BACKUP_UPLOAD_MAX_SIZE,
-  'POST /api/mail/send': MAIL_COMPOSE_REQUEST_MAX_SIZE,
-  'POST /api/mail/drafts': MAIL_COMPOSE_REQUEST_MAX_SIZE,
-  'PUT /api/mail/drafts/:id': MAIL_COMPOSE_REQUEST_MAX_SIZE,
-  // Calendar account metadata payloads
-  'POST /api/calendar/accounts': 50000,
-  'PUT /api/calendar/accounts/:id': 50000,
-  'PUT /api/mail/accounts/:id/calendar': 50000,
-  // Synced events can carry long descriptions
-  'POST /api/calendar/events': 100000,
-  'PUT /api/calendar/events/:id': 100000,
-  // Mail account credentials and custom host metadata
-  'POST /api/mail/accounts': 50000,
-  'PUT /api/mail/accounts/:id': 50000,
-  // Bulk operations and sync need more space (100 emails * ~36 chars UUID + JSON overhead)
-  'POST /api/mail/emails/bulk-update': 50000,
-  'POST /api/mail/emails/bulk-delete': 50000,
-  'POST /api/mail/emails/bulk-move': 50000,
-  'POST /api/mail/sync': 50000,
-};
-function bodyLimitFor(routeKey: string, pathname: string) {
-  for (const [prefix, limit] of BODY_LIMIT_BY_PATH_PREFIX) if (pathname.startsWith(prefix)) return limit;
-  return BODY_LIMIT_BY_ROUTE[routeKey] ?? DEFAULT_BODY_LIMIT;
-}
-
-const PUBLIC_ROUTE_KEYS = new Set([
-  'GET /health',
-  'GET /api/version',
-  'GET /api/auth/signup-mode',
-  'POST /api/auth/signup',
-  'POST /api/auth/signin',
-  'POST /api/auth/2fa/login',
-  'GET /api/backup/export',
-]);
+const matchRoute = compileRouteMatcher(Object.keys(routeTable));
 
 function sanitizeHeaderFilename(filename: unknown) {
   const sanitized = String(filename || 'download')
@@ -177,8 +111,8 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
     return;
   }
 
-  const handler = (routes as unknown as RouteTable)[routeKey];
-  if (!handler) {
+  const spec = routeTable[routeKey];
+  if (!spec) {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not Found' }));
     return;
@@ -188,7 +122,7 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
   try {
     const userId = await verifyToken(req, { renew: true });
     if (userId) refreshSessionCookies(req, res);
-    if (!userId && !PUBLIC_ROUTE_KEYS.has(routeKey)) {
+    if (!userId && spec.auth !== 'public') {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unauthorized', status: 401 }));
       return;
@@ -201,10 +135,15 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       return;
     }
 
-    const moduleId = getModuleForPath(url.pathname);
-    if (userId && moduleId && !await isModuleEnabled(userId, moduleId)) {
+    if (spec.auth === 'admin' && !(await isAdmin(userId))) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'This module is disabled. Enable it in Settings.', code: 'MODULE_DISABLED', module: moduleId }));
+      res.end(JSON.stringify({ error: 'Forbidden', status: 403 }));
+      return;
+    }
+
+    if (userId && spec.module && !await isModuleEnabled(userId, spec.module)) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'This module is disabled. Enable it in Settings.', code: 'MODULE_DISABLED', module: spec.module }));
       return;
     }
 
@@ -215,23 +154,21 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       return;
     }
 
-    if (userId && ['POST', 'PUT', 'DELETE'].includes(req.method!)) {
-      const section = url.pathname === '/api/modules' ? 'settings' : getRestoreSectionForWrite(url.pathname);
-      if (section) {
-        const activeSections = await getActiveRestoreSections(userId);
-        if ((section === '*' && activeSections.size > 0) || activeSections.has(section)) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            error: `Restore in progress for ${section}. This section is temporarily read-only.`,
-            code: 'RESTORE_IN_PROGRESS',
-            status: 409,
-          }));
-          return;
-        }
+    const section = spec.restoreSection;
+    if (userId && section) {
+      const activeSections = await getActiveRestoreSections(userId);
+      if ((section === '*' && activeSections.size > 0) || activeSections.has(section)) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: `Restore in progress for ${section}. This section is temporarily read-only.`,
+          code: 'RESTORE_IN_PROGRESS',
+          status: 409,
+        }));
+        return;
       }
     }
 
-    const maxBodySize = bodyLimitFor(routeKey, url.pathname);
+    const maxBodySize = spec.body?.limit ?? DEFAULT_BODY_LIMIT;
     if (isRequestBodyTooLarge(req, maxBodySize)) {
       res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' });
       res.end(JSON.stringify({ error: `Request body too large (max ${maxBodySize} bytes)` }));
@@ -239,14 +176,16 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
     }
 
     const contentType = String(req.headers['content-type'] || '').toLowerCase();
-    const expectsBackupUpload = routeKey === 'POST /api/backup/import'
+    const expectsBackupUpload = spec.body?.kind === 'backup-upload'
       && (
         contentType.includes('application/zip')
         || contentType.includes('application/octet-stream')
         || contentType.includes('application/vnd.unihub.backup')
       );
-    let body;
-    if (expectsBackupUpload) {
+    let body: unknown;
+    if (spec.body?.kind === 'none') {
+      body = undefined;
+    } else if (expectsBackupUpload) {
       temporaryUploadPath = path.join(BACKUP_UPLOAD_ROOT, `${crypto.randomUUID()}.zip`);
       body = await parseRawBodyToFile(req, temporaryUploadPath, maxBodySize);
     } else {
@@ -261,10 +200,14 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       return;
     }
 
-    const result = await handler(req, userId, body, res);
+    const result = spec.auth === 'public'
+      ? await spec.handler(req, userId ?? null, body, res)
+      : await spec.handler(req, userId!, body, res);
 
-    // A streaming route (GET /api/events) has written and owns the response.
-    if (result?.__handled === true) return;
+    // A streaming route (GET /api/events, the Android notification stream) has
+    // written and owns the response; only a refusal before that is serialized.
+    if (spec.response === 'stream' && (result === undefined || res.headersSent)) return;
+    if (!result) throw new Error('Route returned no response');
 
     if (result.__redirect) {
       res.writeHead(302, { Location: result.__redirect });
@@ -367,9 +310,6 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
   }
 }
 
-// Start server
-
 export {
   handleRequest,
-  BODY_LIMIT_BY_ROUTE,
 };

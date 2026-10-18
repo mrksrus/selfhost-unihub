@@ -21,7 +21,7 @@ test('every route key resolves from a concrete sample path with its parameters f
 });
 
 test('every explicit body limit names a key in the route table, so none is silently unused', () => {
-  const { BODY_LIMIT_BY_ROUTE } = require('../dist/src/request-handler') as typeof import('../src/request-handler');
+  const { BODY_LIMIT_BY_ROUTE } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
   for (const key of Object.keys(BODY_LIMIT_BY_ROUTE)) {
     assert.ok(key in routes, `${key} has a body limit but no handler`);
   }

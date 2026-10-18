@@ -13,14 +13,15 @@ function handlerHarness(t: import('node:test').TestContext, { userId = 'u1', rou
   stub(paths[1], { verifyToken: async () => userId, validateCsrfToken: () => true, refreshSessionCookies: () => {} });
   stub(paths[3], { isModuleEnabled: async () => moduleEnabled });
   stub(paths[4], { getActiveRestoreSections: async () => new Set<FixtureValue>(restoring) });
-  stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
+  const { legacyTable } = require('./helpers/route-table.cts') as { legacyTable: (handlers: Record<string, FixtureValue>) => FixtureValue };
+  stub(paths[2], legacyTable({ 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
     'POST /api/mail/writebacks/:id/accept-server-state': route,
     'POST /api/admin/users/:id/2fa/reset': route,
     'PUT /api/recordings/:id': route, 'POST /api/contacts': route, 'PUT /api/contacts/:id': route,
     'POST /api/auth/signin': route, 'POST /api/auth/signup': route, 'PUT /api/auth/password': route, 'PUT /api/admin/users/:id/password': route,
     'GET /api/version': async () => ({ app: 'unihub' }),
     'GET /api/modules': route, 'GET /api/contacts/export': route, 'GET /api/offline/snapshot': route || (async (_req: FixtureValue, user: FixtureValue) => ({ snapshot: { userId: user } })),
-    'POST /api/parse-test': route || (async () => ({ success: true })) });
+    'POST /api/parse-test': route || (async () => ({ success: true })) }));
   const { handleRequest } = require(paths[0]) as typeof import('../src/request-handler');
   return async function run(method: string, url: string, body = '', overrides = {}) {
     const req = new PassThrough(); Object.assign(req, { method, url, headers: { host: 'localhost', ...overrides } });
