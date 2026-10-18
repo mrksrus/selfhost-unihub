@@ -1,4 +1,4 @@
-import type { FixtureValue, With } from './helpers/test-types.cts';
+import type { FixtureValue, With, RouteTable } from './helpers/test-types.cts';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 // Run before database-startup smoke, which intentionally leaves a populated schema.
 // Node sorts test file paths even when the runner supplies another argument order.
@@ -34,7 +34,7 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
   };
   const op = async () => (await pool.execute<RowDataPacket[]>('SELECT * FROM mail_writebacks WHERE email_id=?', [emailId]))[0][0];
   await assert.rejects(service.mutateMessages(stranger, [emailId], { read: 1 }), { status: 404 });
-  const mailRoutes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const mailRoutes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
   const list = async (query: string) => mailRoutes['GET /api/mail/emails']({ url: `/api/mail/emails${query}`, headers: { host: 'localhost' } } as FixtureValue, user);
   const detail = async () => mailRoutes['GET /api/mail/emails/:id']({ url: `/api/mail/emails/${emailId}` } as FixtureValue, user);
   const assertSnapshot = async (read: FixtureValue, star: FixtureValue, readPending: FixtureValue, starPending: FixtureValue) => {
@@ -146,7 +146,7 @@ test('durable mail commands: ownership, restart, retry retention and operation-a
   const [[email]]=await pool.execute<RowDataPacket[]>('SELECT folder,remote_uid,remote_uidvalidity,remote_folder FROM emails WHERE id=?',[emailId]);
   assert.deepEqual(email,{folder:'filed',remote_uid:77,remote_uidvalidity:10,remote_folder:'Filed'});
   assert.equal((await pool.execute<RowDataPacket[]>('SELECT state FROM mail_writebacks WHERE id=?',[move.id]))[0][0].state,'confirmed');
-  const route=(require('../dist/src/routes/mail') as typeof import('../src/routes/mail'))['GET /api/mail/writebacks'];
+  const route=(require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>)['GET /api/mail/writebacks'];
   const statusRequest = {url:'/api/mail/writebacks',headers:{host:'localhost'}};
   const strangers = await route(statusRequest as FixtureValue,stranger);
   assert.equal((strangers as With<typeof strangers, 'error'>).error,undefined, JSON.stringify(strangers));

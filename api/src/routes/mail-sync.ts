@@ -6,7 +6,7 @@ import {
   getMailSyncState,
   cancelMailAccountSync,
 } from '../services/mail';
-import { startMailSyncInBackground } from './mail-route-helpers';
+import { startMailSyncInBackground, routeError } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input { account_id?: string; min_age_ms?: unknown }
@@ -70,7 +70,7 @@ export = {
       return { started, skipped, alreadyRunning: Array.from(new Set(alreadyRunning)) };
     } catch (error) {
       console.error('[SYNC] Background sync trigger error:', error);
-      return { error: (error as ApiError).message || 'Failed to start background mail sync', status: 500 };
+      return routeError(error, 'Failed to start background mail sync');
     }
   },
 
@@ -112,7 +112,7 @@ export = {
         status: job.started ? 202 : 200 };
     } catch (error) {
       console.error('[SYNC] Sync error:', error);
-      return { error: (error as ApiError).message || 'Failed to sync mail', status: 500 };
+      return routeError(error, 'Failed to sync mail');
     }
   },
 
@@ -131,7 +131,7 @@ export = {
         status: requested ? 202 : 200 };
     } catch (error) {
       console.error('[SYNC] Cancellation request failed:', (error as ApiError).message);
-      return { error: 'Could not request mail sync cancellation', status: 500 };
+      return routeError(error, 'Could not request mail sync cancellation');
     }
   },
 };

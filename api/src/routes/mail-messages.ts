@@ -10,7 +10,7 @@ import { mailPathUnderRoot } from '../services/mail-storage';
 import { EMAIL_TASK_COUNT_SQL, tasksForEmail } from '../services/email-tasks';
 import { isModuleEnabled } from '../services/module-settings';
 import { toBooleanFlag } from '../services/mail';
-import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL, extractMailRouteId } from './mail-route-helpers';
+import { pendingFlagSql, EFFECTIVE_READ_SQL, EFFECTIVE_STAR_SQL, extractMailRouteId, routeError } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Input = unknown;
@@ -157,7 +157,7 @@ export = {
       console.error(`[API] Params:`, params || 'N/A');
       console.error(`[API] Folder:`, folder || 'N/A', `AccountId:`, accountId || 'N/A');
       console.error(`[API] Error stack:`, (error as ApiError).stack);
-      return { error: 'Failed to get emails', status: 500 };
+      return routeError(error, 'Failed to get emails');
     }
   },
 
@@ -216,7 +216,7 @@ export = {
 
       return { email: parsedEmail };
     } catch (error) {
-      return { error: 'Failed to get email', status: 500 };
+      return routeError(error, 'Failed to get email');
     }
   },
 
@@ -276,11 +276,11 @@ export = {
         };
       } catch (fileError) {
         console.error(`[ATTACH] Failed to read attachment file:`, (fileError as Error).message);
-        return { error: 'Failed to read attachment file', status: 500 };
+        return routeError(fileError, 'Failed to read attachment file');
       }
     } catch (error) {
       console.error('[ATTACH] Error:', error);
-      return { error: 'Failed to fetch attachment', status: 500 };
+      return routeError(error, 'Failed to fetch attachment');
     }
   },
 };

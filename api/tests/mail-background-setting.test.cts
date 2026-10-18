@@ -1,4 +1,4 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, RouteTable } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 process.env.ENCRYPTION_KEY = 'mail-background-setting-test-only-key';
@@ -142,7 +142,7 @@ test('service-worker background trigger uses background admission and reports a 
     if (sql.includes('FROM mail_accounts')) return [[{ id: 'off', last_synced_at: null }, { id: 'on', last_synced_at: null }]];
     assert.fail(sql);
   }) } as FixtureValue);
-  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
   const result = await routes['POST /api/mail/sync/background']({ url: '/api/mail/sync/background' } as FixtureValue, 'owner', {});
   assert.deepEqual(calls, [['off', { background: true }], ['on', { background: true }]]);
   assert.deepEqual([result.started, result.skipped, result.alreadyRunning], [['on'], ['off'], []]);

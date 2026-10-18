@@ -12,7 +12,7 @@ import {
 } from '../services/mail';
 import { saveDraftMutation } from '../services/mail-drafts';
 import { normalizeRecipients, parseStoredRecipients } from '../services/mail-recipients';
-import { extractMailRouteId } from './mail-route-helpers';
+import { extractMailRouteId, routeError } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface DraftRow extends RowDataPacket {
@@ -164,7 +164,7 @@ export = {
       return { draft: await loadDraftEmail(userId, draftId) };
     } catch (error) {
       console.error('Create draft error:', error);
-      return { error: (error as ApiError).message || 'Failed to save draft', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Failed to save draft');
     }
   },
 
@@ -225,7 +225,7 @@ export = {
       return { draft: await loadDraftEmail(userId, draftId) };
     } catch (error) {
       console.error('Update draft error:', error);
-      return { error: (error as ApiError).message || 'Failed to update draft', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Failed to update draft');
     }
   },
 
@@ -236,7 +236,7 @@ export = {
       return await deleteDraftWithFiles(userId, extractMailRouteId(req)!);
     } catch (error) {
       console.error('Delete draft error:', error);
-      return { error: (error as ApiError).message || 'Failed to delete draft', status: 500 };
+      return routeError(error, 'Failed to delete draft');
     }
   },
 
@@ -295,7 +295,7 @@ export = {
       };
     } catch (error) {
       console.error('Send draft error:', (error as NodeJS.ErrnoException)?.code || (error as Error)?.name || 'Error');
-      return { error: (error as ApiError).message || 'Failed to send draft', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Failed to send draft');
     }
   },
 
@@ -327,7 +327,7 @@ export = {
     } catch (error) {
       // SMTP errors carry the rejected recipients in their message and fields; the log gets the kind only.
       console.error('Send email error:', (error as NodeJS.ErrnoException)?.code || (error as Error)?.name || 'Error');
-      return { error: (error as ApiError).message || 'Failed to send email', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Failed to send email');
     }
   },
 };

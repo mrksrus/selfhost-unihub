@@ -1,4 +1,4 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, RouteTable } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
@@ -273,7 +273,7 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
     },
   });
 
-  return { routes: (require('../dist/src/routes/mail') as typeof import('../src/routes/mail')), state, uploadRoot };
+  return { routes: (require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>), state, uploadRoot };
 }
 
 test('draft routes create, update, and delete draft attachments', async (t) => {

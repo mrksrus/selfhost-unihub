@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
-import type { StoredFlag } from '../types';
+import type { ApiError, StoredFlag } from '../types';
 import { db } from '../state';
 import { normalizeMailFolderSlug, ensureDefaultMailFoldersForUser, scheduleMailAccountSync } from '../services/mail';
 
@@ -39,6 +39,16 @@ async function validateUserMailFolder(userId: string, folderSlug: unknown) {
   return { folder: normalizedSlug, accountId: rows[0].mail_account_id || null, isSystem: !!rows[0].is_system };
 }
 
+// An error that carries a status (refused input, missing record, conflict)
+// reaches the client with its message. Anything else is a server failure: the
+// client gets the route's fallback and the text (for example a database
+// driver's) stays in the log.
+function routeError(error: unknown, fallback: string) {
+  const status = (error as ApiError).status;
+  return { error: status ? (error as ApiError).message : fallback, status: status || 500,
+    ...((error as ApiError & { requiresConfirmation?: boolean }).requiresConfirmation ? { requires_confirmation: true } : {}) };
+}
+
 function extractMailRouteId(req: Pick<IncomingMessage, 'url'>, offsetFromEnd = 1) {
   const parts = req.url!.split('?')[0].split('/').filter(Boolean);
   return parts[parts.length - offsetFromEnd] || null;
@@ -50,5 +60,6 @@ export {
   EFFECTIVE_STAR_SQL,
   startMailSyncInBackground,
   validateUserMailFolder,
+  routeError,
   extractMailRouteId,
 };

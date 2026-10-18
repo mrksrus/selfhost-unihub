@@ -1,4 +1,4 @@
-import type { FixtureValue, With } from './helpers/test-types.cts';
+import type { FixtureValue, With, RouteTable } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 
@@ -82,7 +82,7 @@ test('add mail account maps strict IMAP TLS failures to host trust confirmation'
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   });
 
-  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
   const result = await routes['POST /api/mail/accounts'](
     { headers: { host: 'localhost' }, url: '/api/mail/accounts' } as FixtureValue,
     'user-1',
@@ -188,7 +188,7 @@ test('add mail account keeps server deletion off by default and can enable grace
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   });
 
-  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
   const baseBody = {
     email_address: 'user@example.test',
     provider: 'custom',
@@ -317,7 +317,7 @@ test('update mail account can disable server deletion without password changes',
     deleteStoredAttachmentFiles: async () => ({ deletedFiles: 0, failedFiles: 0 }),
   });
 
-  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
   const result = await routes['PUT /api/mail/accounts/:id'](
     { headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' } as FixtureValue,
     'user-1',
@@ -395,7 +395,7 @@ test('reconnect uses the saved password of an account a restore paused, never of
     syncMailAccount: async () => ({ success: true }),
     isAnyMailAccountSyncRunning: () => false, getRunningMailSyncAccountIds: () => [], getRunningMailServerDeleteAccountIds: () => [],
   });
-  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
   const put = (body: FixtureValue) => routes['PUT /api/mail/accounts/:id']({ headers: { host: 'localhost' }, url: '/api/mail/accounts/account-1' } as FixtureValue, 'user-1', body);
 
   row = { is_active: 0, disconnected_at: null, encrypted_password: 'encrypted:restored' };
@@ -413,4 +413,86 @@ test('reconnect uses the saved password of an account a restore paused, never of
     assert.equal(refused.status, 400); assert.match(refused.error!, /credentials again/);
   }
   assert.equal(loginTests.length, 1); assert.equal(updates.length, 1);
+});
+
+// The database refuses an undefined bind like mysql2 does; every write,
+// connection test and work stop is recorded.
+function accountInputFixture(t: import('node:test').TestContext) {
+  const routePath = require.resolve('../dist/src/routes/mail');
+  const mailServicePath = require.resolve('../dist/src/services/mail');
+  const statePath = require.resolve('../dist/src/state');
+  const encryptionPath = require.resolve('../dist/src/security/encryption');
+  const saved = Object.fromEntries([routePath, mailServicePath, statePath, encryptionPath].map(path => [path, require.cache[path]]));
+  t.after(() => {
+    for (const [path, entry] of Object.entries(saved)) { if (entry) require.cache[path] = entry; else delete require.cache[path]; }
+  });
+  t.after(require('./helpers/mail-service-modules.cts').evictMailRouteModules());
+  t.mock.method((require('../dist/src/services/mail-engine/runtime') as typeof import('../src/services/mail-engine/runtime')), 'resumeAccount', async () => ({ resumed: 0, retired: 0 }));
+  const inserts: FixtureValue[] = [], updates: FixtureValue[] = [], tested: FixtureValue[] = [];
+  let stops = 0;
+  const existing = { id: 'account-1', user_id: 'user-1', email_address: 'user@example.test', username: 'user@example.test', display_name: null,
+    provider: 'custom', imap_host: 'mail.example.test', imap_port: 993, smtp_host: 'mail.example.test', smtp_port: 587,
+    encrypted_password: 'encrypted:secret', allow_self_signed: 0, delete_emails_on_server: 0, sync_mode: 'download', is_active: 1 };
+  setRequireStub(statePath, { db: { execute: async (sql: string, params: FixtureValue[] = []) => {
+    if (params.some(value => value === undefined)) throw new Error('Bind parameters must not contain undefined. To pass SQL NULL specify JS null');
+    if (sql.includes('SELECT * FROM mail_accounts')) return [[existing]];
+    if (sql.includes('INSERT INTO mail_accounts')) { inserts.push({ sql, params }); return [{ affectedRows: 1 }]; }
+    if (sql.includes('UPDATE mail_accounts SET')) { updates.push({ sql, params }); return [{ affectedRows: 1 }]; }
+    if (sql.includes('SELECT id, user_id, email_address')) return [[existing]];
+    return [[]];
+  } } });
+  setRequireStub(encryptionPath, { encrypt: (value: FixtureValue) => `encrypted:${value}` });
+  setRequireStub(mailServicePath, {
+    DEFAULT_MAIL_SYNC_FETCH_LIMIT: 'all', MAIL_SENDER_RULE_MATCH_TYPES: new Set<FixtureValue>(['domain', 'email']), SYSTEM_MAIL_FOLDER_SET: new Set<FixtureValue>(),
+    toBooleanFlag: (value: FixtureValue) => value === true || value === 1 || value === '1',
+    ensureDefaultMailFoldersForUser: async () => {},
+    normalizeSyncFetchLimit: (value: FixtureValue, fallback = 'all') => value || fallback,
+    validateMailHostPolicy: async () => ({ accepted: true, mailHostTrust: {} }),
+    buildMailHostTrustResult: async () => ({}),
+    testImapConnection: async (account: FixtureValue) => { tested.push(account); return { success: true }; },
+    stopMailAccountWork: async () => { stops++; },
+    scheduleMailAccountSync: () => ({ started: true, promise: Promise.resolve({ success: true }) }),
+    syncMailAccount: async () => ({ success: true }),
+    isAnyMailAccountSyncRunning: () => false, getRunningMailSyncAccountIds: () => [], getRunningMailServerDeleteAccountIds: () => [],
+  });
+  const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
+  const request = (url: string) => ({ headers: { host: 'localhost' }, url }) as FixtureValue;
+  return { inserts, updates, tested, get stops() { return stops; },
+    post: (body: FixtureValue): Promise<FixtureValue> => routes['POST /api/mail/accounts'](request('/api/mail/accounts'), 'user-1', body),
+    put: (body: FixtureValue): Promise<FixtureValue> => routes['PUT /api/mail/accounts/:id'](request('/api/mail/accounts/account-1'), 'user-1', body) };
+}
+
+test('account fields are checked before anything is tested, stopped or stored', async (t) => {
+  const h = accountInputFixture(t);
+  const refused = await h.put({ imap_port: '993x' });
+  assert.equal(refused.status, 400);
+  assert.match(refused.error, /IMAP port must be a number/);
+  assert.deepEqual([h.updates.length, h.tested.length, h.stops], [0, 0, 0], 'A refused port writes, tests and stops nothing');
+  for (const bad of [0, 70000, '993.5', true]) assert.equal((await h.put({ smtp_port: bad })).status, 400, `smtp_port ${JSON.stringify(bad)}`);
+  assert.equal((await h.put({ display_name: 'x'.repeat(256) })).status, 400);
+  assert.equal(h.updates.length, 0);
+
+  const moved = await h.put({ imap_port: '143' });
+  assert.equal(moved.error, undefined);
+  assert.equal(h.tested[0].imap_port, 143, 'The connection test sees a number');
+  assert.match(h.updates[0].sql, /imap_port = \?/);
+  assert.ok(h.updates[0].params.includes(143), 'The stored port is the tested port');
+
+  const base = { email_address: 'new@example.test', provider: 'custom', encrypted_password: 'secret',
+    imap_host: 'mail.example.test', imap_port: 993, smtp_host: 'mail.example.test', smtp_port: 587 };
+  const noProvider = await h.post({ ...base, provider: undefined });
+  assert.equal(noProvider.status, 400);
+  assert.equal(noProvider.error, 'Mail provider is required.');
+  const longName = await h.post({ ...base, display_name: 'x'.repeat(256) });
+  assert.equal(longName.status, 400);
+  assert.match(longName.error, /Display name must be 255/);
+  assert.equal((await h.post({ ...base, email_address: 'not-an-address' })).status, 400);
+  assert.equal((await h.post({ ...base, encrypted_password: '' })).error, 'Email address and password are required');
+  assert.equal(h.inserts.length, 0, 'Nothing reached INSERT');
+
+  const created = await h.post({ ...base, display_name: '', username: '', smtp_port: '465' });
+  assert.equal(created.error, undefined);
+  assert.equal(h.inserts.length, 1);
+  assert.deepEqual(h.inserts[0].params.slice(2, 10), ['new@example.test', null, 'custom', 'new@example.test', 'mail.example.test', 993, 'mail.example.test', 465],
+    'Stored values are the normalized ones: empty optional fields become null or the address, ports are numbers');
 });

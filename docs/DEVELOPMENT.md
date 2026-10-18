@@ -103,7 +103,9 @@ passes something outside the declared type (a partial database row, a provider
 or database double, a malformed request), mark that value with `FixtureValue`
 from `api/tests/helpers/test-types.cts`; it is an intentional `any`, so use it
 only there. To read one known outcome of a call that returns a union, narrow
-with `With<typeof result, 'property'>` instead. Because tsc compiles the API
+with `With<typeof result, 'property'>` instead; to read a whole route module's
+results the way TypeScript reads a union of literals, type it as
+`RouteTable<typeof import('../src/routes/mail')>`. Because tsc compiles the API
 source in the test check, ESLint rather than tsc rejects TypeScript that Node
 cannot strip (enums, namespaces, parameter properties, `import =`, `export =`)
 in tests; `api/tsconfig.scripts.json` still enforces it for the scripts. ESLint

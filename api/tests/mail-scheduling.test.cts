@@ -1,4 +1,4 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, RouteTable } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { queueChanges, runDueWritebacks, mutateMessages } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
@@ -34,7 +34,7 @@ test('HTTP sync acknowledgement is prompt and status never includes another owne
     }
     assert.fail(sql);
   }) } as FixtureValue);
-  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
   const req = (url: string) => ({ url });
   assert.equal((await routes['POST /api/mail/sync'](req('/api/mail/sync') as FixtureValue, 'alice', { account_id: 'bob-mail' })).status, 404);
   const accepted = await routes['POST /api/mail/sync'](req('/api/mail/sync') as FixtureValue, 'alice', { account_id: 'alice-mail' });
