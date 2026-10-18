@@ -21,7 +21,7 @@ function harness(t: import('node:test').TestContext) {
   const auth = require('../dist/src/routes/auth') as typeof import('../src/routes/auth');
   const { legacyTable } = require('./helpers/route-table.cts') as { legacyTable: (handlers: Record<string, FixtureValue>) => FixtureValue };
   const { mergeRouteTables } = require('../dist/src/http/route') as typeof import('../src/http/route');
-  stub(paths[1], mergeRouteTables(legacyTable({ 'PUT /api/contacts/:id': route, 'GET /api/contacts': route }), {
+  stub(paths[1], mergeRouteTables(legacyTable({ 'PUT /api/contacts/:id': route, 'GET /api/contacts': route, 'POST /api/mail/sync/background': route }), {
     'GET /api/auth/me': auth['GET /api/auth/me'], 'POST /api/auth/signin': auth['POST /api/auth/signin'], 'POST /api/auth/signout': auth['POST /api/auth/signout'],
   }));
   stub(paths[2], { isModuleEnabled: async () => true });
@@ -83,6 +83,16 @@ test('a bearer header next to an ambient auth cookie does not lift the CSRF chec
   const allowed = await run('PUT', '/api/contacts/c1', { ...bearer, ...cookie(`; csrf-token=${csrf}`), 'x-csrf-token': csrf });
   assert.equal(allowed.status, 200);
   assert.deepEqual(calls, [{ userId: 'u1', credential: 'bearer' }]);
+});
+
+test('the background-sync header stands in for the token only on a route that declares it', async (t) => {
+  const { run, calls } = harness(t);
+  const header = { ...cookie(), 'x-background-sync': '1' };
+  assert.equal((await run('POST', '/api/mail/sync/background', header)).status, 200);
+  assert.deepEqual(calls, [{ userId: 'u1', credential: 'cookie' }]);
+  assert.equal((await run('PUT', '/api/contacts/c1', header)).status, 403);
+  assert.equal((await run('POST', '/api/mail/sync/background', cookie())).status, 403);
+  assert.equal(calls.length, 1);
 });
 
 test('an invalid bearer token is unauthenticated rather than CSRF-exempt', async (t) => {

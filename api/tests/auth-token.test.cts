@@ -85,16 +85,19 @@ test('expired session rows and bad signatures are rejected without renewal', asy
   assert.equal(await verifyToken(cookieRequest(forged) as FixtureValue, { renew: true }), null);
 });
 
-test('only recording uploads accept the service worker header instead of a CSRF token', () => {
+test('the service worker header replaces the CSRF token only where the route declares it', () => {
   const { validateCsrfToken } = require('../dist/src/auth') as typeof import('../src/auth');
-  const request = (method: string, url: string, headers = {}) => ({ method, url, headers });
+  const request = (method: string, headers = {}) => ({ method, url: '/api/anything', headers });
   const background = { 'x-background-sync': '1' };
-  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/start', background) as FixtureValue), true);
-  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/chunk', background) as FixtureValue), true);
-  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/complete', background) as FixtureValue), true);
-  assert.equal(validateCsrfToken(request('DELETE', '/api/recordings/uploads/abc', background) as FixtureValue), true);
-  assert.equal(validateCsrfToken(request('POST', '/api/recordings/uploads/abc/chunk') as FixtureValue), false);
-  assert.equal(validateCsrfToken(request('DELETE', '/api/recordings/abc', background) as FixtureValue), false);
-  assert.equal(validateCsrfToken(request('PUT', '/api/recordings/uploads/abc', background) as FixtureValue), false);
-  assert.equal(validateCsrfToken(request('POST', '/api/contacts', background) as FixtureValue), false);
+  assert.equal(validateCsrfToken(request('POST', background) as FixtureValue, 'background-header'), true);
+  assert.equal(validateCsrfToken(request('DELETE', background) as FixtureValue, 'background-header'), true);
+  assert.equal(validateCsrfToken(request('POST') as FixtureValue, 'background-header'), false);
+  assert.equal(validateCsrfToken(request('POST', background) as FixtureValue, 'token'), false);
+  assert.equal(validateCsrfToken(request('POST', background) as FixtureValue), false);
+  assert.equal(validateCsrfToken(request('POST') as FixtureValue, 'none'), true);
+  assert.equal(validateCsrfToken(request('GET') as FixtureValue, 'token'), true);
+  // Which routes declare it is pinned in routes-policy.test.cts.
+  const routes = require('../dist/src/routes') as typeof import('../src/routes');
+  assert.equal(routes['POST /api/recordings/uploads/:id/chunk'].csrf, 'background-header');
+  assert.equal(routes['POST /api/contacts'].csrf, undefined);
 });

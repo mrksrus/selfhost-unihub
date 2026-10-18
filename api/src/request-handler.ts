@@ -129,7 +129,7 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
     }
 
     // Validate CSRF token for authenticated state-changing requests
-    if (userId && !validateCsrfToken(req, res)) {
+    if (userId && !validateCsrfToken(req, spec.csrf)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'CSRF token validation failed', status: 403 }));
       return;
