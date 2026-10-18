@@ -208,7 +208,7 @@ test('disconnect and delete removes the mail account, its mail and its linked ca
     await connection.execute<ResultSetHeader>(`UPDATE calendar_accounts SET mail_account_id = ?, provider_config = '{"server":{"url":"https://dav.example.test"}}',
       encrypted_password = ? WHERE id = ?`, [paused.mail, encrypt('old-copy'), paused.calendarAccount]);
     const settingsRoutes = require('../dist/src/routes/settings') as typeof import('../src/routes/settings');
-    await settingsRoutes['POST /api/settings/clear-mail-accounts']({} as FixtureValue, paused.user);
+    await settingsRoutes['POST /api/settings/clear-mail-accounts'].handler({} as FixtureValue, paused.user);
     const [[cleared]] = await connection.execute<RowDataPacket[]>('SELECT * FROM calendar_accounts WHERE id = ?', [paused.calendarAccount]);
     assert.equal(cleared.mail_account_id, null);
     assert.equal(cleared.encrypted_password, null, 'The copy goes with the link');

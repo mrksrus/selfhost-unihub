@@ -23,7 +23,7 @@ const routes = mergeRouteTables(
   legacyRoutes(modulesRoutes),
   authRoutes,
   legacyRoutes(contactsRoutes),
-  legacyRoutes(settingsRoutes),
+  settingsRoutes,
   legacyRoutes(backupRoutes),
   legacyRoutes(searchRoutes),
   legacyRoutes(recordingsRoutes),

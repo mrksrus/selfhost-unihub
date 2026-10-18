@@ -76,7 +76,13 @@ test('module checks fail closed on database failure and malformed saved settings
   assert.throws(() => modulesFromValue('{broken'));
 });
 test('module path gates include attachments and destructive settings while preserving core routes', () => {
-  for (const path of ['/api/mail/attachments/id', '/api/mail/emails', '/api/settings/clear-mail-accounts']) assert.equal(getModuleForPath(path), 'mail');
+  for (const path of ['/api/mail/attachments/id', '/api/mail/emails']) assert.equal(getModuleForPath(path), 'mail');
+  // Destructive settings actions declare their module on the route spec.
+  const routes = require('../dist/src/routes') as typeof import('../src/routes');
+  for (const [key, moduleId] of [['POST /api/settings/clear-mail-accounts', 'mail'], ['POST /api/settings/clear-contacts', 'contacts'],
+    ['POST /api/settings/clear-calendar', 'calendar'], ['POST /api/settings/clear-recordings', 'recordings'], ['GET /api/settings/mail-sender-candidates', 'mail']]) {
+    assert.equal(routes[key].module, moduleId, key);
+  }
   assert.equal(getModuleForPath('/api/recordings/id/audio'), 'recordings');
   for (const path of ['/api/settings/preferences', '/api/settings/account', '/api/backup/export', '/api/auth/profile', '/api/modules']) assert.equal(getModuleForPath(path), null);
 });
