@@ -14,6 +14,7 @@ import {
   deleteRecordingFiles,
 } from '../services/recordings';
 import { deleteUser } from '../services/user-lifecycle';
+import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Input = Record<string, unknown>;
@@ -75,29 +76,26 @@ async function setUserPreferences(userId: string, input: Input = {}) {
   return { preferences: await getUserPreferences(userId) };
 }
 
-export = {
-  'GET /api/settings/preferences': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+export = defineRoutes({
+  'GET /api/settings/preferences': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
     try {
       return { preferences: await getUserPreferences(userId) };
     } catch (error) {
       console.error('Get preferences error:', error);
       return { error: 'Failed to load preferences', status: 500 };
     }
-  },
+  } },
 
-  'PUT /api/settings/preferences': async (req: Request, userId: string | null, body: Input) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'PUT /api/settings/preferences': { auth: 'user', module: null, restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
     try {
       return await setUserPreferences(userId, body || {});
     } catch (error) {
       console.error('Update preferences error:', error);
       return { error: 'Failed to update preferences', status: 500 };
     }
-  },
+  } },
 
-  'DELETE /api/settings/account': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'DELETE /api/settings/account': { auth: 'user', module: null, restoreSection: '*', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     try {
       await deleteUser(userId, { actor: 'self' });
       clearAuthCookie(res);
@@ -107,11 +105,10 @@ export = {
       if (!(error as ApiError).status) console.error('Delete account error:', error);
       return clientError(error, 'Failed to delete account');
     }
-  },
+  } },
 
-  // User data management: clear all for current user
-  'POST /api/settings/clear-contacts': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  // Clearing a module's data follows that module's switch and its restore lock.
+  'POST /api/settings/clear-contacts': { auth: 'user', module: 'contacts', restoreSection: 'contacts', handler: async (req: Request, userId: string) => {
     try {
       const [result] = await db.execute<ResultSetHeader>('DELETE FROM contacts WHERE user_id = ?', [userId]);
       const deleted = result.affectedRows || 0;
@@ -120,9 +117,8 @@ export = {
       console.error('Clear contacts error:', error);
       return { error: 'Failed to delete contacts', status: 500 };
     }
-  },
-  'POST /api/settings/clear-calendar': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  } },
+  'POST /api/settings/clear-calendar': { auth: 'user', module: 'calendar', restoreSection: 'calendar', handler: async (req: Request, userId: string) => {
     try {
       const [subtasksResult] = await db.execute<ResultSetHeader>('DELETE FROM calendar_event_subtasks WHERE user_id = ?', [userId]);
       const [eventsResult] = await db.execute<ResultSetHeader>('DELETE FROM calendar_events WHERE user_id = ?', [userId]);
@@ -136,9 +132,8 @@ export = {
       console.error('Clear calendar error:', error);
       return { error: 'Failed to delete calendar and todo data', status: 500 };
     }
-  },
-  'POST /api/settings/clear-mail-accounts': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  } },
+  'POST /api/settings/clear-mail-accounts': { auth: 'user', module: 'mail', restoreSection: 'mail', handler: async (req: Request, userId: string) => {
     try {
       const [attachments] = await db.execute<RowDataPacket[]>(
         'SELECT storage_path FROM email_attachments WHERE user_id = ?',
@@ -179,9 +174,8 @@ export = {
       console.error('Clear mail accounts error:', error);
       return { error: 'Failed to delete mail accounts', status: 500 };
     }
-  },
-  'POST /api/settings/clear-recordings': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  } },
+  'POST /api/settings/clear-recordings': { auth: 'user', module: 'recordings', restoreSection: 'recordings', handler: async (req: Request, userId: string) => {
     try {
       const [recordings] = await db.execute<RowDataPacket[]>('SELECT storage_path FROM recordings WHERE user_id = ?', [userId]);
       for (const row of recordings || []) {
@@ -193,9 +187,8 @@ export = {
       console.error('Clear recordings error:', error);
       return { error: 'Failed to delete recordings', status: 500 };
     }
-  },
-  'GET /api/settings/mail-sender-candidates': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  } },
+  'GET /api/settings/mail-sender-candidates': { auth: 'user', module: 'mail', handler: async (req: Request, userId: string) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
       const requestedDomainLimit = Number.parseInt(url.searchParams.get('domain_limit') || '20', 10);
@@ -279,5 +272,5 @@ export = {
       console.error('Mail sender candidate query error:', error);
       return { error: 'Failed to load sender/domain candidates', status: 500 };
     }
-  },
-};
+  } },
+});

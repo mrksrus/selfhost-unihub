@@ -84,15 +84,14 @@ test('self deletion calls the service as the owner and clears cookies only after
   const routes = require('../dist/src/routes/settings') as RouteTable<typeof import('../src/routes/settings')>;
   const req = { url: '/api/settings/account', headers: {} } as FixtureValue;
 
-  assert.equal((await routes['DELETE /api/settings/account'](req, null, {}, {} as FixtureValue)).status, 401);
-  assert.deepEqual(await routes['DELETE /api/settings/account'](req, 'user-1', {}, {} as FixtureValue), { deleted: true });
+  assert.deepEqual(await routes['DELETE /api/settings/account'].handler(req, 'user-1', {}, {} as FixtureValue), { deleted: true });
   assert.deepEqual(lifecycle.calls, [['user-1', { actor: 'self' }]]);
   assert.deepEqual(cleared, ['auth', 'csrf']);
 
   const { conflict } = require('../dist/src/http/errors') as typeof import('../src/http/errors');
   stubModules(t, { '../dist/src/services/user-lifecycle': lifecycleStub(conflict('RESTORE_IN_PROGRESS', 'Restore in progress.')) }, ['../dist/src/routes/settings']);
   const reloaded = require('../dist/src/routes/settings') as RouteTable<typeof import('../src/routes/settings')>;
-  const refused = await reloaded['DELETE /api/settings/account'](req, 'user-1', {}, {} as FixtureValue);
+  const refused = await reloaded['DELETE /api/settings/account'].handler(req, 'user-1', {}, {} as FixtureValue);
   assert.deepEqual([refused.status, refused.code], [409, 'RESTORE_IN_PROGRESS']);
   assert.deepEqual(cleared, ['auth', 'csrf'], 'a refused deletion keeps the session');
 });

@@ -146,7 +146,7 @@ test('deleting a user removes their rows and files under every root, nothing of 
 
     // B deletes their own account: same removal, and the browser's cookies are cleared.
     const res = response();
-    const self = await settingsRoutes['DELETE /api/settings/account']({ url: '/api/settings/account', headers: {} } as FixtureValue, b.user, {}, res as FixtureValue);
+    const self = await settingsRoutes['DELETE /api/settings/account'].handler({ url: '/api/settings/account', headers: {} } as FixtureValue, b.user, {}, res as FixtureValue);
     assert.deepEqual(self, { deleted: true });
     const cookies = (res.headers.get('Set-Cookie') as string[]).join('\n');
     assert.match(cookies, /auth-token=;/);
