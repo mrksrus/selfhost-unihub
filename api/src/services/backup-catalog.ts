@@ -117,37 +117,19 @@ const FILE_POLICIES: Readonly<Record<string, { table: string; column: string }>>
   raw_email: { table: 'emails', column: 'raw_storage_path' },
   recording: { table: 'recordings', column: 'storage_path' },
 });
-const WRITE_PATHS: Readonly<Record<string, readonly string[]>> = Object.freeze({
-  settings: ['/api/settings', '/api/auth/profile'],
-  contacts: ['/api/contacts', '/api/settings/clear-contacts'],
-  calendar: ['/api/calendar', '/api/settings/clear-calendar'],
-  mail: ['/api/mail', '/api/settings/clear-mail-accounts'],
-  recordings: ['/api/recordings', '/api/settings/clear-recordings'],
-});
-
 const BACKGROUND_WRITERS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   settings: [], contacts: [], recordings: [],
   mail: ['mail.runDurableMailJob', 'mail.syncMailAccount', 'mail.runMailServerDeletionPass', 'notifications.deliverPending'],
   calendar: ['calendarSync.runCalendarSyncPass', 'notifications.reconcileReminders', 'notifications.enqueueDueReminders', 'notifications.deliverPending'],
 });
-const WRITE_ROUTES = Object.entries(WRITE_PATHS).flatMap(([section, paths]) => paths.map(path => ({ section, path })))
-  .sort((a, b) => b.path.length - a.path.length);
-
-function getRestoreSectionForWrite(pathname: string) {
-  if (pathname.startsWith('/api/backup/')) return null;
-  if (pathname === '/api/settings/account') return '*';
-  // Specific destructive settings actions take precedence over /api/settings.
-  return WRITE_ROUTES
-    .find(({ path }) => pathname === path || pathname.startsWith(path + '/'))?.section || null;
-}
-
-function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POLICIES, references = REFERENCES, files = FILE_POLICIES, writePaths = WRITE_PATHS, backgroundWriters = BACKGROUND_WRITERS } = {}) {
+// Which routes are read-only while a section is restored is declared on the
+// route specs (routes/*.ts, checked by http/route.ts assertRouteTable).
+function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POLICIES, references = REFERENCES, files = FILE_POLICIES, backgroundWriters = BACKGROUND_WRITERS } = {}) {
   const seen = new Set();
   const seenFiles = new Set();
   const fail = (message: string): never => { throw new Error(`Invalid recovery catalog: ${message}`); };
   for (const [section, policy] of Object.entries(sections)) {
     if (!Array.isArray(backgroundWriters[section])) fail(`${section} has no background-writer declaration`);
-    if (!Array.isArray(writePaths[section]) || !writePaths[section].length) fail(`${section} has no write protection declaration`);
     for (const name of policy.tables) {
       if (!tables[name] || tables[name].section !== section || seen.has(name)) fail(`invalid or duplicate section table ${name}`);
       seen.add(name);
@@ -171,7 +153,6 @@ function assertRecoveryCatalog({ sections = SECTION_POLICIES, tables = TABLE_POL
   for (const [kind, file] of Object.entries(files)) {
     if (!seenFiles.has(kind) || tables[file.table]?.fieldPolicies[file.column] !== 'restored_file') fail(`unhandled file ${kind}`);
   }
-  if (Object.keys(writePaths).some(section => !sections[section])) fail('unknown write section');
 }
 assertRecoveryCatalog();
 
@@ -238,10 +219,8 @@ export {
   TABLE_POLICIES,
   REFERENCES,
   FILE_POLICIES,
-  WRITE_PATHS,
   BACKGROUND_WRITERS,
   assertRecoveryCatalog,
-  getRestoreSectionForWrite,
   normalizeBackupSections,
   ACCOUNT_SECTION,
   ACCOUNT_ONLY_TABLES,

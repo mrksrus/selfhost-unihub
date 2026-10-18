@@ -101,6 +101,27 @@ test('the production table passes the whole-table invariants, and a table that b
   assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', body: { limit: 0 }, handler } }), /body.limit/);
 });
 
+test('restore sections: every section has a write route, destructive settings lock their module, backup and account deletion are declared', () => {
+  const { getRestoreSectionForWrite } = require('../dist/src/routes/restore-sections') as typeof import('../src/routes/restore-sections');
+  const { SECTION_POLICIES } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
+  for (const section of Object.keys(SECTION_POLICIES)) assert.ok(Object.values(routes).some(spec => spec.restoreSection === section), section);
+  for (const [key, section] of [
+    ['PUT /api/contacts/:id', 'contacts'], ['POST /api/calendar/events', 'calendar'], ['POST /api/mail/emails/bulk-update', 'mail'], ['PUT /api/recordings/:id', 'recordings'],
+    ['POST /api/settings/clear-contacts', 'contacts'], ['POST /api/settings/clear-calendar', 'calendar'], ['POST /api/settings/clear-mail-accounts', 'mail'],
+    ['POST /api/settings/clear-recordings', 'recordings'], ['PUT /api/settings/preferences', 'settings'], ['PUT /api/auth/profile', 'settings'],
+    ['PUT /api/modules', 'settings'], ['DELETE /api/settings/account', '*'], ['POST /api/backup/restore-jobs/:id/cancel', null], ['POST /api/notifications/test', null],
+  ] as const) assert.equal(routes[key].restoreSection, section, key);
+  assert.equal(getRestoreSectionForWrite('PUT', '/api/contacts/c1'), 'contacts');
+  assert.equal(getRestoreSectionForWrite('POST', '/api/settings/clear-mail-accounts'), 'mail');
+  assert.equal(getRestoreSectionForWrite('DELETE', '/api/settings/account'), '*');
+  assert.equal(getRestoreSectionForWrite('GET', '/api/contacts'), null);
+  assert.equal(getRestoreSectionForWrite('POST', '/api/contacts-unrelated'), null);
+  const { MODULE_CATALOG } = require('../dist/src/services/module-catalog') as typeof import('../src/services/module-catalog');
+  const handler = async () => ({});
+  assert.throws(() => assertRouteTable(defineRoutes({ 'POST /api/things': { auth: 'user', module: null, restoreSection: 'settings', handler } }),
+    { moduleIds: MODULE_CATALOG.map(module => module.id), sections: ['settings', 'contacts'] }), /no route writes section contacts/);
+});
+
 // Limits declared by converted route files; the derived ones are pinned by route-spec.test.cts.
 test('credential routes keep their explicit body limits in the production table', () => {
   for (const key of ['PUT /api/admin/users/:id/password', 'POST /api/auth/signin', 'POST /api/auth/signup', 'PUT /api/auth/password']) {

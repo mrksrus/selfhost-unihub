@@ -3,12 +3,19 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 const routes = require('../dist/src/routes') as typeof import('../src/routes');
 const { PUBLIC_ROUTE_KEYS, bodyLimitFor } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
 const { getModuleForPath } = require('../dist/src/services/module-catalog') as typeof import('../src/services/module-catalog');
-const { getRestoreSectionForWrite } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
 
 // Route files converted to defineRoutes() declare their own policy; the rest
 // derive it from the tables the boundary used before specs existed. This test
 // pins the derivation to those lookups, applied to a concrete request path as
 // the boundary applied them, and shrinks as files are converted.
+// The restore mapping the backup catalog's WRITE_PATHS gave the derived files.
+function oldRestoreSection(pathname: string) {
+  if (pathname.startsWith('/api/backup/')) return null;
+  for (const [section, prefix] of [['contacts', '/api/contacts'], ['calendar', '/api/calendar'], ['mail', '/api/mail'], ['recordings', '/api/recordings']]) {
+    if (pathname === prefix || pathname.startsWith(prefix + '/')) return section;
+  }
+  return null;
+}
 const NATIVE_ROUTE_FILES = ['notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events'];
 const nativeKeys = new Set(NATIVE_ROUTE_FILES.flatMap(name => Object.keys(require(`../dist/src/routes/${name}`))));
 
@@ -22,7 +29,7 @@ test('every derived route spec equals the policy the boundary looked up before s
     const expected = {
       auth: PUBLIC_ROUTE_KEYS.has(key) ? 'public' : 'user',
       module: getModuleForPath(pathname),
-      restoreSection: mutating ? getRestoreSectionForWrite(pathname) : undefined,
+      restoreSection: mutating ? oldRestoreSection(pathname) : undefined,
       body: { limit: bodyLimitFor(key), kind: key === 'POST /api/backup/import' ? 'backup-upload' : 'json' },
     };
     const { handler, ...policy } = spec;

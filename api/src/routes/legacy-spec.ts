@@ -3,7 +3,6 @@ import type { RouteRequest, RouteResponse } from '../types';
 import type { RouteSpec, RouteTable } from '../http/route';
 import { DEFAULT_BODY_LIMIT, MUTATING_METHODS, defineRoutes } from '../http/route';
 import { getModuleForPath } from '../services/module-catalog';
-import { getRestoreSectionForWrite } from '../services/backup-catalog';
 import { BACKUP_UPLOAD_MAX_SIZE, MAIL_COMPOSE_REQUEST_MAX_SIZE } from '../config';
 
 // Route files not yet declared with specs export plain handlers; their policy
@@ -57,10 +56,19 @@ function bodyLimitFor(routeKey: string) {
   return BODY_LIMIT_BY_ROUTE[routeKey] ?? DEFAULT_BODY_LIMIT;
 }
 
-// Restore sections by write path.
+// Restore sections of the route files still on the derived policy, by path
+// prefix: a write under a module's prefix is read-only while that module's
+// section is being restored. Backup routes run the restore themselves.
+const RESTORE_SECTION_BY_PATH_PREFIX: readonly [string, string][] = [
+  ['/api/contacts', 'contacts'],
+  ['/api/calendar', 'calendar'],
+  ['/api/mail', 'mail'],
+  ['/api/recordings', 'recordings'],
+];
 function restoreSectionFor(method: string, pathname: string) {
   if (!MUTATING_METHODS.has(method)) return undefined;
-  return getRestoreSectionForWrite(pathname);
+  if (pathname.startsWith('/api/backup/')) return null;
+  return RESTORE_SECTION_BY_PATH_PREFIX.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + '/'))?.[1] ?? null;
 }
 
 function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
@@ -81,5 +89,5 @@ function legacyRoutes(table: LegacyRouteTable): RouteTable {
   return defineRoutes(Object.fromEntries(Object.entries(table).map(([key, handler]) => [key, legacyRouteSpec(key, handler)])));
 }
 
-export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, bodyLimitFor };
+export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, RESTORE_SECTION_BY_PATH_PREFIX, bodyLimitFor };
 export type { LegacyHandler, LegacyRouteTable };
