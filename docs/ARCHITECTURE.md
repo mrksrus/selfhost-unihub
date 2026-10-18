@@ -33,6 +33,23 @@ Nginx uses long `/api/` proxy timeouts because mail sync and large backup upload
 can take time. Backup validation and restore themselves run as durable
 background jobs and do not depend on the proxy connection after job creation.
 
+Nginx sends the security headers from `docker/nginx/security-headers.conf`
+(`X-Frame-Options`, `X-Content-Type-Options: nosniff`, `X-XSS-Protection: 0`,
+`Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`) with every
+response. nginx inherits `add_header` all or nothing, so the file is included at
+the `http` level and again inside each location that sets its own `add_header`
+(`/assets/`, `/sw.js`, the manifest, `/icons/`); the SSE locations set none and
+inherit it. The policy allows scripts from this origin only, which is why the
+pre-paint theme script is the file `public/theme-init.js` rather than inline
+markup. `img-src` also admits `http:` and `https:` because the mail reader's
+`srcdoc` frame inherits the page policy on top of its own per-message policy
+(`src/lib/email-privacy.ts`), and that inner policy alone decides whether remote
+images load; the page never renders sender HTML outside that frame. The
+service worker and the pdf.js worker run under the policy of their own script
+response, so `/sw.js` and `/assets/` must carry it. `scripts/container-smoke.sh`
+asserts the headers on `/`, `/sw.js`, `/theme-init.js`, an asset, the manifest
+and an icon, and that the page loads no inline script.
+
 ## Backend Structure
 
 | Path | Purpose |

@@ -87,6 +87,7 @@ RUN apk info -v > /app/licenses/alpine-packages.txt \
 
 # ── Set up Nginx for the frontend ─────────────────────────────────
 COPY docker/nginx/nginx.conf /etc/nginx/nginx.conf
+COPY docker/nginx/security-headers.conf /etc/nginx/security-headers.conf
 COPY docker/nginx/default.conf /etc/nginx/conf.d/default.conf
 
 # Copy built frontend assets from Stage 1

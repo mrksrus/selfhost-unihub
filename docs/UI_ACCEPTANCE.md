@@ -105,12 +105,19 @@ is the expected outcome, the "Mark" column the current state.
 
 | ID | Where | Steps | Checks | Mark |
 | --- | --- | --- | --- | --- |
-| A-01 | Wide, Phone | Switch Dark, Light, System; reload each. | Page, rail, panel and the browser bar colour follow; no flash of the other mode on reload; System follows the OS. | Source (`index.html`, `ThemeProvider.tsx`), Open at runtime |
+| A-01 | Wide, Phone | Switch Dark, Light, System; reload each. | Page, rail, panel and the browser bar colour follow; no flash of the other mode on reload; System follows the OS. | Source (`public/theme-init.js`, `ThemeProvider.tsx`), Browser (production build with the Nginx CSP, 2026-10-18), Open at runtime |
 | A-02 | Wide, Phone | Choose a look for Dark and another for Light; switch modes; reload; open a second browser. | Each mode keeps its own look on this device; the second browser has the defaults (looks are per device). | Source (`appearance-settings.test.tsx`), Open at runtime |
 | A-03 | Wide, Phone | Choose an accent; open a second browser signed in as the same account; sign in as another account. | Accent follows the account across browsers and does not leak to another account; icon and mark take the accent; text on the accent is legible in every look. | Source (`appearance-settings.test.tsx` contrast), Open at runtime |
 | A-04 | Device | In the Android app, switch modes and looks. | Status and navigation bars follow the page colour of the look. | Open |
 | A-05 | All | With `prefers-reduced-motion`, open a sheet, a dialog and the sync details. | No decorative animation; disclosure arrows do not animate; nothing depends on motion to be understood. | Open (see PROJECT-PREFERENCES S-03) |
 | A-06 | Wide, Phone, both themes | Capture the reference screens listed under Baselines. | Matches the approved baseline, or the difference is an intended change recorded with the release. | Browser ([runner and coverage](UI_BASELINES.md)) |
+
+The deployed image sends a Content Security Policy that allows scripts from the
+page's origin only, so the pre-paint script of A-01 is the file
+`public/theme-init.js`, loaded before any stylesheet; an inline script would be
+refused and the page would flash the dark default. `scripts/container-smoke.sh`
+asserts that header and the absence of inline scripts in the built image, and
+`appearance-settings.test.tsx` holds the file and its order in `index.html`.
 
 ### Contacts and settings (P-10, P-18)
 
