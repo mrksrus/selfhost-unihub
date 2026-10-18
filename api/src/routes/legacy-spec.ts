@@ -24,8 +24,6 @@ const PUBLIC_ROUTE_KEYS: ReadonlySet<string> = new Set([
 // Request body limits in bytes for the routes that carry files, archives,
 // imports, bulk selections, or text columns sized well beyond the default.
 const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
-  'GET /api/modules': 16384,
-  'PUT /api/modules': 16384,
   // Contact notes are a TEXT column
   'POST /api/contacts': 65536,
   'PUT /api/contacts/:id': 65536,
@@ -66,11 +64,9 @@ const STREAMING_ROUTE_KEYS: ReadonlySet<string> = new Set([
   'GET /api/events',
 ]);
 
-// Restore sections by write path. /api/modules writes module preferences, a
-// settings-section row, under a path the prefix table does not cover.
+// Restore sections by write path.
 function restoreSectionFor(method: string, pathname: string) {
   if (!MUTATING_METHODS.has(method)) return undefined;
-  if (pathname === '/api/modules') return 'settings';
   return getRestoreSectionForWrite(pathname);
 }
 

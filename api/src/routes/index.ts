@@ -20,7 +20,7 @@ import { MODULE_CATALOG } from '../services/module-catalog';
 // exporting plain handlers are wrapped with the derived legacy policy.
 const routes = mergeRouteTables(
   legacyRoutes(systemRoutes),
-  legacyRoutes(modulesRoutes),
+  modulesRoutes,
   authRoutes,
   legacyRoutes(contactsRoutes),
   settingsRoutes,

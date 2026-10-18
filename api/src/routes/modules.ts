@@ -1,18 +1,17 @@
-import type { IncomingMessage } from 'node:http';
+import type { RouteRequest } from '../types';
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ApiError, StoredFlag } from '../types';
 
 import { getOrderedUserModules, getUserPages, setUserModules } from '../services/module-settings';
+import { defineRoutes } from '../http/route';
 
 interface ModuleRequest { modules?: { mail?: unknown }; [key: string]: unknown }
 
-export = {
-  'GET /api/modules': async (_req: IncomingMessage, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+export = defineRoutes({
+  'GET /api/modules': { auth: 'user', module: null, handler: async (_req: RouteRequest, userId: string) => {
     return { modules: await getOrderedUserModules(userId), pages: await getUserPages(userId) };
-  },
-  'PUT /api/modules': async (_req: IncomingMessage, userId: string | null, body: ModuleRequest) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  } },
+  'PUT /api/modules': { auth: 'user', module: null, restoreSection: 'settings', handler: async (_req: RouteRequest, userId: string, body: ModuleRequest) => {
     try {
       const modules = await setUserModules(userId, body);
       (require('../services/server-events') as typeof import('../services/server-events')).serverEvents.setUserModules(userId,
@@ -47,5 +46,5 @@ export = {
       return { modules, pages: await getUserPages(userId) };
     }
     catch (error) { if ((error as ApiError).status === 400) return { error: (error as ApiError).message, status: 400 }; throw error; }
-  },
-};
+  } },
+});
