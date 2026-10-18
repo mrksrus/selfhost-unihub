@@ -1,5 +1,6 @@
 
 import crypto from 'crypto';
+import { badRequest } from '../http/errors';
 
 interface ReminderEvent {
   id: string;
@@ -40,12 +41,12 @@ function reminderIsCurrent(event: ReminderEvent | null | undefined, payload: { r
 }
 function hash(value: unknown) { return crypto.createHash('sha256').update(String(value)).digest('hex'); }
 function normalizeSubscription(input: SubscriptionInput | null | undefined) {
-  if (!input || typeof input.endpoint !== 'string' || input.endpoint.length > 4096) throw new Error('Invalid push subscription');
+  if (!input || typeof input.endpoint !== 'string' || input.endpoint.length > 4096) throw badRequest('PUSH_SUBSCRIPTION_INVALID', 'Invalid push subscription');
   const url = new URL(input.endpoint);
   // A browser supplies these URLs, but the API must still reject arbitrary SSRF targets.
   const providers = ['fcm.googleapis.com', 'push.services.mozilla.com', 'notify.windows.com', 'push.apple.com'];
   if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443') || url.hash ||
-      !providers.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) throw new Error('Unsupported push service endpoint');
+      !providers.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) throw badRequest('PUSH_ENDPOINT_UNSUPPORTED', 'Unsupported push service endpoint');
   return { endpoint: url.toString(), keys: normalizeKeys(input.keys) };
 }
 // The device's encryption keys (RFC 8291): an uncompressed P-256 public key
@@ -53,9 +54,9 @@ function normalizeSubscription(input: SubscriptionInput | null | undefined) {
 function normalizeKeys(input: SubscriptionInput['keys']) {
   const keys = input || {};
   for (const [key, length] of [['p256dh', 65], ['auth', 16]] as const) {
-    if (typeof keys[key] !== 'string' || !/^[A-Za-z0-9_-]+={0,2}$/.test(keys[key]) || Buffer.from(keys[key], 'base64url').length !== length) throw new Error('Invalid push subscription keys');
+    if (typeof keys[key] !== 'string' || !/^[A-Za-z0-9_-]+={0,2}$/.test(keys[key]) || Buffer.from(keys[key], 'base64url').length !== length) throw badRequest('PUSH_SUBSCRIPTION_KEYS_INVALID', 'Invalid push subscription keys');
   }
-  if (Buffer.from(keys.p256dh as string, 'base64url')[0] !== 4) throw new Error('Invalid push subscription key');
+  if (Buffer.from(keys.p256dh as string, 'base64url')[0] !== 4) throw badRequest('PUSH_SUBSCRIPTION_KEYS_INVALID', 'Invalid push subscription key');
   return { p256dh: keys.p256dh as string, auth: keys.auth as string };
 }
 function retryDisposition(error: { statusCode?: unknown } | null | undefined, attempts: number, now = Date.now()) {

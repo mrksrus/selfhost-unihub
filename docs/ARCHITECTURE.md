@@ -176,6 +176,21 @@ or request targets return HTTP 400 without terminating the API.
 A route that streams its own response (only `GET /api/events`) returns
 `{ __handled: true }` after writing; the handler then leaves the response alone.
 
+### Error contract
+
+An error response is `{ error, code?, status }`: `error` is the text a client
+may show, `code` (when present) is the stable value a client branches on, and
+`status` repeats the HTTP status. `api/src/http/errors.ts` defines `ApiError`
+(`status`, `code`, optional `details`) with the constructors `badRequest`,
+`unauthorized`, `forbidden`, `notFound` and `conflict`, and `clientError(error,
+fallback)`, the one mapping rule: an error carrying a 4xx status (an `ApiError`
+or a plain `Error` with a `status`) answers with that status, its message and
+its code; anything else answers 500 with the fallback text. The boundary applies
+the rule to every error a route lets through (fallback `Internal Server Error`,
+logged with the method and route key but never the request body), and route
+catch blocks apply it with their own fallback (`Failed to update event`), so a
+database driver's or file system's message never reaches the browser.
+
 ## Live Status Events
 
 `GET /api/events` is a Server-Sent Events stream (`text/event-stream`) that

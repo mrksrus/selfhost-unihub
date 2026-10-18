@@ -412,3 +412,28 @@ test('device status reports the latest delivery and only unresolved problems', a
   assert.deepEqual((await status(endpoint)).lastError, { message: 'Push service 503', at: '2026-10-03T08:00:00.000Z' });
   assert.deepEqual(await status(''), { subscribed: false });
 });
+
+// The route answers through the shared error contract: a service's typed 4xx
+// keeps its text, anything else is the route's generic 500.
+test('notification routes pass typed validation errors through and hide unknown failures', async (t) => {
+  const paths = ['../dist/src/routes/notifications', '../dist/src/services/notifications', '../dist/src/services/android-push', '../dist/src/auth'].map(name => require.resolve(name));
+  const previous = paths.map(name => require.cache[name]);
+  t.after(() => paths.forEach((name, i) => { if (previous[i]) require.cache[name] = previous[i]; else delete require.cache[name]; }));
+  const stub = (name: string, exports: FixtureValue) => { require.cache[name] = { id: name, filename: name, loaded: true, exports } as NodeJS.Module; };
+  delete require.cache[paths[0]];
+  const { badRequest } = require('../dist/src/http/errors') as typeof import('../src/http/errors');
+  let failure: unknown;
+  stub(paths[1], { subscribe: async () => { throw failure; }, unsubscribe: async (_user: string, endpoint: unknown) => { if (typeof endpoint !== 'string') throw badRequest('NOTIFICATION_ENDPOINT_INVALID', 'Invalid subscription endpoint'); return { subscribed: false }; } });
+  stub(paths[2], {});
+  stub(paths[3], { getAuthTokenFromRequest: () => 'token' });
+  const routes = require(paths[0]) as Record<string, (req: FixtureValue, userId: string | null, body: FixtureValue, res: FixtureValue) => Promise<FixtureValue>>;
+  t.mock.method(console, 'error', () => {});
+
+  assert.deepEqual(await routes['POST /api/notifications/unsubscribe']({ url: '/api/notifications/unsubscribe' }, 'u1', { endpoint: 7 }, {}),
+    { error: 'Invalid subscription endpoint', status: 400, code: 'NOTIFICATION_ENDPOINT_INVALID' });
+  failure = Object.assign(new Error('Session expired'), { status: 401 });
+  assert.deepEqual(await routes['POST /api/notifications/subscription']({ url: '/api/notifications/subscription' }, 'u1', { subscription: {} }, {}), { error: 'Session expired', status: 401 });
+  failure = Object.assign(new Error('Invalid JSON text in argument 1 to function json_extract'), { code: 'ER_INVALID_JSON_TEXT' });
+  assert.deepEqual(await routes['POST /api/notifications/subscription']({ url: '/api/notifications/subscription' }, 'u1', { subscription: {} }, {}),
+    { error: 'Could not update notifications. Please try again.', status: 500 });
+});

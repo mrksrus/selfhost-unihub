@@ -4,6 +4,7 @@ import type { ApiError } from '../types';
 
 import crypto from 'node:crypto';
 import { db } from '../state';
+import { badRequest, unauthorized } from '../http/errors';
 import { verifyToken } from '../auth';
 import { createServerEvents } from './server-events';
 import { hash, normalizeKeys } from './notification-rules';
@@ -40,15 +41,9 @@ const devices = createServerEvents({ heartbeatMs: 45 * 1000, retryMs: 30 * 1000,
 const latest = new Map<string, () => void>();
 
 const endpointFor = (deviceId: string) => `${ENDPOINT_PREFIX}${deviceId}`;
-function badRequest(message: string) {
-  const error: ApiError = new Error(message);
-  error.status = 400;
-  return error;
-}
-
 async function sessionId(userId: string, sessionToken: string | null) {
   const [sessions] = await db.execute<RowDataPacket[]>('SELECT id FROM sessions WHERE token = ? AND user_id = ? AND expires_at > UTC_TIMESTAMP()', [sessionToken, userId]);
-  if (!sessions.length) { const error: ApiError = new Error('Session expired'); error.status = 401; throw error; }
+  if (!sessions.length) throw unauthorized('SESSION_EXPIRED', 'Session expired');
   return String(sessions[0].id);
 }
 
@@ -69,13 +64,13 @@ async function registerDevice(userId: string, sessionToken: string | null, input
   const keys = normalizeKeys((input?.keys || null) as Parameters<typeof normalizeKeys>[0]);
   // A key that is not a point on P-256 could never be encrypted for.
   try { const ecdh = crypto.createECDH('prime256v1'); ecdh.generateKeys(); ecdh.computeSecret(Buffer.from(keys.p256dh, 'base64url')); }
-  catch { throw badRequest('Invalid push subscription key'); }
+  catch { throw badRequest('PUSH_SUBSCRIPTION_KEYS_INVALID', 'Invalid push subscription key'); }
   const session = await sessionId(userId, sessionToken);
   if (typeof input?.replaces === 'string' && UUID.test(input.replaces)) {
     await db.execute("DELETE FROM push_subscriptions WHERE id = ? AND user_id = ? AND transport = 'android'", [input.replaces, userId]);
   }
   const [count] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM push_subscriptions WHERE user_id = ?', [userId]);
-  if (Number(count[0]?.total) >= MAX_DEVICES) throw badRequest('Maximum notification devices reached');
+  if (Number(count[0]?.total) >= MAX_DEVICES) throw badRequest('NOTIFICATION_DEVICE_LIMIT', 'Maximum notification devices reached');
   const id = crypto.randomUUID();
   const endpoint = endpointFor(id);
   await db.execute(`INSERT INTO push_subscriptions (id, user_id, session_id, endpoint, endpoint_hash, p256dh, auth, transport)
@@ -88,7 +83,7 @@ async function registerDevice(userId: string, sessionToken: string | null, input
 /** Marks deliveries the app has shown (or knowingly skipped) as delivered. */
 async function acknowledge(userId: string, sessionToken: string | null, input: { device?: unknown; ids?: unknown } | null | undefined) {
   const ids = input?.ids;
-  if (!Array.isArray(ids) || ids.length > MAX_ACK_IDS || !ids.every(id => typeof id === 'string' && UUID.test(id))) throw badRequest('Invalid notification ids');
+  if (!Array.isArray(ids) || ids.length > MAX_ACK_IDS || !ids.every(id => typeof id === 'string' && UUID.test(id))) throw badRequest('NOTIFICATION_ACK_IDS_INVALID', 'Invalid notification ids');
   const device = await ownDevice(userId, sessionToken, input?.device);
   if (!device) return { error: 'This device is not registered for notifications', code: 'DEVICE_UNKNOWN', status: 404 };
   if (!ids.length) return { acknowledged: 0 };

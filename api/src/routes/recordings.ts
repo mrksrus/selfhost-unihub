@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { ApiError } from '../types';
 import fs from 'fs';
 import path from 'path';
+import { clientError } from '../http/errors';
 import {
   isPathUnderRoot,
   replaceFilenameExtension,
@@ -55,7 +56,7 @@ export = {
       return await startRecordingUpload(userId, body || {});
     } catch (error) {
       console.error('Start recording upload error:', error);
-      return { error: (error as ApiError).message || 'Failed to start recording upload', status: 500 };
+      return clientError(error, 'Failed to start recording upload');
     }
   },
 
@@ -91,7 +92,7 @@ export = {
       return await appendRecordingUploadChunk(userId, uploadId, body || {});
     } catch (error) {
       console.error('Append recording upload chunk error:', error);
-      return { error: (error as ApiError).message || 'Failed to upload recording chunk', status: 500 };
+      return clientError(error, 'Failed to upload recording chunk');
     }
   },
 
@@ -103,7 +104,7 @@ export = {
       return await completeRecordingUpload(userId, uploadId, body || {});
     } catch (error) {
       console.error('Complete recording upload error:', error);
-      return { error: (error as ApiError).message || 'Failed to complete recording upload', status: (error as ApiError).status || 500 };
+      return clientError(error, 'Failed to complete recording upload');
     }
   },
 
@@ -155,7 +156,7 @@ export = {
       return await updateRecording(userId, recordingId, body || {});
     } catch (error) {
       console.error('Update recording error:', error);
-      return { error: (error as ApiError).message || 'Failed to update recording', status: 500 };
+      return clientError(error, 'Failed to update recording');
     }
   },
 
@@ -167,7 +168,7 @@ export = {
       return await deleteRecording(userId, recordingId);
     } catch (error) {
       console.error('Delete recording error:', error);
-      return { error: (error as ApiError).message || 'Failed to delete recording', status: 500 };
+      return clientError(error, 'Failed to delete recording');
     }
   },
 };

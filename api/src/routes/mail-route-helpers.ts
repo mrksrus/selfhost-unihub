@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ApiError, StoredFlag } from '../types';
 import { db } from '../state';
+import { clientError } from '../http/errors';
 import { normalizeMailFolderSlug, ensureDefaultMailFoldersForUser, scheduleMailAccountSync } from '../services/mail';
 
 // Keep stored flags as the last confirmed provider state. Show an accepted
@@ -39,13 +40,9 @@ async function validateUserMailFolder(userId: string, folderSlug: unknown) {
   return { folder: normalizedSlug, accountId: rows[0].mail_account_id || null, isSystem: !!rows[0].is_system };
 }
 
-// An error that carries a status (refused input, missing record, conflict)
-// reaches the client with its message. Anything else is a server failure: the
-// client gets the route's fallback and the text (for example a database
-// driver's) stays in the log.
+// The shared error contract (http/errors.ts) plus the mail trust prompt flag.
 function routeError(error: unknown, fallback: string) {
-  const status = (error as ApiError).status;
-  return { error: status ? (error as ApiError).message : fallback, status: status || 500,
+  return { ...clientError(error, fallback),
     ...((error as ApiError & { requiresConfirmation?: boolean }).requiresConfirmation ? { requires_confirmation: true } : {}) };
 }
 

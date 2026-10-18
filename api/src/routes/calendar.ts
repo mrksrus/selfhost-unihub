@@ -3,6 +3,7 @@ import type { RouteRequest, ApiError, StoredFlag } from '../types';
 import type { CalendarAccount, CalendarCalendar, CalendarEvent, CalendarAttendee, CalendarSubtask } from '../types/calendar';
 import crypto from 'crypto';
 import { db } from '../state';
+import { clientError } from '../http/errors';
 import { sourceEmailPresentSql, snapshotSourceEmail, sourceEmailLinkRefusal } from '../services/email-tasks';
 import {
   CALENDAR_MULTI_ENABLED,
@@ -263,7 +264,7 @@ export = {
       return { account: serializeCalendarAccount(rows[0]) };
     } catch (error) {
       console.error('Update calendar account error:', error);
-      return { error: (error as ApiError).message || 'Failed to update calendar account', status: 500 };
+      return clientError(error, 'Failed to update calendar account');
     }
   },
 
@@ -292,7 +293,7 @@ export = {
       return { message: 'Calendar account deleted' };
     } catch (error) {
       console.error('Delete calendar account error:', error);
-      return { error: (error as ApiError).message || 'Failed to delete calendar account', status: 500 };
+      return clientError(error, 'Failed to delete calendar account');
     }
   },
 
@@ -342,7 +343,7 @@ export = {
       return { calendars };
     } catch (error) {
       console.error('Get calendars error:', error);
-      return { error: (error as ApiError).message || 'Failed to get calendars', status: 500 };
+      return clientError(error, 'Failed to get calendars');
     }
   },
 
@@ -382,7 +383,7 @@ export = {
       return { calendar: serializeCalendarCalendar(rows[0]) };
     } catch (error) {
       console.error('Create calendar error:', error);
-      return { error: (error as ApiError).message || 'Failed to create calendar', status: 500 };
+      return clientError(error, 'Failed to create calendar');
     }
   },
 
@@ -444,7 +445,7 @@ export = {
       return { calendar: serializeCalendarCalendar(rows[0]) };
     } catch (error) {
       console.error('Update calendar error:', error);
-      return { error: (error as ApiError).message || 'Failed to update calendar', status: 500 };
+      return clientError(error, 'Failed to update calendar');
     }
   },
 
@@ -490,7 +491,7 @@ export = {
       };
     } catch (error) {
       console.error('Delete calendar error:', error);
-      return { error: (error as ApiError).message || 'Failed to delete calendar', status: 500 };
+      return clientError(error, 'Failed to delete calendar');
     }
   },
 
@@ -655,7 +656,7 @@ export = {
       return { event };
     } catch (error) {
       console.error('Create event error:', error);
-      return { error: (error as ApiError).message || 'Failed to create event', status: 500 };
+      return clientError(error, 'Failed to create event');
     }
   },
 
@@ -795,7 +796,7 @@ export = {
       return { event: updatedEvent, ...(updatedEvent ? {} : { replaced: true }), ...(writeback.scope ? { scope: writeback.scope } : {}) };
     } catch (error) {
       console.error('Update event error:', error);
-      return { error: (error as ApiError).message || 'Failed to update event', status: 500 };
+      return clientError(error, 'Failed to update event');
     }
   },
 
@@ -873,7 +874,7 @@ export = {
       return { event: updatedEvent };
     } catch (error) {
       console.error('Update todo status error:', error);
-      return { error: (error as ApiError).message || 'Failed to update todo status', status: 500 };
+      return clientError(error, 'Failed to update todo status');
     }
   },
 
@@ -916,7 +917,7 @@ export = {
       return { event: updated };
     } catch (error) {
       console.error('RSVP update error:', error);
-      return { error: (error as ApiError).message || 'Failed to update RSVP', status: 500 };
+      return clientError(error, 'Failed to update RSVP');
     }
   },
 
@@ -937,7 +938,7 @@ export = {
       return { subtasks: subtasks.map(serializeCalendarSubtask) };
     } catch (error) {
       console.error('Get subtasks error:', error);
-      return { error: (error as ApiError).message || 'Failed to fetch subtasks', status: 500 };
+      return clientError(error, 'Failed to fetch subtasks');
     }
   },
 
@@ -979,7 +980,7 @@ export = {
       return { subtask: subtasks[0] ? serializeCalendarSubtask(subtasks[0]) : null };
     } catch (error) {
       console.error('Create subtask error:', error);
-      return { error: (error as ApiError).message || 'Failed to create subtask', status: 500 };
+      return clientError(error, 'Failed to create subtask');
     }
   },
 
@@ -1034,7 +1035,7 @@ export = {
       return { subtask: subtasks[0] ? serializeCalendarSubtask(subtasks[0]) : null };
     } catch (error) {
       console.error('Update subtask error:', error);
-      return { error: (error as ApiError).message || 'Failed to update subtask', status: 500 };
+      return clientError(error, 'Failed to update subtask');
     }
   },
 
@@ -1055,7 +1056,7 @@ export = {
       return { message: 'Subtask deleted' };
     } catch (error) {
       console.error('Delete subtask error:', error);
-      return { error: (error as ApiError).message || 'Failed to delete subtask', status: 500 };
+      return clientError(error, 'Failed to delete subtask');
     }
   },
 
@@ -1094,7 +1095,7 @@ export = {
       return { subtasks: subtasks.map(serializeCalendarSubtask) };
     } catch (error) {
       console.error('Reorder subtasks error:', error);
-      return { error: (error as ApiError).message || 'Failed to reorder subtasks', status: 500 };
+      return clientError(error, 'Failed to reorder subtasks');
     }
   },
 

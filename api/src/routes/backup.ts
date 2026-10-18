@@ -111,7 +111,7 @@ const routes = {
       };
     } catch (error) {
       console.error('Start backup job error:', error);
-      return { error: (error as ApiError).message || 'Failed to start backup job', status: (error as ApiError).code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : 500 };
+      return { error: (error as ApiError).status ? (error as ApiError).message : 'Failed to start backup job', status: (error as ApiError).code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : 500 };
     }
   },
 
@@ -231,7 +231,7 @@ const routes = {
       return result.error ? result : { ...result, status: 202 };
     } catch (error) {
       console.error('Create restore from backup error:', error);
-      return { error: (error as ApiError).message || 'Failed to create restore job', status: (error as ApiError).code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : 500 };
+      return { error: (error as ApiError).status ? (error as ApiError).message : 'Failed to create restore job', status: (error as ApiError).code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : 500 };
     }
   },
 
@@ -346,7 +346,7 @@ const routes = {
       return { job, status: 202 };
     } catch (error) {
       console.error('Backup upload error:', error);
-      return { error: (error as ApiError).message || 'Failed to retain backup upload', status: (error as ApiError).code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : 500 };
+      return { error: (error as ApiError).status ? (error as ApiError).message : 'Failed to retain backup upload', status: (error as ApiError).code === 'BACKUP_SECTION_UNSUPPORTED' ? 400 : 500 };
     }
   },
 };
