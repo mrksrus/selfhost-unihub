@@ -20,7 +20,7 @@ import {
   resolveMailSenderTargetFolder,
   createMailRoutingContext,
 } from '../services/mail';
-import { EFFECTIVE_READ_SQL, validateUserMailFolder } from './mail-route-helpers';
+import { EFFECTIVE_READ_SQL, validateUserMailFolder, routeError } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -171,7 +171,7 @@ export = {
       return { folders: await getMailFolderRowsWithCounts(userId, accountId) };
     } catch (error) {
       console.error('List mail folders error:', error);
-      return { error: 'Failed to load mail folders', status: 500 };
+      return routeError(error, 'Failed to load mail folders');
     }
   },
 
@@ -231,7 +231,7 @@ export = {
       return { folder: folders.find(folder => folder.slug === slug) || null, folders, remoteFolder };
     } catch (error) {
       console.error('Create mail folder error:', error);
-      return { error: 'Failed to create mail folder', status: 500 };
+      return routeError(error, 'Failed to create mail folder');
     }
   },
 
@@ -270,7 +270,7 @@ export = {
       return { folder: updatedFolders.find(item => item.slug === slug) || null, folders: updatedFolders };
     } catch (error) {
       console.error('Update mail folder error:', error);
-      return { error: 'Failed to update mail folder', status: 500 };
+      return routeError(error, 'Failed to update mail folder');
     }
   },
 
@@ -286,9 +286,8 @@ export = {
       const result = await deleteMailFolder({ userId, slug, server });
       return { deleted: true, ...result, folders: await getMailFolderRowsWithCounts(userId) };
     } catch (error) {
-      if ((error as ApiError).status) return { error: (error as Error).message, status: (error as ApiError).status };
-      console.error('Delete mail folder error:', error);
-      return { error: 'Failed to delete mail folder', status: 500 };
+      if (!(error as ApiError).status) console.error('Delete mail folder error:', error);
+      return routeError(error, 'Failed to delete mail folder');
     }
   },
 
@@ -323,7 +322,7 @@ export = {
       return { rules: rules || [] };
     } catch (error) {
       console.error('List mail sender rules error:', error);
-      return { error: 'Failed to load sender rules', status: 500 };
+      return routeError(error, 'Failed to load sender rules');
     }
   },
 
@@ -359,7 +358,7 @@ export = {
       return { rule: rows[0] || null };
     } catch (error) {
       console.error('Create mail sender rule error:', error);
-      return { error: 'Failed to create sender rule', status: 500 };
+      return routeError(error, 'Failed to create sender rule');
     }
   },
 
@@ -406,7 +405,7 @@ export = {
       return { rule: rows[0] || null };
     } catch (error) {
       console.error('Update mail sender rule error:', error);
-      return { error: 'Failed to update sender rule', status: 500 };
+      return routeError(error, 'Failed to update sender rule');
     }
   },
 
@@ -420,7 +419,7 @@ export = {
       return { deleted: true };
     } catch (error) {
       console.error('Delete mail sender rule error:', error);
-      return { error: 'Failed to delete sender rule', status: 500 };
+      return routeError(error, 'Failed to delete sender rule');
     }
   },
 
@@ -510,7 +509,7 @@ export = {
     } catch (error) {
       if (MAIL_PAUSED_ERRORS.has((error as ApiError).message)) return { error: (error as ApiError).message, status: 409 };
       console.error('Mail sender rule backfill error:', error);
-      return { error: 'Failed to backfill mail routing', status: 500 };
+      return routeError(error, 'Failed to backfill mail routing');
     }
   },
 
@@ -549,7 +548,7 @@ export = {
       return response;
     } catch (error) {
       console.error('[MAIL] Failed to get unread counts:', error);
-      return { error: 'Failed to get unread counts', status: 500 };
+      return routeError(error, 'Failed to get unread counts');
     }
   },
 };

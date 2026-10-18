@@ -1,7 +1,7 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, RouteTable } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
-const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
 const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
 const { presentMailFiling, folderAcceptsAccount } = require('../dist/src/services/mail-filing') as typeof import('../src/services/mail-filing');
 const mailWritebacks = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');

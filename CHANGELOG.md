@@ -44,6 +44,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   drafts and imports and commits the message and attachment rows together; a
   failed copy removes the staged files and still reports the message as sent,
   so it is never sent twice.
+- **Mail account settings are checked before they are saved.** A port that
+  was not a number was tested against the old port and then stored as typed,
+  a display name longer than its column or a missing provider reached the
+  database and came back as the database driver's message, and the email
+  address was never checked to be one. Adding and changing an account now
+  checks and normalizes every field first and answers with a plain message;
+  the connection test and the saved account use the same values. Every mail
+  route answers an unexpected failure with a short message instead of the
+  database's text.
 - **Sent mail stays out of the server log.** A leftover debugging hook printed
   the recipients and subject of every sent message to the container log (and
   tried to write them to a file). It is removed; a failed send logs only the
@@ -61,6 +70,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - The mail attachment and raw-message roots, and the checks that a stored
   path lies inside them, are defined once in `api/src/services/mail-storage.ts`
   and used by mail, the admin storage overview, account deletion and backup.
+- Mail routes share one `routeError` helper (`api/src/routes/mail-route-helpers.ts`)
+  and the account routes one input parser (`api/src/services/mail-account-input.ts`).
 
 ## 0.22.4
 

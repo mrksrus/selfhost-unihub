@@ -1,4 +1,4 @@
-import type { FixtureValue, With } from './helpers/test-types.cts';
+import type { FixtureValue, With, RouteTable } from './helpers/test-types.cts';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
@@ -47,7 +47,7 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
   }
   await repository.withTransaction((cx) => repository.upsertOccurrence({userId:owner,accountId:account,mailboxId:boxes.get('inbox').id,
     epoch:17,uid:12,emailId:copy},cx),pool);
-  const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+  const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
   const list = async (folder: string, user = owner) => {
     const result = await routes['GET /api/mail/emails']({url:`/api/mail/emails?folder=${encodeURIComponent(folder)}`,headers:{host:'localhost'}} as FixtureValue,user);
     assert.equal(result.error,undefined); return result;
@@ -181,7 +181,7 @@ test('real MySQL folder views preserve Gmail memberships, distinct items, intent
     await pool.execute<ResultSetHeader>("UPDATE emails SET remote_folder=NULL,remote_uid=NULL,remote_uidvalidity=NULL,folder='inbox' WHERE id=?",[item]);
   });
   await t.test('a folder the server stops listing leaves folder views and badges, and returns when listed again', async () => {
-    const accountsRoutes = require('../dist/src/routes/mail-accounts') as typeof import('../src/routes/mail-accounts');
+    const accountsRoutes = require('../dist/src/routes/mail-accounts') as RouteTable<typeof import('../src/routes/mail-accounts')>;
     const badge = async () => ((await accountsRoutes['GET /api/mail/accounts']({url:'/api/mail/accounts',headers:{host:'localhost'}} as FixtureValue,owner)) as FixtureValue)
       .accounts.find((row: FixtureValue) => row.id === account).unread_count;
     assert.equal((await list('label')).pagination.total,1);

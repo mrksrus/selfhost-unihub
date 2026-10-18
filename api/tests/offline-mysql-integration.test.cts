@@ -1,4 +1,4 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, RouteTable } from './helpers/test-types.cts';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
@@ -12,7 +12,7 @@ const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 const { createOfflineSnapshot } = require('../dist/src/services/offline') as typeof import('../src/services/offline');
 const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
-const mailRoutes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+const mailRoutes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
 
 test('MySQL offline queries match application schema, include every contact and refresh deletions', { skip: !process.env.MYSQL_TEST_HOST }, async (t) => {
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),

@@ -58,7 +58,7 @@ and an icon, and that the page loads no inline script.
 | `api/src/service-supervisor.ts` | Supervises API/nginx and essential-service failure |
 | `api/src/app.ts` | Initializes DB, starts HTTP server, schedules background jobs |
 | `api/src/request-handler.ts` | CORS, auth, CSRF, body parsing, route dispatch |
-| `api/src/routes/` | Route handlers grouped by feature; `routes/mail.ts` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync` |
+| `api/src/routes/` | Route handlers grouped by feature; `routes/mail.ts` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync`. Every mail route answers a caught error through `routeError` in `mail-route-helpers.ts`: a status-bearing error passes its message, anything else gets the route's fallback with 500. Account fields are parsed by `services/mail-account-input.ts` before anything is tested or stored |
 | `api/src/services/` | Database, mail, calendar, backup creation/encryption/restore workers, recordings, 2FA logic |
 | `api/src/services/mail.ts` | Facade re-exporting `mail-host-policy` (host checks, IMAP config), `mail-folders` (folders, sender rules), `mail-durable-jobs` (job executor, scheduler), `mail-sync-control` (sync admission, cancel/stop), `mail-server-delete` and `mail-send` |
 | `api/src/services/backup.ts` | Facade re-exporting `backup-common`, `backup-export`, `backup-validate`, `backup-restore-mapping`, `backup-zip-reader` and `backup-import` |

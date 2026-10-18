@@ -6,7 +6,7 @@ import { folderConnections } from '../services/mail-folder-reconciliation';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
 import crypto from 'crypto';
 import { db } from '../state';
-import { validateUserMailFolder } from './mail-route-helpers';
+import { validateUserMailFolder, routeError } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -32,7 +32,7 @@ export = {
       const query = new URL(req.url, 'http://localhost').searchParams;
       const result = await mailWritebacks.listWritebacks(userId, { accountId: query.get('account_id'), includeHistory: query.get('history') === 'true' });
       return Array.isArray(result) ? { operations: result } : result;
-    } catch (error) { return { error: (error as ApiError).status ? (error as ApiError).message : 'Could not load provider changes', status: (error as ApiError).status || 500 }; }
+    } catch (error) { return routeError(error, 'Could not load provider changes'); }
   },
 
   'GET /api/mail/operations': async (req: Request, userId: string | null) => {
@@ -41,25 +41,25 @@ export = {
       const key = new URL(req.url, 'http://localhost').searchParams.get('key');
       if (!key || !/^[A-Za-z0-9._:-]{1,128}$/.test(key)) return { error: 'Valid operation key required', status: 400 };
       return await mailWritebacks.getOperationReceipt(userId, key);
-    } catch (error) { return { error: (error as ApiError).status ? (error as ApiError).message : 'Could not look up accepted change', status: (error as ApiError).status || 500 }; }
+    } catch (error) { return routeError(error, 'Could not look up accepted change'); }
   },
 
   'POST /api/mail/writebacks/:id/cancel': async (req: Request, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try { return await mailWritebacks.cancelWriteback(userId, req.params.id); }
-    catch (error) { return { error: (error as ApiError).status ? (error as ApiError).message : 'Could not cancel provider change', status: (error as ApiError).status || 500 }; }
+    catch (error) { return routeError(error, 'Could not cancel provider change'); }
   },
 
   'POST /api/mail/writebacks/:id/retry': async (req: Request, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try { return await mailWritebacks.retryWriteback(userId, req.params.id); }
-    catch (error) { return { error: (error as ApiError).status ? (error as ApiError).message : 'Could not retry provider update', status: (error as ApiError).status || 500 }; }
+    catch (error) { return routeError(error, 'Could not retry provider update'); }
   },
 
   'POST /api/mail/writebacks/:id/accept-server-state': async (req: Request, userId: string | null) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try { return await mailWritebacks.acceptServerState(userId, req.params.id); }
-    catch (error) { return { error: (error as ApiError).status ? (error as ApiError).message : 'Could not accept the server state', status: (error as ApiError).status || 500 }; }
+    catch (error) { return routeError(error, 'Could not accept the server state'); }
   },
 
   'PUT /api/mail/emails/:id/read': async (req: Request, userId: string | null, body: Input) => {
@@ -71,7 +71,7 @@ export = {
       if (typeof body.is_read !== 'boolean') return { error: 'Read state must be boolean', status: 400 };
       return await mailWritebacks.mutateMessages(userId, [id], { read: Number(body.is_read) }, undefined, operationOptions(req));
     } catch (error) {
-      return { error: (error as ApiError).status ? (error as ApiError).message : 'Failed to update email', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Failed to update email');
     }
   },
 
@@ -84,7 +84,7 @@ export = {
       if (typeof body.is_starred !== 'boolean') return { error: 'Star state must be boolean', status: 400 };
       return await mailWritebacks.mutateMessages(userId, [id], { star: Number(body.is_starred) }, undefined, operationOptions(req));
     } catch (error) {
-      return { error: (error as ApiError).status ? (error as ApiError).message : 'Failed to update email', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Failed to update email');
     }
   },
 
@@ -100,7 +100,7 @@ export = {
       return await mailWritebacks.mutateMessages(userId, email_ids, { move: 'trash' }, undefined, operationOptions(req));
     } catch (error) {
       console.error('[BULK] Delete error:', error);
-      return { error: (error as ApiError).status ? (error as ApiError).message : 'Failed to delete emails', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Failed to delete emails');
     }
   },
 
@@ -185,7 +185,7 @@ export = {
       }
     } catch (error) {
       console.error('[BULK] Move error:', error);
-      return { error: (error as ApiError).status ? (error as ApiError).message : 'Failed to move emails', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Failed to move emails');
     }
   },
 
@@ -220,7 +220,7 @@ export = {
       return await mailWritebacks.mutateMessages(userId, email_ids, changes, undefined, operationOptions(req));
     } catch (error) {
       console.error('[BULK] Update error:', error);
-      return { error: (error as ApiError).status ? (error as ApiError).message : 'Failed to update emails', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Failed to update emails');
     }
   },
 };

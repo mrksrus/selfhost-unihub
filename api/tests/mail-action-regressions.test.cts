@@ -1,8 +1,8 @@
-import type { FixtureValue } from './helpers/test-types.cts';
+import type { FixtureValue, RouteTable } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const { getDb, setDb } = require('../dist/src/state') as typeof import('../src/state');
-const routes = require('../dist/src/routes/mail') as typeof import('../src/routes/mail');
+const routes = require('../dist/src/routes/mail') as RouteTable<typeof import('../src/routes/mail')>;
 const { withMailAccountLock } = require('../dist/src/services/mail-account-lock') as typeof import('../src/services/mail-account-lock');
 const { mutateMessages, retryWriteback } = require('../dist/src/services/mail-writebacks') as typeof import('../src/services/mail-writebacks');
 const request = (url: string) => ({ url, headers: { host: 'localhost' } });

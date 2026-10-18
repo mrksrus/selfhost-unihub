@@ -3,6 +3,7 @@ import type { RouteRequest, ApiError, MailAccountIdentity, StoredFlag } from '..
 import * as mailWritebacks from '../services/mail-writebacks';
 import * as mailAccountLifecycle from '../services/mail-account-lifecycle';
 import { mailAccountModeChange, sameProviderMailbox, addressConfirmed } from '../services/mail-account-mode';
+import { parseMailAccountInput } from '../services/mail-account-input';
 import * as mailSyncPolicy from '../services/mail-sync-policy';
 import { withMailAccountLock } from '../services/mail-account-lock';
 import { accountUnreadQuery } from '../services/mail-folder-view';
@@ -22,7 +23,7 @@ import {
   getRunningMailServerDeleteAccountIds,
 } from '../services/mail';
 import * as calendarAccounts from '../services/calendar-accounts';
-import { EFFECTIVE_READ_SQL, startMailSyncInBackground, extractMailRouteId } from './mail-route-helpers';
+import { EFFECTIVE_READ_SQL, startMailSyncInBackground, extractMailRouteId, routeError } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input extends Record<string, unknown> {
@@ -109,10 +110,6 @@ async function loadAccountJson(userId: string, accountId: string) {
 }
 // /api/mail/accounts/:id/<action>: the id is not the last path segment.
 const accountRouteId = (req: Request) => req.params?.id || extractMailRouteId(req, 2)!;
-function routeError(error: unknown, fallback: string) {
-  return { error: (error as ApiError).status ? (error as ApiError).message : fallback, status: (error as ApiError).status || 500,
-    ...((error as ApiError & { requiresConfirmation?: boolean }).requiresConfirmation ? { requires_confirmation: true } : {}) };
-}
 
 export = {
   'GET /api/mail/accounts': async (req: Request, userId: string | null) => {
@@ -165,7 +162,7 @@ export = {
 
       return { accounts: accountsWithUnread };
     } catch (error) {
-      return { error: 'Failed to get mail accounts', status: 500 };
+      return routeError(error, 'Failed to get mail accounts');
     }
   },
 
@@ -175,7 +172,7 @@ export = {
       const account = await loadAccountJson(userId, extractMailRouteId(req)!);
       return account ? { account } : { error: 'Account not found', status: 404 };
     } catch (error) {
-      return { error: 'Failed to get mail account', status: 500 };
+      return routeError(error, 'Failed to get mail account');
     }
   },
 
@@ -183,37 +180,17 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const {
-        email_address,
-        display_name,
-        provider,
-        username,
-        imap_host,
-        imap_port,
-        smtp_host,
-        smtp_port,
-        encrypted_password,
-        sync_fetch_limit,
-        delete_emails_on_server,
-        accept_host_trust,
-        try_calendar_sync,
-        caldav_url,
-      } = body;
-      console.log(`[ACCOUNT] Add mail account requested for ${email_address || '(missing email)'} via ${provider || 'unknown provider'}`);
+      // A refused field answers 400 here, before the provider is contacted;
+      // the connection test and the stored row use these same values.
+      const { email_address, display_name, provider, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password } = parseMailAccountInput(body);
+      const { sync_fetch_limit, accept_host_trust, try_calendar_sync, caldav_url } = body;
+      console.log(`[ACCOUNT] Add mail account requested for ${email_address} via ${provider}`);
 
-      if (!email_address || !encrypted_password) {
-        return { error: 'Email address and password are required', status: 400 };
-      }
-      if (!imap_host || !smtp_host) {
-        return { error: 'IMAP and SMTP server addresses are required', status: 400 };
-      }
       const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);
       if (!normalizedSyncFetchLimit) {
         return { error: 'Invalid sync fetch limit. Allowed value: all', status: 400 };
       }
 
-      const normalizedImapPort = Number(imap_port) || 993;
-      const normalizedSmtpPort = Number(smtp_port) || 587;
       const trustAccepted = toBooleanFlag(accept_host_trust);
       const modeChange = mailAccountModeChange(null, body);
       const serverDeleteEnabled = modeChange.deleteEnabled;
@@ -222,12 +199,12 @@ export = {
       const parsedTrashWindow = mailSyncPolicy.parseWindowDays(body.trash_window_days, 'trash_window_days');
       const trashWindowDays = parsedTrashWindow === undefined ? mailSyncPolicy.DEFAULT_TRASH_WINDOW_DAYS : parsedTrashWindow;
 
-      console.log(`[ACCOUNT] Checking mail host policy for ${email_address}: IMAP ${imap_host}:${normalizedImapPort}, SMTP ${smtp_host}:${normalizedSmtpPort}`);
+      console.log(`[ACCOUNT] Checking mail host policy for ${email_address}: IMAP ${imap_host}:${imap_port}, SMTP ${smtp_host}:${smtp_port}`);
       const hostPolicyResult = await validateMailHostPolicy({
         imap_host,
-        imap_port: normalizedImapPort,
+        imap_port,
         smtp_host,
-        smtp_port: normalizedSmtpPort,
+        smtp_port,
       });
       console.log(`[ACCOUNT] Host policy check complete for ${email_address}: blocked=${hostPolicyResult.mailHostTrust?.blocked ? 'yes' : 'no'}, trust_accepted=${trustAccepted ? 'yes' : 'no'}`);
       if (hostPolicyResult.error) {
@@ -239,9 +216,9 @@ export = {
       // Verify authentication using strict TLS unless the user explicitly accepted an IMAP certificate failure.
       const tempAccount = {
         email_address,
-        username: username || email_address,
+        username,
         imap_host,
-        imap_port: normalizedImapPort,
+        imap_port,
         allow_self_signed: trustAccepted ? 1 : 0,
         trusted_imap_fingerprint256: null,
         encrypted_password: encryptedPasswordForStorage,
@@ -256,9 +233,9 @@ export = {
           console.warn(`[ACCOUNT] IMAP TLS trust confirmation required for ${email_address}: ${testResult.details || testResult.error}`);
           return buildHostTrustConfirmationResponse({
             imap_host,
-            imap_port: normalizedImapPort,
+            imap_port,
             smtp_host,
-            smtp_port: normalizedSmtpPort,
+            smtp_port,
             imapTlsError: testResult.details || testResult.error,
           });
         }
@@ -271,7 +248,6 @@ export = {
 
       // Auth successful - save account immediately
       const accountId = crypto.randomUUID();
-      const actualUsername = username || email_address;
       await db.execute(
         `INSERT INTO mail_accounts
            (id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
@@ -286,13 +262,13 @@ export = {
           accountId,
           userId,
           email_address,
-          display_name || null,
-          provider!,
-          actualUsername,
+          display_name,
+          provider,
+          username,
           imap_host || null,
-          normalizedImapPort,
+          imap_port,
           smtp_host || null,
-          normalizedSmtpPort,
+          smtp_port,
           encryptedPasswordForStorage,
           normalizedSyncFetchLimit,
           modeChange.mode,
@@ -317,7 +293,7 @@ export = {
             userId,
             emailAddress: email_address,
             displayName: display_name || email_address,
-            username: actualUsername,
+            username,
             password: encrypted_password,
             imapHost: imap_host,
             caldavUrl: caldav_url || null,
@@ -361,9 +337,8 @@ export = {
           : 'Account connected successfully. A mail sync is already running; this account will sync on the next scheduled pass.'
       };
     } catch (error) {
-      console.error('[ACCOUNT] Create mail account error:', error);
-      return { error: (error as ApiError).message || 'Failed to create mail account', status: (error as ApiError).status || 500,
-        ...((error as ApiError & { requiresConfirmation?: boolean }).requiresConfirmation ? { requires_confirmation: true } : {}) };
+      if (!(error as ApiError).status) console.error('[ACCOUNT] Create mail account error:', error);
+      return routeError(error, 'Failed to create mail account');
     }
   },
 
@@ -372,19 +347,7 @@ export = {
 
     try {
       const id = extractMailRouteId(req)!;
-      const {
-        email_address,
-        display_name,
-        username,
-        imap_host,
-        imap_port,
-        smtp_host,
-        smtp_port,
-        encrypted_password,
-        sync_fetch_limit,
-        delete_emails_on_server,
-        accept_host_trust,
-      } = body;
+      const { sync_fetch_limit, accept_host_trust } = body;
 
       // Verify account belongs to user
       const [accounts] = await db.execute<(RowDataPacket & AccountRow)[]>(
@@ -392,24 +355,24 @@ export = {
         [id, userId]
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
+      // Checked before the lock and before any work stops: a refused field
+      // leaves a working account untouched. The values used below come from
+      // the row re-read under the lock.
+      const requested = parseMailAccountInput(body, accounts[0]);
       const requestedMode = mailAccountModeChange(accounts[0], body);
       // Accepted in both modes (they only take effect in Sync); missing = unchanged.
       const requestedSyncWindow = mailSyncPolicy.parseWindowDays(body.sync_window_days, 'sync_window_days');
       const requestedTrashWindow = mailSyncPolicy.parseWindowDays(body.trash_window_days, 'trash_window_days');
-      const stopRequired = Boolean(requestedMode.changed || body.is_active === true || body.encrypted_password
-        || body.email_address || body.imap_host || body.imap_port || body.username !== undefined || body.delete_emails_on_server !== undefined);
+      const stopRequired = Boolean(requestedMode.changed || body.is_active === true || requested.encrypted_password !== undefined
+        || requested.email_address !== undefined || requested.imap_host !== undefined || requested.imap_port !== undefined
+        || requested.username !== undefined || body.delete_emails_on_server !== undefined);
       return await withMailAccountLock(id, async () => {
       const [fresh] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?', [id, userId]);
       if (!fresh.length) return { error: 'Account not found', status: 404 };
       const existingAccount = fresh[0];
       const modeChange = mailAccountModeChange(existingAccount, body);
-
-      const nextEmailAddress = email_address || existingAccount.email_address;
-      const nextUsername = username !== undefined ? (username || nextEmailAddress) : (existingAccount.username || nextEmailAddress);
-      const nextImapHost = imap_host || existingAccount.imap_host;
-      const nextImapPort = Number(imap_port) || Number(existingAccount.imap_port) || 993;
-      const nextSmtpHost = smtp_host || existingAccount.smtp_host;
-      const nextSmtpPort = Number(smtp_port) || Number(existingAccount.smtp_port) || 587;
+      const { email_address, display_name, username, imap_host, imap_port, smtp_host, smtp_port, encrypted_password, next } = parseMailAccountInput(body, existingAccount);
+      const { email_address: nextEmailAddress, username: nextUsername, imap_host: nextImapHost, imap_port: nextImapPort, smtp_host: nextSmtpHost, smtp_port: nextSmtpPort } = next;
       if (!sameProviderMailbox(existingAccount, { email_address: nextEmailAddress, username: nextUsername, imap_host: nextImapHost, imap_port: nextImapPort })) {
         const [identified] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT id FROM emails WHERE mail_account_id = ? AND user_id = ? AND (imap_uid IS NOT NULL OR remote_uid IS NOT NULL) LIMIT 1', [id, userId]);
         if (identified.length) return { error: 'This account already contains imported mail. Add a separate account for a different mailbox or IMAP server to preserve message identity.', status: 409 };
@@ -423,8 +386,9 @@ export = {
       }
       if (body.is_active === false) return { error: 'Use Disconnect to pause this account and remove its stored credentials.', status: 400 };
       const trustAccepted = toBooleanFlag(accept_host_trust);
-      const hostSettingsChanged = Boolean(body.is_active === true || imap_host || imap_port || smtp_host || smtp_port);
-      const imapLoginSettingsChanged = Boolean(body.is_active === true || email_address || username !== undefined || imap_host || imap_port || encrypted_password);
+      const hostSettingsChanged = Boolean(body.is_active === true || imap_host !== undefined || imap_port !== undefined || smtp_host !== undefined || smtp_port !== undefined);
+      const imapLoginSettingsChanged = Boolean(body.is_active === true || email_address !== undefined || username !== undefined
+        || imap_host !== undefined || imap_port !== undefined || encrypted_password !== undefined);
       let shouldUpdateTlsTrust = false;
       let nextAllowSelfSigned = toBooleanFlag(existingAccount.allow_self_signed) ? 1 : 0;
 
@@ -439,7 +403,7 @@ export = {
       }
 
       if (imapLoginSettingsChanged) {
-        const existingTrustStillApplies = toBooleanFlag(existingAccount.allow_self_signed) && !imap_host && !imap_port;
+        const existingTrustStillApplies = toBooleanFlag(existingAccount.allow_self_signed) && imap_host === undefined && imap_port === undefined;
         const allowInsecureForTest = trustAccepted || existingTrustStillApplies;
         const testAccount = {
           email_address: nextEmailAddress,
@@ -469,7 +433,7 @@ export = {
           };
         }
 
-        if (trustAccepted || imap_host || imap_port) {
+        if (trustAccepted || imap_host !== undefined || imap_port !== undefined) {
           nextAllowSelfSigned = trustAccepted ? 1 : 0;
           shouldUpdateTlsTrust = true;
         }
@@ -498,14 +462,14 @@ export = {
       const windowsWidened = wider(previousWindows.sync, nextWindows.sync) || wider(previousWindows.trash, nextWindows.trash);
       if (requestedSyncWindow !== undefined) { updates.push('sync_window_days = ?'); params.push(nextWindows.sync); }
       if (requestedTrashWindow !== undefined) { updates.push('trash_window_days = ?'); params.push(nextWindows.trash); }
-      if (email_address) { updates.push('email_address = ?'); params.push(email_address); }
-      if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name || null); }
+      if (email_address !== undefined) { updates.push('email_address = ?'); params.push(email_address); }
+      if (display_name !== undefined) { updates.push('display_name = ?'); params.push(display_name); }
       if (username !== undefined) { updates.push('username = ?'); params.push(nextUsername); }
-      if (imap_host) { updates.push('imap_host = ?'); params.push(imap_host); }
-      if (imap_port) { updates.push('imap_port = ?'); params.push(imap_port); }
-      if (smtp_host) { updates.push('smtp_host = ?'); params.push(smtp_host); }
-      if (smtp_port) { updates.push('smtp_port = ?'); params.push(smtp_port); }
-      if (encrypted_password) { updates.push('encrypted_password = ?'); params.push(nextEncryptedPassword); }
+      if (imap_host !== undefined) { updates.push('imap_host = ?'); params.push(imap_host); }
+      if (imap_port !== undefined) { updates.push('imap_port = ?'); params.push(imap_port); }
+      if (smtp_host !== undefined) { updates.push('smtp_host = ?'); params.push(smtp_host); }
+      if (smtp_port !== undefined) { updates.push('smtp_port = ?'); params.push(smtp_port); }
+      if (encrypted_password !== undefined) { updates.push('encrypted_password = ?'); params.push(nextEncryptedPassword); }
       if (body.is_active === true) updates.push('is_active = TRUE', 'disconnected_at = NULL');
       if (shouldUpdateTlsTrust) {
         updates.push('allow_self_signed = ?');
@@ -572,7 +536,7 @@ export = {
       const updatedAccount = await loadAccountJson(userId, id);
       // A linked calendar reads the mail login when it needs it; it only syncs
       // now instead of at its next turn.
-      if (encrypted_password || username !== undefined || email_address || body.is_active === true) {
+      if (encrypted_password !== undefined || username !== undefined || email_address !== undefined || body.is_active === true) {
         await (require('../services/calendar-sync') as typeof import('../services/calendar-sync')).syncLinkedCalendars(userId, id)
           .catch((error: Error) => console.warn('[CALENDAR] Could not start linked calendar sync:', error.message));
       }
@@ -583,9 +547,8 @@ export = {
       return { account: updatedAccount };
       });
     } catch (error) {
-      console.error('[ACCOUNT] Update error:', error);
-      return { error: (error as ApiError).message || 'Failed to update mail account', status: (error as ApiError).status || 500,
-        ...((error as ApiError & { requiresConfirmation?: boolean }).requiresConfirmation ? { requires_confirmation: true } : {}) };
+      if (!(error as ApiError).status) console.error('[ACCOUNT] Update error:', error);
+      return routeError(error, 'Failed to update mail account');
     }
   },
 
@@ -621,7 +584,7 @@ export = {
       return { confirmed: true, queued: true };
     } catch (error) {
       if (!(error as ApiError).status) console.error('[ACCOUNT] Confirm Sync policy error:', error);
-      return { error: (error as ApiError).status ? (error as ApiError).message : 'Could not confirm the Sync policy', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Could not confirm the Sync policy');
     }
   },
 
@@ -636,7 +599,7 @@ export = {
       return { job, status: 202 };
     } catch (error) {
       if (!(error as ApiError).status) console.error('[ACCOUNT] Account backup export error:', error);
-      return { error: (error as ApiError).status ? (error as ApiError).message : 'Could not start the account backup', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Could not start the account backup');
     }
   },
 
@@ -644,7 +607,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     const disconnecting = new URL(req.url, 'http://localhost').searchParams.get('disconnect') === 'true';
     try { return await mailAccountLifecycle.purgePreview(userId, req.params.id, undefined, { disconnecting }); }
-    catch (error) { return { error: (error as ApiError).status ? (error as ApiError).message : 'Could not preview account purge', status: (error as ApiError).status || 500 }; }
+    catch (error) { return routeError(error, 'Could not preview account purge'); }
   },
 
   'DELETE /api/mail/accounts/:id': async (req: Request, userId: string | null) => {
@@ -659,7 +622,7 @@ export = {
       }
       return await mailAccountLifecycle.disconnectAccount(userId, id);
     } catch (error) {
-      return { error: (error as ApiError).status ? (error as ApiError).message : 'Could not change mail account connection', status: (error as ApiError).status || 500 };
+      return routeError(error, 'Could not change mail account connection');
     }
   },
 
