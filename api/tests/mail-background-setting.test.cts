@@ -149,35 +149,63 @@ test('service-worker background trigger uses background admission and reports a 
 });
 
 test('module toggle: background off drops read work without fencing; disable still stops; enable never lifts other pauses', async t => {
-  const routePath = require.resolve('../dist/src/routes/modules');
-  const oldRoute = require.cache[routePath], oldDb = getDb();
-  t.after(() => { setDb(oldDb); if (oldRoute) require.cache[routePath] = oldRoute; else delete require.cache[routePath]; });
-  delete require.cache[routePath];
-  const saved: FixtureValue = {};
+  const { applyModuleChange } = require('../dist/src/services/module-lifecycle') as typeof import('../src/services/module-lifecycle');
+  const { durableScheduler } = require('../dist/src/services/mail-durable-jobs') as typeof import('../src/services/mail-durable-jobs');
+  const oldDb = getDb(); t.after(() => setDb(oldDb));
   const stops: FixtureValue[] = [], cancels: FixtureValue[] = [], resumes: FixtureValue[] = [];
+  const jobsListed = new Set<string>();
+  setDb({ execute: (async (sql: string, params: FixtureValue) => {
+    if (sql.includes('SELECT id, is_active, disconnected_at FROM mail_accounts')) return [[{ id: 'A', is_active: 1, disconnected_at: null },
+      { id: 'B', is_active: 0, disconnected_at: null }]];
+    if (sql.includes('SELECT user_id FROM mail_accounts')) return [[{ user_id: 'owner' }]];
+    if (sql.includes('FROM mail_engine_jobs')) {
+      // One queued background job per account; a cancel keeps manual jobs.
+      assert.match(sql, /manual_refresh = FALSE/);
+      if (jobsListed.has(params[1])) return [[]];
+      jobsListed.add(params[1]);
+      return [[{ id: `job-${params[1]}` }]];
+    }
+    assert.fail(sql);
+  }) } as FixtureValue);
+  t.mock.method(runtime, 'pauseAccount', async (input: FixtureValue) => { stops.push([input.accountId, input.reason]); return {}; });
+  t.mock.method(runtime, 'resumeAccount', async (input: FixtureValue) => { resumes.push(input); return { resumed: 0, retired: 0 }; });
+  t.mock.method(durableScheduler, 'cancel', async (input: FixtureValue) => { cancels.push(input.accountId); return true; });
+  const state = (enabled: boolean, background: boolean) => [{ id: 'mail', enabled, background }];
+  await applyModuleChange('owner', state(true, true), state(true, false));
+  assert.deepEqual(stops, [], 'background off is a scheduling preference, not an account fence');
+  assert.deepEqual(cancels, ['A', 'B']);
+  assert.deepEqual(resumes, [{ userId: 'owner', accountId: 'A', resumeStreams: false, reasons: REASONS }]);
+  await applyModuleChange('owner', state(true, false), state(false, false));
+  assert.deepEqual(stops, [['A', 'Mail module disabled'], ['B', 'Mail module disabled']]);
+  cancels.length = 0; resumes.length = 0; jobsListed.clear();
+  await applyModuleChange('owner', state(false, false), state(true, true));
+  assert.deepEqual(cancels, []);
+  assert.deepEqual(resumes, [{ userId: 'owner', accountId: 'A', resumeStreams: true, reasons: REASONS }]);
+  assert.ok(resumes.every(input => !input.reasons.includes('Deployment canary hold')));
+  // An unchanged choice, or a change to another module, runs no mail work.
+  await applyModuleChange('owner', state(true, true), [...state(true, true), { id: 'contacts', enabled: false, background: true }]);
+  assert.deepEqual([stops.length, cancels.length, resumes.length], [2, 0, 1]);
+});
+
+test('PUT /api/modules saves the choice and then applies it with the states before and after', async t => {
+  const lifecycle = require('../dist/src/services/module-lifecycle') as typeof import('../src/services/module-lifecycle');
+  const oldDb = getDb(); t.after(() => setDb(oldDb));
+  const saved: FixtureValue = {};
   setDb({ execute: (async (sql: string, params: FixtureValue) => {
     if (sql.startsWith('INSERT INTO user_settings')) {
       for (const [id, value] of Object.entries(JSON.parse(params[2]))) saved[id] = { ...saved[id], ...(value as FixtureValue) };
       return [{ affectedRows: 1 }];
     }
     if (sql.includes('FROM user_settings')) return [[{ setting_value: JSON.stringify(saved) }]];
-    if (sql.includes('FROM mail_accounts')) return [[{ id: 'A', is_active: 1, disconnected_at: null },
-      { id: 'B', is_active: 0, disconnected_at: null }]];
     assert.fail(sql);
   }) } as FixtureValue);
-  t.mock.method(mail, 'stopMailAccountWork', async (id: FixtureValue, reason: FixtureValue) => { stops.push([id, reason]); return true; });
-  t.mock.method(mail, 'cancelMailAccountSync', async (id: FixtureValue) => { cancels.push(id); return true; });
-  t.mock.method(runtime, 'resumeAccount', async (input: FixtureValue) => { resumes.push(input); return { resumed: 0, retired: 0 }; });
+  const applied: FixtureValue[] = [];
+  t.mock.method(lifecycle, 'applyModuleChange', async (userId: string, previous: FixtureValue, next: FixtureValue) => { applied.push([userId, previous, next]); });
   const route = (require('../dist/src/routes/modules') as typeof import('../src/routes/modules'))['PUT /api/modules'].handler;
-  await route({} as FixtureValue, 'owner', { modules: { mail: { background: false } } });
-  assert.deepEqual(stops, [], 'background off is a scheduling preference, not an account fence');
-  assert.deepEqual(cancels, ['A', 'B']);
-  assert.deepEqual(resumes, [{ userId: 'owner', accountId: 'A', resumeStreams: false, reasons: REASONS }]);
-  await route({} as FixtureValue, 'owner', { modules: { mail: { enabled: false } } });
-  assert.deepEqual(stops, [['A', 'Mail module disabled'], ['B', 'Mail module disabled']]);
-  cancels.length = 0; resumes.length = 0;
-  await route({} as FixtureValue, 'owner', { modules: { mail: { enabled: true, background: true } } });
-  assert.deepEqual(cancels, []);
-  assert.deepEqual(resumes, [{ userId: 'owner', accountId: 'A', resumeStreams: true, reasons: REASONS }]);
-  assert.ok(resumes.every(input => !input.reasons.includes('Deployment canary hold')));
+  const result = await route({} as FixtureValue, 'owner', { modules: { mail: { background: false } } });
+  assert.ok(result.modules);
+  assert.equal(applied.length, 1);
+  const [userId, previous, next] = applied[0];
+  assert.equal(userId, 'owner');
+  assert.deepEqual([previous.find((m: FixtureValue) => m.id === 'mail').background, next.find((m: FixtureValue) => m.id === 'mail').background], [true, false]);
 });

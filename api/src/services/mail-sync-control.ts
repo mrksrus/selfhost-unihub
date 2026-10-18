@@ -1,5 +1,5 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { SqlExecutor } from '../types';
+import type { SqlExecutor, StoredFlag } from '../types';
 
 import { READ_ONLY_MAIL_JOB_KINDS } from './mail-sync-scheduler';
 import { evictImapConnections } from './mail-engine/connection-pool';
@@ -11,6 +11,7 @@ import { toBooleanFlag } from './mail-host-policy';
 import { durableScheduler, foregroundMutationAccounts, normalizeMailAccountId } from './mail-durable-jobs';
 import { mailDeleteStopRequests } from './mail-server-delete';
 import { publishMailJob } from './server-events';
+import { USER_PAUSES } from './mail-engine/rollout';
 
 interface SyncOptions extends Record<string, unknown> { background?: boolean; followUp?: boolean }
 
@@ -86,6 +87,31 @@ async function stopMailAccountWork(accountId: unknown, reason = 'Account stopped
   (require('./mail-idle') as typeof import('./mail-idle')).idleSupervisor.stopAccount(key);
   inboxFollowUps.delete(key);
   return true;
+}
+
+// The user's Mail module choice changed (services/module-lifecycle.ts).
+// Disabling fences every account. Background off is a scheduling preference
+// enforced at admission, not an account fence: user Sync/flag/move work must
+// keep running without clearing it. Only queued/running background read work
+// is dropped; a requested Sync, such as a restored account's first download,
+// resumes. The IDLE session is background work: it is closed now, or started
+// without waiting for the supervisor's next eligibility pass.
+async function onMailModuleChanged(userId: string, { enabled, background }: { enabled: boolean; background: boolean }) {
+  const [accounts] = await db.execute<(RowDataPacket & { id: string; is_active: StoredFlag; disconnected_at: Date | null })[]>(
+    'SELECT id, is_active, disconnected_at FROM mail_accounts WHERE user_id = ?', [userId]);
+  if (!enabled) {
+    for (const account of accounts) await stopMailAccountWork(account.id, 'Mail module disabled');
+    return;
+  }
+  const runtime = require('./mail-engine/runtime') as typeof import('./mail-engine/runtime');
+  for (const account of accounts) {
+    if (Number(account.is_active) && !account.disconnected_at)
+      await runtime.resumeAccount({ userId, accountId: account.id, resumeStreams: background, reasons: USER_PAUSES });
+    if (!background) await cancelMailAccountSync(account.id, { keepManual: true });
+  }
+  const { idleSupervisor } = require('./mail-idle') as typeof import('./mail-idle');
+  if (!background) for (const account of accounts) idleSupervisor.stopAccount(account.id);
+  else void idleSupervisor.refresh();
 }
 
 // background: periodic/service-worker work; skipped while the user's mail
@@ -204,6 +230,7 @@ export {
   yieldMailReadWork,
   runMailOperationsNow,
   stopMailAccountWork,
+  onMailModuleChanged,
   scheduleMailAccountSync,
   getMailSyncState,
   syncMailAccount,
