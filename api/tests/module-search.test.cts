@@ -17,7 +17,7 @@ test('global search queries only enabled domains and keeps results owner-scoped'
     throw new Error('Unexpected domain query: ' + sql);
   } } as FixtureValue);
   const routes = require('../dist/src/routes/search') as typeof import('../src/routes/search');
-  const result = await routes['GET /api/search']({ url: '/api/search?q=research', headers: { host: 'localhost' } } as FixtureValue, 'owner');
+  const result = await routes['GET /api/search'].handler({ url: '/api/search?q=research', headers: { host: 'localhost' } } as FixtureValue, 'owner');
   assert.equal(result.error, undefined);
   assert.equal(result.results.length, 1);
   assert.equal(result.results[0].type, 'contact');
