@@ -5,8 +5,8 @@ import { folderMembershipSql, pendingMoveSql } from '../services/mail-folder-vie
 import { presentMailFiling } from '../services/mail-filing';
 import { parseStoredRecipients } from '../services/mail-recipients';
 import fs from 'fs';
-import path from 'path';
 import { db } from '../state';
+import { mailPathUnderRoot } from '../services/mail-storage';
 import { EMAIL_TASK_COUNT_SQL, tasksForEmail } from '../services/email-tasks';
 import { isModuleEnabled } from '../services/module-settings';
 import { toBooleanFlag } from '../services/mail';
@@ -16,7 +16,6 @@ type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Input = unknown;
 
 const MAIL_LIST_PREVIEW_LENGTH = 240;
-const MAIL_ATTACHMENT_UPLOAD_ROOT = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments';
 
 export = {
   'GET /api/mail/emails': async (req: Request, userId: string | null) => {
@@ -244,10 +243,9 @@ export = {
 
       // Read file from storage (must stay under attachments root)
       try {
-        const uploadsRoot = path.resolve(MAIL_ATTACHMENT_UPLOAD_ROOT);
-        const resolvedPath = path.resolve(attachment.storage_path || '');
-        if (!resolvedPath.startsWith(`${uploadsRoot}${path.sep}`) && resolvedPath !== uploadsRoot) {
-          console.error('[ATTACH] Rejected attachment path outside uploads root:', resolvedPath);
+        const resolvedPath = mailPathUnderRoot('attachment', attachment.storage_path);
+        if (!resolvedPath) {
+          console.error('[ATTACH] Rejected attachment path outside uploads root:', attachment.storage_path);
           return { error: 'Invalid attachment path', status: 400 };
         }
 

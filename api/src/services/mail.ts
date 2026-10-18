@@ -8,6 +8,7 @@ import * as durableJobs from './mail-durable-jobs';
 import * as serverDelete from './mail-server-delete';
 import * as syncControl from './mail-sync-control';
 import * as send from './mail-send';
+import { rawRoot } from './mail-storage';
 
 export const buildImapConnectionConfig = hostPolicy.buildImapConnectionConfig;
 export const cancelMailAccountSync = syncControl.cancelMailAccountSync;
@@ -21,7 +22,7 @@ export const DEFAULT_MAIL_SYNC_FETCH_LIMIT = syncControl.DEFAULT_MAIL_SYNC_FETCH
 export const MAIL_SYNC_FETCH_LIMITS = syncControl.MAIL_SYNC_FETCH_LIMITS;
 export const MAIL_SERVER_DELETE_GRACE_MS = serverDelete.MAIL_SERVER_DELETE_GRACE_MS;
 export const MAIL_SERVER_DELETE_BATCH_SIZE = serverDelete.MAIL_SERVER_DELETE_BATCH_SIZE;
-export const MAIL_RAW_STORAGE_ROOT = serverDelete.MAIL_RAW_STORAGE_ROOT;
+export const MAIL_RAW_STORAGE_ROOT = rawRoot();
 export const MAIL_FOLDER_DEFINITIONS = folders.MAIL_FOLDER_DEFINITIONS;
 export const ALLOWED_MAIL_FOLDER_SET = folders.ALLOWED_MAIL_FOLDER_SET;
 export const SYSTEM_MAIL_FOLDER_SET = folders.SYSTEM_MAIL_FOLDER_SET;

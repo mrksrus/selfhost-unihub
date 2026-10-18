@@ -14,6 +14,7 @@ import {
 import {
   deleteRecordingFiles,
 } from '../services/recordings';
+import { ownedMailPath } from '../services/mail-storage';
 import { isBackupPathUnderRoot } from '../services/export-jobs';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -116,11 +117,8 @@ export = {
         }
       }
       for (const row of rawEmails || []) {
-        const rawPath = path.resolve(row.raw_storage_path || '');
-        const root = path.resolve('/app/uploads/mail-raw');
-        if (rawPath.startsWith(`${root}${path.sep}`)) {
-          await fs.promises.rm(rawPath, { force: true }).catch(() => {});
-        }
+        const rawPath = ownedMailPath('raw', row.raw_storage_path, userId);
+        if (rawPath) await fs.promises.rm(rawPath, { force: true }).catch(() => {});
       }
       await db.execute('DELETE FROM users WHERE id = ?', [userId]);
       clearAuthCookie(res);

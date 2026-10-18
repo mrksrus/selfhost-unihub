@@ -126,6 +126,14 @@ credentials in the backend process environment as well. The Compose `.env`
 variable names are mapped by Compose; the standalone API reads its runtime
 names directly. Local HTTP development uses non-production cookie settings.
 
+`MAIL_ATTACHMENT_UPLOAD_ROOT` and `MAIL_RAW_STORAGE_ROOT` move the mail
+attachment and raw-message roots away from `/app/uploads/attachments` and
+`/app/uploads/mail-raw`. Tests point them at a temporary directory; a
+deployment normally leaves them unset and mounts `/app/uploads`. Every mail,
+admin and backup code path reads the roots through
+`api/src/services/mail-storage.ts`, so an override applies to writing,
+downloading, deleting and measuring files alike.
+
 Useful checks:
 
 ```bash

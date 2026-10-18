@@ -7,6 +7,9 @@ from two paths:
 
 - IMAP sync, including regular attachments and inline `cid:` images
 - SMTP compose, where sent attachments are saved with the sent-mail copy
+  through the same staging path: the files are written first, then the Sent
+  email row and its attachment rows commit in one transaction; a failed copy
+  removes the staged files and still reports the message as sent
 
 ## Storage
 
@@ -17,6 +20,15 @@ Attachment root:
 ```text
 /app/uploads/attachments/<userId>/
 ```
+
+`api/src/services/mail-storage.ts` is the only definition of this root and of
+the raw-message root below; the environment variables
+`MAIL_ATTACHMENT_UPLOAD_ROOT` and `MAIL_RAW_STORAGE_ROOT` override them (see
+[Development](DEVELOPMENT.md)). Every reader and remover of a stored path
+checks it against the root through that module: `mailPathUnderRoot` for a
+path whose row already proved ownership, `ownedMailPath` for the owner's own
+directory, and `realOwnedMailPath` (realpath, so a symlink cannot lead out)
+before a file is removed.
 
 Filename pattern during mail sync and send:
 
@@ -65,7 +77,7 @@ Behavior:
 1. Requires authenticated session.
 2. Selects the attachment by `id` and `user_id`.
 3. Resolves the stored path.
-4. Rejects paths outside `/app/uploads/attachments`.
+4. Rejects paths outside the attachment root.
 5. Checks the file and streams it from disk; disconnects close the stream.
 6. Normalizes common MIME types from filename when stored content type is generic.
 

@@ -35,6 +35,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   16 KiB, with room for recordings (256 KiB), contacts (64 KiB) and password
   routes (4 KiB); a refused request shows the server's actual limit, and the
   attachment hint appears only when composing mail.
+- **Sent attachments are saved with the Sent copy or not at all.** The copy
+  of a sent message wrote its attachment files and rows one by one after the
+  message row, outside its transaction and to a fixed folder that ignored the
+  configured attachment root; an interruption could leave a Sent copy marked
+  as having attachments that were missing, and a moved root made the files
+  undownloadable and undeletable. The Sent copy now stages its files like
+  drafts and imports and commits the message and attachment rows together; a
+  failed copy removes the staged files and still reports the message as sent,
+  so it is never sent twice.
 - **Sent mail stays out of the server log.** A leftover debugging hook printed
   the recipients and subject of every sent message to the container log (and
   tried to write them to a file). It is removed; a failed send logs only the
@@ -46,6 +55,12 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **Plain-text drafts with attachments are sent as text.** A text draft with an
   attachment was sent as HTML, collapsing line breaks and treating `<` as
   markup; only an empty body with attachments still uses the HTML placeholder.
+
+### Internal
+
+- The mail attachment and raw-message roots, and the checks that a stored
+  path lies inside them, are defined once in `api/src/services/mail-storage.ts`
+  and used by mail, the admin storage overview, account deletion and backup.
 
 ## 0.22.4
 

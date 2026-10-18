@@ -14,6 +14,7 @@ import { isSectionRestoreActive } from './restore-locks';
 import { canRunModule } from './access-policy';
 import { toBooleanFlag, buildImapConnectionConfig } from './mail-host-policy';
 import { normalizeMailAccountId, isMailAccountSyncRunning } from './mail-durable-jobs';
+import { rawRoot, mailPathUnderRoot } from './mail-storage';
 
 interface QueueInput {
   connection?: SqlExecutor;
@@ -36,7 +37,6 @@ const mailDeleteStopRequests = new Set<string>();
 const activeMailServerDeleteAccounts = new Set<string>();
 const MAIL_SERVER_DELETE_GRACE_MS = 10 * 60 * 1000;
 const MAIL_SERVER_DELETE_BATCH_SIZE = 100;
-const MAIL_RAW_STORAGE_ROOT = process.env.MAIL_RAW_STORAGE_ROOT || '/app/uploads/mail-raw';
 
 function isMailServerDeleteRunning(accountId: unknown) {
   const normalizedAccountId = normalizeMailAccountId(accountId);
@@ -52,9 +52,7 @@ function getRunningMailServerDeleteAccountIds() {
 }
 
 function isAttachmentPathUnderUploads(storagePath: string | null | undefined) {
-  const uploadsRoot = path.resolve(process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments');
-  const resolvedPath = path.resolve(storagePath || '');
-  return resolvedPath === uploadsRoot || resolvedPath.startsWith(`${uploadsRoot}${path.sep}`);
+  return mailPathUnderRoot('attachment', storagePath) !== null;
 }
 
 async function deleteStoredAttachmentFiles(storagePaths: readonly (string | null | undefined)[]) {
@@ -85,13 +83,11 @@ function getMailRawStoragePath(userId: string, emailId: string, messageId: strin
   const safeMessagePart = String(messageId || emailId)
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .slice(0, 80);
-  return path.join(MAIL_RAW_STORAGE_ROOT, String(userId), `${emailId}-${safeMessagePart}.eml`);
+  return path.join(rawRoot(), String(userId), `${emailId}-${safeMessagePart}.eml`);
 }
 
 function isMailRawPathUnderRoot(storagePath: string | null | undefined) {
-  const root = path.resolve(MAIL_RAW_STORAGE_ROOT);
-  const resolvedPath = path.resolve(storagePath || '');
-  return resolvedPath === root || resolvedPath.startsWith(`${root}${path.sep}`);
+  return mailPathUnderRoot('raw', storagePath) !== null;
 }
 
 function isUsableRawEmailArchive(storagePath: string | null | undefined) {
@@ -171,7 +167,7 @@ async function recordMailServerMessageForDeletion({
   if (!userId || !accountId || !emailId || !folderName || !normalizedUid || !epoch
     || rawFormat !== 'exact_octets' || rawVerified !== true) return false;
   if (!await verifyArchive({ raw_storage_path: rawStoragePath, raw_sha256: rawSha256,
-    raw_bytes: rawBytes, raw_format: rawFormat, raw_verified: rawVerified }, { root: MAIL_RAW_STORAGE_ROOT })) return false;
+    raw_bytes: rawBytes, raw_format: rawFormat, raw_verified: rawVerified }, { root: rawRoot() })) return false;
 
   await connection.execute(
     `INSERT INTO mail_server_messages
@@ -401,7 +397,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
         const archived = { ...message, source_folder: message.email_source_folder,
           imap_uid: message.email_imap_uid, imap_uidvalidity: message.email_imap_uidvalidity };
         if (!await eligibleForProviderErasure({ row: archived, sourceFolder, uid,
-          uidValidity: expectedEpoch, selectedUidValidity: currentUidValidity, root: MAIL_RAW_STORAGE_ROOT })) {
+          uidValidity: expectedEpoch, selectedUidValidity: currentUidValidity, root: rawRoot() })) {
           await markMailServerMessageDeleteStatus({ id: message.id, status: 'skipped', error: 'Exact archive or current source identity unverified.' });
           skipped++; processed++; continue;
         }
@@ -433,7 +429,7 @@ async function processMailServerDeletionForAccountUnlocked(accountId: string, { 
           || uint32(getCurrentBoxUidValidity(connection)) !== expectedEpoch
           || !await eligibleForProviderErasure({ row: { ...fresh, source_folder: fresh.email_source_folder,
             imap_uid: fresh.email_imap_uid, imap_uidvalidity: fresh.email_imap_uidvalidity },
-          sourceFolder, uid, uidValidity: expectedEpoch, selectedUidValidity: expectedEpoch, root: MAIL_RAW_STORAGE_ROOT })) {
+          sourceFolder, uid, uidValidity: expectedEpoch, selectedUidValidity: expectedEpoch, root: rawRoot() })) {
           await markMailServerMessageDeleteStatus({ id: message.id, status: 'skipped', error: 'Archive/source changed before dispatch.' });
           skipped++; processed++; continue;
         }
@@ -495,7 +491,6 @@ export {
   mailDeleteStopRequests,
   MAIL_SERVER_DELETE_GRACE_MS,
   MAIL_SERVER_DELETE_BATCH_SIZE,
-  MAIL_RAW_STORAGE_ROOT,
   isMailServerDeleteRunning,
   isAnyMailServerDeleteRunning,
   getRunningMailServerDeleteAccountIds,

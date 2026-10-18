@@ -16,8 +16,9 @@ import type { RowDataPacket, ResultSetHeader, ExecuteValues } from 'mysql2/promi
 import type { SqlExecutor, ApiError } from '../types';
 import type { EngineJob } from '../types/mail-engine';
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { db } from '../state';
+import { ownedMailPath, realOwnedMailPath } from './mail-storage';
+import type { MailStorageKind } from './mail-storage';
 
 interface Account {
   id: string;
@@ -204,32 +205,22 @@ async function pendingRemovals(account: Account, executor: SqlExecutor = db) {
 }
 
 // --- Removal -----------------------------------------------------------------
-function ownedFile(stored: string | null | undefined, root: string, userId: string) {
-  if (!stored) return null;
-  const base = path.resolve(root, String(userId));
-  const resolved = path.resolve(stored);
-  return resolved.startsWith(base + path.sep) ? resolved : null;
-}
 // After COMMIT: delete files no remaining row references, only inside this
 // owner's directory of the attachment or raw-message root. A failure leaves an
 // orphan file, never a row pointing at a missing file.
 async function removeUnreferencedFiles({ userId, attachmentPaths = [], rawPaths = [] }: { userId: string; attachmentPaths?: (string | null | undefined)[]; rawPaths?: (string | null | undefined)[] }, executor: SqlExecutor = db) {
-  const roots = { attachment: process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments',
-    raw: process.env.MAIL_RAW_STORAGE_ROOT || '/app/uploads/mail-raw' };
   let deleted = 0, failed = 0;
   for (const [kind, paths, sql] of [
     ['attachment', attachmentPaths, 'SELECT id FROM email_attachments WHERE storage_path = ? LIMIT 1'],
     ['raw', rawPaths, 'SELECT id FROM emails WHERE raw_storage_path = ? LIMIT 1'],
-  ] as [keyof typeof roots, (string | null | undefined)[], string][]) {
+  ] as [MailStorageKind, (string | null | undefined)[], string][]) {
     for (const stored of new Set(paths.filter(Boolean))) {
-      const resolved = ownedFile(stored, roots[kind], userId);
-      if (!resolved) { failed++; continue; }
+      if (!ownedMailPath(kind, stored, userId)) { failed++; continue; }
       try {
         const [used] = await executor.execute<RowDataPacket[]>(sql, [stored!]);
         if (used.length) continue;
-        const real = await fs.realpath(resolved);
-        const realBase = await fs.realpath(path.resolve(roots[kind], String(userId)));
-        if (!real.startsWith(realBase + path.sep)) { failed++; continue; }
+        const real = await realOwnedMailPath(kind, stored, userId);
+        if (!real) { failed++; continue; }
         await fs.unlink(real);
         deleted++;
       } catch (error) { if ((error as ApiError).code !== 'ENOENT') failed++; }

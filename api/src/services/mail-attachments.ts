@@ -2,6 +2,7 @@ import type { SqlExecutor, ComposerAttachment, StagedAttachment } from '../types
 import crypto from 'crypto';
 import { promises as fs } from 'node:fs';
 import path from 'path';
+import { attachmentsRoot } from './mail-storage';
 
 function attachmentError(message: string) {
   return Object.assign(new Error(message), { status: 400 });
@@ -35,7 +36,7 @@ function normalizeComposerAttachments(attachments: unknown = []) {
 
 // Files use their final unique names, but are invisible to readers until their
 // metadata transaction commits. Call discardStagedAttachments on any failure.
-async function stageAttachments({ userId, emailId, attachments, root = process.env.MAIL_ATTACHMENT_UPLOAD_ROOT || '/app/uploads/attachments' }: { userId: string; emailId: string; attachments: readonly ComposerAttachment[]; root?: string }): Promise<StagedAttachment[]> {
+async function stageAttachments({ userId, emailId, attachments, root = attachmentsRoot() }: { userId: string; emailId: string; attachments: readonly ComposerAttachment[]; root?: string }): Promise<StagedAttachment[]> {
   const staged: StagedAttachment[] = [];
   if (!attachments.length) return staged;
   const directory = path.join(root, userId);
