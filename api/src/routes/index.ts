@@ -19,7 +19,7 @@ import { MODULE_CATALOG } from '../services/module-catalog';
 // The production route table: every key once, each with its spec. Files still
 // exporting plain handlers are wrapped with the derived legacy policy.
 const routes = mergeRouteTables(
-  legacyRoutes(systemRoutes),
+  systemRoutes,
   modulesRoutes,
   authRoutes,
   legacyRoutes(contactsRoutes),

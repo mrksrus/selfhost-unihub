@@ -30,6 +30,6 @@ test('dashboard statistics omit disabled modules without reading their rows', as
     assert.match(sql, /FROM user_settings/);
     return [[{ setting_value: JSON.stringify({ mail: { enabled: false }, contacts: { enabled: false }, calendar: { enabled: false } }) }]];
   } } as FixtureValue);
-  const result = await (require('../dist/src/routes/system') as typeof import('../src/routes/system'))['GET /api/stats']({} as FixtureValue, 'owner');
+  const result = await (require('../dist/src/routes/system') as typeof import('../src/routes/system'))['GET /api/stats'].handler({} as FixtureValue, 'owner');
   assert.deepEqual(result, { contacts: 0, upcomingEvents: 0, unreadEmails: 0 });
 });

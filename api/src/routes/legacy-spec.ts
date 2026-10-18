@@ -16,8 +16,6 @@ type LegacyHandler = (...args: never[]) => unknown;
 type LegacyRouteTable = Record<string, LegacyHandler>;
 
 const PUBLIC_ROUTE_KEYS: ReadonlySet<string> = new Set([
-  'GET /health',
-  'GET /api/version',
   'GET /api/backup/export',
 ]);
 
