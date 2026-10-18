@@ -32,7 +32,7 @@ const routes = mergeRouteTables(
   adminRoutes,
   notificationsRoutes,
   offlineRoutes,
-  legacyRoutes(eventsRoutes),
+  eventsRoutes,
 );
 assertRouteTable(routes, { moduleIds: MODULE_CATALOG.map(module => module.id) });
 

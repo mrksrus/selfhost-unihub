@@ -4,6 +4,7 @@ import { verifyToken, getAuthTokenFromRequest } from '../auth';
 import { MODULE_CATALOG } from '../services/module-catalog';
 import { getUserModules } from '../services/module-settings';
 import { serverEvents } from '../services/server-events';
+import { defineRoutes } from '../http/route';
 
 // Modules whose events this user may receive. A disabled module's events are
 // filtered per stream, the same way its routes are refused at the boundary.
@@ -13,12 +14,12 @@ async function enabledModules(userId: string) {
     .filter(moduleId => modules.find(module => module.id === moduleId)?.enabled === true));
 }
 
-export = {
+export = defineRoutes({
   // Reached only through request-handler.ts, which has already authenticated
-  // the session and applied the origin rules. The route takes over the
-  // response; request-handler.ts leaves a __handled result alone.
-  'GET /api/events': async (req: AuthRequest, userId: string | null, body: unknown, res: ServerResponse) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  // the session and applied the origin rules. A streaming route: once attached,
+  // the handler owns the response and returns nothing; a refusal before that
+  // is an ordinary JSON error.
+  'GET /api/events': { auth: 'user', module: null, response: 'stream', body: { kind: 'none' }, handler: async (req: AuthRequest, userId: string, body: unknown, res: ServerResponse) => {
     const modules = await enabledModules(userId);
     const attached = serverEvents.attach({
       userId,
@@ -40,6 +41,6 @@ export = {
       if (attached.status === 429 || attached.status === 503) res.setHeader('Retry-After', '60');
       return { error: attached.error, status: attached.status };
     }
-    return { __handled: true };
-  },
-};
+    return undefined;
+  } },
+});
