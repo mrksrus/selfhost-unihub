@@ -12,20 +12,28 @@ import adminRoutes = require('./admin');
 import notificationsRoutes = require('./notifications');
 import offlineRoutes = require('./offline');
 import eventsRoutes = require('./events');
+import { assertRouteTable, mergeRouteTables } from '../http/route';
+import { legacyRoutes } from './legacy-spec';
+import { MODULE_CATALOG } from '../services/module-catalog';
 
-export = {
-  ...systemRoutes,
-  ...modulesRoutes,
-  ...authRoutes,
-  ...contactsRoutes,
-  ...settingsRoutes,
-  ...backupRoutes,
-  ...searchRoutes,
-  ...recordingsRoutes,
-  ...calendarRoutes,
-  ...mailRoutes,
-  ...adminRoutes,
-  ...notificationsRoutes,
-  ...offlineRoutes,
-  ...eventsRoutes,
-};
+// The production route table: every key once, each with its spec. Files still
+// exporting plain handlers are wrapped with the derived legacy policy.
+const routes = mergeRouteTables(
+  legacyRoutes(systemRoutes),
+  legacyRoutes(modulesRoutes),
+  legacyRoutes(authRoutes),
+  legacyRoutes(contactsRoutes),
+  legacyRoutes(settingsRoutes),
+  legacyRoutes(backupRoutes),
+  legacyRoutes(searchRoutes),
+  legacyRoutes(recordingsRoutes),
+  legacyRoutes(calendarRoutes),
+  legacyRoutes(mailRoutes),
+  legacyRoutes(adminRoutes),
+  legacyRoutes(notificationsRoutes),
+  legacyRoutes(offlineRoutes),
+  legacyRoutes(eventsRoutes),
+);
+assertRouteTable(routes, { moduleIds: MODULE_CATALOG.map(module => module.id) });
+
+export = routes;

@@ -19,10 +19,11 @@ function harness(t: import('node:test').TestContext) {
   const calls: FixtureValue[] = [];
   const route = async (req: FixtureValue, userId: string) => { calls.push({ userId, credential: req.authCredential }); return { ok: true }; };
   const auth = require('../dist/src/routes/auth') as typeof import('../src/routes/auth');
-  stub(paths[1], {
+  const { legacyTable } = require('./helpers/route-table.cts') as { legacyTable: (handlers: Record<string, FixtureValue>) => FixtureValue };
+  stub(paths[1], legacyTable({
     'PUT /api/contacts/:id': route, 'GET /api/contacts': route,
     'GET /api/auth/me': auth['GET /api/auth/me'], 'POST /api/auth/signin': auth['POST /api/auth/signin'], 'POST /api/auth/signout': auth['POST /api/auth/signout'],
-  });
+  }));
   stub(paths[2], { isModuleEnabled: async () => true });
   stub(paths[3], { getActiveRestoreSections: async () => new Set<FixtureValue>() });
   const sessions = new Set([token]);

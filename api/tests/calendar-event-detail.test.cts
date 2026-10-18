@@ -45,7 +45,8 @@ function eventUpdateHarness(t: import('node:test').TestContext, execute: (sql: s
   const stub = (name: FixtureValue, exports: FixtureValue) => { require.cache[name] = { id: name, filename: name, loaded: true, exports } as NodeJS.Module; };
   delete require.cache[paths[0]];
   stub(paths[1], { verifyToken: async () => 'owner', validateCsrfToken: () => true, refreshSessionCookies: () => {} });
-  stub(paths[2], { 'PUT /api/calendar/events/:id': routes['PUT /api/calendar/events/:id'] });
+  const { legacyTable } = require('./helpers/route-table.cts') as { legacyTable: (handlers: Record<string, FixtureValue>) => FixtureValue };
+  stub(paths[2], legacyTable({ 'PUT /api/calendar/events/:id': routes['PUT /api/calendar/events/:id'] }));
   stub(paths[3], { isModuleEnabled: async () => true });
   stub(paths[4], { getActiveRestoreSections: async () => new Set<FixtureValue>() });
   const connection = { execute, async beginTransaction() {}, async commit() {}, async rollback() {}, release() {} };
