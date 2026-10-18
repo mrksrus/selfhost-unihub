@@ -1,16 +1,16 @@
-import type { IncomingMessage } from 'node:http';
+import type { RouteRequest } from '../types';
 import type { RowDataPacket } from 'mysql2/promise';
 import { db } from '../state';
 import { getUserModules } from '../services/module-settings';
 import { escapeLike } from '../services/sql';
+import { defineRoutes } from '../http/route';
 
 function isoDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : (value || null);
 }
 
-export = {
-  'GET /api/search': async (req: IncomingMessage, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+export = defineRoutes({
+  'GET /api/search': { auth: 'user', module: null, handler: async (req: RouteRequest, userId: string) => {
 
     try {
       const url = new URL(req.url!, `http://${req.headers.host}`);
@@ -122,5 +122,5 @@ export = {
       console.error('Global search error:', error);
       return { error: 'Failed to search', status: 500 };
     }
-  },
-};
+  } },
+});
