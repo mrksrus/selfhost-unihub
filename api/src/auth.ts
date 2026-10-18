@@ -62,32 +62,21 @@ const getClientIP = createClientIpResolver({
   trustedProxyCidrs: TRUSTED_PROXY_CIDRS,
 });
 
-// CSRF token validation
-function validateCsrfToken(req: AuthRequest, res?: ServerResponse) {
+// CSRF token validation. `policy` is the matched route's csrf declaration
+// (http/route.ts): 'none' for the routes that issue the token (sign-in,
+// sign-up), 'background-header' where the service worker may send
+// X-Background-Sync: 1 instead of the token (it cannot read the CSRF cookie;
+// cross-origin callers cannot send the custom header without a rejected CORS
+// preflight), 'token' otherwise.
+type CsrfPolicy = 'token' | 'background-header' | 'none';
+function validateCsrfToken(req: AuthRequest, policy: CsrfPolicy = 'token') {
   // Skip CSRF for GET, HEAD, OPTIONS requests
   const method = req.method!.toUpperCase();
   if (['GET', 'HEAD', 'OPTIONS'].includes(method)) {
     return true;
   }
-
-  // Skip CSRF for auth endpoints (they generate new tokens)
-  const url = req.url!.split('?')[0];
-  if (url === '/api/auth/signin' || url === '/api/auth/signup') {
-    return true;
-  }
-
-  // The service worker can start a non-blocking same-origin mail sync while
-  // the app window is closed. Cross-origin callers cannot send this custom
-  // header without a rejected CORS preflight.
-  if (url === '/api/mail/sync/background' && req.headers['x-background-sync'] === '1') {
-    return true;
-  }
-  // Recordings saved on the device finish uploading from the service worker,
-  // which cannot read the CSRF cookie. The same custom-header rule applies.
-  if (/^\/api\/recordings\/uploads\/[^/]+(\/(chunk|complete))?$/.test(url)
-    && ['POST', 'DELETE'].includes(method) && req.headers['x-background-sync'] === '1') {
-    return true;
-  }
+  if (policy === 'none') return true;
+  if (policy === 'background-header' && req.headers['x-background-sync'] === '1') return true;
 
   // A request that proved its session with an Authorization header and carries
   // no auth cookie cannot be a cross-site forgery: browsers never add that

@@ -71,6 +71,17 @@ function restoreSectionFor(method: string, pathname: string) {
   return RESTORE_SECTION_BY_PATH_PREFIX.find(([prefix]) => pathname === prefix || pathname.startsWith(prefix + '/'))?.[1] ?? null;
 }
 
+// Routes the service worker calls with X-Background-Sync: 1 instead of a CSRF
+// token: a non-blocking mail sync while the app window is closed, and
+// finishing a recording upload saved on the device.
+const BACKGROUND_HEADER_CSRF_KEYS: ReadonlySet<string> = new Set([
+  'POST /api/mail/sync/background',
+  'POST /api/recordings/uploads/start',
+  'POST /api/recordings/uploads/:id/chunk',
+  'POST /api/recordings/uploads/:id/complete',
+  'DELETE /api/recordings/uploads/:id',
+]);
+
 function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
   const space = key.indexOf(' ');
   const method = key.slice(0, space);
@@ -79,6 +90,7 @@ function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
     module: getModuleForPath(pathname),
     restoreSection: restoreSectionFor(method, pathname),
     body: { limit: bodyLimitFor(key), kind: (key === 'POST /api/backup/import' ? 'backup-upload' : 'json') as 'backup-upload' | 'json' },
+    ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' as const } : {}),
   };
   // A legacy handler accepts a nullable user id, so it serves either auth level.
   const run = handler as unknown as (req: RouteRequest, userId: string | null, body: unknown, res: ServerResponse) => Promise<RouteResponse | undefined>;
@@ -89,5 +101,5 @@ function legacyRoutes(table: LegacyRouteTable): RouteTable {
   return defineRoutes(Object.fromEntries(Object.entries(table).map(([key, handler]) => [key, legacyRouteSpec(key, handler)])));
 }
 
-export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, RESTORE_SECTION_BY_PATH_PREFIX, bodyLimitFor };
+export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, RESTORE_SECTION_BY_PATH_PREFIX, BACKGROUND_HEADER_CSRF_KEYS, bodyLimitFor };
 export type { LegacyHandler, LegacyRouteTable };

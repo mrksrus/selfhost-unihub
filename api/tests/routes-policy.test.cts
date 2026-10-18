@@ -122,6 +122,14 @@ test('restore sections: every section has a write route, destructive settings lo
     { moduleIds: MODULE_CATALOG.map(module => module.id), sections: ['settings', 'contacts'] }), /no route writes section contacts/);
 });
 
+test('CSRF: sign-in and sign-up need no token, exactly the service-worker routes accept the background header', () => {
+  const none = Object.keys(routes).filter(key => routes[key].csrf === 'none').sort();
+  assert.deepEqual(none, ['POST /api/auth/signin', 'POST /api/auth/signup']);
+  const header = Object.keys(routes).filter(key => routes[key].csrf === 'background-header').sort();
+  assert.deepEqual(header, ['DELETE /api/recordings/uploads/:id', 'POST /api/mail/sync/background', 'POST /api/recordings/uploads/:id/chunk',
+    'POST /api/recordings/uploads/:id/complete', 'POST /api/recordings/uploads/start']);
+});
+
 // Limits declared by converted route files; the derived ones are pinned by route-spec.test.cts.
 test('credential routes keep their explicit body limits in the production table', () => {
   for (const key of ['PUT /api/admin/users/:id/password', 'POST /api/auth/signin', 'POST /api/auth/signup', 'PUT /api/auth/password']) {

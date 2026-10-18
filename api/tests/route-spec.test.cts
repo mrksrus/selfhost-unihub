@@ -1,7 +1,7 @@
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const routes = require('../dist/src/routes') as typeof import('../src/routes');
-const { PUBLIC_ROUTE_KEYS, bodyLimitFor } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
+const { PUBLIC_ROUTE_KEYS, BACKGROUND_HEADER_CSRF_KEYS, bodyLimitFor } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
 const { getModuleForPath } = require('../dist/src/services/module-catalog') as typeof import('../src/services/module-catalog');
 
 // Route files converted to defineRoutes() declare their own policy; the rest
@@ -31,6 +31,7 @@ test('every derived route spec equals the policy the boundary looked up before s
       module: getModuleForPath(pathname),
       restoreSection: mutating ? oldRestoreSection(pathname) : undefined,
       body: { limit: bodyLimitFor(key), kind: key === 'POST /api/backup/import' ? 'backup-upload' : 'json' },
+      ...(BACKGROUND_HEADER_CSRF_KEYS.has(key) ? { csrf: 'background-header' } : {}),
     };
     const { handler, ...policy } = spec;
     assert.equal(typeof handler, 'function', key);
@@ -38,6 +39,6 @@ test('every derived route spec equals the policy the boundary looked up before s
   }
 });
 
-test('the derived public set names routes that exist', () => {
-  for (const key of PUBLIC_ROUTE_KEYS) assert.ok(key in routes, `${key} is listed but has no route`);
+test('the derived public and background-header sets name routes that exist', () => {
+  for (const key of [...PUBLIC_ROUTE_KEYS, ...BACKGROUND_HEADER_CSRF_KEYS]) assert.ok(key in routes, `${key} is listed but has no route`);
 });

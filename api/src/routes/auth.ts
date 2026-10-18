@@ -106,8 +106,9 @@ function validCredentials(email: unknown, password: unknown) {
 }
 
 export = defineRoutes({
-  // Sign-up and sign-in are public; everything else needs the session the
-  // boundary verified. Credential bodies allow a 1024-character passphrase.
+  // Sign-up and sign-in are public and issue the CSRF token, so they need
+  // none; everything else needs the session the boundary verified. Credential
+  // bodies allow a 1024-character passphrase.
   'GET /api/auth/signup-mode': { auth: 'public', module: null, handler: async () => {
     try {
       return { signup_mode: await getSignupMode() };
@@ -116,7 +117,7 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/signup': { auth: 'public', module: null, body: { limit: 4096 }, handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/signup': { auth: 'public', module: null, body: { limit: 4096 }, csrf: 'none', handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
     const ip = getClientIP(req);
     const limited = checkLoginBudget(res, 'ip', ip);
     if (limited) return limited;
@@ -185,7 +186,7 @@ export = defineRoutes({
     }
   } },
 
-  'POST /api/auth/signin': { auth: 'public', module: null, body: { limit: 4096 }, handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/signin': { auth: 'public', module: null, body: { limit: 4096 }, csrf: 'none', handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
     const ip = getClientIP(req);
     const limited = checkLoginBudget(res, 'ip', ip);
     if (limited) return limited;
