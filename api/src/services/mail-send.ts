@@ -1,17 +1,15 @@
 import type { RowDataPacket } from 'mysql2/promise';
-import type { StoredFlag } from '../types';
+import type { StoredFlag, StagedAttachment } from '../types';
 
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
 import net from 'net';
-import fs from 'fs';
-import path from 'path';
-import { promisify } from 'util';
 import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { resolveMailConnectionTarget } from '../security/outbound-network';
 import { isModuleEnabled } from './module-settings';
-import { normalizeComposerAttachments } from './mail-attachments';
+import { normalizeComposerAttachments, stageAttachments, insertStagedAttachments, discardStagedAttachments } from './mail-attachments';
+import { withTransaction } from './mail-engine/repository';
 import { toBooleanFlag } from './mail-host-policy';
 import { normalizeRecipients } from './mail-recipients';
 
@@ -28,9 +26,6 @@ interface SmtpAccount {
   display_name: string | null;
   allow_self_signed: StoredFlag;
 }
-
-const writeFile = promisify(fs.writeFile);
-const mkdir = promisify(fs.mkdir);
 
 interface OutgoingEmail {
   /** Recipients as typed in the composer ("Name <a@example.com>, b@example.com") or a stored list. */
@@ -104,62 +99,47 @@ async function sendEmail(accountId: string, { subject, body, isHtml = false, att
     let sentCopyState = 'failed';
     let sentCopyError: string | null = null;
     let sentCopyId: string | null = null;
+    // Files are staged first and the rows commit together, like drafts and
+    // imports: a Sent copy never claims attachments whose rows do not exist.
+    let staged: StagedAttachment[] = [];
+    let commitAttempted = false;
     try {
       const emailId = crypto.randomUUID();
       const messageId = info.messageId || `<${Date.now()}-${emailId}@unihub.local>`;
-
-      // Bcc stays in the sender's own copy only; SMTP never puts it in the message headers.
-      await db.execute(
-        'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, body_text, body_html, has_attachments, received_at, folder, is_read) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [
-          emailId,
-          account.user_id,
-          accountId,
-          messageId,
-          subject || '(No subject)',
-          account.email_address,
-          account.display_name || null,
-          JSON.stringify(to),
-          storedRecipients(cc),
-          storedRecipients(bcc),
-          isHtml ? null : body,
-          isHtml ? body : null,
-          smtpAttachments.length > 0 ? 1 : 0,
-          new Date(),
-          'sent',
-          1,
-        ]
-      );
-
-      if (smtpAttachments.length > 0) {
-        const uploadsDir = path.join('/app/uploads/attachments', account.user_id);
-        await mkdir(uploadsDir, { recursive: true });
-
-        for (const attachment of smtpAttachments) {
-          const attachmentId = crypto.randomUUID();
-          const safeFilename = attachment.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-          const storagePath = path.join(uploadsDir, `${emailId}-${attachmentId}-${safeFilename}`);
-          await writeFile(storagePath, attachment.content);
-
-          await db.execute(
-            'INSERT INTO email_attachments (id, email_id, user_id, filename, content_type, size_bytes, storage_path, content_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            [
-              attachmentId,
-              emailId,
-              account.user_id,
-              attachment.filename,
-              attachment.contentType || 'application/octet-stream',
-              attachment.content.length,
-              storagePath,
-              null,
-            ]
-          );
-        }
-      }
+      staged = await stageAttachments({ userId: account.user_id, emailId, attachments: smtpAttachments });
+      await withTransaction(async connection => {
+        commitAttempted = false;
+        // Bcc stays in the sender's own copy only; SMTP never puts it in the message headers.
+        await connection.execute(
+          'INSERT INTO emails (id, user_id, mail_account_id, message_id, subject, from_address, from_name, to_addresses, cc_addresses, bcc_addresses, body_text, body_html, has_attachments, received_at, folder, is_read) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            emailId,
+            account.user_id,
+            accountId,
+            messageId,
+            subject || '(No subject)',
+            account.email_address,
+            account.display_name || null,
+            JSON.stringify(to),
+            storedRecipients(cc),
+            storedRecipients(bcc),
+            isHtml ? null : body,
+            isHtml ? body : null,
+            staged.length > 0 ? 1 : 0,
+            new Date(),
+            'sent',
+            1,
+          ]
+        );
+        await insertStagedAttachments(connection, staged);
+        commitAttempted = true;
+      });
       sentCopyState = 'confirmed';
       sentCopyId = emailId;
       console.log(`✓ Saved sent email to database: ${emailId}`);
     } catch (saveError) {
+      // Keep the files if COMMIT may have reached the server: their rows may exist.
+      if (!commitAttempted) await discardStagedAttachments(staged);
       sentCopyError = String((saveError as Error)?.message || saveError).slice(0, 240);
       console.error('Sent message delivered but local Sent copy failed:', sentCopyError);
     }

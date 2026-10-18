@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { db } from '../state';
 import { MIN_PASSWORD_LENGTH } from '../config';
-import { MAIL_RAW_STORAGE_ROOT } from '../services/mail';
+import { attachmentsRoot, rawRoot } from '../services/mail-storage';
 import { RECORDINGS_ROOT, deleteRecordingFiles } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
 import { serverEvents } from '../services/server-events';
@@ -26,8 +26,6 @@ interface Input {
   is_active?: unknown;
   signup_mode: string;
 }
-
-const ATTACHMENTS_ROOT = '/app/uploads/attachments';
 
 async function getActiveAdminCount() {
   const [rows] = await db.execute<RowDataPacket[]>(
@@ -143,12 +141,12 @@ async function buildAdminStorageOverview() {
     db.execute<RowDataPacket[]>("SELECT COUNT(*) AS jobs, SUM(status = 'ready') AS ready_jobs, COALESCE(SUM(file_size), 0) AS bytes FROM data_export_jobs"),
     db.execute<RowDataPacket[]>('SELECT COUNT(*) AS contacts FROM contacts'),
     db.execute<RowDataPacket[]>('SELECT COUNT(*) AS events FROM calendar_events'),
-    sumFilesUnder(ATTACHMENTS_ROOT),
-    sumFilesUnder(MAIL_RAW_STORAGE_ROOT),
+    sumFilesUnder(attachmentsRoot()),
+    sumFilesUnder(rawRoot()),
     sumFilesUnder(RECORDINGS_ROOT),
     sumFilesUnder(BACKUPS_ROOT),
-    sumFilesByImmediateChild(ATTACHMENTS_ROOT),
-    sumFilesByImmediateChild(MAIL_RAW_STORAGE_ROOT),
+    sumFilesByImmediateChild(attachmentsRoot()),
+    sumFilesByImmediateChild(rawRoot()),
     sumFilesByImmediateChild(RECORDINGS_ROOT, new Set(['.tmp'])),
     sumFilesByImmediateChild(BACKUPS_ROOT),
   ]);

@@ -20,6 +20,7 @@ import {
   wrapDataKeyForServer,
 } from './backup-container';
 import { pruneArchiveKeyIfUnreferenced } from './backup-archive-keys';
+import { attachmentsRoot, rawRoot } from './mail-storage';
 import {
   isAnyMailAccountSyncRunning,
   isAnyMailServerDeleteRunning,
@@ -55,8 +56,8 @@ interface RestoreJob extends RowDataPacket {
   expires_at: Date | string | null;
 }
 const RESTORE_ROOT = '/app/uploads/backups/restores';
-const ATTACHMENTS_ROOT = '/app/uploads/attachments';
-const MAIL_RAW_STORAGE_ROOT = '/app/uploads/mail-raw';
+const ATTACHMENTS_ROOT = attachmentsRoot();
+const MAIL_RAW_STORAGE_ROOT = rawRoot();
 const RECORDINGS_ROOT = '/app/uploads/recordings';
 const UPLOAD_RETENTION_DAYS = 7;
 const ACTIVE_RESTORE_STATUSES = new Set(['queued', 'running', 'cancelling']);

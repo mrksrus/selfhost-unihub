@@ -299,7 +299,11 @@ A new database is created from the 0.16.0 baseline, which stands for upgrade ste
 | `/app/uploads/backups/restores/<userId>` | Retained restore uploads |
 | `/app/uploads/backups/restores/work/<jobId>` | Temporary decrypted ZIP used by an active encrypted restore job |
 
-The Docker Compose file mounts `/app/uploads` as `uploads_data`.
+The Docker Compose file mounts `/app/uploads` as `uploads_data`. The two mail
+roots are defined once in `api/src/services/mail-storage.ts`, which also owns
+the "path is inside this root or owner directory" checks; the environment
+variables `MAIL_ATTACHMENT_UPLOAD_ROOT` and `MAIL_RAW_STORAGE_ROOT` override
+them, mainly for tests.
 
 ## Scheduled Jobs
 

@@ -3,7 +3,7 @@ import type { ApiError } from '../types';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { MAIL_RAW_STORAGE_ROOT } from './mail';
+import { attachmentsRoot, rawRoot } from './mail-storage';
 import { RECORDINGS_ROOT } from './recordings';
 import { BACKUP_METADATA_LIMITS } from './backup-format';
 import { SECTION_POLICIES } from './backup-catalog';
@@ -11,9 +11,9 @@ import { SECTION_POLICIES } from './backup-catalog';
 interface FileRangeSource { filePath: string; start: number; size: number }
 type DateValue = string | number | Date | null | undefined;
 
-const ATTACHMENTS_ROOT = '/app/uploads/attachments';
+const ATTACHMENTS_ROOT = attachmentsRoot();
 
-const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: MAIL_RAW_STORAGE_ROOT, recording: RECORDINGS_ROOT });
+const BACKUP_FILE_ROOTS = Object.freeze({ email_attachment: ATTACHMENTS_ROOT, raw_email: rawRoot(), recording: RECORDINGS_ROOT });
 
 const BACKUP_CONFLICT_MODES = new Set(['keep_existing', 'replace', 'keep_both']);
 

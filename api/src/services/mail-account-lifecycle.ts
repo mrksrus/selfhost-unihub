@@ -1,7 +1,7 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
 import fs from 'node:fs/promises';
-import path from 'node:path';
+import { ownedMailPath, realOwnedMailPath } from './mail-storage';
 import { db } from '../state';
 import { withMailAccountLock } from './mail-account-lock';
 import { isSectionRestoreActive } from './restore-locks';
@@ -95,19 +95,16 @@ async function disconnectAccount(userId: string, accountId: string) {
   });
 }
 
-async function removeUnreferencedRaw(storagePaths: readonly (string | null)[], executor: SqlExecutor = db) {
-  const root = path.resolve(process.env.MAIL_RAW_STORAGE_ROOT || '/app/uploads/mail-raw');
+async function removeUnreferencedRaw(userId: string, storagePaths: readonly (string | null)[], executor: SqlExecutor = db) {
   let deletedFiles = 0, failedFiles = 0;
   for (const stored of new Set(storagePaths.filter(Boolean))) {
-    const resolved = path.resolve(stored!);
-    if (!resolved.startsWith(root + path.sep)) { failedFiles++; continue; }
+    const resolved = ownedMailPath('raw', stored, userId);
+    if (!resolved) { failedFiles++; continue; }
     try {
       const [[used]] = await executor.execute<RowDataPacket[]>('SELECT id FROM emails WHERE raw_storage_path = ? LIMIT 1', [stored]);
       if (used) continue;
       // realpath prevents a database path under the root escaping via a symlink.
-      const real = await fs.realpath(resolved);
-      const realRoot = await fs.realpath(root);
-      if (!real.startsWith(realRoot + path.sep)) { failedFiles++; continue; }
+      if (!await realOwnedMailPath('raw', stored, userId)) { failedFiles++; continue; }
       await fs.unlink(resolved);
       deletedFiles++;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') failedFiles++; }
@@ -173,7 +170,7 @@ async function purgeAccount(userId: string, accountId: string, confirmation: unk
       if (!used) safeAttachments.push(stored);
     }
     const files = await (require('./mail') as typeof import('./mail')).deleteStoredAttachmentFiles(safeAttachments);
-    const raw = await removeUnreferencedRaw(rawPaths);
+    const raw = await removeUnreferencedRaw(userId, rawPaths);
     return { message: 'Disconnected account and its retained local mail and linked calendar permanently removed. Provider mail and events were not changed.', purged: true,
       email_count: preview!.email_count, deletedAttachmentFiles: files.deletedFiles, failedAttachmentFiles: files.failedFiles,
       deletedRawFiles: raw.deletedFiles, failedRawFiles: raw.failedFiles };

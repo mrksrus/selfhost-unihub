@@ -8,6 +8,7 @@ import type { ProtocolConnection } from '../../types/imap-protocol';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { rawRoot } from '../mail-storage';
 
 interface RawArchiveRow {
   raw_format?: string;
@@ -104,7 +105,7 @@ async function readVerifiedArchive(row: RawArchiveRow | null | undefined, { root
   if (!Number.isSafeInteger(Number(row.raw_bytes)) || Number(row.raw_bytes) < 0 || Number(row.raw_bytes) > maxBytes) return null;
   if (!/^[a-f0-9]{64}$/i.test(String(row.raw_sha256 || ''))) return null;
   const full = path.resolve(row.raw_storage_path || '');
-  const base = path.resolve(root || '/app/uploads/mail-raw', ...(userId == null ? [] : [String(userId)]));
+  const base = path.resolve(root || rawRoot(), ...(userId == null ? [] : [String(userId)]));
   if (!full.startsWith(`${base}${path.sep}`)) return null;
   let handle: FileHandle | null | undefined;
   try {
