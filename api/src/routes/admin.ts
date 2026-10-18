@@ -5,9 +5,11 @@ import path from 'path';
 import { db } from '../state';
 import { MIN_PASSWORD_LENGTH } from '../config';
 import { attachmentsRoot, rawRoot } from '../services/mail-storage';
-import { RECORDINGS_ROOT, deleteRecordingFiles } from '../services/recordings';
+import { RECORDINGS_ROOT } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
 import { serverEvents } from '../services/server-events';
+import { deleteUser } from '../services/user-lifecycle';
+import { clientError } from '../http/errors';
 import {
   isAdmin,
   hashPassword,
@@ -381,18 +383,11 @@ export = {
       if (targetUser.role === 'admin' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
         return { error: 'Cannot delete the last active admin', status: 400 };
       }
-      const [recordings] = await db.execute<RowDataPacket[]>(
-        'SELECT storage_path FROM recordings WHERE user_id = ?',
-        [id]
-      );
-      for (const recording of recordings || []) {
-        await deleteRecordingFiles(recording.storage_path);
-      }
-      await db.execute('DELETE FROM users WHERE id = ?', [id]);
-      serverEvents.closeUser(id);
+      await deleteUser(id, { actor: 'admin' });
       return { message: 'User deleted' };
     } catch (error) {
-      return { error: 'Failed to delete user', status: 500 };
+      if (!(error as ApiError).status) console.error('Admin delete user error:', error);
+      return clientError(error, 'Failed to delete user');
     }
   },
 

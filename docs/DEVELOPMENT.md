@@ -134,7 +134,10 @@ attachment and raw-message roots away from `/app/uploads/attachments` and
 deployment normally leaves them unset and mounts `/app/uploads`. Every mail,
 admin and backup code path reads the roots through
 `api/src/services/mail-storage.ts`, so an override applies to writing,
-downloading, deleting and measuring files alike.
+downloading, deleting and measuring files alike. `RECORDINGS_ROOT` and
+`BACKUP_ARCHIVES_ROOT` do the same for `/app/uploads/recordings` and
+`/app/uploads/backups` (the generated backup archives); user deletion removes
+files under all four roots.
 
 Useful checks:
 

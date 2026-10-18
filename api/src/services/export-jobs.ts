@@ -61,7 +61,7 @@ interface ExportRow extends RowDataPacket {
   downloaded_at?: Date | string | null;
 }
 
-const BACKUPS_ROOT = '/app/uploads/backups';
+const BACKUPS_ROOT = process.env.BACKUP_ARCHIVES_ROOT || '/app/uploads/backups';
 const activeExportJobs = new Set();
 const { SECTION_POLICIES, normalizeBackupRequest } = require('./backup-catalog') as typeof import('./backup-catalog');
 const EXPORT_SECTIONS = new Set(Object.keys(SECTION_POLICIES));

@@ -494,7 +494,8 @@ The JSON body carries `code: "RESTORE_IN_PROGRESS"`, so clients can tell this
 temporary answer from a lasting conflict. Waiting recording uploads stay queued
 and try again after the restore.
 
-Account deletion is blocked during any active restore.
+Account deletion is blocked during any active restore, whether the user or an
+administrator requests it.
 
 During mail restore:
 

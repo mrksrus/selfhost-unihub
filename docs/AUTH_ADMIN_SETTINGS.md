@@ -271,7 +271,7 @@ Admin routes require an authenticated user whose `users.role` is `admin`.
 | --- | --- | --- |
 | GET | `/api/admin/users` | List users |
 | PUT | `/api/admin/users/:id/password` | Reset a user's password and delete their sessions |
-| DELETE | `/api/admin/users/:id` | Delete user |
+| DELETE | `/api/admin/users/:id` | Delete user, their data and their uploaded files |
 | PUT | `/api/admin/users/:id/role` | Set role to `user` or `admin` |
 | PUT | `/api/admin/users/:id/activate` | Activate/deactivate user |
 | POST | `/api/admin/users/:id/2fa/reset` | Turn off another user's 2FA and delete their sessions; needs the admin's password |
@@ -287,6 +287,10 @@ Safety checks:
 - the last active admin cannot be deactivated
 - admins cannot reset their own 2FA through the admin endpoint
 - deactivating a user deletes their sessions
+- deleting a user removes their rows and their files (mail attachments, raw
+  mail, recordings, generated backup archives) through the same
+  `services/user-lifecycle.ts` as self-deletion; it is refused with
+  `409 RESTORE_IN_PROGRESS` while a restore runs for that user
 
 The storage overview returns aggregate counts and byte totals for mail
 attachments, raw mail archives, recordings, and generated backup archives. It also
@@ -334,11 +338,18 @@ These routes are for the current user and require CSRF:
 | POST | `/api/settings/clear-recordings` | Delete all recordings and files |
 | GET | `/api/settings/mail-sender-candidates` | Suggest sender/domain rule candidates from local mail |
 
-Account deletion clears auth and CSRF cookies after deleting the user.
+Account deletion (`services/user-lifecycle.ts`, shared with the admin route)
+stops the user's mail work, deletes the `users` row (every table cascades from
+it) and then removes the user's files under the configured roots: mail
+attachments, raw mail, recordings and generated backup archives, including the
+user's directory under each root. A file that cannot be removed is logged and
+stays visible as orphaned in the admin storage overview. The cookies are
+cleared after the user is deleted.
 
 During an active background restore, writes to affected sections return
 `409 Restore in progress`. Reads and unaffected sections remain available.
-Account deletion is blocked while any restore section is active.
+Account deletion is blocked while any restore section is active, also when
+an administrator requests it (`409 RESTORE_IN_PROGRESS`).
 
 ## Backup and restore in Settings
 
