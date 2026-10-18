@@ -15,4 +15,6 @@ export type With<T, K extends PropertyKey> = Extract<T, Record<K, unknown>>;
 type UnionKeys<U> = U extends unknown ? keyof U : never;
 // `All` is computed from the whole union before the conditional distributes over its members.
 type Normalized<U, All extends PropertyKey = UnionKeys<U>> = U extends unknown ? U & { [K in Exclude<All, keyof U>]?: undefined } : never;
-export type RouteTable<T> = { [K in keyof T]: T[K] extends (...args: infer A) => Promise<infer R> ? (...args: A) => Promise<Normalized<R>> : T[K] };
+// A module converted to route specs keeps the handler under `handler`.
+type NormalizedHandler<H> = H extends (...args: infer A) => Promise<infer R> ? (...args: A) => Promise<Normalized<R>> : H;
+export type RouteTable<T> = { [K in keyof T]: T[K] extends { handler: infer H } ? Omit<T[K], 'handler'> & { handler: NormalizedHandler<H> } : NormalizedHandler<T[K]> };

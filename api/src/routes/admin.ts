@@ -11,7 +11,6 @@ import { serverEvents } from '../services/server-events';
 import { deleteUser } from '../services/user-lifecycle';
 import { clientError } from '../http/errors';
 import {
-  isAdmin,
   hashPassword,
   verifyPassword,
   consumeAuthAttempt,
@@ -19,6 +18,7 @@ import {
   getAuthTokenFromRequest,
 } from '../auth';
 import { disableTwoFactor } from '../services/two-factor';
+import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -247,11 +247,11 @@ async function buildAdminStorageOverview() {
   };
 }
 
-export = {
-  // ── Admin endpoints (require admin role) ────────────────────────
-  'GET /api/admin/storage': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+export = defineRoutes({
+  // The boundary admits only an admin session (auth 'admin'); the 2FA reset
+  // re-checks the role inside its transaction because it also verifies the
+  // admin's password and live session there.
+  'GET /api/admin/storage': { auth: 'admin', module: null, handler: async (req: Request, userId: string) => {
 
     try {
       return { storage: await buildAdminStorageOverview() };
@@ -259,11 +259,9 @@ export = {
       console.error('Admin storage overview error:', error);
       return { error: 'Failed to get storage overview', status: 500 };
     }
-  },
+  } },
 
-  'GET /api/admin/users': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+  'GET /api/admin/users': { auth: 'admin', module: null, handler: async (req: Request, userId: string) => {
 
     try {
       const [users] = await db.execute<RowDataPacket[]>(
@@ -273,14 +271,11 @@ export = {
     } catch (error) {
       return { error: 'Failed to get users', status: 500 };
     }
-  },
+  } },
 
-  'PUT /api/admin/users/:id/password': async (req: Request, userId: string | null, body: Input) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+  'PUT /api/admin/users/:id/password': { auth: 'admin', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input) => {
 
-    const parts = req.url.split('?')[0].split('/');
-    const targetId = parts[parts.length - 2];
+    const targetId = req.params.id;
     const { new_password } = body;
 
     if (!new_password || new_password.length < MIN_PASSWORD_LENGTH) {
@@ -297,17 +292,14 @@ export = {
     } catch (error) {
       return { error: 'Failed to update password', status: 500 };
     }
-  },
+  } },
 
   // For a user who lost both the authenticator and the recovery codes. The admin
   // confirms with their own password; their own 2FA is turned off in Settings,
   // which needs a code, so a stolen admin session cannot remove it.
-  'POST /api/admin/users/:id/2fa/reset': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+  'POST /api/admin/users/:id/2fa/reset': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
-    const parts = req.url.split('?')[0].split('/');
-    const targetId = parts[parts.length - 3];
+    const targetId = req.params.id;
     if (targetId === userId) {
       return { error: 'Turn off your own two-factor authentication in Settings', status: 400 };
     }
@@ -365,13 +357,11 @@ export = {
     } finally {
       connection?.release();
     }
-  },
+  } },
 
-  'DELETE /api/admin/users/:id': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+  'DELETE /api/admin/users/:id': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string) => {
 
-    const id = req.url.split('?')[0].split('/').pop()!;
+    const id = req.params.id;
 
     if (id === userId) {
       return { error: 'Cannot delete your own account', status: 400 };
@@ -389,14 +379,11 @@ export = {
       if (!(error as ApiError).status) console.error('Admin delete user error:', error);
       return clientError(error, 'Failed to delete user');
     }
-  },
+  } },
 
-  'PUT /api/admin/users/:id/role': async (req: Request, userId: string | null, body: Input) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+  'PUT /api/admin/users/:id/role': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
 
-    const parts = req.url.split('?')[0].split('/');
-    const id = parts[parts.length - 2];
+    const id = req.params.id;
     const nextRole = String(body?.role || '').trim().toLowerCase();
     if (!['user', 'admin'].includes(nextRole)) {
       return { error: 'Invalid role. Must be user or admin.', status: 400 };
@@ -414,14 +401,11 @@ export = {
       console.error('Update user role error:', error);
       return { error: 'Failed to update user role', status: 500 };
     }
-  },
+  } },
 
-  'PUT /api/admin/users/:id/activate': async (req: Request, userId: string | null, body: Input) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+  'PUT /api/admin/users/:id/activate': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
 
-    const parts = req.url.split('?')[0].split('/');
-    const id = parts[parts.length - 2];
+    const id = req.params.id;
     const { is_active } = body;
 
     try {
@@ -439,11 +423,9 @@ export = {
     } catch (error) {
       return { error: 'Failed to update user status', status: 500 };
     }
-  },
+  } },
 
-  'GET /api/admin/settings/signup-mode': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+  'GET /api/admin/settings/signup-mode': { auth: 'admin', module: null, handler: async (req: Request, userId: string) => {
 
     try {
       const mode = await getSignupMode();
@@ -451,11 +433,9 @@ export = {
     } catch (error) {
       return { error: 'Failed to get settings', status: 500 };
     }
-  },
+  } },
 
-  'PUT /api/admin/settings/signup-mode': async (req: Request, userId: string | null, body: Input) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
-    if (!(await isAdmin(userId))) return { error: 'Forbidden', status: 403 };
+  'PUT /api/admin/settings/signup-mode': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
 
     const { signup_mode } = body;
     if (!['open', 'approval', 'disabled'].includes(signup_mode)) {
@@ -471,5 +451,5 @@ export = {
     } catch (error) {
       return { error: 'Failed to update settings', status: 500 };
     }
-  },
-};
+  } },
+});

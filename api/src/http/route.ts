@@ -105,13 +105,14 @@ interface RouteTableInvariants {
   restoreExemptPrefixes?: readonly string[];
 }
 
-// Whole-table rules, checked at startup and by the policy test: a module route
-// declares its module, a mutating route states its restore section, and every
-// key resolves through the matcher.
+// Whole-table rules, checked at startup and by the policy test: an admin route
+// declares auth 'admin', a module route declares its module, a mutating route
+// states its restore section, and every key resolves through the matcher.
 function assertRouteTable(table: RouteTable, { moduleIds, restoreExemptPrefixes = ['/api/backup/', '/api/auth/'] }: RouteTableInvariants) {
   const match = compileRouteMatcher(Object.keys(table));
   for (const [key, spec] of Object.entries(table)) {
     const { method, path } = splitRouteKey(key);
+    if (path.startsWith('/api/admin/') && spec.auth !== 'admin') invalid(key, 'routes under /api/admin/ must declare auth "admin"');
     const moduleId = moduleIds.find(id => path === `/api/${id}` || path.startsWith(`/api/${id}/`));
     if (moduleId && spec.module !== moduleId) invalid(key, `routes under /api/${moduleId}/ must declare module "${moduleId}"`);
     if (MUTATING_METHODS.has(method) && spec.restoreSection === undefined && !restoreExemptPrefixes.some(prefix => path.startsWith(prefix))) {

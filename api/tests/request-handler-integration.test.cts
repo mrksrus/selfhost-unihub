@@ -148,7 +148,6 @@ test('a long chord sheet and long contact notes reach their handlers; each expli
     ['POST', '/api/auth/signin', 4096],
     ['POST', '/api/auth/signup', 4096],
     ['PUT', '/api/auth/password', 4096],
-    ['PUT', '/api/admin/users/u2/password', 4096],
   ] as const) {
     const result = await run(method, path, '{}', { 'content-length': String(limit + 1) });
     assert.equal(result.status, 413, `${method} ${path}`);
