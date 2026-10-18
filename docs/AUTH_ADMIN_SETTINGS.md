@@ -35,13 +35,17 @@ For authenticated `POST`, `PUT`, and `DELETE` requests, the API requires:
 CSRF is skipped for:
 
 - `GET`, `HEAD`, `OPTIONS`
-- `POST /api/auth/signin`
-- `POST /api/auth/signup`
-- `POST /api/mail/sync/background` when `X-Background-Sync: 1` is present
-- recording upload routes with `X-Background-Sync: 1` (the service worker
-  finishing an upload)
+- routes whose spec declares `csrf: 'none'`: `POST /api/auth/signin` and
+  `POST /api/auth/signup`, which issue the token
+- routes whose spec declares `csrf: 'background-header'` when
+  `X-Background-Sync: 1` is present: `POST /api/mail/sync/background` and the
+  recording upload routes (the service worker finishing an upload)
 - requests whose session was verified from an `Authorization: Bearer` header
   and that carry no `auth-token` cookie at all
+
+The exemptions are read from the matched route's spec
+([Request Handling](ARCHITECTURE.md#request-handling)), not from the URL;
+`routes-policy.test.cts` pins which routes declare them.
 
 The last rule is what lets a native client (the planned Android app) write
 without cookies. It is safe because a browser never attaches an `Authorization`
@@ -51,7 +55,8 @@ form or image load. `verifyToken` records which credential it accepted in
 `req.authCredential`; the CSRF check reads that record instead of looking at the
 headers again. When an auth cookie is present next to the bearer header, the
 cookie could have carried the request, so the cookie/header token check still
-applies. Tests: `api/tests/request-csrf.test.cts`.
+applies; the tokens are compared in constant time. Tests:
+`api/tests/request-csrf.test.cts`.
 
 The frontend stores the CSRF token in memory via `src/lib/api.ts`; it does not
 store auth tokens in localStorage.
