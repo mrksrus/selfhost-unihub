@@ -26,7 +26,8 @@ const forbidden = (code: string, message: string, details?: unknown) => new ApiE
 const notFound = (code: string, message: string, details?: unknown) => new ApiError(404, code, message, details);
 const conflict = (code: string, message: string, details?: unknown) => new ApiError(409, code, message, details);
 
-interface ClientErrorResponse { error: string; status: number; code?: string; details?: unknown }
+// A type alias, not an interface: a route returns it where RouteResponse is expected.
+type ClientErrorResponse = { error: string; status: number; code?: string; details?: unknown };
 
 // Route catch blocks and the request boundary answer a caught error through
 // this: a 4xx with a message meant for the client keeps it, everything else

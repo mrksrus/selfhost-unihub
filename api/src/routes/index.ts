@@ -30,7 +30,7 @@ const routes = mergeRouteTables(
   legacyRoutes(calendarRoutes),
   legacyRoutes(mailRoutes),
   legacyRoutes(adminRoutes),
-  legacyRoutes(notificationsRoutes),
+  notificationsRoutes,
   legacyRoutes(offlineRoutes),
   legacyRoutes(eventsRoutes),
 );

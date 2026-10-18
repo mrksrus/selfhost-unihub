@@ -426,7 +426,8 @@ test('notification routes pass typed validation errors through and hide unknown 
   stub(paths[1], { subscribe: async () => { throw failure; }, unsubscribe: async (_user: string, endpoint: unknown) => { if (typeof endpoint !== 'string') throw badRequest('NOTIFICATION_ENDPOINT_INVALID', 'Invalid subscription endpoint'); return { subscribed: false }; } });
   stub(paths[2], {});
   stub(paths[3], { getAuthTokenFromRequest: () => 'token' });
-  const routes = require(paths[0]) as Record<string, (req: FixtureValue, userId: string | null, body: FixtureValue, res: FixtureValue) => Promise<FixtureValue>>;
+  const specs = require(paths[0]) as Record<string, { handler: (req: FixtureValue, userId: string, body: FixtureValue, res: FixtureValue) => Promise<FixtureValue> }>;
+  const routes = Object.fromEntries(Object.entries(specs).map(([key, spec]) => [key, spec.handler]));
   t.mock.method(console, 'error', () => {});
 
   assert.deepEqual(await routes['POST /api/notifications/unsubscribe']({ url: '/api/notifications/unsubscribe' }, 'u1', { endpoint: 7 }, {}),
