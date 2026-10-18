@@ -7,6 +7,8 @@ import type { RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor } from '../../types';
 
 import { db } from '../../state';
+import { WAITING, DUE_SQL } from './operation-states';
+import { sqlList } from './job-kinds';
 
 interface BatchAccount { id: string; user_id: string }
 interface BatchOptions { operationId?: string | null; signal?: AbortSignal; [key: string]: unknown }
@@ -16,12 +18,10 @@ interface BatchDependencies<T> {
   executor?: SqlExecutor;
 }
 const OPERATION_BATCH_LIMIT = 50;
-const DUE = `((is_current=TRUE AND state IN ('queued','retry_wait')) OR (action='move' AND dispatched=TRUE AND state IN ('executing','verifying','reconciling'))
-  OR (action IN ('read','star') AND dispatched=TRUE AND state IN ('executing','verifying','reconciling'))) AND available_at<=UTC_TIMESTAMP()`;
 
 // Mirrors the executor's selection for one operation id.
 async function operationDue(account: BatchAccount, operationId: string, executor: SqlExecutor = db) {
-  const [rows] = await executor.execute<(RowDataPacket & { id: string })[]>(`SELECT id FROM mail_writebacks WHERE id=? AND mail_account_id=? AND user_id=? AND ${DUE} LIMIT 1`,
+  const [rows] = await executor.execute<(RowDataPacket & { id: string })[]>(`SELECT id FROM mail_writebacks WHERE id=? AND mail_account_id=? AND user_id=? AND ${DUE_SQL} LIMIT 1`,
     [operationId, account.id, account.user_id]);
   return rows.length > 0;
 }
@@ -34,7 +34,7 @@ async function processOperationBatch<T>(account: BatchAccount, connection: T, op
   if (options.operationId) await run(options.operationId);
   if (connectionFailed || options.signal?.aborted) return { needsSync, connectionFailed, processed };
   const [rows] = await executor.execute<(RowDataPacket & { id: string })[]>(`SELECT id FROM mail_writebacks WHERE mail_account_id=? AND user_id=?
-    AND is_current=TRUE AND dispatched=FALSE AND state IN ('queued','retry_wait') AND available_at<=UTC_TIMESTAMP()
+    AND is_current=TRUE AND dispatched=FALSE AND state IN (${sqlList(WAITING)}) AND available_at<=UTC_TIMESTAMP()
     ORDER BY created_at,id LIMIT ${Math.max(1, Math.floor(limit))}`, [account.id, account.user_id]);
   for (const { id } of rows) {
     if (id === options.operationId) continue;

@@ -379,29 +379,6 @@ async function createImapBox(connection: ProtocolConnection, folderName: string)
   return { created: result?.created !== false };
 }
 
-async function ensureCustomImapFoldersForUser(userId: string, connection: ProtocolConnection, availableFolders: readonly string[] | null | undefined, dbConnection: SqlExecutor = db) {
-  if (!userId || !connection) return { created: 0, failed: [] };
-  const [localFolders] = await dbConnection.execute<RowDataPacket[]>(
-    'SELECT display_name FROM mail_folders WHERE user_id = ? AND is_system = FALSE ORDER BY position ASC, display_name ASC',
-    [userId]
-  );
-  const existingNames = new Set((availableFolders || []).map(name => String(name).trim().toLowerCase()));
-  const failed = [];
-  let created = 0;
-  for (const folder of localFolders || []) {
-    const displayName = normalizeMailFolderDisplayName(folder.display_name);
-    if (!displayName || existingNames.has(displayName.toLowerCase())) continue;
-    try {
-      await createImapBox(connection, displayName);
-      existingNames.add(displayName.toLowerCase());
-      created += 1;
-    } catch (error) {
-      failed.push({ displayName, error: (error as Error).message || String(error) });
-    }
-  }
-  return { created, failed };
-}
-
 async function createRemoteMailFolderForUserAccounts(userId: string, folderName: unknown, accountId: string) {
   const displayName = normalizeMailFolderDisplayName(folderName);
   if (!userId || !displayName || !accountId) return { status: 'complete', retryable: false, created: 0, existing: 0, accounts: [] };
@@ -463,6 +440,5 @@ export {
   registerCustomImapFoldersForUser,
   pickImapSyncFolders,
   createImapBox,
-  ensureCustomImapFoldersForUser,
   createRemoteMailFolderForUserAccounts,
 };

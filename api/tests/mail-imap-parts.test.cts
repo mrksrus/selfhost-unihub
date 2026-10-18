@@ -5,7 +5,6 @@ const {
   buildMailHostTrustResult,
   deleteImapUid,
   isTlsTrustError,
-  loadExistingImportedUidSet,
   normalizeSyncFetchLimit,
   recordMailServerMessageForDeletion,
   validateMailHostPolicy,

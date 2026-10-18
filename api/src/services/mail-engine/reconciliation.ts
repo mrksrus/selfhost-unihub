@@ -7,6 +7,8 @@ import type { CopyUidMapping } from '../../types/imap-protocol';
 
 import { db } from '../../state';
 import * as runtime from './runtime';
+import { UNPROVEN, sqlStates } from './operation-states';
+import { sqlList } from './job-kinds';
 
 interface OperationIdentity { operationId: string; userId: string; accountId: string }
 interface Settlement extends OperationIdentity {
@@ -171,7 +173,7 @@ async function settleMoveEvidence({ operationId, userId, accountId, attemptId = 
     // An accepted later request is allowed to wait behind this effect. A later
     // *dispatched* placement is not overwritten by the older readback.
     const [[later]] = await cx.execute<RowDataPacket[]>(`SELECT id FROM mail_writebacks WHERE email_id=? AND user_id=? AND action='move'
-      AND intent_revision>? AND dispatched=TRUE AND state NOT IN ('cancelled','rejected','superseded') LIMIT 1`, [op.email_id, userId, op.intent_revision]);
+      AND intent_revision>? AND dispatched=TRUE AND state NOT IN (${sqlStates('cancelled', 'rejected', 'superseded')}) LIMIT 1`, [op.email_id, userId, op.intent_revision]);
     if (later) return { settled: false, reason: 'newer_dispatched_placement' };
     if (found.email_id !== op.email_id) {
       // Retain all bytes/attachments and the provisional ID as a local-only
@@ -214,7 +216,7 @@ async function reconcileObservedOccurrence({ executor, userId, accountId, emailI
   // Scanner calls this after committing/upserting its verified occurrence within the same transaction.
   return transaction(async cx => {
     const [rows] = await cx.execute<RowDataPacket[]>(`SELECT id FROM mail_writebacks WHERE user_id=? AND mail_account_id=? AND email_id=?
-      AND action='move' AND dispatched=TRUE AND state IN ('reconciling','needs_attention','verifying','executing')
+      AND action='move' AND dispatched=TRUE AND state IN (${sqlList(UNPROVEN)})
       ORDER BY intent_revision LIMIT 25 FOR UPDATE`, [userId, accountId, emailId]);
     const result = [];
     for (const row of rows) result.push(await settleMoveEvidence({ operationId: row.id, userId, accountId, executor: cx,

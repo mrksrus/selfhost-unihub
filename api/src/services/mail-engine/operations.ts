@@ -8,6 +8,8 @@ import { db } from '../../state';
 import * as transport from './transport';
 import * as reconciliation from './reconciliation';
 import * as runtime from './runtime';
+import { WAITING, UNRESOLVED, UNPROVEN, SETTLED, DONE, DUE_SQL, statusFor } from './operation-states';
+import { sqlList } from './job-kinds';
 import { canRunModule } from '../access-policy';
 
 interface StateContext {
@@ -61,14 +63,13 @@ async function setState(op: OperationRow, state: string, error: string | null = 
   return publishedState(op, state, transaction(async cx => {
     const [[row]] = await cx.execute<(RowDataPacket & OperationRow)[]>(`SELECT * FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`, [op.id, op.user_id, op.mail_account_id]);
     // A user cancel or newer intent may land while this worker holds a stale copy.
-    if (!row || ['confirmed', 'cancelled', 'superseded'].includes(row.state) || !await accountFence(cx, op, generation, workerId, jobId)) return false;
-    const status = ['confirmed', 'superseded', 'cancelled'].includes(state) ? 'done'
-      : ['needs_attention', 'rejected'].includes(state) ? 'conflict' : 'pending';
+    if (!row || DONE.includes(row.state) || !await accountFence(cx, op, generation, workerId, jobId)) return false;
+    const status = statusFor(state);
     await cx.execute(`UPDATE mail_writebacks SET state=?,status=?,error=?,evidence_json=COALESCE(?,evidence_json),dispatched=IF(?,FALSE,dispatched),available_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? SECOND),attempts=attempts+?
       WHERE id=? AND user_id=? AND mail_account_id=?`,
     [state, status, error && safeText(error), evidence && JSON.stringify(evidence), clearDispatch, due || 0, bump ? 1 : 0, op.id, op.user_id, op.mail_account_id]);
     if (attemptId) await cx.execute(`UPDATE mail_operation_attempts SET outcome=?,transmission=?,evidence_json=?,
-      completed_at=IF(? IN ('reconciling','needs_attention','verifying','executing'),NULL,UTC_TIMESTAMP())
+      completed_at=IF(? IN (${sqlList(UNPROVEN)}),NULL,UTC_TIMESTAMP())
       WHERE id=? AND operation_id=? AND user_id=? AND mail_account_id=? AND completed_at IS NULL`,
     [state, transmission, evidence && JSON.stringify(evidence), state, attemptId, op.id, op.user_id, op.mail_account_id]);
     if (!attemptId && state === 'needs_attention') await cx.execute(`UPDATE mail_operation_attempts SET outcome='needs_attention'
@@ -92,7 +93,7 @@ async function stall(op: OperationRow, reason: string, ctx: StateContext) {
 async function beginDispatch(op: OperationRow, generation: number, observedModseq: string | null, workerId: string | null | undefined, jobId: string | null | undefined) {
   return transaction(async cx => {
     const [[row]] = await cx.execute<(RowDataPacket & OperationRow)[]>(`SELECT * FROM mail_writebacks WHERE id=? AND user_id=? AND mail_account_id=? FOR UPDATE`, [op.id, op.user_id, op.mail_account_id]);
-    if (!row || !Number(row.is_current) || row.dispatched || !['queued', 'retry_wait'].includes(row.state)
+    if (!row || !Number(row.is_current) || row.dispatched || !WAITING.includes(row.state)
       || !await accountFence(cx, row, generation, workerId, jobId)) throw Object.assign(new Error('Stale intent or account fence'), { code: 'STALE_FENCE' });
     const attempt = await runtime.beginOperationAttempt({ operationId: row.id, userId: row.user_id,
       accountId: row.mail_account_id, workerId: workerId!, generation: Number(generation) }, cx);
@@ -209,7 +210,7 @@ async function applyMove(op: OperationRow, connection: ProtocolConnection, gener
   }
   const ctx = { generation, workerId, jobId };
   const [prior] = await db.execute<RowDataPacket[]>(`SELECT id,state FROM mail_writebacks WHERE user_id=? AND mail_account_id=? AND email_id=?
-    AND action='move' AND intent_revision<? AND dispatched=TRUE AND state NOT IN ('confirmed','cancelled','superseded','rejected')
+    AND action='move' AND intent_revision<? AND dispatched=TRUE AND state NOT IN (${sqlList(SETTLED)})
     ORDER BY intent_revision DESC LIMIT 25`, [op.user_id, op.mail_account_id, op.email_id, op.intent_revision]);
   // A prior MOVE's effect must settle first: the message may already have left
   // this source. Once its bounded check ended unresolved, waiting could be
@@ -384,10 +385,7 @@ async function processDueOperations(account: { id: string; user_id: string }, co
   const fence = await runtime.assertFence({ accountId: account.id, workerId: workerId!, generation: Number(workerGeneration), jobId });
   if (signal?.aborted || fence.cancellationRequested) throw stopped();
   const [ops] = await db.execute<(RowDataPacket & OperationRow)[]>(`SELECT * FROM mail_writebacks WHERE mail_account_id=? AND user_id=?
-    AND ((is_current=TRUE AND state IN ('queued','retry_wait')) OR (action='move' AND dispatched=TRUE AND state IN ('executing','verifying'))
-      OR (action='move' AND dispatched=TRUE AND state='reconciling')
-      OR (action IN ('read','star') AND dispatched=TRUE AND state IN ('executing','verifying','reconciling')))
-    AND available_at<=UTC_TIMESTAMP() ${operationId ? 'AND id=?' : ''} ORDER BY created_at,id LIMIT 25`,
+    AND ${DUE_SQL} ${operationId ? 'AND id=?' : ''} ORDER BY created_at,id LIMIT 25`,
   operationId ? [account.id, account.user_id, operationId] : [account.id, account.user_id]);
   let needsSync = false, connectionFailed = false;
   for (const op of ops) {
@@ -419,10 +417,10 @@ async function deferAccountOffline(accountId: string, userId: string, error: unk
   const [result] = await db.execute<ResultSetHeader>(`UPDATE mail_writebacks SET state='retry_wait',status='pending',error=?,
     available_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL LEAST(3600,15*POW(2,LEAST(8,attempts))) SECOND),attempts=attempts+1
     WHERE mail_account_id=? AND user_id=? AND is_current=TRUE AND dispatched=FALSE
-    AND state IN ('queued','retry_wait') AND available_at<=UTC_TIMESTAMP()`, [safeText(error), accountId, userId]);
+    AND state IN (${sqlList(WAITING)}) AND available_at<=UTC_TIMESTAMP()`, [safeText(error), accountId, userId]);
   // Uncertain dispatched work keeps its state; only its next read-only check waits.
   await db.execute(`UPDATE mail_writebacks SET available_at=DATE_ADD(UTC_TIMESTAMP(), INTERVAL LEAST(3600,15*POW(2,LEAST(8,attempts))) SECOND)
-    WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN ('executing','verifying','reconciling')
+    WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN (${sqlList(UNRESOLVED)})
     AND available_at<=UTC_TIMESTAMP()`, [accountId, userId]);
   return result.affectedRows;
 }

@@ -7,7 +7,8 @@ import * as imapClient from './mail-imap-client';
 import { guardImapConnection, runGuardedImap, closeImapConnection } from './mail-imap-guard';
 import { buildImapConnectionConfig } from './mail-host-policy';
 import { withTransaction, repointToLiveOccurrence } from './mail-engine/repository';
-import { deleteEmailRows, removeUnreferencedFiles, SETTLED_OPERATION_STATES } from './mail-sync-policy';
+import { SETTLED } from './mail-engine/operation-states';
+import { deleteEmailRows, removeUnreferencedFiles } from './mail-sync-policy';
 import { yieldMailReadWork } from './mail-sync-control';
 import { SYSTEM_MAIL_FOLDER_SET } from './mail-folders';
 
@@ -21,7 +22,7 @@ interface Options {
 }
 
 const fail = (status: number, message: string): ApiError => Object.assign(new Error(message), { status });
-const settled = SETTLED_OPERATION_STATES.map(() => '?').join(',');
+const settled = SETTLED.map(() => '?').join(',');
 
 async function connectToAccount(account: AccountRow) {
   const config = await buildImapConnectionConfig(account);
@@ -69,7 +70,7 @@ async function settleBox(cx: PoolConnection, { userId, slug, box }: { userId: st
         WHERE o.email_id = e.id AND o.user_id = e.user_id AND o.mail_account_id = e.mail_account_id
           AND NOT (o.mailbox_id <=> ?) AND m.state <> 'missing' AND o.presence IN ('present','quarantined')) AS elsewhere
     FROM emails e WHERE e.user_id = ? AND e.mail_account_id = ? AND e.folder = ? FOR UPDATE`,
-  [...SETTLED_OPERATION_STATES, mailboxId, mailboxId, userId, accountId, slug]);
+  [...SETTLED, mailboxId, mailboxId, userId, accountId, slug]);
 
   const doomed: string[] = [];
   let moved = 0;

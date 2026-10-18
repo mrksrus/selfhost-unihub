@@ -65,7 +65,6 @@ and an icon, and that the page loads no inline script.
 | `api/src/services/mail-attachments.ts` | Attachment validation, staging and inline references |
 | `api/src/services/mail-drafts.ts` | Atomic draft replacements |
 | `api/src/services/mail-import.ts` | Complete-message transactions and durable queue insertion |
-| `api/src/services/mail-sync-state.ts` | Per-folder UID progress and resets |
 | `api/src/services/mail-idle.ts` | IMAP IDLE supervisor: one read-only INBOX session per eligible account; changes become ordinary durable jobs |
 | `api/src/services/offline.ts` | Owner-scoped, size-bounded offline snapshots |
 | `api/src/services/caldav.ts`, `calendar-sync.ts`, `calendar-ical.ts`, `calendar-accounts.ts` | CalDAV discovery and requests, the sync engine and writeback, iCalendar parsing and recurrence expansion, calendars of mail accounts |
@@ -472,7 +471,10 @@ Important boundaries in the current code:
 queue in `mail-account-lock.ts` serializes settings with sync/deletion workers.
 The durable engine in `mail-engine/` scans each mapped provider mailbox in bounded
 UID windows, reconciles verified current locations and retains absent copies. Original provider identity remains
-separate from current bindings and local filing. This assumes the standard single
+separate from current bindings and local filing. Its job kinds (`mail-engine/job-kinds.ts`)
+and operation states (`mail-engine/operation-states.ts`) are declared once; the
+SQL `IN (...)` lists, the "due" predicate and the retry/cancel predicates are
+built from those arrays. This assumes the standard single
 API process; multiple API replicas require distributed worker coordination.
 
 Migration 3 and the recovery catalog declare mode/current-location fields. Restore

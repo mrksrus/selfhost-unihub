@@ -5,6 +5,7 @@ import type { EngineExecutor, MailboxInput, OccurrenceInput, CursorInput, Mailbo
 import { randomUUID } from 'node:crypto';
 import { db } from '../../state';
 import { assertUid32, assertDecimal64 } from './repository-identity';
+import { sqlStates } from './operation-states';
 
 interface ReceiptInput { userId: string; clientKey: string; requestHash: string; response: unknown }
 const STREAMS = new Set(['recent', 'history', 'flags', 'presence', 'bodies']);
@@ -70,7 +71,7 @@ async function ensureMailbox({ userId, accountId, folderName, epoch = null, meta
     // intents are kept but need a user retry (rebased after sync) or discard.
     const stale = `user_id = ? AND mail_account_id = ? AND (BINARY remote_folder = BINARY ?
         OR (? = 'INBOX' AND remote_folder REGEXP '^[iI][nN][bB][oO][xX]$')) AND remote_uidvalidity <> ?
-        AND state IN ('queued','executing','verifying','retry_wait')`;
+        AND state IN (${sqlStates('queued', 'executing', 'verifying', 'retry_wait')})`;
     // Keep recorded COPYUID/UID mapping evidence; the outcome check needs it.
     await cx.execute(`UPDATE mail_writebacks SET state = 'reconciling', status = 'pending',
       evidence_json = JSON_SET(COALESCE(evidence_json, JSON_OBJECT()), '$.reason', 'epoch_changed')
@@ -240,8 +241,12 @@ async function markAbsentInWindow({ userId, accountId, mailboxId, epoch, windowS
     [userId, accountId, mailboxId, epoch, windowStart, windowEnd, ...ids]);
   return result.affectedRows;
 }
+// The one idempotency-key grammar: the route refuses anything else at the
+// boundary, the writeback service and this store check the same rule, and a
+// restored receipt must satisfy it too. The browser sends a UUID.
+const CLIENT_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
 function validateClientKey(key: unknown) {
-  if (typeof key !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(key)) throw new TypeError('Invalid idempotency key');
+  if (typeof key !== 'string' || !CLIENT_KEY_PATTERN.test(key)) throw new TypeError('Invalid idempotency key');
   return key;
 }
 async function getReceipt({ userId, clientKey }: { userId: string; clientKey: string }, executor: SqlExecutor = db) {
@@ -279,6 +284,7 @@ async function finishReceipt({ userId, clientKey, requestHash, response }: Recei
   if (result.affectedRows !== 1) throw fail('IDEMPOTENCY_KEY_BUSY', 'Idempotency receipt was not claimed by this request');
 }
 export {
+  CLIENT_KEY_PATTERN,
   withTransaction,
   isDeadlock,
   ownAccount,

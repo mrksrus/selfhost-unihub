@@ -8,6 +8,9 @@ import { isModuleEnabled, isModuleBackgroundEnabled } from './module-settings';
 import { canRunModule } from './access-policy';
 import * as runtime from './mail-engine/runtime';
 import * as repository from './mail-engine/repository';
+import { WAITING, UNRESOLVED, UNPROVEN, ACTIVE, CANCELLABLE, MOVE_RECHECK, sqlStates,
+  dispatchedMove, canRetry, canCancel, canAcceptServerState } from './mail-engine/operation-states';
+import { sqlList } from './mail-engine/job-kinds';
 import { publishMailChanged, publishMailOperation } from './server-events';
 
 interface EmailRow extends RowDataPacket {
@@ -68,7 +71,7 @@ async function unverifiable(cx: SqlExecutor, userId: string, emails: EmailRow[])
 }
 function keyCheck(key: unknown) {
   if (key === undefined || key === null) return null;
-  if (typeof key !== 'string' || !/^[\x21-\x7e]{1,128}$/.test(key)) throw fail('Invalid Idempotency-Key', 400);
+  if (typeof key !== 'string' || !repository.CLIENT_KEY_PATTERN.test(key)) throw fail('Invalid Idempotency-Key', 400);
   return key;
 }
 function canonicalRequest(ids: string[], changes: Record<string, unknown>) {
@@ -123,7 +126,7 @@ async function queueChanges(cx: SqlExecutor, userId: string, emails: EmailRow[],
       const [oldRows] = await cx.execute<OperationRow[]>(`SELECT * FROM mail_writebacks WHERE user_id=? AND mail_account_id=? AND email_id=? AND action=?
         ORDER BY intent_revision DESC,created_at DESC,id DESC LIMIT 1 FOR UPDATE`, [userId, email.mail_account_id, email.id, action]);
       const old = oldRows[0];
-      if (old && Number(old.is_current) && ['queued', 'executing', 'verifying', 'reconciling', 'retry_wait'].includes(old.state)
+      if (old && Number(old.is_current) && ACTIVE.includes(old.state)
         && old.target_value === target) {
         operationIds.push(old.id); revisions.push(Number(old.intent_revision)); accounts.add(email.mail_account_id); continue;
       }
@@ -212,34 +215,18 @@ async function getOperationReceipt(userId: string, key: string) {
     [userId, ...response.operation_ids]);
   return { found: true, response, operations: ops.map(projectOperation) };
 }
-// These predicates mirror the WHERE clauses of retryWriteback/cancelWriteback.
-// A dispatched MOVE only gets a read-only outcome check and is never discarded:
-// its provider effect may have happened. Flag set/clear is idempotent, so a
-// stuck flag is retried from a fresh provider read or discarded.
-const RETRY_STATES = ['needs_attention', 'retry_wait', 'rejected', 'reconciling'];
-const CANCEL_STATES = ['queued', 'retry_wait', 'needs_attention', 'reconciling'];
-const moveCheck = (op: OperationRow) => op.action === 'move' && Number(op.dispatched);
-function canRetry(op: OperationRow) {
-  if (moveCheck(op)) return ['needs_attention', 'reconciling', 'retry_wait'].includes(op.state);
-  if (!Number(op.is_current)) return false;
-  return Number(op.dispatched) ? op.state === 'needs_attention' : RETRY_STATES.includes(op.state);
-}
-function canCancel(op: OperationRow) {
-  if (Number(op.dispatched)) return op.action !== 'move' && op.state === 'needs_attention';
-  return CANCEL_STATES.includes(op.state);
-}
-// Mirrors the WHERE clause of acceptServerState.
-const canAcceptServerState = (op: OperationRow) => Boolean(moveCheck(op)) && op.state === 'needs_attention';
+// can_retry/can_cancel/can_accept_server_state come from the state registry,
+// which mirrors the WHERE clauses of retryWriteback/cancelWriteback/acceptServerState.
 function projectOperation(op: OperationRow) {
   return { ...op, is_current: Boolean(Number(op.is_current)), can_retry: canRetry(op), can_cancel: canCancel(op),
-    can_accept_server_state: canAcceptServerState(op), retry_action: moveCheck(op) ? 'check_outcome' : 'retry' };
+    can_accept_server_state: canAcceptServerState(op), retry_action: dispatchedMove(op) ? 'check_outcome' : 'retry' };
 }
 async function listWritebacks(userId: string, { accountId = null, includeHistory = false, limit = 100 }: { accountId?: string | null; includeHistory?: boolean; limit?: number | string } = {}) {
   limit = String(Math.floor(Math.min(200, Math.max(1, Number(limit) || 100))));
   const [ops] = await db.execute<OperationRow[]>(`SELECT id,email_id,action,target_value,target_folder,status,state,is_current,intent_revision,
     attempts,error,available_at,created_at,updated_at,dispatched FROM mail_writebacks
     WHERE user_id=? ${accountId ? 'AND mail_account_id=?' : ''}
-      ${includeHistory ? '' : "AND (is_current=TRUE OR state IN ('reconciling','needs_attention','executing','verifying'))"}
+      ${includeHistory ? '' : `AND (is_current=TRUE OR state IN (${sqlList(UNPROVEN)}))`}
     ORDER BY created_at DESC,id DESC LIMIT ?`, accountId ? [userId, accountId, limit] : [userId, limit]);
   return { operations: ops.map(projectOperation) };
 }
@@ -247,8 +234,8 @@ async function cancelWriteback(userId: string, id: string) {
   // Row lock arbitrates with beginDispatch: once dispatched=TRUE commits, only
   // a stopped flag (needs_attention) may still be discarded.
   const [result] = await db.execute<ResultSetHeader>(`UPDATE mail_writebacks SET state='cancelled',status='done',is_current=FALSE,error=NULL
-    WHERE id=? AND user_id=? AND ((dispatched=FALSE AND state IN (${CANCEL_STATES.map(() => '?').join(',')}))
-      OR (dispatched=TRUE AND action IN ('read','star') AND state='needs_attention'))`, [id, userId, ...CANCEL_STATES]);
+    WHERE id=? AND user_id=? AND ((dispatched=FALSE AND state IN (${CANCELLABLE.map(() => '?').join(',')}))
+      OR (dispatched=TRUE AND action IN ('read','star') AND state='needs_attention'))`, [id, userId, ...CANCELLABLE]);
   if (!result.affectedRows) {
     const [[op]] = await db.execute<OperationRow[]>('SELECT id FROM mail_writebacks WHERE id=? AND user_id=?', [id, userId]);
     throw fail(op ? 'This change may already be at the provider; check its outcome instead' : 'Change not found', op ? 409 : 404);
@@ -290,12 +277,12 @@ async function acceptServerState(userId: string, id: string) {
 async function cancelForAccount(cx: SqlExecutor, accountId: string, userId: string, { leavingSync = false } = {}) {
   // Disconnect/settings pause does not erase an accepted or uncertain provider effect.
   await cx.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',error='Account paused; check provider after reconnect'
-    WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN ('executing','verifying','retry_wait')`, [accountId, userId]);
+    WHERE mail_account_id=? AND user_id=? AND dispatched=TRUE AND state IN (${sqlStates('executing', 'verifying', 'retry_wait')})`, [accountId, userId]);
   if (!leavingSync) return;
   // Download mode never talks back to the server, so changes that were never
   // sent stay local: apply them to the copy here instead of leaving them pending.
   const [ops] = await cx.execute<OperationRow[]>(`SELECT * FROM mail_writebacks WHERE mail_account_id=? AND user_id=? AND is_current=TRUE
-    AND dispatched=FALSE AND state IN ('queued','retry_wait') ORDER BY intent_revision,created_at,id`, [accountId, userId]);
+    AND dispatched=FALSE AND state IN (${sqlList(WAITING)}) ORDER BY intent_revision,created_at,id`, [accountId, userId]);
   for (const op of ops) {
     const value = op.action === 'move' ? op.target_folder : Number(op.target_value === '1');
     if (fields[op.action] && value !== null && value !== undefined)
@@ -317,8 +304,8 @@ async function runDueWritebacks() {
   // waits an exponential interval in its job count, never a 1s login loop.
   const dueSql = `SELECT w.id,w.user_id,w.mail_account_id,w.state,w.action FROM mail_writebacks w
     JOIN mail_accounts a ON a.id=w.mail_account_id AND a.user_id=w.user_id
-    WHERE ((w.is_current=TRUE AND w.state IN ('queued','retry_wait'))
-        OR (w.dispatched=TRUE AND w.state IN ('executing','verifying','reconciling')))
+    WHERE ((w.is_current=TRUE AND w.state IN (${sqlList(WAITING)}))
+        OR (w.dispatched=TRUE AND w.state IN (${sqlList(UNRESOLVED)})))
       AND w.available_at<=UTC_TIMESTAMP()
       AND a.is_active=TRUE AND a.disconnected_at IS NULL AND a.sync_mode='sync' AND w.mail_account_id>?
       AND NOT EXISTS (SELECT 1 FROM mail_engine_jobs j WHERE j.operation_id=w.id AND j.user_id=w.user_id
@@ -363,7 +350,7 @@ async function retryWriteback(userId: string, id: string) {
   if (await isSectionRestoreActive(userId, 'mail')) throw fail('Mail restore in progress');
   if (op.action === 'move' && Number(op.dispatched)) {
     await db.execute(`UPDATE mail_writebacks SET state='reconciling',status='pending',available_at=UTC_TIMESTAMP()
-      WHERE id=? AND user_id=? AND state IN ('needs_attention','reconciling','retry_wait')`, [id, userId]);
+      WHERE id=? AND user_id=? AND state IN (${sqlList(MOVE_RECHECK)})`, [id, userId]);
     await runtime.enqueueJob({ userId, accountId: op.mail_account_id, operationId: id,
       kind: 'reconcile', priority: 0, foreground: true });
     runOperationsSoon(op.mail_account_id, { foreground: true });
@@ -388,7 +375,7 @@ async function requeue(userId: string, op: OperationRow) {
   try {
     await cx.beginTransaction();
     const [[row]] = await cx.execute<OperationRow[]>('SELECT * FROM mail_writebacks WHERE id=? AND user_id=? FOR UPDATE', [op.id, userId]);
-    if (!row || moveCheck(row) || !canRetry(row)) { await cx.rollback(); return false; }
+    if (!row || dispatchedMove(row) || !canRetry(row)) { await cx.rollback(); return false; }
     const [[email]] = await cx.execute<RowDataPacket[]>(`SELECT e.remote_folder,e.remote_uid,e.remote_uidvalidity,a.sync_mode FROM emails e
       JOIN mail_accounts a ON a.id=e.mail_account_id AND a.user_id=e.user_id
       WHERE e.id=? AND e.user_id=? AND e.mail_account_id=? FOR UPDATE`, [row.email_id, userId, row.mail_account_id]);

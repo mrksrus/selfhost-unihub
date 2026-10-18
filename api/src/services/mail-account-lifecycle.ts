@@ -8,14 +8,16 @@ import { isSectionRestoreActive } from './restore-locks';
 import { isModuleEnabled } from './module-settings';
 import { publishCalendarChanged } from './server-events';
 import { addressConfirmed } from './mail-account-mode';
+import { UNRESOLVED, sqlStates } from './mail-engine/operation-states';
+import { sqlList } from './mail-engine/job-kinds';
 
 type IdRow = RowDataPacket & { id: string };
 interface CalendarCounts { calendar_accounts: number | string; calendar_events: number | string }
 
 const fail = (message: string | null, status = 409) => Object.assign(new Error(message || ''), { status });
 const enabled = (value: unknown) => value === true || value === 1 || value === '1';
-const unresolved = `(state IN ('executing', 'verifying', 'reconciling')
-  OR (dispatched = TRUE AND status <> 'done' AND state NOT IN ('confirmed', 'rejected')))`;
+const unresolved = `(state IN (${sqlList(UNRESOLVED)})
+  OR (dispatched = TRUE AND status <> 'done' AND state NOT IN (${sqlStates('confirmed', 'rejected')})))`;
 
 // `disconnecting`: the preview for "Disconnect and delete", which disconnects
 // first, so a still connected account does not block it.

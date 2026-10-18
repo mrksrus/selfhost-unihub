@@ -19,6 +19,8 @@ import fs from 'node:fs/promises';
 import { db } from '../state';
 import { ownedMailPath, realOwnedMailPath } from './mail-storage';
 import type { MailStorageKind } from './mail-storage';
+import { SETTLED } from './mail-engine/operation-states';
+import { sqlList as list } from './mail-engine/job-kinds';
 
 interface Account {
   id: string;
@@ -38,14 +40,12 @@ const PRUNE_BATCH = 200;
 const PRUNE_PRIORITY = 80; // below every user-visible job, above nothing
 const GMAIL_GROUP_BATCH = 50;
 const GMAIL_GROUP_SCAN = 2000;
-const SETTLED_OPERATION_STATES = Object.freeze(['confirmed', 'cancelled', 'superseded', 'rejected']);
 const GMAIL_ALL_MAIL_NAMES = Object.freeze(['[Gmail]/All Mail', '[Google Mail]/All Mail']);
 const GMAIL_TRASH_NAMES = Object.freeze(['[Gmail]/Trash', '[Gmail]/Spam', '[Google Mail]/Trash', '[Google Mail]/Spam']);
 const GMAIL_HOSTS = Object.freeze(['imap.gmail.com', 'imap.googlemail.com']);
 const SYNC_WARNING_GMAIL_ALL_MAIL_HIDDEN = 'gmail_all_mail_hidden';
 
 const bool = (value: unknown) => value === true || value === 1 || value === '1';
-const list = (values: readonly string[]) => values.map(value => `'${value.replace(/'/g, "''")}'`).join(',');
 const fail = (message: string, status = 400, extra: Record<string, unknown> = {}) => Object.assign(new Error(message), { status, ...extra });
 
 // undefined: not provided. null: all mail. Number: one of MAIL_WINDOW_DAYS.
@@ -96,7 +96,7 @@ const IN_WINDOW_SQL = `(CASE WHEN ${TRASH_SQL('m')} THEN (? IS NULL OR COALESCE(
 const ELIGIBLE_SQL = `e.user_id = ? AND e.mail_account_id = ? AND COALESCE(e.is_draft, FALSE) = FALSE AND e.is_legacy = FALSE
   AND COALESCE(e.filing_account_id, e.mail_account_id) = e.mail_account_id
   AND NOT EXISTS (SELECT 1 FROM mail_writebacks w WHERE w.email_id = e.id AND w.user_id = e.user_id
-    AND (w.state IS NULL OR w.state NOT IN (${list(SETTLED_OPERATION_STATES)})))`;
+    AND (w.state IS NULL OR w.state NOT IN (${list(SETTLED)})))`;
 // Proven absence: no present (or ambiguous, quarantined) provider occurrence
 // remains, and the item was seen missing. Items that never had a provider
 // identity (local sent copies, drafts) do not qualify.
@@ -194,7 +194,7 @@ async function computeModeImpact(account: Account, { mode, syncWindowDays, trash
   if (result.local_duplicates) notes.push('Local copies that are not linked to the server, such as UniHub\'s own copy of sent mail, are removed once the same message has been downloaded from the server.');
   if (hidden) notes.push('Gmail "All Mail" is not visible over IMAP. Mail missing from every synced label is kept as archived, because it may only be archived. Turn on "Show in IMAP" for All Mail in Gmail settings.');
   const [[pending]] = await executor.execute<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM mail_writebacks WHERE user_id = ? AND mail_account_id = ?
-    AND (state IS NULL OR state NOT IN (${list(SETTLED_OPERATION_STATES)}))`, owner);
+    AND (state IS NULL OR state NOT IN (${list(SETTLED)}))`, owner);
   if (Number(pending.n)) notes.push('Messages with server changes still pending are kept until those changes settle.');
   return { ...result, notes };
 }
@@ -412,5 +412,4 @@ export {
   enqueuePrune,
   removeUnreferencedFiles,
   deleteEmailRows,
-  SETTLED_OPERATION_STATES,
 };

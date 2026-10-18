@@ -19,7 +19,7 @@ interface Input {
 
 function operationOptions(req: Request) {
   const key = req.headers?.['idempotency-key'];
-  if (key !== undefined && (typeof key !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(key))) {
+  if (key !== undefined && (typeof key !== 'string' || !mailRepository.CLIENT_KEY_PATTERN.test(key))) {
     throw Object.assign(new Error('Invalid Idempotency-Key'), { status: 400 });
   }
   return { idempotencyKey: key };
@@ -39,7 +39,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
       const key = new URL(req.url, 'http://localhost').searchParams.get('key');
-      if (!key || !/^[A-Za-z0-9._:-]{1,128}$/.test(key)) return { error: 'Valid operation key required', status: 400 };
+      if (!key || !mailRepository.CLIENT_KEY_PATTERN.test(key)) return { error: 'Valid operation key required', status: 400 };
       return await mailWritebacks.getOperationReceipt(userId, key);
     } catch (error) { return routeError(error, 'Could not look up accepted change'); }
   },
@@ -198,25 +198,12 @@ export = {
         return { error: 'Email IDs array required', status: 400 };
       }
 
-      const updates = [];
-      const values = [];
-
-      if (typeof is_read === 'boolean') {
-        updates.push('is_read = ?');
-        values.push(is_read ? 1 : 0);
-      }
-      if (typeof is_starred === 'boolean') {
-        updates.push('is_starred = ?');
-        values.push(is_starred ? 1 : 0);
-      }
-
-      if (updates.length === 0) {
-        return { error: 'At least one field (is_read or is_starred) required', status: 400 };
-      }
-
       const changes: Record<string, number> = {};
       if (typeof is_read === 'boolean') changes.read = Number(is_read);
       if (typeof is_starred === 'boolean') changes.star = Number(is_starred);
+      if (!Object.keys(changes).length) {
+        return { error: 'At least one field (is_read or is_starred) required', status: 400 };
+      }
       return await mailWritebacks.mutateMessages(userId, email_ids, changes, undefined, operationOptions(req));
     } catch (error) {
       console.error('[BULK] Update error:', error);

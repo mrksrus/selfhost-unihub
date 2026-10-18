@@ -90,61 +90,12 @@ function isMailRawPathUnderRoot(storagePath: string | null | undefined) {
   return mailPathUnderRoot('raw', storagePath) !== null;
 }
 
-function isUsableRawEmailArchive(storagePath: string | null | undefined) {
-  if (!storagePath || !isMailRawPathUnderRoot(storagePath)) return false;
-  try {
-    return fs.existsSync(path.resolve(storagePath!));
-  } catch {
-    return false;
-  }
-}
-
 function getCurrentBoxUidValidity(connection: ProtocolConnection | null) {
   const box = connection?.state === connection?.states?.SELECTED ? connection?.mailbox : null;
   const value: unknown = (box as Exclude<ProtocolConnection['mailbox'], false> | null)?.uidValidity;
   if (value === undefined || value === null || value === false) return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
-}
-
-function chunkArray<T>(values: T[], chunkSize: number) {
-  const chunks = [];
-  for (let i = 0; i < values.length; i += chunkSize) {
-    chunks.push(values.slice(i, i + chunkSize));
-  }
-  return chunks;
-}
-
-async function loadExistingImportedUidSet({ connection = db, accountId, folderName, uids, uidValidity }: { connection?: SqlExecutor; accountId: string; folderName: string; uids: number[]; uidValidity?: number | null }) {
-  const normalizedUids = Array.from(new Set((uids || []).filter(uid => typeof uid === 'number' && Number.isFinite(uid))));
-  const existingUids = new Set<number>();
-  if (!accountId || !folderName || normalizedUids.length === 0) return existingUids;
-
-  for (const uidChunk of chunkArray(normalizedUids, 1000)) {
-    const placeholders = uidChunk.map(() => '?').join(',');
-    const params = [accountId, folderName, ...uidChunk];
-    let query = `
-      SELECT imap_uid
-      FROM emails
-      WHERE mail_account_id = ?
-        AND source_folder = ?
-        AND imap_uid IN (${placeholders})
-        AND import_complete = TRUE
-        AND raw_storage_path IS NOT NULL`;
-
-    if (uidValidity !== null && uidValidity !== undefined) {
-      query += ' AND imap_uidvalidity = ?';
-      params.push(uidValidity);
-    }
-
-    const [rows] = await connection.execute<RowDataPacket[]>(query, params);
-    for (const row of rows || []) {
-      const uid = Number(row.imap_uid);
-      if (Number.isFinite(uid)) existingUids.add(uid);
-    }
-  }
-
-  return existingUids;
 }
 
 async function recordMailServerMessageForDeletion({
@@ -498,9 +449,7 @@ export {
   deleteStoredAttachmentFiles,
   getMailRawStoragePath,
   isMailRawPathUnderRoot,
-  isUsableRawEmailArchive,
   getCurrentBoxUidValidity,
-  loadExistingImportedUidSet,
   recordMailServerMessageForDeletion,
   seedMailServerDeletionQueueForAccount,
   markMailServerMessageDeleteStatus,

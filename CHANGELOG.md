@@ -72,6 +72,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   and used by mail, the admin storage overview, account deletion and backup.
 - Mail routes share one `routeError` helper (`api/src/routes/mail-route-helpers.ts`)
   and the account routes one input parser (`api/src/services/mail-account-input.ts`).
+- Mail job kinds and operation states are declared once (`api/src/services/mail-engine/job-kinds.ts`,
+  `operation-states.ts`) and the SQL lists, due predicate and retry/cancel rules are built from them;
+  one idempotency-key grammar (`CLIENT_KEY_PATTERN`) is shared by the route, the writeback service,
+  the receipt store and restore. The unused `mail-sync-state.ts` module and unused mail exports are removed.
 
 ## 0.22.4
 

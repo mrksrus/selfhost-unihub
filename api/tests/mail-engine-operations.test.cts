@@ -388,3 +388,17 @@ test('stale scan revision cannot repaint a confirmed flag after overlay retires'
   assert.deepEqual(result, { settled: false, reason: 'stale_observation' });
   assert(!f.commands.some((item: FixtureValue) => item.sql.includes('UPDATE emails SET is_read=')));
 });
+test('operation state and job kind registries build the SQL fragments and partition the kinds', () => {
+  const states = require('../dist/src/services/mail-engine/operation-states') as typeof import('../src/services/mail-engine/operation-states');
+  const kinds = require('../dist/src/services/mail-engine/job-kinds') as typeof import('../src/services/mail-engine/job-kinds');
+  const repo = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+  for (const state of [...states.WAITING, ...states.UNRESOLVED]) assert(states.DUE_SQL.includes(`'${state}'`), `${state} is due`);
+  for (const state of states.SETTLED) assert(!states.DUE_SQL.includes(`'${state}'`), `${state} is never due`);
+  assert.deepEqual([...new Set([...states.WAITING, ...states.UNRESOLVED, ...states.SETTLED, 'needs_attention'])].sort(), [...states.OPERATION_STATES].sort());
+  assert.deepEqual([...kinds.READ_ONLY_KINDS, ...kinds.MUTATION_KINDS].sort(), [...kinds.JOB_KINDS].sort());
+  assert.equal(kinds.sqlList(kinds.MUTATION_KINDS), "'operation','reconcile'");
+  assert.equal(states.statusFor('rejected'), 'conflict'); assert.equal(states.statusFor('superseded'), 'done'); assert.equal(states.statusFor('executing'), 'pending');
+  // Every producer satisfies the one grammar: the browser's UUID and the routes' keys.
+  for (const key of ['0f6c1a4e-3b2d-4c7e-9a1b-2d3e4f5a6b7c', 'request-1', 'safe-key_1', 'a:b.c']) assert(repo.CLIENT_KEY_PATTERN.test(key), key);
+  for (const key of ['', ' ', 'bad key', 'k\n', 'x'.repeat(129), 'ключ']) assert(!repo.CLIENT_KEY_PATTERN.test(key), JSON.stringify(key));
+});
