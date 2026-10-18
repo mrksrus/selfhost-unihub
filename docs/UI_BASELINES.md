@@ -77,7 +77,7 @@ in the same change. Fixing either defect is separate work.
   garden 60 × 20 px, ideas 50 × 20 px, sketch 57 × 20 px, each once. Overlap,
   coverage and any other size violation still fail.
 
-The light pre-paint colour in `index.html` (`#f5f7fa`) differs by one channel
+The light pre-paint colour in `public/theme-init.js` (`#f5f7fa`) differs by one channel
 step from the stylesheet's Light Default page colour (`rgb(246, 247, 248)`).
 That is not a visible flash, so the check holds the mode, not the exact value.
 

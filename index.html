@@ -3,19 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="color-scheme" content="dark light" />
-    <script>
-      (() => {
-        let theme = 'dark';
-        try { theme = localStorage.getItem('theme') || 'dark'; } catch {}
-        const dark = theme === 'dark' || (theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
-        document.documentElement.classList.toggle('dark', dark);
-        document.documentElement.classList.toggle('light', !dark);
-        document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
-        document.documentElement.style.backgroundColor = dark ? '#000000' : '#f5f7fa';
-        // The look chosen on this device for that theme (src/lib/theme.ts); the stylesheet colours the page from it.
-        try { const look = localStorage.getItem(dark ? 'unihub:theme:dark' : 'unihub:theme:light'); if (look) document.documentElement.dataset.theme = look; } catch {}
-      })();
-    </script>
+    <!-- Pre-paint theme (P-02): public/theme-init.js, before any stylesheet. -->
+    <script src="/theme-init.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <meta name="theme-color" content="#000000" />
     <meta name="apple-mobile-web-app-capable" content="yes" />

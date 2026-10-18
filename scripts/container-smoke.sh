@@ -126,6 +126,29 @@ console.log("API runs as uid/gid 10001 without capabilities; uploads handed over
 docker exec "$container_name" ffmpeg -version
 docker exec "$container_name" node -e 'const fs=require("node:fs");for(const name of ["LICENSE","LICENSING.md","THIRD_PARTY_NOTICES.md","frontend-dependency-notices.txt","alpine-packages.txt","ffmpeg-license.txt"]){if(!fs.statSync("/app/licenses/"+name).size)throw Error("Empty license notice: "+name)}'
 [[ "$(docker inspect --format '{{index .Config.Labels "org.opencontainers.image.licenses"}}' "$container_name")" == 'PolyForm-Noncommercial-1.0.0' ]]
+# Security headers on every static response: nginx drops inherited add_header
+# lines in a location that sets its own, so the cache locations re-include them.
+# The page must carry no inline script, which the CSP (script-src 'self') refuses.
+node --input-type=module <<'NODE'
+async function secured(path) {
+  const response = await fetch(`http://localhost${path}`);
+  if (response.status !== 200) throw new Error(`${path} answered ${response.status}`);
+  const csp = response.headers.get('content-security-policy') || '';
+  if (!/(^|;)\s*script-src 'self'\s*(;|$)/.test(csp)) throw new Error(`${path} lacks the Content-Security-Policy: ${csp || '(no header)'}`);
+  if (response.headers.get('x-content-type-options') !== 'nosniff') throw new Error(`${path} lacks X-Content-Type-Options: nosniff`);
+  if (response.headers.get('x-xss-protection') !== '0') throw new Error(`${path} must send X-XSS-Protection: 0`);
+  return response;
+}
+const page = await (await secured('/')).text();
+const scripts = [...page.matchAll(/<script\b([^>]*)>/g)].map(match => match[1]);
+if (!scripts.length || scripts.some(attributes => !/\bsrc=/.test(attributes))) throw new Error('index.html must load every script from a file');
+if (!scripts[0].includes('/theme-init.js')) throw new Error('index.html must load /theme-init.js first');
+const asset = page.match(/\/assets\/[^"']+\.js/)?.[0];
+const icon = page.match(/\/icons\/[^"']+/)?.[0];
+if (!asset || !icon) throw new Error('index.html names no asset or icon');
+for (const path of ['/theme-init.js', '/sw.js', '/manifest.webmanifest', asset, icon]) await secured(path);
+console.log(`Security headers present on /, ${asset}, /sw.js, /theme-init.js, the manifest and ${icon}; no inline script`);
+NODE
 # The Android app built into the image: the version handshake offers it and
 # Nginx serves the same bytes as an Android package.
 node --input-type=module <<'NODE'
@@ -167,4 +190,4 @@ for ((attempt=0; attempt<20; attempt++)); do
 done
 [[ "$(docker inspect --format '{{.State.Running}}' "$container_name")" == false ]] || { echo 'Container stayed running after API death.' >&2; exit 1; }
 [[ "$(docker inspect --format '{{.State.ExitCode}}' "$container_name")" == 1 ]] || { echo 'Container did not report essential service failure.' >&2; exit 1; }
-echo 'Container smoke passed: startup, non-root API and uploads handover, health, Android app download, authentication, isolation, malformed requests, audio and encrypted backup round-trips, graceful stop, and essential-service recovery.'
+echo 'Container smoke passed: startup, non-root API and uploads handover, health, security headers, Android app download, authentication, isolation, malformed requests, audio and encrypted backup round-trips, graceful stop, and essential-service recovery.'

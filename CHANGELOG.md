@@ -6,6 +6,22 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
+## 0.23.0 (unreleased)
+
+### Fixed
+
+- **Theme flash and remote images in the deployed image.** The container's
+  Content Security Policy refused the page's inline theme script, so a Light or
+  System-light user, and anyone with a chosen look, saw the dark default first
+  on every load; the same policy refused remote images in HTML mail even after
+  "Load remote images". The theme script is now the file `/theme-init.js`, and
+  the page policy leaves remote images to the mail frame's own per-message
+  consent, which still blocks them until asked.
+- **Security headers on every file.** The service worker, `/assets/`, the
+  manifest and icons were served without the security headers because their
+  caching headers replaced them (nginx inheritance). Every response now carries
+  them, and the deprecated `X-XSS-Protection` filter is turned off (`0`).
+
 ## 0.22.4
 
 New mail is announced again. No database upgrade and no app update; the

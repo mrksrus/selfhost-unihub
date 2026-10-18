@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { api } from '@/lib/api';
 import { DEFAULT_PREFERENCES } from '@/lib/settings-api';
 import { ACCENTS, accentChannels, accentForeground, contrastRatio } from '@/lib/accent';
@@ -122,5 +124,37 @@ describe('accent colours', () => {
         if (theme.minContrast) expect(contrastRatio(background, dark ? '0 0% 0%' : '0 0% 100%'), `${accent.id} ${theme.mode} ${theme.id}`).toBeGreaterThanOrEqual(theme.minContrast);
       }
     }
+  });
+});
+
+// The production CSP (docker/nginx/security-headers.conf) allows scripts from
+// this origin only, so the pre-paint theme script must be a file (P-02).
+describe('pre-paint theme script', () => {
+  const themeInit = readFileSync(path.resolve(__dirname, '../../public/theme-init.js'), 'utf8');
+
+  it('index.html loads every script from a file and the theme script before anything else', () => {
+    const html = readFileSync(path.resolve(__dirname, '../../index.html'), 'utf8');
+    const scripts = [...html.matchAll(/<script\b([^>]*)>/g)].map(match => match[1]);
+    expect(scripts.length).toBeGreaterThan(0);
+    expect(scripts.every(attributes => /\bsrc=/.test(attributes))).toBe(true);
+    expect(scripts[0]).toMatch(/src="\/theme-init\.js"/);
+    expect(html.indexOf('/theme-init.js')).toBeLessThan(html.indexOf('<body>'));
+    expect(html.indexOf('<link ')).toBeGreaterThan(html.indexOf('/theme-init.js'));
+  });
+
+  it('colours the page from the stored mode and look without the application', () => {
+    document.documentElement.className = 'dark';
+    localStorage.setItem('theme', 'light');
+    localStorage.setItem('unihub:theme:light', 'paper');
+    new Function(themeInit)();
+    expect(document.documentElement.classList.contains('light')).toBe(true);
+    expect(document.documentElement.classList.contains('dark')).toBe(false);
+    expect(document.documentElement.style.colorScheme).toBe('light');
+    expect(document.documentElement.dataset.theme).toBe('paper');
+    expect(THEMES.some(theme => theme.mode === 'light' && theme.id === 'paper')).toBe(true);
+    localStorage.clear();
+    new Function(themeInit)();
+    expect(document.documentElement.classList.contains('dark')).toBe(true);
+    expect(document.documentElement.style.colorScheme).toBe('dark');
   });
 });
