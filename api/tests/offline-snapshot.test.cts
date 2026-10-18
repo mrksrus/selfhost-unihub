@@ -101,12 +101,11 @@ test('oversized metadata fails preflight before any full rows are transferred an
   assert.equal(f.calls.includes('COMMIT'), false);
 });
 
-test('snapshot query failure rolls back and unauthenticated snapshot routes never touch the database', async (t) => {
+// Unauthenticated requests stop at the boundary (request-handler-integration.test.cts).
+test('snapshot query failure rolls back', async (t) => {
   const previous = getDb();
   const f = fixture(({ failTable: 'calendar_events' })); setDb(f.db as FixtureValue); t.after(() => setDb(previous));
-  assert.equal((await routes['GET /api/offline/snapshot']({} as FixtureValue, null)).status, 401);
-  assert.equal(f.calls.length, 0);
-  const result = await routes['GET /api/offline/snapshot']({} as FixtureValue, 'user-1');
+  const result = await routes['GET /api/offline/snapshot'].handler({} as FixtureValue, 'user-1');
   assert.equal(result.status, 500);
   assert.match(result.error, /previous snapshot was kept/);
   assert.ok(f.calls.includes('ROLLBACK'));
