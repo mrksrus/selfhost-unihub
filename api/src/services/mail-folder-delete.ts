@@ -1,5 +1,5 @@
-import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
-import type { ApiError } from '../types';
+import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import type { ApiError, SqlExecutor } from '../types';
 import type { ProtocolConnection, ProtocolError } from '../types/imap-protocol';
 
 import { db } from '../state';
@@ -51,7 +51,7 @@ async function alreadyGone(connection: FolderConnection, name: string, error: un
  * still holds elsewhere (on Gmail another label or All Mail), filed where that
  * copy is.
  */
-async function settleBox(cx: PoolConnection, { userId, slug, box }: { userId: string; slug: string; box: RemoteBox }) {
+async function settleBox(cx: SqlExecutor, { userId, slug, box }: { userId: string; slug: string; box: RemoteBox }) {
   const accountId = box.mail_account_id;
   const [[mailbox]] = await cx.execute<RowDataPacket[]>(`SELECT id FROM mail_remote_mailboxes
     WHERE user_id = ? AND mail_account_id = ? AND BINARY remote_name = BINARY ? FOR UPDATE`, [userId, accountId, box.remote_name]);

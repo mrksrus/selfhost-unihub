@@ -1,9 +1,10 @@
-import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { Pool, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { SqlExecutor } from '../../types';
 import type { EngineExecutor, MailboxInput, OccurrenceInput, CursorInput, MailboxMetadata, RemoteMailbox, RemoteOccurrence, MailCursor } from '../../types/mail-engine';
 
 import { randomUUID } from 'node:crypto';
 import { db } from '../../state';
+import * as transactions from '../transactions';
 import { assertUid32, assertDecimal64 } from './repository-identity';
 import { sqlStates } from './operation-states';
 
@@ -11,27 +12,9 @@ interface ReceiptInput { userId: string; clientKey: string; requestHash: string;
 const STREAMS = new Set(['recent', 'history', 'flags', 'presence', 'bodies']);
 const requireId = (v: unknown, label: string) => { if (typeof v !== 'string' || !v.trim()) throw new TypeError(`${label} required`); return v; };
 const fail = (code: string, message: string) => Object.assign(new Error(message), { code });
-// InnoDB picks a deadlock victim and rolls its whole transaction back, so the
-// callback can run again from the start. Callbacks here only touch the
-// database; provider commands never run inside a transaction.
-const DEADLOCK_RETRIES = 3;
-const isDeadlock = (error: unknown) => (error as NodeJS.ErrnoException)?.code === 'ER_LOCK_DEADLOCK' || (error as NodeJS.ErrnoException)?.errno === 1213;
-async function withTransaction<T>(callback: (connection: PoolConnection) => T | PromiseLike<T>, executor: Pick<Pool, 'getConnection'> = db): Promise<T> {
-  if (typeof executor.getConnection !== 'function') throw new TypeError('withTransaction requires a pool; pass your existing connection directly to helpers');
-  for (let attempt = 1; ; attempt++) {
-    const cx = await executor.getConnection();
-    try {
-      await cx.beginTransaction();
-      const result = await callback(cx);
-      await cx.commit();
-      return result;
-    } catch (error) {
-      await cx.rollback();
-      if (!isDeadlock(error) || attempt > DEADLOCK_RETRIES) throw error;
-    } finally { cx.release(); }
-    await new Promise(resolve => setTimeout(resolve, 20 * attempt + Math.floor(Math.random() * 30)));
-  }
-}
+// The shared helper is re-exported through a local binding so repository.withTransaction
+// stays a plain property that mail callers and test doubles can replace.
+const { withTransaction, isDeadlock } = transactions;
 async function ownAccount(cx: SqlExecutor, userId: string, accountId: string, lock = false) {
   requireId(userId, 'userId'); requireId(accountId, 'accountId');
   const [rows] = await cx.execute<RowDataPacket[]>(`SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?${lock ? ' FOR UPDATE' : ''}`, [accountId, userId]);

@@ -9,6 +9,7 @@ import { supportedServer, unsupportedServerMessage } from './database-version';
 import { runMigrations } from './database-migrations';
 import { BASELINE } from './database-baseline';
 import { verifyDatabaseInventory } from './data-inventory';
+import { withTransaction } from './transactions';
 
 type FieldRow = RowDataPacket & { Field: string };
 type CountRow = RowDataPacket & { n: number | string };
@@ -410,4 +411,5 @@ export {
   createNotificationTables,
   addPushTransport,
   createMailPerformanceIndexes,
+  withTransaction,
 };

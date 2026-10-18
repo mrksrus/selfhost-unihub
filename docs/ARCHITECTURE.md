@@ -304,6 +304,15 @@ the "path is inside this root or owner directory" checks; the environment
 variables `MAIL_ATTACHMENT_UPLOAD_ROOT` and `MAIL_RAW_STORAGE_ROOT` override
 them, mainly for tests.
 
+Multi-statement database writes run through `withTransaction` in
+`api/src/services/transactions.ts` (also exported from `services/database.ts`
+and `mail-engine/repository.ts`): one pooled connection between BEGIN and
+COMMIT, rollback and release on a throw, and a bounded retry when InnoDB picks
+the transaction as a deadlock victim. The callback receives an `SqlExecutor`
+and its return value is the result, so a service can run on a passed-in
+connection or open its own. Callbacks only touch the database; provider
+commands and file writes stay outside.
+
 ## Scheduled Jobs
 
 `api/src/app.ts` starts these intervals:

@@ -86,6 +86,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   `operation-states.ts`) and the SQL lists, due predicate and retry/cancel rules are built from them;
   one idempotency-key grammar (`CLIENT_KEY_PATTERN`) is shared by the route, the writeback service,
   the receipt store and restore. The unused `mail-sync-state.ts` module and unused mail exports are removed.
+- The deadlock-retrying `withTransaction` helper moved from the mail engine to
+  `api/src/services/transactions.ts` (exported from `services/database.ts` and still from
+  `mail-engine/repository.ts`), typed with `SqlExecutor` so any service can use it.
 
 ## 0.22.4
 
