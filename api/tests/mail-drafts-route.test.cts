@@ -63,6 +63,10 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
       }
 
       if (sql.includes('SELECT * FROM mail_accounts WHERE id = ?')) return [[state.accounts.get(params[0])].filter(Boolean)];
+      if (sql.includes('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ?')) {
+        const account = state.accounts.get(params[0]);
+        return [[account && account.user_id === params[1] ? { id: account.id } : null].filter(Boolean)];
+      }
       // The Sent copy written by the real sendEmail; mail-engine-send covers its contents.
       if (sql.includes('INSERT INTO emails') && !sql.includes('is_draft')) return [{ affectedRows: 1 }];
 
@@ -405,6 +409,53 @@ test('a quoted recipient name with a comma stays one address from draft to SMTP'
     bcc: 'a@example.test\r\nX-Injected: yes',
   });
   assert.equal(multiline.status, 400);
+});
+
+test('a plain-text draft with an attachment is sent as text', async (t) => {
+  let real: ReturnType<typeof loadRealSendEmail>;
+  const { routes } = await createDraftRouteHarness(t, {
+    sendEmail: (...args: Parameters<typeof real.sendEmail>) => real.sendEmail(...args),
+  });
+  real = loadRealSendEmail(t);
+
+  const created = await routes['POST /api/mail/drafts']({ url: '/api/mail/drafts' } as FixtureValue, 'user-1', {
+    account_id: 'account-1', to: 'reader@example.test', subject: 'Notes', body: 'line one\nif a < b\n', isHtml: false,
+    attachments: [{ filename: 'notes.txt', contentType: 'text/plain', dataBase64: Buffer.from('attached').toString('base64') }],
+  });
+  const draftId = (created.draft! as FixtureValue).id;
+  const sent = await routes['POST /api/mail/drafts/:id/send']({ url: `/api/mail/drafts/${draftId}/send` } as FixtureValue, 'user-1');
+  assert.equal(sent.success, true);
+  assert.equal(real.delivered.length, 1);
+  assert.equal(real.delivered[0].text, 'line one\nif a < b\n');
+  assert.equal(real.delivered[0].html, undefined);
+  assert.equal(real.delivered[0].attachments.length, 1);
+});
+
+test('sending does not write recipients or subject to the server log', async (t) => {
+  const util = (require('node:util') as typeof import('node:util'));
+  let reject = false;
+  const { routes } = await createDraftRouteHarness(t, {
+    sendEmail: async () => {
+      if (reject) throw Object.assign(new Error("Can't send mail - all recipients were rejected: 550 <reader@example.test>"), { code: 'EENVELOPE' });
+      return { success: true, messageId: '<sent@example.test>' };
+    },
+  });
+  const log = t.mock.method(console, 'log', () => {});
+  const error = t.mock.method(console, 'error', () => {});
+  const output = () => [...log.mock.calls, ...error.mock.calls]
+    .map(call => call.arguments.map((value: FixtureValue) => util.inspect(value, { depth: 5 })).join(' ')).join('\n');
+  const body = { account_id: 'account-1', to: 'reader@example.test', subject: 'Private subject', body: '<p>Hi</p>', isHtml: true };
+
+  const sent = await routes['POST /api/mail/send']({ url: '/api/mail/send' } as FixtureValue, 'user-1', body);
+  assert.equal(sent.success, true);
+  reject = true;
+  const failed = await routes['POST /api/mail/send']({ url: '/api/mail/send' } as FixtureValue, 'user-1', body);
+  assert.equal(failed.status, 500);
+
+  const logged = output();
+  assert.doesNotMatch(logged, /reader@example\.test/);
+  assert.doesNotMatch(logged, /Private subject/);
+  assert.match(logged, /EENVELOPE/);
 });
 
 test('invalid replacement leaves original draft and attachment intact', async (t) => {

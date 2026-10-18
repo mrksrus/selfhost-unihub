@@ -88,7 +88,7 @@ async function sendEmail(accountId: string, { subject, body, isHtml = false, att
 
     if (!await isModuleEnabled(account.user_id, 'mail')) throw new Error('Mail module is disabled');
     const info = await transporter.sendMail({
-      from: `${account.display_name || account.email_address} <${account.email_address}>`,
+      from: { name: account.display_name || '', address: account.email_address },
       to: to.length ? to : undefined,
       cc: cc.length ? cc : undefined,
       bcc: bcc.length ? bcc : undefined,

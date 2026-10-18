@@ -28,6 +28,17 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   16 KiB, with room for recordings (256 KiB), contacts (64 KiB) and password
   routes (4 KiB); a refused request shows the server's actual limit, and the
   attachment hint appears only when composing mail.
+- **Sent mail stays out of the server log.** A leftover debugging hook printed
+  the recipients and subject of every sent message to the container log (and
+  tried to write them to a file). It is removed; a failed send logs only the
+  error kind.
+- **A display name no longer changes the sender address.** The From header is
+  built from the account's name and address separately, so a display name that
+  contains `<` and `>` (for example a pasted address) is quoted instead of
+  becoming the envelope sender.
+- **Plain-text drafts with attachments are sent as text.** A text draft with an
+  attachment was sent as HTML, collapsing line breaks and treating `<` as
+  markup; only an empty body with attachments still uses the HTML placeholder.
 
 ## 0.22.4
 
