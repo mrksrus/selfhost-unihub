@@ -20,11 +20,11 @@ Primary table: `contacts`
 | --- | --- |
 | `id` | UUID primary key |
 | `user_id` | Owner, cascades when the user is deleted |
-| `first_name` | Required for manual create; imports can derive it from other identity fields |
-| `last_name` | Nullable |
-| `email`, `email2`, `email3` | Up to three email addresses |
-| `phone`, `phone2`, `phone3` | Up to three phone numbers |
-| `company`, `job_title`, `notes` | Optional metadata |
+| `first_name` | Required for manual create and update (100 characters); imports can derive it from other identity fields |
+| `last_name` | Nullable, 100 characters |
+| `email`, `email2`, `email3` | Up to three email addresses, 255 characters each, loosely checked as `something@something` |
+| `phone`, `phone2`, `phone3` | Up to three phone numbers, 50 characters each |
+| `company`, `job_title`, `notes` | Optional metadata; 255 characters each, `notes` is TEXT (65535 bytes) |
 | `avatar_url` | Stored field, currently not populated by vCard import |
 | `is_favorite` | Favorite flag |
 | `created_at`, `updated_at` | Database timestamps |
@@ -46,7 +46,7 @@ require `X-CSRF-Token`.
 | --- | --- | --- |
 | GET | `/api/contacts` | List contacts |
 | POST | `/api/contacts` | Create contact |
-| PUT | `/api/contacts/:id` | Update contact owned by the current user |
+| PUT | `/api/contacts/:id` | Update contact owned by the current user; 404 when the id is not one of the caller's contacts |
 | DELETE | `/api/contacts/:id` | Delete contact owned by the current user |
 | PUT | `/api/contacts/:id/favorite` | Set favorite status |
 | POST | `/api/contacts/bulk-delete` | Delete multiple contacts by ID |
@@ -56,13 +56,22 @@ require `X-CSRF-Token`.
 | GET | `/api/contacts/export` | Download `contacts.vcf` |
 | POST | `/api/contacts/import` | Import vCard payload |
 
+### Input Validation
+
+`POST /api/contacts` and `PUT /api/contacts/:id` run the body through
+`normalizeContactInput` (`api/src/services/contacts.ts`): every field must be
+text or absent, is trimmed, an empty value becomes `NULL`, a value longer than
+its column is refused with 400 naming the limit, and email fields must contain
+`@`. A first name is required on both. The route ids come from the matcher
+(`req.params.id`), so a query string on the URL does not become part of the id.
+
 ### List Query Parameters
 
 `GET /api/contacts?q=alice&group=all&limit=200&offset=0`
 
 | Parameter | Behavior |
 | --- | --- |
-| `q` | Search first name, last name, all email fields, all phone fields, and company |
+| `q` | Search first name, last name, all email fields, all phone fields, and company; `%`, `_` and `\` match literally |
 | `group` | `all`, `name_only`, or `number_or_email_only` |
 | `limit` | 1-2000, default 2000 |
 | `offset` | Starting row offset, default 0 |
@@ -92,6 +101,8 @@ Import behavior:
 5. Contacts with no useful identity field are skipped.
 6. Duplicate identity keys are skipped within the uploaded file.
 7. Existing contacts with the same normalized email or phone are skipped.
+8. A field longer than its column (for example a 300-character `ORG`) is cut
+   to the column size; the card is imported rather than reported as failed.
 
 Property mapping:
 
@@ -128,6 +139,11 @@ The merge process:
 4. preserves favorite status if any duplicate was favorited
 5. concatenates unique notes
 6. deletes the duplicate rows after updating the primary row
+
+Each group's update and deletions run in one transaction
+(`mergeDuplicateGroups` in `api/src/services/contacts.ts`), so an interruption
+leaves a group either merged or untouched. A group whose primary row no longer
+exists is skipped and not counted.
 
 Use the preview endpoint before applying merge in UI flows.
 

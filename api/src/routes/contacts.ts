@@ -2,15 +2,18 @@ import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { RouteRequest, ApiError } from '../types';
 import crypto from 'crypto';
 import { db } from '../state';
+import { escapeLike } from '../services/sql';
 import {
   contactToVCard,
   parseVCards,
   getContactIdentityKeys,
   groupDuplicateContacts,
-  buildMergedContact,
   rankContactsForMerge,
   getPrimaryContactIdentityKey,
   getContactDisplayName,
+  normalizeContactInput,
+  boundContactFields,
+  mergeDuplicateGroups,
 } from '../services/contacts';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -75,7 +78,7 @@ export = {
 
       // Server-side search (indexed fields + phone/company for quick find)
       if (q.length > 0) {
-        const like = `%${q.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+        const like = `%${escapeLike(q)}%`;
         query += ' AND (first_name LIKE ? OR last_name LIKE ? OR email LIKE ? OR email2 LIKE ? OR email3 LIKE ? OR phone LIKE ? OR phone2 LIKE ? OR phone3 LIKE ? OR company LIKE ?)';
         params.push(like, like, like, like, like, like, like, like, like);
       }
@@ -95,10 +98,9 @@ export = {
   'POST /api/contacts': async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
-    const { first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes } = body;
-    if (!first_name || !first_name.trim()) {
-      return { error: 'First name is required', status: 400 };
-    }
+    const parsed = normalizeContactInput(body, { requireFirstName: true });
+    if ('error' in parsed) return { error: parsed.error, status: 400 };
+    const { fields } = parsed;
 
     try {
       const contactId = crypto.randomUUID();
@@ -107,17 +109,17 @@ export = {
         [
           contactId,
           userId,
-          first_name.trim(),
-          last_name || null,
-          email || null,
-          email2 || null,
-          email3 || null,
-          phone || null,
-          phone2 || null,
-          phone3 || null,
-          company || null,
-          job_title || null,
-          notes || null,
+          fields.first_name,
+          fields.last_name,
+          fields.email,
+          fields.email2,
+          fields.email3,
+          fields.phone,
+          fields.phone2,
+          fields.phone3,
+          fields.company,
+          fields.job_title,
+          fields.notes,
         ]
       );
 
@@ -131,30 +133,33 @@ export = {
   'PUT /api/contacts/:id': async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
-    const { first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes } = body;
-    const firstName = first_name != null ? String(first_name).trim() : '';
+    const parsed = normalizeContactInput(body, { requireFirstName: true });
+    if ('error' in parsed) return { error: parsed.error, status: 400 };
+    const { fields } = parsed;
 
     try {
-      const id = req.url.split('/').pop()!;
+      const id = req.params.id;
 
-      await db.execute(
+      // mysql2 connects with FOUND_ROWS, so an unchanged row still counts as matched.
+      const [result] = await db.execute<ResultSetHeader>(
         'UPDATE contacts SET first_name = ?, last_name = ?, email = ?, email2 = ?, email3 = ?, phone = ?, phone2 = ?, phone3 = ?, company = ?, job_title = ?, notes = ? WHERE id = ? AND user_id = ?',
         [
-          firstName,
-          last_name || null,
-          email || null,
-          email2 || null,
-          email3 || null,
-          phone || null,
-          phone2 || null,
-          phone3 || null,
-          company || null,
-          job_title || null,
-          notes || null,
+          fields.first_name,
+          fields.last_name,
+          fields.email,
+          fields.email2,
+          fields.email3,
+          fields.phone,
+          fields.phone2,
+          fields.phone3,
+          fields.company,
+          fields.job_title,
+          fields.notes,
           id,
           userId,
         ]
       );
+      if (!result.affectedRows) return { error: 'Contact not found', status: 404 };
 
       const [contacts] = await db.execute<(RowDataPacket & Contact)[]>('SELECT * FROM contacts WHERE id = ? AND user_id = ?', [id, userId]);
       return { contact: contacts[0] };
@@ -167,7 +172,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const id = req.url.split('/').pop()!;
+      const id = req.params.id;
       await db.execute('DELETE FROM contacts WHERE id = ? AND user_id = ?', [id, userId]);
       return { message: 'Contact deleted' };
     } catch (error) {
@@ -231,62 +236,16 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const [rows] = await db.execute<(RowDataPacket & Contact)[]>(
-        `SELECT id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes, is_favorite, created_at
-         FROM contacts
-         WHERE user_id = ?`,
-        [userId]
-      );
+      const { merged, removed, groups } = await mergeDuplicateGroups(userId);
 
-      const duplicateGroups = groupDuplicateContacts(rows || []);
-
-      let merged = 0;
-      let removed = 0;
-
-      for (const members of duplicateGroups) {
-        const { primary, others, mergedContact } = buildMergedContact(members);
-        await db.execute(
-          `UPDATE contacts
-           SET first_name = ?, last_name = ?, email = ?, email2 = ?, email3 = ?, phone = ?, phone2 = ?, phone3 = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?
-           WHERE id = ? AND user_id = ?`,
-          [
-            mergedContact.first_name || '',
-            mergedContact.last_name,
-            mergedContact.email,
-            mergedContact.email2,
-            mergedContact.email3,
-            mergedContact.phone,
-            mergedContact.phone2,
-            mergedContact.phone3,
-            mergedContact.company,
-            mergedContact.job_title,
-            mergedContact.notes,
-            mergedContact.is_favorite ? 1 : 0,
-            primary.id!,
-            userId,
-          ]
-        );
-
-        const deleteIds = others.map((o) => o.id!);
-        if (deleteIds.length > 0) {
-          const placeholders = deleteIds.map(() => '?').join(',');
-          const [result] = await db.execute<ResultSetHeader>(
-            `DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders})`,
-            [userId, ...deleteIds]
-          );
-          removed += result.affectedRows || 0;
-          merged++;
-        }
-      }
-
-      if (duplicateGroups.length === 0) {
+      if (groups === 0) {
         return { merged: 0, removed: 0, groups: 0, message: 'No duplicates detected.' };
       }
 
       return {
         merged,
         removed,
-        groups: duplicateGroups.length,
+        groups,
         message: `Merged ${merged} duplicate group(s), removed ${removed} duplicate contact(s).`,
       };
     } catch (error) {
@@ -405,23 +364,25 @@ export = {
         const keys = getContactIdentityKeys(c);
         if (keys.some((key) => existingKeys.has(key))) continue; // already in DB, skip
         try {
+          // A card with an over-long field keeps the card and loses the tail of that field.
+          const bounded = boundContactFields(c);
           const contactId = crypto.randomUUID();
           await db.execute(
             'INSERT INTO contacts (id, user_id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
               contactId,
               userId,
-              c.first_name!,
-              c.last_name!,
-              c.email!,
-              c.email2!,
-              c.email3!,
-              c.phone!,
-              c.phone2!,
-              c.phone3!,
-              c.company!,
-              c.job_title!,
-              c.notes!,
+              bounded.first_name,
+              bounded.last_name,
+              bounded.email,
+              bounded.email2,
+              bounded.email3,
+              bounded.phone,
+              bounded.phone2,
+              bounded.phone3,
+              bounded.company,
+              bounded.job_title,
+              bounded.notes,
             ]
           );
           imported++;
@@ -450,8 +411,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const parts = req.url.split('?')[0].split('/');
-      const id = parts[parts.length - 2];
+      const id = req.params.id;
       const { is_favorite } = body;
       await db.execute(
         'UPDATE contacts SET is_favorite = ? WHERE id = ? AND user_id = ?',

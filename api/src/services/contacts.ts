@@ -1,10 +1,80 @@
+import type { Pool, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import type { StoredFlag } from '../types';
+import { db } from '../state';
+import { withTransaction } from './transactions';
 
 type ContactField = 'first_name' | 'last_name' | 'email' | 'email2' | 'email3' | 'phone' | 'phone2' | 'phone3' | 'company' | 'job_title' | 'notes';
 interface Contact extends Partial<Record<ContactField, string | null>> {
   id?: string;
   is_favorite?: StoredFlag;
   created_at?: string | number | Date | null;
+}
+type NormalizedContact = { first_name: string } & Record<Exclude<ContactField, 'first_name'>, string | null>;
+
+const CONTACT_FIELDS: readonly ContactField[] = ['first_name', 'last_name', 'email', 'email2', 'email3', 'phone', 'phone2', 'phone3', 'company', 'job_title', 'notes'];
+// Column sizes from docker/mariadb/schema.sql. VARCHAR counts characters; the
+// TEXT column `notes` counts bytes. MariaDB in strict mode refuses longer
+// values with "Data too long", which would surface as a 500.
+const CONTACT_FIELD_LIMITS: Record<ContactField, number> = {
+  first_name: 100, last_name: 100,
+  email: 255, email2: 255, email3: 255,
+  phone: 50, phone2: 50, phone3: 50,
+  company: 255, job_title: 255,
+  notes: 65535,
+};
+const CONTACT_FIELD_LABELS: Record<ContactField, string> = {
+  first_name: 'First name', last_name: 'Last name',
+  email: 'Email', email2: 'Second email', email3: 'Third email',
+  phone: 'Phone', phone2: 'Second phone', phone3: 'Third phone',
+  company: 'Company', job_title: 'Job title', notes: 'Notes',
+};
+const EMAIL_FIELDS = new Set<ContactField>(['email', 'email2', 'email3']);
+// Loose on purpose: display addresses from many sources; only "something@something" is required.
+const LOOSE_EMAIL = /^\S+@\S+$/;
+
+function fitsContactColumn(field: ContactField, value: string) {
+  return field === 'notes' ? Buffer.byteLength(value, 'utf8') <= CONTACT_FIELD_LIMITS.notes : Array.from(value).length <= CONTACT_FIELD_LIMITS[field];
+}
+
+// Cuts to the column size without splitting a character (or, for the TEXT
+// column, a multi-byte sequence), for sources such as vCard imports where
+// refusing the whole card would lose more than the tail of one field.
+function boundContactField(field: ContactField, value: string | null | undefined): string | null {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return null;
+  if (fitsContactColumn(field, trimmed)) return trimmed;
+  if (field !== 'notes') return Array.from(trimmed).slice(0, CONTACT_FIELD_LIMITS[field]).join('');
+  const bytes = Buffer.from(trimmed, 'utf8');
+  let end = CONTACT_FIELD_LIMITS.notes;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end--;
+  return bytes.subarray(0, end).toString('utf8');
+}
+
+function boundContactFields<T extends Contact>(contact: T): Omit<T, ContactField> & NormalizedContact {
+  const bounded: Record<string, unknown> = { ...(contact as Contact) };
+  for (const field of CONTACT_FIELDS) bounded[field] = boundContactField(field, contact[field]);
+  bounded.first_name = bounded.first_name || '';
+  return bounded as Omit<T, ContactField> & NormalizedContact;
+}
+
+// Validates a create/update body at the boundary: every field is optional text,
+// trimmed, empty becomes null, and nothing longer than its column gets through.
+function normalizeContactInput(body: unknown, { requireFirstName = true } = {}): { fields: NormalizedContact } | { error: string } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'Contact fields are required' };
+  const input = body as Record<string, unknown>;
+  const fields = {} as Record<ContactField, string | null>;
+  for (const field of CONTACT_FIELDS) {
+    const value = input[field];
+    if (value == null) { fields[field] = null; continue; }
+    if (typeof value !== 'string') return { error: `${CONTACT_FIELD_LABELS[field]} must be text` };
+    const trimmed = value.trim();
+    if (!trimmed) { fields[field] = null; continue; }
+    if (!fitsContactColumn(field, trimmed)) return { error: `${CONTACT_FIELD_LABELS[field]} is too long (at most ${CONTACT_FIELD_LIMITS[field]} ${field === 'notes' ? 'bytes' : 'characters'})` };
+    if (EMAIL_FIELDS.has(field) && !LOOSE_EMAIL.test(trimmed)) return { error: `${CONTACT_FIELD_LABELS[field]} is not an email address` };
+    fields[field] = trimmed;
+  }
+  if (requireFirstName && !fields.first_name) return { error: 'First name is required' };
+  return { fields: { ...fields, first_name: fields.first_name || '' } };
 }
 
 // ── vCard helpers (3.0, compatible with Google & Apple) ──────────
@@ -294,7 +364,67 @@ function groupDuplicateContacts<T extends Contact>(contacts: readonly T[] | null
   return Array.from(groups.values()).filter((group) => group.length > 1);
 }
 
+// Each duplicate group is merged in its own transaction: the primary row's
+// update and the deletion of the others commit together, so an interruption
+// leaves the group either merged or untouched, never half-merged with wrong
+// counts. A group whose primary vanished since the listing is skipped.
+async function mergeDuplicateGroups(userId: string, executor: Pick<Pool, 'execute' | 'getConnection'> = db) {
+  const [rows] = await executor.execute<(RowDataPacket & Contact)[]>(
+    `SELECT id, first_name, last_name, email, email2, email3, phone, phone2, phone3, company, job_title, notes, is_favorite, created_at
+     FROM contacts
+     WHERE user_id = ?`,
+    [userId]
+  );
+  const duplicateGroups = groupDuplicateContacts(rows || []);
+  let merged = 0;
+  let removed = 0;
+
+  for (const members of duplicateGroups) {
+    const { primary, others, mergedContact } = buildMergedContact(members);
+    const deleteIds = others.map((other) => other.id!);
+    const outcome = await withTransaction(async (cx) => {
+      const [updated] = await cx.execute<ResultSetHeader>(
+        `UPDATE contacts
+         SET first_name = ?, last_name = ?, email = ?, email2 = ?, email3 = ?, phone = ?, phone2 = ?, phone3 = ?, company = ?, job_title = ?, notes = ?, is_favorite = ?
+         WHERE id = ? AND user_id = ?`,
+        [
+          mergedContact.first_name || '',
+          mergedContact.last_name,
+          mergedContact.email,
+          mergedContact.email2,
+          mergedContact.email3,
+          mergedContact.phone,
+          mergedContact.phone2,
+          mergedContact.phone3,
+          mergedContact.company,
+          mergedContact.job_title,
+          mergedContact.notes,
+          mergedContact.is_favorite ? 1 : 0,
+          primary.id!,
+          userId,
+        ]
+      );
+      if (!updated.affectedRows || deleteIds.length === 0) return null;
+      const placeholders = deleteIds.map(() => '?').join(',');
+      const [deleted] = await cx.execute<ResultSetHeader>(
+        `DELETE FROM contacts WHERE user_id = ? AND id IN (${placeholders})`,
+        [userId, ...deleteIds]
+      );
+      return deleted.affectedRows || 0;
+    }, executor);
+    if (outcome === null) continue;
+    removed += outcome;
+    merged++;
+  }
+
+  return { merged, removed, groups: duplicateGroups.length };
+}
+
 export {
+  CONTACT_FIELD_LIMITS,
+  normalizeContactInput,
+  boundContactFields,
+  mergeDuplicateGroups,
   escapeVCard,
   unescapeVCard,
   decodeQuotedPrintable,

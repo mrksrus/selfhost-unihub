@@ -2,10 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
 import { db } from '../state';
 import { getUserModules } from '../services/module-settings';
-
-function escapeLike(value: unknown) {
-  return String(value || '').replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-}
+import { escapeLike } from '../services/sql';
 
 function isoDate(value: unknown) {
   return value instanceof Date ? value.toISOString() : (value || null);

@@ -74,6 +74,27 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   through the API, not the dialog) detached it locally, so later edits stayed
   local until the next sync overwrote them. It is now refused with a message;
   move or delete the event instead.
+- **Contact fields are checked before they are saved.** A name, phone,
+  email, company or title longer than its column reached the database and the
+  dialog saw "Failed to create contact"; a field that was not text failed the
+  same way. Creating and editing a contact now trims every field, refuses one
+  that does not fit (with the limit in the message), requires a first name on
+  edit as well as on create, and loosely checks that an email address has the
+  shape of one. Editing a contact that is not yours, or no longer exists,
+  answers "Contact not found" instead of succeeding with no contact.
+- **vCard import keeps a card with an over-long field.** An `ORG`, `NOTE` or
+  other value longer than its column was reported as a failed card with the
+  database's message; the card is now imported with that field cut to the
+  column size.
+- **Merging duplicates is all-or-nothing per group.** The kept contact's
+  update and the removal of its duplicates were separate statements, so an
+  interruption between them could leave a merged primary with its duplicates
+  still present and wrong counts; each group now commits in one transaction,
+  and a group whose kept contact vanished since the listing is skipped.
+- **A `%` or `_` in a search matches that character.** Contacts search and
+  the mail list's search treated `%` and `_` as wildcards (so `100%` matched
+  everything containing `100`); they now match literally, as in global search
+  and recordings, which share the one escaper.
 
 ### Internal
 
@@ -89,6 +110,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - The deadlock-retrying `withTransaction` helper moved from the mail engine to
   `api/src/services/transactions.ts` (exported from `services/database.ts` and still from
   `mail-engine/repository.ts`), typed with `SqlExecutor` so any service can use it.
+- Contact input normalization (`normalizeContactInput`, `boundContactFields`) and the
+  duplicate merge (`mergeDuplicateGroups`) live in `api/src/services/contacts.ts`; the routes
+  read `:id` from `req.params`; `escapeLike` is shared from `api/src/services/sql.ts`.
 
 ## 0.22.4
 
