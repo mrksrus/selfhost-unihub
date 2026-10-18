@@ -18,7 +18,7 @@ function stub<T>(t: import('node:test').TestContext, entries: FixtureValue, targ
   return require(target);
 }
 
-function backlog(t: import('node:test').TestContext, count: number, { fetchRawMessage }: FixtureValue = {}) {
+function backlog(t: import('node:test').TestContext, count: number, { fetchRawMessage, persist }: FixtureValue = {}) {
   const queued = Array.from({ length: count }, (_, i) => ({ occurrence_id: `occ-${i}`, uid: count - i, uidvalidity: 7,
     email_id: `email-${i}`, import_complete: 0, is_read: 0 }));
   const persisted: FixtureValue[] = [], imported: FixtureValue[] = [], reports: FixtureValue[] = [], marked: FixtureValue[] = [], fetches: FixtureValue[] = [];
@@ -32,7 +32,7 @@ function backlog(t: import('node:test').TestContext, count: number, { fetchRawMe
     throw Error(`Unexpected SQL: ${sql}`);
   } };
   const content = stub<typeof import('../src/services/mail-engine/content')>(t, [
-    [engine('repository'), { withTransaction: (fn: FixtureValue) => fn(db) }],
+    [engine('repository'), { withTransaction: (fn: FixtureValue) => fn(db), isDeadlock: (error: FixtureValue) => error?.code === 'ER_LOCK_DEADLOCK' }],
     [engine('runtime'), { async assertFence() {} }],
     [engine('transport'), { async selectMailbox() { return { uidvalidity: 7 }; },
       async fetchRawMessage(connection: FixtureValue, address: FixtureValue, options: FixtureValue) {
@@ -40,6 +40,7 @@ function backlog(t: import('node:test').TestContext, count: number, { fetchRawMe
         if (fetchRawMessage) return fetchRawMessage(address, options);
         return { raw: Buffer.from('From: a@example.test\r\nSubject: Hi\r\n\r\nBody') }; } }],
     [require.resolve('../dist/src/services/mail-import'), { async persistImportedMessage(input: FixtureValue) {
+      if (persist) await persist(input);
       persisted.push(input.uid); imported.push(input); queued.shift(); return { emailId: input.existingEmail.id }; } }],
     [require.resolve('../dist/src/services/mail'), { MAIL_RAW_STORAGE_ROOT: '/nonexistent', recordMailServerMessageForDeletion: async () => {} }],
   ], engine('content'));
@@ -125,6 +126,38 @@ test('a cancelled download is not set aside as slow', async t => {
   assert.deepEqual(h.marked, []);
   assert.equal(h.queued.length, 2, 'the message stays queued for the next job');
 });
+
+test('a message whose rows the database refuses is set aside and the mailbox loads on behind it', async t => {
+  const refused = Object.assign(new Error("Data too long for column 'content_type' at row 1"), { code: 'ER_DATA_TOO_LONG', errno: 1406, sqlState: '22001' });
+  const h = backlog(t, 5, { persist: async (input: FixtureValue) => { if (input.uid === 4) throw refused; } });
+  const log = t.mock.method(console, 'error', () => {});
+  const first = await h.run();
+  assert.deepEqual(h.persisted, [5, 3, 2, 1], 'the messages behind the refused one are imported in the same job');
+  assert.deepEqual(h.marked, [['deferred', 'email-1']]);
+  assert.deepEqual({ processed: first.processed, deferred: first.deferred, more: first.more }, { processed: 5, deferred: 1, more: false },
+    'the set-aside message counts as handled in the job, like a parse failure');
+  assert.equal(log.mock.callCount(), 1);
+  const logged = log.mock.calls[0].arguments.join(' ');
+  assert.ok(logged.includes('ER_DATA_TOO_LONG') && !logged.includes('content_type'), 'the operator log carries the error code, not the SQL message');
+  const next = await h.run();
+  assert.equal(next.more, false);
+  assert.deepEqual(h.fetches.map(f => f.uid), [5, 4, 3, 2, 1], 'the set-aside message is not downloaded again');
+});
+
+for (const [label, error] of [
+  ['a deadlock', { code: 'ER_LOCK_DEADLOCK', errno: 1213, sqlState: '40001' }],
+  ['a lock wait timeout', { code: 'ER_LOCK_WAIT_TIMEOUT', errno: 1205, sqlState: 'HY000' }],
+  ['a lost database connection', { code: 'PROTOCOL_CONNECTION_LOST', fatal: true }],
+  ['a full disk', { code: 'ENOSPC', errno: -28, syscall: 'write' }],
+  ['a lost worker lease', { code: 'MAIL_WORKER_FENCED' }],
+] as [string, FixtureValue][]) {
+  test(`${label} while storing a message is not the message's fault: the job fails and the message stays queued`, async t => {
+    const h = backlog(t, 2, { persist: async () => { throw Object.assign(new Error(label), error); } });
+    await assert.rejects(h.run(), (actual: FixtureValue) => actual.code === error.code);
+    assert.deepEqual(h.marked, []);
+    assert.equal(h.queued.length, 2);
+  });
+}
 
 test('discovery requeues body work for every mailbox with queued content and promotes old priorities', async t => {
   const enqueued: FixtureValue[] = [], statements: FixtureValue[] = [];

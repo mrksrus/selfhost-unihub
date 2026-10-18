@@ -17,6 +17,7 @@ async function fixture(t: import('node:test').TestContext, { failAttachment = fa
     await fs.rm(root, { recursive: true, force: true });
   });
   const calls: FixtureValue[] = [];
+  const statements: FixtureValue[] = [];
   let committed = false;
   let rolledBack = false;
   const connection = {
@@ -25,7 +26,7 @@ async function fixture(t: import('node:test').TestContext, { failAttachment = fa
     async rollback() { rolledBack = true; calls.push('rollback'); },
     release() { calls.push('release'); },
     async execute(sql: string, params: FixtureValue) {
-      calls.push(sql);
+      calls.push(sql); statements.push({ sql, params });
       assert.equal((sql.match(/\?/g) || []).length, params.length, 'prepared SQL parameter count');
       if (failAttachment && sql.includes('INSERT INTO email_attachments')) throw new Error('Injected attachment insert failure');
       if (sql.includes('SELECT id, storage_path')) return [[]];
@@ -54,7 +55,7 @@ async function fixture(t: import('node:test').TestContext, { failAttachment = fa
       calls.push('queue deletion');
     },
   };
-  return { root, args, calls, get committed() { return committed; }, get rolledBack() { return rolledBack; } };
+  return { root, args, calls, statements, get committed() { return committed; }, get rolledBack() { return rolledBack; } };
 }
 
 test('complete imported message, attachments and deletion queue commit together', async (t) => {
@@ -114,4 +115,25 @@ test('an import without a held notification sends nothing', async (t) => {
   const h = await fixture(t, { existingEmail: { id: 'existing', import_complete: false } });
   await persistImportedMessage(h.args as FixtureValue);
   assert.ok(!h.calls.some(sql => sql.includes('notification_deliveries') || sql.includes('UPDATE notification_events')));
+});
+
+// The fake accepts any length; the real-database case is in mail-mysql-integration.
+test('header values longer than their columns are stored cut to the column length; the raw message keeps the originals', async (t) => {
+  const h = await fixture(t);
+  const args = { ...h.args, messageId: `<${'m'.repeat(600)}@example.test>`, fromAddress: `${'a'.repeat(300)}@example.test`,
+    fromName: '\u{1F600}'.repeat(300), parsed: { ...h.args.parsed, html: '<img src="cid:pic">', attachments: [
+      { filename: `${'f'.repeat(300)}.png`, contentType: `image/${'x'.repeat(150)}`, contentId: 'c'.repeat(300), content: Buffer.from('image') }] } };
+  const result = await persistImportedMessage(args as FixtureValue);
+  assert.equal(h.committed, true);
+  const email = h.statements.find(s => s.sql.includes('INSERT INTO emails')).params;
+  assert.equal(email[3], args.messageId.slice(0, 500));
+  assert.equal(email[5], args.fromAddress.slice(0, 255));
+  assert.equal(Array.from(email[6]).length, 255, 'characters, not UTF-16 units: no surrogate pair is split');
+  assert.equal(email[6], '\u{1F600}'.repeat(255));
+  const attachment = h.statements.find(s => s.sql.includes('INSERT INTO email_attachments')).params;
+  assert.equal(attachment[3], 'f'.repeat(255));
+  assert.equal(attachment[4], `image/${'x'.repeat(94)}`);
+  assert.equal(attachment[7], 'c'.repeat(255));
+  await fs.access(attachment[6]);
+  assert.deepEqual(await fs.readFile(path.join(h.root, `${result.emailId}.eml`)), h.args.fullEmail);
 });

@@ -348,8 +348,15 @@ that stops sending data still ends after the job's 30-second socket inactivity
 timeout. A message whose download misses the 5-minute deadline is set aside
 (`content_state = 'slow'`) so the messages behind it continue, since newest
 first would otherwise pick it again in every job. A manual sync queues set-aside
-messages again (**Sync now**). A message above 50 MiB, or one that cannot be parsed, is set
-aside for good (`deferred`). Both keep the "Loading message" placeholder.
+messages again (**Sync now**). A message above 50 MiB, one that cannot be parsed, or one
+whose rows the database refuses (`persist_failure`; the operator log carries the error
+code, never message content) is set aside for good (`deferred`); the provider keeps the
+message, and a rolled-back import releases no held notification. All keep the "Loading
+message" placeholder. A deadlock, a lost database connection, a full disk or a lost lease
+is not the message's fault: the job fails and the message stays queued for the next one.
+Header-derived values (Message-ID, sender address and name, attachment file name, content
+type and content ID) are cut to their column lengths before the import, so an overlong
+header alone does not set a message aside; the raw `.eml` keeps the originals.
 
 Operation and reconcile jobs also hold the in-process account lock (shared with
 settings changes and server deletion), dial with shorter timeouts, and on a
