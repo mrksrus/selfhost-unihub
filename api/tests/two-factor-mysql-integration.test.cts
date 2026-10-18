@@ -29,7 +29,7 @@ function response() {
   return { headers, setHeader(key: FixtureValue, value: FixtureValue) { headers.set(key, value); }, getHeader(key: FixtureValue) { return headers.get(key); } };
 }
 
-const request = (token?: FixtureValue, url = '/api/auth/2fa') => ({ url, headers: token ? { authorization: `Bearer ${token}` } : {}, socket: { remoteAddress: '127.0.0.1' } });
+const request = (token?: FixtureValue, url = '/api/auth/2fa', params: Record<string, string> = {}) => ({ url, params, headers: token ? { authorization: `Bearer ${token}` } : {}, socket: { remoteAddress: '127.0.0.1' } });
 
 test('2FA setup signs out other devices, an unreadable secret keeps recovery codes usable and admins can reset 2FA',
   { skip: !process.env.MYSQL_TEST_HOST }, async (t) => {
@@ -132,15 +132,16 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     await createTwoFactorLoginChallenge(person, request() as FixtureValue);
 
     // Admin reset: admins only, not for themselves, with the admin's own password.
-    const resetUrl = `/api/admin/users/${person}/2fa/reset`;
-    const reset = (userId: string, target: FixtureValue, password: FixtureValue, token = 'admin-session') => adminRoutes['POST /api/admin/users/:id/2fa/reset'](
-      request(token, `/api/admin/users/${target}/2fa/reset`) as FixtureValue, userId, { current_password: password } as FixtureValue, response() as FixtureValue);
-    assert.equal((await adminRoutes['POST /api/admin/users/:id/2fa/reset'](request(null, resetUrl) as FixtureValue, person, { current_password: 'synthetic-person-password' } as FixtureValue, response() as FixtureValue)).status, 403);
+    const reset = (userId: string, target: FixtureValue, password: FixtureValue, token = 'admin-session') => adminRoutes['POST /api/admin/users/:id/2fa/reset'].handler(
+      request(token, `/api/admin/users/${target}/2fa/reset`, { id: target }) as FixtureValue, userId, { current_password: password } as FixtureValue, response() as FixtureValue);
+    // The boundary admits only admins (routes-policy.test.cts); the route's own
+    // in-transaction role check still refuses a non-admin whose password verified.
+    assert.equal((await reset(person, admin, 'synthetic-person-password', 'person-current')).status, 403);
     assert.equal((await reset(admin, admin, 'synthetic-admin-password')).status, 400);
     // 403, not 401: the client signs out on a 401 from a non-auth endpoint.
     assert.equal((await reset(admin, person, 'wrong-admin-password')).status, 403);
     assert.equal((await reset(admin, crypto.randomUUID(), 'synthetic-admin-password')).status, 404);
-    const listed = (await adminRoutes['GET /api/admin/users'](request(null, '/api/admin/users') as FixtureValue, admin)).users;
+    const listed = (await adminRoutes['GET /api/admin/users'].handler(request(null, '/api/admin/users') as FixtureValue, admin)).users;
     assert.equal(listed!.find((user: FixtureValue) => user.id === person)!.two_factor_enabled, true);
     assert.equal(listed!.find((user: FixtureValue) => user.id === admin)!.two_factor_enabled, false);
 

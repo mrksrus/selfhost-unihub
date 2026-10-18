@@ -35,7 +35,6 @@ const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
   'POST /api/auth/signin': 4096,
   'POST /api/auth/signup': 4096,
   'PUT /api/auth/password': 4096,
-  'PUT /api/admin/users/:id/password': 4096,
   // Contact notes are a TEXT column
   'POST /api/contacts': 65536,
   'PUT /api/contacts/:id': 65536,

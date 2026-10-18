@@ -123,7 +123,7 @@ test('deleting a user removes their rows and files under every root, nothing of 
     assert.deepEqual(await everythingOf(b), intact);
 
     const adminDelete = (actor: string, target: string) =>
-      adminRoutes['DELETE /api/admin/users/:id']({ url: `/api/admin/users/${target}`, headers: {}, params: { id: target } } as FixtureValue, actor);
+      adminRoutes['DELETE /api/admin/users/:id'].handler({ url: `/api/admin/users/${target}`, headers: {}, params: { id: target } } as FixtureValue, actor);
 
     // A restore writing for A: the admin's request is refused and nothing of A changes.
     const restore = crypto.randomUUID();

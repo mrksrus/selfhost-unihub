@@ -86,12 +86,19 @@ test('the production table passes the whole-table invariants, and a table that b
     /must declare module "contacts"/);
   assert.throws(() => assertRouteTable(defineRoutes({ 'POST /api/things': { auth: 'user', module: null, handler } }), { moduleIds }),
     /must declare restoreSection/);
+  assert.throws(() => assertRouteTable(defineRoutes({ 'GET /api/admin/things': { auth: 'user', module: null, handler } }), { moduleIds }),
+    /must declare auth "admin"/);
   assert.doesNotThrow(() => assertRouteTable(defineRoutes({ 'POST /api/things': { auth: 'user', module: null, restoreSection: null, handler } }), { moduleIds }));
   assert.throws(() => assertRouteTable(defineRoutes({ 'GET /api/things/:id': { auth: 'user', handler }, 'GET /api/things/:other': { auth: 'user', handler } }), { moduleIds }),
     /does not resolve/);
   assert.throws(() => defineRoutes({ 'PATCH /api/things': { auth: 'user', handler } } as FixtureValue), /key must be "METHOD \/path"/);
   assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'owner', handler } } as FixtureValue), /unknown auth/);
   assert.throws(() => defineRoutes({ 'GET /api/things': { auth: 'user', body: { limit: 0 }, handler } }), /body.limit/);
+});
+
+// Limits declared by converted route files; the derived ones are pinned by route-spec.test.cts.
+test('credential routes keep their explicit body limits in the production table', () => {
+  assert.equal(routes['PUT /api/admin/users/:id/password'].body?.limit, 4096);
 });
 
 test('a route key declared in two files is refused instead of one file silently winning', () => {

@@ -43,14 +43,12 @@ test('admin user deletion keeps its own checks and reports the service refusal',
       if (sql.includes('COUNT(*)')) return [[{ count: activeAdmins }]];
       throw new Error(`Unexpected query: ${sql}`);
     } } },
-    '../dist/src/auth': { isAdmin: async (userId: string) => users[userId]?.role === 'admin' },
     '../dist/src/services/user-lifecycle': lifecycle,
   }, ['../dist/src/routes/admin']);
   const routes = require('../dist/src/routes/admin') as RouteTable<typeof import('../src/routes/admin')>;
-  const remove = (actor: string | null, target: string) => routes['DELETE /api/admin/users/:id']({ url: `/api/admin/users/${target}`, headers: {}, params: { id: target } } as FixtureValue, actor);
+  // The boundary admits only admins to these routes (routes-policy.test.cts).
+  const remove = (actor: string, target: string) => routes['DELETE /api/admin/users/:id'].handler({ url: `/api/admin/users/${target}`, headers: {}, params: { id: target } } as FixtureValue, actor);
 
-  assert.equal((await remove(null, 'user-1')).status, 401);
-  assert.equal((await remove('user-1', 'admin-1')).status, 403);
   assert.equal((await remove('admin-1', 'admin-1')).status, 400, 'an admin cannot delete themselves here');
   assert.equal((await remove('admin-1', 'missing')).status, 404);
   activeAdmins = 1;
@@ -64,14 +62,14 @@ test('admin user deletion keeps its own checks and reports the service refusal',
   const refused = lifecycleStub(conflict('RESTORE_IN_PROGRESS', 'Restore in progress.'));
   stubModules(t, { '../dist/src/services/user-lifecycle': refused }, ['../dist/src/routes/admin']);
   const reloaded = require('../dist/src/routes/admin') as RouteTable<typeof import('../src/routes/admin')>;
-  const result = await reloaded['DELETE /api/admin/users/:id']({ url: '/api/admin/users/user-1', headers: {}, params: { id: 'user-1' } } as FixtureValue, 'admin-1');
+  const result = await reloaded['DELETE /api/admin/users/:id'].handler({ url: '/api/admin/users/user-1', headers: {}, params: { id: 'user-1' } } as FixtureValue, 'admin-1');
   assert.deepEqual([result.status, result.code], [409, 'RESTORE_IN_PROGRESS']);
 
   const failed = lifecycleStub(new Error('ER_LOCK_WAIT_TIMEOUT: Lock wait timeout exceeded'));
   stubModules(t, { '../dist/src/services/user-lifecycle': failed }, ['../dist/src/routes/admin']);
   const failing = require('../dist/src/routes/admin') as RouteTable<typeof import('../src/routes/admin')>;
   t.mock.method(console, 'error', () => {});
-  const internal = await failing['DELETE /api/admin/users/:id']({ url: '/api/admin/users/user-1', headers: {}, params: { id: 'user-1' } } as FixtureValue, 'admin-1');
+  const internal = await failing['DELETE /api/admin/users/:id'].handler({ url: '/api/admin/users/user-1', headers: {}, params: { id: 'user-1' } } as FixtureValue, 'admin-1');
   assert.deepEqual(internal, { error: 'Failed to delete user', status: 500 }, 'database text stays in the log');
 });
 
