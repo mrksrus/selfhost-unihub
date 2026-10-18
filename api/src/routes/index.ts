@@ -21,7 +21,7 @@ import { MODULE_CATALOG } from '../services/module-catalog';
 const routes = mergeRouteTables(
   legacyRoutes(systemRoutes),
   legacyRoutes(modulesRoutes),
-  legacyRoutes(authRoutes),
+  authRoutes,
   legacyRoutes(contactsRoutes),
   legacyRoutes(settingsRoutes),
   legacyRoutes(backupRoutes),

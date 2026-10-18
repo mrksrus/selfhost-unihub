@@ -51,7 +51,7 @@ test('MySQL login isolation, valid 2FA sessions, recovery reuse, replay and tran
       [id, email, hash, has2fa, has2fa ? encrypt('JBSWY3DPEHPK3PXP') : null, has2fa ? JSON.stringify([await bcrypt.hash(recoveryCode, 4)]) : null]);
   }
   const req = { headers: {}, socket: { remoteAddress: '192.0.2.1' } };
-  const signin = (email: FixtureValue, pass = password) => routes['POST /api/auth/signin'](req as FixtureValue, null, { email, password: pass }, response() as FixtureValue);
+  const signin = (email: FixtureValue, pass = password) => routes['POST /api/auth/signin'].handler(req as FixtureValue, null, { email, password: pass }, response() as FixtureValue);
   // A correct login to user two never clears failed guesses against user one.
   for (let index = 0; index < 10; index++) {
     assert.equal(((await signin(index % 2 ? 'ONE@example.test' : 'one@example.test', 'incorrect'))! as FixtureValue).status, 401);
@@ -67,22 +67,22 @@ test('MySQL login isolation, valid 2FA sessions, recovery reuse, replay and tran
   }
   const token = await challenge();
   const res = response();
-  const verified = await routes['POST /api/auth/2fa/login'](req as FixtureValue, null, { challenge_token: token, code: otp() } as FixtureValue, res as FixtureValue);
+  const verified = await routes['POST /api/auth/2fa/login'].handler(req as FixtureValue, null, { challenge_token: token, code: otp() } as FixtureValue, res as FixtureValue);
   assert.equal((verified as With<typeof verified, 'user'>).user.id, three);
   const cookies = res.headers.get('Set-Cookie').map((value: FixtureValue) => value.split(';')[0]).join('; ');
   assert.equal(await verifyToken({ headers: { cookie: cookies } } as FixtureValue), three, 'Issued session authenticates the actual user');
-  assert.equal(((await routes['POST /api/auth/2fa/login'](req as FixtureValue, null, { challenge_token: token, code: otp() } as FixtureValue, response() as FixtureValue)) as FixtureValue).status, 401);
+  assert.equal(((await routes['POST /api/auth/2fa/login'].handler(req as FixtureValue, null, { challenge_token: token, code: otp() } as FixtureValue, response() as FixtureValue)) as FixtureValue).status, 401);
 
   const recoveryToken = await challenge();
-  const recovered = await routes['POST /api/auth/2fa/login'](req as FixtureValue, null, { challenge_token: recoveryToken, code: recoveryCode } as FixtureValue, response() as FixtureValue);
+  const recovered = await routes['POST /api/auth/2fa/login'].handler(req as FixtureValue, null, { challenge_token: recoveryToken, code: recoveryCode } as FixtureValue, response() as FixtureValue);
   assert.equal((recovered as With<typeof recovered, 'user'>).user.id, three); assert.equal((recovered as With<typeof recovered, 'recoveryCodesRemaining'>).recoveryCodesRemaining, 0);
   const [[stored]] = await pool.execute<RowDataPacket[]>('SELECT two_factor_recovery_codes FROM users WHERE id=?', [three]);
   assert.deepEqual(stored.two_factor_recovery_codes, []);
   const reusedToken = await challenge();
-  assert.equal(((await routes['POST /api/auth/2fa/login'](req as FixtureValue, null, { challenge_token: reusedToken, code: recoveryCode } as FixtureValue, response() as FixtureValue)) as FixtureValue).status, 401);
+  assert.equal(((await routes['POST /api/auth/2fa/login'].handler(req as FixtureValue, null, { challenge_token: reusedToken, code: recoveryCode } as FixtureValue, response() as FixtureValue)) as FixtureValue).status, 401);
 
   const concurrentToken = await challenge();
-  const results = await Promise.all([1, 2].map(() => routes['POST /api/auth/2fa/login'](req as FixtureValue, null, { challenge_token: concurrentToken, code: otp() } as FixtureValue, response() as FixtureValue)));
+  const results = await Promise.all([1, 2].map(() => routes['POST /api/auth/2fa/login'].handler(req as FixtureValue, null, { challenge_token: concurrentToken, code: otp() } as FixtureValue, response() as FixtureValue)));
   assert.equal(results.filter(result => (result as With<typeof result, 'user'>).user?.id === three).length, 1, 'Challenge is consumed atomically');
   assert.equal(results.filter(result => (result as With<typeof result, 'status'>).status === 401).length, 1);
 
@@ -96,7 +96,7 @@ test('MySQL login isolation, valid 2FA sessions, recovery reuse, replay and tran
   const loggedErrors: FixtureValue[] = [];
   const logMock = t.mock.method(console, 'error', (...args: FixtureValue[]) => loggedErrors.push(args));
   try {
-    const failed = await routes['POST /api/auth/2fa/login'](req as FixtureValue, null,
+    const failed = await routes['POST /api/auth/2fa/login'].handler(req as FixtureValue, null,
       { challenge_token: rollbackChallenge, code: recoveryCode } as FixtureValue, failedResponse as FixtureValue);
     assert.equal((failed as With<typeof failed, 'status'>).status, 500);
     assert.equal(loggedErrors.length, 1);
@@ -115,7 +115,7 @@ test('MySQL login isolation, valid 2FA sessions, recovery reuse, replay and tran
   const [[sessions]] = await pool.execute<RowDataPacket[]>('SELECT COUNT(*) AS count FROM sessions WHERE user_id=?', [four]);
   assert.equal(sessions.count, 0);
   const retryResponse = response();
-  const retried = await routes['POST /api/auth/2fa/login'](req as FixtureValue, null,
+  const retried = await routes['POST /api/auth/2fa/login'].handler(req as FixtureValue, null,
     { challenge_token: rollbackChallenge, code: recoveryCode } as FixtureValue, retryResponse as FixtureValue);
   assert.equal((retried as With<typeof retried, 'user'>).user.id, four, 'The same challenge and recovery code work after the database recovers');
   assert.equal((retried as With<typeof retried, 'recoveryCodesRemaining'>).recoveryCodesRemaining, 0);
