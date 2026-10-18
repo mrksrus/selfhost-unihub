@@ -1,5 +1,5 @@
 import type { IncomingMessage } from 'node:http';
-import type { RowDataPacket } from 'mysql2/promise';
+import type { ExecuteValues, RowDataPacket } from 'mysql2/promise';
 import type { SqlExecutor, StoredFlag } from '../types';
 import type { CalendarAccount, CalendarCalendar, CalendarSubtask, CalendarAttendee, CalendarEvent } from '../types/calendar';
 
@@ -349,6 +349,37 @@ async function replaceEventAttendees(userId: string, eventId: string, attendees:
   }
 }
 
+// The local half of an event edit, once the calendar server (if any) has
+// accepted it. A series time change rebuilds the occurrence rows from the
+// server's answer, so the edited id may be gone by now; then nothing is
+// written for it (an attendee row would hit the foreign key) and null says
+// the row was replaced. The row lock keeps a concurrent rebuild from removing
+// it between the check and the attendee rows.
+async function applyLocalEventUpdate(userId: string, eventId: string, { sets, params }: { sets: string[]; params: ExecuteValues[] }, attendees: unknown) {
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.execute<RowDataPacket[]>('SELECT id FROM calendar_events WHERE id = ? AND user_id = ? FOR UPDATE', [eventId, userId]);
+    if (rows.length === 0) {
+      await connection.rollback();
+      return null;
+    }
+    if (sets.length > 0) {
+      await connection.execute(`UPDATE calendar_events SET ${sets.join(', ')} WHERE id = ? AND user_id = ?`, [...params, eventId, userId]);
+    }
+    if (Array.isArray(attendees)) {
+      await replaceEventAttendees(userId, eventId, attendees, connection);
+    }
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+  return getCalendarEventWithSubtasks(userId, eventId);
+}
+
 async function loadCalendarWithAccount(userId: string, calendarId: string) {
   const [rows] = await db.execute<(RowDataPacket & CalendarCalendar & { provider: string; account_email: string | null; account_display_name: string | null; capabilities: unknown; account_is_active: StoredFlag })[]>(
     `SELECT c.*, a.provider, a.account_email, a.display_name AS account_display_name,
@@ -409,6 +440,7 @@ export {
   normalizeResponseStatus,
   normalizeAttendeesPayload,
   replaceEventAttendees,
+  applyLocalEventUpdate,
   loadCalendarWithAccount,
   formatProviderDateRange,
 };

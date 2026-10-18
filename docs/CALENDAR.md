@@ -221,7 +221,7 @@ The backend refuses to delete the last calendar in an account.
 | GET | `/api/calendar/events` | List events |
 | GET | `/api/calendar/events/:id` | Load one owned event/to-do, including subtasks and attendees |
 | POST | `/api/calendar/events` | Create event or to-do |
-| PUT | `/api/calendar/events/:id` | Update event fields and attendees; `scope` (`occurrence` or `series`) for recurring server events |
+| PUT | `/api/calendar/events/:id` | Update event fields and attendees; `scope` (`occurrence` or `series`) for recurring server events. Answers `{ event: null, replaced: true, scope: 'series' }` when a series time change rebuilt the occurrences and the edited id is gone. `calendar_id: null` is refused (400) for an event linked to a server copy |
 | PUT | `/api/calendar/events/:id/todo-status` | Update `todo_status`, optionally moving time |
 | PUT | `/api/calendar/events/:id/rsvp` | Update RSVP state for an attendee |
 | DELETE | `/api/calendar/events/:id` | Delete event; `?scope=occurrence\|series` for recurring server events |
@@ -340,7 +340,12 @@ are then rebuilt from the server's answer, so the server stays the authority.
 
 - **Recurring events.** Edit and delete ask **This event** or **All events**.
   This event writes an overridden occurrence or an `EXDATE`; all events edits
-  the series. Changing a series' time creates new occurrences.
+  the series. Changing a series' time creates new occurrences: the edited row
+  (and its attendees) is gone, nothing more is written for its id, and the
+  response says `replaced: true` with `event: null`.
+- **No calendar.** A synced event cannot be detached from its calendar
+  (`calendar_id: null` is refused): without the calendar its later edits would
+  stay local and be overwritten by the next sync. Move it or delete it instead.
 - **Conflicts.** If the event changed on the server meanwhile (HTTP 412), the
   edit is refused with a message, nothing is overwritten, and the account syncs
   at once.
