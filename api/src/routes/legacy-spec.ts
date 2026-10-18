@@ -57,11 +57,6 @@ function bodyLimitFor(routeKey: string) {
   return BODY_LIMIT_BY_ROUTE[routeKey] ?? DEFAULT_BODY_LIMIT;
 }
 
-// Routes that write and own their response (returned { __handled: true }).
-const STREAMING_ROUTE_KEYS: ReadonlySet<string> = new Set([
-  'GET /api/events',
-]);
-
 // Restore sections by write path.
 function restoreSectionFor(method: string, pathname: string) {
   if (!MUTATING_METHODS.has(method)) return undefined;
@@ -76,7 +71,6 @@ function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
     module: getModuleForPath(pathname),
     restoreSection: restoreSectionFor(method, pathname),
     body: { limit: bodyLimitFor(key), kind: (key === 'POST /api/backup/import' ? 'backup-upload' : 'json') as 'backup-upload' | 'json' },
-    ...(STREAMING_ROUTE_KEYS.has(key) ? { response: 'stream' as const } : {}),
   };
   // A legacy handler accepts a nullable user id, so it serves either auth level.
   const run = handler as unknown as (req: RouteRequest, userId: string | null, body: unknown, res: ServerResponse) => Promise<RouteResponse | undefined>;
@@ -87,5 +81,5 @@ function legacyRoutes(table: LegacyRouteTable): RouteTable {
   return defineRoutes(Object.fromEntries(Object.entries(table).map(([key, handler]) => [key, legacyRouteSpec(key, handler)])));
 }
 
-export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, STREAMING_ROUTE_KEYS, bodyLimitFor };
+export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, bodyLimitFor };
 export type { LegacyHandler, LegacyRouteTable };

@@ -1,7 +1,7 @@
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const routes = require('../dist/src/routes') as typeof import('../src/routes');
-const { PUBLIC_ROUTE_KEYS, STREAMING_ROUTE_KEYS, bodyLimitFor } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
+const { PUBLIC_ROUTE_KEYS, bodyLimitFor } = require('../dist/src/routes/legacy-spec') as typeof import('../src/routes/legacy-spec');
 const { getModuleForPath } = require('../dist/src/services/module-catalog') as typeof import('../src/services/module-catalog');
 const { getRestoreSectionForWrite } = require('../dist/src/services/backup-catalog') as typeof import('../src/services/backup-catalog');
 
@@ -9,7 +9,7 @@ const { getRestoreSectionForWrite } = require('../dist/src/services/backup-catal
 // derive it from the tables the boundary used before specs existed. This test
 // pins the derivation to those lookups, applied to a concrete request path as
 // the boundary applied them, and shrinks as files are converted.
-const NATIVE_ROUTE_FILES = ['notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search'];
+const NATIVE_ROUTE_FILES = ['notifications', 'admin', 'auth', 'settings', 'modules', 'system', 'offline', 'search', 'events'];
 const nativeKeys = new Set(NATIVE_ROUTE_FILES.flatMap(name => Object.keys(require(`../dist/src/routes/${name}`))));
 
 test('every derived route spec equals the policy the boundary looked up before specs existed', () => {
@@ -24,7 +24,6 @@ test('every derived route spec equals the policy the boundary looked up before s
       module: getModuleForPath(pathname),
       restoreSection: mutating ? getRestoreSectionForWrite(pathname) : undefined,
       body: { limit: bodyLimitFor(key), kind: key === 'POST /api/backup/import' ? 'backup-upload' : 'json' },
-      ...(STREAMING_ROUTE_KEYS.has(key) ? { response: 'stream' } : {}),
     };
     const { handler, ...policy } = spec;
     assert.equal(typeof handler, 'function', key);
@@ -32,6 +31,6 @@ test('every derived route spec equals the policy the boundary looked up before s
   }
 });
 
-test('the derived public set and the streaming set name routes that exist', () => {
-  for (const key of [...PUBLIC_ROUTE_KEYS, ...STREAMING_ROUTE_KEYS]) assert.ok(key in routes, `${key} is listed but has no route`);
+test('the derived public set names routes that exist', () => {
+  for (const key of PUBLIC_ROUTE_KEYS) assert.ok(key in routes, `${key} is listed but has no route`);
 });

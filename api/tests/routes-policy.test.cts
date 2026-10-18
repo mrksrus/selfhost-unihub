@@ -70,6 +70,11 @@ test('every route under /api/admin/ answers 403 to a signed-in user without the 
   assert.equal(queries.length, adminKeys.length);
 });
 
+test('the two live streams are the only routes that own their response', () => {
+  const streaming = Object.keys(routes).filter(key => routes[key].response === 'stream').sort();
+  assert.deepEqual(streaming, ['GET /api/events', 'GET /api/notifications/android/stream']);
+});
+
 test('the public routes are exactly the ones a client needs before signing in', () => {
   const publicKeys = Object.keys(routes).filter(key => routes[key].auth === 'public').sort();
   assert.deepEqual(publicKeys, [

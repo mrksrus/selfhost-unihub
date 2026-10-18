@@ -87,7 +87,6 @@ export type BackupFileSource = Buffer | FileRangeSource;
 export interface RouteRequest extends AuthRequest { params?: Record<string, string | null> }
 export interface RouteResponse extends Record<string, unknown> {
   status?: number;
-  __handled?: boolean;
   __redirect?: string;
   __html?: string;
   __raw?: string | Buffer;
