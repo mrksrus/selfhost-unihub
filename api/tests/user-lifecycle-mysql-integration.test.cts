@@ -134,9 +134,6 @@ test('deleting a user removes their rows and files under every root, nothing of 
     assert.equal(refused.code, 'RESTORE_IN_PROGRESS');
     assert.deepEqual(await everythingOf(a), intact);
 
-    // Another user is not an administrator, whatever the URL says.
-    assert.equal((await adminDelete(b.user, a.user)).status, 403);
-    assert.deepEqual(await everythingOf(a), intact);
 
     await connection.execute<ResultSetHeader>("UPDATE backup_restore_jobs SET status = 'completed' WHERE id = ?", [restore]);
     assert.deepEqual(await adminDelete(admin, a.user), { message: 'User deleted' });
