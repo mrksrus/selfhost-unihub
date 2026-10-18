@@ -14,6 +14,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { EventEmitter } from 'node:events';
 
 import crypto from 'node:crypto';
+import { OPERATION_STATES } from './mail-engine/operation-states';
+import { JOB_KINDS } from './mail-engine/job-kinds';
 
 interface EventStream {
   userId: string;
@@ -77,10 +79,10 @@ const DEFAULTS = Object.freeze({
 });
 
 const MAIL_JOB_STATES = new Set(['queued', 'running', 'idle', 'error', 'cancelled', 'paused']);
-const MAIL_OPERATION_STATES = new Set(['accepted', 'queued', 'executing', 'verifying', 'retry_wait', 'reconciling',
-  'confirmed', 'needs_attention', 'rejected', 'cancelled', 'superseded']);
+// 'accepted' is published by admission before a row state exists.
+const MAIL_OPERATION_STATES = new Set<string>(['accepted', ...OPERATION_STATES]);
 const MAIL_CHANGE_REASONS = new Set(['import', 'flags', 'folders', 'content', 'operation', 'local']);
-const MAIL_JOB_KINDS = new Set(['sync', 'recent', 'flags', 'history', 'presence', 'body', 'prune', 'operation', 'reconcile']);
+const MAIL_JOB_KINDS = new Set<string>(JOB_KINDS);
 
 const id = (value: unknown) => {
   const text = value === null || value === undefined ? '' : String(value);

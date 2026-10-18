@@ -123,7 +123,7 @@ outbound mail through SMTP. The mail system includes:
 | Import persistence | `api/src/services/mail-import.ts` | Stage files and commit complete message metadata atomically |
 | Attachment handling | `api/src/services/mail-attachments.ts` | Shared validation, file staging and inline CID rewriting |
 | Draft persistence | `api/src/services/mail-drafts.ts` | Transactional draft and attachment replacement |
-| Folder checkpoints | `api/src/services/mail-sync-state.ts` | Durable per-folder UID progress |
+| Job kinds and operation states | `api/src/services/mail-engine/job-kinds.ts`, `mail-engine/operation-states.ts` | The one declaration of the scheduler's kinds (read-only, mutation) and of `mail_writebacks.state` lists (waiting, unresolved, settled, the "due" predicate, retry/cancel rules) |
 | Raw archive | filesystem | Stores imported `.eml` source below `/app/uploads/mail-raw` |
 | Attachments | filesystem + DB | Stores regular and inline attachments below `/app/uploads/attachments` |
 
@@ -134,7 +134,7 @@ outbound mail through SMTP. The mail system includes:
 | `mail_accounts` | IMAP/SMTP settings, encrypted password, sync metadata, TLS trust state |
 | `mail_folders` | User-owned catalog; new custom folders also have `mail_account_id`, old shared folders keep NULL |
 | `mail_folder_remote_boxes` | Account-specific mapping from app folders to exact provider folder names |
-| `mail_sync_state` | Folder UIDVALIDITY, last successful UID and initialization state |
+| `mail_sync_state` | Pre-engine folder checkpoints; kept for upgrades, no longer read or written (restore rebuilds progress from `mail_engine_cursors`) |
 | `mail_sender_rules` | Sender/domain routing rules |
 | `emails` | Local email metadata, bodies, folder, read/star state, raw archive path and `import_complete` state |
 | `mail_server_messages` | Runtime queue for imported IMAP copies eligible for optional server deletion |
@@ -473,7 +473,7 @@ matched message.
 For each selected folder:
 
 1. Open the folder and read its current `UIDVALIDITY`.
-2. Load its entry in `mail_sync_state`. A new folder, changed UIDVALIDITY, or
+2. Load its stream cursors (`mail_engine_cursors`). A new folder, changed UIDVALIDITY, or
    missing UIDVALIDITY triggers a full UID search. A successfully initialized
    folder searches UIDs greater than its last successful checkpoint.
 3. Include incomplete local imports below the checkpoint in the retry set.

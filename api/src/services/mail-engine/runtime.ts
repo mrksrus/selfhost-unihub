@@ -7,6 +7,8 @@ import { db } from '../../state';
 import { withTransaction, ownAccount } from './repository';
 import { bool } from './repository-identity';
 import { HOLD_REASON } from './rollout';
+import { READ_ONLY_KINDS, MUTATION_KINDS, MANUAL_REFRESH_KINDS, sqlList } from './job-kinds';
+import { WAITING, SETTLED, sqlStates } from './operation-states';
 
 const requireId = (value: unknown, name: string) => { if (typeof value !== 'string' || !value.trim()) throw new TypeError(`${name} required`); return value; };
 const fenced = () => Object.assign(new Error('Mail worker lease or generation was lost'), { code: 'MAIL_WORKER_FENCED' });
@@ -14,12 +16,12 @@ const tx = <T>(executor: EngineExecutor, callback: (connection: SqlExecutor) => 
 const int = (n: number, low: number, high: number, name: string) => { if (!Number.isSafeInteger(n) || n < low || n > high) throw new RangeError(`Invalid ${name}`); return n; };
 async function enqueueJob({ userId, accountId, mailboxId = null, operationId = null, kind = 'sync', priority = 50, dueAt = null, foreground = false, manualRefresh = false }: EnqueueJob, executor: EngineExecutor = db) {
   if (!/^[a-z_]{1,32}$/.test(kind)) throw new TypeError('Invalid job kind');
-  if (typeof manualRefresh !== 'boolean' || (manualRefresh && !['sync', 'flags', 'presence'].includes(kind)))
+  if (typeof manualRefresh !== 'boolean' || (manualRefresh && !MANUAL_REFRESH_KINDS.includes(kind)))
     throw new TypeError('Manual refresh requires a sync, flags or presence job');
   int(priority, -1000, 1000, 'priority');
   if (dueAt != null && (!(dueAt instanceof Date) || !Number.isFinite(dueAt.getTime()))) throw new TypeError('dueAt must be Date');
   return tx(executor, async cx => {
-    if (foreground && ['operation', 'reconcile'].includes(kind)) await resumeAccount({ userId, accountId,
+    if (foreground && MUTATION_KINDS.includes(kind)) await resumeAccount({ userId, accountId,
       resumeStreams: false, reasons: ['Mail module disabled', 'Mail background paused'] }, cx);
     await ownAccount(cx, userId, accountId, true);
     if (mailboxId) {
@@ -38,7 +40,7 @@ async function enqueueJob({ userId, accountId, mailboxId = null, operationId = n
       ORDER BY CASE state WHEN 'queued' THEN 0 WHEN 'paused' THEN 1 ELSE 2 END, created_at
       LIMIT 1 FOR UPDATE`, [userId, accountId, kind, mailboxId, operationId]);
     if (existing.length && !(existing[0].state === 'running' &&
-      (kind === 'recent' || (manualRefresh && ['sync', 'flags', 'presence'].includes(kind))))) {
+      (kind === 'recent' || (manualRefresh && MANUAL_REFRESH_KINDS.includes(kind))))) {
       if (manualRefresh && !Number(existing[0].manual_refresh)) {
         await cx.execute('UPDATE mail_engine_jobs SET manual_refresh = TRUE WHERE id = ? AND state IN (\'queued\',\'paused\')', [existing[0].id]);
         existing[0].manual_refresh = 1;
@@ -199,13 +201,13 @@ async function resumeAccount({ userId, accountId, resumeStreams = true, reasons 
         lease_owner = NULL, lease_until = NULL, worker_generation = NULL, due_at = UTC_TIMESTAMP(),
         phase = 'revalidation', completed_at = NULL, error = NULL
         WHERE mail_account_id = ? AND user_id = ? AND state = 'paused' AND operation_id IS NULL
-          AND kind IN ('sync','recent','flags','history','presence','body','prune')`, [accountId, userId]);
+          AND kind IN (${sqlList(READ_ONLY_KINDS)})`, [accountId, userId]);
       return { resumed: resumed.affectedRows, retired: 0 };
     }
     await cx.execute(`UPDATE mail_engine_accounts SET paused_reason = IF(paused_reason <=> ?, paused_reason, NULL),
       generation = generation + 1, lease_owner = NULL, lease_until = NULL WHERE mail_account_id = ? AND user_id = ?`,
     [HOLD_REASON, accountId, userId]);
-    const readOnly = "operation_id IS NULL AND kind IN ('sync','recent','flags','history','presence','body','prune')";
+    const readOnly = `operation_id IS NULL AND kind IN (${sqlList(READ_ONLY_KINDS)})`;
     const [retired] = await cx.execute<ResultSetHeader>(`UPDATE mail_engine_jobs SET state = 'cancelled', cancellation_requested = TRUE,
       lease_owner = NULL, lease_until = NULL, completed_at = UTC_TIMESTAMP(),
       error = 'Reconnect retained prior provider intent for review; this historical job was not replayed'
@@ -234,9 +236,9 @@ async function recoverExpiredJobs(executor: EngineExecutor = db) {
     const [ops] = await cx.execute<ResultSetHeader>(`UPDATE mail_writebacks w
       LEFT JOIN mail_engine_accounts a ON a.mail_account_id = w.mail_account_id
       SET w.state = 'reconciling', w.status = 'pending'
-      WHERE (w.state IN ('executing','verifying') AND
+      WHERE (w.state IN (${sqlStates('executing', 'verifying')}) AND
         (a.mail_account_id IS NULL OR a.lease_owner IS NULL OR a.lease_until <= UTC_TIMESTAMP()))
-        OR (w.dispatched = TRUE AND w.state IN ('queued','retry_wait'))`);
+        OR (w.dispatched = TRUE AND w.state IN (${sqlList(WAITING)}))`);
     await cx.execute(`UPDATE mail_engine_jobs j JOIN mail_writebacks w ON w.id = j.operation_id
       SET j.kind = 'reconcile' WHERE j.state = 'queued' AND w.state = 'reconciling' AND j.kind <> 'reconcile'`);
     return { jobs: jobs.affectedRows, operations: ops.affectedRows };
@@ -246,10 +248,9 @@ async function recoverExpiredJobs(executor: EngineExecutor = db) {
 // each account/kind/mailbox (status, discovery cadence) and every job of an
 // unsettled operation (runDueWritebacks backs off on its job count).
 const FINISHED_JOB_STATES = ['idle', 'cancelled', 'error'];
-const SETTLED_OPERATION_STATES = ['confirmed', 'cancelled', 'superseded', 'rejected'];
 async function pruneFinishedJobs({ olderThanDays = 7, batchSize = 1000, maxBatches = 20 } = {}, executor: SqlExecutor = db) {
   int(olderThanDays, 1, 3650, 'olderThanDays'); int(batchSize, 1, 1000, 'batchSize'); int(maxBatches, 1, 1000, 'maxBatches');
-  const finished = FINISHED_JOB_STATES.map(() => '?').join(','), settled = SETTLED_OPERATION_STATES.map(() => '?').join(',');
+  const finished = FINISHED_JOB_STATES.map(() => '?').join(','), settled = SETTLED.map(() => '?').join(',');
   let deleted = 0, batches = 0;
   while (batches < maxBatches) {
     batches++;
@@ -260,7 +261,7 @@ async function pruneFinishedJobs({ olderThanDays = 7, batchSize = 1000, maxBatch
           AND (n.created_at > j.created_at OR (n.created_at = j.created_at AND n.id > j.id)))
         AND (j.operation_id IS NULL OR NOT EXISTS (SELECT 1 FROM mail_writebacks w WHERE w.id = j.operation_id
           AND w.user_id = j.user_id AND (w.state IS NULL OR w.state NOT IN (${settled}))))
-      ORDER BY j.completed_at, j.id LIMIT ?`, [...FINISHED_JOB_STATES, olderThanDays, ...SETTLED_OPERATION_STATES, String(batchSize)]);
+      ORDER BY j.completed_at, j.id LIMIT ?`, [...FINISHED_JOB_STATES, olderThanDays, ...SETTLED, String(batchSize)]);
     if (!rows.length) break;
     // Short autocommit statement by primary key; finished states are final.
     const [result] = await executor.execute<ResultSetHeader>(`DELETE FROM mail_engine_jobs WHERE id IN (${rows.map(() => '?').join(',')})
@@ -281,7 +282,7 @@ async function beginOperationAttempt({ operationId, userId, accountId, workerId,
     await assertFence({ accountId, workerId, generation }, cx);
     const [rows] = await cx.execute<RowDataPacket[]>('SELECT * FROM mail_writebacks WHERE id = ? AND user_id = ? AND mail_account_id = ? FOR UPDATE', [operationId, userId, accountId]);
     const op = rows[0];
-    if (!op || !['queued','retry_wait'].includes(op.state) || bool(op.dispatched)) throw Object.assign(new Error('Operation is not safe to dispatch'), { code: 'MAIL_OPERATION_UNCERTAIN' });
+    if (!op || !WAITING.includes(op.state) || bool(op.dispatched)) throw Object.assign(new Error('Operation is not safe to dispatch'), { code: 'MAIL_OPERATION_UNCERTAIN' });
     // The accepted source address must still resolve to the same item and the
     // currently selected mailbox epoch before a dispatch fence is committed.
     const [sources] = await cx.execute<RowDataPacket[]>(`SELECT o.id FROM mail_remote_occurrences o

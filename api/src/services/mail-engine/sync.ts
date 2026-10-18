@@ -7,6 +7,8 @@ import * as repository from './repository';
 import * as runtime from './runtime';
 import * as transport from './transport';
 import { uint32 } from './content';
+import { UNPROVEN } from './operation-states';
+import { sqlList } from './job-kinds';
 import { outsideWindow } from '../mail-sync-policy';
 
 type Selection = Awaited<ReturnType<typeof transport.selectMailbox>>;
@@ -140,7 +142,7 @@ async function mappedMoveFor(executor: SqlExecutor, { userId, accountId, folderN
       AND m.uidvalidity = s.uidvalidity AND m.state = 'active'
     WHERE w.user_id = ? AND w.mail_account_id = ? AND BINARY w.target_value = BINARY ?
       AND w.action = 'move' AND w.dispatched = TRUE
-      AND w.state IN ('executing','verifying','reconciling','needs_attention')
+      AND w.state IN (${sqlList(UNPROVEN)})
       AND JSON_EXTRACT(w.evidence_json,'$.mapping.destinationUids[0]') = ?
     LIMIT 2 FOR UPDATE`, [userId, accountId, folderName, uid]);
   if (rows.length !== 1) return null;

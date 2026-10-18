@@ -3,6 +3,7 @@ import type { SqlExecutor } from '../types';
 import type { ClaimedJob, EngineJob, EnqueueJob } from '../types/mail-engine';
 
 import * as runtime from './mail-engine/runtime';
+import { READ_ONLY_KINDS, MUTATION_KINDS } from './mail-engine/job-kinds';
 import { randomUUID } from 'node:crypto';
 
 interface ProgressChange { phase?: string | null; processed?: number | null; total?: number | null; coverage?: unknown }
@@ -38,11 +39,10 @@ interface SchedulerOptions {
   recoveryMs?: number;
   now?: () => number;
 }
-// 'prune' never contacts the provider; it applies Sync policy to local copies
-// and yields to interactive work like the provider read jobs.
-const READ_ONLY_MAIL_JOB_KINDS = new Set(['sync', 'recent', 'flags', 'history', 'presence', 'body', 'prune']);
-// Provider writes and their outcome checks. Accepted user changes run as these.
-const MUTATION_MAIL_JOB_KINDS = ['operation', 'reconcile'];
+// The kinds are declared in mail-engine/job-kinds.ts; these are the
+// scheduler's views of them (a Set for per-job checks, a list for claims).
+const READ_ONLY_MAIL_JOB_KINDS = new Set(READ_ONLY_KINDS);
+const MUTATION_MAIL_JOB_KINDS = MUTATION_KINDS;
 // readConcurrency caps the slots read-only jobs may hold. Below concurrency, the
 // remaining slots only ever take operation/reconcile jobs, so an accepted change
 // never waits behind other accounts' long history or body scans. (A read-only

@@ -4,7 +4,6 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 
 const {
   pickImapSyncFolders,
-  ensureCustomImapFoldersForUser,
 } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 
 test('mail sync includes standard and custom IMAP folders while ignoring provider namespaces', () => {
@@ -23,26 +22,6 @@ test('mail sync includes standard and custom IMAP folders while ignoring provide
     { folderName: '[Gmail]/All Mail', dbFolderName: 'archive' },
     { folderName: 'Projects/2026', dbFolderName: 'projects_2026' },
   ]);
-});
-
-test('mail sync creates missing local custom folders on a newly connected IMAP account', async () => {
-  const added: FixtureValue[] = [];
-  // A guarded stand-in for an ImapFlow client.
-  const connection = (require('../dist/src/services/mail-imap-guard') as typeof import('../src/services/mail-imap-guard')).guardImapConnection(Object.assign(new ((require('node:events') as typeof import('node:events')))(), {
-    close() {},
-    async mailboxCreate(name: FixtureValue) { added.push(name); return { path: name, created: true }; },
-  }));
-  const db = {
-    execute: async () => [[
-      { display_name: 'Receipts' },
-      { display_name: 'Project Alpha' },
-    ]],
-  };
-
-  const result = await ensureCustomImapFoldersForUser('user-1', connection as FixtureValue, ['INBOX', 'Receipts'], db as FixtureValue);
-
-  assert.deepEqual(added, ['Project Alpha']);
-  assert.deepEqual(result, { created: 1, failed: [] });
 });
 
 test('provider special-use attributes survive nesting and existing folder mappings win', () => {

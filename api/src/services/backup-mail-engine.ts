@@ -4,6 +4,7 @@ import type { MailRestoreContext, MailRestoreData, MailRestoreRow } from '../typ
 import { randomUUID } from 'node:crypto';
 import { resolveOwnedReference } from './backup-ownership';
 import { ARCHIVE_COLUMNS } from './mail-engine/recovery-policy';
+import { CLIENT_KEY_PATTERN } from './mail-engine/repository';
 
 const json = (value: unknown): unknown => {
   if (value == null) return null;
@@ -90,7 +91,7 @@ async function restoreMailEngineEvidence(connection: SqlExecutor, userId: string
   }
   for (const row of data.mail_command_receipts || []) {
     await checkCancelled();
-    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(row.client_key || '') || !/^[a-f0-9]{64}$/.test(row.request_hash || '')) throw new Error('Invalid restored operation receipt');
+    if (!CLIENT_KEY_PATTERN.test(row.client_key || '') || !/^[a-f0-9]{64}$/.test(row.request_hash || '')) throw new Error('Invalid restored operation receipt');
     const response = json(row.response_json) as ({ operation_ids?: string[] } & Record<string, unknown>) | null;
     if (!response || typeof response !== 'object' || Array.isArray(response)) throw new Error('Invalid restored operation receipt response');
     const restoredResponse = { ...response, recovery_required: true,

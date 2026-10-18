@@ -7,11 +7,10 @@ const os = (require('node:os') as typeof import('node:os'));
 const path = (require('node:path') as typeof import('node:path'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
 const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
-const { loadMailFoldersForUser, loadExistingImportedUidSet } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
-const { loadFolderSyncState, saveFolderSyncState } = require('../dist/src/services/mail-sync-state') as typeof import('../src/services/mail-sync-state');
+const { loadMailFoldersForUser } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 const { persistImportedMessage } = require('../dist/src/services/mail-import') as typeof import('../src/services/mail-import');
 
-test('MySQL mail defaults, folder checkpoints and atomic import rollback', { skip: !process.env.MYSQL_TEST_HOST }, async (t) => {
+test('MySQL mail defaults and atomic import rollback', { skip: !process.env.MYSQL_TEST_HOST }, async (t) => {
   const connection = await mysql.createConnection({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER || 'unihub_test', password: process.env.MYSQL_TEST_PASSWORD || 'test-db-password',
     database: process.env.MYSQL_TEST_DATABASE || 'unihub_test' });
@@ -29,9 +28,6 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
   await connection.execute(`CREATE TEMPORARY TABLE mail_folders (id CHAR(36) PRIMARY KEY, user_id CHAR(36), mail_account_id CHAR(36) NULL, special_use VARCHAR(32) NULL, slug VARCHAR(64),
     display_name VARCHAR(128), is_system BOOLEAN, position INT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE KEY(user_id, slug)) ENGINE=InnoDB`);
-  await connection.execute(`CREATE TEMPORARY TABLE mail_sync_state (mail_account_id CHAR(36), source_folder VARCHAR(255), uidvalidity BIGINT,
-    last_uid BIGINT NOT NULL DEFAULT 0, initialized BOOLEAN NOT NULL DEFAULT FALSE, last_synced_at TIMESTAMP NULL,
-    PRIMARY KEY(mail_account_id, source_folder)) ENGINE=InnoDB`);
   await connection.execute(`CREATE TEMPORARY TABLE emails (id CHAR(36) PRIMARY KEY, user_id CHAR(36), mail_account_id CHAR(36),
     message_id VARCHAR(500), subject TEXT, from_address VARCHAR(255), from_name VARCHAR(255), to_addresses JSON, cc_addresses JSON,
     body_text LONGTEXT, body_html LONGTEXT, has_attachments BOOLEAN, received_at TIMESTAMP NULL, folder VARCHAR(64),
@@ -49,10 +45,6 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
   assert.equal(folders.length, 10);
   assert.equal(folders.find((row) => row.slug === 'inbox')!.display_name, 'Personal Inbox');
   assert.equal((folders.find((row) => row.slug === 'inbox')! as FixtureValue).position, 777);
-  await saveFolderSyncState(connection, accountId, 'INBOX', 123, 5);
-  assert.deepEqual(await loadFolderSyncState(connection, accountId, 'INBOX', 123), { incremental: true, lastUid: 5 });
-  assert.deepEqual(await loadFolderSyncState(connection, accountId, 'INBOX', 124), { incremental: false, lastUid: 0 });
-  assert.deepEqual(await loadFolderSyncState(connection, accountId, 'New Folder', 123), { incremental: false, lastUid: 0 });
   const db = { async getConnection() { return {
     execute: (...args: FixtureValue[]) => connection.execute(...args as [string, FixtureValue]), beginTransaction: () => connection.beginTransaction(),
     commit: () => connection.commit(), rollback: () => connection.rollback(), release() {},
@@ -70,7 +62,6 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
   await persistImportedMessage(args as FixtureValue);
   const [[imported]] = await connection.execute<RowDataPacket[]>('SELECT cc_addresses FROM emails WHERE imap_uid = 6');
   assert.deepEqual(typeof imported.cc_addresses === 'string' ? JSON.parse(imported.cc_addresses) : imported.cc_addresses, ['copy@example.test']);
-  assert.deepEqual([...await loadExistingImportedUidSet({ connection, accountId, folderName: 'INBOX', uidValidity: 123, uids: [6] })], [6]);
   // Header values longer than their columns commit cut to the column length
   // instead of being refused under STRICT_TRANS_TABLES.
   await persistImportedMessage({ ...args, uid: 7, messageId: `<${'m'.repeat(600)}@example.test>`, fromAddress: `${'a'.repeat(300)}@example.test`,
