@@ -15,6 +15,7 @@ import eventsRoutes = require('./events');
 import { assertRouteTable, mergeRouteTables } from '../http/route';
 import { legacyRoutes } from './legacy-spec';
 import { MODULE_CATALOG } from '../services/module-catalog';
+import { SECTION_POLICIES } from '../services/backup-catalog';
 
 // The production route table: every key once, each with its spec. Files still
 // exporting plain handlers are wrapped with the derived legacy policy.
@@ -34,6 +35,6 @@ const routes = mergeRouteTables(
   offlineRoutes,
   eventsRoutes,
 );
-assertRouteTable(routes, { moduleIds: MODULE_CATALOG.map(module => module.id) });
+assertRouteTable(routes, { moduleIds: MODULE_CATALOG.map(module => module.id), sections: Object.keys(SECTION_POLICIES) });
 
 export = routes;

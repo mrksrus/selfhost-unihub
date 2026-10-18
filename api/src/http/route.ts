@@ -100,6 +100,9 @@ function mergeRouteTables(...tables: RouteTable[]): RouteTable {
 interface RouteTableInvariants {
   // Ids whose /api/<id>/ prefix must declare that module.
   moduleIds: readonly string[];
+  // Recovery sections with tables; each must be written by at least one route,
+  // or a restore of it would lock nothing.
+  sections?: readonly string[];
   // Keys under these prefixes may omit restoreSection: backup routes run the
   // restore, auth routes sign in and out.
   restoreExemptPrefixes?: readonly string[];
@@ -107,9 +110,13 @@ interface RouteTableInvariants {
 
 // Whole-table rules, checked at startup and by the policy test: an admin route
 // declares auth 'admin', a module route declares its module, a mutating route
-// states its restore section, and every key resolves through the matcher.
-function assertRouteTable(table: RouteTable, { moduleIds, restoreExemptPrefixes = ['/api/backup/', '/api/auth/'] }: RouteTableInvariants) {
+// states its restore section, every section has a write route, and every key
+// resolves through the matcher.
+function assertRouteTable(table: RouteTable, { moduleIds, sections = [], restoreExemptPrefixes = ['/api/backup/', '/api/auth/'] }: RouteTableInvariants) {
   const match = compileRouteMatcher(Object.keys(table));
+  for (const section of sections) {
+    if (!Object.values(table).some(spec => spec.restoreSection === section)) throw new Error(`Invalid route table: no route writes section ${section}`);
+  }
   for (const [key, spec] of Object.entries(table)) {
     const { method, path } = splitRouteKey(key);
     if (path.startsWith('/api/admin/') && spec.auth !== 'admin') invalid(key, 'routes under /api/admin/ must declare auth "admin"');
