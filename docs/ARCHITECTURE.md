@@ -158,7 +158,10 @@ Every request passes through `handleRequest`:
    requests are exempt, see [Auth](AUTH_ADMIN_SETTINGS.md#csrf-protection)).
 6. Enforce body size limits from a table keyed by route key (`BODY_LIMIT_BY_ROUTE`
    in `request-handler.ts`, plus a path-prefix list for `/api/notifications/`);
-   the default is 1000 bytes.
+   the default is 16 KiB (16384 bytes). A route whose validators or columns
+   accept more (files, imports, compose, contacts, recordings, calendar
+   events, credentials) declares its own limit; `route-matcher.test.cts`
+   checks that every declared key exists in the route table.
 7. Refuse disabled modules (`getModuleForPath` derives the `/api/<module>`
    prefixes from `MODULE_CATALOG`) and writes to sections under restore.
 8. Decode chunked JSON with a UTF-8 decoder, rejecting malformed JSON with HTTP 400, or stream backup uploads directly to persisted storage.

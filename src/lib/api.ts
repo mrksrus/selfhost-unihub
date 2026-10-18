@@ -44,25 +44,32 @@ function getNetworkErrorMessage(error: unknown) {
   return message || 'Network request failed before the server returned a response.';
 }
 
-function getHttpErrorMessage(status: number, statusText: string) {
+// Compose requests carry base64 attachments; anywhere else a refused size is
+// about the text itself, and the server names its limit when it answers JSON.
+const COMPOSE_ENDPOINT = /^\/mail\/(send|drafts)(?:[/?]|$)/;
+
+function getHttpErrorMessage(status: number, statusText: string, endpoint = '') {
   if (status === 401) return 'Session expired or authentication is required. Sign in again.';
   if (status === 403) return 'Request rejected by the server. Refresh the app and try again.';
   if (status === 404) return 'The requested API endpoint was not found.';
   if (status === 408 || status === 504) return `The server or proxy did not respond in time (${status}).`;
-  if (status === 413) return 'The request is too large for the server or proxy (413). Reduce the attachment size and try again.';
+  if (status === 413) {
+    const tooLarge = 'The request is too large for the server or proxy (413).';
+    return COMPOSE_ENDPOINT.test(endpoint) ? `${tooLarge} Reduce the attachment size and try again.` : tooLarge;
+  }
   if (status === 502 || status === 503) return `The API is temporarily unavailable (${status}). Check that the server is running.`;
   if (status >= 500) return `The server returned an internal error (${status}).`;
   if (status >= 400) return `Request failed (${status}${statusText ? ` ${statusText}` : ''}).`;
   return `Unexpected response (${status}${statusText ? ` ${statusText}` : ''}).`;
 }
 
-function getUnexpectedResponseMessage(response: Response, contentType: string) {
+function getUnexpectedResponseMessage(response: Response, contentType: string, endpoint = '') {
   const received = contentType || 'no content type';
   if (response.ok) {
     return `The server responded, but not with JSON (${received}). Check proxy or server routing.`;
   }
   if (response.status === 413) {
-    return getHttpErrorMessage(response.status, response.statusText);
+    return getHttpErrorMessage(response.status, response.statusText, endpoint);
   }
   return `${getHttpErrorMessage(response.status, response.statusText)} The response was not JSON (${received}).`;
 }
@@ -163,7 +170,7 @@ class ApiClient {
         const preview = text.slice(0, 80).replace(/\s+/g, ' ');
         return {
           status: response.status,
-          error: getUnexpectedResponseMessage(response, contentType),
+          error: getUnexpectedResponseMessage(response, contentType, endpoint),
           details: preview,
         };
       }
@@ -186,7 +193,7 @@ class ApiClient {
         return {
           ...errorData,
           status: response.status,
-          error: typeof errorData.error === 'string' ? errorData.error : getHttpErrorMessage(response.status, response.statusText),
+          error: typeof errorData.error === 'string' ? errorData.error : getHttpErrorMessage(response.status, response.statusText, endpoint),
           details: errorData.details,
         };
       }

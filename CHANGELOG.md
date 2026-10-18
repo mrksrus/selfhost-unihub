@@ -21,6 +21,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   manifest and icons were served without the security headers because their
   caching headers replaced them (nginx inheritance). Every response now carries
   them, and the deprecated `X-XSS-Protection` filter is turned off (`0`).
+- **Long chord sheets, contact notes and passphrases save.** Ordinary writes
+  were limited to 1000 bytes including the JSON itself, so a Music chord sheet
+  beyond a few lines, a contact with longer notes or a sign-in with a long
+  passphrase was refused with a message about attachments. The default is now
+  16 KiB, with room for recordings (256 KiB), contacts (64 KiB) and password
+  routes (4 KiB); a refused request shows the server's actual limit, and the
+  attachment hint appears only when composing mail.
 
 ## 0.22.4
 

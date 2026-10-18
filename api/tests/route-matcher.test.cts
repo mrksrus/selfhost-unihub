@@ -20,6 +20,13 @@ test('every route key resolves from a concrete sample path with its parameters f
   }
 });
 
+test('every explicit body limit names a key in the route table, so none is silently unused', () => {
+  const { BODY_LIMIT_BY_ROUTE } = require('../dist/src/request-handler') as typeof import('../src/request-handler');
+  for (const key of Object.keys(BODY_LIMIT_BY_ROUTE)) {
+    assert.ok(key in routes, `${key} has a body limit but no handler`);
+  }
+});
+
 test('exact keys win over parameters, and the most literal pattern wins among parameterized keys', () => {
   assert.equal(resolve('POST', '/api/mail/emails/bulk-update'), 'POST /api/mail/emails/bulk-update');
   assert.equal(resolve('POST', '/api/mail/emails/bulk-delete'), 'POST /api/mail/emails/bulk-delete');
