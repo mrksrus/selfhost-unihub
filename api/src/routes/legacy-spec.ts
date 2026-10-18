@@ -18,10 +18,6 @@ type LegacyRouteTable = Record<string, LegacyHandler>;
 const PUBLIC_ROUTE_KEYS: ReadonlySet<string> = new Set([
   'GET /health',
   'GET /api/version',
-  'GET /api/auth/signup-mode',
-  'POST /api/auth/signup',
-  'POST /api/auth/signin',
-  'POST /api/auth/2fa/login',
   'GET /api/backup/export',
 ]);
 
@@ -30,11 +26,6 @@ const PUBLIC_ROUTE_KEYS: ReadonlySet<string> = new Set([
 const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
   'GET /api/modules': 16384,
   'PUT /api/modules': 16384,
-  // Credentials: a passphrase may be up to 1024 characters, so the JSON needs
-  // more than a bare id but nowhere near the default.
-  'POST /api/auth/signin': 4096,
-  'POST /api/auth/signup': 4096,
-  'PUT /api/auth/password': 4096,
   // Contact notes are a TEXT column
   'POST /api/contacts': 65536,
   'PUT /api/contacts/:id': 65536,

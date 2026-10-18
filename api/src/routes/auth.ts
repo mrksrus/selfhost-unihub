@@ -36,6 +36,7 @@ import {
   deleteTwoFactorLoginChallenge,
 } from '../services/two-factor';
 import { serverEvents } from '../services/server-events';
+import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -104,17 +105,18 @@ function validCredentials(email: unknown, password: unknown) {
     && typeof password === 'string' && password.length > 0 && password.length <= 1024;
 }
 
-export = {
-  // Authentication endpoints
-  'GET /api/auth/signup-mode': async () => {
+export = defineRoutes({
+  // Sign-up and sign-in are public; everything else needs the session the
+  // boundary verified. Credential bodies allow a 1024-character passphrase.
+  'GET /api/auth/signup-mode': { auth: 'public', module: null, handler: async () => {
     try {
       return { signup_mode: await getSignupMode() };
     } catch {
       return { signup_mode: 'disabled' };
     }
-  },
+  } },
 
-  'POST /api/auth/signup': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/signup': { auth: 'public', module: null, body: { limit: 4096 }, handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
     const ip = getClientIP(req);
     const limited = checkLoginBudget(res, 'ip', ip);
     if (limited) return limited;
@@ -181,9 +183,9 @@ export = {
       console.error('Signup error:', error);
       return { error: 'Failed to create user', status: 500 };
     }
-  },
+  } },
 
-  'POST /api/auth/signin': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/signin': { auth: 'public', module: null, body: { limit: 4096 }, handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
     const ip = getClientIP(req);
     const limited = checkLoginBudget(res, 'ip', ip);
     if (limited) return limited;
@@ -261,9 +263,9 @@ export = {
       console.error('Signin error:', error);
       return { error: 'Failed to sign in', status: 500 };
     }
-  },
+  } },
 
-  'POST /api/auth/2fa/login': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/auth/2fa/login': { auth: 'public', module: null, handler: async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
     const ip = getClientIP(req);
     const limited = checkLoginBudget(res, 'ip', ip);
     if (limited) return limited;
@@ -308,10 +310,9 @@ export = {
     } finally {
       connection?.release();
     }
-  },
+  } },
 
-  'GET /api/auth/2fa/status': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'GET /api/auth/2fa/status': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
     try {
       const status = await getTwoFactorStatus(userId);
       if (!status) return { error: 'User not found', status: 404 };
@@ -320,10 +321,9 @@ export = {
       console.error('2FA status error:', error);
       return { error: 'Failed to get two-factor status', status: 500 };
     }
-  },
+  } },
 
-  'POST /api/auth/2fa/setup/start': async (req: Request, userId: string | null) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'POST /api/auth/2fa/setup/start': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
     try {
       const [users] = await db.execute<UserRow[]>('SELECT email, two_factor_enabled FROM users WHERE id = ?', [userId]);
       if (users.length === 0) return { error: 'User not found', status: 404 };
@@ -340,10 +340,9 @@ export = {
       console.error('2FA setup start error:', error);
       return { error: 'Failed to start two-factor setup', status: 500 };
     }
-  },
+  } },
 
-  'POST /api/auth/2fa/setup/confirm': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'POST /api/auth/2fa/setup/confirm': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     // Each accepted request hashes ten recovery codes, which takes seconds of CPU.
     const limited = checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
@@ -400,10 +399,9 @@ export = {
     } finally {
       connection?.release();
     }
-  },
+  } },
 
-  'POST /api/auth/2fa/disable': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'POST /api/auth/2fa/disable': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     const limited = checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
     const { current_password, code } = body || {};
@@ -429,10 +427,9 @@ export = {
       console.error('2FA disable error:', error);
       return { error: 'Failed to disable two-factor authentication', status: 500 };
     }
-  },
+  } },
 
-  'POST /api/auth/2fa/recovery-codes/regenerate': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'POST /api/auth/2fa/recovery-codes/regenerate': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     const limited = checkLoginBudget(res, 'secondFactor', userId);
     if (limited) return limited;
     const code = String(body?.code || '').trim();
@@ -461,10 +458,9 @@ export = {
       console.error('2FA recovery regenerate error:', error);
       return { error: 'Failed to regenerate recovery codes', status: 500 };
     }
-  },
+  } },
 
-  'POST /api/auth/signout': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'POST /api/auth/signout': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     try {
       const token = getAuthTokenFromRequest(req);
@@ -478,10 +474,9 @@ export = {
     } catch (error) {
       return { error: 'Failed to sign out', status: 500 };
     }
-  },
+  } },
 
-  'GET /api/auth/me': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'GET /api/auth/me': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     try {
       const [users] = await db.execute<UserRow[]>(
@@ -511,10 +506,9 @@ export = {
     } catch (error) {
       return { error: 'Failed to get user', status: 500 };
     }
-  },
+  } },
 
-  'PUT /api/auth/password': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'PUT /api/auth/password': { auth: 'user', module: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const { current_password, new_password } = body;
     if (!current_password || !new_password) {
@@ -550,10 +544,9 @@ export = {
       console.error('Password change error:', error);
       return { error: 'Failed to change password', status: 500 };
     }
-  },
+  } },
 
-  'PUT /api/auth/profile': async (req: Request, userId: string | null, body: Input) => {
-    if (!userId) return { error: 'Unauthorized', status: 401 };
+  'PUT /api/auth/profile': { auth: 'user', module: null, restoreSection: 'settings', handler: async (req: Request, userId: string, body: Input) => {
 
     const { full_name, timezone } = body;
     if (full_name === undefined || full_name === null) {
@@ -577,5 +570,5 @@ export = {
       console.error('Profile update error:', error);
       return { error: 'Failed to update profile', status: 500 };
     }
-  },
-};
+  } },
+});

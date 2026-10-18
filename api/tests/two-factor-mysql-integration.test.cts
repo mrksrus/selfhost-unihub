@@ -81,17 +81,17 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     await addSession(person, 'person-laptop');
 
     // Setup: a wrong code changes nothing; the right one enables 2FA and signs out the other device.
-    const setup = await authRoutes['POST /api/auth/2fa/setup/start'](request('person-current') as FixtureValue, person);
+    const setup = await authRoutes['POST /api/auth/2fa/setup/start'].handler(request('person-current') as FixtureValue, person);
     assert.match(setup.secret!, /^[A-Z2-7]{32}$/);
     assert.match(setup.otpauth_uri!, /^otpauth:\/\/totp\/UniHub%3Aperson%40example\.test\?secret=/);
-    const confirm = (body: FixtureValue) => authRoutes['POST /api/auth/2fa/setup/confirm'](request('person-current') as FixtureValue, person, { secret: setup.secret, ...body }, response() as FixtureValue);
+    const confirm = (body: FixtureValue) => authRoutes['POST /api/auth/2fa/setup/confirm'].handler(request('person-current') as FixtureValue, person, { secret: setup.secret, ...body }, response() as FixtureValue);
     const wrong = String((Number(otp(setup.secret)) + 500000) % 1000000).padStart(6, '0');
     assert.equal(((await confirm({ code: wrong, current_password: 'synthetic-person-password' })) as FixtureValue).status, 400);
     // A signed-in session alone cannot enable 2FA and sign out the other devices.
     assert.equal(((await confirm({ code: otp(setup.secret) })) as FixtureValue).status, 400);
     assert.equal(((await confirm({ code: otp(setup.secret), current_password: 'wrong-person-password' })) as FixtureValue).status, 401);
     assert.deepEqual(await sessions(person), ['person-current', 'person-laptop']);
-    assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, false);
+    assert.equal(((await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person)) as FixtureValue).enabled, false);
     // A password change or deactivation commits before its session deletion. One landing
     // between the password check and the locked recheck changes nothing either.
     for (const change of ['UPDATE users SET password_hash = ? WHERE id = ?', 'UPDATE users SET is_active = FALSE WHERE id = ?']) {
@@ -109,24 +109,24 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
         assert.equal(((await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' })) as FixtureValue).status, 401);
       } finally { setDb(pool); }
       await pool.execute<ResultSetHeader>('UPDATE users SET password_hash = ?, is_active = TRUE WHERE id = ?', [saved.password_hash, person]);
-      assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, false);
+      assert.equal(((await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person)) as FixtureValue).enabled, false);
       assert.deepEqual(await sessions(person), ['person-current', 'person-laptop']);
     }
     const enabled = await confirm({ code: otp(setup.secret), current_password: 'synthetic-person-password' });
     assert.equal((enabled as With<typeof enabled, 'enabled'>).enabled, true);
     assert.equal((enabled as With<typeof enabled, 'recoveryCodes'>).recoveryCodes.length, 10);
     assert.deepEqual(await sessions(person), ['person-current']);
-    assert.deepEqual(await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person), { enabled: true, recoveryCodesRemaining: 10, secretReadable: true });
+    assert.deepEqual(await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person), { enabled: true, recoveryCodesRemaining: 10, secretReadable: true });
 
     // A secret stored under another ENCRYPTION_KEY cannot be read. Status says so,
     // regenerating refuses without using up the recovery code, and sign-in with one still works.
     await pool.execute<ResultSetHeader>('UPDATE users SET encrypted_two_factor_secret = ? WHERE id = ?', ['00:00:00', person]);
-    assert.deepEqual(await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person), { enabled: true, recoveryCodesRemaining: 10, secretReadable: false });
-    const regenerate = await authRoutes['POST /api/auth/2fa/recovery-codes/regenerate'](request('person-current') as FixtureValue, person, { code: (enabled as With<typeof enabled, 'recoveryCodes'>).recoveryCodes[0] } as FixtureValue, response() as FixtureValue);
+    assert.deepEqual(await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person), { enabled: true, recoveryCodesRemaining: 10, secretReadable: false });
+    const regenerate = await authRoutes['POST /api/auth/2fa/recovery-codes/regenerate'].handler(request('person-current') as FixtureValue, person, { code: (enabled as With<typeof enabled, 'recoveryCodes'>).recoveryCodes[0] } as FixtureValue, response() as FixtureValue);
     assert.equal((regenerate as With<typeof regenerate, 'status'>).status, 409);
     assert.match((regenerate as With<typeof regenerate, 'error'>).error, /encryption key changed/);
     const challenge = await createTwoFactorLoginChallenge(person, request() as FixtureValue);
-    const signedIn = await authRoutes['POST /api/auth/2fa/login'](request() as FixtureValue, null, { challenge_token: challenge, code: (enabled as With<typeof enabled, 'recoveryCodes'>).recoveryCodes[0] } as FixtureValue, response() as FixtureValue);
+    const signedIn = await authRoutes['POST /api/auth/2fa/login'].handler(request() as FixtureValue, null, { challenge_token: challenge, code: (enabled as With<typeof enabled, 'recoveryCodes'>).recoveryCodes[0] } as FixtureValue, response() as FixtureValue);
     assert.equal((signedIn as With<typeof signedIn, 'usedRecoveryCode'>).usedRecoveryCode, true);
     assert.equal((signedIn as With<typeof signedIn, 'recoveryCodesRemaining'>).recoveryCodesRemaining, 9);
     await createTwoFactorLoginChallenge(person, request() as FixtureValue);
@@ -147,11 +147,11 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
 
     // A request from an admin session that was signed out meanwhile changes nothing.
     assert.equal((await reset(admin, person, 'synthetic-admin-password', 'admin-signed-out')).status, 401);
-    assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
+    assert.equal(((await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
     // Deactivation commits before deleting sessions; an admin caught in between changes nothing either.
     await pool.execute<ResultSetHeader>('UPDATE users SET is_active = FALSE WHERE id = ?', [admin]);
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 401);
-    assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
+    assert.equal(((await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
     await pool.execute<ResultSetHeader>('UPDATE users SET is_active = TRUE WHERE id = ?', [admin]);
     // So is an admin whose password changed after it was checked, before the session deletion.
     setDb({ execute: (...args: FixtureValue[]) => pool.execute(...args as [string, FixtureValue]), getConnection: (async () => {
@@ -167,7 +167,7 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
       assert.equal((await reset(admin, person, 'synthetic-admin-password')).status, 401);
     } finally { setDb(pool); }
     await pool.execute<ResultSetHeader>('UPDATE users SET password_hash = ? WHERE id = ?', [await hashPassword('synthetic-admin-password'), admin]);
-    assert.equal(((await authRoutes['GET /api/auth/2fa/status'](request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
+    assert.equal(((await authRoutes['GET /api/auth/2fa/status'].handler(request('person-current') as FixtureValue, person)) as FixtureValue).enabled, true);
 
     assert.equal((await reset(admin, person, 'synthetic-admin-password')).message, 'Two-factor authentication reset');
     const [[after]] = await pool.execute<RowDataPacket[]>('SELECT two_factor_enabled, encrypted_two_factor_secret, two_factor_recovery_codes FROM users WHERE id = ?', [person]);

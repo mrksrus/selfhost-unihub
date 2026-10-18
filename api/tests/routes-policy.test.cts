@@ -98,7 +98,9 @@ test('the production table passes the whole-table invariants, and a table that b
 
 // Limits declared by converted route files; the derived ones are pinned by route-spec.test.cts.
 test('credential routes keep their explicit body limits in the production table', () => {
-  assert.equal(routes['PUT /api/admin/users/:id/password'].body?.limit, 4096);
+  for (const key of ['PUT /api/admin/users/:id/password', 'POST /api/auth/signin', 'POST /api/auth/signup', 'PUT /api/auth/password']) {
+    assert.equal(routes[key].body?.limit, 4096, key);
+  }
 });
 
 test('a route key declared in two files is refused instead of one file silently winning', () => {

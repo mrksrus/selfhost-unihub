@@ -106,12 +106,11 @@ function validateCsrfToken(req: AuthRequest, res?: ServerResponse) {
     ?.split('=')[1];
   const headerToken = req.headers['x-csrf-token'];
 
-  // Both must be present and match
-  if (!cookieToken || !headerToken || cookieToken !== headerToken) {
-    return false;
-  }
-
-  return true;
+  // Both must be present and match; compared in constant time.
+  if (!cookieToken || typeof headerToken !== 'string' || !headerToken) return false;
+  const expected = Buffer.from(cookieToken);
+  const presented = Buffer.from(headerToken);
+  return expected.length === presented.length && crypto.timingSafeEqual(expected, presented);
 }
 
 function appendSetCookie(res: ServerResponse, cookieValue: string) {
