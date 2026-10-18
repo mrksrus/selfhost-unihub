@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { ChevronDown, ChevronUp, ExternalLink, Forward, Mail, Minimize2, Reply, X } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { Email } from '@/lib/mail-api';
+import { mailQueryKeys, type Email } from '@/lib/mail-api';
 import { emailPath } from '@/lib/email-tasks';
 import { closeMailPeek, dockMailPeek, expandMailPeek, guardMailPeek, useMailPeek } from '@/lib/mail-peek';
 import { cn } from '@/lib/utils';
@@ -39,7 +39,7 @@ function MailPeekPanel({ emailId, docked }: { emailId: string; docked: boolean }
   const navigate = useNavigate();
   const timezone = useUserTimezone();
   const query = useQuery({
-    queryKey: ['emails', 'peek', emailId],
+    queryKey: mailQueryKeys.detail(emailId),
     queryFn: async ({ signal }) => {
       const response = await api.get<{ email: Email }>(`/mail/emails/${encodeURIComponent(emailId)}`, { signal });
       if (response.error || !response.data?.email) throw new Error(response.error || 'Could not load the email');

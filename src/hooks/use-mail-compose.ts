@@ -5,7 +5,7 @@ import { format } from 'date-fns';
 import { api } from '@/lib/api';
 import { invalidateMailQueries, type Email, type EmailAttachment } from '@/lib/mail-api';
 import { contactsQueryOptions } from '@/lib/contacts-api';
-import { plainTextToHtml, escapeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
+import { plainTextToHtml, escapeHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
 import { useToast } from '@/hooks/use-toast';
 import { useMailAccounts } from '@/hooks/use-mail-queries';
 import { preferencesQueryOptions } from '@/lib/settings-api';
@@ -97,14 +97,6 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     }
   }, []);
 
-  useEffect(() => {
-    for (const editorRef of [inlineComposeEditorRef, dialogComposeEditorRef]) {
-      if (editorRef.current && editorRef.current.innerHTML !== composeForm.body) {
-        editorRef.current.innerHTML = composeForm.body;
-      }
-    }
-  }, [composeForm.body, isComposeOpen, isReplying]);
-
   const { data: contactsForCompose = [] } = useQuery({ ...contactsQueryOptions, enabled: isComposeOpen || isReplying });
   const contactEmailSuggestions = useMemo<ContactEmailSuggestion[]>(() => {
     return contactsForCompose.flatMap((contact) => {
@@ -135,7 +127,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       cc: draft.cc_addresses?.join(', ') || '',
       bcc: draft.bcc_addresses?.join(', ') || '',
       subject: draft.subject || '',
-      body: draft.body_html || (draft.body_text ? plainTextToHtml(draft.body_text) : ''),
+      body: sanitizeComposeHtml(draft.body_html || '') || (draft.body_text ? plainTextToHtml(draft.body_text) : ''),
     });
     setChosenAccountId(draft.mail_account_id);
     setIsReplying(false);

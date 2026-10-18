@@ -545,7 +545,11 @@ identities. Offline snapshots include mode and the retained-copy marker, excludi
 provider UIDs and credentials. See [mail modes](MAIL_MODES.md).
 
 `email-privacy.ts` builds a display-only sanitized document from inert HTML.
-`SafeEmailContent` owns transient consent and a restricted iframe. A synthetic
+`SafeEmailContent` owns transient consent and a restricted iframe. A stored
+draft's HTML passes through the same sanitizer (`sanitizeComposeHtml`) before
+it enters the compose editor, the one place where server-supplied HTML becomes
+live DOM in the application origin; SVG attachments are drawn from `data:` URLs
+so that no sender content is reachable through a same-origin `blob:` URL. A synthetic
 Chromium request check is available through
 `node scripts/email-privacy-browser-check.mts` when Chromium is installed. It
 intercepts image responses and uses no provider account.

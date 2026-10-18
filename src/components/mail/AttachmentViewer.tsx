@@ -62,6 +62,23 @@ function displayType(kind: PreviewKind, type: string) {
   return type;
 }
 
+const SVG_TYPE = 'image/svg+xml';
+
+/**
+ * A blob: URL belongs to this app's origin, and the browser's own "Open image
+ * in new tab" would run an SVG's scripts there. SVG therefore gets a data: URL,
+ * which is drawn identically in <img> but opens with an opaque origin.
+ */
+function dataUrl(blob: Blob, type: string, signal: AbortSignal) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Could not read the attachment'));
+    reader.onerror = () => reject(reader.error ?? new Error('Could not read the attachment'));
+    signal.addEventListener('abort', () => reader.abort(), { once: true });
+    reader.readAsDataURL(new Blob([blob], { type }));
+  });
+}
+
 function canOpenInTab(kind: PreviewKind, type: string) {
   return kind === 'pdf' || kind === 'text' || (kind === 'image' && RASTER_IMAGE_TYPES.has(type));
 }
@@ -133,6 +150,13 @@ function ViewerContent({ attachments, initialId }: { attachments: EmailAttachmen
 
   useEffect(() => {
     if (!blob || !id || kind === 'html' || kind === 'none') return;
+    if (type === SVG_TYPE) {
+      const controller = new AbortController();
+      dataUrl(blob, SVG_TYPE, controller.signal).then(href => {
+        if (!controller.signal.aborted) setUrl({ id, href });
+      }, () => { /* the viewer keeps showing its loading state; Download still works */ });
+      return () => controller.abort();
+    }
     const href = URL.createObjectURL(new Blob([blob], { type: displayType(kind, type) }));
     setUrl({ id, href });
     return () => URL.revokeObjectURL(href);

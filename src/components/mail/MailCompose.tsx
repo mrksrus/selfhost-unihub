@@ -1,4 +1,4 @@
-import { useState, type RefObject } from 'react';
+import { useEffect, useState, type RefObject } from 'react';
 import { format } from 'date-fns';
 import {
   Bold, Image as ImageIcon, Italic, Link as LinkIcon, List, ListOrdered, ListTodo, Loader2, Palette, Paperclip, Send, Underline, X,
@@ -133,6 +133,14 @@ function RecipientRows({ compose, idSuffix = '', rowClassName }: { compose: Mail
 function RichComposeEditor({ compose, editorId, editorRef, editorClassName = '' }: {
   compose: MailCompose; editorId: string; editorRef: RefObject<HTMLDivElement>; editorClassName?: string;
 }) {
+  // The body state becomes the editor's content here, where the editor exists:
+  // the dialog's editor is portaled in a commit after the draft set the body,
+  // so an effect in the hook ran before the element did. Only sanitized or
+  // self-written HTML reaches composeForm.body (see sanitizeComposeHtml).
+  const body = compose.composeForm.body;
+  useEffect(() => {
+    if (editorRef.current && editorRef.current.innerHTML !== body) editorRef.current.innerHTML = body;
+  }, [body, editorRef]);
   return (
     <div className={`rounded-md border border-input bg-background overflow-hidden ${editorClassName.includes('flex-1') ? 'flex flex-col min-h-0' : ''}`}>
       <div className="flex flex-wrap items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
