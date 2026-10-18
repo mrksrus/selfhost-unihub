@@ -7,6 +7,7 @@ import { db } from '../state';
 import { inspectRecordingAudio } from './recording-audio';
 import { createAudioConversionQueue } from './audio-conversion-queue';
 import { MAX_CONVERTED_BYTES, runAudioConversion } from './audio-transcode';
+import { escapeLike } from './sql';
 
 interface RecordingRow extends RowDataPacket {
   id: string;
@@ -329,7 +330,7 @@ async function listRecordings(userId: string, { search = '', tag = '', category 
       OR r.original_filename LIKE ?
       OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(r.metadata, '$.chords')), '') LIKE ?
     )`);
-    const like = `%${trimmedSearch.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')}%`;
+    const like = `%${escapeLike(trimmedSearch)}%`;
     params.push(like, like, like, like);
   }
   const trimmedCategory = String(category || '').trim();

@@ -7,6 +7,7 @@ import { parseStoredRecipients } from '../services/mail-recipients';
 import fs from 'fs';
 import { db } from '../state';
 import { mailPathUnderRoot } from '../services/mail-storage';
+import { escapeLike } from '../services/sql';
 import { EMAIL_TASK_COUNT_SQL, tasksForEmail } from '../services/email-tasks';
 import { isModuleEnabled } from '../services/module-settings';
 import { toBooleanFlag } from '../services/mail';
@@ -58,7 +59,7 @@ export = {
       }
 
       if (searchParam) {
-        const searchValue = `%${searchParam.toLowerCase()}%`;
+        const searchValue = `%${escapeLike(searchParam.toLowerCase())}%`;
         where.push(`(
           LOWER(COALESCE(subject, '')) LIKE ? OR
           LOWER(COALESCE(from_name, '')) LIKE ? OR
