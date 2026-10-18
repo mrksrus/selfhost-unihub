@@ -23,12 +23,13 @@ function mailFixture(t: import('node:test').TestContext, { active = 1, disconnec
   const network = require.resolve('../dist/src/security/outbound-network');
   const settings = require.resolve('../dist/src/services/module-settings');
   const mailPath = require.resolve('../dist/src/services/mail');
-  // The Sent copy commits through mail-engine/repository, which keeps the db it
-  // was loaded with; it must reload with this fixture's state stub.
+  // The Sent copy commits through services/transactions (via mail-engine/repository),
+  // which keeps the db it was loaded with; both must reload with this fixture's state stub.
   const repository = require.resolve('../dist/src/services/mail-engine/repository');
-  const paths = [state, nodemailer, encryption, network, settings, mailPath, repository];
+  const transactionHelper = require.resolve('../dist/src/services/transactions');
+  const paths = [state, nodemailer, encryption, network, settings, mailPath, repository, transactionHelper];
   const original = new Map(paths.map(p => [p, require.cache[p]]));
-  delete require.cache[repository];
+  delete require.cache[repository]; delete require.cache[transactionHelper];
   let sends = 0, inserts = 0, delivered: FixtureValue = null, sentCopy: FixtureValue = null;
   const attachmentRows: FixtureValue[] = [], transactions: string[] = [];
   // The Sent copy commits through a pool connection; attachment rows are only
