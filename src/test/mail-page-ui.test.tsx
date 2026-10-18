@@ -1,11 +1,14 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import MailPage from '@/pages/MailPage';
 import { api } from '@/lib/api';
-import type { Email } from '@/lib/mail-api';
+import { mailQueryKeys, type Email } from '@/lib/mail-api';
+import { closeMailPeek, openMailPeek } from '@/lib/mail-peek';
 import { setOfflineMode } from '@/lib/offline';
+import { AuthContext, type AuthContextType } from '@/contexts/auth-context';
+import { MailPeek } from '@/components/mail/MailPeek';
 import { applyMailPageWaitBudget, MAIL_PAGE_TEST_TIMEOUT } from '@/test/helpers/mail-page-budget';
 
 vi.mock('@/lib/api', () => ({
@@ -69,6 +72,17 @@ const draftEmail: Email = {
   attachments: [],
 };
 
+// A draft written in another client that quoted a hostile message; the provider's Drafts folder brings it here.
+const hostileDraft: Email = {
+  ...draftEmail,
+  id: 'draft-2',
+  subject: 'Quoted draft subject',
+  body_text: 'Quoted offer',
+  body_html: '<p>Quoted <b>offer</b></p><img src="x" onerror="alert(1)"><script>alert(2)</script><a href="javascript:alert(3)">terms</a>',
+};
+
+const peekEmail: Email = { ...inboxEmail, id: 'email-2', subject: 'Peek subject', body_text: 'Peek body', is_read: true };
+
 function setupApi(emails = [inboxEmail], accountPatch: Record<string, unknown> = {}) {
   vi.mocked(api.get).mockImplementation(async (endpoint: string) => {
     if (endpoint === '/mail/accounts') return { data: { accounts: [{ ...account, ...accountPatch }] } };
@@ -76,6 +90,8 @@ function setupApi(emails = [inboxEmail], accountPatch: Record<string, unknown> =
     if (endpoint === '/mail/folders') return { data: { folders } };
     if (endpoint.startsWith('/mail/unread-counts')) return { data: { unreadByFolder: { inbox: 1 }, unreadByFolderAccount: {} } };
     if (endpoint.startsWith('/mail/emails/draft-1')) return { data: { email: draftEmail } };
+    if (endpoint.startsWith('/mail/emails/draft-2')) return { data: { email: hostileDraft } };
+    if (endpoint.startsWith('/mail/emails/email-2')) return { data: { email: peekEmail } };
     if (endpoint.startsWith('/mail/emails/email-1')) return { data: { email: inboxEmail } };
     if (endpoint.startsWith('/mail/emails?')) {
       return {
@@ -110,6 +126,21 @@ function renderMailPage(emails: Email[] = [inboxEmail], initialEntry = '/mail', 
   );
 }
 
+/** The Mail page with the app layout's email peek beside it, sharing one query cache. */
+function renderMailPageWithPeek(emails: Email[]) {
+  setupApi(emails);
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const auth = { user: { id: 'owner', email: 'owner@example.test' }, session: { authenticated: true } } as unknown as AuthContextType;
+  render(
+    <AuthContext.Provider value={auth}>
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/mail']}><MailPage /><MailPeek /></MemoryRouter>
+      </QueryClientProvider>
+    </AuthContext.Provider>
+  );
+  return queryClient;
+}
+
 function getComposeEditor() {
   return screen.getAllByRole('textbox').find(element => element.getAttribute('aria-multiline') === 'true');
 }
@@ -122,6 +153,7 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     localStorage.clear();
     setOfflineMode(false);
   });
+  afterEach(() => { cleanup(); closeMailPeek(); });
 
   it('opens notification mail outside the visible list without marking saved offline mail read', async () => {
     setOfflineMode(true);
@@ -173,5 +205,35 @@ describe('MailPage UI regressions', { timeout: MAIL_PAGE_TEST_TIMEOUT }, () => {
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
     expect(screen.getByLabelText('Subject')).toHaveValue('Draft subject');
     expect(screen.getByText(/draft saved/i)).toBeInTheDocument();
+  });
+
+  it('opens a stored draft with inert content in the editor', async () => {
+    renderMailPage([hostileDraft]);
+
+    fireEvent.click(await screen.findByText('Quoted draft subject'));
+    await screen.findByRole('dialog');
+    const editor = getComposeEditor();
+    expect(editor).toBeDefined();
+    await waitFor(() => expect(editor).toHaveTextContent('Quoted offer'));
+    expect(editor!.querySelector('b')).toHaveTextContent('offer');
+    expect(editor!.querySelector('[onerror], script, a[href^="javascript:"]')).toBeNull();
+    expect(editor!.innerHTML).not.toMatch(/onerror|<script|javascript:/i);
+  });
+
+  it('marks a message read and loads it while an email peek is cached', async () => {
+    const queryClient = renderMailPageWithPeek([inboxEmail, peekEmail]);
+    await screen.findByText('Inbox subject');
+    act(() => openMailPeek('email-2'));
+    const peek = await screen.findByRole('dialog', { name: 'Email' });
+    await within(peek).findByText('Peek body');
+    act(() => closeMailPeek());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Email' })).not.toBeInTheDocument());
+    expect(queryClient.getQueryData(mailQueryKeys.detail('email-2'))).toMatchObject({ id: 'email-2' });
+
+    fireEvent.click(screen.getByText('Inbox subject'));
+    expect(await screen.findByText('Inbox body')).toBeInTheDocument();
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/emails/email-1/read', { is_read: true }, expect.any(Object)));
+    // The peek's cached message is left alone by the list patch.
+    expect(queryClient.getQueryData(mailQueryKeys.detail('email-2'))).toMatchObject({ id: 'email-2', is_read: true });
   });
 });

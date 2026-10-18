@@ -207,9 +207,12 @@ export const mailQueryKeys = {
   unread: (account: string | null) => ['mail-unread-counts', account] as const,
   dashboardUnread: ['dashboard-unread-mail'] as const,
   list: (filters: MailListFilters) => ['emails', filters.account, filters.folder, filters.page, filters.search, filters.unreadOnly] as const,
+  // One message outside the Mail page (the peek). Its own root: every entry
+  // under 'emails' is a list, and the list cache patches rely on that shape.
+  detail: (id: string) => ['mail-email', id] as const,
 };
 
-const MAIL_QUERY_ROOTS = new Set(['emails', 'mail-unread-counts', 'mail-accounts', 'mail-accounts-count', 'mail-folders', 'email-count', 'stats', 'dashboard-unread-mail', 'mail-writebacks']);
+const MAIL_QUERY_ROOTS = new Set(['emails', 'mail-email', 'mail-unread-counts', 'mail-accounts', 'mail-accounts-count', 'mail-folders', 'email-count', 'stats', 'dashboard-unread-mail', 'mail-writebacks']);
 export function invalidateMailQueries(client: QueryClient) {
   return client.invalidateQueries({ predicate: (query) => MAIL_QUERY_ROOTS.has(String(query.queryKey[0])) });
 }
@@ -220,7 +223,7 @@ export function invalidateMailQueries(client: QueryClient) {
 const MAIL_FLAG_COUNT_ROOTS = new Set(['mail-unread-counts', 'mail-accounts', 'mail-accounts-count', 'email-count', 'stats', 'dashboard-unread-mail']);
 
 export function invalidateMailFlagViews(client: QueryClient) {
-  return client.invalidateQueries({ predicate: query => query.queryKey[0] === 'emails' || MAIL_FLAG_COUNT_ROOTS.has(String(query.queryKey[0])) });
+  return client.invalidateQueries({ predicate: query => query.queryKey[0] === 'emails' || query.queryKey[0] === 'mail-email' || MAIL_FLAG_COUNT_ROOTS.has(String(query.queryKey[0])) });
 }
 
 const MAIL_COUNT_ROOTS = new Set(['mail-unread-counts', 'dashboard-unread-mail', 'email-count', 'stats']);
@@ -235,6 +238,8 @@ export function invalidateChangedMail(client: QueryClient, accounts: ReadonlySet
     const [root, account] = query.queryKey;
     if (MAIL_COUNT_ROOTS.has(String(root))) return true;
     if (folders && root === mailQueryKeys.folders[0]) return true;
+    // The peek's key carries no account, so it follows every change.
+    if (root === 'mail-email') return true;
     return root === mailQueryKeys.all[0] && (accounts.has('*') || account === 'all' || accounts.has(String(account)));
   } });
 }
@@ -289,7 +294,8 @@ export function mailFlagRevision(client: QueryClient, id: string, kind: MailFlag
 
 export function showRequestedFlagInMailLists(client: QueryClient, ids: string[], patch: MailFlagPatch) {
   const selectedIds = new Set(ids);
-  client.setQueriesData<MailListResponse>({ queryKey: mailQueryKeys.all }, current => current ? {
+  // Only list-shaped entries are patched; anything else under the prefix is left alone.
+  client.setQueriesData<MailListResponse>({ queryKey: mailQueryKeys.all }, current => Array.isArray(current?.emails) ? {
     ...current,
     emails: current.emails.map(email => selectedIds.has(email.id) ? { ...email, ...patch } : email),
   } : current);

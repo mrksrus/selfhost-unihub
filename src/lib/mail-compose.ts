@@ -1,3 +1,5 @@
+import { prepareEmailHtml } from '@/lib/email-privacy';
+
 const MAIL_ATTACHMENT_MAX_COUNT = 20;
 const MAIL_ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024;
 const MAIL_ATTACHMENTS_TOTAL_MAX_BYTES = 25 * 1024 * 1024;
@@ -16,6 +18,16 @@ export const plainTextToHtml = (value: string) =>
     .map((paragraph) => paragraph.replace(/\n/g, '<br>'))
     .map((paragraph) => `<p>${paragraph || '<br>'}</p>`)
     .join('');
+
+/**
+ * Stored draft HTML before it becomes the editor's live DOM. A draft can come
+ * from another client through the provider's Drafts folder, so it is as
+ * untrusted as any message: the mail reader's projection removes scripts,
+ * handlers, forms and non-HTTP links while keeping everything the composer's
+ * toolbar produces. Remote images are the writer's own content here.
+ */
+export const sanitizeComposeHtml = (html: string) =>
+  html ? prepareEmailHtml(html, { allowRemoteImages: true, blockSuspectedTrackers: false }).html : '';
 
 export const sanitizeReturnTo = (value: string | null) => {
   if (!value) return null;

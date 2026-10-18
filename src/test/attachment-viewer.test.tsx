@@ -21,6 +21,7 @@ const files: Record<string, { attachment: EmailAttachment; body: BlobPart; type:
   notes: { attachment: { id: 'notes', filename: 'payment.txt', content_type: 'application/octet-stream', size_bytes: 40 }, body: 'IBAN DE89 3704 0044 0532 0130 00', type: 'application/octet-stream' },
   sheet: { attachment: { id: 'sheet', filename: 'costs.xlsx', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size_bytes: 9000 }, body: 'PK', type: 'application/zip' },
   invoice: { attachment: { id: 'invoice', filename: 'invoice-4711.pdf', content_type: 'application/pdf', size_bytes: 1200 }, body: '%PDF-1.7', type: 'application/pdf' },
+  logo: { attachment: { id: 'logo', filename: 'logo.svg', content_type: 'image/svg+xml', size_bytes: 300 }, body: '<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("/api/auth/me")</script></svg>', type: 'image/svg+xml' },
 };
 
 const email = (attachments: EmailAttachment[]): Email => ({
@@ -62,6 +63,22 @@ describe('attachment viewer', () => {
     fireEvent.keyDown(dialog, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:viewer-1');
+  });
+
+  it('draws an SVG from a data: URL, never from a same-origin blob: URL, and offers no new tab for it', async () => {
+    show([files.logo.attachment, files.photo.attachment]);
+    openRow('logo.svg');
+    const dialog = await screen.findByRole('dialog', { name: 'logo.svg' });
+    const image = await within(dialog).findByRole('img', { name: 'logo.svg' });
+    expect(image.getAttribute('src')).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(within(dialog).queryByRole('link', { name: 'Open in new tab' })).not.toBeInTheDocument();
+
+    // Raster images keep the object URL and the new-tab link.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Next attachment' }));
+    const photo = await screen.findByRole('dialog', { name: 'receipt-photo.jpg' });
+    expect(await within(photo).findByRole('img', { name: 'receipt-photo.jpg' })).toHaveAttribute('src', 'blob:viewer-1');
+    expect(within(photo).getByRole('link', { name: 'Open in new tab' })).toBeInTheDocument();
   });
 
   it('moves between attachments: text by its extension, no preview for a spreadsheet, without fetching twice', async () => {

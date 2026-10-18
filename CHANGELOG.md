@@ -10,6 +10,25 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **A draft's HTML is made inert before it reaches the editor.** Opening a
+  draft put its stored HTML into the message editor as it was. A draft written
+  in another client that quoted a hostile message (the provider's Drafts
+  folder brings such drafts in) could therefore run scripts and event handlers
+  in the app. The draft now passes through the same sanitizer as displayed
+  mail before it enters the editor; everything the editor's own toolbar writes
+  (bold, italic, underline, lists, colour, size, links, images, quotes) is
+  kept. The editor also shows a draft's body when the compose dialog opens for
+  the first time in a session, where it used to come up empty.
+- **SVG attachments open with no access to the app.** The attachment viewer
+  showed an SVG from a same-origin `blob:` address, so the browser's own "Open
+  image in new tab" could run the file's scripts with this app's session. SVG
+  is now drawn from a `data:` address, which is identical in the viewer and has
+  no origin when opened on its own; "Open in new tab" stays unavailable for it.
+- **Reading mail works after an email was shown over another page.** Once an
+  email had been opened from a task or event, marking any message read on the
+  Mail page failed inside the list cache and the reader showed "(No content)"
+  without a request. The over-the-page email has its own cache entry, and the
+  list update skips entries that are not lists.
 - **Login cookies are secure however the container is started.** The `Secure`
   flag on the session and CSRF cookies depended on `NODE_ENV=production` being
   passed by the Compose file; an installer form that left it out (Portainer,
