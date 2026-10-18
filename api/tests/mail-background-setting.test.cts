@@ -168,7 +168,7 @@ test('module toggle: background off drops read work without fencing; disable sti
   t.mock.method(mail, 'stopMailAccountWork', async (id: FixtureValue, reason: FixtureValue) => { stops.push([id, reason]); return true; });
   t.mock.method(mail, 'cancelMailAccountSync', async (id: FixtureValue) => { cancels.push(id); return true; });
   t.mock.method(runtime, 'resumeAccount', async (input: FixtureValue) => { resumes.push(input); return { resumed: 0, retired: 0 }; });
-  const route = (require('../dist/src/routes/modules') as typeof import('../src/routes/modules'))['PUT /api/modules'];
+  const route = (require('../dist/src/routes/modules') as typeof import('../src/routes/modules'))['PUT /api/modules'].handler;
   await route({} as FixtureValue, 'owner', { modules: { mail: { background: false } } });
   assert.deepEqual(stops, [], 'background off is a scheduling preference, not an account fence');
   assert.deepEqual(cancels, ['A', 'B']);
