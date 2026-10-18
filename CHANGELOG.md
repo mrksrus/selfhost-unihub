@@ -10,6 +10,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **Deleting a user as an administrator removes their files.** The admin
+  "Delete user" action removed the person's rows and recordings but left their
+  mail attachments, raw mail copies and generated backup archives on the
+  server, where the storage overview showed them as orphaned with no way to
+  remove them. Both the admin action and "Delete my account" now use one
+  deletion path that stops the person's mail work, deletes their rows and then
+  removes every file under the configured roots. Deleting a user whose restore
+  is still running is refused (409) instead of leaving the restore writing for
+  a vanished account.
 - **Internal error text no longer shown to the browser.** When a calendar,
   recording or notification request failed inside the server (for example a
   database or file system error), the browser showed the raw internal message.
@@ -105,6 +114,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Internal
 
+- `api/src/services/user-lifecycle.ts::deleteUser(userId, { actor })` owns account
+  deletion for both routes (restore refusal, mail stop, cascade delete in `withTransaction`,
+  file removal under the roots, stream close); `BACKUP_ARCHIVES_ROOT` overrides the backup
+  archive root for tests, like the mail and recording roots.
 - One error contract at the request boundary (`api/src/http/errors.ts`): `ApiError` with
   `badRequest`/`unauthorized`/`forbidden`/`notFound`/`conflict`, and `clientError(error, fallback)`
   used by the request handler, the mail `routeError` helper and the calendar, recording and

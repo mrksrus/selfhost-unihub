@@ -1,9 +1,8 @@
 import type { RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { RouteRequest } from '../types';
+import type { RouteRequest, ApiError } from '../types';
 import { db } from '../state';
-import fs from 'fs';
-import path from 'path';
 import { clearAuthCookie, clearCsrfCookie } from '../auth';
+import { clientError } from '../http/errors';
 import { ensureDefaultLocalCalendarForUser } from '../services/calendar';
 import {
   deleteStoredAttachmentFiles,
@@ -14,8 +13,7 @@ import {
 import {
   deleteRecordingFiles,
 } from '../services/recordings';
-import { ownedMailPath } from '../services/mail-storage';
-import { isBackupPathUnderRoot } from '../services/export-jobs';
+import { deleteUser } from '../services/user-lifecycle';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Input = Record<string, unknown>;
@@ -101,32 +99,13 @@ export = {
   'DELETE /api/settings/account': async (req: Request, userId: string | null, body: Input, res: import('node:http').ServerResponse) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
     try {
-      const [[attachments], [recordings], [exports], [rawEmails]] = await Promise.all([
-        db.execute<RowDataPacket[]>('SELECT storage_path FROM email_attachments WHERE user_id = ?', [userId]),
-        db.execute<RowDataPacket[]>('SELECT storage_path FROM recordings WHERE user_id = ?', [userId]),
-        db.execute<RowDataPacket[]>('SELECT file_path FROM data_export_jobs WHERE user_id = ?', [userId]),
-        db.execute<RowDataPacket[]>('SELECT raw_storage_path FROM emails WHERE user_id = ? AND raw_storage_path IS NOT NULL', [userId]),
-      ]);
-      await deleteStoredAttachmentFiles((attachments || []).map(row => row.storage_path));
-      for (const row of recordings || []) {
-        await deleteRecordingFiles(row.storage_path);
-      }
-      for (const row of exports || []) {
-        if (row.file_path && isBackupPathUnderRoot(row.file_path)) {
-          await fs.promises.rm(path.resolve(row.file_path), { force: true }).catch(() => {});
-        }
-      }
-      for (const row of rawEmails || []) {
-        const rawPath = ownedMailPath('raw', row.raw_storage_path, userId);
-        if (rawPath) await fs.promises.rm(rawPath, { force: true }).catch(() => {});
-      }
-      await db.execute('DELETE FROM users WHERE id = ?', [userId]);
+      await deleteUser(userId, { actor: 'self' });
       clearAuthCookie(res);
       clearCsrfCookie(res);
       return { deleted: true };
     } catch (error) {
-      console.error('Delete account error:', error);
-      return { error: 'Failed to delete account', status: 500 };
+      if (!(error as ApiError).status) console.error('Delete account error:', error);
+      return clientError(error, 'Failed to delete account');
     }
   },
 
