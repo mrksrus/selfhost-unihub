@@ -4,7 +4,6 @@ import crypto from 'crypto';
 import fs from 'fs';
 import { promisify } from 'util';
 import { db } from '../state';
-import { debugLog } from '../logger';
 import {
   toBooleanFlag,
   ensureDefaultMailFoldersForUser,
@@ -283,7 +282,7 @@ export = {
         bcc,
         subject: draft.subject || '(No subject)',
         body: bodyContent,
-        isHtml: !!draft.body_html || attachments.length > 0,
+        isHtml: !!draft.body_html || (!draft.body_text && attachments.length > 0),
         attachments,
       });
       const deleteResult = await deleteDraftWithFiles(userId, draftId);
@@ -295,7 +294,7 @@ export = {
         failedAttachmentFiles: deleteResult.failedAttachmentFiles || 0,
       };
     } catch (error) {
-      console.error('Send draft error:', error);
+      console.error('Send draft error:', (error as NodeJS.ErrnoException)?.code || (error as Error)?.name || 'Error');
       return { error: (error as ApiError).message || 'Failed to send draft', status: (error as ApiError).status || 500 };
     }
   },
@@ -323,19 +322,11 @@ export = {
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
 
-      // #region agent log
-      debugLog('server.js:1440', 'POST /mail/send START', { account_id, to, subject, userId }, 'H5');
-      // #endregion
       const result = await sendEmail(account_id, { to: to || '', cc, bcc, subject, body: emailBody, isHtml, attachments: attachments || [] });
-      // #region agent log
-      debugLog('server.js:1441', 'POST /mail/send SUCCESS', { messageId: result.messageId }, 'H5');
-      // #endregion
       return { ...result, success: true, messageId: result.messageId };
     } catch (error) {
-      // #region agent log
-      debugLog('server.js:1442', 'POST /mail/send ERROR', { errorMessage: (error as ApiError).message, errorStack: (error as ApiError).stack?.substring(0, 200) }, 'H5');
-      // #endregion
-      console.error('Send email error:', error);
+      // SMTP errors carry the rejected recipients in their message and fields; the log gets the kind only.
+      console.error('Send email error:', (error as NodeJS.ErrnoException)?.code || (error as Error)?.name || 'Error');
       return { error: (error as ApiError).message || 'Failed to send email', status: (error as ApiError).status || 500 };
     }
   },

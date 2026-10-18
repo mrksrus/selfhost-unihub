@@ -2,7 +2,7 @@ import type { FixtureValue } from './helpers/test-types.cts';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 
-function mailFixture(t: import('node:test').TestContext, { active = 1, disconnected = null, failCopy = false }: FixtureValue = {}) {
+function mailFixture(t: import('node:test').TestContext, { active = 1, disconnected = null, failCopy = false, displayName = null }: FixtureValue = {}) {
   const state = require.resolve('../dist/src/state');
   const nodemailer = require.resolve('nodemailer');
   const encryption = require.resolve('../dist/src/security/encryption');
@@ -12,7 +12,7 @@ function mailFixture(t: import('node:test').TestContext, { active = 1, disconnec
   const paths = [state, nodemailer, encryption, network, settings, mailPath];
   const original = new Map(paths.map(p => [p, require.cache[p]]));
   let sends = 0, inserts = 0, delivered: FixtureValue = null, sentCopy: FixtureValue = null;
-  const account = { id: 'account-1', user_id: 'user-1', email_address: 'sender@example.test',
+  const account = { id: 'account-1', user_id: 'user-1', email_address: 'sender@example.test', display_name: displayName,
     smtp_host: 'smtp.example.test', smtp_port: 587, encrypted_password: 'vault-ciphertext',
     is_active: active, disconnected_at: disconnected, allow_self_signed: 0 };
   const stubs = [
@@ -20,7 +20,7 @@ function mailFixture(t: import('node:test').TestContext, { active = 1, disconnec
       if (sql.includes('FROM mail_accounts')) return [[account]];
       if (sql.includes('INSERT INTO emails')) {
         inserts++; if (failCopy) throw Error('storage offline');
-        sentCopy = { cc: params[8], bcc: params[9] };
+        sentCopy = { from_address: params[5], from_name: params[6], cc: params[8], bcc: params[9] };
         return [{ affectedRows: 1 }];
       }
       return [[]];
@@ -69,4 +69,17 @@ test('successful local Sent copy is separately confirmed and keeps Cc and Bcc wi
   assert.deepEqual(JSON.parse(h.sentCopy.bcc), ['hidden@example.test']);
   assert.equal(result.sent_copy_state, 'confirmed');
   assert.match(result.sent_copy_id!, /^[0-9a-f-]{36}$/i);
+});
+test('a display name containing an address does not change the sender address', async t => {
+  const h = mailFixture(t, { displayName: 'Jane <evil@example.net> Doe' });
+  await h.send();
+  assert.equal(h.sends, 1);
+  assert.deepEqual(h.delivered.from, { name: 'Jane <evil@example.net> Doe', address: 'sender@example.test' });
+  const MailComposer = require('nodemailer/lib/mail-composer');
+  const compiled = new MailComposer(h.delivered).compile();
+  assert.deepEqual(compiled.getEnvelope().from, 'sender@example.test');
+  const mime = String(await compiled.build());
+  assert.match(mime, /^From: "Jane <evil@example.net> Doe" <sender@example.test>$/m);
+  assert.equal(h.sentCopy.from_address, 'sender@example.test');
+  assert.equal(h.sentCopy.from_name, 'Jane <evil@example.net> Doe');
 });
