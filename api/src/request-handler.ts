@@ -32,20 +32,33 @@ const BACKUP_UPLOAD_ROOT = '/app/uploads/backups/imports';
 // segment matcher, so adding a route needs no change here.
 const matchRoute = compileRouteMatcher(Object.keys(routes));
 
-// Request body limits in bytes. Most routes take small JSON documents; the
-// routes below carry files, archives, imports, bulk selections or long text.
-const DEFAULT_BODY_LIMIT = 1000;
+// Request body limits in bytes. The default covers the small JSON documents
+// most routes take, with room for the ordinary text their validators accept
+// (names, titles, patterns); the routes below carry files, archives, imports,
+// bulk selections, or text columns sized well beyond that.
+const DEFAULT_BODY_LIMIT = 16384;
 const BODY_LIMIT_BY_PATH_PREFIX: readonly [string, number][] = [
   ['/api/notifications/', 16384],
 ];
 const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
   'GET /api/modules': 16384,
   'PUT /api/modules': 16384,
+  // Credentials: a passphrase may be up to 1024 characters, so the JSON needs
+  // more than a bare id but nowhere near the default.
+  'POST /api/auth/signin': 4096,
+  'POST /api/auth/signup': 4096,
+  'PUT /api/auth/password': 4096,
+  'PUT /api/admin/users/:id/password': 4096,
+  // Contact notes are a TEXT column
+  'POST /api/contacts': 65536,
+  'PUT /api/contacts/:id': 65536,
   'POST /api/contacts/import': 500000, // vCard import can be large
   // A contact selection: up to 5000 IDs of ~39 bytes each
   'POST /api/contacts/bulk-delete': 250000,
   'POST /api/contacts/bulk-update': 250000,
   'POST /api/recordings/uploads/:id/chunk': 1200 * 1024, // Recording chunks are base64 encoded JSON.
+  // Chord sheets (metadata.chords, 10000 characters), a TEXT description and tags
+  'PUT /api/recordings/:id': 262144,
   'POST /api/recordings/uploads/start': 50000,
   'POST /api/backup/import': BACKUP_UPLOAD_MAX_SIZE,
   'POST /api/mail/send': MAIL_COMPOSE_REQUEST_MAX_SIZE,
@@ -354,4 +367,5 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
 
 export {
   handleRequest,
+  BODY_LIMIT_BY_ROUTE,
 };

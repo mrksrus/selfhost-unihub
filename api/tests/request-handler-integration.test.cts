@@ -16,6 +16,8 @@ function handlerHarness(t: import('node:test').TestContext, { userId = 'u1', rou
   stub(paths[2], { 'GET /api/mail/attachments/:id': route, 'PUT /api/mail/emails/:id': route, 'POST /api/mail/writebacks/:id/retry': route,
     'POST /api/mail/writebacks/:id/accept-server-state': route,
     'POST /api/admin/users/:id/2fa/reset': route,
+    'PUT /api/recordings/:id': route, 'POST /api/contacts': route, 'PUT /api/contacts/:id': route,
+    'POST /api/auth/signin': route, 'POST /api/auth/signup': route, 'PUT /api/auth/password': route, 'PUT /api/admin/users/:id/password': route,
     'GET /api/version': async () => ({ app: 'unihub' }),
     'GET /api/modules': route, 'GET /api/contacts/export': route, 'GET /api/offline/snapshot': route || (async (_req: FixtureValue, user: FixtureValue) => ({ snapshot: { userId: user } })),
     'POST /api/parse-test': route || (async () => ({ success: true })) });
@@ -120,12 +122,38 @@ test('writes during a restore of their section get a 409 that clients can tell f
 test('body limits come from the route table: the default applies to ordinary routes', async (t) => {
   let called = 0;
   const run = handlerHarness(t, ({ route: async () => { called++; return { success: true }; } }));
-  const oversized = await run('POST', '/api/parse-test', '{}', { 'content-length': '1001' });
+  const oversized = await run('POST', '/api/parse-test', '{}', { 'content-length': '16385' });
   assert.equal(oversized.status, 413);
-  assert.match(oversized.body.error, /max 1000 bytes/);
+  assert.match(oversized.body.error, /max 16384 bytes/);
   assert.equal(called, 0);
   assert.equal((await run('POST', '/api/parse-test', '{}', { 'content-length': '2' })).status, 200);
   assert.equal(called, 1);
+});
+
+test('a long chord sheet and long contact notes reach their handlers; each explicit limit still refuses more', async (t) => {
+  let called = 0;
+  const run = handlerHarness(t, ({ route: async () => { called++; return { success: true }; } }));
+  const chords = JSON.stringify({ category: 'music', metadata: { chords: '[Verse]\nC  G  Am  F\n'.repeat(180) } });
+  assert.ok(chords.length > 3000);
+  assert.equal((await run('PUT', '/api/recordings/r1', chords)).status, 200);
+  const contact = JSON.stringify({ first_name: 'Alice', notes: 'Met at the spring conference; prefers mail. '.repeat(50) });
+  assert.ok(contact.length > 2000);
+  assert.equal((await run('POST', '/api/contacts', contact)).status, 200);
+  assert.equal(called, 2);
+  for (const [method, path, limit] of [
+    ['PUT', '/api/recordings/r1', 262144],
+    ['POST', '/api/contacts', 65536],
+    ['PUT', '/api/contacts/c1', 65536],
+    ['POST', '/api/auth/signin', 4096],
+    ['POST', '/api/auth/signup', 4096],
+    ['PUT', '/api/auth/password', 4096],
+    ['PUT', '/api/admin/users/u2/password', 4096],
+  ] as const) {
+    const result = await run(method, path, '{}', { 'content-length': String(limit + 1) });
+    assert.equal(result.status, 413, `${method} ${path}`);
+    assert.match(result.body.error, new RegExp(`max ${limit} bytes`), `${method} ${path}`);
+  }
+  assert.equal(called, 2);
 });
 
 test('a parameter with malformed percent-encoding is rejected with 400 before any route runs', async (t) => {

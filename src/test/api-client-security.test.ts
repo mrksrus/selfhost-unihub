@@ -57,7 +57,43 @@ describe('api client security', () => {
 
     expect(response.status).toBe(413);
     expect(response.error).toContain('request is too large');
+    expect(response.error).toContain('attachment');
     expect(response.error).not.toContain('not JSON');
+  });
+
+  it('reports the server-side size limit of an oversized write instead of an attachment hint', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 413,
+      statusText: 'Payload Too Large',
+      headers: { get: () => 'application/json' },
+      json: async () => ({ error: 'Request body too large (max 262144 bytes)' }),
+    }) as unknown as typeof fetch);
+
+    const response = await api.put('/recordings/r1', { category: 'music', metadata: { chords: 'C G Am F' } });
+
+    expect(response.status).toBe(413);
+    expect(response.error).toBe('Request body too large (max 262144 bytes)');
+  });
+
+  it('mentions attachments only when a proxy refuses a compose request', async () => {
+    const proxyRefusal = () => vi.fn().mockResolvedValue({
+      ok: false,
+      status: 413,
+      statusText: 'Request Entity Too Large',
+      headers: { get: () => 'text/html' },
+      text: async () => '<html><body>413 Request Entity Too Large</body></html>',
+    }) as unknown as typeof fetch;
+
+    vi.stubGlobal('fetch', proxyRefusal());
+    const contact = await api.post('/contacts', { first_name: 'Alice', notes: 'long' });
+    expect(contact.status).toBe(413);
+    expect(contact.error).toContain('too large');
+    expect(contact.error).not.toContain('attachment');
+
+    vi.stubGlobal('fetch', proxyRefusal());
+    const draft = await api.put('/mail/drafts/d1', { attachments: [] });
+    expect(draft.error).toContain('attachment');
   });
   it('forwards AbortSignal and preserves cancellation as a rejected request', async () => {
     const controller = new AbortController();
