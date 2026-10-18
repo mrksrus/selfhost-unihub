@@ -262,8 +262,11 @@ Sessions use:
 
 `/api/auth/me` refreshes the CSRF token for regular frontend auth checks.
 
-When `NODE_ENV=production`, auth cookies are marked `Secure`. In production,
-serve UniHub through HTTPS.
+Auth and CSRF cookies are marked `Secure` when `NODE_ENV=production`
+(`COOKIE_SECURE` in `api/src/config.ts`, the only place that reads it). The
+image sets `NODE_ENV=production`, so a deployment gets secure cookies however
+the container is started; serve UniHub through HTTPS. Local HTTP development
+runs the API without it.
 
 ## Database Initialization
 
@@ -292,6 +295,13 @@ Startup behavior:
    calendar.
 5. Check the declared field inventory against the actual schema, then generate
    the Web Push identity if `notification_config` is still empty.
+
+A refusal in steps 1 to 3a is thrown from `initDatabase`; `api/server.ts`
+logs it and exits 1, so the container restarts instead of serving nothing.
+`database.ts` exports the migration list as `MIGRATIONS` and
+`LATEST_MIGRATION_ID`; `api/tests/database-migration-list.test.cts` checks ids,
+names, inventory `introducedIn` bounds and the schema file's header without a
+database.
 
 The numbered upgrades in `database.ts` are the only schema path: since 0.19.2
 step 15 also owns the notification tables and the mail list indexes, which

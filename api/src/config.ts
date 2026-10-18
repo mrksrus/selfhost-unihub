@@ -17,6 +17,9 @@ const TRUSTED_MAIL_HOSTS = (process.env.TRUSTED_MAIL_HOSTS || '')
   .filter(Boolean);
 const CALENDAR_MULTI_ENABLED = process.env.CALENDAR_MULTI_ENABLED !== 'false';
 const AUTH_COOKIE_NAME = 'auth-token';
+// Secure cookies need HTTPS; local HTTP development starts the API without
+// NODE_ENV=production. The image sets it (Dockerfile).
+const COOKIE_SECURE = process.env.NODE_ENV === 'production';
 const MIN_PASSWORD_LENGTH = 12;
 const BACKUP_UPLOAD_MAX_SIZE = 3900 * 1024 * 1024;
 // A 25 MiB attachment payload expands to roughly 33.4 MiB when base64 encoded.
@@ -36,6 +39,7 @@ export {
   TRUSTED_MAIL_HOSTS,
   CALENDAR_MULTI_ENABLED,
   AUTH_COOKIE_NAME,
+  COOKIE_SECURE,
   MIN_PASSWORD_LENGTH,
   BACKUP_UPLOAD_MAX_SIZE,
   MAIL_COMPOSE_REQUEST_MAX_SIZE,

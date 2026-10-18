@@ -10,6 +10,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **Login cookies are secure however the container is started.** The `Secure`
+  flag on the session and CSRF cookies depended on `NODE_ENV=production` being
+  passed by the Compose file; an installer form that left it out (Portainer,
+  TrueNAS) got a healthy container whose cookies could travel over plain HTTP.
+  The image now sets production mode itself; a `NODE_ENV` entry stays harmless.
 - **Deleting a user as an administrator removes their files.** The admin
   "Delete user" action removed the person's rows and recordings but left their
   mail attachments, raw mail copies and generated backup archives on the
@@ -114,6 +119,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Internal
 
+- `COOKIE_SECURE` in `api/src/config.ts` is the one `NODE_ENV` read; `database.ts` exports
+  `MIGRATIONS` and `LATEST_MIGRATION_ID`, checked without a database by
+  `api/tests/database-migration-list.test.cts` (consecutive ids, unique kebab-case names,
+  inventory `introducedIn` bounds, the `-- Through migration N.` header that
+  `docker/mariadb/schema.sql` now carries); `initDatabase` throws its startup refusals
+  (server.ts logs and exits) instead of calling `process.exit`; `docker/start.sh` skips the
+  uploads ownership scan once the marker `/app/uploads/.owned-by-<uid>` exists.
 - `api/src/services/user-lifecycle.ts::deleteUser(userId, { actor })` owns account
   deletion for both routes (restore refusal, mail stop, cascade delete in `withTransaction`,
   file removal under the roots, stream close); `BACKUP_ARCHIVES_ROOT` overrides the backup

@@ -7,6 +7,7 @@ import { safeJsonParse } from './calendar';
 import { getDatabaseConfig } from './database-config';
 import { supportedServer, unsupportedServerMessage } from './database-version';
 import { runMigrations } from './database-migrations';
+import type { Migration } from './database-migrations';
 import { BASELINE } from './database-baseline';
 import { verifyDatabaseInventory } from './data-inventory';
 import { withTransaction } from './transactions';
@@ -60,23 +61,21 @@ function useUtcSessions(pool: Pool) {
 const POOL_CONNECTION_LIMIT = 50;
 
 async function initDatabase() {
+  // Startup refusals are thrown, not exited here: server.ts logs the cause and
+  // exits 1, and a script or test calling initDatabase sees an ordinary rejection.
   if (isPlaceholderSecret(JWT_SECRET)) {
-    console.error('✗ Missing or placeholder JWT_SECRET. Set a strong random JWT secret before starting.');
-    process.exit(1);
+    throw new Error('Missing or placeholder JWT_SECRET. Set a strong random JWT secret before starting.');
   }
   if (isPlaceholderSecret(ENCRYPTION_KEY)) {
-    console.error('✗ Missing or placeholder ENCRYPTION_KEY. Set a strong random encryption key before starting.');
-    process.exit(1);
+    throw new Error('Missing or placeholder ENCRYPTION_KEY. Set a strong random encryption key before starting.');
   }
   const databaseConfig = getDatabaseConfig();
   if (!databaseConfig) {
-    console.error('✗ Missing database configuration. Set DATABASE_URL or MYSQL_* in docker-compose.yml.');
-    process.exit(1);
+    throw new Error('Missing database configuration. Set DATABASE_URL or MYSQL_* in docker-compose.yml.');
   }
 
   if (isPlaceholderSecret(databaseConfig.password)) {
-    console.error('✗ Missing or placeholder database password. Set a real database password before starting.');
-    process.exit(1);
+    throw new Error('Missing or placeholder database password. Set a real database password before starting.');
   }
   const poolConfig = {
     // Connection options (inherited by pool)
@@ -106,8 +105,7 @@ async function initDatabase() {
       // Clean up the failed pool before retrying
       if (getDb()) { await db.end().catch(() => {}); setDb(null); }
       if (attempt === 20) {
-        console.error('✗ Database connection failed after 20 attempts:', (error as Error).message);
-        process.exit(1);
+        throw new Error(`Database connection failed after 20 attempts: ${(error as Error).message}`);
       }
       // Faster retry intervals: 2s for first 5 attempts, then 3s
       const waitTime = attempt <= 5 ? 2000 : 3000;
@@ -119,8 +117,7 @@ async function initDatabase() {
   // Refuse before any schema work, so a MySQL database is never half-converted.
   const [[server]] = await db.query<(RowDataPacket & { version: string })[]>('SELECT VERSION() AS version');
   if (!supportedServer(server.version)) {
-    console.error('✗ ' + unsupportedServerMessage(server.version));
-    process.exit(1);
+    throw new Error(unsupportedServerMessage(server.version));
   }
 
   await ensureSchema();
@@ -143,161 +140,164 @@ function poolStats() {
 // A new database starts from the 0.16.0 baseline (steps 1 to 11, see
 // database-baseline.ts); the steps below apply to it and to every database
 // created by an earlier release.
+const MIGRATIONS: readonly Migration[] = [
+  {
+    // 0.17.0: CalDAV and ICS calendars sync continuously. Server copies of
+    // calendar objects are kept so changes can be detected and written back.
+    id: 12,
+    name: 'calendar-sync',
+    up: async (connection: PoolConnection) => {
+      const changes = [
+        ['calendar_accounts', 'mail_account_id', 'ALTER TABLE calendar_accounts ADD COLUMN mail_account_id CHAR(36) NULL'],
+        ['calendar_accounts', 'next_sync_at', 'ALTER TABLE calendar_accounts ADD COLUMN next_sync_at DATETIME NULL'],
+        ['calendar_calendars', 'remote_ctag', 'ALTER TABLE calendar_calendars ADD COLUMN remote_ctag VARCHAR(255) NULL'],
+        ['calendar_calendars', 'remote_expanded_on', 'ALTER TABLE calendar_calendars ADD COLUMN remote_expanded_on DATE NULL'],
+        ['calendar_event_external_refs', 'remote_object_id', 'ALTER TABLE calendar_event_external_refs ADD COLUMN remote_object_id CHAR(36) NULL'],
+        ['calendar_event_external_refs', 'recurrence_id', 'ALTER TABLE calendar_event_external_refs ADD COLUMN recurrence_id VARCHAR(64) NULL'],
+      ];
+      for (const [table, column, sql] of changes) {
+        const [fields] = await connection.execute<FieldRow[]>(`SHOW COLUMNS FROM ${quoteIdentifier(table)}`);
+        if (!fields.some(field => field.Field === column)) await connection.execute(sql);
+      }
+      await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_remote_objects (
+        id CHAR(36) PRIMARY KEY,
+        user_id CHAR(36) NOT NULL,
+        account_id CHAR(36) NOT NULL,
+        calendar_id CHAR(36) NOT NULL,
+        href TEXT NOT NULL,
+        href_hash CHAR(64) NOT NULL,
+        etag VARCHAR(255) NULL,
+        uid VARCHAR(500) NULL,
+        ics MEDIUMTEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE,
+        FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
+        UNIQUE KEY uq_calendar_remote_object (calendar_id, href_hash),
+        INDEX idx_calendar_remote_objects_account (account_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+      const indexes = [
+        ['calendar_accounts', 'idx_calendar_accounts_mail', 'ALTER TABLE calendar_accounts ADD INDEX idx_calendar_accounts_mail (user_id, mail_account_id)'],
+        ['calendar_event_external_refs', 'idx_event_refs_remote_object', 'ALTER TABLE calendar_event_external_refs ADD INDEX idx_event_refs_remote_object (remote_object_id)'],
+      ];
+      for (const [table, name, sql] of indexes) {
+        const [present] = await connection.execute<RowDataPacket[]>(`SHOW INDEX FROM ${quoteIdentifier(table)} WHERE Key_name = ?`, [name]);
+        if (!present.length) await connection.execute(sql);
+      }
+    },
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 12 });
+    },
+  },
+  {
+    // 0.17.1: backups keep provider_config but not mail_account_id. Accounts
+    // linked by 0.17.0 are marked mailLinked, so a restore links them again.
+    id: 13,
+    name: 'calendar-mail-link-marker',
+    up: async (connection: PoolConnection) => {
+      for (const row of await unmarkedMailCalendars(connection)) {
+        const config = (safeJsonParse(row.provider_config, {}) || {}) as Record<string, unknown>;
+        await connection.execute('UPDATE calendar_accounts SET provider_config = ? WHERE id = ?', [JSON.stringify({ ...config, mailLinked: true }), row.id]);
+      }
+    },
+    verify: async (connection: PoolConnection) => {
+      if ((await unmarkedMailCalendars(connection)).length) throw new Error('Linked calendar accounts without the mailLinked mark remain');
+    },
+  },
+  {
+    // 0.18.2: a calendar linked to a mail account reads the mail login when
+    // it needs it, instead of keeping a copy. The copies go, and calendars
+    // that were switched off only because their mail account was
+    // disconnected are on again (they wait while it stays disconnected).
+    // Mail calendars not linked yet (restored, or from before 0.17) are
+    // included; they find their mail account when first used.
+    id: 14,
+    name: 'calendar-linked-login',
+    up: async (connection: PoolConnection) => {
+      // A link to a deleted mail account (all mail accounts cleared) goes:
+      // the calendar finds a mail account with its address again.
+      // It stays marked and drops a CalDAV password, like at runtime.
+      const [stale] = await connection.execute<(CalendarAccountRow & { mail_account_id: string })[]>(`SELECT ca.id, ca.provider_config, ca.mail_account_id FROM calendar_accounts ca
+        LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ca.mail_account_id IS NOT NULL AND m.id IS NULL`);
+      for (const row of stale) {
+        await connection.execute(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = ?,
+            encrypted_password = IF(provider = 'caldav', NULL, encrypted_password) WHERE id = ? AND mail_account_id = ?`,
+        [JSON.stringify({ ...((safeJsonParse(row.provider_config, {}) || {}) as Record<string, unknown>), mailLinked: true }), row.id, row.mail_account_id]);
+      }
+      const { sql, params } = await mailCalDavScope(connection);
+      await connection.execute(`UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL
+        WHERE ${sql} AND is_active = FALSE AND sync_error = ?`,
+      [...params, 'The mail account is disconnected. Reconnect it to resume calendar sync.']);
+      await connection.execute(`UPDATE calendar_accounts SET encrypted_password = NULL WHERE ${sql} AND encrypted_password IS NOT NULL`, params);
+    },
+    verify: async (connection: PoolConnection) => {
+      const { sql, params } = await mailCalDavScope(connection);
+      const [[left]] = await connection.execute<CountRow[]>(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE ${sql} AND encrypted_password IS NOT NULL`, params);
+      if (Number(left.n) !== 0) throw new Error('Mail calendar accounts still hold a copied password');
+      const [[stale]] = await connection.execute<CountRow[]>(`SELECT COUNT(*) AS n FROM calendar_accounts ca
+        LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ca.mail_account_id IS NOT NULL AND m.id IS NULL`);
+      if (Number(stale.n) !== 0) throw new Error('Calendar accounts still link a deleted mail account');
+    },
+  },
+  {
+    // 0.19.2: the notification tables (created at every start by the
+    // notification service until now) and the mail list indexes (added
+    // after listen, with errors only logged) become ordinary upgrade steps,
+    // so startup has one schema path. Existing databases already have all
+    // of them; a new database gets them here.
+    id: 15,
+    name: 'notification-tables-and-mail-indexes',
+    up: async (connection: PoolConnection) => {
+      await createNotificationTables(connection);
+      await createMailPerformanceIndexes(connection);
+    },
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 15 });
+      for (const [table, name] of [['calendar_events', NOTIFICATION_SCAN_INDEX], ...MAIL_PERFORMANCE_INDEXES.map(([name]) => ['emails', name])]) {
+        if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
+      }
+    },
+  },
+  {
+    // 0.20.0: a task or event can come from an email. The link is a plain
+    // id (no foreign key: a calendar-only restore must not depend on mail),
+    // with a snapshot of the email's header so the task keeps its context
+    // after the email is gone.
+    id: 16,
+    name: 'event-source-email',
+    up: async (connection: PoolConnection) => {
+      if (!await hasColumn(connection, 'calendar_events', 'source_email_id')) {
+        await connection.execute('ALTER TABLE calendar_events ADD COLUMN source_email_id char(36) DEFAULT NULL');
+      }
+      if (!await hasColumn(connection, 'calendar_events', 'source_email_json')) {
+        await connection.execute('ALTER TABLE calendar_events ADD COLUMN source_email_json longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(source_email_json))');
+      }
+      if (!await hasIndex(connection, 'calendar_events', 'idx_events_source_email')) {
+        await connection.execute('ALTER TABLE calendar_events ADD KEY idx_events_source_email (user_id, source_email_id)');
+      }
+    },
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 16 });
+      if (!await hasIndex(connection, 'calendar_events', 'idx_events_source_email')) throw new Error('Index idx_events_source_email on calendar_events is missing');
+    },
+  },
+  {
+    // 0.22.1: the Android app receives notifications over its own
+    // connection to this server. A device is a push subscription whose
+    // transport says how it is reached (notification-transports.ts).
+    id: 17,
+    name: 'android-notification-devices',
+    up: addPushTransport,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 17 });
+    },
+  },
+];
+const LATEST_MIGRATION_ID = MIGRATIONS[MIGRATIONS.length - 1].id;
+
 async function ensureSchema() {
-  await runMigrations(getDb()!, [
-    {
-      // 0.17.0: CalDAV and ICS calendars sync continuously. Server copies of
-      // calendar objects are kept so changes can be detected and written back.
-      id: 12,
-      name: 'calendar-sync',
-      up: async (connection: PoolConnection) => {
-        const changes = [
-          ['calendar_accounts', 'mail_account_id', 'ALTER TABLE calendar_accounts ADD COLUMN mail_account_id CHAR(36) NULL'],
-          ['calendar_accounts', 'next_sync_at', 'ALTER TABLE calendar_accounts ADD COLUMN next_sync_at DATETIME NULL'],
-          ['calendar_calendars', 'remote_ctag', 'ALTER TABLE calendar_calendars ADD COLUMN remote_ctag VARCHAR(255) NULL'],
-          ['calendar_calendars', 'remote_expanded_on', 'ALTER TABLE calendar_calendars ADD COLUMN remote_expanded_on DATE NULL'],
-          ['calendar_event_external_refs', 'remote_object_id', 'ALTER TABLE calendar_event_external_refs ADD COLUMN remote_object_id CHAR(36) NULL'],
-          ['calendar_event_external_refs', 'recurrence_id', 'ALTER TABLE calendar_event_external_refs ADD COLUMN recurrence_id VARCHAR(64) NULL'],
-        ];
-        for (const [table, column, sql] of changes) {
-          const [fields] = await connection.execute<FieldRow[]>(`SHOW COLUMNS FROM ${quoteIdentifier(table)}`);
-          if (!fields.some(field => field.Field === column)) await connection.execute(sql);
-        }
-        await connection.execute(`CREATE TABLE IF NOT EXISTS calendar_remote_objects (
-          id CHAR(36) PRIMARY KEY,
-          user_id CHAR(36) NOT NULL,
-          account_id CHAR(36) NOT NULL,
-          calendar_id CHAR(36) NOT NULL,
-          href TEXT NOT NULL,
-          href_hash CHAR(64) NOT NULL,
-          etag VARCHAR(255) NULL,
-          uid VARCHAR(500) NULL,
-          ics MEDIUMTEXT NOT NULL,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-          FOREIGN KEY (account_id) REFERENCES calendar_accounts(id) ON DELETE CASCADE,
-          FOREIGN KEY (calendar_id) REFERENCES calendar_calendars(id) ON DELETE CASCADE,
-          UNIQUE KEY uq_calendar_remote_object (calendar_id, href_hash),
-          INDEX idx_calendar_remote_objects_account (account_id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-        const indexes = [
-          ['calendar_accounts', 'idx_calendar_accounts_mail', 'ALTER TABLE calendar_accounts ADD INDEX idx_calendar_accounts_mail (user_id, mail_account_id)'],
-          ['calendar_event_external_refs', 'idx_event_refs_remote_object', 'ALTER TABLE calendar_event_external_refs ADD INDEX idx_event_refs_remote_object (remote_object_id)'],
-        ];
-        for (const [table, name, sql] of indexes) {
-          const [present] = await connection.execute<RowDataPacket[]>(`SHOW INDEX FROM ${quoteIdentifier(table)} WHERE Key_name = ?`, [name]);
-          if (!present.length) await connection.execute(sql);
-        }
-      },
-      verify: async (connection: PoolConnection) => {
-        await verifyDatabaseInventory(connection, { throughMigration: 12 });
-      },
-    },
-    {
-      // 0.17.1: backups keep provider_config but not mail_account_id. Accounts
-      // linked by 0.17.0 are marked mailLinked, so a restore links them again.
-      id: 13,
-      name: 'calendar-mail-link-marker',
-      up: async (connection: PoolConnection) => {
-        for (const row of await unmarkedMailCalendars(connection)) {
-          const config = (safeJsonParse(row.provider_config, {}) || {}) as Record<string, unknown>;
-          await connection.execute('UPDATE calendar_accounts SET provider_config = ? WHERE id = ?', [JSON.stringify({ ...config, mailLinked: true }), row.id]);
-        }
-      },
-      verify: async (connection: PoolConnection) => {
-        if ((await unmarkedMailCalendars(connection)).length) throw new Error('Linked calendar accounts without the mailLinked mark remain');
-      },
-    },
-    {
-      // 0.18.2: a calendar linked to a mail account reads the mail login when
-      // it needs it, instead of keeping a copy. The copies go, and calendars
-      // that were switched off only because their mail account was
-      // disconnected are on again (they wait while it stays disconnected).
-      // Mail calendars not linked yet (restored, or from before 0.17) are
-      // included; they find their mail account when first used.
-      id: 14,
-      name: 'calendar-linked-login',
-      up: async (connection: PoolConnection) => {
-        // A link to a deleted mail account (all mail accounts cleared) goes:
-        // the calendar finds a mail account with its address again.
-        // It stays marked and drops a CalDAV password, like at runtime.
-        const [stale] = await connection.execute<(CalendarAccountRow & { mail_account_id: string })[]>(`SELECT ca.id, ca.provider_config, ca.mail_account_id FROM calendar_accounts ca
-          LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ca.mail_account_id IS NOT NULL AND m.id IS NULL`);
-        for (const row of stale) {
-          await connection.execute(`UPDATE calendar_accounts SET mail_account_id = NULL, provider_config = ?,
-              encrypted_password = IF(provider = 'caldav', NULL, encrypted_password) WHERE id = ? AND mail_account_id = ?`,
-          [JSON.stringify({ ...((safeJsonParse(row.provider_config, {}) || {}) as Record<string, unknown>), mailLinked: true }), row.id, row.mail_account_id]);
-        }
-        const { sql, params } = await mailCalDavScope(connection);
-        await connection.execute(`UPDATE calendar_accounts SET is_active = TRUE, sync_status = 'pending', sync_error = NULL, next_sync_at = NULL
-          WHERE ${sql} AND is_active = FALSE AND sync_error = ?`,
-        [...params, 'The mail account is disconnected. Reconnect it to resume calendar sync.']);
-        await connection.execute(`UPDATE calendar_accounts SET encrypted_password = NULL WHERE ${sql} AND encrypted_password IS NOT NULL`, params);
-      },
-      verify: async (connection: PoolConnection) => {
-        const { sql, params } = await mailCalDavScope(connection);
-        const [[left]] = await connection.execute<CountRow[]>(`SELECT COUNT(*) AS n FROM calendar_accounts WHERE ${sql} AND encrypted_password IS NOT NULL`, params);
-        if (Number(left.n) !== 0) throw new Error('Mail calendar accounts still hold a copied password');
-        const [[stale]] = await connection.execute<CountRow[]>(`SELECT COUNT(*) AS n FROM calendar_accounts ca
-          LEFT JOIN mail_accounts m ON m.id = ca.mail_account_id AND m.user_id = ca.user_id WHERE ca.mail_account_id IS NOT NULL AND m.id IS NULL`);
-        if (Number(stale.n) !== 0) throw new Error('Calendar accounts still link a deleted mail account');
-      },
-    },
-    {
-      // 0.19.2: the notification tables (created at every start by the
-      // notification service until now) and the mail list indexes (added
-      // after listen, with errors only logged) become ordinary upgrade steps,
-      // so startup has one schema path. Existing databases already have all
-      // of them; a new database gets them here.
-      id: 15,
-      name: 'notification-tables-and-mail-indexes',
-      up: async (connection: PoolConnection) => {
-        await createNotificationTables(connection);
-        await createMailPerformanceIndexes(connection);
-      },
-      verify: async (connection: PoolConnection) => {
-        await verifyDatabaseInventory(connection, { throughMigration: 15 });
-        for (const [table, name] of [['calendar_events', NOTIFICATION_SCAN_INDEX], ...MAIL_PERFORMANCE_INDEXES.map(([name]) => ['emails', name])]) {
-          if (!await hasIndex(connection, table, name)) throw new Error(`Index ${name} on ${table} is missing`);
-        }
-      },
-    },
-    {
-      // 0.20.0: a task or event can come from an email. The link is a plain
-      // id (no foreign key: a calendar-only restore must not depend on mail),
-      // with a snapshot of the email's header so the task keeps its context
-      // after the email is gone.
-      id: 16,
-      name: 'event-source-email',
-      up: async (connection: PoolConnection) => {
-        if (!await hasColumn(connection, 'calendar_events', 'source_email_id')) {
-          await connection.execute('ALTER TABLE calendar_events ADD COLUMN source_email_id char(36) DEFAULT NULL');
-        }
-        if (!await hasColumn(connection, 'calendar_events', 'source_email_json')) {
-          await connection.execute('ALTER TABLE calendar_events ADD COLUMN source_email_json longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(source_email_json))');
-        }
-        if (!await hasIndex(connection, 'calendar_events', 'idx_events_source_email')) {
-          await connection.execute('ALTER TABLE calendar_events ADD KEY idx_events_source_email (user_id, source_email_id)');
-        }
-      },
-      verify: async (connection: PoolConnection) => {
-        await verifyDatabaseInventory(connection, { throughMigration: 16 });
-        if (!await hasIndex(connection, 'calendar_events', 'idx_events_source_email')) throw new Error('Index idx_events_source_email on calendar_events is missing');
-      },
-    },
-    {
-      // 0.22.1: the Android app receives notifications over its own
-      // connection to this server. A device is a push subscription whose
-      // transport says how it is reached (notification-transports.ts).
-      id: 17,
-      name: 'android-notification-devices',
-      up: addPushTransport,
-      verify: async (connection: PoolConnection) => {
-        await verifyDatabaseInventory(connection, { throughMigration: 17 });
-      },
-    },
-  ], BASELINE);
+  await runMigrations(getDb()!, MIGRATIONS, BASELINE);
 }
 
 // CalDAV accounts of a mail account: linked; marked and not linked again yet
@@ -408,6 +408,8 @@ export {
   initDatabase,
   useUtcSessions,
   ensureSchema,
+  MIGRATIONS,
+  LATEST_MIGRATION_ID,
   createNotificationTables,
   addPushTransport,
   createMailPerformanceIndexes,
