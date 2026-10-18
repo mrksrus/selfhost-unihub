@@ -44,6 +44,13 @@ const DEFAULT_TIMEOUT_MS = 300_000;
 // Deadline codes of fetchRawBounded and the per-command guard: data arrived,
 // but the whole message did not within the deadline.
 const BODY_DEADLINE_CODES = new Set(['MAIL_BODY_TIMEOUT', 'MAIL_IMAP_TIMEOUT']);
+// A server-side SQL error carries a SQLSTATE (mysql2); a lost connection, a
+// local or a filesystem error does not. Deadlocks and lock waits are transient.
+function isDatabaseRefusal(error: unknown) {
+  const { code, sqlState } = (error ?? {}) as NodeJS.ErrnoException & { sqlState?: string };
+  if (typeof sqlState !== 'string' || !sqlState) return false;
+  return !(require('./repository') as typeof import('./repository')).isDeadlock(error) && code !== 'ER_LOCK_WAIT_TIMEOUT';
+}
 const uint32 = (value: unknown) => {
   if (typeof value !== 'number' && typeof value !== 'string' && typeof value !== 'bigint') return null;
   if (!/^[0-9]+$/.test(String(value))) return null;
@@ -234,22 +241,38 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
   }
   const address = parsed.from?.value?.[0];
   const { persistImportedMessage } = require('../mail-import') as typeof import('../mail-import');
-  const result = await persistImportedMessage({ db, account, accountId: account.id, folderName: folder.folderName,
-    uid: row.uid, uidValidity: row.uidvalidity, existingEmail: { id: row.email_id, raw_storage_path: row.raw_storage_path },
-    messageId: parsed.messageId || null, fullEmail: raw, parsed, fromAddress: address?.address || 'unknown',
-    fromName: address?.name || null, toAddresses: parsedAddresses(parsed.to), ccAddresses: parsedAddresses(parsed.cc),
-    folder: folder.dbFolderName, isRead: !!row.is_read,
-    archiveRaw: data => publishRaw({ root: (require('../mail') as typeof import('../mail')).MAIL_RAW_STORAGE_ROOT, ...data, raw: data.rawEmail as Buffer }),
-    enqueueDeletion: (require('../mail') as typeof import('../mail')).recordMailServerMessageForDeletion,
-    validateOccurrence: async (cx, emailId) => {
-      if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id,
-        workerId: job.lease_owner, generation: job.worker_generation }, cx);
-      const [[occ]] = await cx.execute<(RowDataPacket & { email_id: string })[]>(`SELECT o.email_id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id=o.mailbox_id
-        WHERE o.id=? AND o.user_id=? AND o.mail_account_id=? AND o.mailbox_id=? AND o.uidvalidity=? AND o.uid=?
-          AND o.presence='present' AND m.uidvalidity=o.uidvalidity AND m.state='active' FOR UPDATE`,
-      [row.occurrence_id, account.user_id, account.id, mailboxId, row.uidvalidity, row.uid]);
-      if (!occ || occ.email_id !== emailId) throw new Error('Body occurrence changed before archive commit');
-    } });
+  let result;
+  try {
+    result = await persistImportedMessage({ db, account, accountId: account.id, folderName: folder.folderName,
+      uid: row.uid, uidValidity: row.uidvalidity, existingEmail: { id: row.email_id, raw_storage_path: row.raw_storage_path },
+      messageId: parsed.messageId || null, fullEmail: raw, parsed, fromAddress: address?.address || 'unknown',
+      fromName: address?.name || null, toAddresses: parsedAddresses(parsed.to), ccAddresses: parsedAddresses(parsed.cc),
+      folder: folder.dbFolderName, isRead: !!row.is_read,
+      archiveRaw: data => publishRaw({ root: (require('../mail') as typeof import('../mail')).MAIL_RAW_STORAGE_ROOT, ...data, raw: data.rawEmail as Buffer }),
+      enqueueDeletion: (require('../mail') as typeof import('../mail')).recordMailServerMessageForDeletion,
+      validateOccurrence: async (cx, emailId) => {
+        if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id,
+          workerId: job.lease_owner, generation: job.worker_generation }, cx);
+        const [[occ]] = await cx.execute<(RowDataPacket & { email_id: string })[]>(`SELECT o.email_id FROM mail_remote_occurrences o JOIN mail_remote_mailboxes m ON m.id=o.mailbox_id
+          WHERE o.id=? AND o.user_id=? AND o.mail_account_id=? AND o.mailbox_id=? AND o.uidvalidity=? AND o.uid=?
+            AND o.presence='present' AND m.uidvalidity=o.uidvalidity AND m.state='active' FOR UPDATE`,
+        [row.occurrence_id, account.user_id, account.id, mailboxId, row.uidvalidity, row.uid]);
+        if (!occ || occ.email_id !== emailId) throw new Error('Body occurrence changed before archive commit');
+      } });
+  } catch (error) {
+    // A row the database refuses (ER_DATA_TOO_LONG, a constraint) would be
+    // picked, downloaded and refused again by every job, newest first, and
+    // block the mailbox behind it. Set it aside like a parse failure; the
+    // provider keeps the message and the rolled-back import released no held
+    // notification. A deadlock keeps the job's retry; a transport, storage,
+    // fence or cancellation failure is not the message's fault and ends the
+    // job as before, so a full disk or a lost connection defers nothing.
+    if (signal?.aborted || !isDatabaseRefusal(error)) throw error;
+    // Operator log only, the code and never the SQL message: ER_DUP_ENTRY would quote the value.
+    console.error(`[MAIL BODY] message ${row.email_id} could not be stored and was set aside:`, (error as NodeJS.ErrnoException).code || 'Error');
+    await markDeferred(row.email_id);
+    return { processed: 0, deferred: true, reason: 'persist_failure', more: true };
+  }
   return { processed: 1, emailId: result.emailId, more: true };
 }
 

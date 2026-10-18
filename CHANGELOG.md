@@ -10,6 +10,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **One refused message no longer stalls its mailbox.** A message whose rows
+  the database refused (for example a sender name, Message-ID or attachment
+  name or type longer than its column) was downloaded and refused again by
+  every body job and kept every older queued message in that mailbox from
+  loading. Overlong header values are now cut to their column lengths (the
+  stored raw message keeps the originals), and a message the database still
+  refuses is set aside like an unparsable one so the rest of the mailbox loads.
 - **Theme flash and remote images in the deployed image.** The container's
   Content Security Policy refused the page's inline theme script, so a Light or
   System-light user, and anyone with a chosen look, saw the dark default first

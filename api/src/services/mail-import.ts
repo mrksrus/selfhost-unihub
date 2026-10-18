@@ -39,6 +39,29 @@ interface ImportedMessage {
   validateOccurrence?: ((connection: PoolConnection, emailId: string) => Promise<unknown>) | null;
 }
 
+// Column lengths of the header-derived values (docker/mariadb/schema.sql). In
+// MariaDB's strict mode an overlong value is refused, and a refused message
+// would be downloaded and refused again by every body job of its mailbox. The
+// raw .eml keeps the originals, so cutting is safe. Storage names are bounded
+// separately in stageAttachments.
+const COLUMN_LENGTHS = Object.freeze({ messageId: 500, fromAddress: 255, fromName: 255, filename: 255, contentType: 100, contentId: 255 });
+// varchar(n) counts characters; slice code points so a surrogate pair is not split.
+const bound = <T extends string | null | undefined>(value: T, max: number): T | string =>
+  value == null ? value : Array.from(value).slice(0, max).join('');
+function normalizeParsedHeaders({ messageId, fromAddress, fromName, attachments }:
+  { messageId: string | null; fromAddress: string; fromName: string | null; attachments: readonly ComposerAttachment[] }) {
+  return {
+    messageId: bound(messageId, COLUMN_LENGTHS.messageId),
+    fromAddress: bound(fromAddress, COLUMN_LENGTHS.fromAddress),
+    fromName: bound(fromName, COLUMN_LENGTHS.fromName),
+    attachments: attachments.map(attachment => ({ ...attachment,
+      filename: bound(attachment.filename, COLUMN_LENGTHS.filename),
+      contentType: bound(attachment.contentType, COLUMN_LENGTHS.contentType),
+      contentId: bound(attachment.contentId, COLUMN_LENGTHS.contentId),
+      cid: bound(attachment.cid, COLUMN_LENGTHS.contentId) })),
+  };
+}
+
 // Persist one complete provider message. Existing local read/star/folder choices
 // survive repair; files are staged before a short metadata transaction. The
 // notification for a new message is held by the engine's discovery scan and
@@ -47,6 +70,8 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
   existingEmail, messageId, fullEmail, parsed, fromAddress, fromName, toAddresses, ccAddresses = [],
   folder, isRead, archiveRaw, enqueueDeletion, validateOccurrence = null }: ImportedMessage) {
   const emailId = existingEmail?.id || crypto.randomUUID();
+  const { messageId: storedMessageId, fromAddress: storedFromAddress, fromName: storedFromName, attachments } =
+    normalizeParsedHeaders({ messageId, fromAddress, fromName, attachments: parsed.attachments || [] });
   const storedCc = ccAddresses.length ? JSON.stringify(ccAddresses) : null;
   let staged: StagedAttachment[] = [];
   let archive: RawArchive | undefined;
@@ -62,7 +87,7 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
       && archive.rawVerified === true && archive.rawBytes === rawBuffer.length
       && archive.rawSha256 === crypto.createHash('sha256').update(rawBuffer).digest('hex');
     if (Buffer.isBuffer(fullEmail) && !exact) throw new Error('Raw archive integrity could not be verified');
-    staged = await stageAttachments({ userId: account.user_id, emailId, attachments: parsed.attachments || [] });
+    staged = await stageAttachments({ userId: account.user_id, emailId, attachments });
     const bodyHtml = rewriteInlineAttachments(parsed.html, staged);
     connection = await db.getConnection();
     await connection.beginTransaction();
@@ -76,8 +101,8 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
           raw_storage_path = ?, raw_sha256 = ?, raw_bytes = ?, raw_format = ?, raw_verified = ?,
           content_state = 'complete', import_complete = TRUE
          WHERE id = ? AND user_id = ? AND mail_account_id = ?`,
-        [messageId, parsed.subject || '(No subject)', parsed.date || new Date(),
-          fromAddress, fromName, JSON.stringify(toAddresses), storedCc, parsed.text || null, bodyHtml,
+        [storedMessageId, parsed.subject || '(No subject)', parsed.date || new Date(),
+          storedFromAddress, storedFromName, JSON.stringify(toAddresses), storedCc, parsed.text || null, bodyHtml,
           staged.length > 0 ? 1 : 0, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256,
           archive.rawBytes ?? null, exact ? 'exact_octets' : 'legacy_normalized', exact ? 1 : 0,
           emailId, account.user_id, accountId]
@@ -92,7 +117,7 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
            has_attachments, received_at, folder, source_folder, imap_uid, imap_uidvalidity, raw_storage_path, raw_sha256,
            raw_bytes, raw_format, raw_verified, content_state, is_read, import_complete)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'complete', ?, TRUE)`,
-        [emailId, account.user_id, accountId, messageId, parsed.subject || '(No subject)', fromAddress, fromName,
+        [emailId, account.user_id, accountId, storedMessageId, parsed.subject || '(No subject)', storedFromAddress, storedFromName,
           JSON.stringify(toAddresses), storedCc, parsed.text || null, bodyHtml, staged.length > 0 ? 1 : 0, parsed.date || new Date(),
           folder, folderName, uid, uidValidity, archive.rawStoragePath, archive.rawSha256, archive.rawBytes ?? null,
           exact ? 'exact_octets' : 'legacy_normalized', exact ? 1 : 0, isRead ? 1 : 0]
@@ -130,4 +155,4 @@ async function persistImportedMessage({ db, account, accountId, folderName, uid,
   return { emailId, isNew: !existingEmail };
 }
 
-export { persistImportedMessage };
+export { COLUMN_LENGTHS, normalizeParsedHeaders, persistImportedMessage };

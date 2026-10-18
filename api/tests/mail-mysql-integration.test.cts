@@ -71,11 +71,21 @@ test('MySQL mail defaults, folder checkpoints and atomic import rollback', { ski
   const [[imported]] = await connection.execute<RowDataPacket[]>('SELECT cc_addresses FROM emails WHERE imap_uid = 6');
   assert.deepEqual(typeof imported.cc_addresses === 'string' ? JSON.parse(imported.cc_addresses) : imported.cc_addresses, ['copy@example.test']);
   assert.deepEqual([...await loadExistingImportedUidSet({ connection, accountId, folderName: 'INBOX', uidValidity: 123, uids: [6] })], [6]);
+  // Header values longer than their columns commit cut to the column length
+  // instead of being refused under STRICT_TRANS_TABLES.
+  await persistImportedMessage({ ...args, uid: 7, messageId: `<${'m'.repeat(600)}@example.test>`, fromAddress: `${'a'.repeat(300)}@example.test`,
+    fromName: 'n'.repeat(300), parsed: { ...args.parsed, attachments: [
+      { filename: `${'f'.repeat(300)}.txt`, contentType: `text/${'x'.repeat(150)}`, contentId: 'c'.repeat(300), content: Buffer.from('long') }] } } as FixtureValue);
+  const [[bounded]] = await connection.execute<RowDataPacket[]>(`SELECT CHAR_LENGTH(e.message_id) AS message_id, CHAR_LENGTH(e.from_address) AS from_address,
+      CHAR_LENGTH(e.from_name) AS from_name, CHAR_LENGTH(a.filename) AS filename, CHAR_LENGTH(a.content_type) AS content_type, CHAR_LENGTH(a.content_id) AS content_id
+    FROM emails e JOIN email_attachments a ON a.email_id = e.id WHERE e.imap_uid = 7`);
+  assert.deepEqual(bounded, { message_id: 500, from_address: 255, from_name: 255, filename: 255, content_type: 100, content_id: 255 });
   const beforeFiles = await fs.readdir(root, { recursive: true });
-  await assert.rejects(persistImportedMessage({ ...args, uid: 7, messageId: '<invalid@example.test>', parsed: {
-    ...args.parsed, attachments: [{ filename: 'b.txt', contentType: 'x'.repeat(101), content: Buffer.from('invalid') }],
+  // The subject column (TEXT) is not bounded: an overlong one is still refused and rolls the import back.
+  await assert.rejects(persistImportedMessage({ ...args, uid: 8, messageId: '<invalid@example.test>', parsed: {
+    ...args.parsed, subject: 's'.repeat(70000), attachments: [{ filename: 'b.txt', contentType: 'text/plain', content: Buffer.from('invalid') }],
   } } as FixtureValue), error => (error as FixtureValue).code === 'ER_DATA_TOO_LONG');
   const [[counts]] = await connection.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM emails');
-  assert.equal(counts.total, 1);
+  assert.equal(counts.total, 2);
   assert.deepEqual((await fs.readdir(root, { recursive: true })).sort(), beforeFiles.sort());
 });
