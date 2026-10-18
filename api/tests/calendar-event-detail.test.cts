@@ -69,7 +69,7 @@ function eventUpdateHarness(t: import('node:test').TestContext, execute: (sql: s
 
 test('removing the calendar of a synced event is refused; a local event can still be detached', async (t) => {
   const state = { linked: true, calendar_id: 'cal' as string | null };
-  const writes: FixtureValue[] = [];
+  const writes: { sql: string; params: FixtureValue }[] = [];
   const put = eventUpdateHarness(t, async (sql, params) => {
     if (/^(INSERT|UPDATE|DELETE)/.test(sql.trim())) {
       writes.push({ sql, params });
@@ -88,7 +88,7 @@ test('removing the calendar of a synced event is refused; a local event can stil
   const refused = await put('/api/calendar/events/target', { calendar_id: null });
   assert.equal(refused.status, 400);
   assert.match(refused.body.error, /synced with a calendar server/);
-  assert.deepEqual(writes, [], 'a refused detach writes nothing');
+  assert.equal(writes.length, 0, 'a refused detach writes nothing');
   assert.equal((await put('/api/calendar/events/target', { calendar_id: '' })).status, 400);
 
   state.linked = false;
@@ -99,4 +99,16 @@ test('removing the calendar of a synced event is refused; a local event can stil
   assert.equal(writes.length, 1);
   assert.match(writes[0].sql, /UPDATE calendar_events SET calendar_id = NULL WHERE id = \? AND user_id = \?/);
   assert.deepEqual(writes[0].params, ['target', 'owner']);
+});
+
+test('a database failure while updating an event answers the route fallback, never the driver message', async (t) => {
+  const put = eventUpdateHarness(t, async (sql) => {
+    if (/^(INSERT|UPDATE|DELETE)/.test(sql.trim())) throw Object.assign(new Error("Data too long for column 'title' at row 1"), { code: 'ER_DATA_TOO_LONG', errno: 1406 });
+    if (sql.includes('FROM calendar_events')) return [[{ id: 'target', user_id: 'owner', calendar_id: null, title: 'Local', start_time: '2026-10-20 10:00:00', end_time: '2026-10-20 11:00:00' }]];
+    return [[]];
+  });
+  t.mock.method(console, 'error', () => {});
+  const result = await put('/api/calendar/events/target', { title: 'Renamed' });
+  assert.equal(result.status, 500);
+  assert.equal(result.body.error, 'Failed to update event');
 });

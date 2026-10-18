@@ -10,6 +10,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **Internal error text no longer shown to the browser.** When a calendar,
+  recording or notification request failed inside the server (for example a
+  database or file system error), the browser showed the raw internal message.
+  Such failures now show the request's own message ("Failed to update event")
+  and keep the details in the server log. A refusal the server meant for you
+  (not found, conflict, invalid input) keeps its text and now also keeps its
+  status instead of being reported as a server error.
 - **One refused message no longer stalls its mailbox.** A message whose rows
   the database refused (for example a sender name, Message-ID or attachment
   name or type longer than its column) was downloaded and refused again by
@@ -98,6 +105,12 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Internal
 
+- One error contract at the request boundary (`api/src/http/errors.ts`): `ApiError` with
+  `badRequest`/`unauthorized`/`forbidden`/`notFound`/`conflict`, and `clientError(error, fallback)`
+  used by the request handler, the mail `routeError` helper and the calendar, recording and
+  notification routes; the notification services throw typed 400/401 errors instead of plain
+  errors matched by a regular expression. Responses are `{ error, code?, status }`
+  (docs/ARCHITECTURE.md, Request Handling).
 - The mail attachment and raw-message roots, and the checks that a stored
   path lies inside them, are defined once in `api/src/services/mail-storage.ts`
   and used by mail, the admin storage overview, account deletion and backup.

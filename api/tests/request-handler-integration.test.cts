@@ -166,3 +166,32 @@ test('a parameter with malformed percent-encoding is rejected with 400 before an
   assert.equal(decoded.status, 200);
   assert.equal(decoded.body.id, 'e 1');
 });
+
+test('a thrown error with a 4xx status reaches the client with its status and code; any other thrown error stays generic', async (t) => {
+  const { notFound, conflict } = require('../dist/src/http/errors') as typeof import('../src/http/errors');
+  let thrown: unknown;
+  const run = handlerHarness(t, ({ route: async () => { throw thrown; } }));
+  const logged: unknown[][] = [];
+  t.mock.method(console, 'error', (...args: unknown[]) => { logged.push(args); });
+
+  thrown = notFound('RECORDING_NOT_FOUND', 'Recording not found');
+  let result = await run('PUT', '/api/recordings/r1', '{"title":"x"}');
+  assert.deepEqual([result.status, result.body], [404, { error: 'Recording not found', code: 'RECORDING_NOT_FOUND', status: 404 }]);
+
+  thrown = conflict('MAIL_ACCOUNT_BUSY', 'Another operation is running');
+  result = await run('PUT', '/api/recordings/r1', '{"title":"x"}');
+  assert.deepEqual([result.status, result.body.code], [409, 'MAIL_ACCOUNT_BUSY']);
+
+  // A plain error carrying a status (the existing throw sites) is honoured the same way.
+  thrown = Object.assign(new Error('Draft not found'), { status: 404 });
+  result = await run('PUT', '/api/recordings/r1', '{"title":"x"}');
+  assert.deepEqual([result.status, result.body.error], [404, 'Draft not found']);
+  assert.equal(logged.length, 0, 'client errors are not logged as failures');
+
+  thrown = Object.assign(new Error("Data too long for column 'notes' at row 1"), { code: 'ER_DATA_TOO_LONG', errno: 1406 });
+  result = await run('PUT', '/api/recordings/r1', '{"title":"x"}');
+  assert.deepEqual([result.status, result.body], [500, { error: 'Internal Server Error', status: 500 }]);
+  assert.equal(logged.length, 1);
+  assert.deepEqual(logged[0].slice(0, 3), ['Request error:', 'PUT', 'PUT /api/recordings/:id']);
+  assert.ok(!JSON.stringify(logged[0]).includes('"title"'), 'the log line carries the route, not the request body');
+});

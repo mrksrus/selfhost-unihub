@@ -1,8 +1,9 @@
 import type { PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
-import type { SqlExecutor, ApiError } from '../types';
+import type { SqlExecutor } from '../types';
 
 import crypto from 'crypto';
 import { db } from '../state';
+import { badRequest, unauthorized } from '../http/errors';
 import { isModuleBackgroundEnabled } from './module-settings';
 import { getActiveRestoreSectionsByUser } from './restore-locks';
 import { blockedBackgroundModulesByUser } from './access-policy';
@@ -59,26 +60,26 @@ const jsonValue = (value: unknown): NotificationPayload => (typeof value === 'st
 async function subscribe(userId: string, sessionToken: string | null, input: unknown) {
   const subscription = normalizeSubscription(input as Parameters<typeof normalizeSubscription>[0]);
   const [sessions] = await db.execute<RowDataPacket[]>('SELECT id FROM sessions WHERE token = ? AND user_id = ? AND expires_at > UTC_TIMESTAMP()', [sessionToken, userId]);
-  if (!sessions.length) { const error: ApiError = new Error('Session expired'); error.status = 401; throw error; }
+  if (!sessions.length) throw unauthorized('SESSION_EXPIRED', 'Session expired');
   const [count] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM push_subscriptions WHERE user_id = ?', [userId]);
   const endpointHash = hash(subscription.endpoint);
   const [existing] = await db.execute<RowDataPacket[]>('SELECT id, user_id FROM push_subscriptions WHERE endpoint_hash = ?', [endpointHash]);
-  if (!existing.length && Number(count[0]?.total) >= 20) throw new Error('Maximum notification devices reached');
+  if (!existing.length && Number(count[0]?.total) >= 20) throw badRequest('NOTIFICATION_DEVICE_LIMIT', 'Maximum notification devices reached');
   // Never transfer another account's endpoint without explicit unsubscribe by its authenticated owner.
-  if (existing.length && existing[0].user_id !== userId) throw new Error('This device subscription belongs to another account. Disable and enable notifications again.');
+  if (existing.length && existing[0].user_id !== userId) throw badRequest('NOTIFICATION_DEVICE_FOREIGN', 'This device subscription belongs to another account. Disable and enable notifications again.');
   await db.execute(`INSERT IGNORE INTO push_subscriptions (id, user_id, session_id, endpoint, endpoint_hash, p256dh, auth)
     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   [existing[0]?.id || crypto.randomUUID(), userId, sessions[0].id, subscription.endpoint, endpointHash, subscription.keys.p256dh, subscription.keys.auth]);
   await db.execute('UPDATE push_subscriptions SET session_id = ?, p256dh = ?, auth = ?, updated_at = UTC_TIMESTAMP() WHERE user_id = ? AND endpoint_hash = ?',
     [sessions[0].id, subscription.keys.p256dh, subscription.keys.auth, userId, endpointHash]);
   const [owners] = await db.execute<RowDataPacket[]>('SELECT user_id FROM push_subscriptions WHERE endpoint_hash = ?', [endpointHash]);
-  if (owners[0]?.user_id !== userId) throw new Error('This device subscription belongs to another account. Disable and enable notifications again.');
+  if (owners[0]?.user_id !== userId) throw badRequest('NOTIFICATION_DEVICE_FOREIGN', 'This device subscription belongs to another account. Disable and enable notifications again.');
   // Marking this scan dirty includes old calendar entries for a newly subscribed device.
   if (!existing.length) await db.execute('UPDATE notification_config SET reminder_revision = reminder_revision + 1 WHERE id = 1');
   return { subscribed: true };
 }
 async function unsubscribe(userId: string, endpoint: unknown) {
-  if (typeof endpoint !== 'string' || endpoint.length > 4096) throw new Error('Invalid subscription endpoint');
+  if (typeof endpoint !== 'string' || endpoint.length > 4096) throw badRequest('NOTIFICATION_ENDPOINT_INVALID', 'Invalid subscription endpoint');
   await db.execute('DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint_hash = ?', [userId, hash(endpoint)]);
   return { subscribed: false };
 }
@@ -210,7 +211,7 @@ async function enqueueCalendarNotification({ userId, eventId }: { userId: string
     url: `${event.is_todo_only ? '/todo' : '/calendar'}?event=${encodeURIComponent(event.id)}`, data: { eventId: event.id }, expiresAt: new Date(Date.now() + 86400000) }, connection);
 }
 async function enqueueTestNotification(userId: string, endpoint: unknown) {
-  if (!await subscriptionStatus(userId, endpoint)) throw new Error('Enable notifications on this device first');
+  if (!await subscriptionStatus(userId, endpoint)) throw badRequest('NOTIFICATION_DEVICE_UNSUBSCRIBED', 'Enable notifications on this device first');
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();

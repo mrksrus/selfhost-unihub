@@ -14,6 +14,7 @@ import {
   isRequestBodyTooLarge,
 } from './http/request';
 import { parseSingleByteRange, fileValidators, rangeAllowed } from './http/range';
+import { clientError } from './http/errors';
 import { compileRouteMatcher } from './http/route-matcher';
 import { getModuleForPath } from './services/module-catalog';
 import { isModuleEnabled } from './services/module-settings';
@@ -130,12 +131,12 @@ async function handleRequest(req: RouteRequest, res: ServerResponse) {
   try {
     await dispatchRequest(req, res);
   } catch (error) {
-    const status = (error as ApiError)?.status === 400 ? 400 : 500;
-    if (status === 500) console.error('Request dispatch error:', (error as ApiError).message);
+    const response = clientError(error, 'Internal Server Error');
+    if (response.status === 500) console.error('Request dispatch error:', req.method, (error as ApiError).message);
     if (res.destroyed || res.writableEnded) return;
     if (res.headersSent) { res.destroy(); return; }
-    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify({ error: status === 400 ? 'Invalid request address' : 'Internal Server Error' }));
+    res.writeHead(response.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(JSON.stringify(response));
   }
 }
 
@@ -352,10 +353,13 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
     res.writeHead(status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
   } catch (error) {
-    console.error('Request error:', error);
-    const status = (error as ApiError)?.status === 400 ? 400 : 500;
-    if (!res.headersSent) res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: status === 400 ? (error as ApiError).message : 'Internal Server Error' }));
+    // Error contract (docs/ARCHITECTURE.md, Request Handling): a thrown error
+    // with a 4xx status answers with it; anything else is a generic 500 whose
+    // text stays in the log, with the route but never the request body.
+    const response = clientError(error, 'Internal Server Error');
+    if (response.status === 500) console.error('Request error:', req.method, routeKey, error);
+    if (!res.headersSent) res.writeHead(response.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(response));
   } finally {
     if (temporaryUploadPath) {
       await fs.promises.rm(temporaryUploadPath, { force: true }).catch(() => {});

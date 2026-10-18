@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ApiError } from '../types';
 
 import { getAuthTokenFromRequest } from '../auth';
+import { clientError } from '../http/errors';
 import * as notifications from '../services/notifications';
 import * as androidPush from '../services/android-push';
 
@@ -12,10 +13,9 @@ const authenticated = (handler: NotificationHandler) => async (req: IncomingMess
   if (!userId) return { error: 'Unauthorized', status: 401 };
   try { return await handler(req, userId, body || {}, res); }
   catch (error) {
-    if ((error as ApiError).status === 401) return { error: (error as ApiError).message, status: 401 };
-    if ((error as ApiError).status === 400 || /Invalid|Unsupported|Maximum|belongs to another|Enable notifications/.test((error as ApiError).message)) return { error: (error as ApiError).message, status: 400 };
-    console.error('[NOTIFICATIONS] Request failed:', (error as ApiError).code || (error as ApiError).name);
-    return { error: 'Could not update notifications. Please try again.', status: 500 };
+    const response = clientError(error, 'Could not update notifications. Please try again.');
+    if (response.status === 500) console.error('[NOTIFICATIONS] Request failed:', (error as ApiError).code || (error as ApiError).name);
+    return response;
   }
 };
 export = {
