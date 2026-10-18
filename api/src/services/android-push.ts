@@ -120,7 +120,7 @@ async function attachStream(req: IncomingMessage, res: ServerResponse, userId: s
     await db.execute("UPDATE notification_deliveries SET available_at = UTC_TIMESTAMP() WHERE subscription_id = ? AND status = 'pending'", [device]);
     await (require('./notifications') as typeof import('./notifications')).processNotificationJobs();
   })().catch(error => console.error('[NOTIFICATIONS] Android delivery deferred:', (error as ApiError).code || (error as ApiError).name));
-  return { __handled: true };
+  return undefined;
 }
 
 /**

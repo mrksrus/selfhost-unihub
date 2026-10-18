@@ -27,9 +27,6 @@ const PUBLIC_ROUTE_KEYS: ReadonlySet<string> = new Set([
 
 // Request body limits in bytes for the routes that carry files, archives,
 // imports, bulk selections, or text columns sized well beyond the default.
-const BODY_LIMIT_BY_PATH_PREFIX: readonly [string, number][] = [
-  ['/api/notifications/', 16384],
-];
 const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
   'GET /api/modules': 16384,
   'PUT /api/modules': 16384,
@@ -70,15 +67,13 @@ const BODY_LIMIT_BY_ROUTE: Readonly<Record<string, number>> = {
   'POST /api/mail/emails/bulk-move': 50000,
   'POST /api/mail/sync': 50000,
 };
-function bodyLimitFor(routeKey: string, pathname: string) {
-  for (const [prefix, limit] of BODY_LIMIT_BY_PATH_PREFIX) if (pathname.startsWith(prefix)) return limit;
+function bodyLimitFor(routeKey: string) {
   return BODY_LIMIT_BY_ROUTE[routeKey] ?? DEFAULT_BODY_LIMIT;
 }
 
 // Routes that write and own their response (returned { __handled: true }).
 const STREAMING_ROUTE_KEYS: ReadonlySet<string> = new Set([
   'GET /api/events',
-  'GET /api/notifications/android/stream',
 ]);
 
 // Restore sections by write path. /api/modules writes module preferences, a
@@ -96,7 +91,7 @@ function legacyRouteSpec(key: string, handler: LegacyHandler): RouteSpec {
   const policy = {
     module: getModuleForPath(pathname),
     restoreSection: restoreSectionFor(method, pathname),
-    body: { limit: bodyLimitFor(key, pathname), kind: (key === 'POST /api/backup/import' ? 'backup-upload' : 'json') as 'backup-upload' | 'json' },
+    body: { limit: bodyLimitFor(key), kind: (key === 'POST /api/backup/import' ? 'backup-upload' : 'json') as 'backup-upload' | 'json' },
     ...(STREAMING_ROUTE_KEYS.has(key) ? { response: 'stream' as const } : {}),
   };
   // A legacy handler accepts a nullable user id, so it serves either auth level.
@@ -108,5 +103,5 @@ function legacyRoutes(table: LegacyRouteTable): RouteTable {
   return defineRoutes(Object.fromEntries(Object.entries(table).map(([key, handler]) => [key, legacyRouteSpec(key, handler)])));
 }
 
-export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, BODY_LIMIT_BY_PATH_PREFIX, STREAMING_ROUTE_KEYS, bodyLimitFor };
+export { legacyRoutes, legacyRouteSpec, PUBLIC_ROUTE_KEYS, BODY_LIMIT_BY_ROUTE, STREAMING_ROUTE_KEYS, bodyLimitFor };
 export type { LegacyHandler, LegacyRouteTable };
