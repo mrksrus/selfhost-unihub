@@ -43,8 +43,11 @@ Older snapshots retain their original offline behavior until refreshed.
 
 ## Implementation contract
 
-The built-in module catalog defines page/API membership and worker capabilities;
-the request boundary derives the `/api/<module>` gate from its ids. Workers ask
+The built-in module catalog defines page/API membership and worker capabilities.
+Each route declares the module that gates it on its spec (`module` in
+`api/src/http/route.ts`; routes under `/api/<module>/` must name that module,
+and the destructive settings actions name theirs), and the boundary refuses a
+disabled module's routes before anything else. Workers ask
 `canRunModule(userId, moduleId, { background })` in `services/access-policy.ts`
 (module enabled, background allowed when unattended, no restore of its section)
 or take the per-user map from `blockedBackgroundModulesByUser` when they scan
@@ -54,7 +57,14 @@ The recovery catalog declares durable data and remains independent of visibility
 Settings are archived under `user_settings.module_preferences`; the order is a
 separate `user_settings.module_order` JSON list of module IDs. `PUT /api/modules`
 accepts `modules` (a preference patch), `order` (every current module ID exactly
-once), or both. When reading a saved order, unknown or removed IDs and duplicates
+once), or both. After saving, the route calls
+`services/module-lifecycle.ts::applyModuleChange(userId, previous, next)`, which
+updates the open event streams' module filter and runs the hook of every module
+whose `enabled` or `background` choice changed; the mail hook
+(`mail-sync-control.ts::onMailModuleChanged`) stops the accounts when the
+module is disabled, and otherwise resumes user pauses, drops queued background
+read work and closes or starts the IDLE sessions according to the background
+choice. A new module with background work adds its hook there. When reading a saved order, unknown or removed IDs and duplicates
 are dropped and missing modules are appended in catalog order, so an order saved
 by an older or newer version never hides a module.
 

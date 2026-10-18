@@ -36,7 +36,7 @@ For feature details, follow the corresponding file in docs/ rather than treating
 
 ## Contracts to keep intact
 
-- The API is a vanilla Node HTTP server, not Express. request-handler.ts normalizes parameterized paths, then handles CORS, authentication, CSRF, module access, body limits, and dispatch. Add new routes through that boundary.
+- The API is a vanilla Node HTTP server, not Express. request-handler.ts normalizes parameterized paths, then handles CORS, authentication, CSRF, module access, body limits, and dispatch. Every route is declared with a spec (api/src/http/route.ts: auth level, module, restore section, body limit, CSRF rule, streaming) and the boundary reads only that spec; add new routes with `defineRoutes()` in their feature file.
 - User data is owner-scoped. Keep user_id checks on queries, file access, background jobs, exports, and restores. Admin-only operations need an explicit role check.
 - Browser session state is account-specific. SessionQueryProvider clears private query data on account change. Offline snapshots in IndexedDB are read-only, owner/epoch-scoped copies; a cached profile is not an authenticated server session. API responses are not service-worker cached.
 - Authentication requires a valid JWT signature, a live database session and an active user. Session expiry slides from last use; the database session is authoritative. Preserve revocation, production cookie flags, CSRF checks, atomic 2FA challenge consumption and trusted-proxy login limits. See docs/AUTH_ADMIN_SETTINGS.md.

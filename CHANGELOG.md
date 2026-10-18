@@ -151,6 +151,29 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - Contact input normalization (`normalizeContactInput`, `boundContactFields`) and the
   duplicate merge (`mergeDuplicateGroups`) live in `api/src/services/contacts.ts`; the routes
   read `:id` from `req.params`; `escapeLike` is shared from `api/src/services/sql.ts`.
+- Every API route is declared with a spec (`api/src/http/route.ts`: `auth`, `module`,
+  `restoreSection`, `body`, `csrf`, `response`) and `request-handler.ts` reads only the spec;
+  `mergeRouteTables` refuses duplicate keys and `assertRouteTable` checks the table at startup
+  (admin level under `/api/admin/`, module under `/api/<module>/`, a restore section on every
+  write, a write route for every section, every key resolving). The notifications, admin, auth,
+  settings, modules, system, offline, search and events files declare native specs; the admin
+  role check and the per-route 401 lines moved to the boundary, admin routes read `:id` from
+  `req.params`, and the two live streams are declared `response: 'stream'` (the `__handled`
+  return is gone). Calendar, mail, contacts, recordings and backup still derive their policy
+  through `api/src/routes/legacy-spec.ts`, pinned by `route-spec.test.cts`.
+  `routes-policy.test.cts` walks the production table through the real boundary (401 without
+  a session, 403 for a non-admin on every admin route, the public, CSRF and restore
+  declarations).
+- The restore write policy left the backup catalog: `WRITE_PATHS` is replaced by
+  `restoreSection` on the specs (a prefix table in `legacy-spec.ts` for the derived files);
+  `api/src/routes/restore-sections.ts::getRestoreSectionForWrite(method, path)` looks it up
+  over the route table. CSRF exemptions are the matched spec's `csrf` (`'none'` for sign-in and
+  sign-up, `'background-header'` for the service-worker routes) instead of URL matching in
+  `auth.ts`; the cookie/header token compare is constant-time.
+- `services/module-lifecycle.ts::applyModuleChange(userId, previous, next)` owns what a
+  changed module choice means for running work; the mail hook
+  (`mail-sync-control.ts::onMailModuleChanged`) replaces the six lazy requires in
+  `routes/modules.ts`, and the toggle tests moved to the service.
 
 ## 0.22.4
 

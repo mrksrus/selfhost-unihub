@@ -57,7 +57,8 @@ and an icon, and that the page loads no inline script.
 | `api/server.ts` | Starts the API |
 | `api/src/service-supervisor.ts` | Supervises API/nginx and essential-service failure |
 | `api/src/app.ts` | Initializes DB, starts HTTP server, schedules background jobs |
-| `api/src/request-handler.ts` | CORS, auth, CSRF, body parsing, route dispatch |
+| `api/src/request-handler.ts` | CORS, auth, CSRF, module/restore gates, body parsing, route dispatch; every gate reads the matched route's spec |
+| `api/src/http/route.ts` | `RouteSpec`, `defineRoutes`, `mergeRouteTables` and the route-table invariants (see Request Handling) |
 | `api/src/routes/` | Route handlers grouped by feature; `routes/mail.ts` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync`. Every mail route answers a caught error through `routeError` in `mail-route-helpers.ts`: a status-bearing error passes its message, anything else gets the route's fallback with 500. Account fields are parsed by `services/mail-account-input.ts` before anything is tested or stored |
 | `api/src/services/` | Database, mail, calendar, backup creation/encryption/restore workers, recordings, 2FA logic |
 | `api/src/services/mail.ts` | Facade re-exporting `mail-host-policy` (host checks, IMAP config), `mail-folders` (folders, sender rules), `mail-durable-jobs` (job executor, scheduler), `mail-sync-control` (sync admission, cancel/stop), `mail-server-delete` and `mail-send` |
@@ -70,6 +71,7 @@ and an icon, and that the page loads no inline script.
 | `api/src/services/caldav.ts`, `calendar-sync.ts`, `calendar-ical.ts`, `calendar-accounts.ts` | CalDAV discovery and requests, the sync engine and writeback, iCalendar parsing and recurrence expansion, calendars of mail accounts |
 | `api/src/services/notifications.ts`, `notification-transports.ts`, `android-push.ts` | Durable notification events, delivery state and reminder worker; delivery transports keyed by the subscription's transport (`webpush`, which owns the VAPID identity, and `android`, the app's own connection) |
 | `api/src/services/access-policy.ts` | `canRunModule` (module enabled, background allowed, no restore of its section) and the per-user blocked-module map used by workers |
+| `api/src/services/module-lifecycle.ts` | `applyModuleChange`: what a saved module choice means for running work (the mail hook stops, cancels or resumes accounts and the IDLE session) and for open event streams |
 | `api/src/security/encryption.ts` | AES-256-GCM helpers |
 | `api/src/security/client-ip.ts`, `login-limits.ts` | Explicit proxy trust and separate IP/account attempt budgets |
 | `api/src/security/outbound-network.ts`, `caldav-transport.ts` | Checked-address connections and same-origin CalDAV credentials |
@@ -145,36 +147,62 @@ terminal jobs and password-waiting jobs do not keep a polling loop running.
 
 ## Request Handling
 
-Every request passes through `handleRequest`:
+Every route is declared with a spec (`api/src/http/route.ts`): the key
+(`METHOD /path`, with `:param` segments) and the policy the boundary applies.
+`request-handler.ts` reads only the spec; no other table decides a request's
+treatment.
+
+| Field | Meaning |
+| --- | --- |
+| `auth` | `'public'`, `'user'` or `'admin'`. The handler of a `'user'` or `'admin'` route receives a signed-in user id; the boundary has already answered 401 (no session) or 403 (`'admin'` without the admin role). |
+| `module` | A module id gates the route behind that module's switch (403 `MODULE_DISABLED`); `null` is a core route. Required under `/api/<module>/`; a route elsewhere that touches a module (`POST /api/settings/clear-mail-accounts`) declares it too. |
+| `restoreSection` | The recovery section whose running restore makes the route read-only (409 `RESTORE_IN_PROGRESS`); `'*'` refuses during any restore. Required on `POST`/`PUT`/`DELETE` outside `/api/backup/` and `/api/auth/`; an explicit `null` states that the route writes nothing a restore replaces. Every section with tables must have at least one write route. |
+| `body` | `limit` in bytes (default 16 KiB, `DEFAULT_BODY_LIMIT`) and `kind`: `'json'` (default), `'backup-upload'` (spooled to a file when the content type is an archive) or `'none'` (not read). |
+| `csrf` | `'token'` (default: cookie/header pair), `'background-header'` (the service worker's `X-Background-Sync: 1` also passes) or `'none'` (sign-in and sign-up, which issue the token). The bearer-without-cookie rule is global. |
+| `response` | `'json'` (default) or `'stream'`: the handler writes and owns the response and returns nothing; a refusal before that is an ordinary JSON error. `GET /api/events` and `GET /api/notifications/android/stream`. |
+
+`routes/index.ts` merges the files with `mergeRouteTables()` (a duplicate key
+throws) and runs `assertRouteTable()` at startup and in `routes-policy.test.cts`:
+every `/api/admin/` key is `'admin'`, every module key names its module, every
+mutating key states its restore section, every section has a write route, and
+every key resolves through the matcher. `routes-policy.test.cts` also walks the
+production table through the real boundary: 401 for every non-public route
+without a session, 403 for every admin route as a plain user.
+
+Route files not yet declared with specs (`calendar`, `mail-*`, `contacts`,
+`recordings`, `backup`) export plain handlers that `routes/legacy-spec.ts`
+wraps with the derived policy (public keys, body limits, `getModuleForPath`,
+a restore-section prefix table, the background-header keys);
+`route-spec.test.cts` pins that derivation. To add a route, declare it in its
+feature file with `defineRoutes()`; the invariants refuse a missing module,
+restore section or admin level at startup.
+
+Every request passes through `handleRequest`, in this order:
 
 1. Resolve the method and path to a route key and `req.params` through the
-   compiled route matcher.
-2. Apply CORS using `ALLOWED_ORIGINS`; if unset, only same-host origins are accepted.
-3. Handle `OPTIONS` preflight.
-4. Verify auth from the session cookie or bearer token; the accepted credential
-   is recorded on the request.
-5. Validate CSRF for authenticated state-changing requests (bearer-only
-   requests are exempt, see [Auth](AUTH_ADMIN_SETTINGS.md#csrf-protection)).
-6. Enforce body size limits from a table keyed by route key (`BODY_LIMIT_BY_ROUTE`
-   in `request-handler.ts`, plus a path-prefix list for `/api/notifications/`);
-   the default is 16 KiB (16384 bytes). A route whose validators or columns
-   accept more (files, imports, compose, contacts, recordings, calendar
-   events, credentials) declares its own limit; `route-matcher.test.cts`
-   checks that every declared key exists in the route table.
-7. Refuse disabled modules (`getModuleForPath` derives the `/api/<module>`
-   prefixes from `MODULE_CATALOG`) and writes to sections under restore.
-8. Decode chunked JSON with a UTF-8 decoder, rejecting malformed JSON with HTTP 400, or stream backup uploads directly to persisted storage.
-9. Dispatch to the route handler.
-10. Serialize JSON, raw downloads, stream downloads, redirects, or HTML responses.
+   compiled route matcher (404 when nothing matches).
+2. Apply CORS using `ALLOWED_ORIGINS`; if unset, only same-host origins are
+   accepted. Handle `OPTIONS` preflight.
+3. Verify auth from the session cookie or bearer token; the accepted credential
+   is recorded on the request. 401 unless the spec is `'public'`.
+4. Validate CSRF for authenticated state-changing requests according to
+   `spec.csrf` (see [Auth](AUTH_ADMIN_SETTINGS.md#csrf-protection)).
+5. Refuse a non-admin on an `'admin'` route (403).
+6. Module gate (`spec.module`, 403), then the backup kill switch
+   (`DISABLED_BACKUP_ROUTES`, 503), then the restore gate (`spec.restoreSection`,
+   409). A disabled module therefore answers before a body is looked at.
+7. Enforce `spec.body.limit` (413) and parse: chunked JSON with a UTF-8
+   decoder (malformed JSON is 400), a backup upload spooled to a file, or no
+   body for `kind: 'none'`.
+8. Dispatch to the handler.
+9. Serialize JSON, raw downloads, stream downloads, redirects or HTML; a
+   `'stream'` route that has written its head is left alone.
 
 JSON API responses use `Cache-Control: no-store`. Authenticated mail attachments,
 recordings and backup archives reuse the file-stream response contract, including
 byte ranges. Client disconnects destroy the corresponding stream.
 Request URL parsing is inside the outer error boundary. Malformed Host headers
 or request targets return HTTP 400 without terminating the API.
-
-A route that streams its own response (only `GET /api/events`) returns
-`{ __handled: true }` after writing; the handler then leaves the response alone.
 
 ### Error contract
 
