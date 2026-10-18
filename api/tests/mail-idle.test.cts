@@ -270,9 +270,8 @@ test('background sync off in module settings stops IDLE sessions', async t => {
   t.mock.method(runtime, 'resumeAccount', async () => ({ resumed: 0 }));
   const stopped: FixtureValue[] = [];
   t.mock.method(idleSupervisor, 'stopAccount', (key: FixtureValue) => { stopped.push(key); return true; });
-  const routes = require('../dist/src/routes/modules') as typeof import('../src/routes/modules');
-  const result = await routes['PUT /api/modules'].handler({} as FixtureValue, 'owner', { modules: { mail: { background: false } } });
-  assert.ok(result.modules);
+  const { applyModuleChange } = require('../dist/src/services/module-lifecycle') as typeof import('../src/services/module-lifecycle');
+  await applyModuleChange('owner', [{ id: 'mail', enabled: true, background: true }], [{ id: 'mail', enabled: true, background: false }]);
   assert.deepEqual(stopped, ['acct-1']);
 });
 
