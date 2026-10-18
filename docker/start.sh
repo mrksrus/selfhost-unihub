@@ -9,13 +9,23 @@ esac
 # The API runs as UNIHUB_API_UID/GID (set in the image). Volumes created before
 # 0.11.1 are owned by root, so hand /app/uploads over once. The scan only
 # changes ownership when some entry differs; -h changes a symlink itself and
-# never the file it points to.
+# never the file it points to. A marker written after a completed pass skips
+# the whole-tree scan on later starts (the API creates its files as its own
+# user); remove the marker to scan again after adding files as root.
 if [ "$(id -u)" = 0 ] && [ -n "${UNIHUB_API_UID:-}" ] && [ -d /app/uploads ]; then
   owner="${UNIHUB_API_UID}:${UNIHUB_API_GID:-$UNIHUB_API_UID}"
-  if [ -n "$(find /app/uploads \( ! -user "$UNIHUB_API_UID" -o ! -group "${UNIHUB_API_GID:-$UNIHUB_API_UID}" \) -print 2>/dev/null | head -n 1)" ]; then
-    echo "Giving /app/uploads to the API user ($owner)..."
-    if ! chown -R -h "$owner" /app/uploads; then
-      echo "WARNING: could not change ownership of /app/uploads. The API runs as uid $UNIHUB_API_UID and needs write access; see docs/UPGRADING.md (0.11.1)." >&2
+  marker="/app/uploads/.owned-by-${UNIHUB_API_UID}"
+  if [ ! -e "$marker" ]; then
+    handed_over=1
+    if [ -n "$(find /app/uploads \( ! -user "$UNIHUB_API_UID" -o ! -group "${UNIHUB_API_GID:-$UNIHUB_API_UID}" \) -print 2>/dev/null | head -n 1)" ]; then
+      echo "Giving /app/uploads to the API user ($owner)..."
+      if ! chown -R -h "$owner" /app/uploads; then
+        handed_over=0
+        echo "WARNING: could not change ownership of /app/uploads. The API runs as uid $UNIHUB_API_UID and needs write access; see docs/UPGRADING.md (0.11.1)." >&2
+      fi
+    fi
+    if [ "$handed_over" = 1 ]; then
+      { : > "$marker" && chown -h "$owner" "$marker"; } 2>/dev/null || true
     fi
   fi
 fi

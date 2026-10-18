@@ -370,7 +370,10 @@ No database migration is required.
   are owned by root. On start, the container checks `/app/uploads` and, if any
   entry is not owned by 10001, runs `chown -R` once (symlinks themselves are
   changed, never their targets). This can take a moment on a large volume.
-  Later starts only scan and skip the change.
+  Since 0.23.0 a completed handover leaves the marker file
+  `/app/uploads/.owned-by-10001`, and later starts skip the scan while it
+  exists (the API creates its files as its own user). Delete the marker to
+  scan again, for example after copying files into the volume as root.
 - **Keep the capability list.** The supplied Compose file already grants
   `CHOWN`, `DAC_OVERRIDE`, `SETGID` and `SETUID`; the start script needs `CHOWN`
   and `DAC_OVERRIDE` for the handover and the supervisor needs `SETGID`/`SETUID`

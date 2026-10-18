@@ -16,12 +16,19 @@ const path = require('node:path') as typeof import('node:path');
 const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 
 const SCHEMA_FILE = path.resolve(__dirname, '../../docker/mariadb/schema.sql');
-const HEADER = `-- UniHub MariaDB schema after all startup upgrades. GENERATED, do not edit.
+// The migration id in the header makes a file that was not regenerated after a
+// new migration differ from the database, so the drift test catches it even
+// when the migration did not change a table.
+function header() {
+  const { LATEST_MIGRATION_ID } = require('../dist/src/services/database') as typeof import('../src/services/database');
+  return `-- UniHub MariaDB schema after all startup upgrades. GENERATED, do not edit.
 -- Regenerate with: scripts/local-db.sh schema-dump (api/scripts/dump-schema.cts).
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
+-- Through migration ${LATEST_MIGRATION_ID}.
 `;
+}
 
 // Deterministic across runs: sorted tables, no AUTO_INCREMENT counters.
 function normalizeCreateTable(sql: string) {
@@ -39,7 +46,7 @@ async function dumpSchema(connection: Pick<Connection, 'query'>) {
     const [[row]] = await connection.query<RowDataPacket[]>(`SHOW CREATE TABLE \`${name}\``);
     tables.push(normalizeCreateTable(row['Create Table']));
   }
-  return `${HEADER}\n${tables.join('\n\n')}\n`;
+  return `${header()}\n${tables.join('\n\n')}\n`;
 }
 
 // Everything the API runs against the schema at startup (api/src/app.ts).

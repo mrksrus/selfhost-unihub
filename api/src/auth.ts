@@ -11,6 +11,7 @@ import {
   TRUST_PROXY_HEADERS,
   TRUSTED_PROXY_CIDRS,
   AUTH_COOKIE_NAME,
+  COOKIE_SECURE,
 } from './config';
 import { createClientIpResolver } from './security/client-ip';
 import { consumeAuthAttempt } from './security/login-limits';
@@ -156,29 +157,24 @@ function getAuthTokenFromRequest(req: Pick<IncomingMessage, 'headers'>) {
 function setCsrfCookie(res: ServerResponse, token: string) {
   const expires = new Date();
   expires.setDate(expires.getDate() + SESSION_DAYS); // Match session expiry
-  // Note: Secure flag requires HTTPS. For HTTP (development), remove Secure flag
-  const isSecure = process.env.NODE_ENV === 'production';
-  const secureFlag = isSecure ? 'Secure;' : '';
+  const secureFlag = COOKIE_SECURE ? 'Secure;' : '';
   appendSetCookie(res, `csrf-token=${token}; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=${expires.toUTCString()}`);
 }
 
 function clearCsrfCookie(res: ServerResponse) {
-  const isSecure = process.env.NODE_ENV === 'production';
-  const secureFlag = isSecure ? 'Secure;' : '';
+  const secureFlag = COOKIE_SECURE ? 'Secure;' : '';
   appendSetCookie(res, `csrf-token=; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
 }
 
 function setAuthCookie(res: ServerResponse, token: string) {
   const expires = new Date();
   expires.setDate(expires.getDate() + SESSION_DAYS); // Match session expiry
-  const isSecure = process.env.NODE_ENV === 'production';
-  const secureFlag = isSecure ? 'Secure;' : '';
+  const secureFlag = COOKIE_SECURE ? 'Secure;' : '';
   appendSetCookie(res, `${AUTH_COOKIE_NAME}=${token}; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=${expires.toUTCString()}`);
 }
 
 function clearAuthCookie(res: ServerResponse) {
-  const isSecure = process.env.NODE_ENV === 'production';
-  const secureFlag = isSecure ? 'Secure;' : '';
+  const secureFlag = COOKIE_SECURE ? 'Secure;' : '';
   appendSetCookie(res, `${AUTH_COOKIE_NAME}=; HttpOnly; ${secureFlag} SameSite=Strict; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT`);
 }
 

@@ -29,7 +29,10 @@ is itself a container, `localhost` refers to that container, not your NAS.
 Production login cookies require HTTPS. Opening `http://NAS-IP:3000` may show the
 page but is not a supported normal login setup. Some browsers treat localhost
 specially; do not rely on that exception for deployment. Do not switch production
-into development mode to work around HTTPS.
+into development mode to work around HTTPS. The image runs in production mode
+by itself (`NODE_ENV=production` is set in the image), so the login cookies are
+`Secure` however the container is started; a `NODE_ENV` entry in your Compose
+file or installer form is no longer needed and stays harmless.
 
 ## 2. Get the deployment files
 

@@ -137,4 +137,4 @@ function assertArchiveRelationships(rows: readonly RelationshipRow[]) {
   }
 }
 
-export { NON_ARCHIVE_POLICIES, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };
+export { NON_ARCHIVE_POLICIES, declaredFields, assertInventoryCoverage, assertArchiveRelationships, verifyDatabaseInventory };

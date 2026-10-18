@@ -73,7 +73,7 @@ Do not make users reconstruct these internal connections:
 | --- | --- |
 | App image | Pin the reviewed release tag, initially `0.10.8`; never `latest` for a catalog release. |
 | MariaDB image | MariaDB 10.11 or later; the reference uses `mariadb:11.8`. The catalog's MariaDB template helper is suitable. UniHub refuses MySQL servers at startup. |
-| App mode / proxy | `NODE_ENV=production`, `TRUST_PROXY_HEADERS=true`; keep bundled loopback trust. |
+| App mode / proxy | `TRUST_PROXY_HEADERS=true`; keep bundled loopback trust. Production mode (`NODE_ENV=production`) is set in the image since 0.23.0 and need not be supplied. |
 | Database connection | `MYSQL_HOST` is the installer-defined DB service name; `MYSQL_PORT=3306`, database/user `unihub` in both containers; never expose database port publicly. |
 | Startup | `MYSQL_STARTUP_MAX_WAIT_SECONDS=300`, check interval `5`; preserve `UNIHUB_API_START_DELAY_SECONDS=2` and health start period `360s`. The current supervisor starts the API first and delays Nginx by this setting. |
 | Health | App check through `/health` on internal port 80. Database readiness must allow slow initialization and verify actual app DB access. |

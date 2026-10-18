@@ -143,3 +143,25 @@ test('public signup mode endpoint defaults to disabled', async (t) => {
   const routes = require('../dist/src/routes/auth') as typeof import('../src/routes/auth');
   assert.deepEqual(await routes['GET /api/auth/signup-mode'](), { signup_mode: 'disabled' });
 });
+
+// COOKIE_SECURE is read once at load, so each mode runs in its own process.
+test('session and CSRF cookies carry Secure exactly when NODE_ENV is production', () => {
+  const script = `
+    const auth = require(${JSON.stringify(require.resolve('../dist/src/auth'))});
+    const headers = new Map();
+    const res = { setHeader: (key, value) => headers.set(key, value), getHeader: key => headers.get(key) };
+    auth.setAuthCookie(res, 'session-token'); auth.setCsrfCookie(res, 'csrf-token');
+    auth.clearAuthCookie(res); auth.clearCsrfCookie(res);
+    process.stdout.write(JSON.stringify(headers.get('Set-Cookie')));`;
+  const cookiesWith = (nodeEnv: string | null) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, JWT_SECRET: 'auth-route-cookie-test-secret' };
+    if (nodeEnv === null) delete env.NODE_ENV; else env.NODE_ENV = nodeEnv;
+    const result = spawnSync(process.execPath, ['-e', script], { env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout) as string[];
+  };
+  const production = cookiesWith('production');
+  assert.equal(production.length, 4);
+  for (const cookie of production) assert.match(cookie, /; Secure; SameSite=Strict; Path=\//, cookie);
+  for (const cookie of cookiesWith(null)) assert.doesNotMatch(cookie, /Secure/, cookie);
+});

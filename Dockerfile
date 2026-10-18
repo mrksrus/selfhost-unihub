@@ -96,6 +96,11 @@ COPY --from=frontend-builder /build/dist /usr/share/nginx/html
 # The Android app and its metadata (empty when built with UNIHUB_ANDROID=0)
 COPY --from=android-app /out/ /app/downloads/
 
+# Production mode belongs to the image, not to whoever starts it: the API marks
+# its cookies Secure only under NODE_ENV=production (api/src/config.ts), and an
+# installer that cannot pass environment variables must not lose that.
+ENV NODE_ENV=production
+
 # The Node API runs as this unprivileged user (fixed IDs so bind mounts can be
 # prepared on the host). The supervisor and Nginx master stay root; Nginx drops
 # its workers to the nginx user as before.

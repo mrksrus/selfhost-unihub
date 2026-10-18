@@ -189,8 +189,13 @@ every schema change is a new numbered migration in `ensureSchema`
 (`api/src/services/database.ts`). `docker/mariadb/schema.sql` is
 generated, never edited: `schema-dump` runs the startup schema code
 (`api/scripts/dump-schema.cts`) on an empty database and writes a sorted
-`SHOW CREATE TABLE` dump. Commit the regenerated file with the migration;
-`database-schema-file-mysql-integration.test.cts` fails in CI when it is stale.
+`SHOW CREATE TABLE` dump whose header records the migration it was generated
+through. Commit the regenerated file with the migration;
+`database-schema-file-mysql-integration.test.cts` fails in CI when it is stale,
+and the database-free `database-migration-list.test.cts` (part of
+`npm --prefix api test`) fails first when ids are not consecutive, a name
+repeats, an inventory `introducedIn` points past the latest migration or the
+schema file's header is behind.
 `migrate-check` warns and prints a diff when an upgraded old database ends up
 different from a fresh install.
 
