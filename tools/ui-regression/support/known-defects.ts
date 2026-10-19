@@ -8,11 +8,6 @@ import { expect } from '@playwright/test';
 export interface KnownDefect { id: string; summary: string; matches: RegExp; expectedViolations?: string[] }
 
 export const KNOWN_DEFECTS = {
-  todoRowClipped: {
-    id: 'UIR-1',
-    summary: 'ToDo: a task row with a long source-email subject is wider than its list. On Phone its description, email block, subtasks and menu are cut off at the right edge and the page scrolls sideways (P-07). On Wide the same row runs past the row divider without being cut off; that is visible in the todo-wide baselines.',
-    matches: /^ToDo (row "Confirm the documentation review dates"|page body scrolls sideways)/,
-  },
   recordingTagTargets: {
     id: 'UIR-2',
     summary: 'Recordings: tag buttons stay 20 px tall on touch screens with no 44 px tap area (P-11).',

@@ -55,20 +55,20 @@
       "bytes": 102509
     },
     "todo-phone-dark.png": {
-      "sha256": "e23e434100003d860b002c2ea00184f61e24469ab8eb3fa47fc792684ce98cd3",
-      "bytes": 65728
+      "sha256": "da157bcce7c5d7f4558c4823a1ecbff2cb1efaad5929af93df1e9bd692f24509",
+      "bytes": 65704
     },
     "todo-phone-light.png": {
-      "sha256": "f45e76617e1d6d924b38d89cadc1610eee67e851f79a9321914dfabfbb2980dc",
-      "bytes": 71064
+      "sha256": "c1de650d252190a369e51a1eff2a0968e0544f1af0c006d3e2f695a803f34a7e",
+      "bytes": 70643
     },
     "todo-wide-dark.png": {
-      "sha256": "3e6e4e96a59238bb0a39ff8162d5f0f4a48c9c36f36de38ffc08936aa05e618a",
-      "bytes": 101187
+      "sha256": "ae4cf4b570cdeaf208ec5930dfe0c6ab64a847a2bc1cb835c23106d4c04d42d5",
+      "bytes": 100371
     },
     "todo-wide-light.png": {
-      "sha256": "263f4d2158d43832d7eac67d2cfefbf33050527c8ab7eb443ce69d78dc5730b2",
-      "bytes": 104940
+      "sha256": "4a9a1c6edfe4301b8a4583cb75c6da1c36e72a5ec395d9e028ea2d17a25adad2",
+      "bytes": 103897
     }
   },
   "approvals": [
@@ -120,6 +120,48 @@
         "todo-wide-light.png"
       ],
       "changed": [],
+      "removed": []
+    },
+    {
+      "date": "2026-10-19T10:35:06.067Z",
+      "reason": "UIR-1 fixed (2026-10-19, maintainer-approved audit work): the ToDo row's expanded block gets min-w-0, so a long source-email subject truncates inside the row instead of widening it; chip rows contain their hidden count labels. Required for pinch zoom (B19).",
+      "source": {
+        "commit": "1ff7a9733919600df60bfbee41c839f2df5f88f9",
+        "branch": "feat/0.23.0-hardening",
+        "dirty": true,
+        "digest": "8515a0a19be801533a837e097278dd978ff10e7f5c513806038f8ab5b2c669de"
+      },
+      "render": {
+        "playwright": "1.64.0",
+        "browser": "chromium-headless-shell 156.0.8078.4",
+        "browserArgs": [
+          "--font-render-hinting=none",
+          "--disable-lcd-text",
+          "--force-color-profile=srgb",
+          "--disable-gpu",
+          "--disable-skia-runtime-opts",
+          "--num-raster-threads=1",
+          "--disable-partial-raster"
+        ],
+        "platform": "linux-x64",
+        "fonts": {
+          "@fontsource/inter": "5.3.0",
+          "@fontsource/jetbrains-mono": "5.3.0"
+        },
+        "fontconfig": "isolated",
+        "deviceScaleFactor": 1
+      },
+      "host": {
+        "node": "v26.7.0",
+        "ci": false
+      },
+      "added": [],
+      "changed": [
+        "todo-phone-dark.png",
+        "todo-phone-light.png",
+        "todo-wide-dark.png",
+        "todo-wide-light.png"
+      ],
       "removed": []
     }
   ]

@@ -574,11 +574,11 @@ Open proposals do not override accepted decisions.
 
 ### Open verification gaps
 
-- **UIR-1 and UIR-2, confirmed browser defects.** Long source-email subjects can
-  make ToDo rows overflow, and recording tag buttons lack the accepted touch
-  height. [UI baselines](docs/UI_BASELINES.md#known-defects-in-the-pinned-code)
-  records exact regression exceptions. Fixing them should remove those
-  exceptions and update affected pictures, not weaken P-07 or P-11.
+- **UIR-2, confirmed browser defect.** Recording tag buttons lack the accepted
+  touch height. [UI baselines](docs/UI_BASELINES.md#known-defects-in-the-pinned-code)
+  records the exact regression exception. Fixing it should remove the exception
+  and update affected pictures, not weaken P-11. (UIR-1, ToDo rows overflowing
+  with long source-email subjects, was fixed on 2026-10-19.)
 
 - **C-02 Reader over the peek on phones.** After 0.20.0 the mail reader
   covering the peek panel on phones was noted as a follow-up. Whether 0.21.x

@@ -61,17 +61,19 @@ font hosts.
 
 ### Known defects in the pinned code
 
-The checks found two violations in the pinned code. Each is listed in
-`tools/ui-regression/support/known-defects.ts` and matched exactly. A check
+The checks found two violations in the pinned code. A remaining one is listed
+in `tools/ui-regression/support/known-defects.ts` and matched exactly. A check
 fails on any new violation, and it also fails once a listed violation stops
 occurring. The fix then removes the entry and re-approves the affected pictures
-in the same change. Fixing either defect is separate work.
+in the same change.
 
-- **UIR-1 (P-07).** A ToDo task row with a long source-email subject is wider
-  than its list. On Phone the description, email block, subtasks and menu are
-  cut off at the right edge, and the page body scrolls sideways. On Wide the
-  same row runs past the row divider, which is visible in `todo-wide-*`, but
-  nothing is cut off.
+- **UIR-1 (P-07), fixed 2026-10-19.** A ToDo task row with a long source-email
+  subject was wider than its list: cut off on Phone, past the row divider on
+  Wide. The `todo-*` pictures were re-approved with the fix. The phone checks
+  also require that `/todo`, `/mail`, `/recordings` and the appearance settings
+  keep the layout at the screen width: the page allows pinch zoom, and any
+  wider content (also a hidden label) lets a phone's browser widen the layout
+  so the bottom bar leaves the screen.
 - **UIR-2 (P-11).** Recording tag buttons stay 20 px tall on touch screens, with
   no 44 px tap area. Only the three exact existing size violations are waived:
   garden 60 × 20 px, ideas 50 × 20 px, sketch 57 × 20 px, each once. Overlap,

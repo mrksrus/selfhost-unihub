@@ -77,8 +77,8 @@ export default defineConfig(() => ({
     classicWorkers(),
     VitePWA({
       registerType: "prompt",
-      // theme-init.js runs before the stylesheet; an offline cold start needs it precached.
-      includeAssets: ["favicon.ico", "favicon.svg", "robots.txt", "theme-init.js"],
+      // theme-init.js and viewport-init.js run before the stylesheet; an offline cold start needs them precached.
+      includeAssets: ["favicon.ico", "favicon.svg", "robots.txt", "theme-init.js", "viewport-init.js"],
       workbox: {
         // Workbox's default patterns plus mjs: the pdf.js worker is a hashed
         // .mjs asset, and an open tab must still find it after a deploy.
