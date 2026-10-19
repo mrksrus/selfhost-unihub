@@ -164,6 +164,14 @@ class MainActivity : Activity() {
                             error.setText(R.string.connect_unreachable)
                             error.visibility = View.VISIBLE
                         }
+                        ServerAddress.Check.Incompatible -> {
+                            error.setText(R.string.connect_incompatible)
+                            error.visibility = View.VISIBLE
+                        }
+                        ServerAddress.Check.AppTooOld -> {
+                            error.text = getString(R.string.connect_app_too_old, "$candidate/downloads/unihub.apk")
+                            error.visibility = View.VISIBLE
+                        }
                     }
                 }
             }.start()
@@ -716,12 +724,16 @@ class MainActivity : Activity() {
     // person signed out: the phone's copy follows.
     override fun onResume() {
         super.onResume()
+        webView?.onResume()
         ContactsSync.renewSession(this)
         if (origin != null) NotificationService.startIfWanted(this)
     }
 
     override fun onPause() {
         super.onPause()
+        // Pauses the page's media, animations and plugins while it is not shown;
+        // notifications come from NotificationService, not from the page.
+        webView?.onPause()
         CookieManager.getInstance().flush()
         ContactsSync.requestSync(this)
     }

@@ -32,7 +32,9 @@ its own connection to the server (no push service; see
   website could send such a link, the app asks before switching to a server it
   is not already using. Without the app installed, the link downloads it.
 - Opening the app directly shows a connect screen. The address is checked
-  against `GET /api/version` (below) before it is saved. HTTPS is required;
+  against `GET /api/version` (below) before it is saved: from 0.23.0 a server
+  speaking another handshake `protocol`, or whose `minApp` is newer than the
+  app, is refused with a hint to install the app from that server. HTTPS is required;
   plain HTTP only works for `localhost`, `127.0.0.1` and the emulator's
   `10.0.2.2` (development).
 - You sign in inside the app as in the browser, including two-factor codes.
@@ -148,7 +150,10 @@ the app supports.
 
 Android keeps the contacts on the phone and other apps with the contacts
 permission can read them (WhatsApp, for example, uploads phone numbers to find
-its users). That is the reason it is a question, not a default.
+its users). That is the reason it is a question, not a default. Those apps can
+also change or delete the UniHub contacts on the phone, and such changes sync
+to UniHub like your own; the deletion guard above still holds many deletions
+for an answer.
 
 ## Notifications
 

@@ -114,7 +114,7 @@ is kept. Releases before 0.21.0 have no app.
   deep links into pages, downloads and uploads, the file picker, the microphone,
   theme colours and logout. Older apps against the candidate server and the
   candidate app against older servers are therefore not shown.
-- Native handling of `protocol`, `minApp` and `features`: no app reads them,
-  so an unsupported server is not reported in the app.
+- Native handling of `protocol` and `minApp` before 0.23.0: older apps do not
+  read them, so an unsupported server is not reported in those apps.
 - Physical phones and manufacturer changes, and WebView versions other than the
   emulator images'. Record real-phone checks separately from CI.

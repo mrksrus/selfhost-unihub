@@ -61,8 +61,10 @@
   "handshake": {
     "shellReads": [
       "app",
-      "features"
+      "features",
+      "minApp",
+      "protocol"
     ],
-    "note": "Every shell in the window checks that GET /api/version answers app = \"unihub\". Shells from 0.22.1 also read features: they offer notifications only while they list android-notifications. None reads protocol or minApp yet, so the server must keep app = \"unihub\", keep listing android-notifications while a shell in the window uses it, and must not raise minApp above the oldest shell here."
+    "note": "Every shell in the window checks that GET /api/version answers app = \"unihub\". Shells from 0.22.1 also read features: they offer notifications only while they list android-notifications. Shells from 0.23.0 also read protocol and minApp when connecting: they refuse a protocol other than 1 and a minApp above their own version. So the server must keep app = \"unihub\", keep listing android-notifications while a shell in the window uses it, keep protocol 1 while a 0.23.0 shell is in the window, and must not raise minApp above the oldest shell here."
   }
 }
