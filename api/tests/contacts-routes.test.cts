@@ -18,8 +18,6 @@ test('contact create and update refuse fields that do not fit their columns befo
   assert.equal(notText.status, 400); assert.match(notText.error!, /First name must be text/);
   const longPhone = await routes['PUT /api/contacts/:id'](req('/api/contacts/c1', { id: 'c1' }), 'u1', { first_name: 'Ann', phone: '1'.repeat(51) });
   assert.equal(longPhone.status, 400); assert.match(longPhone.error!, /Phone is too long/);
-  const badEmail = await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: 'Ann', email2: 'not an address' });
-  assert.equal(badEmail.status, 400); assert.match(badEmail.error!, /Second email is not an email address/);
   const blank = await routes['PUT /api/contacts/:id'](req('/api/contacts/c1', { id: 'c1' }), 'u1', { first_name: '   ' });
   assert.equal(blank.status, 400); assert.equal(blank.error, 'First name is required');
   assert.equal(calls.length, 0, 'refused input never reaches the database');
@@ -31,6 +29,13 @@ test('contact create and update refuse fields that do not fit their columns befo
   assert.equal(calls[0].params[2], 'B'.repeat(100));
   assert.equal(calls[0].params[3], null);
   assert.equal(calls[0].params[4], 'ann@example.com');
+
+  // An email field holds what was typed (a phone or vCard may carry "ann at work"): stored, not refused.
+  const loose = await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: 'Ann', email2: 'ann at work' });
+  assert.equal(loose.status, undefined);
+  const inserts = calls.filter(call => /INSERT INTO contacts/.test(call.sql));
+  assert.equal(inserts.length, 2);
+  assert.equal(inserts[1].params[5], 'ann at work');
 });
 
 test('updating a contact that belongs to another user answers 404 and changes nothing', async (t) => {

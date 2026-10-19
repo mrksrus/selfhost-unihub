@@ -10,8 +10,11 @@ version-specific upgrade guidance. Preserve existing data and keys when upgradin
 Two automatic database upgrades: step 18 replaces each stored session token
 with its hash (everyone stays signed in) and step 19 adds the activity log.
 Make a database backup first. After the upgrade, going back to 0.22.x signs
-everyone out, and mail or calendar passwords saved after the update use a
-format 0.22.x cannot read.
+everyone out, and secrets saved after the update use a format 0.22.x cannot
+read, among them mail and calendar passwords, calendar subscription addresses
+and the authenticator key of two-factor authentication turned on after the
+update (those users then sign in with a recovery code, or an admin resets
+their two-factor authentication). Restore the backup instead of going back.
 
 No configuration change is needed. Worth knowing:
 

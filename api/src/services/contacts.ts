@@ -28,9 +28,6 @@ const CONTACT_FIELD_LABELS: Record<ContactField, string> = {
   phone: 'Phone', phone2: 'Second phone', phone3: 'Third phone',
   company: 'Company', job_title: 'Job title', notes: 'Notes',
 };
-const EMAIL_FIELDS = new Set<ContactField>(['email', 'email2', 'email3']);
-// Loose on purpose: display addresses from many sources; only "something@something" is required.
-const LOOSE_EMAIL = /^\S+@\S+$/;
 
 function fitsContactColumn(field: ContactField, value: string) {
   return field === 'notes' ? Buffer.byteLength(value, 'utf8') <= CONTACT_FIELD_LIMITS.notes : Array.from(value).length <= CONTACT_FIELD_LIMITS[field];
@@ -59,6 +56,8 @@ function boundContactFields<T extends Contact>(contact: T): Omit<T, ContactField
 
 // Validates a create/update body at the boundary: every field is optional text,
 // trimmed, empty becomes null, and nothing longer than its column gets through.
+// Email fields are not checked for a format: phones, vCards and older entries
+// hold whatever was typed, and refusing it would stop that contact from syncing.
 function normalizeContactInput(body: unknown, { requireFirstName = true } = {}): { fields: NormalizedContact } | { error: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'Contact fields are required' };
   const input = body as Record<string, unknown>;
@@ -70,7 +69,6 @@ function normalizeContactInput(body: unknown, { requireFirstName = true } = {}):
     const trimmed = value.trim();
     if (!trimmed) { fields[field] = null; continue; }
     if (!fitsContactColumn(field, trimmed)) return { error: `${CONTACT_FIELD_LABELS[field]} is too long (at most ${CONTACT_FIELD_LIMITS[field]} ${field === 'notes' ? 'bytes' : 'characters'})` };
-    if (EMAIL_FIELDS.has(field) && !LOOSE_EMAIL.test(trimmed)) return { error: `${CONTACT_FIELD_LABELS[field]} is not an email address` };
     fields[field] = trimmed;
   }
   if (requireFirstName && !fields.first_name) return { error: 'First name is required' };
