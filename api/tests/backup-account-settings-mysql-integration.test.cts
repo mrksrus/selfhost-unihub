@@ -215,6 +215,6 @@ test('an account settings backup restores accounts as fresh sign-ins without con
   assert.deepEqual(await engineState(), [{ state: 'paused', paused_reason: 'Mail module disabled' }]);
   await waitFor(async () => started_syncs, (calls: FixtureValue) => calls.length === 4, 'Calendar sync start');
   assert.equal(started_syncs.some(call => call[0] === 'mail'), false, 'Disabled Mail is not woken');
-  await destination('routes/modules')['PUT /api/modules']({}, disabledUser, { modules: { mail: { enabled: true, background: false } } });
+  await destination('routes/modules')['PUT /api/modules'].handler({}, disabledUser, { modules: { mail: { enabled: true, background: false } } });
   assert.deepEqual(await engineState(), [{ state: 'queued', paused_reason: null }]);
 });
