@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/useAuth';
-import { api } from '@/lib/api';
+import { adminUsersQueryKey, deleteAdminUser, fetchAdminUsers, resetUserTwoFactor, setUserActive, setUserPassword, setUserRole, type AdminUser } from '@/lib/admin-api';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -24,15 +24,7 @@ import { Loader2, MoreHorizontal } from 'lucide-react';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
 
-interface UserRow {
-  id: string;
-  email: string;
-  full_name: string | null;
-  role: 'user' | 'admin';
-  is_active: boolean;
-  two_factor_enabled?: boolean;
-  created_at: string;
-}
+type UserRow = AdminUser;
 
 const AdminUsers = () => {
   const { user } = useAuth();
@@ -50,22 +42,15 @@ const AdminUsers = () => {
   useEffect(() => { openResetUserId.current = resetTwoFactorUser?.id ?? null; }, [resetTwoFactorUser]);
 
   const { data, isLoading, error, refetch, isFetching } = useQuery({
-    queryKey: ['admin', 'users'],
-    queryFn: async () => {
-      const response = await api.get<{ users: UserRow[] }>('/admin/users');
-      if (response.error) throw new Error(response.error);
-      return response.data!.users;
-    },
+    queryKey: adminUsersQueryKey,
+    queryFn: ({ signal }) => fetchAdminUsers(signal),
     enabled: user?.role === 'admin',
   });
   
   const deleteUser = useMutation({
-    mutationFn: async (userId: string) => {
-      const response = await api.delete(`/admin/users/${userId}`);
-      if (response.error) throw new Error(response.error);
-    },
+    mutationFn: deleteAdminUser,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+      queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
       toast({ title: 'User deleted' });
     },
     onError: (err: Error) => {
@@ -74,12 +59,9 @@ const AdminUsers = () => {
   });
 
   const updateUserRole = useMutation({
-    mutationFn: async ({ userId, role, currentPassword }: { userId: string; role: 'user' | 'admin'; currentPassword: string }) => {
-      const response = await api.put(`/admin/users/${userId}/role`, { role, current_password: currentPassword });
-      if (response.error) throw new Error(response.error);
-    },
+    mutationFn: ({ userId, role, currentPassword }: { userId: string; role: 'user' | 'admin'; currentPassword: string }) => setUserRole(userId, role, currentPassword),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+      queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
       toast({ title: variables.role === 'admin' ? 'User promoted to admin' : 'User changed to standard user' });
       setRoleChangeUser(current => (current?.id === variables.userId ? null : current));
       setAdminPassword('');
@@ -90,12 +72,9 @@ const AdminUsers = () => {
   });
   
   const toggleUserActive = useMutation({
-    mutationFn: async ({ userId, is_active }: { userId: string; is_active: boolean }) => {
-      const response = await api.put(`/admin/users/${userId}/activate`, { is_active });
-      if (response.error) throw new Error(response.error);
-    },
+    mutationFn: ({ userId, is_active }: { userId: string; is_active: boolean }) => setUserActive(userId, is_active),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+      queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
       toast({ title: variables.is_active ? 'User activated' : 'User deactivated' });
     },
     onError: (err: Error) => {
@@ -104,13 +83,10 @@ const AdminUsers = () => {
   });
   
   const resetTwoFactor = useMutation({
-    mutationFn: async ({ user, currentPassword }: { user: UserRow; currentPassword: string }) => {
-      const response = await api.post(`/admin/users/${user.id}/2fa/reset`, { current_password: currentPassword });
-      if (response.error) throw new Error(response.error);
-    },
+    mutationFn: ({ user, currentPassword }: { user: UserRow; currentPassword: string }) => resetUserTwoFactor(user.id, currentPassword),
     // Report on the submitted user; the dialog may have been reopened for someone else meanwhile.
     onSuccess: (_data, { user }) => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+      queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
       toast({ title: `Two-factor authentication reset for ${user.email}`, description: 'They were signed out and can sign in with their password.' });
       if (openResetUserId.current === user.id) {
         setResetTwoFactorUser(null);
@@ -133,18 +109,11 @@ const AdminUsers = () => {
     }
     setPasswordLoading(true);
     try {
-      const response = await api.put(`/admin/users/${passwordDialogUser.id}/password`, {
-        new_password: newPassword,
-        current_password: adminPassword,
-      });
-      if (response.error) {
-        toast({ title: 'Failed to change password', description: response.error, variant: 'destructive' });
-      } else {
-        toast({ title: `Password updated for ${passwordDialogUser.email}` });
-        setPasswordDialogUser(null);
-        setNewPassword('');
-        setAdminPassword('');
-      }
+      await setUserPassword(passwordDialogUser.id, newPassword, adminPassword);
+      toast({ title: `Password updated for ${passwordDialogUser.email}` });
+      setPasswordDialogUser(null);
+      setNewPassword('');
+      setAdminPassword('');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       toast({ title: 'Failed to change password', description: message, variant: 'destructive' });

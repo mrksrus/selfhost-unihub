@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
-import { api } from '@/lib/api';
+import { fetchPublicSignupMode } from '@/lib/auth-api';
+import type { SignupMode } from '@/lib/admin-api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -14,7 +15,6 @@ import { z } from 'zod';
 
 const emailSchema = z.string().email('Please enter a valid email address');
 const passwordSchema = z.string().min(12, 'Password must be at least 12 characters');
-type SignupMode = 'open' | 'approval' | 'disabled';
 
 const Auth = () => {
   const { user, signIn, signUp, verifyTwoFactorLogin, loading: authLoading } = useAuth();
@@ -38,10 +38,8 @@ const Auth = () => {
 
   useEffect(() => {
     let cancelled = false;
-    api.get<{ signup_mode?: SignupMode }>('/auth/signup-mode').then((response) => {
-      if (!cancelled && response.data?.signup_mode) {
-        setSignupMode(response.data.signup_mode);
-      }
+    void fetchPublicSignupMode().then(mode => {
+      if (!cancelled) setSignupMode(mode);
     });
     return () => {
       cancelled = true;

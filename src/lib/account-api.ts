@@ -1,4 +1,5 @@
 import { api } from '@/lib/api';
+import { unwrap } from '@/lib/api-error';
 
 /** A signed-in device of this account (GET /api/auth/sessions). */
 export interface AccountSession {
@@ -14,14 +15,11 @@ export interface AccountSession {
 export const accountSessionsQueryKey = ['account', 'sessions'] as const;
 
 export async function fetchAccountSessions(signal?: AbortSignal): Promise<AccountSession[]> {
-  const response = await api.get<{ sessions: AccountSession[] }>('/auth/sessions', { signal });
-  if (response.error) throw new Error(response.error);
-  return response.data?.sessions ?? [];
+  return unwrap(await api.get<{ sessions: AccountSession[] }>('/auth/sessions', { signal }))?.sessions ?? [];
 }
 
 export async function signOutSession(id: string) {
-  const response = await api.delete(`/auth/sessions/${encodeURIComponent(id)}`);
-  if (response.error) throw new Error(response.error);
+  unwrap(await api.delete(`/auth/sessions/${encodeURIComponent(id)}`));
 }
 
 const BROWSERS: [RegExp, string][] = [

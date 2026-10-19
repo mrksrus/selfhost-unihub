@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/contexts/useAuth';
-import { api } from '@/lib/api';
+import { fetchSignupMode, fetchStorageOverview, saveSignupMode, signupModeQueryKey, storageQueryKey, type SignupMode, type StorageUser } from '@/lib/admin-api';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { LoadingState } from '@/components/ui/page-states';
 import { useToast } from '@/hooks/use-toast';
@@ -9,45 +9,6 @@ import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
 import { AuditLog } from '@/components/settings/AuditLog';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
-
-type StorageSection = {
-  key: string;
-  label: string;
-  bytes: number;
-  files: number;
-  tracked_bytes?: number;
-  tracked_items?: number;
-  ready_items?: number;
-  path_exists: boolean;
-  scan_error: string | null;
-};
-
-type StorageUser = {
-  user_id: string;
-  email: string | null;
-  full_name: string | null;
-  is_active: boolean;
-  orphaned: boolean;
-  bytes: number;
-  files: number;
-  sections: Record<string, { bytes: number; files: number }>;
-};
-
-type StorageOverview = {
-  generated_at: string;
-  totals: {
-    users: number;
-    active_users: number;
-    mail_accounts: number;
-    emails: number;
-    contacts: number;
-    calendar_events: number;
-    bytes: number;
-    files: number;
-  };
-  sections: StorageSection[];
-  users: StorageUser[];
-};
 
 function formatBytes(value: number | null | undefined) {
   const bytes = Number(value) || 0;
@@ -73,32 +34,21 @@ const AdminSettings = () => {
   const queryClient = useQueryClient();
 
   const { data: signupMode = 'disabled', isLoading } = useQuery({
-    queryKey: ['admin', 'signup-mode'],
-    queryFn: async () => {
-      const response = await api.get<{ signup_mode: string }>('/admin/settings/signup-mode');
-      if (response.error) throw new Error(response.error);
-      return response.data?.signup_mode || 'disabled';
-    },
+    queryKey: signupModeQueryKey,
+    queryFn: ({ signal }) => fetchSignupMode(signal),
     enabled: user?.role === 'admin',
   });
 
   const { data: storageOverview, isLoading: storageLoading } = useQuery({
-    queryKey: ['admin', 'storage'],
-    queryFn: async () => {
-      const response = await api.get<{ storage: StorageOverview }>('/admin/storage');
-      if (response.error) throw new Error(response.error);
-      return response.data?.storage || null;
-    },
+    queryKey: storageQueryKey,
+    queryFn: ({ signal }) => fetchStorageOverview(signal),
     enabled: user?.role === 'admin',
   });
 
   const updateSignupMode = useMutation({
-    mutationFn: async (mode: string) => {
-      const response = await api.put('/admin/settings/signup-mode', { signup_mode: mode });
-      if (response.error) throw new Error(response.error);
-    },
+    mutationFn: (mode: SignupMode) => saveSignupMode(mode),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'signup-mode'] });
+      queryClient.invalidateQueries({ queryKey: signupModeQueryKey });
       toast({ title: 'Signup settings updated' });
     },
     onError: (err: Error) => {
@@ -116,7 +66,7 @@ const AdminSettings = () => {
             : signupMode === 'approval' ? 'Anyone can sign up, and an admin approves them in Users.'
             : 'Nobody can sign up. Existing accounts keep working.'}>
           {isLoading ? <Loader2 aria-hidden="true" className="h-5 w-5 animate-spin text-muted-foreground" /> : (
-            <Select value={signupMode} onValueChange={mode => updateSignupMode.mutate(mode)} disabled={updateSignupMode.isPending}>
+            <Select value={signupMode} onValueChange={mode => updateSignupMode.mutate(mode as SignupMode)} disabled={updateSignupMode.isPending}>
               <SelectTrigger id="signup-mode" className="w-full sm:w-56"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="open">Anyone</SelectItem>

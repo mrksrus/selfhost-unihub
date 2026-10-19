@@ -306,6 +306,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - `api/src/services/sessions.ts` owns every session query by token (create, find, renew, lock,
   end, end others, end all); routes and the notification services call it. Upgrade step 18
   (`session-token-hashes`) hashes existing tokens in place.
+- Feature modules throw `ApiError` (`src/lib/api-error.ts`: message, status, the server's `code`
+  and request id) through `unwrap()`; an error state shows the request id of a server failure.
+  The admin pages, the sign-in page, Security settings and the compose hook call the API through
+  `admin-api.ts`, `auth-api.ts`, `account-api.ts` and `mail-compose-api.ts`; the list of views
+  allowed to use the API client directly shrank from 28 to 23.
 - `sendEmail` takes `{ userId, accountId }` and loads the account with its owner, so a draft's
   stored account reference cannot send from another user's account.
 - `api/src/services/settings.ts` owns the account preferences (one declaration of keys, defaults
