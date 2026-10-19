@@ -34,6 +34,13 @@ by itself (`NODE_ENV=production` is set in the image), so the login cookies are
 `Secure` however the container is started; a `NODE_ENV` entry in your Compose
 file or installer form is no longer needed and stays harmless.
 
+The proxy must send `X-Forwarded-Proto: https` (most do by default; in Nginx
+Proxy Manager and Traefik it is automatic). UniHub then answers with
+`Strict-Transport-Security: max-age=31536000`, so browsers that once reached it
+over HTTPS refuse to downgrade to plain HTTP for a year. Plain-HTTP requests
+never get the header. If your proxy also adds HSTS, browsers use the first
+header they receive.
+
 ## 2. Get the deployment files
 
 `docker-compose.yml` is the only file you need. It pulls the published UniHub
