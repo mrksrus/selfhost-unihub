@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, ty
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { format } from 'date-fns';
-import { api } from '@/lib/api';
+import { deleteDraft, saveDraft, sendDraft, sendMessage, type AttachmentPayload, type DraftInput, type OutgoingMessage } from '@/lib/mail-compose-api';
 import { invalidateMailQueries, type Email, type EmailAttachment } from '@/lib/mail-api';
 import { contactsQueryOptions } from '@/lib/contacts-api';
 import { plainTextToHtml, escapeHtml, sanitizeComposeHtml, sanitizeReturnTo, isComposeHtmlEmpty, isComposeMeaningful, validateComposeAttachments } from '@/lib/mail-compose';
@@ -14,7 +14,6 @@ import {
   type ComposeAttachment, type ComposeForm, type ComposeMode, type ContactEmailSuggestion,
 } from '@/components/mail/mail-page-model';
 
-type AttachmentPayload = Array<{ filename: string; contentType: string; size: number; dataBase64: string }>;
 type RecipientField = 'to' | 'cc' | 'bcc';
 
 const EMPTY_COMPOSE_FORM: ComposeForm = { to: '', cc: '', bcc: '', subject: '', body: '' };
@@ -81,7 +80,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   // One Idempotency-Key per composed message: pressing Send again after a lost
   // response returns the first result instead of sending the message twice.
   const sendKeyRef = useRef<string | null>(null);
-  const sendHeaders = () => ({ headers: { 'Idempotency-Key': (sendKeyRef.current ??= `send-${crypto.randomUUID()}`) } });
+  const sendKey = () => (sendKeyRef.current ??= `send-${crypto.randomUUID()}`);
 
   // Open compose dialog if linked from dashboard
   useEffect(() => {
@@ -292,22 +291,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   };
 
   const sendEmailMutation = useMutation({
-    mutationFn: async (data: {
-      account_id: string;
-      to: string;
-      cc: string;
-      bcc: string;
-      subject: string;
-      body: string;
-      isHtml?: boolean;
-      attachments?: AttachmentPayload;
-    }) => {
-      const response = await api.post('/mail/send', data, sendHeaders());
-      if (response.error) {
-        throw new Error(response.error);
-      }
-      return response.data;
-    },
+    mutationFn: (message: OutgoingMessage & { attachments?: AttachmentPayload }) => sendMessage(message, sendKey()),
     onSuccess: () => {
       toast({ title: '✓ Email sent successfully' });
       closeComposeFlow({ force: true });
@@ -344,17 +328,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     setIsDraftSaving(true);
     try {
       const includeAttachments = options.includeAttachments ?? attachmentsDirty;
-      const payload: {
-        account_id: string;
-        to: string;
-        cc: string;
-        bcc: string;
-        subject: string;
-        body: string;
-        isHtml: boolean;
-        existing_attachment_ids?: string[];
-        attachments?: AttachmentPayload;
-      } = {
+      const payload: DraftInput = {
         account_id: fromAccountId,
         to: composeForm.to,
         cc: composeForm.cc,
@@ -369,15 +343,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         payload.attachments = await buildAttachmentPayload();
       }
 
-      const response = activeDraftId
-        ? await api.put<{ draft: Email }>(`/mail/drafts/${activeDraftId}`, payload)
-        : await api.post<{ draft: Email }>('/mail/drafts', payload);
-
-      if (response.error || !response.data?.draft) {
-        throw new Error(response.error || 'Failed to save draft');
-      }
-
-      const savedDraft = response.data.draft;
+      const savedDraft = await saveDraft(activeDraftId, payload);
       setActiveDraftId(savedDraft.id);
       setExistingDraftAttachments(savedDraft.attachments || []);
       if (includeAttachments) {
@@ -438,8 +404,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   ]);
 
   const deleteDraftById = async (draftId: string) => {
-    const response = await api.delete(`/mail/drafts/${draftId}`);
-    if (response.error) throw new Error(response.error);
+    await deleteDraft(draftId);
     void invalidateMailQueries(queryClient);
   };
 
@@ -504,8 +469,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       if (activeDraftId) {
         const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
         const draftId = savedDraft?.id || activeDraftId;
-        const response = await api.post(`/mail/drafts/${draftId}/send`, undefined, sendHeaders());
-        if (response.error) throw new Error(response.error);
+        await sendDraft(draftId, sendKey());
         toast({ title: '✓ Email sent successfully' });
         void invalidateMailQueries(queryClient);
         closeComposeFlow({ force: true });

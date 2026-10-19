@@ -37,6 +37,13 @@ describe('Signed-in devices', () => {
     expect(toast).toHaveBeenCalledWith({ title: 'Device signed out' });
   });
 
+  it('names the request id of a server failure so it can be found in the server log', async () => {
+    vi.mocked(api.get).mockResolvedValue({ status: 500, error: 'Failed to list sessions', requestId: 'req-7f3a' });
+    mount(<SignedInDevices />);
+    expect(await screen.findByText('Failed to list sessions')).toBeInTheDocument();
+    expect(screen.getByText('Reference req-7f3a')).toBeInTheDocument();
+  });
+
   it('reports a failed sign-out and keeps the device listed', async () => {
     vi.mocked(api.get).mockResolvedValue({ data: { sessions: [laptop, phone] } });
     vi.mocked(api.delete).mockResolvedValue({ error: 'Device not found' });

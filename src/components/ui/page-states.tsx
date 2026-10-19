@@ -3,6 +3,7 @@ import { AlertCircle, Loader2 } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { ApiError } from '@/lib/api-error';
 
 type IconType = ComponentType<{ className?: string; 'aria-hidden'?: boolean | 'true' | 'false' }>;
 
@@ -75,6 +76,8 @@ export function ErrorState({ title, error, onRetry, retrying = false, className 
       <AlertTitle>{title}</AlertTitle>
       <AlertDescription className="space-y-3">
         <p>{errorMessage(error)}</p>
+        {/* A server failure names the request id it was logged under. */}
+        {error instanceof ApiError && error.requestId && <p className="font-mono text-xs">Reference {error.requestId}</p>}
         {onRetry && (
           <Button type="button" size="sm" variant="outline" className="text-foreground" onClick={onRetry} disabled={retrying}>
             {retrying && <Loader2 aria-hidden="true" className="mr-2 h-4 w-4 motion-safe:animate-spin" />}

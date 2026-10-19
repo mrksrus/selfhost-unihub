@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useAuth } from '@/contexts/useAuth';
-import { api } from '@/lib/api';
+import { changePassword, confirmTwoFactorSetup, disableTwoFactor, fetchTwoFactorStatus, regenerateRecoveryCodes, startTwoFactorSetup, twoFactorStatusQueryKey, type TwoFactorSetup } from '@/lib/auth-api';
 import { useToast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -13,8 +13,6 @@ import { TotpQrCode } from '@/components/settings/TotpQrCode';
 import { SignedInDevices } from '@/components/settings/SignedInDevices';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 
-type TwoFactorStatus = { enabled: boolean; recoveryCodesRemaining: number; secretReadable?: boolean };
-type TwoFactorSetup = { secret: string; otpauth_uri: string };
 
 const message = (error: unknown) => error instanceof Error ? error.message : 'Unknown error';
 const emptyPasswordForm = { current_password: '', new_password: '', confirm_password: '' };
@@ -48,8 +46,7 @@ function PasswordDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
     if (form.new_password.length < 12) { toast({ title: 'Use at least 12 characters for the new password', variant: 'destructive' }); return; }
     setBusy(true);
     try {
-      const response = await api.put('/auth/password', { current_password: form.current_password, new_password: form.new_password });
-      if (response.error) { toast({ title: 'Could not change the password', description: response.error, variant: 'destructive' }); return; }
+      await changePassword(form.current_password, form.new_password);
       toast({ title: 'Password changed', description: 'All devices were signed out. Sign in again with your new password.' });
       close(false);
       await signOut();
@@ -99,22 +96,16 @@ export default function SecuritySettings() {
   const [busy, setBusy] = useState(false);
 
   const statusQuery = useQuery({
-    queryKey: ['auth', '2fa-status'],
-    queryFn: async () => {
-      const response = await api.get<TwoFactorStatus>('/auth/2fa/status');
-      if (response.error) throw new Error(response.error);
-      return response.data || { enabled: false, recoveryCodesRemaining: 0 };
-    },
+    queryKey: twoFactorStatusQueryKey,
+    queryFn: ({ signal }) => fetchTwoFactorStatus(signal),
     enabled: !!user,
   });
   const status = statusQuery.data;
 
-  const run = async <T,>(failure: string, request: () => Promise<{ data?: T; error?: string }>, done: (data: T | undefined) => Promise<void> | void) => {
+  const run = async <T,>(failure: string, request: () => Promise<T>, done: (data: T) => Promise<void> | void) => {
     setBusy(true);
     try {
-      const response = await request();
-      if (response.error) { toast({ title: failure, description: response.error, variant: 'destructive' }); return; }
-      await done(response.data);
+      await done(await request());
     } catch (error) {
       toast({ title: failure, description: message(error), variant: 'destructive' });
     } finally {
@@ -124,25 +115,25 @@ export default function SecuritySettings() {
 
   const startSetup = () => {
     setNewCodes(null); setCode(''); setSetupPassword('');
-    void run<TwoFactorSetup>('Could not start two-factor authentication setup', () => api.post<TwoFactorSetup>('/auth/2fa/setup/start'), data => {
-      setSetup(data || null);
+    void run<TwoFactorSetup | null>('Could not start two-factor authentication setup', startTwoFactorSetup, data => {
+      setSetup(data);
       setSetupOpen(true);
     });
   };
 
   const confirmSetup = () => {
     if (!setup) return;
-    void run<{ recoveryCodes: string[] }>('Could not turn on two-factor authentication',
-      () => api.post('/auth/2fa/setup/confirm', { secret: setup.secret, code, current_password: setupPassword }), async data => {
+    void run('Could not turn on two-factor authentication',
+      () => confirmTwoFactorSetup({ secret: setup.secret, code, current_password: setupPassword }), async recoveryCodes => {
         setSetupPassword('');
-        setNewCodes(data?.recoveryCodes || []);
+        setNewCodes(recoveryCodes);
         setUser(user ? { ...user, two_factor_enabled: true } : user);
         await statusQuery.refetch();
         toast({ title: 'Two-factor authentication is on' });
       });
   };
 
-  const disable = () => void run<unknown>('Could not turn off two-factor authentication', () => api.post('/auth/2fa/disable', disableForm), async () => {
+  const disable = () => void run('Could not turn off two-factor authentication', () => disableTwoFactor(disableForm), async () => {
     setDisableOpen(false);
     setDisableForm({ current_password: '', code: '' });
     setNewCodes(null);
@@ -151,9 +142,9 @@ export default function SecuritySettings() {
     toast({ title: 'Two-factor authentication is off' });
   });
 
-  const regenerate = () => void run<{ recoveryCodes: string[] }>('Could not create new recovery codes',
-    () => api.post('/auth/2fa/recovery-codes/regenerate', { code }), async data => {
-      setNewCodes(data?.recoveryCodes || []);
+  const regenerate = () => void run('Could not create new recovery codes',
+    () => regenerateRecoveryCodes(code), async recoveryCodes => {
+      setNewCodes(recoveryCodes);
       setRecoveryOpen(false);
       setCode('');
       await statusQuery.refetch();
