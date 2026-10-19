@@ -363,7 +363,7 @@ Supported preferences:
 | `default_mail_account_id` | the id of one of the user's active, connected mail accounts; empty means the first account | empty |
 | `accent_color` | `blue`, `indigo`, `violet`, `pink`, `teal`, `green` (src/lib/accent.ts) | `blue` |
 
-Unknown preference keys are ignored. Invalid values are rejected.
+Unknown preference keys are ignored. Invalid values are rejected, and a request with one invalid value changes nothing. `api/src/services/settings.ts` declares the keys.
 
 General Settings also contains browser/device preferences: **Appearance**
 (Dark by default, Light or System, and a look per theme such as OLED black or

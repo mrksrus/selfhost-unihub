@@ -253,19 +253,6 @@ async function hasPermission(userId: string | null | undefined, permission: Perm
   }
 }
 
-// Get signup mode (open, approval, disabled)
-async function getSignupMode() {
-  try {
-    const [rows] = await db.execute<(RowDataPacket & { setting_value: string | null })[]>(
-      'SELECT setting_value FROM system_settings WHERE setting_key = ?',
-      ['signup_mode']
-    );
-    return rows[0]?.setting_value || 'disabled';
-  } catch {
-    return 'disabled';
-  }
-}
-
 export {
   hashPassword,
   verifyPassword,
@@ -289,5 +276,4 @@ export {
   clearAuthCookie,
   verifyToken,
   hasPermission,
-  getSignupMode,
 };

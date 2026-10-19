@@ -26,7 +26,7 @@ The standard deployment is one app container and one MariaDB container. Nginx se
 | Android app and the device boundary | android/ (thin WebView shell), src/lib/platform.ts, src/lib/install-prompt.ts, api/src/services/app-version.ts; docs/ANDROID.md |
 | API startup and request boundary | api/server.ts, api/src/app.ts, api/src/request-handler.ts, api/src/routes/ (routes/mail.ts combines the routes/mail-* area files) |
 | Authentication and outbound connections | api/src/auth.ts, api/src/routes/auth.ts, api/src/services/two-factor.ts, api/src/security/ |
-| User preferences and settings pages | api/src/routes/settings.ts (no settings service yet), src/lib/settings-api.ts, src/components/settings/; docs/AUTH_ADMIN_SETTINGS.md |
+| User preferences and settings pages | api/src/services/settings.ts (preferences, sign-up mode), api/src/routes/settings.ts, src/lib/settings-api.ts, src/components/settings/; docs/AUTH_ADMIN_SETTINGS.md |
 | Calendar accounts, sync and recurrence | src/lib/calendar-api.ts, api/src/routes/calendar.ts, api/src/services/calendar*.ts, api/src/services/caldav.ts; docs/CALENDAR.md |
 | Durable mail sync and operations | api/src/services/mail-engine/, api/src/services/mail-account-lock.ts, api/src/services/mail-sync-control.ts; docs/MAIL_MODES.md, docs/MAIL_SYNC.md |
 | Domain logic and persistence | api/src/services/, api/src/security/, api/src/services/database.ts; services/mail.ts and services/backup.ts are facades over the mail-* and backup-* modules |

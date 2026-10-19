@@ -14,67 +14,11 @@ import {
   deleteRecordingFiles,
 } from '../services/recordings';
 import { deleteUser } from '../services/user-lifecycle';
+import { getUserPreferences, setUserPreferences } from '../services/settings';
 import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 type Input = Record<string, unknown>;
-
-const USER_SETTING_DEFAULTS: Record<string, string> = {
-  email_link_behavior: 'mailto',
-  default_start_page: 'mail',
-  /** The account new messages are sent from; empty means the first account. */
-  default_mail_account_id: '',
-  /** The accent colour of the app; the choices live in the frontend (src/lib/accent.ts). */
-  accent_color: 'blue',
-};
-
-const USER_SETTING_ALLOWED_VALUES: Record<string, Set<string>> = {
-  email_link_behavior: new Set(['mailto', 'internal']),
-  default_start_page: new Set(['mail', 'calendar', 'todo', 'contacts', 'recordings', 'music', 'dashboard']),
-  accent_color: new Set(['blue', 'indigo', 'violet', 'pink', 'teal', 'green']),
-};
-
-async function getUserPreferences(userId: string) {
-  const [rows] = await db.execute<RowDataPacket[]>(
-    'SELECT setting_key, setting_value FROM user_settings WHERE user_id = ?',
-    [userId]
-  );
-  const preferences = { ...USER_SETTING_DEFAULTS };
-  for (const row of rows || []) {
-    if (Object.prototype.hasOwnProperty.call(preferences, row.setting_key)) {
-      // A value no longer offered (for example the removed Notes start page) falls back to the default.
-      const allowed = USER_SETTING_ALLOWED_VALUES[row.setting_key];
-      if (!allowed || allowed.has(row.setting_value)) preferences[row.setting_key] = row.setting_value;
-    }
-  }
-  return preferences;
-}
-
-async function setUserPreferences(userId: string, input: Input = {}) {
-  const updates: Record<string, string> = {};
-  for (const [key, value] of Object.entries(input || {})) {
-    if (!Object.prototype.hasOwnProperty.call(USER_SETTING_DEFAULTS, key)) continue;
-    const normalizedValue = String(value || '').trim();
-    const allowedValues = USER_SETTING_ALLOWED_VALUES[key];
-    if (allowedValues && !allowedValues.has(normalizedValue)) {
-      return { error: `Invalid value for ${key}`, status: 400 };
-    }
-    if (key === 'default_mail_account_id' && normalizedValue) {
-      const [owned] = await db.execute<RowDataPacket[]>('SELECT id FROM mail_accounts WHERE id = ? AND user_id = ? AND is_active = TRUE AND disconnected_at IS NULL', [normalizedValue, userId]);
-      if (!owned.length) return { error: 'Choose one of your connected mail accounts', status: 400 };
-    }
-    updates[key] = normalizedValue;
-  }
-  for (const [key, value] of Object.entries(updates)) {
-    await db.execute(
-      `INSERT INTO user_settings (user_id, setting_key, setting_value)
-       VALUES (?, ?, ?)
-       ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-      [userId, key, value]
-    );
-  }
-  return { preferences: await getUserPreferences(userId) };
-}
 
 export = defineRoutes({
   'GET /api/settings/preferences': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
