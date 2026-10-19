@@ -8,7 +8,7 @@ import { createDurableMailScheduler, MUTATION_MAIL_JOB_KINDS } from './mail-sync
 import { acquireImapConnection, releaseImapConnection } from './mail-engine/connection-pool';
 import { operationDue, processOperationBatch } from './mail-engine/operation-batch';
 import { db } from '../state';
-import { publishMailJob } from './server-events';
+import { publishMailJob } from './realtime';
 import { canRunModule } from './access-policy';
 import { toBooleanFlag, buildImapConnectionConfig } from './mail-host-policy';
 import {

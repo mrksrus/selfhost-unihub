@@ -11,7 +11,7 @@ const MAIL_LOGIN = { username: 'owner@example.test', encrypted_password: 'mail-l
 // mail: the connected mail login, or null while it is disconnected.
 function calendarFixture(t: import('node:test').TestContext, { account = {}, mail = MAIL_LOGIN, caldav = {} }: FixtureValue = {}) {
   const paths = ['../dist/src/services/module-settings', '../dist/src/services/restore-locks', '../dist/src/services/caldav', '../dist/src/services/calendar-sync',
-    '../dist/src/security/encryption', '../dist/src/services/calendar-accounts', '../dist/src/services/server-events'].map(path => require.resolve(path));
+    '../dist/src/security/encryption', '../dist/src/services/calendar-accounts', '../dist/src/services/realtime'].map(path => require.resolve(path));
   const saved = paths.map(path => require.cache[path]);
   const savedDb = getDb();
   t.after(() => {

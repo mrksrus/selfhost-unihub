@@ -10,7 +10,7 @@ import { canRunModule } from './access-policy';
 import { toBooleanFlag } from './mail-host-policy';
 import { durableScheduler, foregroundMutationAccounts, normalizeMailAccountId } from './mail-durable-jobs';
 import { mailDeleteStopRequests } from './mail-server-delete';
-import { publishMailJob } from './server-events';
+import { publishMailJob } from './realtime';
 import { USER_PAUSES } from './mail-engine/rollout';
 
 interface SyncOptions extends Record<string, unknown> { background?: boolean; followUp?: boolean }

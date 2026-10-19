@@ -191,7 +191,7 @@ this policy remain inactive with a warning.
 | --- | --- | --- |
 | Initial account add | account creation route | starts non-blocking sync when no other sync is running |
 | INBOX push (IMAP IDLE) | `api/src/services/mail-idle.ts` | a change announced on the account's INBOX: `recent` (plus throttled `flags`/`presence` in Sync mode) about 2 seconds later; see [IMAP IDLE](#imap-idle-for-inbox) |
-| Periodic INBOX follow-up | `api/src/app.ts` interval | every 30 seconds: one `recent` job for the account's INBOX; every 5 minutes while the account's IDLE session is healthy |
+| Periodic INBOX follow-up | `api/src/services/background-work.ts` interval | every 30 seconds: one `recent` job for the account's INBOX; every 5 minutes while the account's IDLE session is healthy |
 | Periodic folder discovery | same interval | at most every 5 minutes (or after a failed pass): folder LIST plus per-folder `recent`/`flags`/`history`/`presence` jobs |
 | Manual sync | `POST /api/mail/sync` | immediate, complete folder discovery and fan-out |
 | Service worker sync | `POST /api/mail/sync/background` | starts at most one sync if data is stale |

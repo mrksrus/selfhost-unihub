@@ -4,14 +4,19 @@ const { everyInterval } = require('../dist/src/services/timers') as typeof impor
 
 function fakeTimers() {
   const ticks: (() => void)[] = [];
-  return { ticks, setInterval: ((fn: () => void) => { ticks.push(fn); return 0 as unknown as NodeJS.Timeout; }) as unknown as typeof setInterval };
+  const cleared: unknown[] = [];
+  return {
+    ticks, cleared,
+    setInterval: ((fn: () => void) => { ticks.push(fn); return ticks.length as unknown as NodeJS.Timeout; }) as unknown as typeof setInterval,
+    clearInterval: ((timer: unknown) => { cleared.push(timer); }) as typeof clearInterval,
+  };
 }
 
 test('a tick is skipped while the previous run is still in progress', async () => {
   const timers = fakeTimers();
   let finish!: () => void;
   let runs = 0;
-  const tick = everyInterval('TEST', 1000, () => { runs++; return new Promise<void>(resolve => { finish = resolve; }); }, timers);
+  const { run: tick } = everyInterval('TEST', 1000, () => { runs++; return new Promise<void>(resolve => { finish = resolve; }); }, timers);
   assert.equal(timers.ticks.length, 1);
   const first = tick();
   assert.equal(await tick(), false);
@@ -32,7 +37,7 @@ test('a failing run is logged and the next tick runs again', async () => {
   console.error = (...args: unknown[]) => { logged.push(args); };
   try {
     let calls = 0;
-    const tick = everyInterval('TEST', 1000, async () => { calls++; if (calls === 1) throw new Error('database away'); }, timers);
+    const { run: tick } = everyInterval('TEST', 1000, async () => { calls++; if (calls === 1) throw new Error('database away'); }, timers);
     assert.equal(await tick(), true);
     assert.equal(await tick(), true);
     assert.equal(calls, 2);
@@ -40,4 +45,11 @@ test('a failing run is logged and the next tick runs again', async () => {
   } finally {
     console.error = original;
   }
+});
+
+test('stop ends the interval it started', () => {
+  const timers = fakeTimers();
+  const handle = everyInterval('TEST', 1000, () => {}, timers);
+  handle.stop();
+  assert.deepEqual(timers.cleared, [1]);
 });

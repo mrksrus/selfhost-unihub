@@ -5,10 +5,13 @@ const { EventEmitter } = (require('node:events') as typeof import('node:events')
 const {
   createServerEvents,
   installShutdownHandler,
+} = require('../dist/src/services/server-events') as typeof import('../src/services/server-events');
+const {
+  createRealtime,
   publishMailJob,
   publishMailOperation,
   publishMailChanged,
-} = require('../dist/src/services/server-events') as typeof import('../src/services/server-events');
+} = require('../dist/src/services/realtime') as typeof import('../src/services/realtime');
 
 function fakeTimers() {
   let now = 0, seq = 0;
@@ -61,6 +64,18 @@ function hub(options: FixtureValue = {}) {
     return { res, result };
   };
   return { bus, timers, open };
+}
+
+// The browser bus of hub() and a device bus, behind the realtime front.
+function realtimeHub(options: FixtureValue = {}) {
+  const browser = hub(options);
+  const devices = createServerEvents({ timers: browser.timers as FixtureValue, now: browser.timers.now, throttleMs: 0 });
+  const openDevice = (userId: string, deviceId: string, extra: FixtureValue = {}) => {
+    const res = fakeResponse();
+    devices.attach({ userId, req: new EventEmitter(), res, modules: [deviceId], ...extra });
+    return { res };
+  };
+  return { ...browser, devices, openDevice, realtime: createRealtime({ browser: browser.bus, devices }) };
 }
 
 test('a stream starts with SSE headers, a retry hint and a ready event', () => {
@@ -214,18 +229,18 @@ test('the shutdown handler closes streams before the stop signal ends the proces
 });
 
 test('mail job events carry ids, states and counters only', () => {
-  const { bus, timers, open } = hub();
+  const { realtime, timers, open } = realtimeHub();
   const { res } = open('u1');
   publishMailJob({ id: 'job-1', user_id: 'u1', mail_account_id: 'acc-1', kind: 'recent', state: 'running',
     phase: 'recent', processed: 4, total: null, error: 'LOGIN failed for person@example.com',
-    folder: 'Private/Bank', subject: 'Secret' } as FixtureValue, bus);
+    folder: 'Private/Bank', subject: 'Secret' } as FixtureValue, realtime);
   const [job] = events(res).filter((e: FixtureValue) => e.type === 'mail.job');
   assert.deepEqual(job.data, { accountId: 'acc-1', jobId: 'job-1', kind: 'recent', state: 'running',
     phase: 'recent', processed: 4, total: null });
   assert.doesNotMatch(res.chunks.join(''), /example\.com|Bank|Secret|LOGIN/);
   timers.advance(1000);
   publishMailJob({ id: 'job-1', user_id: 'u1', mail_account_id: 'acc-1', kind: 'recent', state: 'idle',
-    result: { success: true, inserted: 3, updated: 0 } as FixtureValue }, bus);
+    result: { success: true, inserted: 3, updated: 0 } as FixtureValue }, realtime);
   timers.advance(1000);
   const types = events(res).map((e: FixtureValue) => `${e.type}:${e.data.state ?? e.data.reason ?? ''}`);
   assert.ok(types.includes('mail.job:idle'));
@@ -234,25 +249,44 @@ test('mail job events carry ids, states and counters only', () => {
 });
 
 test('a quiet job does not announce a list change', () => {
-  const { bus, open } = hub();
+  const { realtime, open } = realtimeHub();
   const { res } = open('u1');
   publishMailJob({ id: 'job-2', user_id: 'u1', mail_account_id: 'acc-1', kind: 'recent', state: 'idle',
-    result: { success: true, inserted: 0, updated: 0 } as FixtureValue }, bus);
+    result: { success: true, inserted: 0, updated: 0 } as FixtureValue }, realtime);
   assert.deepEqual(events(res).map((e: FixtureValue) => e.type), ['ready', 'mail.job']);
 });
 
 test('operation events coalesce ids and reject unknown values', () => {
-  const { bus, timers, open } = hub();
+  const { realtime, timers, open } = realtimeHub();
   const { res } = open('u1');
-  publishMailOperation('u1', { accountId: 'acc-1', operationIds: ['op-1'], state: 'confirmed' }, bus);
-  publishMailOperation('u1', { accountId: 'acc-1', operationIds: ['op-2', 'bad id <script>'], state: 'confirmed' }, bus);
-  publishMailOperation('u1', { accountId: 'acc-1', operationIds: ['op-3'], state: 'needs_attention' }, bus);
+  publishMailOperation('u1', { accountId: 'acc-1', operationIds: ['op-1'], state: 'confirmed' }, realtime);
+  publishMailOperation('u1', { accountId: 'acc-1', operationIds: ['op-2', 'bad id <script>'], state: 'confirmed' }, realtime);
+  publishMailOperation('u1', { accountId: 'acc-1', operationIds: ['op-3'], state: 'needs_attention' }, realtime);
   timers.advance(1000);
   const operations = events(res).filter((e: FixtureValue) => e.type === 'mail.operation').map((e: FixtureValue) => e.data);
   assert.deepEqual(operations, [
     { accountId: 'acc-1', operationIds: ['op-1'], state: 'confirmed' },
     { accountId: 'acc-1', operationIds: ['op-2', 'op-3'], state: null },
   ]);
-  publishMailChanged('u1', 'acc-1', 'not-a-reason', bus);
+  publishMailChanged('u1', 'acc-1', 'not-a-reason', realtime);
   assert.deepEqual(events(res).at(-1), { type: 'mail.changed', data: { accountId: 'acc-1', reason: null } });
+});
+
+test('realtime closes a user on both channels and keeps module events off phones', () => {
+  const { realtime, open, openDevice } = realtimeHub();
+  const browser = open('u1', { token: 'keep' }), other = open('u1', { token: 'old' });
+  const phoneKept = openDevice('u1', 'device-1', { token: 'keep' }), phoneOld = openDevice('u1', 'device-2', { token: 'old' });
+  publishMailChanged('u1', 'acc-1', 'import', realtime);
+  assert.equal(events(phoneKept.res).some((e: FixtureValue) => e.type === 'mail.changed'), false);
+  assert.equal(events(browser.res).some((e: FixtureValue) => e.type === 'mail.changed'), true);
+  // A password change keeps the current session; its phone stream stays open.
+  realtime.closeUser('u1', { exceptToken: 'keep' });
+  assert.equal(other.res.ended, true);
+  assert.equal(phoneOld.res.ended, true);
+  assert.equal(browser.res.ended, false);
+  assert.equal(phoneKept.res.ended, false);
+  realtime.closeSession('keep', { reason: 'signed_out' });
+  assert.equal(browser.res.ended, true);
+  assert.equal(phoneKept.res.ended, true);
+  assert.equal(realtime.isOnline('u1'), false);
 });

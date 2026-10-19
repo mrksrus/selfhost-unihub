@@ -157,7 +157,7 @@ export = defineRoutes({
         await connection.commit();
       } catch (error) { await connection.rollback(); throw error; }
       finally { connection.release(); }
-      const { publishCalendarChanged } = require('../services/server-events') as typeof import('../services/server-events');
+      const { publishCalendarChanged } = require('../services/realtime') as typeof import('../services/realtime');
       for (const calendar of linkedCalendars) {
         if (calendar.provider === 'caldav') stopCalendarAccountWork(calendar.id, 'unlinked');
         publishCalendarChanged(userId, calendar.id, 'status');

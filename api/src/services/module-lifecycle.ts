@@ -1,4 +1,4 @@
-import { serverEvents } from './server-events';
+import { realtime } from './realtime';
 import { onMailModuleChanged } from './mail-sync-control';
 
 // What a saved module choice means for running work. PUT /api/modules saves
@@ -14,7 +14,7 @@ const MODULE_HOOKS: Readonly<Record<string, ModuleHook>> = Object.freeze({
 
 async function applyModuleChange(userId: string, previous: readonly ModuleState[], next: readonly ModuleState[]) {
   // Open event streams filter by the enabled set from now on.
-  serverEvents.setUserModules(userId, next.filter(module => module.enabled).map(module => module.id));
+  realtime.setUserModules(userId, next.filter(module => module.enabled).map(module => module.id));
   for (const module of next) {
     const before = previous.find(candidate => candidate.id === module.id);
     if (before && before.enabled === module.enabled && before.background === module.background) continue;

@@ -12,7 +12,7 @@ import { db } from '../state';
 import { encrypt, decrypt } from '../security/encryption';
 import { isModuleEnabled } from './module-settings';
 import { isSectionRestoreActive } from './restore-locks';
-import { publishCalendarChanged } from './server-events';
+import { publishCalendarChanged } from './realtime';
 import * as caldav from './caldav';
 import { isValidTimeZone } from './calendar-ical';
 import {

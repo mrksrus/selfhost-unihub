@@ -17,7 +17,7 @@ import crypto from 'crypto';
 import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { canRunModule } from './access-policy';
-import { publishCalendarChanged } from './server-events';
+import { publishCalendarChanged } from './realtime';
 import * as caldav from './caldav';
 import * as ical from './calendar-ical';
 import {
