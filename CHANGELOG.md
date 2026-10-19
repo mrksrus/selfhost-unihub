@@ -19,6 +19,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **A message is sent once, even when Send is pressed again.** When the answer
+  to Send got lost (a weak mobile connection, a server restart) and you pressed
+  Send again, the message went out twice. Each composed message now carries a
+  key: a repeat gets the first answer, and a repeat while the first send is
+  still running is refused with a hint to check Sent.
 - **Calendar sync removes only what the server confirms is gone.** An event,
   or a whole calendar with its events and ToDo state, was deleted as soon as
   one listing from the server left it out, so a server hiccup or an

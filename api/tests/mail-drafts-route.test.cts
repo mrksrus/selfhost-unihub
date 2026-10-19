@@ -262,6 +262,8 @@ async function createDraftRouteHarness(t: import('node:test').TestContext, optio
     getRunningMailSyncAccountIds: () => [],
     getRunningMailServerDeleteAccountIds: () => [],
     sendEmail: options.sendEmail || (async () => ({ success: true, messageId: '<sent@example.test>' })),
+    // No Idempotency-Key in these requests: the real sendOnce would send directly.
+    sendOnce: async (_options: FixtureValue, send: () => Promise<FixtureValue>) => send(),
     deleteStoredAttachmentFiles: async (paths: FixtureValue) => {
       let deletedFiles = 0;
       for (const item of paths || []) {

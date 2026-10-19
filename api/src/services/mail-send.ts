@@ -8,7 +8,8 @@ import { decrypt } from '../security/encryption';
 import { resolveMailConnectionTarget } from '../security/outbound-network';
 import { isModuleEnabled } from './module-settings';
 import { normalizeComposerAttachments, stageAttachments, insertStagedAttachments, discardStagedAttachments } from './mail-attachments';
-import { withTransaction } from './mail-engine/repository';
+import { finishReceipt, recordReceipt, withTransaction } from './mail-engine/repository';
+import { log } from '../log';
 import { accountTlsOptions, toBooleanFlag } from './mail-host-policy';
 import { normalizeRecipients } from './mail-recipients';
 
@@ -154,6 +155,52 @@ async function sendEmail({ userId, accountId }: { userId: string; accountId: str
   }
 }
 
+const SEND_PENDING = { send_pending: true };
+
+/**
+ * Sends at most once per Idempotency-Key. A lost response or a second click
+ * repeats the request; the key is claimed (in its own transaction) before
+ * SMTP and holds the result after it, so a repeat gets that result, or
+ * SEND_IN_PROGRESS while the first send runs or when it ended without a
+ * recorded outcome, never a second message. A send that failed (threw, or
+ * returned an `error`) releases the key, so the same message can be sent again;
+ * `send` must not fail once the message is out.
+ */
+async function sendOnce<T extends Record<string, unknown>>({ userId, clientKey, request }: { userId: string; clientKey?: string; request: unknown }, send: () => Promise<T>): Promise<T> {
+  if (!clientKey) return send();
+  const requestHash = crypto.createHash('sha256').update(JSON.stringify({ kind: 'send', request })).digest('hex');
+  let claim;
+  try {
+    claim = await withTransaction(connection => recordReceipt({ userId, clientKey, requestHash, response: SEND_PENDING }, connection));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'IDEMPOTENCY_KEY_REUSED') {
+      throw Object.assign(new Error('This message was already sent with different content. Check Sent before sending again.'), { status: 409, code: 'IDEMPOTENCY_KEY_REUSED' });
+    }
+    throw error;
+  }
+  if (claim.replayed) {
+    if ((claim.response as Record<string, unknown>).send_pending) {
+      throw Object.assign(new Error('This message is already being sent, or its sending was interrupted. Check Sent before sending it again.'), { status: 409, code: 'SEND_IN_PROGRESS' });
+    }
+    return claim.response as T;
+  }
+  const release = () => db.execute('DELETE FROM mail_command_receipts WHERE user_id = ? AND client_key = ? AND request_hash = ?', [userId, clientKey, requestHash])
+    .catch((cleanup: unknown) => log.warn('mail', 'could not release the key of a failed send', { userId }, cleanup));
+  let result: T;
+  try {
+    result = await send();
+  } catch (error) {
+    await release();
+    throw error;
+  }
+  if (result.error) { await release(); return result; }
+  // The message is out; a failure to record that leaves the key pending, which refuses a resend.
+  await finishReceipt({ userId, clientKey, requestHash, response: result })
+    .catch((error: unknown) => log.warn('mail', 'could not record a sent message', { userId }, error));
+  return result;
+}
+
 export {
   sendEmail,
+  sendOnce,
 };
