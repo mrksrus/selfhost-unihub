@@ -243,6 +243,14 @@ logged with the method and route key but never the request body), and route
 catch blocks apply it with their own fallback (`Failed to update event`), so a
 database driver's or file system's message never reaches the browser.
 
+Every response carries `X-Request-Id`, and a 5xx body adds `requestId`. The id
+is on every line `api/src/log.ts` writes while that request runs (an
+`AsyncLocalStorage` context set in `handleRequest`), so a reported failure can
+be found in the log. `log.info/warn/error(area, message, …)` writes
+`[AREA] message key=value` text, or one JSON object per line with
+`LOG_FORMAT=json`. `no-console` keeps new API code on the logger; the files that
+still call `console` are listed in `eslint.boundaries.js` and only shrink.
+
 ## Live Status Events
 
 `GET /api/events` is a Server-Sent Events stream (`text/event-stream`) that

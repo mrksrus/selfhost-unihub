@@ -48,7 +48,7 @@ test('a saturated pool after a recent success is busy with 200, not a failure', 
   assert.equal(result.health, 'degraded');
   assert.equal(result.database, 'busy');
   assert.deepEqual(result.pool, saturated());
-  assert.match(lines[0], /active 50\/50, queued 12/);
+  assert.match(lines[0], /active=50 limit=50 queued=12/);
 });
 
 test('a timeout with free connections is 503: the database, not the pool, is stuck', async () => {

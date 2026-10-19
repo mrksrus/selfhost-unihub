@@ -1,5 +1,5 @@
 import type { OutgoingHttpHeaders, ServerResponse } from 'node:http';
-import type { ApiError, RouteRequest } from './types';
+import type { RouteRequest } from './types';
 import type { RouteTable } from './http/route';
 
 import { BACKUP_DISABLED_MESSAGE, DISABLED_BACKUP_ROUTES } from './services/backup-availability';
@@ -16,6 +16,7 @@ import {
 } from './http/request';
 import { parseSingleByteRange, fileValidators, rangeAllowed } from './http/range';
 import { clientError } from './http/errors';
+import { log, newRequestId, withRequestId } from './log';
 import { compileRouteMatcher } from './http/route-matcher';
 import { DEFAULT_BODY_LIMIT } from './http/route';
 import { isModuleEnabled } from './services/module-settings';
@@ -61,17 +62,23 @@ function requestUrl(req: RouteRequest) {
 
 // Enclose parsing, routing and headers as well as the asynchronous route body.
 // A malformed request must never become an unhandled rejected HTTP callback.
+// Every request gets an id: the X-Request-Id response header, the body of a
+// 500 (so a person can report it) and every log line written while it runs.
 async function handleRequest(req: RouteRequest, res: ServerResponse) {
-  try {
-    await dispatchRequest(req, res);
-  } catch (error) {
-    const response = clientError(error, 'Internal Server Error');
-    if (response.status === 500) console.error('Request dispatch error:', req.method, (error as ApiError).message);
-    if (res.destroyed || res.writableEnded) return;
-    if (res.headersSent) { res.destroy(); return; }
-    res.writeHead(response.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    res.end(JSON.stringify(response));
-  }
+  const requestId = newRequestId();
+  res.setHeader('X-Request-Id', requestId);
+  return withRequestId(requestId, async () => {
+    try {
+      await dispatchRequest(req, res);
+    } catch (error) {
+      const response = clientError(error, 'Internal Server Error');
+      if (response.status === 500) log.error('HTTP', 'Request dispatch failed', error, { method: req.method });
+      if (res.destroyed || res.writableEnded) return;
+      if (res.headersSent) { res.destroy(); return; }
+      res.writeHead(response.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(response.status >= 500 ? { ...response, requestId } : response));
+    }
+  });
 }
 
 async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
@@ -279,7 +286,7 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       res.writeHead(status, headers);
       const stream = fs.createReadStream(result.__streamPath, streamOptions);
       stream.on('error', (error) => {
-        console.error('Stream response error:', error);
+        log.error('HTTP', 'Stream response failed', error, { route: routeKey });
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
         }
@@ -294,15 +301,15 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
     delete result.status;
 
     res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(result));
+    res.end(JSON.stringify(status >= 500 ? { ...result, requestId: res.getHeader('X-Request-Id') } : result));
   } catch (error) {
     // Error contract (docs/ARCHITECTURE.md, Request Handling): a thrown error
     // with a 4xx status answers with it; anything else is a generic 500 whose
     // text stays in the log, with the route but never the request body.
     const response = clientError(error, 'Internal Server Error');
-    if (response.status === 500) console.error('Request error:', req.method, routeKey, error);
+    if (response.status === 500) log.error('HTTP', 'Request failed', error, { route: routeKey });
     if (!res.headersSent) res.writeHead(response.status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(response));
+    res.end(JSON.stringify(response.status >= 500 ? { ...response, requestId: res.getHeader('X-Request-Id') } : response));
   } finally {
     if (temporaryUploadPath) {
       await fs.promises.rm(temporaryUploadPath, { force: true }).catch(() => {});

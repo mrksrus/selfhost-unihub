@@ -15,6 +15,7 @@ import {
 } from './config';
 import { createClientIpResolver } from './security/client-ip';
 import { consumeAuthAttempt } from './security/login-limits';
+import { log } from './log';
 
 interface AuthSession extends RowDataPacket { user_id: string; expires_at: Date | string; is_active: StoredFlag }
 
@@ -225,7 +226,7 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
             await db.execute('UPDATE sessions SET expires_at = ? WHERE token = ? AND expires_at > UTC_TIMESTAMP()', [getSessionExpiry(), token]);
             req.sessionRenewed = token;
           } catch (renewError) {
-            console.error('[AUTH] Session renewal failed:', (renewError as NodeJS.ErrnoException).code || (renewError as Error).name);
+            log.error('AUTH', 'Session renewal failed', undefined, { code: (renewError as NodeJS.ErrnoException).code || (renewError as Error).name });
           }
         }
 
@@ -234,7 +235,7 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
       } catch (dbError) {
         retries--;
         if (retries === 0) {
-          console.error('[AUTH] Database error in verifyToken:', (dbError as Error).message);
+          log.error('AUTH', 'Database error in verifyToken', undefined, { error: (dbError as Error).message });
           return null;
         }
         // Wait a bit before retrying
@@ -243,7 +244,7 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
     }
     return null;
   } catch (error) {
-    console.error('[AUTH] Error in verifyToken:', (error as Error).message);
+    log.error('AUTH', 'Error in verifyToken', undefined, { error: (error as Error).message });
     return null;
   }
 }

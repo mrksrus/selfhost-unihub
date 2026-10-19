@@ -55,6 +55,8 @@ services:
       # ── Encryption key for stored email passwords ──────────────────
       ENCRYPTION_KEY: ${UNIHUB_ENCRYPTION_KEY:?Set UNIHUB_ENCRYPTION_KEY to a strong random value before starting}
       BACKUP_MASTER_KEY: ${UNIHUB_BACKUP_MASTER_KEY:-}
+      # ── Log lines: readable text by default, "json" for a log collector ──
+      LOG_FORMAT: ${UNIHUB_LOG_FORMAT:-text}
       # ── First-run admin bootstrap (required when users table is empty) ──
       BOOTSTRAP_ADMIN_EMAIL: ${UNIHUB_BOOTSTRAP_ADMIN_EMAIL:?Set UNIHUB_BOOTSTRAP_ADMIN_EMAIL before first startup}
       BOOTSTRAP_ADMIN_PASSWORD: ${UNIHUB_BOOTSTRAP_ADMIN_PASSWORD:?Set UNIHUB_BOOTSTRAP_ADMIN_PASSWORD before first startup}

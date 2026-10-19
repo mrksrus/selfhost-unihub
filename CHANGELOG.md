@@ -54,6 +54,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   characters is now shown but not converted for search and previews, and a
   subscription may be at most 8 MiB and 10,000 entries; a larger one shows an
   error and keeps its last synced entries instead of being imported in part.
+- **Server errors can be traced in the log.** A request that fails with a
+  server error now returns a request id (`requestId`, and `X-Request-Id` on
+  every response), and every log line written while handling it carries the
+  same id. `UNIHUB_LOG_FORMAT=json` writes JSON log lines for a log collector.
 - **The interface fonts load in the installed app.** Inter and JetBrains Mono
   were requested from Google Fonts, which the app's own security policy
   refused, so an installed UniHub showed the system's fallback fonts. Both
@@ -248,6 +252,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   Docker and Gradle updates; each run reports `npm audit` for shipped dependencies; a monthly
   workflow deletes `candidate-*` images older than 30 days that no release adopted
   (docs/RELEASE_CONTRACT.md).
+- `api/src/log.ts` is the API logger (area, fields, request id via `AsyncLocalStorage`, text or
+  JSON); the request boundary, startup, background work, timers, auth, database, health and user
+  deletion use it, and `no-console` with a shrink-only list in `eslint.boundaries.js` covers the
+  remaining 36 files.
 
 ## 0.22.4
 

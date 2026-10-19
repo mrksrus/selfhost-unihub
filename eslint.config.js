@@ -3,7 +3,7 @@ import globals from "globals";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
-import { ROUTES_USING_DB, VIEWS_USING_API_CLIENT } from "./eslint.boundaries.js";
+import { API_FILES_USING_CONSOLE, ROUTES_USING_DB, VIEWS_USING_API_CLIENT } from "./eslint.boundaries.js";
 
 export default tseslint.config(
   { ignores: ["dist", "api/dist", ".worker-dist", "tools/ui-regression/.build", "tools/ui-regression/.browsers", "tools/ui-regression/report", "tools/ui-regression/test-results"] },
@@ -61,6 +61,11 @@ export default tseslint.config(
         message: "Read path parameters from req.params; the boundary matched the route.",
       }],
     },
+  },
+  {
+    files: ["api/src/**/*.ts"],
+    ignores: ["api/src/log.ts", ...API_FILES_USING_CONSOLE.files],
+    rules: { "no-console": "error" },
   },
   {
     files: ["api/src/security/**/*.ts", "api/src/http/**/*.ts"],

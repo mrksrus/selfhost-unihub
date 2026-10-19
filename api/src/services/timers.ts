@@ -1,3 +1,5 @@
+import { log } from '../log';
+
 type Timers = Pick<typeof globalThis, 'setInterval' | 'clearInterval'>;
 
 /**
@@ -18,7 +20,7 @@ function everyInterval(label: string, intervalMs: number, task: () => unknown, t
     try {
       await task();
     } catch (error) {
-      console.error(`[${label}] Failed:`, (error as Error).message);
+      log.error(label, 'Failed', error);
     } finally {
       running = false;
     }

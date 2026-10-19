@@ -1,5 +1,6 @@
 import { db, getDb } from '../state';
 import { poolStats } from './database';
+import { log } from '../log';
 
 const HEALTH_PROBE_MS = 4000;
 // How long a saturated pool may keep the probe from answering before it counts
@@ -65,13 +66,13 @@ function createHealthCheck({
       const pool = stats();
       const saturated = pool.queued > 0 || pool.active >= pool.limit;
       const recent = lastSuccessAt !== null && now() - lastSuccessAt <= graceMs;
-      const counts = `active ${pool.active}/${pool.limit}, queued ${pool.queued}`;
+      const counts = { active: pool.active, limit: pool.limit, queued: pool.queued };
       if (saturated && recent) {
-        console.warn(`[HEALTH] Database busy: no connection within ${probeMs} ms (${counts})`);
+        log.warn('HEALTH', `Database busy: no connection within ${probeMs} ms`, counts);
         return { health: 'degraded', database: 'busy', pool, timestamp };
       }
       const reason = saturated ? `pool saturated with no successful probe for ${Math.round(graceMs / 1000)} s` : 'no answer with connections free';
-      console.error(`[HEALTH] Database unavailable: ${reason} (${counts})`);
+      log.error('HEALTH', `Database unavailable: ${reason}`, undefined, counts);
       return { status: 503, health: 'error', database: 'unavailable', pool, timestamp };
     } catch (error) {
       return { status: 503, health: 'error', database: 'unavailable', error: (error as Error).message, timestamp };
