@@ -246,7 +246,14 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
     for (const { controller } of running.values()) controller.abort();
     return drainFinished.then(() => Promise.all([...running.values()].map(({ finished }) => finished)));
   }
+  // Shutdown: claim nothing more and let running jobs finish on their own.
+  // Unlike stop() nothing is aborted, so no job ends as cancelled; whatever
+  // has not finished when the process exits is recovered from its lease.
+  function quiesce() {
+    stopped = true; clearInterval(timer!);
+    return drainFinished.then(() => Promise.all([...running.values()].map(({ finished }) => finished)));
+  }
   return { start, enqueue, cancel, yieldReadWork, interruptAccount, state: (input: { userId: string; accountId: string }) => repository.getJobStatus(input), drain, stop,
-    ids: () => [...running.keys()] };
+    quiesce, workerId, ids: () => [...running.keys()] };
 }
 export { createDurableMailScheduler, READ_ONLY_MAIL_JOB_KINDS, MUTATION_MAIL_JOB_KINDS };

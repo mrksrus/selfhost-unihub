@@ -54,6 +54,9 @@ interface ShutdownOptions {
   graceMs?: number;
   timers?: Pick<TimerApi, 'setTimeout'>;
   onShutdown?: readonly (() => unknown)[];
+  /** Finishes in-flight work after the hooks; the signal is re-raised when it settles or after drainMs. */
+  drain?: () => Promise<unknown>;
+  drainMs?: number;
 }
 
 const DEFAULTS = Object.freeze({
@@ -287,7 +290,8 @@ const serverEvents = createServerEvents();
 // onShutdown hooks (e.g. the mail IDLE supervisor) close long-lived provider
 // sockets on the same path; they must not throw or block the re-raise.
 function installShutdownHandler({ bus = serverEvents, server = null, signals = process,
-  kill = signal => process.kill(process.pid, signal), graceMs = 200, timers = { setTimeout }, onShutdown = [] }: ShutdownOptions = {}) {
+  kill = signal => process.kill(process.pid, signal), graceMs = 200, timers = { setTimeout }, onShutdown = [],
+  drain, drainMs = 0 }: ShutdownOptions = {}) {
   const handlers: Record<string, () => void> = {};
   const onSignal = (signal: NodeJS.Signals) => {
     for (const [name, handler] of Object.entries(handlers)) signals.removeListener(name, handler);
@@ -295,7 +299,12 @@ function installShutdownHandler({ bus = serverEvents, server = null, signals = p
     bus.closeAll({ reason: 'shutdown' });
     try { server?.close?.(); } catch { /* not listening */ }
     // Give the final writes a moment to flush, then re-raise with no handler.
-    timers.setTimeout(() => kill(signal), graceMs);
+    // The drain is bounded: the supervisor sends SIGKILL 10 s after SIGTERM.
+    let raised = false;
+    const raise = () => { if (!raised) { raised = true; timers.setTimeout(() => kill(signal), graceMs); } };
+    if (!drain) { raise(); return; }
+    if (drainMs > 0) timers.setTimeout(raise, drainMs);
+    Promise.resolve().then(drain).catch(() => { /* shutting down anyway */ }).finally(raise);
   };
   for (const name of ['SIGTERM', 'SIGINT'] as const) {
     handlers[name] = () => onSignal(name);
