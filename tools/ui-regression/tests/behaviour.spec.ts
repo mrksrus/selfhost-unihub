@@ -60,7 +60,7 @@ test.describe('P-07 content rows stay in view', () => {
 
       test(`ToDo rows fit their list (${width})`, async ({ page, open }) => {
         await open('/todo');
-        expectOnlyKnown(await clippedRows(page, 'section > ul > li', 'ToDo'), width === 'phone' ? [KNOWN_DEFECTS.todoRowClipped] : []);
+        expectOnlyKnown(await clippedRows(page, 'section > ul > li', 'ToDo'), []);
       });
     });
   }
@@ -78,6 +78,17 @@ test.describe('P-07 content rows stay in view', () => {
       await expect(page.locator('li [aria-expanded]:not([aria-haspopup="menu"])')).toHaveCount(0);
       expectOnlyKnown(await clippedRows(page, 'ul > li:has(button[aria-label^="Play"])', 'Recordings'), []);
     });
+
+    // The page allows pinch zoom, so anything wider than the screen (even a
+    // hidden label) makes the phone's browser widen the layout, and the bottom
+    // bar leaves the screen.
+    for (const path of ['/todo', '/mail', '/recordings', '/settings?section=appearance']) {
+      test(`${path} keeps the layout at the screen width (phone)`, async ({ page, open }) => {
+        await open(path);
+        const { layout, content } = await page.evaluate(() => ({ layout: window.innerWidth, content: document.documentElement.scrollWidth }));
+        expect({ layout, content }).toEqual({ layout: VIEWPORTS.phone.viewport.width, content: VIEWPORTS.phone.viewport.width });
+      });
+    }
   });
 });
 

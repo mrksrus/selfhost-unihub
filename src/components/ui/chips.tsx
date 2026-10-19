@@ -11,7 +11,7 @@ type IconType = ComponentType<{ className?: string; 'aria-hidden'?: boolean | 't
 export function ChipGroup({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
   return (
     <div role="radiogroup" aria-label={label}
-      className={cn('-mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5 [scrollbar-width:none] md:mx-0 md:flex-wrap md:overflow-visible md:px-0 [&::-webkit-scrollbar]:hidden', className)}>
+      className={cn('relative -mx-4 flex gap-2 overflow-x-auto px-4 pb-0.5 [scrollbar-width:none] md:mx-0 md:flex-wrap md:overflow-visible md:px-0 [&::-webkit-scrollbar]:hidden', className)}>
       {children}
     </div>
   );

@@ -48,6 +48,14 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   refused, so an installed UniHub showed the system's fallback fonts. Both
   fonts now ship with the app: no request leaves your server for them, and they
   also work offline.
+- **Pinch zoom works on phones.** The page forbade zooming, which locked out
+  anyone who needs larger text, in Android browsers and in the Android app.
+  Pinch zoom now works everywhere; iPhones keep their behaviour of not zooming
+  into a text field when it is tapped.
+- **ToDo rows fit the screen with a long email subject.** A task made from an
+  email with a long subject was wider than the list: on phones its menu, the
+  "Show email" button and the subtasks were cut off, and the page scrolled
+  sideways. The subject is now shortened inside the row.
 - **The Android app survives a crash of its page renderer.** When Android
   ended the WebView's renderer (a very large mail, or memory pressure while the
   app was in the background), the whole app closed and its notification

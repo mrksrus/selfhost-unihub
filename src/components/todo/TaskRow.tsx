@@ -75,7 +75,7 @@ export function TaskRow({ task, actions, timezone, onEdit, onMove, calendarColor
         </DropdownMenu>
       )}
       {(task.description || task.source_email || subtasks) && (
-        <div className="col-start-2 mt-2 space-y-2.5">
+        <div className="col-start-2 mt-2 min-w-0 space-y-2.5">
           {task.description && <p className="whitespace-pre-wrap text-sm text-muted-foreground">{task.description}</p>}
           {task.source_email && <SourceEmailBlock source={task.source_email} timezone={timezone} onUnlink={done ? undefined : () => unlink.mutate(task)} unlinking={unlink.isPending} />}
           {subtasks && <Subtasks task={task} actions={actions} readOnly={done} autoFocus={addingSubtask} />}

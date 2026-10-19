@@ -212,6 +212,9 @@ class MainActivity : Activity() {
             allowFileAccess = false
             allowContentAccess = false
             setSupportMultipleWindows(false)
+            // Pinch zoom as in a browser, without the on-screen zoom buttons.
+            builtInZoomControls = true
+            displayZoomControls = false
             // The page reads this to know it runs in the app (src/lib/platform.ts).
             userAgentString = "$userAgentString UniHubAndroid/${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
         }
