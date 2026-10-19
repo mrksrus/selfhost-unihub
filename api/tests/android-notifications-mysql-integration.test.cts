@@ -241,13 +241,13 @@ test('Android notification devices: registration, encrypted stream delivery, ack
     await owner('POST', '/notifications/android/devices', { keys: deviceKeys().keys, replaces: otherPhone.device });
     assert.equal((await other('GET', `/notifications/status?endpoint=${encodeURIComponent(otherPhone.endpoint)}`)).subscribed, true);
 
-    // Signing out removes the device with its session and ends its stream.
+    // Signing out removes the device with its session and ends its stream at
+    // once, not at the next heartbeat.
     const last = await owner.stream(renewed.device);
     assert.equal(last.status, 200);
     await owner('POST', '/auth/signout', {});
-    await androidStreams.tick();
     const end = await last.next('end');
-    assert.equal(end?.reason, 'session_ended');
+    assert.equal(end?.reason, 'signed_out');
     const [[left]] = await pool.query<RowDataPacket[]>("SELECT COUNT(*) AS total FROM push_subscriptions WHERE user_id = ? AND transport = 'android'", [ids.owner]);
     assert.equal(Number(left.total), 0);
     const signedOut = await owner.stream(renewed.device);
