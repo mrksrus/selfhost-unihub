@@ -10,21 +10,25 @@ const {
   validateMailHostPolicy,
 } = require('../dist/src/services/mail') as typeof import('../src/services/mail');
 
-test('IMAP TLS verification failures produce host trust confirmation details', async () => {
+test('IMAP TLS verification failures produce host trust confirmation details with both certificates', async () => {
+  const presented = (fingerprint256: string, authorized: boolean) => ({ authorized, authorizationError: authorized ? null : 'DEPTH_ZERO_SELF_SIGNED_CERT',
+    subject: { CN: 'mail.example.test' }, issuer: { CN: 'mail.example.test' }, valid_to: 'Jan  1 00:00:00 2030 GMT', fingerprint256 });
+  const inspected: FixtureValue[] = [];
   const result = await buildMailHostTrustResult({
     imap_host: '93.184.216.34',
     imap_port: 993,
     smtp_host: '93.184.216.34',
     smtp_port: 587,
     imapTlsError: 'self-signed certificate',
-  });
+  }, { inspectCertificates: async hosts => { inspected.push(hosts); return { imap: presented('AA:'.repeat(31) + 'AA', false), smtp: presented('BB:'.repeat(31) + 'BB', true) }; } });
 
   assert.equal(result.blocked, false);
   assert.equal(result.requiresConfirmation, true);
   assert.equal(result.requiresInsecureTls, true);
+  assert.deepEqual(inspected, [{ imap_host: '93.184.216.34', imap_port: 993, smtp_host: '93.184.216.34', smtp_port: 587 }]);
   assert.equal(result.certificates.imap!.authorized, false);
-  assert.equal(result.certificates.imap!.error, 'self-signed certificate');
-  assert.equal(result.certificates.smtp, undefined);
+  assert.equal(result.certificates.imap!.fingerprint256, 'AA:'.repeat(31) + 'AA');
+  assert.equal(result.certificates.smtp!.fingerprint256, 'BB:'.repeat(31) + 'BB', 'the SMTP certificate is confirmed too');
   assert.match(result.warnings.join('\n'), /IMAP certificate/);
 });
 

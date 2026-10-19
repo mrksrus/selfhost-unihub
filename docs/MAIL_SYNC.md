@@ -160,6 +160,7 @@ Main payload fields:
 | `sync_fetch_limit` | Currently normalized to `all` |
 | `delete_emails_on_server` | Optional, defaults to false; enables delayed provider-side deletion after import |
 | `accept_host_trust` | Allows a user-confirmed TLS trust exception |
+| `trusted_imap_fingerprint256`, `trusted_smtp_fingerprint256` | With `accept_host_trust`: the SHA-256 fingerprints of the certificates shown in the confirmation; the account then trusts exactly these |
 | `try_calendar_sync`, `caldav_url`, `time_zone` | Connect the account's calendar with the same login (see [Calendar](CALENDAR.md#connecting-a-calendar)); `caldav_url` may also be an ICS subscription address. The response's `calendarSync` says whether it worked |
 
 ### Host Policy
@@ -176,6 +177,27 @@ Before saving an account, the backend:
 
 Self-hosted mail servers that resolve to private/local addresses must be listed
 in `TRUSTED_MAIL_HOSTS`.
+
+### Confirmed certificates
+
+When the IMAP login cannot verify the certificate, the `409` confirmation
+(`mailHostTrust.certificates`) lists both certificates (IMAP over implicit TLS,
+SMTP over implicit TLS on 465 or after STARTTLS otherwise): owner, issuer,
+expiry and SHA-256 fingerprint. Confirming stores both fingerprints in
+`trusted_imap_fingerprint256` and `trusted_smtp_fingerprint256`. From then on
+every IMAP and SMTP connection of the account accepts a certificate only if it
+verifies normally or has exactly the confirmed fingerprint, checked by
+`api/src/security/mail-certificates.ts` before the server receives anything
+(no login, no message). A different certificate fails the connection with
+`CERT_FINGERPRINT_MISMATCH`; editing the account's login then shows the new
+certificate for confirmation. Moving a confirmed account to another SMTP
+server asks again unless the new server's certificate verifies.
+
+An account confirmed before fingerprints were kept (or whose SMTP certificate
+could not be read during the confirmation) keeps the first certificate it is
+shown afterwards. A server that presents different certificates on different
+connections, such as several backends behind one name, cannot be confirmed
+this way; give it a verifiable certificate.
 
 The same policy is enforced immediately before every IMAP/SMTP connection,
 including background work. DNS errors fail closed. Every returned address is
@@ -715,7 +737,7 @@ See [Backup and Restore Guide](BACKUP_RESTORE.md).
 - State-changing endpoints require CSRF validation.
 - CORS is controlled by `ALLOWED_ORIGINS`.
 - Private/local mail hosts are blocked unless allowlisted.
-- TLS certificate verification is strict unless the user explicitly accepts a trust exception.
+- TLS certificate verification is strict unless the user explicitly confirms the server's certificates; a confirmed account trusts only those certificates (by fingerprint) or ones that verify.
 - Email HTML is rendered by the frontend inside a sandboxed iframe.
 - Attachments are served only through authenticated API routes with path guards.
 

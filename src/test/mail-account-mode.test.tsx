@@ -323,3 +323,30 @@ describe('calendar of a mail account', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/accounts', expect.objectContaining({ provider: 'gmail', try_calendar_sync: false })));
   });
 });
+
+describe('confirming a mail server certificate', () => {
+  it('shows both certificates and confirms exactly the fingerprints shown', async () => {
+    const certificate = (fingerprint256: string) => ({ authorized: false, authorizationError: 'DEPTH_ZERO_SELF_SIGNED_CERT',
+      subject: { CN: 'mail.example.test' }, issuer: { CN: 'mail.example.test' }, valid_to: 'Jan  1 00:00:00 2030 GMT', fingerprint256 });
+    const imap = 'AA:'.repeat(31) + 'AA', smtp = 'BB:'.repeat(31) + 'BB';
+    const assessment = (port: number) => ({ host: 'mail.example.test', port, knownProvider: false, allowlisted: false, resolvedAddresses: ['192.0.2.25'] });
+    vi.mocked(api.post)
+      .mockResolvedValueOnce({ status: 409, error: 'Review and confirm mail server authenticity before continuing.', requiresHostTrustConfirmation: true,
+        mailHostTrust: { blocked: false, requiresConfirmation: true, requiresInsecureTls: true, warnings: [],
+          assessments: { imap: assessment(993), smtp: assessment(587) }, certificates: { imap: certificate(imap), smtp: certificate(smtp) } } } as never)
+      .mockResolvedValue({ data: { syncInProgress: true } });
+    const dialog = mountEditor();
+    fireEvent.change(within(dialog).getByLabelText('Email Address'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Username'), { target: { value: 'new@example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('Password'), { target: { value: 'secret' } });
+    fireEvent.change(within(dialog).getByLabelText('IMAP Server'), { target: { value: 'mail.example.test' } });
+    fireEvent.change(within(dialog).getByLabelText('SMTP Server'), { target: { value: 'mail.example.test' } });
+    fireEvent.submit(within(dialog).getByLabelText('Password').closest('form')!);
+
+    expect(await screen.findByText(`SHA-256 fingerprint: ${imap}`)).toBeInTheDocument();
+    expect(screen.getByText(`SHA-256 fingerprint: ${smtp}`)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Continue and Trust Server' }));
+    await waitFor(() => expect(api.post).toHaveBeenLastCalledWith('/mail/accounts', expect.objectContaining({
+      accept_host_trust: true, trusted_imap_fingerprint256: imap, trusted_smtp_fingerprint256: smtp })));
+  });
+});

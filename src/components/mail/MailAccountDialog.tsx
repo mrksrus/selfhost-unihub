@@ -68,7 +68,7 @@ function HostTrustConfirmation({ editor }: { editor: MailAccountEditor }) {
       {editor.pendingHostTrust.trust.certificates.smtp && renderTrustSection('SMTP', editor.pendingHostTrust.trust.assessments.smtp, editor.pendingHostTrust.trust.certificates.smtp)}
       {editor.pendingHostTrust.trust.requiresInsecureTls && (
         <p className="text-sm text-muted-foreground">
-          If you continue, this account will allow insecure TLS for this mail server. This is useful for self-hosted mail, but unsafe if you do not recognize the server.
+          If you continue, this account trusts these certificates even though they could not be verified. Compare the fingerprints with the ones on your mail server. If the server later shows a different certificate that cannot be verified, UniHub stops connecting until you confirm it.
         </p>
       )}
       <div className="flex justify-end gap-3 pt-2">

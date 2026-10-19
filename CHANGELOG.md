@@ -19,6 +19,16 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **A confirmed mail server is trusted only with the certificate you
+  confirmed.** Confirming a mail server whose certificate could not be
+  verified turned certificate checks off for that account's IMAP and SMTP
+  connections for good, so anyone able to intercept the connection later could
+  read the password and mail. The confirmation now shows the IMAP and the SMTP
+  certificate with their fingerprints, and the account connects only while the
+  server presents one of those (or a certificate that verifies). A different
+  one stops the connection before the password is sent, and editing the
+  account shows it for confirmation. Accounts confirmed earlier keep the
+  certificate their next connection sees.
 - **A draft's HTML is made inert before it reaches the editor.** Opening a
   draft put its stored HTML into the message editor as it was. A draft written
   in another client that quoted a hostile message (the provider's Drafts
