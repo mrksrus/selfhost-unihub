@@ -9,6 +9,7 @@ import { attachmentsRoot, rawRoot, mailPathUnderRoot, ownedMailPath } from './ma
 import { RECORDINGS_ROOT, deleteRecordingFiles } from './recordings';
 import { BACKUPS_ROOT, isBackupPathUnderRoot } from './export-jobs';
 import { realtime } from './realtime';
+import { log } from '../log';
 
 type DeleteActor = 'self' | 'admin';
 interface DeleteUserResult { files: { removed: number; failed: number } }
@@ -78,7 +79,7 @@ async function removeUserFiles(userId: string, files: Set<string>, recordingPath
       removed++;
     } catch (error) {
       failed.push(file);
-      console.error('[USERS] Could not remove a deleted user\'s file:', (error as Error).message);
+      log.error('USERS', 'Could not remove a deleted user\'s file', error);
     }
   }
   for (const storagePath of recordingPaths) {
@@ -94,11 +95,11 @@ async function removeUserFiles(userId: string, files: Set<string>, recordingPath
         await fs.rm(directory, { recursive: true, force: true });
       } catch (error) {
         failed.push(directory);
-        console.error('[USERS] Could not remove a deleted user\'s directory:', (error as Error).message);
+        log.error('USERS', 'Could not remove a deleted user\'s directory', error);
       }
     }
   }
-  if (failed.length) console.error(`[USERS] ${failed.length} file(s) of deleted user ${userId} remain on disk: ${failed.join(', ')}`);
+  if (failed.length) log.error('USERS', 'Files of a deleted user remain on disk', undefined, { user: userId, count: failed.length, files: failed.join(', ') });
   return { files: { removed, failed: failed.length } };
 }
 

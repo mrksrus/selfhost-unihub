@@ -41,7 +41,8 @@ test('a failing run is logged and the next tick runs again', async () => {
     assert.equal(await tick(), true);
     assert.equal(await tick(), true);
     assert.equal(calls, 2);
-    assert.deepEqual(logged, [['[TEST] Failed:', 'database away']]);
+    assert.equal(logged.length, 1);
+    assert.match(String(logged[0][0]), /^\[TEST\] Failed error="database away"/);
   } finally {
     console.error = original;
   }

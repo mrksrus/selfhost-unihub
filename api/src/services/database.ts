@@ -11,6 +11,7 @@ import type { Migration } from './database-migrations';
 import { BASELINE } from './database-baseline';
 import { verifyDatabaseInventory } from './data-inventory';
 import { withTransaction } from './transactions';
+import { log } from '../log';
 
 type FieldRow = RowDataPacket & { Field: string };
 type CountRow = RowDataPacket & { n: number | string };
@@ -46,12 +47,12 @@ function useUtcSessions(pool: Pool) {
   pool.pool.on('connection', connection => {
     connection.query("SET time_zone = '+00:00'", error => {
       if (!error) return;
-      console.error('[DB] Could not set the session time zone to UTC:', error.message);
+      log.error('DB', 'Could not set the session time zone to UTC', error);
       connection.destroy();
     });
     connection.query('SET innodb_snapshot_isolation = OFF', error => {
       if (!error || error.errno === UNKNOWN_SYSTEM_VARIABLE) return;
-      console.error('[DB] Could not turn off snapshot isolation for the session:', error.message);
+      log.error('DB', 'Could not turn off snapshot isolation for the session', error);
       connection.destroy();
     });
   });
@@ -99,7 +100,7 @@ async function initDatabase() {
     try {
       setDb(useUtcSessions(mysql.createPool(poolConfig)));
       await db.execute('SELECT 1');
-      console.log('✓ Database connected');
+      log.info('DB', 'Connected');
       break;
     } catch (error) {
       // Clean up the failed pool before retrying
@@ -109,7 +110,7 @@ async function initDatabase() {
       }
       // Faster retry intervals: 2s for first 5 attempts, then 3s
       const waitTime = attempt <= 5 ? 2000 : 3000;
-      console.log(`⏳ Waiting for database (attempt ${attempt}/20)…`);
+      log.info('DB', 'Waiting for the database', { attempt, of: 20 });
       await new Promise(r => setTimeout(r, waitTime));
     }
   }

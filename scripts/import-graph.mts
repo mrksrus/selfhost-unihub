@@ -90,19 +90,24 @@ for (const component of [...cycles(api.imports), ...cycles(web.imports)]) {
 }
 
 const boundariesPath = '../eslint.boundaries.js';
-const { ROUTES_USING_DB, VIEWS_USING_API_CLIENT } = await import(boundariesPath) as Record<string, Boundary>;
+const { ROUTES_USING_DB, VIEWS_USING_API_CLIENT, API_FILES_USING_CONSOLE } = await import(boundariesPath) as Record<string, Boundary>;
 const allImports = new Map([...api.imports, ...web.imports]);
+function checkBoundary(name: string, boundary: Boundary, stillNeeded: (file: string) => boolean) {
+  if (boundary.files.length > boundary.ceiling) failures.push(`${name} in eslint.boundaries.js grew past its ceiling of ${boundary.ceiling}; follow the rule instead.`);
+  for (const file of boundary.files) {
+    if (!allImports.has(file)) failures.push(`${name}: ${file} does not exist; remove it from eslint.boundaries.js.`);
+    else if (!stillNeeded(file)) failures.push(`${name}: ${file} follows the rule now; remove it from eslint.boundaries.js and lower the ceiling.`);
+  }
+}
 const usesAny = (file: string, targets: readonly string[]) => [...allImports.get(file) || []].some(target => targets.includes(target));
 for (const [name, boundary, targets] of [
   ['ROUTES_USING_DB', ROUTES_USING_DB, ['api/src/state.ts']],
   ['VIEWS_USING_API_CLIENT', VIEWS_USING_API_CLIENT, ['src/lib/api.ts']],
 ] as const) {
-  if (boundary.files.length > boundary.ceiling) failures.push(`${name} in eslint.boundaries.js grew past its ceiling of ${boundary.ceiling}; follow the rule instead.`);
-  for (const file of boundary.files) {
-    if (!allImports.has(file)) failures.push(`${name}: ${file} does not exist; remove it from eslint.boundaries.js.`);
-    else if (!usesAny(file, targets)) failures.push(`${name}: ${file} follows the rule now; remove it from eslint.boundaries.js and lower the ceiling.`);
-  }
+  checkBoundary(name, boundary, file => usesAny(file, targets));
 }
+const CONSOLE_CALL = /\bconsole\.(log|error|warn|info|debug)\(/;
+checkBoundary('API_FILES_USING_CONSOLE', API_FILES_USING_CONSOLE, file => CONSOLE_CALL.test(fs.readFileSync(path.join(root, file), 'utf8')));
 
 const engineEdges = [...api.lazy].flatMap(([file, targets]) => file.startsWith('api/src/routes/')
   ? [...targets].filter(target => target.startsWith('api/src/services/mail-engine/')).map(target => `${file} -> ${target}`) : []);

@@ -13,6 +13,7 @@ import { startBackgroundWork } from './services/background-work';
 import type { BackgroundWorkHandle } from './services/background-work';
 import { getVapidKeys } from './services/notifications';
 import { closeAndroidStreams } from './services/android-push';
+import { log } from './log';
 
 // Both are logged with their stack, so a container restart has a cause in its
 // log. Startup failures exit (server.ts catches start()). A runtime rejection
@@ -21,10 +22,10 @@ import { closeAndroidStreams } from './services/android-push';
 // outside any handler leaves unknown state, so the process ends and the
 // container restarts.
 process.on('unhandledRejection', reason => {
-  console.error('[PROCESS] Unhandled promise rejection:', reason instanceof Error ? reason.stack || reason.message : reason);
+  log.error('PROCESS', 'Unhandled promise rejection', reason);
 });
 process.on('uncaughtException', error => {
-  console.error('[PROCESS] Uncaught exception, exiting:', error.stack || error.message);
+  log.error('PROCESS', 'Uncaught exception, exiting', error);
   process.exit(1);
 });
 
@@ -36,11 +37,11 @@ async function start() {
   await prepareFolderReconciliation();
   if (DISABLED_BACKUP_ROUTES.size) {
     await suspendPendingBackupJobs(db);
-    console.log('[BACKUP] Creation and restore suspended; existing archives retained.');
+    log.info('BACKUP', 'Creation and restore suspended; existing archives retained');
   } else {
     await resumePendingDataExportJobs();
     await resumePendingRestoreJobs();
-    console.log('[BACKUP] Versioned backup and restore workers enabled.');
+    log.info('BACKUP', 'Versioned backup and restore workers enabled');
   }
   // Previously retained restore uploads stay available until explicitly deleted.
   // Re-enabling backup must not suddenly expire archives retained during suspension.
@@ -48,7 +49,7 @@ async function start() {
   const server = http.createServer((req, res) => {
     // Last-resort boundary, including failures while writing an error response.
     handleRequest(req, res).catch(error => {
-      console.error('HTTP response failed:', (error as Error).message);
+      log.error('HTTP', 'Response failed', error);
       res.destroy();
     });
   });
@@ -59,7 +60,7 @@ async function start() {
   let work: BackgroundWorkHandle | null = null;
   installShutdownHandler({ server, onShutdown: [() => work?.stop(), closeAndroidStreams] });
   server.listen(PORT, () => {
-    console.log(`✓ UniHub API server running on port ${PORT}`);
+    log.info('STARTUP', 'UniHub API listening', { port: PORT });
   });
 
   work = await startBackgroundWork();

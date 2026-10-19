@@ -187,8 +187,13 @@ test('a thrown error with a 4xx status reaches the client with its status and co
 
   thrown = Object.assign(new Error("Data too long for column 'notes' at row 1"), { code: 'ER_DATA_TOO_LONG', errno: 1406 });
   result = await run('PUT', '/api/recordings/r1', '{"title":"x"}');
-  assert.deepEqual([result.status, result.body], [500, { error: 'Internal Server Error', status: 500 }]);
+  // The id in the body and header is the one on the log line, so a reported
+  // failure can be found in the log.
+  const requestId = result.headers.get('x-request-id');
+  assert.match(requestId, /^[0-9a-f]{16}$/);
+  assert.deepEqual([result.status, result.body], [500, { error: 'Internal Server Error', status: 500, requestId }]);
   assert.equal(logged.length, 1);
-  assert.deepEqual(logged[0].slice(0, 3), ['Request error:', 'PUT', 'PUT /api/recordings/:id']);
+  assert.match(String(logged[0][0]), /^\[HTTP\] Request failed route="PUT \/api\/recordings\/:id" error="Data too long/);
+  assert.ok(String(logged[0][0]).includes(`requestId=${requestId}`));
   assert.ok(!JSON.stringify(logged[0]).includes('"title"'), 'the log line carries the route, not the request body');
 });
