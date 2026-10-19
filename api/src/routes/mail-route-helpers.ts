@@ -46,7 +46,11 @@ function routeError(error: unknown, fallback: string) {
     ...((error as ApiError & { requiresConfirmation?: boolean }).requiresConfirmation ? { requires_confirmation: true } : {}) };
 }
 
-function extractMailRouteId(req: Pick<IncomingMessage, 'url'>, offsetFromEnd = 1) {
+// The `:id` the boundary matched. Handlers called without the boundary (route
+// unit tests) have no params; their id is read from the URL instead.
+function extractMailRouteId(req: Pick<IncomingMessage, 'url'> & { params?: Record<string, string | null> }, offsetFromEnd = 1) {
+  if (req.params?.id) return req.params.id;
+  // eslint-disable-next-line no-restricted-syntax -- the fallback described above
   const parts = req.url!.split('?')[0].split('/').filter(Boolean);
   return parts[parts.length - offsetFromEnd] || null;
 }

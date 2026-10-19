@@ -3,6 +3,7 @@ import globals from "globals";
 import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
+import { ROUTES_USING_DB, VIEWS_USING_API_CLIENT } from "./eslint.boundaries.js";
 
 export default tseslint.config(
   { ignores: ["dist", "api/dist", ".worker-dist", "tools/ui-regression/.build", "tools/ui-regression/.browsers", "tools/ui-regression/report", "tools/ui-regression/test-results"] },
@@ -38,6 +39,46 @@ export default tseslint.config(
       // Modules loaded on first use (import cycles, require.cache swaps in tests)
       // and the `import x = require()` of `export =` route tables.
       "@typescript-eslint/no-require-imports": "off",
+    },
+  },
+  // Layering (docs/ARCHITECTURE.md, Layering). Existing exceptions are listed
+  // in eslint.boundaries.js and only shrink.
+  {
+    files: ["api/src/routes/**/*.ts"],
+    ignores: ROUTES_USING_DB.files,
+    rules: {
+      "no-restricted-imports": ["error", { paths: [{ name: "../state", message: "Routes reach the database through a service in api/src/services/." }] }],
+    },
+  },
+  {
+    files: ["api/src/routes/**/*.ts"],
+    rules: {
+      "no-restricted-syntax": ["error", {
+        selector: "CallExpression[callee.property.name='split'] > MemberExpression.callee > MemberExpression.object[property.name='url']",
+        message: "Read path parameters from req.params; the boundary matched the route.",
+      }, {
+        selector: "CallExpression[callee.property.name='split'] > MemberExpression.callee > TSNonNullExpression.object > MemberExpression.expression[property.name='url']",
+        message: "Read path parameters from req.params; the boundary matched the route.",
+      }],
+    },
+  },
+  {
+    files: ["api/src/security/**/*.ts", "api/src/http/**/*.ts"],
+    rules: {
+      "no-restricted-imports": ["error", { patterns: [{
+        group: ["../services", "../services/*", "../routes", "../routes/*"],
+        message: "security/ and http/ are leaf layers: they do not import services or routes.",
+      }] }],
+    },
+  },
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/lib/**", "src/test/**", "src/contexts/AuthContext.tsx", "src/utils/service-worker.ts", ...VIEWS_USING_API_CLIENT.files],
+    rules: {
+      "no-restricted-imports": ["error", { patterns: [{
+        regex: "(^@/lib/api$)|(/lib/api$)",
+        message: "Call the API through a feature module in src/lib/ (calendar-api.ts, mail-api.ts, ...).",
+      }] }],
     },
   },
   {

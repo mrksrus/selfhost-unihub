@@ -116,7 +116,9 @@ The root tools in `scripts/` and the PostCSS configuration use `.mts`; the
 ESLint configuration stays `eslint.config.js`, so editors and a plain
 `npx eslint` load it without extra flags. `npm run typecheck` checks frontend
 code, browser workers, root configuration, root tools, API source, API scripts
-and API tests; CI runs it as part of `npm run build`. Install dependencies for
+and API tests; CI runs it as part of `npm run build`. `npm run lint` runs ESLint, including the
+layering rules, and then `scripts/import-graph.mts` (docs/ARCHITECTURE.md,
+Layering). Install dependencies for
 both packages first; the root mail smoke tool resolves its provider types from
 the API's dependencies. `npm run typecheck:frontend` remains usable in the
 separate frontend Docker build stage.

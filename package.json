@@ -9,7 +9,7 @@
     "build:dev": "npm run build:workers && vite build --mode development",
     "build:frontend": "npm run typecheck:frontend && npm run build:workers && vite build",
     "build:workers": "tsc -p tsconfig.workers.json",
-    "lint": "eslint .",
+    "lint": "eslint . && node scripts/import-graph.mts",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

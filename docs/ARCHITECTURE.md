@@ -94,6 +94,25 @@ change in `request-handler.ts`. A `:param` is one non-empty, percent-decoded
 segment, available to the handler as `req.params`; malformed encoding is a 400.
 Paths with an empty or trailing segment match nothing.
 
+### Layering
+
+`npm run lint` enforces the direction of imports:
+
+- `api/src/security/` and `api/src/http/` are leaf layers: they import neither
+  services nor routes.
+- Routes reach the database through services, not `db` from `state.ts`, and
+  read path parameters from `req.params` rather than splitting `req.url`.
+- Frontend views and hooks call the API through a feature module in `src/lib/`
+  (`calendar-api.ts`, `mail-api.ts`, ...); only `src/lib/`, `AuthContext.tsx`
+  and `utils/service-worker.ts` use the raw client in `src/lib/api.ts`.
+- There is no static import cycle in the API or the frontend
+  (`scripts/import-graph.mts`). A cycle is broken on purpose with a lazy
+  `require()`; the check lists the lazy edges from routes into the mail engine.
+
+Files that predate a rule are listed in `eslint.boundaries.js`. The lists only
+shrink: the check fails when a listed file no longer needs its entry or a list
+grows past its ceiling.
+
 ## Frontend Structure
 
 | Path | Purpose |
