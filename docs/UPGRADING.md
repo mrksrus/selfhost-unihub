@@ -5,6 +5,36 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.23.0 Hardening
+
+Two automatic database upgrades: step 18 replaces each stored session token
+with its hash (everyone stays signed in) and step 19 adds the activity log.
+Make a database backup first. After the upgrade, going back to 0.22.x signs
+everyone out, and mail or calendar passwords saved after the update use a
+format 0.22.x cannot read.
+
+No configuration change is needed. Worth knowing:
+
+- **Confirmed mail servers.** An account whose server certificate you
+  confirmed earlier keeps the certificate its first connection after the
+  update sees. If that server later presents another certificate that cannot
+  be verified, the account stops connecting until you edit it and confirm the
+  new certificate ([Mail sync](MAIL_SYNC.md#confirmed-certificates)).
+- **HSTS.** The bundled Nginx sends `Strict-Transport-Security` (one year) on
+  requests that reached your proxy over HTTPS (`X-Forwarded-Proto: https`).
+  Browsers then use HTTPS only for that host name. A proxy that adds its own
+  HSTS header does no harm.
+- **Fonts** come with the app now; a Content-Security-Policy in your proxy no
+  longer needs to allow Google Fonts.
+- **Stopping the container** lets running requests and mail jobs finish for up
+  to 8 seconds. The supplied Compose file allows 15 seconds
+  (`stop_grace_period`); Docker's default of 10 is enough too.
+- **Optional settings:** `UNIHUB_LOG_FORMAT=json` for a log collector, and
+  `UNIHUB_ENCRYPTION_KEY_PREVIOUS` only when you change the encryption key
+  ([Installation](INSTALLATION.md#changing-the-encryption-key)).
+- **Android app.** Older apps keep working. Install 0.23.0 from Settings →
+  General → Install for the server version check on connect.
+
 ## 0.22.4 New mail is announced again
 
 No database upgrade, no configuration change and no app update. Pull and

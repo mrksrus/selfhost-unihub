@@ -6,7 +6,13 @@ Read the [upgrade guide](docs/UPGRADING.md) before updating an existing
 installation, and keep a consistent backup of the database, uploads, configuration and
 secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
-## 0.23.0 (unreleased)
+## 0.23.0
+
+Hardening across the server, mail, calendar and the apps: hashed sessions,
+an activity log, signed-in devices, pinned mail certificates, verified calendar
+deletions, sending a message once, bundled fonts and pinch zoom. Two automatic
+database upgrades; no configuration change is needed (see
+[Upgrading](docs/UPGRADING.md#0230-hardening)).
 
 ### Added
 
