@@ -13,7 +13,7 @@ const { isPublicAddress } = require('../dist/src/services/push-transport') as ty
 // synthetic database, encryption and web-push sender; `transports` replaces
 // the transport map to test the dispatcher alone.
 function loadService(db: FixtureValue, sender: FixtureValue = {}, transports: FixtureValue = null) {
-  const sandboxed = new Set(['../dist/src/services/notifications', '../dist/src/services/notification-transports'].map(name => require.resolve(name)));
+  const sandboxed = new Set(['../dist/src/services/notifications', '../dist/src/services/notification-transports', '../dist/src/services/sessions'].map(name => require.resolve(name)));
   function load(filename: string) {
     const nativeRequire = createRequire(filename);
     const module = { exports: {} };

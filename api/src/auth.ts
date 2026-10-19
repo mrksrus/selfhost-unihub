@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
-import type { AuthCredentialSource, AuthRequest, StoredFlag } from './types';
+import type { AuthCredentialSource, AuthRequest } from './types';
 
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
@@ -16,8 +16,8 @@ import {
 import { createClientIpResolver } from './security/client-ip';
 import { consumeAuthAttempt } from './security/login-limits';
 import { log } from './log';
+import { findSession, renewSession } from './services/sessions';
 
-interface AuthSession extends RowDataPacket { user_id: string; expires_at: Date | string; is_active: StoredFlag }
 
 // Password hashing
 async function hashPassword(password: string) {
@@ -208,22 +208,13 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
     let retries = 3;
     while (retries > 0) {
       try {
-        const [sessions] = await db.execute<AuthSession[]>(
-          `SELECT s.user_id, s.expires_at, u.is_active
-           FROM sessions s
-           INNER JOIN users u ON u.id = s.user_id
-           WHERE s.token = ?
-           LIMIT 1`,
-          [token]
-        );
-
-        if (sessions.length === 0) return null;
-        const session = sessions[0];
+        const session = await findSession(token);
+        if (!session) return null;
         if (new Date(session.expires_at) < new Date()) return null;
         if (!session.is_active) return null;
         if (renew && sessionNeedsRenewal(session.expires_at)) {
           try {
-            await db.execute('UPDATE sessions SET expires_at = ? WHERE token = ? AND expires_at > UTC_TIMESTAMP()', [getSessionExpiry(), token]);
+            await renewSession(token, getSessionExpiry());
             req.sessionRenewed = token;
           } catch (renewError) {
             log.error('AUTH', 'Session renewal failed', undefined, { code: (renewError as NodeJS.ErrnoException).code || (renewError as Error).name });

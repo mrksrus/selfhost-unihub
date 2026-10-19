@@ -128,7 +128,8 @@ test('real MariaDB + IMAP wire peer: new mail is announced after its content arr
     // An owner with a signed-in browser that turned notifications on.
     const userId = crypto.randomUUID(), accountId = crypto.randomUUID(), sessionId = crypto.randomUUID();
     await pool.execute<ResultSetHeader>('INSERT INTO users (id,email,password_hash) VALUES (?,?,?)', [userId, 'owner@example.test', 'synthetic']);
-    await pool.execute<ResultSetHeader>('INSERT INTO sessions (id,user_id,token,expires_at) VALUES (?,?,?,?)', [sessionId, userId, 'owner-session', new Date(Date.now() + 10 * 86400000)]);
+    const { sessionKey } = require('../dist/src/services/sessions') as typeof import('../src/services/sessions');
+    await pool.execute<ResultSetHeader>('INSERT INTO sessions (id,user_id,token,expires_at) VALUES (?,?,?,?)', [sessionId, userId, sessionKey('owner-session'), new Date(Date.now() + 10 * 86400000)]);
     const keyBytes = Buffer.alloc(65, 1); keyBytes[0] = 4;
     await notifications.subscribe(userId, 'owner-session', { endpoint: 'https://fcm.googleapis.com/fcm/send/owner-browser',
       keys: { p256dh: keyBytes.toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } });

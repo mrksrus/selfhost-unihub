@@ -294,6 +294,14 @@ const MIGRATIONS: readonly Migration[] = [
       await verifyDatabaseInventory(connection, { throughMigration: 17 });
     },
   },
+  {
+    id: 18,
+    name: 'session-token-hashes',
+    up: hashSessionTokens,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 18 });
+    },
+  },
 ];
 const LATEST_MIGRATION_ID = MIGRATIONS[MIGRATIONS.length - 1].id;
 
@@ -382,6 +390,14 @@ async function createNotificationTables(connection: SqlExecutor) {
 
 // 'webpush' (a browser's push service) or 'android' (the app's connection to
 // this server). Upgrade step 17.
+// Sessions keep the SHA-256 of their token (services/sessions.ts). Existing
+// sessions stay signed in: their stored token becomes its hash, which is what
+// the next request's token hashes to. A stored value that is already 64 hex
+// characters is a hash (a session token is a JWT with dots).
+async function hashSessionTokens(connection: SqlExecutor) {
+  await connection.execute("UPDATE sessions SET token = LOWER(SHA2(token, 256)) WHERE token NOT REGEXP '^[0-9a-f]{64}$'");
+}
+
 async function addPushTransport(connection: SqlExecutor) {
   if (!await hasColumn(connection, 'push_subscriptions', 'transport')) {
     await connection.execute("ALTER TABLE push_subscriptions ADD COLUMN transport VARCHAR(16) NOT NULL DEFAULT 'webpush'");

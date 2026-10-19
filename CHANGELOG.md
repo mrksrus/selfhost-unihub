@@ -62,6 +62,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   work.** Only one API process at a time runs the mail sync, IDLE sessions and
   timers; another one logs a warning, serves requests and takes over when the
   first stops.
+- **Session tokens are stored hashed.** The database kept a copy of every
+  signed-in session's token, so anyone holding a database dump or a copy of
+  the volume could sign in as any of those users for up to 21 days. It now
+  keeps only a hash; existing sign-ins stay valid through the upgrade.
 - **Restarts finish what they can.** Stopping or updating the container now
   lets requests in progress and running mail jobs finish (up to 8 seconds),
   and hands any job still running to the next start at once instead of after
@@ -264,6 +268,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   JSON); the request boundary, startup, background work, timers, auth, database, health and user
   deletion use it, and `no-console` with a shrink-only list in `eslint.boundaries.js` covers the
   remaining 36 files.
+- `api/src/services/sessions.ts` owns every session query by token (create, find, renew, lock,
+  end, end others, end all); routes and the notification services call it. Upgrade step 18
+  (`session-token-hashes`) hashes existing tokens in place.
 
 ## 0.22.4
 

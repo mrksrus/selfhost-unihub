@@ -44,7 +44,8 @@ test('MySQL notification schema, atomic outbox, due reminders, stale cancellatio
   await connection.execute(`CREATE TEMPORARY TABLE backup_restore_jobs (id CHAR(36) PRIMARY KEY, user_id CHAR(36), requested_sections JSON, status VARCHAR(24)) ${options}`);
   const userId = crypto.randomUUID(); const sessionId = crypto.randomUUID();
   await connection.execute<ResultSetHeader>("INSERT INTO users (id, email, role) VALUES (?, 'admin@example.com', 'admin')", [userId]);
-  await connection.execute<ResultSetHeader>('INSERT INTO sessions VALUES (?, ?, ?, ?)', [sessionId, userId, 'test-session', new Date(Date.now() + 10 * 86400000)]);
+  const { sessionKey } = require('../dist/src/services/sessions') as typeof import('../src/services/sessions');
+  await connection.execute<ResultSetHeader>('INSERT INTO sessions VALUES (?, ?, ?, ?)', [sessionId, userId, sessionKey('test-session'), new Date(Date.now() + 10 * 86400000)]);
   const service = require('../dist/src/services/notifications') as typeof import('../src/services/notifications');
   // The same DDL as upgrade steps 15 and 17, on this connection's temporary tables.
   const database = require('../dist/src/services/database') as typeof import('../src/services/database');

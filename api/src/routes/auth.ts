@@ -36,6 +36,7 @@ import {
   deleteTwoFactorLoginChallenge,
 } from '../services/two-factor';
 import { realtime } from '../services/realtime';
+import { createSession, endOtherSessions, endSession, endUserSessions, lockOwnSession } from '../services/sessions';
 import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -68,10 +69,7 @@ async function createSessionResponse(user: Pick<UserRow, 'id' | 'email' | 'full_
   const token = generateToken(user.id);
   const csrfToken = generateCsrfToken();
   const expiresAt = getSessionExpiry();
-  await connection.execute(
-    'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
-    [user.id, token, expiresAt]
-  );
+  await createSession({ userId: user.id, token, expiresAt }, connection);
 
   const sendCookies = () => { setAuthCookie(res, token); setCsrfCookie(res, csrfToken); };
   if (afterCommit) afterCommit.push(sendCookies);
@@ -171,10 +169,7 @@ export = defineRoutes({
 
       // Create session
       const expiresAt = getSessionExpiry();
-      await db.execute(
-        'INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)',
-        [newUserId, token, expiresAt]
-      );
+      await createSession({ userId: newUserId, token, expiresAt });
 
       const result = { csrfToken, user: { id: newUserId, email, full_name, role: 'user', timezone: null, two_factor_enabled: false } };
       setAuthCookie(res, token);
@@ -381,11 +376,10 @@ export = defineRoutes({
         return { error: 'Two-factor authentication is already enabled', status: 400 };
       }
       // Locking the session row also holds back a sign-out of it until this commits.
-      const [current] = await connection.execute<UserRow[]>('SELECT 1 FROM sessions WHERE user_id = ? AND token = ? FOR UPDATE', [userId, currentToken]);
-      if (current.length === 0) { await connection.rollback(); return { error: 'Unauthorized', status: 401 }; }
+      if (!await lockOwnSession(userId, currentToken, connection)) { await connection.rollback(); return { error: 'Unauthorized', status: 401 }; }
       await enableTwoFactor(userId, secret, recovery.hashes, connection);
       // Sessions on other devices were opened with the password alone.
-      await connection.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, currentToken]);
+      await endOtherSessions(userId, currentToken, connection);
       await connection.commit();
       realtime.closeUser(userId, { exceptToken: currentToken });
       return {
@@ -421,7 +415,7 @@ export = defineRoutes({
       const verification = await verifyUserSecondFactor(users[0], code);
       if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
       await disableTwoFactor(userId);
-      await db.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, getAuthTokenFromRequest(req) || '']);
+      await endOtherSessions(userId, getAuthTokenFromRequest(req));
       realtime.closeUser(userId, { exceptToken: getAuthTokenFromRequest(req) });
       return { enabled: false };
     } catch (error) {
@@ -466,7 +460,7 @@ export = defineRoutes({
     try {
       const token = getAuthTokenFromRequest(req);
       if (token) {
-        await db.execute('DELETE FROM sessions WHERE token = ?', [token]);
+        await endSession(token);
         realtime.closeSession(token, { reason: 'signed_out' });
       }
       clearAuthCookie(res);
@@ -535,7 +529,7 @@ export = defineRoutes({
 
       const newHash = await hashPassword(new_password);
       await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId]);
-      await db.execute('DELETE FROM sessions WHERE user_id = ?', [userId]);
+      await endUserSessions(userId);
       realtime.closeUser(userId);
       clearAuthCookie(res);
       clearCsrfCookie(res);

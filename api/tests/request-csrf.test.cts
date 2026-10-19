@@ -26,7 +26,9 @@ function harness(t: import('node:test').TestContext) {
   }));
   stub(paths[2], { isModuleEnabled: async () => true });
   stub(paths[3], { getActiveRestoreSections: async () => new Set<FixtureValue>() });
-  const sessions = new Set([token]);
+  // The database holds token hashes (services/sessions.ts).
+  const { sessionKey } = require('../dist/src/services/sessions') as typeof import('../src/services/sessions');
+  const sessions = new Set([sessionKey(token)]);
   const user = { id: 'u1', email: 'one@example.test', full_name: 'One', avatar_url: null, role: 'user', timezone: null, two_factor_enabled: 0, is_active: 1, password_hash: passwordHash };
   setDb({ async execute(sql: string, values: FixtureValue) {
     if (sql.includes('FROM sessions s')) return [sessions.has(values[0]) ? [{ user_id: 'u1', expires_at: new Date(Date.now() + 3600000), is_active: 1 }] : []];

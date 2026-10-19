@@ -74,8 +74,13 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
       [admin, await hashPassword('synthetic-admin-password')]);
     await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'person@example.test',?,'user',TRUE)",
       [person, await hashPassword('synthetic-person-password')]);
-    const addSession = (userId: string, token: FixtureValue) => pool.execute<ResultSetHeader>('INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 DAY))', [userId, token]);
-    const sessions = async (userId: string) => (await pool.execute<RowDataPacket[]>('SELECT token FROM sessions WHERE user_id = ? ORDER BY token', [userId]))[0].map((row) => row.token);
+    // The table holds token hashes (services/sessions.ts); the names map them back.
+    const { sessionKey } = require('../dist/src/services/sessions') as typeof import('../src/services/sessions');
+    const names = new Map<string, string>();
+    const addSession = (userId: string, token: string) => { names.set(sessionKey(token), token);
+      return pool.execute<ResultSetHeader>('INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 1 DAY))', [userId, sessionKey(token)]); };
+    const sessions = async (userId: string) => (await pool.execute<RowDataPacket[]>('SELECT token FROM sessions WHERE user_id = ?', [userId]))[0]
+      .map((row) => names.get(row.token) ?? row.token).sort();
     await addSession(admin, 'admin-session');
     await addSession(person, 'person-current');
     await addSession(person, 'person-laptop');
