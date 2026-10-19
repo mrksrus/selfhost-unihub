@@ -15,10 +15,10 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "ical.js": "2.2.1",
-    "imapflow": "2.1.2",
+    "imapflow": "2.5.2",
     "jsonwebtoken": "^9.0.2",
     "mailparser": "3.9.46",
-    "mysql2": "3.23.1",
+    "mysql2": "3.24.6",
     "nodemailer": "^10.1.7",
     "web-push": "^3.6.7"
   },
@@ -32,7 +32,7 @@
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.10",
     "@types/mailparser": "^3.9.0",
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "@types/nodemailer": "^8.0.2",
     "@types/web-push": "^3.6.4",
     "typescript": "^5.9.3"
