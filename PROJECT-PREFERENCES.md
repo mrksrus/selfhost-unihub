@@ -75,7 +75,9 @@ and System. The page is coloured before the first paint from the stored mode so
 there is no flash, and the browser or Android chrome follows the resolved
 background. Every screen must be usable in both resolved modes.
 
-Evidence: `index.html` (pre-paint script reads the stored mode and look),
+Evidence: `public/theme-init.js`, loaded first by `index.html` (pre-paint
+script reads the stored mode and look; external since 0.23.0 because the
+Content-Security-Policy forbids inline scripts),
 `src/components/theme/ThemeProvider.tsx` (default `dark`, system enabled,
 updates `theme-color` and the Android status bar), `src/lib/platform.ts`
 (`showThemeInApp`), `docs/ANDROID.md` (the `theme` bridge message),
@@ -546,8 +548,22 @@ Open proposals do not override accepted decisions.
   `Team: Alice;` followed by a named address merges "Alice" into the next
   display name when a draft is saved twice. No address is lost; left as is in
   0.21.2 and recorded here so it is not rediscovered as new.
+- **S-06 Overlong mail headers are shortened, not refused.** Since 0.23.0
+  (audit 2026-10-17) a parsed value longer than its database column (message
+  id, sender address and name, attachment file name, content type and content
+  id) is cut to the column length so the message is still stored, instead of
+  the import refusing the message. Proposed by the
+  implementing agent; the maintainer has not confirmed it.
 
 ### Open verification gaps
+
+- **F-01 Inter and JetBrains Mono do not load in the container.** P-04 names
+  both fonts; `src/index.css` imports them from Google Fonts, but the bundled
+  nginx Content-Security-Policy (`style-src 'self' 'unsafe-inline'`, `font-src
+  'self' data:`) has refused that stylesheet since before 0.22.4, so the
+  installed app shows the system fallback. Self-hosting the two fonts would
+  make P-04 true and keeps the CSP; it changes what users see today, so it waits
+  for the maintainer (audit 2026-10-17, decision B21).
 
 - **UIR-1 and UIR-2, confirmed browser defects.** Long source-email subjects can
   make ToDo rows overflow, and recording tag buttons lack the accepted touch
