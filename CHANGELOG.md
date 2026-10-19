@@ -43,6 +43,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   removes every file under the configured roots. Deleting a user whose restore
   is still running is refused (409) instead of leaving the restore writing for
   a vanished account.
+- **The interface fonts load in the installed app.** Inter and JetBrains Mono
+  were requested from Google Fonts, which the app's own security policy
+  refused, so an installed UniHub showed the system's fallback fonts. Both
+  fonts now ship with the app: no request leaves your server for them, and they
+  also work offline.
 - **The Android app survives a crash of its page renderer.** When Android
   ended the WebView's renderer (a very large mail, or memory pressure while the
   app was in the background), the whole app closed and its notification

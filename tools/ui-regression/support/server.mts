@@ -6,42 +6,13 @@ import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
-import { distDir, toolRoot } from './env.mts';
+import { distDir } from './env.mts';
 
 const TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
   '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.ico': 'image/x-icon', '.txt': 'text/plain', '.woff2': 'font/woff2', '.woff': 'font/woff', '.wasm': 'application/wasm',
 };
-
-// The page's stylesheet imports Inter and JetBrains Mono from Google Fonts.
-// Those two hosts are answered inside the browser from the pinned Fontsource
-// files (latin subset); a loopback URL would be refused by Chromium's
-// local-network protection for a page on a public origin.
-export const FONT_ORIGIN = 'https://fonts.gstatic.com';
-const FONT_PREFIX = '/ui-regression/';
-const fontRoots: Record<string, string> = {
-  inter: path.join(toolRoot, 'node_modules/@fontsource/inter/files'),
-  'jetbrains-mono': path.join(toolRoot, 'node_modules/@fontsource/jetbrains-mono/files'),
-};
-
-export function fontStylesheet() {
-  const face = (family: string, dir: string, weight: number) =>
-    `@font-face{font-family:'${family}';font-style:normal;font-display:block;font-weight:${weight};src:url(${FONT_ORIGIN}${FONT_PREFIX}${dir}/${dir}-latin-${weight}-normal.woff2) format('woff2');}`;
-  return [
-    ...[300, 400, 500, 600, 700].map(weight => face('Inter', 'inter', weight)),
-    ...[400, 500].map(weight => face('JetBrains Mono', 'jetbrains-mono', weight)),
-  ].join('\n');
-}
-
-/** The pinned font file for a URL from fontStylesheet(), or null. */
-export function fontFile(url: URL): Buffer | null {
-  if (url.origin !== FONT_ORIGIN || !url.pathname.startsWith(FONT_PREFIX)) return null;
-  const [family, file] = url.pathname.slice(FONT_PREFIX.length).split('/');
-  const root = fontRoots[family];
-  if (!root || !file || !/^[a-z0-9-]+\.woff2$/.test(file)) return null;
-  return fs.readFileSync(path.join(root, file));
-}
 
 export interface FixtureServer { origin: string; close: () => Promise<void> }
 

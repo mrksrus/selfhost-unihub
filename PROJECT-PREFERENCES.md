@@ -120,8 +120,13 @@ maintainer asked for unnecessary UI text to be removed (0.19.x). Within that,
 copy says what happens ("Save draft", "Delete"), keeps one name for one action
 through a flow, and errors say what went wrong and what to do.
 
-Evidence: `src/index.css` (`body`, headings, `code, pre`), `tailwind.config.ts`
-(`fontFamily`), AGENTS.md "Visual style".
+The two fonts ship with the app and load from its own origin, never from a
+font service (maintainer, 2026-10-19: until 0.23.0 the security policy refused
+the Google Fonts import, so installations showed fallback fonts).
+
+Evidence: `src/main.tsx` (Fontsource imports), `src/index.css` (`body`,
+headings, `code, pre`), `tailwind.config.ts` (`fontFamily`), AGENTS.md "Visual
+style".
 
 #### P-05 Reuse the existing controls
 
@@ -378,6 +383,18 @@ there.
 Evidence: `src/pages/Contacts.tsx`, `src/test/contacts-page.test.tsx`, CHANGELOG
 0.21.1 "Added".
 
+#### P-25 Quick search finds words in message bodies
+
+Accepted, in source. Pinned 2026-10-19.
+
+The quick search (command palette and the Mail search field) matches mail
+bodies as well as subjects and addresses. The maintainer declined the audit
+proposal (2026-10-17, B17) to drop bodies for speed; a faster index may replace
+the scan, but not the reach.
+
+Evidence: `api/src/routes/search.ts`, `api/src/routes/mail-messages.ts`
+(`body_text` in the search conditions).
+
 ### Product reliability
 
 #### P-19 Product reliability
@@ -556,14 +573,6 @@ Open proposals do not override accepted decisions.
   implementing agent; the maintainer has not confirmed it.
 
 ### Open verification gaps
-
-- **F-01 Inter and JetBrains Mono do not load in the container.** P-04 names
-  both fonts; `src/index.css` imports them from Google Fonts, but the bundled
-  nginx Content-Security-Policy (`style-src 'self' 'unsafe-inline'`, `font-src
-  'self' data:`) has refused that stylesheet since before 0.22.4, so the
-  installed app shows the system fallback. Self-hosting the two fonts would
-  make P-04 true and keeps the CSP; it changes what users see today, so it waits
-  for the maintainer (audit 2026-10-17, decision B21).
 
 - **UIR-1 and UIR-2, confirmed browser defects.** Long source-email subjects can
   make ToDo rows overflow, and recording tag buttons lack the accepted touch

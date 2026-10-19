@@ -4,7 +4,6 @@
 // reduced motion.
 import { test as base, expect, type Page } from '@playwright/test';
 import { createApiRouter, FIXED_NOW, type ApiRouter } from './fixtures.ts';
-import { fontFile, fontStylesheet } from './server.mts';
 import { markBaselineUsed } from './used-baselines.mts';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
@@ -43,11 +42,6 @@ export const test = base.extend<Options & Fixtures>({
         const reply = router.handle(url, request.method(), body);
         return route.fulfill({ status: reply.status ?? 200, contentType: 'application/json', body: JSON.stringify(reply.body) });
       }
-      if (url.origin === 'https://fonts.googleapis.com' && url.pathname === '/css2') {
-        return route.fulfill({ status: 200, contentType: 'text/css', body: fontStylesheet() });
-      }
-      const font = fontFile(url);
-      if (font) return route.fulfill({ status: 200, contentType: 'font/woff2', headers: { 'Access-Control-Allow-Origin': '*' }, body: font });
       refused.push(`${request.method()} ${request.url()}`);
       return route.abort('blockedbyclient');
     });

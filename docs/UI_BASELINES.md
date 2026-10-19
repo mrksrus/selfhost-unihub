@@ -89,7 +89,7 @@ That is not a visible flash, so the check holds the mode, not the exact value.
 | Themes | Dark Default and Light Default, with the OS preference set to match. Accent blue. |
 | Clock | `Date` fixed at 2026-06-15 09:30 UTC (a Monday). Time zone UTC, account time zone UTC, locale en-GB. |
 | Motion | `prefers-reduced-motion: reduce`. Playwright disables CSS animations and transitions and hides the caret for each capture. Nothing is hovered. |
-| Fonts | `src/index.css` imports Google Fonts. The browser gets the pinned Fontsource files instead, served under the same two hostnames, so nothing leaves the machine. Fallback fonts come from an isolated fontconfig that only knows the same files. Inter must be loaded before any capture. |
+| Fonts | The app bundles Inter and JetBrains Mono (Fontsource, `src/main.tsx`) and serves them from its own origin, so nothing leaves the machine. Fallback fonts come from an isolated fontconfig that only knows the same files. Inter must be loaded before any capture. |
 | Settling | The page has made no API request for 300 ms, no font is loading and nothing is `aria-busy`. A capture also has to be identical on two consecutive frames. |
 | Service workers | Blocked, so every request goes through the test's interception. |
 
