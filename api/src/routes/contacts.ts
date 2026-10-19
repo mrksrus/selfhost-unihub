@@ -133,7 +133,9 @@ export = {
   'PUT /api/contacts/:id': async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
-    const parsed = normalizeContactInput(body, { requireFirstName: true });
+    // An imported card without a name has an empty first name, and edits to it
+    // (from the dialog or a phone) must still save.
+    const parsed = normalizeContactInput(body, { requireFirstName: false });
     if ('error' in parsed) return { error: parsed.error, status: 400 };
     const { fields } = parsed;
 
