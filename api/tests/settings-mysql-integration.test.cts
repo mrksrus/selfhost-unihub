@@ -4,39 +4,16 @@ import type { RowDataPacket } from 'mysql2/promise';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const crypto = require('node:crypto') as typeof import('node:crypto');
-const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
+const { withTestDatabase } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 
 test('preferences accept only offered values and the user\'s own mail accounts; sign-up mode reads closed when unreadable', {
   skip: !process.env.MYSQL_TEST_HOST, timeout: 120000,
 }, async t => {
-  assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/, 'Only an isolated disposable schema is allowed');
-  process.env.JWT_SECRET ||= 'settings-test-only-secret';
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'settings-bootstrap@example.test';
   process.env.BOOTSTRAP_ADMIN_PASSWORD = 'synthetic-settings-bootstrap-password';
-  const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
-    user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD,
-    database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 5 });
-  const state = require('../dist/src/state') as typeof import('../src/state');
-  const originalDb = state.getDb();
-  let ownsSchema = false;
-  t.after(async () => {
-    try {
-      if (ownsSchema) {
-        const cx = await pool.getConnection();
-        try {
-          await cx.query('SET FOREIGN_KEY_CHECKS = 0');
-          for (const row of (await cx.query<RowDataPacket[]>('SHOW TABLES'))[0]) await cx.query('DROP TABLE ??', [Object.values(row)[0]]);
-          await cx.query('SET FOREIGN_KEY_CHECKS = 1');
-        } finally { cx.release(); }
-      }
-    } finally { state.setDb(originalDb); await pool.end(); }
-  });
-  assert.equal((await pool.query<RowDataPacket[]>('SHOW TABLES'))[0].length, 0, 'Refuse to touch a populated schema');
-  ownsSchema = true;
-  state.setDb(pool);
   const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
   t.after(captureLog(() => {}));
-  await (require('../dist/src/services/database') as typeof import('../src/services/database')).ensureSchema();
+  const pool = await withTestDatabase(t);
   const settings = require('../dist/src/services/settings') as typeof import('../src/services/settings');
 
   const owner = crypto.randomUUID(), stranger = crypto.randomUUID();

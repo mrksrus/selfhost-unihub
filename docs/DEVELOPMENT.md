@@ -185,6 +185,14 @@ scripts/local-db.sh migrate-check d.sql  # run the startup upgrades on a dump, c
 scripts/local-db.sh schema-dump          # regenerate docker/mariadb/schema.sql
 ```
 
+A new database test starts with `withTestDatabase(t)` from
+`api/tests/helpers/test-database.cts`: it refuses a database that is not an
+empty `*_test` one, makes it the app's database, migrates it like a fresh
+install and drops every table afterwards. `startTestApi(t)` serves the real
+request handler on a loopback port; each `client()` keeps its own cookies and
+CSRF token, as a browser does. `golden-path-mysql-integration.test.cts` uses
+both for one pass through sign-in, sign-up, CSRF, ownership and sign-out.
+
 The app creates and upgrades its own schema at startup. A new database starts
 from the frozen 0.16.0 baseline in `api/src/services/database-baseline.ts`;
 every schema change is a new numbered migration in `ensureSchema`
