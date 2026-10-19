@@ -16,6 +16,7 @@ import { closeAndroidStreams } from './services/android-push';
 import { drainProcess } from './services/shutdown';
 import { durableScheduler } from './services/mail-durable-jobs';
 import { expireWorkerLeases } from './services/mail-engine/runtime';
+import { startWorkerOwnership } from './services/worker-owner';
 import { log } from './log';
 
 // Both are logged with their stack, so a container restart has a cause in its
@@ -61,14 +62,23 @@ async function start() {
   // nothing to stop. Stopping them (and the IDLE sessions they own) comes
   // before the Android streams; then services/shutdown.ts drains the rest.
   let work: BackgroundWorkHandle | null = null;
+  let ownership: Awaited<ReturnType<typeof startWorkerOwnership>> | null = null;
+  let stopping = false;
   const serverClosed = new Promise(resolve => server.once('close', resolve));
-  installShutdownHandler({ server, onShutdown: [() => work?.stop(), closeAndroidStreams], drainMs: 8000,
-    drain: () => drainProcess({ serverClosed, scheduler: durableScheduler, expireWorkerLeases, closePool: () => db.end() }) });
+  installShutdownHandler({ server, onShutdown: [() => { stopping = true; work?.stop(); }, closeAndroidStreams], drainMs: 8000,
+    drain: () => drainProcess({ serverClosed, scheduler: durableScheduler, expireWorkerLeases,
+      closePool: async () => { await ownership?.stop(); await db.end(); } }) });
   server.listen(PORT, () => {
     log.info('STARTUP', 'UniHub API listening', { port: PORT });
   });
 
-  work = await startBackgroundWork();
+  // Only the process holding the database lock runs the background work
+  // (services/worker-owner.ts); another one serves requests and waits.
+  ownership = await startWorkerOwnership({
+    pool: db,
+    onGained: async () => { if (!stopping) work = await startBackgroundWork(); },
+    onLost: () => { work?.stop(); work = null; },
+  });
 }
 
 export {

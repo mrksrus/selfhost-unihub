@@ -369,3 +369,20 @@ test('quiesce lets a running job finish on its own and claims nothing more', asy
   assert.equal(jobs[1].state, 'queued');
   assert.match(scheduler.workerId, /^[0-9a-f-]{36}$/);
 });
+
+test('a process that does not own the background work leaves queued jobs for the owner', async () => {
+  let owner = false, claims = 0;
+  const repo = {
+    recoverExpiredJobs: async () => ({ jobs: 0, operations: 0 }),
+    async claimDueJob() { claims++; return null; },
+    async enqueueJob(input: FixtureValue) { return { id: 'queued-1', ...input }; },
+  };
+  const scheduler = createDurableMailScheduler((async () => ({ success: true })) as FixtureValue,
+    { repository: repo as FixtureValue, pollMs: 60000, canRun: () => owner });
+  await scheduler.enqueue({ userId: 'owner', accountId: 'A', kind: 'operation' } as FixtureValue);
+  assert.equal(claims, 0, 'the job stays queued in the database');
+  owner = true;
+  await scheduler.drain();
+  assert.equal(claims, 1);
+  await scheduler.stop();
+});

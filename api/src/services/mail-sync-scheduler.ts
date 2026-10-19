@@ -38,6 +38,8 @@ interface SchedulerOptions {
   leaseSeconds?: number;
   recoveryMs?: number;
   now?: () => number;
+  /** False while another API process runs the background work (worker-owner.ts): jobs stay queued for it. */
+  canRun?: () => boolean;
 }
 // The kinds are declared in mail-engine/job-kinds.ts; these are the
 // scheduler's views of them (a Set for per-job checks, a list for claims).
@@ -48,7 +50,7 @@ const MUTATION_MAIL_JOB_KINDS = MUTATION_KINDS;
 // never waits behind other accounts' long history or body scans. (A read-only
 // job of the same account holds its lease; yieldReadWork releases that one.)
 function createDurableMailScheduler(run: RunJob, { repository = runtime, concurrency = 2, readConcurrency = concurrency,
-  workerId = randomUUID(), onState = () => {}, pollMs = 1000, leaseSeconds = 30, recoveryMs = 15000, now = Date.now }: SchedulerOptions = {}) {
+  workerId = randomUUID(), onState = () => {}, pollMs = 1000, leaseSeconds = 30, recoveryMs = 15000, now = Date.now, canRun = () => true }: SchedulerOptions = {}) {
   if (typeof run !== 'function' || !Number.isInteger(concurrency) || concurrency < 1
     || !Number.isInteger(readConcurrency) || readConcurrency < 1 || readConcurrency > concurrency) throw new TypeError('Invalid mail worker');
   const running = new Map<string, RunningJob>();
@@ -177,7 +179,7 @@ function createDurableMailScheduler(run: RunJob, { repository = runtime, concurr
   // work committed after the running pass's claim query must not wait for the
   // next poll (an accepted change nudges the scheduler this way).
   async function drain() {
-    if (stopped) return;
+    if (stopped || !canRun()) return;
     if (draining) { redrain = true; return drainFinished; }
     draining = true;
     let finishDrain!: () => void;
