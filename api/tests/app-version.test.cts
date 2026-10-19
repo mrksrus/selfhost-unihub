@@ -27,4 +27,6 @@ test('no Android offer when the image was built without the app or its metadata 
   assert.equal(versionInfo(downloadsDir(t, { 'unihub-android.json': JSON.stringify(META) })).android, null);
   assert.equal(versionInfo(downloadsDir(t, { 'unihub.apk': 'apk!', 'unihub-android.json': '{"versionName":' })).android, null);
   assert.equal(versionInfo(downloadsDir(t, { 'unihub.apk': 'apk!', 'unihub-android.json': JSON.stringify({ ...META, sha256: 'nope' }) })).android, null);
+  assert.equal(versionInfo(downloadsDir(t, { 'unihub.apk': 'apk!', 'unihub-android.json': JSON.stringify({ ...META, versionCode: 0 }) })).android, null);
+  assert.equal(versionInfo(downloadsDir(t, { 'unihub.apk': 'apk!', 'unihub-android.json': JSON.stringify({ ...META, versionName: '' }) })).android, null);
 });

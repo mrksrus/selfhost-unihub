@@ -33,7 +33,8 @@ function readAndroidDownload(dir: string): AndroidDownload | null {
   try {
     if (!fs.statSync(path.join(dir, 'unihub.apk')).isFile()) return null;
     const meta = JSON.parse(fs.readFileSync(path.join(dir, 'unihub-android.json'), 'utf8'));
-    const valid = typeof meta?.versionName === 'string' && Number.isSafeInteger(meta.versionCode)
+    // Code 0 or an empty name would offer the download to no one and hide every update.
+    const valid = typeof meta?.versionName === 'string' && meta.versionName !== '' && Number.isSafeInteger(meta.versionCode) && meta.versionCode > 0
       && Number.isSafeInteger(meta.size) && meta.size > 0 && /^[0-9a-f]{64}$/.test(meta.sha256);
     if (!valid) return null;
     return { url: ANDROID_APK_URL, versionName: meta.versionName, versionCode: meta.versionCode, size: meta.size, sha256: meta.sha256 };

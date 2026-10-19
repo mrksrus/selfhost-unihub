@@ -26,6 +26,7 @@ import android.view.WindowInsetsController
 import android.view.inputmethod.EditorInfo
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -250,6 +251,15 @@ class MainActivity : Activity() {
 
             override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
                 if (request.isForMainFrame) showError(server)
+            }
+
+            // Unhandled, a renderer that crashed or was reclaimed (a large
+            // mail, low memory while in the background) ends the app's process
+            // and the notification service with it. The dead WebView is
+            // replaced and the page starts again from the server.
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (view === webView) showWeb(server, null)
+                return true
             }
         }
 
