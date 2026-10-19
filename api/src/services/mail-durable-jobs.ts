@@ -9,6 +9,7 @@ import { acquireImapConnection, releaseImapConnection } from './mail-engine/conn
 import { operationDue, processOperationBatch } from './mail-engine/operation-batch';
 import { db } from '../state';
 import { publishMailJob } from './realtime';
+import { isWorkerOwner } from './worker-owner';
 import { canRunModule } from './access-policy';
 import { toBooleanFlag, buildImapConnectionConfig } from './mail-host-policy';
 import {
@@ -292,7 +293,7 @@ async function runDurableMailJob(job: ClaimedJob, signal: AbortSignal, report: J
 
 // Three slots, at most two for read-only work: one is always free for accepted
 // provider changes of any account (see createDurableMailScheduler).
-const durableScheduler = createDurableMailScheduler(runDurableMailJob, { concurrency: 3, readConcurrency: 2, onState: state => {
+const durableScheduler = createDurableMailScheduler(runDurableMailJob, { concurrency: 3, readConcurrency: 2, canRun: isWorkerOwner, onState: state => {
   if (!state.mail_account_id) return;
   publishMailJob(state); // live status for the account owner's open tabs
   // Operator log: job kind, account id and the stored error text only — no

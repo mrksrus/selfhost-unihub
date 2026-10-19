@@ -572,6 +572,13 @@ Important boundaries in the current code:
 
 - This is a single-container app design. Do not run multiple app containers
   against the same database without reviewing in-memory locks and rate limits.
+  As a safeguard, one API process per database runs the background work (the
+  timers, mail IDLE sessions and the durable mail scheduler): it holds the
+  MariaDB named lock `unihub:background-work` on a connection it keeps
+  (`api/src/services/worker-owner.ts`). Another process logs that it serves
+  requests only; mail work it accepts stays queued for the owner, and it takes
+  over within 30 s when the lock becomes free (the owner stops, or its session
+  ends). Backup jobs, rate limits and live events remain per process.
 - Mail and backup workers use in-process execution locks and are not designed
   for multiple app containers. Backup/restore job state itself is durable.
 - Live status events (`/api/events`) use an in-process bus: one API process

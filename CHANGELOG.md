@@ -58,6 +58,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   server error now returns a request id (`requestId`, and `X-Request-Id` on
   every response), and every log line written while handling it carries the
   same id. `UNIHUB_LOG_FORMAT=json` writes JSON log lines for a log collector.
+- **A second UniHub container on the same database no longer duplicates mail
+  work.** Only one API process at a time runs the mail sync, IDLE sessions and
+  timers; another one logs a warning, serves requests and takes over when the
+  first stops.
 - **Restarts finish what they can.** Stopping or updating the container now
   lets requests in progress and running mail jobs finish (up to 8 seconds),
   and hands any job still running to the next start at once instead of after
