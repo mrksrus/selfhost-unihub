@@ -56,7 +56,9 @@ and an icon, and that the page loads no inline script.
 | --- | --- |
 | `api/server.ts` | Starts the API |
 | `api/src/service-supervisor.ts` | Supervises API/nginx and essential-service failure |
-| `api/src/app.ts` | Initializes DB, starts HTTP server, schedules background jobs |
+| `api/src/app.ts` | Initializes DB, resumes backup workers, starts HTTP server and the background work |
+| `api/src/services/background-work.ts`, `timers.ts` | The periodic jobs of the API process behind one start/stop (see Scheduled Jobs) |
+| `api/src/services/realtime.ts` | Front for the live channels (browser event stream, Android notification stream); the mail and calendar event producers |
 | `api/src/request-handler.ts` | CORS, auth, CSRF, module/restore gates, body parsing, route dispatch; every gate reads the matched route's spec |
 | `api/src/http/route.ts` | `RouteSpec`, `defineRoutes`, `mergeRouteTables` and the route-table invariants (see Request Handling) |
 | `api/src/routes/` | Route handlers grouped by feature; `routes/mail.ts` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync`. Every mail route answers a caught error through `routeError` in `mail-route-helpers.ts`: a status-bearing error passes its message, anything else gets the route's fallback with 500. Account fields are parsed by `services/mail-account-input.ts` before anything is tested or stored |
@@ -227,9 +229,13 @@ boundary: the session must be valid (401 otherwise), a foreign `Origin` is
 refused (403), and as a GET it needs no CSRF token. The stream belongs to one
 user and one session.
 
-- **Bus.** `api/src/services/server-events.ts` holds an in-process bus. UniHub
-  runs exactly one API process, so every event published by the mail workers
-  reaches every stream. A second API replica would not share events (or the
+- **Bus.** `api/src/services/server-events.ts` holds an in-process bus; the
+  Android notification stream (`android-push.ts`) is a second bus of the same
+  kind. Producers publish and session changes close streams through
+  `api/src/services/realtime.ts`, which fronts both: signing out, a password or
+  two-factor change and deactivation end the user's streams on both channels.
+  UniHub runs exactly one API process, so every event published by the mail
+  workers reaches every stream. A second API replica would not share events (or the
   existing in-process mail and backup locks); see Operational Notes.
 - **Owner scoping.** Events are published for a user id taken from the row that
   changed (`mail_engine_jobs.user_id`, `mail_writebacks.user_id`) and are written
@@ -368,18 +374,27 @@ commands and file writes stay outside.
 
 ## Scheduled Jobs
 
-`api/src/app.ts` starts these intervals:
+`api/src/services/background-work.ts` holds the periodic work of the API
+process. `app.ts` starts it once after the server listens and stops it on
+shutdown, before the event streams close. Each timer skips a tick while its
+previous run is still going (`services/timers.ts`). These nine run:
 
 | Interval | Job |
 | --- | --- |
+| 1 second | Re-enqueue due mail writebacks (per-operation backoff) and nudge the durable mail scheduler |
 | 30 seconds | Reconcile due reminders and process durable notification deliveries |
 | 30 seconds | Mail INBOX follow-up per active account (every 5 minutes while its IMAP IDLE session is healthy); folder discovery at most every 5 minutes |
-| 60 seconds | Mail IDLE supervisor eligibility pass (`mail-idle.ts`): opens/closes one read-only INBOX IDLE session per eligible account |
+| 1 minute | Calendar accounts whose `next_sync_at` is due |
 | 1 minute | Process eligible mail-server deletion queue rows |
+| 1 minute | Database pool counts, logged every 15 minutes and every minute while busy |
 | 1 hour | Delete expired sessions |
+| 1 hour | Delete finished mail engine jobs older than 7 days |
 | 1 hour | Delete expired recording upload temp files |
-| Paused | Restore-upload expiry remains paused; completed restores still clean their upload |
-| 15 minutes | Database pool health logging |
+
+It also starts the mail IDLE supervisor (`mail-idle.ts`) after the first mail
+pass; the supervisor runs its own 60-second eligibility pass that opens and
+closes one read-only INBOX IDLE session per eligible account. Restore-upload
+expiry remains paused; completed restores still clean their upload.
 
 At startup:
 

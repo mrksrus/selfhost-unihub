@@ -6,7 +6,7 @@ import { db } from '../state';
 import { withMailAccountLock } from './mail-account-lock';
 import { isSectionRestoreActive } from './restore-locks';
 import { isModuleEnabled } from './module-settings';
-import { publishCalendarChanged } from './server-events';
+import { publishCalendarChanged } from './realtime';
 import { addressConfirmed } from './mail-account-mode';
 import { UNRESOLVED, sqlStates } from './mail-engine/operation-states';
 import { sqlList } from './mail-engine/job-kinds';

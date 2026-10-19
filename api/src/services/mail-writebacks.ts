@@ -11,7 +11,7 @@ import * as repository from './mail-engine/repository';
 import { WAITING, UNRESOLVED, UNPROVEN, ACTIVE, CANCELLABLE, MOVE_RECHECK, sqlStates,
   dispatchedMove, canRetry, canCancel, canAcceptServerState } from './mail-engine/operation-states';
 import { sqlList } from './mail-engine/job-kinds';
-import { publishMailChanged, publishMailOperation } from './server-events';
+import { publishMailChanged, publishMailOperation } from './realtime';
 
 interface EmailRow extends RowDataPacket {
   id: string;

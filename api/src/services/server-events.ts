@@ -10,12 +10,13 @@
 // addresses, folder names or provider error text. Delivery is best effort;
 // the browser refetches the authoritative state over the normal API, and keeps
 // a slow polling safety net while connected.
+//
+// Producers do not publish here directly: realtime.ts fronts this bus and the
+// Android stream bus (android-push.ts) and owns the mail and calendar producers.
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { EventEmitter } from 'node:events';
 
 import crypto from 'node:crypto';
-import { OPERATION_STATES } from './mail-engine/operation-states';
-import { JOB_KINDS } from './mail-engine/job-kinds';
 
 interface EventStream {
   userId: string;
@@ -45,19 +46,6 @@ interface PublishOptions<T> {
 }
 type TimerApi = Pick<typeof globalThis, 'setTimeout' | 'clearTimeout' | 'setInterval' | 'clearInterval'>;
 type BusOptions = Partial<Record<keyof typeof DEFAULTS, number>> & { now?: () => number; timers?: TimerApi };
-interface MailJobHint {
-  user_id?: string;
-  mail_account_id?: unknown;
-  state?: string;
-  kind?: string;
-  phase?: string | null;
-  id?: unknown;
-  operation_id?: string | null;
-  processed?: unknown;
-  total?: unknown;
-  result?: { inserted?: unknown; updated?: unknown; processed?: unknown };
-}
-interface OperationHint { accountId: string | null; operationIds: (string | null)[]; state: string | null }
 interface ShutdownOptions {
   bus?: ReturnType<typeof createServerEvents>;
   server?: { close?: () => unknown } | null;
@@ -78,21 +66,6 @@ const DEFAULTS = Object.freeze({
   maxBufferedBytes: 256 * 1024,
 });
 
-const MAIL_JOB_STATES = new Set(['queued', 'running', 'idle', 'error', 'cancelled', 'paused']);
-// 'accepted' is published by admission before a row state exists.
-const MAIL_OPERATION_STATES = new Set<string>(['accepted', ...OPERATION_STATES]);
-const MAIL_CHANGE_REASONS = new Set(['import', 'flags', 'folders', 'content', 'operation', 'local']);
-const MAIL_JOB_KINDS = new Set<string>(JOB_KINDS);
-
-const id = (value: unknown) => {
-  const text = value === null || value === undefined ? '' : String(value);
-  return /^[A-Za-z0-9_-]{1,64}$/.test(text) ? text : null;
-};
-const count = (value: unknown) => {
-  if (value === null || value === undefined || value === '') return null;
-  const number = Number(value);
-  return Number.isSafeInteger(number) && number >= 0 ? number : null;
-};
 const hashToken = (token: unknown) => token ? crypto.createHash('sha256').update(String(token)).digest('hex') : null;
 
 function frame(type: string, data: unknown) {
@@ -307,76 +280,6 @@ function createServerEvents(options: BusOptions = {}) {
 
 const serverEvents = createServerEvents();
 
-// --- Mail event producers -------------------------------------------------
-// Each producer reduces its input to ids/states/counters before publishing.
-
-function publishMailJob(job: MailJobHint | null | undefined, bus = serverEvents) {
-  const userId = job?.user_id;
-  const accountId = id(job?.mail_account_id);
-  if (!userId || !accountId || !MAIL_JOB_STATES.has(job.state || '') || !bus.hasListeners(userId)) return;
-  const kind = MAIL_JOB_KINDS.has(job.kind || '') ? job.kind : null;
-  bus.publish(userId, 'mail.job', {
-    accountId,
-    jobId: id(job.id),
-    kind,
-    state: job.state,
-    phase: MAIL_JOB_KINDS.has(job.phase || '') || job.phase === 'reconcile' ? job.phase : null,
-    processed: count(job.processed),
-    total: count(job.total),
-  }, { module: 'mail', throttleKey: `mail.job:${accountId}` });
-  if (job.state === 'running') return;
-  // A finished job may have changed lists or settled provider changes.
-  const result = job.result || {};
-  const changedRows = (count(result.inserted) || 0) + (count(result.updated) || 0);
-  let reason = null;
-  if (kind === 'operation' || kind === 'reconcile') reason = 'operation';
-  else if (kind === 'sync' && job.state === 'idle') reason = 'folders';
-  else if (kind === 'body' && (count(result.processed) || 0) > 0) reason = 'content';
-  // Sync policy removed, merged or refiled local copies in this batch.
-  else if (kind === 'prune' && (count(result.processed) || 0) > 0) reason = 'content';
-  else if (changedRows > 0) reason = kind === 'recent' || kind === 'history' ? 'import' : 'flags';
-  if (reason) publishMailChanged(userId, accountId, reason, bus);
-  // A scan can settle a flag or move by observation; mutation jobs settle them directly.
-  if (kind === 'operation' || kind === 'reconcile' || (changedRows > 0 && ['recent', 'flags', 'presence'].includes(kind || ''))) {
-    publishMailOperation(userId, { accountId, operationIds: job.operation_id ? [job.operation_id] : [], state: null }, bus);
-  }
-}
-
-// Coalesced operation events keep every id; a mixed burst reports no single state.
-function mergeOperations(previous: OperationHint, next: OperationHint) {
-  const operationIds = [...new Set([...previous.operationIds, ...next.operationIds])].slice(0, 100);
-  return { accountId: next.accountId, operationIds, state: previous.state === next.state ? next.state : null };
-}
-
-function publishMailOperation(userId: unknown, { accountId = null, operationIds = [], state = null }: { accountId?: unknown; operationIds?: unknown; state?: string | null } = {}, bus = serverEvents) {
-  if (!userId || !bus.hasListeners(userId)) return;
-  const ids = [...new Set((Array.isArray(operationIds) ? operationIds : []).map(id).filter(Boolean))].slice(0, 100);
-  const account = id(accountId);
-  bus.publish(userId, 'mail.operation', {
-    accountId: account,
-    operationIds: ids,
-    state: MAIL_OPERATION_STATES.has(state || '') ? state : null,
-  }, { module: 'mail', throttleKey: `mail.operation:${account || '*'}`, merge: mergeOperations });
-}
-
-function publishMailChanged(userId: unknown, accountId: unknown, reason: string, bus = serverEvents) {
-  if (!userId || !bus.hasListeners(userId)) return;
-  const account = id(accountId);
-  bus.publish(userId, 'mail.changed', { accountId: account, reason: MAIL_CHANGE_REASONS.has(reason) ? reason : null },
-    { module: 'mail', throttleKey: `mail.changed:${account || '*'}` });
-}
-
-// --- Calendar event producers ---------------------------------------------
-
-const CALENDAR_CHANGE_REASONS = new Set(['sync', 'status', 'local']);
-
-function publishCalendarChanged(userId: unknown, accountId: unknown, reason: string, bus = serverEvents) {
-  if (!userId || !bus.hasListeners(userId)) return;
-  const account = id(accountId);
-  bus.publish(userId, 'calendar.changed', { accountId: account, reason: CALENDAR_CHANGE_REASONS.has(reason) ? reason : null },
-    { module: 'calendar', throttleKey: `calendar.changed:${account || '*'}` });
-}
-
 // The supervisor stops the API with SIGTERM (or by closing the IPC channel,
 // which drop-privileges.js turns into SIGTERM). End every stream with a final
 // 'end' event first so browsers back off instead of seeing a broken
@@ -405,10 +308,6 @@ export {
   createServerEvents,
   installShutdownHandler,
   serverEvents,
-  publishMailJob,
-  publishMailOperation,
-  publishMailChanged,
-  publishCalendarChanged,
   hashToken,
   DEFAULTS,
 };

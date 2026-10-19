@@ -55,7 +55,7 @@ async function accountFence(cx: SqlExecutor, op: OperationRow, generation: numbe
 // Committed operation states reach the owner's open tabs as a refetch hint.
 async function publishedState(op: OperationRow, state: string, committed: Promise<boolean>) {
   const changed = await committed;
-  if (changed) (require('../server-events') as typeof import('../server-events')).publishMailOperation(op.user_id,
+  if (changed) (require('../realtime') as typeof import('../realtime')).publishMailOperation(op.user_id,
     { accountId: op.mail_account_id, operationIds: [op.id], state });
   return changed;
 }

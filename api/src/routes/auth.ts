@@ -35,7 +35,7 @@ import {
   consumeTwoFactorLoginChallenge,
   deleteTwoFactorLoginChallenge,
 } from '../services/two-factor';
-import { serverEvents } from '../services/server-events';
+import { realtime } from '../services/realtime';
 import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -387,7 +387,7 @@ export = defineRoutes({
       // Sessions on other devices were opened with the password alone.
       await connection.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, currentToken]);
       await connection.commit();
-      serverEvents.closeUser(userId, { exceptToken: currentToken });
+      realtime.closeUser(userId, { exceptToken: currentToken });
       return {
         enabled: true,
         recoveryCodes: recovery.codes,
@@ -422,7 +422,7 @@ export = defineRoutes({
       if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
       await disableTwoFactor(userId);
       await db.execute('DELETE FROM sessions WHERE user_id = ? AND token != ?', [userId, getAuthTokenFromRequest(req) || '']);
-      serverEvents.closeUser(userId, { exceptToken: getAuthTokenFromRequest(req) });
+      realtime.closeUser(userId, { exceptToken: getAuthTokenFromRequest(req) });
       return { enabled: false };
     } catch (error) {
       console.error('2FA disable error:', error);
@@ -467,7 +467,7 @@ export = defineRoutes({
       const token = getAuthTokenFromRequest(req);
       if (token) {
         await db.execute('DELETE FROM sessions WHERE token = ?', [token]);
-        serverEvents.closeToken(token, { reason: 'signed_out' });
+        realtime.closeSession(token, { reason: 'signed_out' });
       }
       clearAuthCookie(res);
       clearCsrfCookie(res);
@@ -536,7 +536,7 @@ export = defineRoutes({
       const newHash = await hashPassword(new_password);
       await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId]);
       await db.execute('DELETE FROM sessions WHERE user_id = ?', [userId]);
-      serverEvents.closeUser(userId);
+      realtime.closeUser(userId);
       clearAuthCookie(res);
       clearCsrfCookie(res);
 

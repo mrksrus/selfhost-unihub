@@ -193,6 +193,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   changed module choice means for running work; the mail hook
   (`mail-sync-control.ts::onMailModuleChanged`) replaces the six lazy requires in
   `routes/modules.ts`, and the toggle tests moved to the service.
+- `api/src/services/realtime.ts` fronts both live channels (the browser event bus and the
+  Android notification stream bus): `publishToUser(s)`, `closeSession`, `closeUser`,
+  `isOnline`, `setUserModules`, `stats`, and the mail and calendar producers moved there from
+  `server-events.ts`. Sign-out, password and two-factor changes and deactivation now end the
+  user's Android stream at once instead of at its next 45-second session check.
+- The nine periodic timers and their startup resets moved from `app.ts` to
+  `api/src/services/background-work.ts::startBackgroundWork()`, which returns `stop()`;
+  `everyInterval` returns `{ run, stop }`. Shutdown stops the timers as well as the IDLE
+  sessions (docs/ARCHITECTURE.md, Scheduled Jobs, now lists all nine).
 
 ## 0.22.4
 

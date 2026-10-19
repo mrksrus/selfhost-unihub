@@ -7,7 +7,7 @@ import { MIN_PASSWORD_LENGTH } from '../config';
 import { attachmentsRoot, rawRoot } from '../services/mail-storage';
 import { RECORDINGS_ROOT } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
-import { serverEvents } from '../services/server-events';
+import { realtime } from '../services/realtime';
 import { deleteUser } from '../services/user-lifecycle';
 import { clientError } from '../http/errors';
 import {
@@ -287,7 +287,7 @@ export = defineRoutes({
       await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, targetId]);
       // Invalidate all sessions so the user must re-login
       await db.execute('DELETE FROM sessions WHERE user_id = ?', [targetId]);
-      serverEvents.closeUser(targetId);
+      realtime.closeUser(targetId);
       return { message: 'Password updated successfully' };
     } catch (error) {
       return { error: 'Failed to update password', status: 500 };
@@ -348,7 +348,7 @@ export = defineRoutes({
       // Sessions may be on the lost device.
       await connection.execute('DELETE FROM sessions WHERE user_id = ?', [targetId]);
       await connection.commit();
-      serverEvents.closeUser(targetId);
+      realtime.closeUser(targetId);
       return { message: 'Two-factor authentication reset' };
     } catch (error) {
       if (connection) await connection.rollback().catch(() => {});
@@ -417,7 +417,7 @@ export = defineRoutes({
       await db.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
       if (!is_active) {
         await db.execute('DELETE FROM sessions WHERE user_id = ?', [id]);
-        serverEvents.closeUser(id);
+        realtime.closeUser(id);
       }
       return { message: is_active ? 'User activated' : 'User deactivated' };
     } catch (error) {

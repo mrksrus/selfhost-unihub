@@ -1,4 +1,4 @@
-type Timers = Pick<typeof globalThis, 'setInterval'>;
+type Timers = Pick<typeof globalThis, 'setInterval' | 'clearInterval'>;
 
 /**
  * Runs `task` every `intervalMs`, skipping a tick while the previous run is
@@ -7,11 +7,12 @@ type Timers = Pick<typeof globalThis, 'setInterval'>;
  * request queues behind them, and the slowdown feeds itself. A failure is
  * logged under `label` and the next tick runs again.
  *
- * Returns the guarded task, so a caller can also run it right away.
+ * Returns a handle: `run()` is the guarded task, so a caller can also run it
+ * right away; `stop()` ends the interval.
  */
 function everyInterval(label: string, intervalMs: number, task: () => unknown, timers: Timers = globalThis) {
   let running = false;
-  const tick = async () => {
+  const run = async () => {
     if (running) return false;
     running = true;
     try {
@@ -23,8 +24,8 @@ function everyInterval(label: string, intervalMs: number, task: () => unknown, t
     }
     return true;
   };
-  timers.setInterval(() => { void tick(); }, intervalMs);
-  return tick;
+  const timer = timers.setInterval(() => { void run(); }, intervalMs);
+  return { run, stop: () => timers.clearInterval(timer) };
 }
 
 export { everyInterval };

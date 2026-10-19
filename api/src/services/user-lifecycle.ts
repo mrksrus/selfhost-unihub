@@ -8,8 +8,7 @@ import { getActiveRestoreSections } from './restore-locks';
 import { attachmentsRoot, rawRoot, mailPathUnderRoot, ownedMailPath } from './mail-storage';
 import { RECORDINGS_ROOT, deleteRecordingFiles } from './recordings';
 import { BACKUPS_ROOT, isBackupPathUnderRoot } from './export-jobs';
-import { serverEvents } from './server-events';
-import { androidStreams } from './android-push';
+import { realtime } from './realtime';
 
 type DeleteActor = 'self' | 'admin';
 interface DeleteUserResult { files: { removed: number; failed: number } }
@@ -64,8 +63,7 @@ async function deleteUser(userId: string, { actor }: { actor: DeleteActor }): Pr
   if (!deleted) throw notFound('USER_NOT_FOUND', 'User not found');
 
   const outcome = await removeUserFiles(userId, files, recordingPaths);
-  serverEvents.closeUser(userId);
-  androidStreams.closeUser(userId);
+  realtime.closeUser(userId);
   return outcome;
 }
 
