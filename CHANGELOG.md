@@ -43,6 +43,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   removes every file under the configured roots. Deleting a user whose restore
   is still running is refused (409) instead of leaving the restore writing for
   a vanished account.
+- **The Android app survives a crash of its page renderer.** When Android
+  ended the WebView's renderer (a very large mail, or memory pressure while the
+  app was in the background), the whole app closed and its notification
+  service stopped with it until the next restart. The app now replaces the
+  page and loads it again from the server.
 - **Internal error text no longer shown to the browser.** When a calendar,
   recording or notification request failed inside the server (for example a
   database or file system error), the browser showed the raw internal message.
@@ -207,6 +212,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   API through `src/lib/` feature modules, and `scripts/import-graph.mts` fails on a static import
   cycle. The files that predate a rule are listed in `eslint.boundaries.js`, which only shrinks.
   The mail read, star and attachment routes read their id from `req.params`.
+- `android/scripts/build-apk.sh` reads the version from `package.json` independent of its
+  formatting and stops on anything but `major.minor.patch`; the server ignores app metadata with
+  version code 0 or an empty version name instead of advertising it. docs/ANDROID_COMPATIBILITY.md
+  lists the 0.22.4 window.
 
 ## 0.22.4
 

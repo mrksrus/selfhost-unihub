@@ -14,10 +14,17 @@ set -euo pipefail
 out="${1:?usage: build-apk.sh <output directory>}"
 cd "$(dirname "$0")/.."
 
-# Same formula as app/build.gradle.kts: 0.21.0 is version code 21000.
-version="$(sed -n 's/^  "version": "\([0-9.]*\)",$/\1/p' ../package.json | head -n 1)"
+# Same formula as app/build.gradle.kts: 0.21.0 is version code 21000. Gradle
+# reads package.json as JSON; this reads the first "version" key whatever the
+# formatting, and refuses anything Gradle would not turn into the same code, so
+# the download's metadata cannot advertise an empty version or code 0.
+version="$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' ../package.json | head -n 1 | sed -E 's/.*"([^"]*)"$/\1/' || true)"
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "package.json has no plain major.minor.patch version (read: '$version')." >&2
+  exit 1
+fi
 IFS=. read -r major minor patch <<<"$version"
-code=$((major * 1000000 + minor * 1000 + patch))
+code=$((10#$major * 1000000 + 10#$minor * 1000 + 10#$patch))
 
 # The Dockerfile's build cache only notices a new key through UNIHUB_ANDROID_SIGNER.
 key_name="${UNIHUB_ANDROID_SIGNER:-none}"
