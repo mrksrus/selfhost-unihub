@@ -202,6 +202,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   `api/src/services/background-work.ts::startBackgroundWork()`, which returns `stop()`;
   `everyInterval` returns `{ run, stop }`. Shutdown stops the timers as well as the IDLE
   sessions (docs/ARCHITECTURE.md, Scheduled Jobs, now lists all nine).
+- Import layering is checked by `npm run lint` (docs/ARCHITECTURE.md, Layering): security/ and
+  http/ import no services or routes, routes do not import `db` or split `req.url`, views call the
+  API through `src/lib/` feature modules, and `scripts/import-graph.mts` fails on a static import
+  cycle. The files that predate a rule are listed in `eslint.boundaries.js`, which only shrinks.
+  The mail read, star and attachment routes read their id from `req.params`.
 
 ## 0.22.4
 

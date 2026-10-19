@@ -225,8 +225,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const parts = req.url.split('?')[0].split('/');
-      const attachmentId = parts[parts.length - 1];
+      const attachmentId = extractMailRouteId(req)!;
 
       // Get attachment info and verify it belongs to user's email
       const [attachments] = await db.execute<RowDataPacket[]>(

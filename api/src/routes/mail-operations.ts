@@ -6,7 +6,7 @@ import { folderConnections } from '../services/mail-folder-reconciliation';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
 import crypto from 'crypto';
 import { db } from '../state';
-import { validateUserMailFolder, routeError } from './mail-route-helpers';
+import { validateUserMailFolder, extractMailRouteId, routeError } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -66,8 +66,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const parts = req.url.split('?')[0].split('/');
-      const id = parts[parts.length - 2];
+      const id = extractMailRouteId(req, 2)!;
       if (typeof body.is_read !== 'boolean') return { error: 'Read state must be boolean', status: 400 };
       return await mailWritebacks.mutateMessages(userId, [id], { read: Number(body.is_read) }, undefined, operationOptions(req));
     } catch (error) {
@@ -79,8 +78,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const parts = req.url.split('?')[0].split('/');
-      const id = parts[parts.length - 2];
+      const id = extractMailRouteId(req, 2)!;
       if (typeof body.is_starred !== 'boolean') return { error: 'Star state must be boolean', status: 400 };
       return await mailWritebacks.mutateMessages(userId, [id], { star: Number(body.is_starred) }, undefined, operationOptions(req));
     } catch (error) {
