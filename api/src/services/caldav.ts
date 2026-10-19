@@ -424,6 +424,18 @@ async function fetchCalendarObjects({ calendarUrl, objects, username, password, 
   return results;
 }
 
+// Whether a calendar or object that a listing no longer shows is gone from
+// the server. 404 and 410 mean gone; for a calendar so does 403 (the user's
+// access was removed, as when it is unshared). A resource that answers is not
+// gone, and any other answer throws, so nothing is removed on a transport,
+// server or login failure.
+async function resourceGone({ url, kind, username, password, credentialScope, signal }: Login & { url: string; kind: 'calendar' | 'object' }) {
+  const gone = kind === 'calendar' ? [403, 404, 410] : [404, 410];
+  const result = await davRequest(url, { ...auth({ username, password, credentialScope, signal }), depth: '0',
+    body: `${XML_HEADER}\n<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype /></d:prop></d:propfind>`, acceptStatuses: gone });
+  return gone.includes(result.status);
+}
+
 async function readObjectEtag(url: string, login: ReturnType<typeof auth>) {
   const result = await davRequest(url, { ...login, depth: '0',
     body: `${XML_HEADER}\n<d:propfind xmlns:d="DAV:"><d:prop><d:getetag /></d:prop></d:propfind>`, acceptStatuses: [404] });
@@ -491,6 +503,7 @@ export {
   findCalDavServer,
   listCalendarObjects,
   fetchCalendarObjects,
+  resourceGone,
   putCalendarObject,
   deleteCalendarObject,
   normalizeIcsFeedUrl,
@@ -502,3 +515,4 @@ export {
   accountCredentialScope,
   credentialScopeAllows,
 };
+export type { Login as CalDavLogin };

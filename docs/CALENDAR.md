@@ -309,8 +309,17 @@ rows from it: one row per occurrence within 365 days back and 730 days ahead.
 - **What is fetched.** The calendar list is read every time. A calendar whose
   change marker (ctag) did not change is skipped. Otherwise UniHub lists the
   objects in the window and downloads only new or changed ones (by ETag) with
-  `calendar-multiget`, in batches of 50. Objects missing from the listing are
-  removed. ICS feeds use `If-None-Match`.
+  `calendar-multiget`, in batches of 50. ICS feeds use `If-None-Match`.
+- **What is removed.** A listing can be incomplete, so a stored object it
+  leaves out is requested again: one the server still has stays (and is
+  updated) while it has occurrences in the window, and loses its local rows
+  once it moved out of the window, as before. An object is removed only when
+  the server answers `404` or `410` for it; a calendar missing from the list
+  only on `403`, `404` or `410`. Any other answer (a timeout, a server error,
+  a rejected login) fails the sync and removes nothing. An ICS feed that
+  suddenly has no events while some are saved is reported as an error
+  (`ICS_FEED_EMPTY`) and the saved events stay; remove the subscription if its
+  calendar was emptied on purpose.
 - **Unreadable objects.** An object that cannot be parsed keeps its last
   readable copy, its ETag and its event rows with their ToDo state. The sync
   status shows how many entries could not be read, and the next sync downloads

@@ -19,6 +19,13 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **Calendar sync removes only what the server confirms is gone.** An event,
+  or a whole calendar with its events and ToDo state, was deleted as soon as
+  one listing from the server left it out, so a server hiccup or an
+  incomplete answer could wipe them. UniHub now asks the server about each
+  missing entry and removes it only when the server says it no longer exists.
+  A subscription that suddenly returns no events keeps the saved ones and
+  shows an error instead.
 - **A confirmed mail server is trusted only with the certificate you
   confirmed.** Confirming a mail server whose certificate could not be
   verified turned certificate checks off for that account's IMAP and SMTP
