@@ -2,6 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { RowDataPacket } from 'mysql2/promise';
 import type { ApiError, StoredFlag } from '../types';
 import { db } from '../state';
+import { CLIENT_KEY_PATTERN } from '../services/mail-engine/repository';
 import { clientError } from '../http/errors';
 import { normalizeMailFolderSlug, ensureDefaultMailFoldersForUser, scheduleMailAccountSync } from '../services/mail';
 
@@ -55,7 +56,17 @@ function extractMailRouteId(req: Pick<IncomingMessage, 'url'> & { params?: Recor
   return parts[parts.length - offsetFromEnd] || null;
 }
 
+/** The request's Idempotency-Key, if any; a malformed one is refused. */
+function idempotencyKey(req: Pick<IncomingMessage, 'headers'>) {
+  const key = req.headers?.['idempotency-key'];
+  if (key !== undefined && (typeof key !== 'string' || !CLIENT_KEY_PATTERN.test(key))) {
+    throw Object.assign(new Error('Invalid Idempotency-Key'), { status: 400 });
+  }
+  return key;
+}
+
 export {
+  idempotencyKey,
   pendingFlagSql,
   EFFECTIVE_READ_SQL,
   EFFECTIVE_STAR_SQL,

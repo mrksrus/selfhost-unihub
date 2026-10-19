@@ -83,3 +83,4 @@ export const scheduleMailAccountSync = syncControl.scheduleMailAccountSync;
 export const getMailSyncState = syncControl.getMailSyncState;
 export const withMailAccountLock = accountLock.withMailAccountLock;
 export const sendEmail = send.sendEmail;
+export const sendOnce = send.sendOnce;

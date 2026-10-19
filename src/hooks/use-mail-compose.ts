@@ -78,6 +78,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   const [isAttachmentDragOver, setIsAttachmentDragOver] = useState(false);
   const inlineComposeEditorRef = useRef<HTMLDivElement | null>(null);
   const dialogComposeEditorRef = useRef<HTMLDivElement | null>(null);
+  // One Idempotency-Key per composed message: pressing Send again after a lost
+  // response returns the first result instead of sending the message twice.
+  const sendKeyRef = useRef<string | null>(null);
+  const sendHeaders = () => ({ headers: { 'Idempotency-Key': (sendKeyRef.current ??= `send-${crypto.randomUUID()}`) } });
 
   // Open compose dialog if linked from dashboard
   useEffect(() => {
@@ -255,6 +259,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     const target = composeReturnTo;
     setIsComposeOpen(false);
     resetComposeState();
+    sendKeyRef.current = null;
     setComposeReturnTo(null);
     if (target) navigate(target);
   };
@@ -297,7 +302,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       isHtml?: boolean;
       attachments?: AttachmentPayload;
     }) => {
-      const response = await api.post('/mail/send', data);
+      const response = await api.post('/mail/send', data, sendHeaders());
       if (response.error) {
         throw new Error(response.error);
       }
@@ -499,7 +504,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       if (activeDraftId) {
         const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
         const draftId = savedDraft?.id || activeDraftId;
-        const response = await api.post(`/mail/drafts/${draftId}/send`);
+        const response = await api.post(`/mail/drafts/${draftId}/send`, undefined, sendHeaders());
         if (response.error) throw new Error(response.error);
         toast({ title: '✓ Email sent successfully' });
         void invalidateMailQueries(queryClient);

@@ -675,6 +675,15 @@ System folders cannot be deleted. Synced custom-folder deletion returns a confli
 the `sent` folder. Drafts are app-local rows in the `drafts` folder with
 `is_draft = true`; they are not synchronized to provider draft folders.
 
+Both send routes accept an `Idempotency-Key` header; the app sends one per
+composed message. The key is claimed in `mail_command_receipts` before SMTP and
+holds the response afterwards, so a repeated request (a lost response, a second
+click) returns the first response and sends nothing. While the first request
+runs, or when it ended without a recorded outcome, a repeat gets
+`409 SEND_IN_PROGRESS`; the user checks Sent instead of sending twice. A send
+that failed releases its key. The same key with a different message is
+`409 IDEMPOTENCY_KEY_REUSED`.
+
 Send and draft requests take `to`, `cc` and `bcc` as comma-separated strings;
 at least one of them needs a recipient. The Sent copy and drafts keep all three
 (`to_addresses`, `cc_addresses`, `bcc_addresses`), and the email detail returns

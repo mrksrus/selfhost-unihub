@@ -6,7 +6,7 @@ import { folderConnections } from '../services/mail-folder-reconciliation';
 import { filingAccountId, folderAcceptsAccount } from '../services/mail-filing';
 import crypto from 'crypto';
 import { db } from '../state';
-import { validateUserMailFolder, extractMailRouteId, routeError } from './mail-route-helpers';
+import { validateUserMailFolder, extractMailRouteId, routeError, idempotencyKey } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface Input {
@@ -18,11 +18,7 @@ interface Input {
 }
 
 function operationOptions(req: Request) {
-  const key = req.headers?.['idempotency-key'];
-  if (key !== undefined && (typeof key !== 'string' || !mailRepository.CLIENT_KEY_PATTERN.test(key))) {
-    throw Object.assign(new Error('Invalid Idempotency-Key'), { status: 400 });
-  }
-  return { idempotencyKey: key };
+  return { idempotencyKey: idempotencyKey(req) };
 }
 
 export = {

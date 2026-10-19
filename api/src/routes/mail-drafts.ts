@@ -8,11 +8,12 @@ import {
   toBooleanFlag,
   ensureDefaultMailFoldersForUser,
   sendEmail,
+  sendOnce,
   deleteStoredAttachmentFiles,
 } from '../services/mail';
 import { saveDraftMutation } from '../services/mail-drafts';
 import { normalizeRecipients, parseStoredRecipients } from '../services/mail-recipients';
-import { extractMailRouteId, routeError } from './mail-route-helpers';
+import { extractMailRouteId, routeError, idempotencyKey } from './mail-route-helpers';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
 interface DraftRow extends RowDataPacket {
@@ -245,47 +246,53 @@ export = {
 
     try {
       const draftId = extractMailRouteId(req, 2)!;
-      const draft = await loadDraftEmail(userId, draftId);
-      if (!draft) return { error: 'Draft not found', status: 404 };
+      // A repeat after a lost response gets the first result, before the (deleted) draft is looked up.
+      return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { draftId } }, async () => {
+        const draft = await loadDraftEmail(userId, draftId);
+        if (!draft) return { error: 'Draft not found', status: 404 };
 
-      const account = await loadMailAccountForDraft(userId, draft.mail_account_id);
-      if (!account) return { error: 'Account not found', status: 404 };
+        const account = await loadMailAccountForDraft(userId, draft.mail_account_id);
+        if (!account) return { error: 'Account not found', status: 404 };
 
-      const to = parseStoredRecipients(draft.to_addresses);
-      const cc = parseStoredRecipients(draft.cc_addresses);
-      const bcc = parseStoredRecipients(draft.bcc_addresses);
-      if (!to.length && !cc.length && !bcc.length) return { error: 'Draft needs at least one recipient before sending', status: 400 };
+        const to = parseStoredRecipients(draft.to_addresses);
+        const cc = parseStoredRecipients(draft.cc_addresses);
+        const bcc = parseStoredRecipients(draft.bcc_addresses);
+        if (!to.length && !cc.length && !bcc.length) return { error: 'Draft needs at least one recipient before sending', status: 400 };
 
-      const [attachmentRows] = await db.execute<RowDataPacket[]>(
-        'SELECT filename, content_type, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
-        [draftId, userId]
-      );
-      const attachments = [];
-      for (const attachment of attachmentRows || []) {
-        if (!attachment.storage_path) continue;
-        const content = await readFile(attachment.storage_path);
-        attachments.push({
-          filename: attachment.filename,
-          contentType: attachment.content_type || 'application/octet-stream',
-          dataBase64: content.toString('base64'),
-        });
-      }
+        const [attachmentRows] = await db.execute<RowDataPacket[]>(
+          'SELECT filename, content_type, storage_path FROM email_attachments WHERE email_id = ? AND user_id = ? ORDER BY filename',
+          [draftId, userId]
+        );
+        const attachments = [];
+        for (const attachment of attachmentRows || []) {
+          if (!attachment.storage_path) continue;
+          const content = await readFile(attachment.storage_path);
+          attachments.push({
+            filename: attachment.filename,
+            contentType: attachment.content_type || 'application/octet-stream',
+            dataBase64: content.toString('base64'),
+          });
+        }
 
-      const bodyContent = draft.body_html || draft.body_text || (attachments.length > 0 ? '<p></p>' : '');
-      if (!bodyContent && attachments.length === 0) {
-        return { error: 'Draft needs a message or attachment before sending', status: 400 };
-      }
+        const bodyContent = draft.body_html || draft.body_text || (attachments.length > 0 ? '<p></p>' : '');
+        if (!bodyContent && attachments.length === 0) {
+          return { error: 'Draft needs a message or attachment before sending', status: 400 };
+        }
 
-      const result = await sendEmail({ userId, accountId: draft.mail_account_id }, {
-        to,
-        cc,
-        bcc,
-        subject: draft.subject || '(No subject)',
-        body: bodyContent,
-        isHtml: !!draft.body_html || (!draft.body_text && attachments.length > 0),
-        attachments,
+        const result = await sendEmail({ userId, accountId: draft.mail_account_id }, {
+          to,
+          cc,
+          bcc,
+          subject: draft.subject || '(No subject)',
+          body: bodyContent,
+          isHtml: !!draft.body_html || (!draft.body_text && attachments.length > 0),
+          attachments,
       });
-      const deleteResult = await deleteDraftWithFiles(userId, draftId);
+      // The message is out: a draft that cannot be removed now stays, and the send still succeeded.
+      const deleteResult = await deleteDraftWithFiles(userId, draftId).catch((error: unknown) => {
+        console.error('Send draft cleanup error:', (error as Error)?.name || 'Error');
+        return { deletedAttachmentFiles: 0, failedAttachmentFiles: 0 };
+      });
 
       return {
         success: true,
@@ -293,6 +300,7 @@ export = {
         deletedAttachmentFiles: deleteResult.deletedAttachmentFiles || 0,
         failedAttachmentFiles: deleteResult.failedAttachmentFiles || 0,
       };
+      });
     } catch (error) {
       console.error('Send draft error:', (error as NodeJS.ErrnoException)?.code || (error as Error)?.name || 'Error');
       return routeError(error, 'Failed to send draft');
@@ -322,8 +330,11 @@ export = {
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
 
-      const result = await sendEmail({ userId, accountId: account_id }, { to: to || '', cc, bcc, subject, body: emailBody, isHtml, attachments: attachments || [] });
-      return { ...result, success: true, messageId: result.messageId };
+      const message = { to: to || '', cc, bcc, subject, body: emailBody, isHtml, attachments: attachments || [] };
+      return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { account_id, ...message } }, async () => {
+        const result = await sendEmail({ userId, accountId: account_id }, message);
+        return { ...result, success: true, messageId: result.messageId };
+      });
     } catch (error) {
       // SMTP errors carry the rejected recipients in their message and fields; the log gets the kind only.
       console.error('Send email error:', (error as NodeJS.ErrnoException)?.code || (error as Error)?.name || 'Error');

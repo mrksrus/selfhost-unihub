@@ -68,7 +68,7 @@ describe('which account a message is sent from', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New message' }));
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'From' })).toHaveTextContent('alex.work@example.test'));
     await fillAndSend('someone@example.test', 'Hello', 'compose-body');
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-b', to: 'someone@example.test' })));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-b', to: 'someone@example.test' }), expect.anything()));
   });
 
   it('starts from the open account, and replies from the account that received the message', async () => {
@@ -80,7 +80,7 @@ describe('which account a message is sent from', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reply to Sparks' }));
     expect(await screen.findByLabelText('To')).toHaveValue('sparks@example.test');
     await fillAndSend('sparks@example.test', 'Thanks', 'compose-body-inline');
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-a' })));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-a' }), expect.anything()));
   });
 
   it('closes the contact list after a pick until more is typed, and sends a Bcc-only message', async () => {
@@ -102,7 +102,7 @@ describe('which account a message is sent from', () => {
     editor.innerHTML = '<p>Quietly</p>';
     fireEvent.input(editor);
     fireEvent.click(screen.getByRole('button', { name: /^Send/ }));
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ to: '', cc: '', bcc: 'hidden@example.test' })));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ to: '', cc: '', bcc: 'hidden@example.test' }), expect.anything()));
   });
 
   it('keeps a draft\'s Cc and Bcc when the draft is saved again', async () => {
@@ -113,5 +113,27 @@ describe('which account a message is sent from', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalledWith('/mail/drafts/draft-1', expect.objectContaining({
       account_id: 'acc-a', to: '', cc: 'copy@example.test, second@example.test', bcc: 'hidden@example.test',
     })));
+  });
+});
+
+describe('sending a message once', () => {
+  it('sends again with the same Idempotency-Key after a lost response, and a new message gets a new key', async () => {
+    const sendKeys = () => vi.mocked(api.post).mock.calls.filter(([path]) => path === '/mail/send')
+      .map(([, , options]) => (options as { headers: Record<string, string> }).headers['Idempotency-Key']);
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'Network error. Check your connection.' });
+    wrap(<Host />);
+    fireEvent.click(screen.getByRole('button', { name: 'New message' }));
+    await fillAndSend('someone@example.test', 'Hello', 'compose-body');
+    await waitFor(() => expect(sendKeys()).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: /^Send/ }));
+    await waitFor(() => expect(sendKeys()).toHaveLength(2));
+    expect(sendKeys()[1]).toBe(sendKeys()[0]);
+
+    // The second attempt succeeded and closed the message; the next one is a different message.
+    await waitFor(() => expect(screen.queryByLabelText('To')).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'New message' }));
+    await fillAndSend('other@example.test', 'Again', 'compose-body');
+    await waitFor(() => expect(sendKeys()).toHaveLength(3));
+    expect(sendKeys()[2]).not.toBe(sendKeys()[0]);
   });
 });

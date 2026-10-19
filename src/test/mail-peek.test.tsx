@@ -73,7 +73,7 @@ describe('the email peek', () => {
     expect(to).toHaveValue('billing@power.example');
     expect(within(peek).getByLabelText('Subject')).toHaveValue('Re: Invoice 4711 for October');
     fireEvent.click(within(peek).getByRole('button', { name: /^Send/ }));
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'account-1', to: 'billing@power.example' })));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'account-1', to: 'billing@power.example' }), expect.anything()));
     expect(screen.getByTestId('where')).toHaveTextContent('/todo');
     await waitFor(() => expect(within(peek).queryByLabelText('To')).not.toBeInTheDocument());
   });
