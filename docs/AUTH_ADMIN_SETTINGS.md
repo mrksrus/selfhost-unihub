@@ -213,8 +213,10 @@ It returns `409` if 2FA was turned off while the request ran.
 
 ### When ENCRYPTION_KEY changed
 
-The authenticator secret is encrypted with `ENCRYPTION_KEY`. After that key
-changes, the secret can no longer be read, so authenticator codes stop working.
+The authenticator secret is encrypted with `ENCRYPTION_KEY`. A key change with
+the old key in `ENCRYPTION_KEY_PREVIOUS` keeps it readable
+([Installation](INSTALLATION.md#changing-the-encryption-key)). Without the old
+key the secret can no longer be read, so authenticator codes stop working.
 Recovery codes are bcrypt hashes and keep working:
 
 - sign-in with a recovery code still succeeds

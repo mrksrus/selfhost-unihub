@@ -713,8 +713,12 @@ Stored mail passwords use AES-256-GCM through `api/src/security/encryption.ts`.
 The encryption key is derived from `ENCRYPTION_KEY` with SHA-256. Stored format:
 
 ```text
-iv_hex:auth_tag_hex:ciphertext_hex
+v1:iv_hex:auth_tag_hex:ciphertext_hex
 ```
+
+Values from before 0.23.0 have no `v1:` prefix and are read the same way.
+Reading falls back to `ENCRYPTION_KEY_PREVIOUS` after a key change (see
+[Installation](INSTALLATION.md#changing-the-encryption-key)).
 
 The password is decrypted only when opening IMAP/SMTP connections or the
 CalDAV connections of the account's calendar.
