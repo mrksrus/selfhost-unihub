@@ -20,7 +20,7 @@ Primary table: `contacts`
 | --- | --- |
 | `id` | UUID primary key |
 | `user_id` | Owner, cascades when the user is deleted |
-| `first_name` | Required for manual create and update (100 characters); imports can derive it from other identity fields |
+| `first_name` | Required for manual create (100 characters); may be empty on edit; imports can derive it from other identity fields |
 | `last_name` | Nullable, 100 characters |
 | `email`, `email2`, `email3` | Up to three email addresses, 255 characters each, stored as typed (no format check, so contacts from phones and vCards keep syncing) |
 | `phone`, `phone2`, `phone3` | Up to three phone numbers, 50 characters each |
@@ -62,8 +62,10 @@ require `X-CSRF-Token`.
 `normalizeContactInput` (`api/src/services/contacts.ts`): every field must be
 text or absent, is trimmed, an empty value becomes `NULL`, a value longer than
 its column is refused with 400 naming the limit. Email fields are not checked
-for a format. A first name is required on both. The route ids come from the matcher
-(`req.params.id`), so a query string on the URL does not become part of the id.
+for a format. A first name is required to create a contact; an edit may leave
+it empty, as a vCard imported without a name has none. The route ids come from
+the matcher (`req.params.id`), so a query string on the URL does not become
+part of the id.
 
 ### List Query Parameters
 

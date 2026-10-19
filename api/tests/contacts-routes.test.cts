@@ -10,7 +10,7 @@ const req = (url: string, params: Record<string, string> = {}) => ({ url, header
 test('contact create and update refuse fields that do not fit their columns before any SQL runs', async (t) => {
   const previous = getDb(); t.after(() => setDb(previous));
   const calls: FixtureValue[] = [];
-  setDb({ async execute(sql: string, params: FixtureValue) { calls.push({ sql, params }); return [[{ id: 'c1' }]]; } } as FixtureValue);
+  setDb({ async execute(sql: string, params: FixtureValue) { calls.push({ sql, params }); return /^UPDATE/.test(sql) ? [{ affectedRows: 1 }] : [[{ id: 'c1' }]]; } } as FixtureValue);
 
   const tooLong = await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: 'A'.repeat(101) });
   assert.equal(tooLong.status, 400); assert.match(tooLong.error!, /First name is too long/);
@@ -18,9 +18,16 @@ test('contact create and update refuse fields that do not fit their columns befo
   assert.equal(notText.status, 400); assert.match(notText.error!, /First name must be text/);
   const longPhone = await routes['PUT /api/contacts/:id'](req('/api/contacts/c1', { id: 'c1' }), 'u1', { first_name: 'Ann', phone: '1'.repeat(51) });
   assert.equal(longPhone.status, 400); assert.match(longPhone.error!, /Phone is too long/);
-  const blank = await routes['PUT /api/contacts/:id'](req('/api/contacts/c1', { id: 'c1' }), 'u1', { first_name: '   ' });
+  const blank = await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: '   ' });
   assert.equal(blank.status, 400); assert.equal(blank.error, 'First name is required');
   assert.equal(calls.length, 0, 'refused input never reaches the database');
+
+  // An imported card without a name has an empty first name; editing it still saves.
+  const unnamed = await routes['PUT /api/contacts/:id'](req('/api/contacts/c1', { id: 'c1' }), 'u1', { first_name: '', phone: '+1 555 0100' });
+  assert.equal(unnamed.status, undefined);
+  assert.match(calls[0].sql, /UPDATE contacts/);
+  assert.equal(calls[0].params[0], '');
+  calls.length = 0;
 
   // Boundary values are trimmed and stored; empty optional fields become NULL.
   const ok = await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: ` ${'B'.repeat(100)} `, last_name: '', email: ' ann@example.com ', notes: 'x'.repeat(65535) });
