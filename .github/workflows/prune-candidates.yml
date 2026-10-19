@@ -1,0 +1,51 @@
+name: Prune old candidate images
+
+# Every pull request leaves a tested image tagged candidate-<tree> (see
+# docker-image.yml). A release adds its own tags to the image it promotes, so
+# only images whose every tag is a candidate tag and that are older than 30
+# days are deleted. A merge that finds no candidate builds and tests a new one,
+# so pruning never blocks a release. Untagged versions (the per-platform parts
+# of an image) are left alone: deleting one would break the image it belongs to.
+#
+# Deleting needs the package to grant this repository the Admin role
+# (package settings, "Manage Actions access").
+
+on:
+  schedule:
+    - cron: '17 4 1 * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted without deleting it
+        type: boolean
+        default: true
+
+permissions:
+  packages: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OWNER: mrksrus
+      PACKAGE: selfhost-unihub
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+    steps:
+      - name: Delete candidate-only images older than 30 days
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          gh api --paginate "/users/$OWNER/packages/container/$PACKAGE/versions" \
+            --jq ".[] | select((.metadata.container.tags | length) > 0)
+                      | select(all(.metadata.container.tags[]; startswith(\"candidate-\")))
+                      | select(.updated_at < \"$cutoff\")
+                      | \"\(.id) \(.updated_at) \(.metadata.container.tags | join(\",\"))\"" > old.txt
+          echo "Candidate-only images older than $cutoff: $(wc -l < old.txt)"
+          while read -r id updated tags; do
+            echo "$id $updated $tags"
+            if [ "$DRY_RUN" != true ]; then
+              gh api -X DELETE "/users/$OWNER/packages/container/$PACKAGE/versions/$id"
+            fi
+          done < old.txt
