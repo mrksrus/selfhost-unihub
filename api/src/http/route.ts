@@ -1,6 +1,8 @@
 import type { ServerResponse } from 'node:http';
 import type { RouteRequest, RouteResponse } from '../types';
+import type { Permission } from '../security/permissions';
 import { compileRouteMatcher } from './route-matcher';
+import { isPermission } from '../security/permissions';
 
 // A route is declared with its policy. request-handler.ts reads only the spec:
 // who may call it, which module and restore section gate it, how large and of
@@ -38,6 +40,8 @@ interface PublicRouteSpec extends RoutePolicy {
 }
 interface UserRouteSpec extends RoutePolicy {
   auth: 'user' | 'admin';
+  // Required with 'admin': what the caller's role must grant (security/permissions.ts).
+  permission?: Permission;
   handler(req: RouteRequest, userId: string, body: unknown, res: ServerResponse): Promise<RouteResponse | undefined>;
 }
 type RouteSpec = PublicRouteSpec | UserRouteSpec;
@@ -71,6 +75,9 @@ function defineRoutes<T extends RouteTable>(table: T): T {
     if (!ROUTE_METHODS.includes(method as RouteMethod) || !path.startsWith('/')) invalid(key, 'key must be "METHOD /path"');
     if (!spec || typeof spec !== 'object' || typeof spec.handler !== 'function') invalid(key, 'spec needs a handler');
     if (!AUTH_VALUES.has(spec.auth)) invalid(key, `unknown auth ${String(spec.auth)}`);
+    const permission = (spec as { permission?: unknown }).permission;
+    if (spec.auth === 'admin' && !isPermission(permission)) invalid(key, 'an admin route declares the permission it needs');
+    if (spec.auth !== 'admin' && permission !== undefined) invalid(key, 'only an admin route declares a permission');
     if (spec.module !== undefined && spec.module !== null && typeof spec.module !== 'string') invalid(key, 'module must be an id or null');
     if (spec.restoreSection !== undefined && spec.restoreSection !== null && typeof spec.restoreSection !== 'string') invalid(key, 'restoreSection must be a section, "*" or null');
     if (spec.body !== undefined) {

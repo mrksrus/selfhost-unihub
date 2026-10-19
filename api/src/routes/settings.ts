@@ -97,7 +97,7 @@ export = defineRoutes({
 
   'DELETE /api/settings/account': { auth: 'user', module: null, restoreSection: '*', handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
     try {
-      await deleteUser(userId, { actor: 'self' });
+      await deleteUser(userId, { actor: 'self', actorId: userId, req });
       clearAuthCookie(res);
       clearCsrfCookie(res);
       return { deleted: true };

@@ -16,8 +16,13 @@ function sessionKey(token: SessionToken) {
 
 interface SessionRow extends RowDataPacket { id: string; user_id: string; expires_at: Date | string; is_active: StoredFlag }
 
-async function createSession({ userId, token, expiresAt }: { userId: string; token: SessionToken; expiresAt: Date }, executor: SqlExecutor = db) {
-  await executor.execute('INSERT INTO sessions (user_id, token, expires_at) VALUES (?, ?, ?)', [userId, sessionKey(token), expiresAt]);
+interface NewSession { userId: string; token: SessionToken; expiresAt: Date; ipAddress?: string | null; userAgent?: string | null }
+
+// The address and browser are shown to the user in Settings > Security so they
+// can recognize a device and sign it out.
+async function createSession({ userId, token, expiresAt, ipAddress = null, userAgent = null }: NewSession, executor: SqlExecutor = db) {
+  await executor.execute('INSERT INTO sessions (user_id, token, expires_at, ip_address, user_agent) VALUES (?, ?, ?, ?, ?)',
+    [userId, sessionKey(token), expiresAt, ipAddress?.slice(0, 45) || null, userAgent?.slice(0, 512) || null]);
 }
 
 /** The session of this token with its user's active flag, expired or not; null when unknown. */
@@ -58,6 +63,35 @@ async function endOtherSessions(userId: string, exceptToken: SessionToken | null
   return result.affectedRows;
 }
 
+interface ListedSession extends RowDataPacket { id: string; token: string; created_at: Date | string | null; expires_at: Date | string; ip_address: string | null; user_agent: string | null }
+
+/**
+ * The user's live sessions, newest first. A session renews at most once a day
+ * by moving its expiry SESSION_DAYS ahead, so the last renewal is when it was
+ * last used, to the day.
+ */
+async function listSessions(userId: string, currentToken: SessionToken | null, sessionDays: number, executor: SqlExecutor = db) {
+  const current = currentToken ? sessionKey(currentToken) : null;
+  const [rows] = await executor.execute<ListedSession[]>(`SELECT id, token, created_at, expires_at, ip_address, user_agent FROM sessions
+    WHERE user_id = ? AND expires_at > UTC_TIMESTAMP() ORDER BY created_at DESC, id`, [userId]);
+  return rows.map(row => ({
+    id: row.id,
+    current: row.token === current,
+    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+    lastActiveAt: new Date(new Date(row.expires_at).getTime() - sessionDays * 86_400_000).toISOString(),
+    ipAddress: row.ip_address,
+    userAgent: row.user_agent,
+  }));
+}
+
+/** Ends one of the user's sessions by id; returns its token hash (to close its streams) or null. */
+async function endSessionById(userId: string, sessionId: string, executor: SqlExecutor = db) {
+  const [rows] = await executor.execute<RowDataPacket[]>('SELECT token FROM sessions WHERE id = ? AND user_id = ?', [sessionId, userId]);
+  if (!rows.length) return null;
+  await executor.execute('DELETE FROM sessions WHERE id = ? AND user_id = ?', [sessionId, userId]);
+  return String(rows[0].token);
+}
+
 async function endUserSessions(userId: string, executor: SqlExecutor = db) {
   const [result] = await executor.execute<ResultSetHeader>('DELETE FROM sessions WHERE user_id = ?', [userId]);
   return result.affectedRows;
@@ -73,4 +107,6 @@ export {
   endSession,
   endOtherSessions,
   endUserSessions,
+  listSessions,
+  endSessionById,
 };

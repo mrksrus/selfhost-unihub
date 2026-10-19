@@ -10,6 +10,7 @@ import { BACKUPS_ROOT } from '../services/export-jobs';
 import { realtime } from '../services/realtime';
 import { endUserSessions, lockOwnSession } from '../services/sessions';
 import { deleteUser } from '../services/user-lifecycle';
+import { listAuditLog, recordAudit, recordAuditAfter } from '../services/audit';
 import { clientError } from '../http/errors';
 import {
   hashPassword,
@@ -273,7 +274,7 @@ export = defineRoutes({
   // The boundary admits only an admin session (auth 'admin'); the 2FA reset
   // re-checks the role inside its transaction because it also verifies the
   // admin's password and live session there.
-  'GET /api/admin/storage': { auth: 'admin', module: null, handler: async (req: Request, userId: string) => {
+  'GET /api/admin/storage': { auth: 'admin', permission: 'storage.read', module: null, handler: async (req: Request, userId: string) => {
 
     try {
       return { storage: await buildAdminStorageOverview() };
@@ -283,7 +284,7 @@ export = defineRoutes({
     }
   } },
 
-  'GET /api/admin/users': { auth: 'admin', module: null, handler: async (req: Request, userId: string) => {
+  'GET /api/admin/users': { auth: 'admin', permission: 'users.read', module: null, handler: async (req: Request, userId: string) => {
 
     try {
       const [users] = await db.execute<RowDataPacket[]>(
@@ -295,7 +296,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/admin/users/:id/password': { auth: 'admin', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'PUT /api/admin/users/:id/password': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const targetId = req.params.id;
     const { new_password } = body;
@@ -312,6 +313,7 @@ export = defineRoutes({
       // Invalidate all sessions so the user must re-login
       await endUserSessions(targetId);
       realtime.closeUser(targetId);
+      await recordAuditAfter({ action: 'admin.password_reset', actorId: userId, targetUserId: targetId, req });
       return { message: 'Password updated successfully' };
     } catch (error) {
       return { error: 'Failed to update password', status: 500 };
@@ -321,7 +323,7 @@ export = defineRoutes({
   // For a user who lost both the authenticator and the recovery codes. The admin
   // confirms with their own password; their own 2FA is turned off in Settings,
   // which needs a code, so a stolen admin session cannot remove it.
-  'POST /api/admin/users/:id/2fa/reset': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'POST /api/admin/users/:id/2fa/reset': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const targetId = req.params.id;
     if (targetId === userId) {
@@ -358,6 +360,7 @@ export = defineRoutes({
       await connection.execute('DELETE FROM two_factor_challenges WHERE user_id = ?', [targetId]);
       // Sessions may be on the lost device.
       await endUserSessions(targetId, connection);
+      await recordAudit({ action: 'admin.two_factor_reset', actorId: userId, targetUserId: targetId, req }, connection);
       await connection.commit();
       realtime.closeUser(targetId);
       return { message: 'Two-factor authentication reset' };
@@ -370,7 +373,7 @@ export = defineRoutes({
     }
   } },
 
-  'DELETE /api/admin/users/:id': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string) => {
+  'DELETE /api/admin/users/:id': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, handler: async (req: Request, userId: string) => {
 
     const id = req.params.id;
 
@@ -384,7 +387,7 @@ export = defineRoutes({
       if (targetUser.role === 'admin' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
         return { error: 'Cannot delete the last active admin', status: 400 };
       }
-      await deleteUser(id, { actor: 'admin' });
+      await deleteUser(id, { actor: 'admin', actorId: userId, req });
       return { message: 'User deleted' };
     } catch (error) {
       if (!(error as ApiError).status) console.error('Admin delete user error:', error);
@@ -392,7 +395,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/admin/users/:id/role': { auth: 'admin', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
+  'PUT /api/admin/users/:id/role': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const id = req.params.id;
     const nextRole = String(body?.role || '').trim().toLowerCase();
@@ -409,6 +412,7 @@ export = defineRoutes({
         return { error: 'Cannot demote the last active admin', status: 400 };
       }
       await db.execute('UPDATE users SET role = ? WHERE id = ?', [nextRole, id]);
+      await recordAuditAfter({ action: 'admin.role_changed', actorId: userId, targetUserId: id, req, details: { role: nextRole } });
       return { message: `User role set to ${nextRole}` };
     } catch (error) {
       console.error('Update user role error:', error);
@@ -416,7 +420,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/admin/users/:id/activate': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/admin/users/:id/activate': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
 
     const id = req.params.id;
     const { is_active } = body;
@@ -432,13 +436,25 @@ export = defineRoutes({
         await endUserSessions(id);
         realtime.closeUser(id);
       }
+      await recordAuditAfter({ action: is_active ? 'admin.user_activated' : 'admin.user_deactivated', actorId: userId, targetUserId: id, req });
       return { message: is_active ? 'User activated' : 'User deactivated' };
     } catch (error) {
       return { error: 'Failed to update user status', status: 500 };
     }
   } },
 
-  'GET /api/admin/settings/signup-mode': { auth: 'admin', module: null, handler: async (req: Request, userId: string) => {
+  // Newest first; `before` is the `cursor` of the previous page.
+  'GET /api/admin/audit': { auth: 'admin', permission: 'audit.read', module: null, handler: async (req: Request) => {
+    const url = new URL(req.url || '/', 'http://localhost');
+    const cursor = url.searchParams.get('before');
+    const [createdAt, id] = cursor ? cursor.split('|') : [];
+    const before = createdAt && id && !Number.isNaN(Date.parse(createdAt)) && /^[0-9a-f-]{36}$/i.test(id) ? { createdAt, id } : null;
+    const { entries, more } = await listAuditLog({ limit: Number(url.searchParams.get('limit')) || 50, before });
+    const last = entries[entries.length - 1];
+    return { entries, cursor: more && last ? `${last.createdAt}|${last.id}` : null };
+  } },
+
+  'GET /api/admin/settings/signup-mode': { auth: 'admin', permission: 'server.settings', module: null, handler: async (req: Request, userId: string) => {
 
     try {
       const mode = await getSignupMode();
@@ -448,7 +464,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/admin/settings/signup-mode': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/admin/settings/signup-mode': { auth: 'admin', permission: 'server.settings', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
 
     const { signup_mode } = body;
     if (!['open', 'approval', 'disabled'].includes(signup_mode)) {
@@ -460,6 +476,7 @@ export = defineRoutes({
         'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
         ['signup_mode', signup_mode, signup_mode]
       );
+      await recordAuditAfter({ action: 'admin.signup_mode_changed', actorId: userId, req, details: { mode: signup_mode } });
       return { message: `Signup mode set to: ${signup_mode}` };
     } catch (error) {
       return { error: 'Failed to update settings', status: 500 };

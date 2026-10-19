@@ -36,6 +36,7 @@ function deps(timers: ReturnType<typeof fakeTimers>) {
       isSectionRestoreActive: async () => false,
       idleSupervisor: { start: () => { idle.started++; }, stop: () => { idle.stopped++; }, options: { maxSessions: 0 } },
       runCalendarSyncPass: async () => {},
+      pruneAuditLog: async () => 0,
     } as FixtureValue,
   };
 }

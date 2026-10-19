@@ -19,6 +19,7 @@ import {
   getAuthTokenFromRequest,
   clearAuthCookie,
   clearCsrfCookie,
+  SESSION_DAYS,
 } from '../auth';
 import {
   generateTwoFactorSecret,
@@ -36,7 +37,16 @@ import {
   deleteTwoFactorLoginChallenge,
 } from '../services/two-factor';
 import { realtime } from '../services/realtime';
-import { createSession, endOtherSessions, endSession, endUserSessions, lockOwnSession } from '../services/sessions';
+import { createSession, endOtherSessions, endSession, endSessionById, endUserSessions, listSessions, lockOwnSession } from '../services/sessions';
+import { recordAudit, recordAuditAfter } from '../services/audit';
+
+// The address (through the trusted-proxy rules) and the browser of a new sign-in.
+function sessionDevice(req: Request) {
+  let ipAddress: string | null = null;
+  try { ipAddress = getClientIP(req as Parameters<typeof getClientIP>[0]) || null; } catch { /* unknown */ }
+  const agent = req.headers?.['user-agent'];
+  return { ipAddress, userAgent: typeof agent === 'string' ? agent : null };
+}
 import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -65,11 +75,13 @@ interface UserRow extends RowDataPacket {
   two_factor_recovery_codes?: unknown;
 }
 
-async function createSessionResponse(user: Pick<UserRow, 'id' | 'email' | 'full_name' | 'avatar_url' | 'role' | 'timezone' | 'two_factor_enabled'>, res: ServerResponse, connection: SqlExecutor = db, afterCommit: (() => void)[] | null = null) {
+async function createSessionResponse(user: Pick<UserRow, 'id' | 'email' | 'full_name' | 'avatar_url' | 'role' | 'timezone' | 'two_factor_enabled'>, req: Request, res: ServerResponse, connection: SqlExecutor = db, afterCommit: (() => void)[] | null = null) {
   const token = generateToken(user.id);
   const csrfToken = generateCsrfToken();
   const expiresAt = getSessionExpiry();
-  await createSession({ userId: user.id, token, expiresAt }, connection);
+  await createSession({ userId: user.id, token, expiresAt, ...sessionDevice(req) }, connection);
+  const signin = { action: 'auth.signin', actorId: user.id, targetUserId: user.id, req } as const;
+  if (connection === db) await recordAuditAfter(signin); else await recordAudit(signin, connection);
 
   const sendCookies = () => { setAuthCookie(res, token); setCsrfCookie(res, csrfToken); };
   if (afterCommit) afterCommit.push(sendCookies);
@@ -169,7 +181,7 @@ export = defineRoutes({
 
       // Create session
       const expiresAt = getSessionExpiry();
-      await createSession({ userId: newUserId, token, expiresAt });
+      await createSession({ userId: newUserId, token, expiresAt, ...sessionDevice(req) });
 
       const result = { csrfToken, user: { id: newUserId, email, full_name, role: 'user', timezone: null, two_factor_enabled: false } };
       setAuthCookie(res, token);
@@ -224,6 +236,7 @@ export = defineRoutes({
       const isValid = await verifyPassword(password, user.password_hash);
 
       if (!isValid) {
+        await recordAuditAfter({ action: 'auth.signin_failed', actorId: null, targetUserId: user.id, req });
         return { error: 'Invalid credentials', status: 401 };
       }
 
@@ -244,7 +257,7 @@ export = defineRoutes({
       retries = 3;
       while (retries > 0) {
         try {
-          const result = await createSessionResponse(user, res);
+          const result = await createSessionResponse(user, req, res);
           return result;
         } catch (dbError) {
           retries--;
@@ -291,7 +304,7 @@ export = defineRoutes({
 
       await deleteTwoFactorLoginChallenge(challengeToken, connection);
       const afterCommit: (() => void)[] = [];
-      const result = await createSessionResponse(challengeUser, res, connection, afterCommit);
+      const result = await createSessionResponse(challengeUser, req, res, connection, afterCommit);
       await connection.commit();
       afterCommit.forEach(apply => apply());
       return {
@@ -380,6 +393,7 @@ export = defineRoutes({
       await enableTwoFactor(userId, secret, recovery.hashes, connection);
       // Sessions on other devices were opened with the password alone.
       await endOtherSessions(userId, currentToken, connection);
+      await recordAudit({ action: 'auth.two_factor_enabled', actorId: userId, targetUserId: userId, req }, connection);
       await connection.commit();
       realtime.closeUser(userId, { exceptToken: currentToken });
       return {
@@ -416,6 +430,7 @@ export = defineRoutes({
       if (!verification.ok) return { error: 'Invalid authentication code', status: 401 };
       await disableTwoFactor(userId);
       await endOtherSessions(userId, getAuthTokenFromRequest(req));
+      await recordAuditAfter({ action: 'auth.two_factor_disabled', actorId: userId, targetUserId: userId, req });
       realtime.closeUser(userId, { exceptToken: getAuthTokenFromRequest(req) });
       return { enabled: false };
     } catch (error) {
@@ -445,6 +460,7 @@ export = defineRoutes({
       if (!(await replaceRecoveryCodes(userId, recovery.hashes))) {
         return { error: 'Two-factor authentication was turned off', status: 409 };
       }
+      await recordAuditAfter({ action: 'auth.recovery_codes_replaced', actorId: userId, targetUserId: userId, req });
       return {
         recoveryCodes: recovery.codes,
         recoveryCodesRemaining: recovery.codes.length,
@@ -453,6 +469,26 @@ export = defineRoutes({
       console.error('2FA recovery regenerate error:', error);
       return { error: 'Failed to regenerate recovery codes', status: 500 };
     }
+  } },
+
+  // The signed-in devices of this account (Settings > Security), and signing
+  // one of them out. The current device signs out with POST /api/auth/signout.
+  'GET /api/auth/sessions': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
+    return { sessions: await listSessions(userId, getAuthTokenFromRequest(req), SESSION_DAYS) };
+  } },
+
+  'DELETE /api/auth/sessions/:id': { auth: 'user', module: null, handler: async (req: Request, userId: string) => {
+    const sessionId = req.params.id;
+    if (!/^[0-9a-f-]{36}$/i.test(sessionId || '')) return { error: 'Session not found', code: 'SESSION_NOT_FOUND', status: 404 };
+    const current = getAuthTokenFromRequest(req);
+    if (current && (await listSessions(userId, current, SESSION_DAYS)).some(session => session.current && session.id === sessionId)) {
+      return { error: 'Use Sign out to end the session on this device', code: 'SESSION_CURRENT', status: 400 };
+    }
+    const key = await endSessionById(userId, sessionId);
+    if (!key) return { error: 'Session not found', code: 'SESSION_NOT_FOUND', status: 404 };
+    realtime.closeSessionKey(key, { reason: 'signed_out' });
+    await recordAuditAfter({ action: 'auth.session_revoked', actorId: userId, targetUserId: userId, req, details: { session: sessionId } });
+    return { signedOut: true };
   } },
 
   'POST /api/auth/signout': { auth: 'user', module: null, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
@@ -531,6 +567,7 @@ export = defineRoutes({
       await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId]);
       await endUserSessions(userId);
       realtime.closeUser(userId);
+      await recordAuditAfter({ action: 'auth.password_changed', actorId: userId, targetUserId: userId, req });
       clearAuthCookie(res);
       clearCsrfCookie(res);
 

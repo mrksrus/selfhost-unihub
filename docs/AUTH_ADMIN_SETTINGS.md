@@ -281,12 +281,23 @@ Then sign in with the password and set up 2FA again.
 | GET | `/api/auth/me` | Return current user and existing CSRF token, issuing one if missing or malformed |
 | PUT | `/api/auth/password` | Change password, delete all sessions, clear cookies |
 | PUT | `/api/auth/profile` | Update full name and timezone |
+| GET | `/api/auth/sessions` | List the user's live sessions (device, address, last use, which one is current) |
+| DELETE | `/api/auth/sessions/:id` | Sign out one other session and close its live connections; `404 SESSION_NOT_FOUND` for an unknown or foreign id, `400 SESSION_CURRENT` for the calling session (use sign-out) |
+
+A session stores the address and user agent it signed in from, for Settings >
+Security > Signed-in devices. It renews at most once a day, so "last active" is
+known to the day.
 
 Passwords must be at least 12 characters.
 
 ## Admin Endpoints
 
-Admin routes require an authenticated user whose `users.role` is `admin`.
+Admin routes require an authenticated user whose role grants the route's
+permission. `api/src/security/permissions.ts` maps roles to permissions
+(`users.read`, `users.manage`, `server.settings`, `storage.read`,
+`audit.read`); today `admin` has all of them and `user` none. Every route
+declared with `auth: 'admin'` must name its permission, and the request
+boundary checks it before the handler runs.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -299,6 +310,20 @@ Admin routes require an authenticated user whose `users.role` is `admin`.
 | GET | `/api/admin/storage` | Aggregate server storage counts and byte usage |
 | GET | `/api/admin/settings/signup-mode` | Read signup mode |
 | PUT | `/api/admin/settings/signup-mode` | Set signup mode |
+| GET | `/api/admin/audit` | Activity log, newest first; `?before=<cursor>` for the next page |
+
+### Activity log
+
+`audit_log` (upgrade step 19) records sign-ins and failed sign-ins, password,
+2FA and recovery-code changes, signing out another device, account deletion,
+and every admin action on a user or on sign-up. Each entry names the actor, the
+account concerned, the address and the request id; details hold only a role or
+mode, never a password, code or token. Entries about an account that later
+got deleted stay, without its address. An entry written for a change that runs
+in a transaction commits or rolls back with it. Entries older than 365 days are
+deleted by the hourly session cleanup. The log is server-local: backups and
+restores do not carry it. Admins read it in Settings > Server settings >
+Activity.
 
 Safety checks:
 

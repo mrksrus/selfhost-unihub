@@ -14,7 +14,7 @@ import { androidStreams } from './android-push';
 import { OPERATION_STATES } from './mail-engine/operation-states';
 import { JOB_KINDS } from './mail-engine/job-kinds';
 
-type Bus = Pick<typeof serverEvents, 'publish' | 'hasListeners' | 'closeUser' | 'closeToken' | 'setUserModules' | 'stats'>;
+type Bus = Pick<typeof serverEvents, 'publish' | 'hasListeners' | 'closeUser' | 'closeToken' | 'closeTokenHash' | 'setUserModules' | 'stats'>;
 interface PublishOptions<T> {
   module?: string | null;
   throttleKey?: string | null;
@@ -60,6 +60,13 @@ function createRealtime({ browser, devices }: { browser: Bus; devices: Bus }) {
     return closed;
   }
 
+  /** Ends the streams of a session known by its stored token hash (a session ended from another device). */
+  function closeSessionKey(key: string, { reason = 'session_ended' }: CloseOptions = {}) {
+    let closed = 0;
+    for (const bus of buses) closed += bus.closeTokenHash(key, { reason });
+    return closed;
+  }
+
   /** Ends a user's streams on every channel, except those of `exceptToken`. */
   function closeUser(userId: unknown, { exceptToken = null, reason = 'session_ended' }: CloseUserOptions = {}) {
     let closed = 0;
@@ -81,7 +88,7 @@ function createRealtime({ browser, devices }: { browser: Bus; devices: Bus }) {
     return { browser: browser.stats(), devices: devices.stats() };
   }
 
-  return { publishToUser, publishToUsers, closeSession, closeUser, isOnline, setUserModules, stats };
+  return { publishToUser, publishToUsers, closeSession, closeSessionKey, closeUser, isOnline, setUserModules, stats };
 }
 
 const realtime = createRealtime({ browser: serverEvents, devices: androidStreams });
