@@ -1,8 +1,10 @@
 import type { MailAccountIdentity, StoredFlag } from '../types';
 
-import net from 'net';
 import * as imapClient from './mail-imap-client';
+import { db } from '../state';
+import { log } from '../log';
 import { decrypt } from '../security/encryption';
+import { inspectMailCertificates, mailTlsOptions } from '../security/mail-certificates';
 import {
   normalizeNetworkHost,
   isTrustedMailHost,
@@ -13,10 +15,14 @@ import {
 
 interface MailHostSettings { imap_host?: unknown; imap_port?: unknown; smtp_host?: unknown; smtp_port?: unknown }
 interface TransportAccount extends MailAccountIdentity {
+  id?: string;
   email_address: string;
   encrypted_password?: string | null;
   allow_self_signed?: StoredFlag;
+  trusted_imap_fingerprint256?: string | null;
+  trusted_smtp_fingerprint256?: string | null;
 }
+type RecordFingerprint = (fingerprint256: string) => void;
 interface MailConnectionError {
   message?: string;
   code?: string;
@@ -131,7 +137,8 @@ async function assessMailHost(host: unknown, port: unknown) {
   };
 }
 
-async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError = null }: MailHostSettings & { imapTlsError?: string | null }) {
+async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError = null, smtpTlsError = null }: MailHostSettings & { imapTlsError?: string | null; smtpTlsError?: string | null },
+  { inspectCertificates = inspectMailCertificates }: { inspectCertificates?: typeof inspectMailCertificates } = {}) {
   const [imapAssessment, smtpAssessment] = await Promise.all([
     assessMailHost(imap_host, imap_port || 993),
     assessMailHost(smtp_host, smtp_port || 587),
@@ -150,6 +157,7 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
   if (imapTlsError) {
     warnings.push(`IMAP certificate for "${imapAssessment.host}" could not be verified by the mail login (${imapTlsError}).`);
   }
+  if (smtpTlsError) warnings.push(`SMTP certificate for "${smtpAssessment.host}" could not be verified (${smtpTlsError}).`);
 
   if (blocked) {
     return {
@@ -165,22 +173,15 @@ async function buildMailHostTrustResult({ imap_host, imap_port, smtp_host, smtp_
     };
   }
 
-  const requiresInsecureTls = Boolean(imapTlsError);
+  // Both certificates are shown, and confirming trusts exactly these two.
+  const requiresInsecureTls = Boolean(imapTlsError || smtpTlsError);
   return {
     blocked,
     requiresConfirmation: requiresInsecureTls,
     requiresInsecureTls,
     warnings,
     assessments,
-    certificates: requiresInsecureTls
-      ? {
-          imap: {
-            authorized: false,
-            authorizationError: imapTlsError,
-            error: imapTlsError,
-          },
-        }
-      : {},
+    certificates: requiresInsecureTls ? await inspectCertificates({ imap_host, imap_port, smtp_host, smtp_port }) : {},
   };
 }
 
@@ -206,7 +207,32 @@ async function validateMailHostPolicy({ imap_host, imap_port, smtp_host, smtp_po
   };
 }
 
-async function buildImapConnectionConfig(account: TransportAccount, { keepalive = true } = {}) {
+/**
+ * Keeps the first certificate a confirmed account presents when no fingerprint
+ * is stored yet: accounts confirmed before fingerprints were kept, or an SMTP
+ * server whose certificate could not be read at confirmation.
+ */
+function recordConfirmedFingerprint(protocol: 'imap' | 'smtp', account: TransportAccount): RecordFingerprint | undefined {
+  const id = account.id;
+  if (!id) return undefined;
+  const column = protocol === 'imap' ? 'trusted_imap_fingerprint256' : 'trusted_smtp_fingerprint256';
+  return fingerprint256 => {
+    account[column] = fingerprint256;
+    db.execute(`UPDATE mail_accounts SET ${column} = ? WHERE id = ? AND allow_self_signed = TRUE AND ${column} IS NULL`, [fingerprint256, id])
+      .then(() => log.info('mail', 'kept the certificate of a confirmed server', { account: id, protocol }))
+      .catch((error: unknown) => log.warn('mail', 'could not keep a confirmed certificate', { account: id, protocol }, error));
+  };
+}
+
+function accountTlsOptions(protocol: 'imap' | 'smtp', account: TransportAccount, hostname: string, record?: RecordFingerprint) {
+  return mailTlsOptions(hostname, {
+    confirmed: toBooleanFlag(account.allow_self_signed),
+    fingerprint256: protocol === 'imap' ? account.trusted_imap_fingerprint256 : account.trusted_smtp_fingerprint256,
+    record: record ?? recordConfirmedFingerprint(protocol, account),
+  });
+}
+
+async function buildImapConnectionConfig(account: TransportAccount, { keepalive = true, record }: { keepalive?: boolean; record?: RecordFingerprint } = {}) {
   const password = account.encrypted_password ? decrypt(account.encrypted_password) : null;
   if (!password) return null;
   const imapPort = account.imap_port || 993;
@@ -218,10 +244,7 @@ async function buildImapConnectionConfig(account: TransportAccount, { keepalive 
       host: target.address,
       port: imapPort,
       tls: true,
-      tlsOptions: {
-        rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
-        servername: net.isIP(target.hostname) ? undefined : target.hostname,
-      },
+      tlsOptions: accountTlsOptions('imap', account, target.hostname, record),
       connTimeout: 60000,
       authTimeout: 30000,
       socketTimeout: 60000,
@@ -233,11 +256,11 @@ async function buildImapConnectionConfig(account: TransportAccount, { keepalive 
 // ── Mail sync and send functions ──────────────────────────────────
 
 // Test IMAP connection and authentication without syncing.
-async function testImapConnection(account: TransportAccount) {
+async function testImapConnection(account: TransportAccount, { record }: { record?: RecordFingerprint } = {}) {
   let connection: Awaited<ReturnType<typeof imapClient.connectImap>> | null = null;
   const imapPort = account.imap_port || 993;
   try {
-    const config = await buildImapConnectionConfig(account, { keepalive: false });
+    const config = await buildImapConnectionConfig(account, { keepalive: false, record });
     if (!config) return { success: false, error: 'No password configured' };
 
     connection = await imapClient.connectImap(config);
@@ -297,5 +320,6 @@ export {
   buildMailHostTrustResult,
   validateMailHostPolicy,
   buildImapConnectionConfig,
+  accountTlsOptions,
   testImapConnection,
 };

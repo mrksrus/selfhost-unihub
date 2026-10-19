@@ -10,6 +10,7 @@ import { accountUnreadQuery } from '../services/mail-folder-view';
 import crypto from 'crypto';
 import { db } from '../state';
 import { encrypt } from '../security/encryption';
+import { inspectMailCertificate, normalizeFingerprint } from '../security/mail-certificates';
 import {
   DEFAULT_MAIL_SYNC_FETCH_LIMIT,
   toBooleanFlag,
@@ -39,6 +40,8 @@ interface Input extends Record<string, unknown> {
   sync_fetch_limit?: unknown;
   delete_emails_on_server?: unknown;
   accept_host_trust?: unknown;
+  trusted_imap_fingerprint256?: unknown;
+  trusted_smtp_fingerprint256?: unknown;
   try_calendar_sync?: unknown;
   caldav_url?: string | null;
   time_zone?: unknown;
@@ -64,13 +67,14 @@ interface AccountRow extends RowDataPacket, MailAccountIdentity {
   sync_fetch_limit: number | null;
 }
 
-async function buildHostTrustConfirmationResponse({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError }: Parameters<typeof buildMailHostTrustResult>[0]) {
+async function buildHostTrustConfirmationResponse({ imap_host, imap_port, smtp_host, smtp_port, imapTlsError, smtpTlsError }: Parameters<typeof buildMailHostTrustResult>[0]) {
   const mailHostTrust = await buildMailHostTrustResult({
     imap_host,
     imap_port,
     smtp_host,
     smtp_port,
     imapTlsError,
+    smtpTlsError,
   });
   return {
     error: 'Review and confirm mail server authenticity before continuing.',
@@ -78,6 +82,17 @@ async function buildHostTrustConfirmationResponse({ imap_host, imap_port, smtp_h
     requiresHostTrustConfirmation: true,
     mailHostTrust,
   };
+}
+
+// The certificates the user saw when confirming the server; the account then
+// trusts exactly these (security/mail-certificates.ts). An older client sends
+// none: the IMAP certificate of the confirming login is kept instead, and the
+// SMTP one at the first send.
+function confirmedFingerprints(body: Input): { imap: string | null; smtp: string | null } | ApiError {
+  const parse = (value: unknown) => value === undefined || value === null || value === '' ? null : normalizeFingerprint(value) ?? false;
+  const imap = parse(body.trusted_imap_fingerprint256), smtp = parse(body.trusted_smtp_fingerprint256);
+  if (imap === false || smtp === false) return Object.assign(new Error('Certificate fingerprints must be SHA-256 fingerprints'), { status: 400, code: 'INVALID_FINGERPRINT' });
+  return { imap, smtp };
 }
 
 const ACCOUNT_COLUMNS = `id, user_id, email_address, display_name, provider, username, imap_host, imap_port,
@@ -192,6 +207,8 @@ export = {
       }
 
       const trustAccepted = toBooleanFlag(accept_host_trust);
+      const confirmed = trustAccepted ? confirmedFingerprints(body) : { imap: null, smtp: null };
+      if (confirmed instanceof Error) return { error: confirmed.message, code: confirmed.code, status: 400 };
       const modeChange = mailAccountModeChange(null, body);
       const serverDeleteEnabled = modeChange.deleteEnabled;
       // Missing: all mail, and 30 days for Trash/Junk. Windows apply in Sync only.
@@ -220,16 +237,18 @@ export = {
         imap_host,
         imap_port,
         allow_self_signed: trustAccepted ? 1 : 0,
-        trusted_imap_fingerprint256: null,
+        trusted_imap_fingerprint256: confirmed.imap,
         encrypted_password: encryptedPasswordForStorage,
       };
 
       // Test IMAP connection and auth (wrong password / connection errors still returned)
       console.log(`[ACCOUNT] Testing IMAP connection for ${email_address} (strict_tls=${trustAccepted ? 'no' : 'yes'})...`);
-      const testResult = await testImapConnection(tempAccount);
+      let keptImapFingerprint: string | null = null;
+      const testResult = await testImapConnection(tempAccount, { record: fingerprint => { keptImapFingerprint = fingerprint; } });
 
       if (!testResult.success) {
-        if (testResult.tlsTrustError && !trustAccepted) {
+        // After a confirmation this means the certificate changed since it was shown: show the new one.
+        if (testResult.tlsTrustError) {
           console.warn(`[ACCOUNT] IMAP TLS trust confirmation required for ${email_address}: ${testResult.details || testResult.error}`);
           return buildHostTrustConfirmationResponse({
             imap_host,
@@ -275,8 +294,8 @@ export = {
           modeChange.mode === 'sync' ? 'pending' : 'idle',
           serverDeleteEnabled ? 1 : 0,
           trustAccepted ? 1 : 0,
-          null,
-          null,
+          trustAccepted ? confirmed.imap ?? keptImapFingerprint : null,
+          trustAccepted ? confirmed.smtp : null,
           syncWindowDays,
           trashWindowDays,
         ]
@@ -386,11 +405,16 @@ export = {
       }
       if (body.is_active === false) return { error: 'Use Disconnect to pause this account and remove its stored credentials.', status: 400 };
       const trustAccepted = toBooleanFlag(accept_host_trust);
+      const confirmed = trustAccepted ? confirmedFingerprints(body) : { imap: null, smtp: null };
+      if (confirmed instanceof Error) return { error: confirmed.message, code: confirmed.code, status: 400 };
+      const imapServerChanged = imap_host !== undefined || imap_port !== undefined;
       const hostSettingsChanged = Boolean(body.is_active === true || imap_host !== undefined || imap_port !== undefined || smtp_host !== undefined || smtp_port !== undefined);
       const imapLoginSettingsChanged = Boolean(body.is_active === true || email_address !== undefined || username !== undefined
         || imap_host !== undefined || imap_port !== undefined || encrypted_password !== undefined);
       let shouldUpdateTlsTrust = false;
       let nextAllowSelfSigned = toBooleanFlag(existingAccount.allow_self_signed) ? 1 : 0;
+      let keptImapFingerprint: string | null = null;
+      let nextSmtpFingerprint: string | null | undefined;
 
       if (hostSettingsChanged) {
         const hostPolicyResult = await validateMailHostPolicy({
@@ -402,8 +426,21 @@ export = {
         if (hostPolicyResult.error) return hostPolicyResult;
       }
 
+      // A confirmed account moving to another SMTP server keeps trusting only
+      // a certificate that verifies, unless the user confirms the new one.
+      if ((smtp_host !== undefined || smtp_port !== undefined) && !trustAccepted && !imapServerChanged && toBooleanFlag(existingAccount.allow_self_signed)) {
+        const smtpCertificate = await inspectMailCertificate(nextSmtpHost, Number(nextSmtpPort) || 587, 'smtp').catch((error: Error) => ({ authorized: false, authorizationError: error.message, fingerprint256: null }));
+        if (!smtpCertificate.authorized || !smtpCertificate.fingerprint256) {
+          return buildHostTrustConfirmationResponse({
+            imap_host: nextImapHost, imap_port: nextImapPort, smtp_host: nextSmtpHost, smtp_port: nextSmtpPort,
+            smtpTlsError: smtpCertificate.authorizationError || 'The certificate could not be verified',
+          });
+        }
+        nextSmtpFingerprint = smtpCertificate.fingerprint256;
+      }
+
       if (imapLoginSettingsChanged) {
-        const existingTrustStillApplies = toBooleanFlag(existingAccount.allow_self_signed) && imap_host === undefined && imap_port === undefined;
+        const existingTrustStillApplies = toBooleanFlag(existingAccount.allow_self_signed) && !imapServerChanged;
         const allowInsecureForTest = trustAccepted || existingTrustStillApplies;
         const testAccount = {
           email_address: nextEmailAddress,
@@ -412,11 +449,13 @@ export = {
           imap_port: nextImapPort,
           encrypted_password: nextEncryptedPassword,
           allow_self_signed: allowInsecureForTest ? 1 : 0,
+          trusted_imap_fingerprint256: trustAccepted ? confirmed.imap : existingTrustStillApplies ? existingAccount.trusted_imap_fingerprint256 : null,
         };
         console.log(`[ACCOUNT] Testing updated IMAP connection for ${nextEmailAddress} (strict_tls=${allowInsecureForTest ? 'no' : 'yes'})...`);
-        const testResult = await testImapConnection(testAccount);
+        const testResult = await testImapConnection(testAccount, { record: fingerprint => { keptImapFingerprint = fingerprint; } });
         if (!testResult.success) {
-          if (testResult.tlsTrustError && !allowInsecureForTest) {
+          // Unconfirmed, or the server now presents a different certificate than the confirmed one.
+          if (testResult.tlsTrustError) {
             console.warn(`[ACCOUNT] IMAP TLS trust confirmation required for updated account ${nextEmailAddress}: ${testResult.details || testResult.error}`);
             return buildHostTrustConfirmationResponse({
               imap_host: nextImapHost,
@@ -433,10 +472,14 @@ export = {
           };
         }
 
-        if (trustAccepted || imap_host !== undefined || imap_port !== undefined) {
+        if (imapServerChanged) {
           nextAllowSelfSigned = trustAccepted ? 1 : 0;
           shouldUpdateTlsTrust = true;
         }
+      }
+      if (trustAccepted) {
+        nextAllowSelfSigned = 1;
+        shouldUpdateTlsTrust = true;
       }
 
       // Build update query dynamically
@@ -475,9 +518,13 @@ export = {
         updates.push('allow_self_signed = ?');
         params.push(nextAllowSelfSigned);
         updates.push('trusted_imap_fingerprint256 = ?');
-        params.push(null);
+        params.push(trustAccepted ? confirmed.imap ?? keptImapFingerprint ?? (imapServerChanged ? null : existingAccount.trusted_imap_fingerprint256 ?? null) : null);
         updates.push('trusted_smtp_fingerprint256 = ?');
-        params.push(null);
+        params.push(trustAccepted ? confirmed.smtp : null);
+      } else {
+        // An account confirmed before fingerprints were kept keeps the certificate of this login.
+        if (keptImapFingerprint && !existingAccount.trusted_imap_fingerprint256) { updates.push('trusted_imap_fingerprint256 = ?'); params.push(keptImapFingerprint); }
+        if (nextSmtpFingerprint !== undefined) { updates.push('trusted_smtp_fingerprint256 = ?'); params.push(nextSmtpFingerprint); }
       }
       if (sync_fetch_limit !== undefined) {
         const normalizedSyncFetchLimit = normalizeSyncFetchLimit(sync_fetch_limit, DEFAULT_MAIL_SYNC_FETCH_LIMIT);

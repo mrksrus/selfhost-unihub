@@ -10,6 +10,8 @@ import {
   type AccountFormState, type AddMailAccountResponse, type MailHostTrustError, type MailHostTrustResult, type PendingHostTrust,
 } from '@/components/mail/mail-page-model';
 
+type HostTrustFields = { accept_host_trust?: boolean; trusted_imap_fingerprint256?: string | null; trusted_smtp_fingerprint256?: string | null };
+
 const createHostTrustError = (message: string, mailHostTrust?: unknown) => {
   const error = new Error(message) as MailHostTrustError;
   error.requiresHostTrustConfirmation = true;
@@ -53,7 +55,7 @@ export function useMailAccountEditor() {
 
   // The backend verifies host safety, certificate trust, then IMAP auth.
   const addAccount = useMutation({
-    mutationFn: async (account: AccountFormState & { accept_host_trust?: boolean }) => {
+    mutationFn: async (account: AccountFormState & HostTrustFields) => {
       // Providers without CalDAV only get a calendar when a subscription address was pasted.
       const tryCalendar = account.try_calendar_sync && (!calendarSubscriptionHints[account.provider] || account.caldav_url.trim() !== '');
       const response = await api.post<AddMailAccountResponse>('/mail/accounts', {
@@ -123,7 +125,7 @@ export function useMailAccountEditor() {
   });
 
   const updateAccount = useMutation({
-    mutationFn: async ({ id, ...data }: { id: string; is_active?: boolean; confirm_address?: string; sync_mode_confirmed?: boolean } & Partial<AccountFormState> & { accept_host_trust?: boolean }) => {
+    mutationFn: async ({ id, ...data }: { id: string; is_active?: boolean; confirm_address?: string; sync_mode_confirmed?: boolean } & Partial<AccountFormState> & HostTrustFields) => {
       const response = await api.put(`/mail/accounts/${id}`, {
         ...data,
         encrypted_password: data.password || undefined,
@@ -218,17 +220,23 @@ export function useMailAccountEditor() {
 
   const confirmHostTrust = () => {
     if (!pendingHostTrust) return;
+    // The account trusts exactly the certificates shown in the confirmation.
+    const trusted = {
+      accept_host_trust: true,
+      trusted_imap_fingerprint256: pendingHostTrust.trust.certificates.imap?.fingerprint256 ?? null,
+      trusted_smtp_fingerprint256: pendingHostTrust.trust.certificates.smtp?.fingerprint256 ?? null,
+    };
     if (pendingHostTrust.mode === 'edit' && pendingHostTrust.accountId) {
       updateAccount.mutate({
         id: pendingHostTrust.accountId,
         ...pendingHostTrust.account,
         ...confirmation(),
-        accept_host_trust: true,
+        ...trusted,
       });
     } else {
       addAccount.mutate({
         ...pendingHostTrust.account,
-        accept_host_trust: true,
+        ...trusted,
       });
     }
     setPendingHostTrust(null);

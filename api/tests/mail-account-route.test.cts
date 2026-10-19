@@ -116,6 +116,7 @@ test('add mail account keeps server deletion off by default and can enable grace
   const originalState = require.cache[statePath];
   const originalEncryption = require.cache[encryptionPath];
   const inserts: FixtureValue[] = [];
+  const seenFingerprint = 'CC:'.repeat(31) + 'CC';
 
   t.after(() => {
     if (originalRoute) require.cache[routePath] = originalRoute;
@@ -178,7 +179,11 @@ test('add mail account keeps server deletion off by default and can enable grace
       mailHostTrust: { blocked: false, requiresConfirmation: false, requiresInsecureTls: false, warnings: [], assessments: {}, certificates: {} },
     }),
     buildMailHostTrustResult: async () => ({}),
-    testImapConnection: async () => ({ success: true }),
+    // A confirmed login without a fingerprint keeps the certificate it saw.
+    testImapConnection: async (account: FixtureValue, { record }: FixtureValue = {}) => {
+      if (account.allow_self_signed && !account.trusted_imap_fingerprint256) record?.(seenFingerprint);
+      return { success: true };
+    },
     syncMailAccount: async () => ({ success: true }),
     scheduleMailAccountSync: () => ({ started: true, promise: Promise.resolve({ success: true }) }),
     isAnyMailAccountSyncRunning: () => false,
@@ -212,6 +217,17 @@ test('add mail account keeps server deletion off by default and can enable grace
   assert.equal(inserts[0].sql.includes('DATE_ADD(UTC_TIMESTAMP(), INTERVAL 10 MINUTE)'), false);
   assert.equal(inserts[1].params[14], 1);
   assert.match(inserts[1].sql, /DATE_ADD\(UTC_TIMESTAMP\(\), INTERVAL 10 MINUTE\)/);
+  assert.deepEqual(inserts[0].params.slice(15, 18), [0, null, null], 'an unconfirmed server is verified strictly');
+
+  // Confirming stores the certificates the user was shown; an older client sends none.
+  const post = (body: FixtureValue) => routes['POST /api/mail/accounts']({ headers: { host: 'localhost' }, url: '/api/mail/accounts' } as FixtureValue, 'user-1', { ...baseBody, ...body });
+  const shown = { imap: 'aa'.repeat(32), smtp: 'BB:'.repeat(31) + 'BB' };
+  await post({ accept_host_trust: true, trusted_imap_fingerprint256: shown.imap, trusted_smtp_fingerprint256: shown.smtp });
+  assert.deepEqual(inserts[2].params.slice(15, 18), [1, 'AA:'.repeat(31) + 'AA', shown.smtp]);
+  await post({ accept_host_trust: true });
+  assert.deepEqual(inserts[3].params.slice(15, 18), [1, seenFingerprint, null]);
+  assert.equal((await post({ accept_host_trust: true, trusted_imap_fingerprint256: 'not-a-fingerprint' })).status, 400);
+  assert.equal(inserts.length, 4);
 });
 
 test('update mail account can disable server deletion without password changes', async (t) => {

@@ -3,14 +3,13 @@ import type { StoredFlag, StagedAttachment } from '../types';
 
 import crypto from 'crypto';
 import nodemailer from 'nodemailer';
-import net from 'net';
 import { db } from '../state';
 import { decrypt } from '../security/encryption';
 import { resolveMailConnectionTarget } from '../security/outbound-network';
 import { isModuleEnabled } from './module-settings';
 import { normalizeComposerAttachments, stageAttachments, insertStagedAttachments, discardStagedAttachments } from './mail-attachments';
 import { withTransaction } from './mail-engine/repository';
-import { toBooleanFlag } from './mail-host-policy';
+import { accountTlsOptions, toBooleanFlag } from './mail-host-policy';
 import { normalizeRecipients } from './mail-recipients';
 
 interface SmtpAccount {
@@ -25,6 +24,7 @@ interface SmtpAccount {
   email_address: string;
   display_name: string | null;
   allow_self_signed: StoredFlag;
+  trusted_smtp_fingerprint256: string | null;
 }
 
 interface OutgoingEmail {
@@ -69,10 +69,8 @@ async function sendEmail(accountId: string, { subject, body, isHtml = false, att
         user: account.username || account.email_address,
         pass: password,
       },
-      tls: {
-        rejectUnauthorized: !toBooleanFlag(account.allow_self_signed),
-        servername: net.isIP(target.hostname) ? undefined : target.hostname, // Preserve hostname verification after DNS pinning
-      },
+      // Verify the account hostname after DNS pinning, or the confirmed certificate.
+      tls: accountTlsOptions('smtp', account, target.hostname),
       connectionTimeout: 60000, // Connection timeout: 60 seconds
       greetingTimeout: 30000, // Greeting timeout: 30 seconds
       socketTimeout: 60000, // Socket timeout: 60 seconds
