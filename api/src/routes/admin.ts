@@ -8,6 +8,7 @@ import { attachmentsRoot, rawRoot } from '../services/mail-storage';
 import { RECORDINGS_ROOT } from '../services/recordings';
 import { BACKUPS_ROOT } from '../services/export-jobs';
 import { realtime } from '../services/realtime';
+import { endUserSessions, lockOwnSession } from '../services/sessions';
 import { deleteUser } from '../services/user-lifecycle';
 import { clientError } from '../http/errors';
 import {
@@ -286,7 +287,7 @@ export = defineRoutes({
       const newHash = await hashPassword(new_password);
       await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, targetId]);
       // Invalidate all sessions so the user must re-login
-      await db.execute('DELETE FROM sessions WHERE user_id = ?', [targetId]);
+      await endUserSessions(targetId);
       realtime.closeUser(targetId);
       return { message: 'Password updated successfully' };
     } catch (error) {
@@ -328,11 +329,10 @@ export = defineRoutes({
       const [rows] = await connection.execute<RowDataPacket[]>(
         'SELECT id, role, is_active, two_factor_enabled, password_hash FROM users WHERE id IN (?, ?) ORDER BY id FOR UPDATE', [userId, targetId]);
       const requester = rows.find(row => row.id === userId);
-      const [current] = await connection.execute<RowDataPacket[]>('SELECT 1 FROM sessions WHERE user_id = ? AND token = ? FOR UPDATE',
-        [userId, getAuthTokenFromRequest(req) || '']);
+      const current = await lockOwnSession(userId, getAuthTokenFromRequest(req), connection);
       // Deactivation and password changes commit before they delete sessions, so check the
       // flag and that the password verified above is still the admin's.
-      if (!current.length || !requester?.is_active || requester.password_hash !== admins[0].password_hash) {
+      if (!current || !requester?.is_active || requester.password_hash !== admins[0].password_hash) {
         await connection.rollback();
         return { error: 'Unauthorized', status: 401 };
       }
@@ -346,7 +346,7 @@ export = defineRoutes({
       await disableTwoFactor(targetId, connection);
       await connection.execute('DELETE FROM two_factor_challenges WHERE user_id = ?', [targetId]);
       // Sessions may be on the lost device.
-      await connection.execute('DELETE FROM sessions WHERE user_id = ?', [targetId]);
+      await endUserSessions(targetId, connection);
       await connection.commit();
       realtime.closeUser(targetId);
       return { message: 'Two-factor authentication reset' };
@@ -416,7 +416,7 @@ export = defineRoutes({
       }
       await db.execute('UPDATE users SET is_active = ? WHERE id = ?', [!!is_active, id]);
       if (!is_active) {
-        await db.execute('DELETE FROM sessions WHERE user_id = ?', [id]);
+        await endUserSessions(id);
         realtime.closeUser(id);
       }
       return { message: is_active ? 'User activated' : 'User deactivated' };

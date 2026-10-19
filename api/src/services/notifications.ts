@@ -3,6 +3,7 @@ import type { SqlExecutor } from '../types';
 
 import crypto from 'crypto';
 import { db } from '../state';
+import { liveSessionId } from './sessions';
 import { badRequest, unauthorized } from '../http/errors';
 import { isModuleBackgroundEnabled } from './module-settings';
 import { getActiveRestoreSectionsByUser } from './restore-locks';
@@ -59,8 +60,8 @@ const jsonValue = (value: unknown): NotificationPayload => (typeof value === 'st
 
 async function subscribe(userId: string, sessionToken: string | null, input: unknown) {
   const subscription = normalizeSubscription(input as Parameters<typeof normalizeSubscription>[0]);
-  const [sessions] = await db.execute<RowDataPacket[]>('SELECT id FROM sessions WHERE token = ? AND user_id = ? AND expires_at > UTC_TIMESTAMP()', [sessionToken, userId]);
-  if (!sessions.length) throw unauthorized('SESSION_EXPIRED', 'Session expired');
+  const sessionId = await liveSessionId(userId, sessionToken);
+  if (!sessionId) throw unauthorized('SESSION_EXPIRED', 'Session expired');
   const [count] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS total FROM push_subscriptions WHERE user_id = ?', [userId]);
   const endpointHash = hash(subscription.endpoint);
   const [existing] = await db.execute<RowDataPacket[]>('SELECT id, user_id FROM push_subscriptions WHERE endpoint_hash = ?', [endpointHash]);
@@ -69,9 +70,9 @@ async function subscribe(userId: string, sessionToken: string | null, input: unk
   if (existing.length && existing[0].user_id !== userId) throw badRequest('NOTIFICATION_DEVICE_FOREIGN', 'This device subscription belongs to another account. Disable and enable notifications again.');
   await db.execute(`INSERT IGNORE INTO push_subscriptions (id, user_id, session_id, endpoint, endpoint_hash, p256dh, auth)
     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  [existing[0]?.id || crypto.randomUUID(), userId, sessions[0].id, subscription.endpoint, endpointHash, subscription.keys.p256dh, subscription.keys.auth]);
+  [existing[0]?.id || crypto.randomUUID(), userId, sessionId, subscription.endpoint, endpointHash, subscription.keys.p256dh, subscription.keys.auth]);
   await db.execute('UPDATE push_subscriptions SET session_id = ?, p256dh = ?, auth = ?, updated_at = UTC_TIMESTAMP() WHERE user_id = ? AND endpoint_hash = ?',
-    [sessions[0].id, subscription.keys.p256dh, subscription.keys.auth, userId, endpointHash]);
+    [sessionId, subscription.keys.p256dh, subscription.keys.auth, userId, endpointHash]);
   const [owners] = await db.execute<RowDataPacket[]>('SELECT user_id FROM push_subscriptions WHERE endpoint_hash = ?', [endpointHash]);
   if (owners[0]?.user_id !== userId) throw badRequest('NOTIFICATION_DEVICE_FOREIGN', 'This device subscription belongs to another account. Disable and enable notifications again.');
   // Marking this scan dirty includes old calendar entries for a newly subscribed device.

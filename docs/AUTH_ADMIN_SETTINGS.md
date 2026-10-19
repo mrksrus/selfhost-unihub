@@ -11,7 +11,11 @@ Session components:
 
 - `auth-token`: HttpOnly JWT cookie
 - `csrf-token`: HttpOnly CSRF cookie
-- `sessions.token`: database copy of the JWT
+- `sessions.token`: the SHA-256 of the JWT, never the JWT itself, so a copy of
+  the table (a database dump, a volume backup) signs no one in. Every query that
+  names a session by its token goes through `api/src/services/sessions.ts`,
+  which hashes it; upgrade step 18 hashed the tokens of existing sessions, which
+  stay signed in.
 - `sessions.expires_at`: 21 days from last use (renewed at most once a day; the session row, not the JWT `exp`, decides expiry)
 
 Every authenticated request verifies:

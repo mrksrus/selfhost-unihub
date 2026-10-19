@@ -8,6 +8,7 @@ import { badRequest, unauthorized } from '../http/errors';
 import { verifyToken } from '../auth';
 import { createServerEvents } from './server-events';
 import { hash, normalizeKeys } from './notification-rules';
+import { liveSessionId, sessionKey } from './sessions';
 
 // Notifications for the Android app (android/), with this server as the app's
 // push server: no Google, Apple or other push service is involved.
@@ -42,16 +43,16 @@ const latest = new Map<string, () => void>();
 
 const endpointFor = (deviceId: string) => `${ENDPOINT_PREFIX}${deviceId}`;
 async function sessionId(userId: string, sessionToken: string | null) {
-  const [sessions] = await db.execute<RowDataPacket[]>('SELECT id FROM sessions WHERE token = ? AND user_id = ? AND expires_at > UTC_TIMESTAMP()', [sessionToken, userId]);
-  if (!sessions.length) throw unauthorized('SESSION_EXPIRED', 'Session expired');
-  return String(sessions[0].id);
+  const id = await liveSessionId(userId, sessionToken);
+  if (!id) throw unauthorized('SESSION_EXPIRED', 'Session expired');
+  return id;
 }
 
 // A device of this user, registered by the session making the request.
 async function ownDevice(userId: string, sessionToken: string | null, deviceId: unknown) {
   if (typeof deviceId !== 'string' || !UUID.test(deviceId)) return null;
   const [rows] = await db.execute<RowDataPacket[]>(`SELECT p.id FROM push_subscriptions p JOIN sessions s ON s.id = p.session_id AND s.user_id = p.user_id
-    WHERE p.id = ? AND p.user_id = ? AND p.transport = 'android' AND s.token = ? AND s.expires_at > UTC_TIMESTAMP()`, [deviceId, userId, sessionToken]);
+    WHERE p.id = ? AND p.user_id = ? AND p.transport = 'android' AND s.token = ? AND s.expires_at > UTC_TIMESTAMP()`, [deviceId, userId, sessionToken ? sessionKey(sessionToken) : '']);
   return rows.length ? String(rows[0].id) : null;
 }
 
