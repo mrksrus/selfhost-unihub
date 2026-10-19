@@ -58,6 +58,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   server error now returns a request id (`requestId`, and `X-Request-Id` on
   every response), and every log line written while handling it carries the
   same id. `UNIHUB_LOG_FORMAT=json` writes JSON log lines for a log collector.
+- **Restarts finish what they can.** Stopping or updating the container now
+  lets requests in progress and running mail jobs finish (up to 8 seconds),
+  and hands any job still running to the next start at once instead of after
+  a 30-second wait. Compose gives the container 15 seconds to stop.
 - **The interface fonts load in the installed app.** Inter and JetBrains Mono
   were requested from Google Fonts, which the app's own security policy
   refused, so an installed UniHub showed the system's fallback fonts. Both

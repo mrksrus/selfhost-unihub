@@ -21,6 +21,9 @@ services:
     container_name: unihub
     init: true
     restart: unless-stopped
+    # On stop the API finishes requests and mail jobs for up to 8 s
+    # (api/src/services/shutdown.ts); Docker's default 10 s leaves no margin.
+    stop_grace_period: 15s
     security_opt:
       - no-new-privileges:true
     cap_drop:

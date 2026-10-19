@@ -333,3 +333,39 @@ test('a claim skips an account whose expired lease has not been recovered yet', 
   const claimed = await runtime.claimDueJob({ workerId: 'successor' }, cx as FixtureValue);
   assert.equal(claimed!.id, 'next'); assert.equal(claimed!.worker_generation, 6);
 });
+
+test('quiesce lets a running job finish on its own and claims nothing more', async () => {
+  const jobs: FixtureValue[] = [
+    { id: 'op-1', user_id: 'owner', mail_account_id: 'A', kind: 'operation', priority: 0, state: 'queued' },
+    { id: 'sync-b', user_id: 'owner', mail_account_id: 'B', kind: 'sync', priority: 50, state: 'queued' },
+  ];
+  const finished: FixtureValue[] = [];
+  let claims = 0, release!: (value: FixtureValue) => void, aborted = false;
+  const repo = {
+    withTransaction: (fn: FixtureValue) => fn({ execute: async () => [[]] }),
+    recoverExpiredJobs: async () => ({ jobs: 0, operations: 0 }),
+    async claimDueJob() {
+      claims++;
+      const next = jobs.find(job => job.state === 'queued');
+      if (!next) return null;
+      next.state = 'running'; next.worker_generation = 1;
+      return { ...next };
+    },
+    async updateJob() { return { cancellationRequested: false }; },
+    async completeJob({ jobId, state }: FixtureValue) { finished.push({ jobId, state }); },
+  };
+  const scheduler = createDurableMailScheduler(((job: FixtureValue, signal: FixtureValue) => new Promise(resolve => {
+    release = resolve;
+    signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+  })) as FixtureValue, { repository: repo as FixtureValue, concurrency: 1, pollMs: 60000 });
+  await scheduler.start();
+  await until(() => claims === 1);
+  const quiet = scheduler.quiesce();
+  release({ success: true });
+  await quiet;
+  assert.deepEqual(finished, [{ jobId: 'op-1', state: 'idle' }]);
+  assert.equal(aborted, false, 'a running provider change is not aborted');
+  assert.equal(claims, 1, 'nothing is claimed after quiesce');
+  assert.equal(jobs[1].state, 'queued');
+  assert.match(scheduler.workerId, /^[0-9a-f-]{36}$/);
+});

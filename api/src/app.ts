@@ -13,6 +13,9 @@ import { startBackgroundWork } from './services/background-work';
 import type { BackgroundWorkHandle } from './services/background-work';
 import { getVapidKeys } from './services/notifications';
 import { closeAndroidStreams } from './services/android-push';
+import { drainProcess } from './services/shutdown';
+import { durableScheduler } from './services/mail-durable-jobs';
+import { expireWorkerLeases } from './services/mail-engine/runtime';
 import { log } from './log';
 
 // Both are logged with their stack, so a container restart has a cause in its
@@ -56,9 +59,11 @@ async function start() {
 
   // The timers start after the server listens; a stop signal before that has
   // nothing to stop. Stopping them (and the IDLE sessions they own) comes
-  // before the Android streams, as the explicit hooks did.
+  // before the Android streams; then services/shutdown.ts drains the rest.
   let work: BackgroundWorkHandle | null = null;
-  installShutdownHandler({ server, onShutdown: [() => work?.stop(), closeAndroidStreams] });
+  const serverClosed = new Promise(resolve => server.once('close', resolve));
+  installShutdownHandler({ server, onShutdown: [() => work?.stop(), closeAndroidStreams], drainMs: 8000,
+    drain: () => drainProcess({ serverClosed, scheduler: durableScheduler, expireWorkerLeases, closePool: () => db.end() }) });
   server.listen(PORT, () => {
     log.info('STARTUP', 'UniHub API listening', { port: PORT });
   });

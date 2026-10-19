@@ -297,8 +297,12 @@ user and one session.
   429 or 503 with `Retry-After: 60`.
 - **Shutdown.** On SIGTERM/SIGINT (the supervisor's stop path, including the
   IPC disconnect of the unprivileged API) the API sends `end` with reason
-  `shutdown`, closes every stream and stops accepting connections, then lets the
-  signal end the process.
+  `shutdown`, closes every stream and stops accepting connections, then drains
+  (`api/src/services/shutdown.ts`, at most 8 s): requests in flight and running
+  mail jobs may finish (the scheduler claims nothing more and aborts nothing),
+  the process's remaining mail leases end so the next start recovers those jobs
+  at once rather than after 30 s, and the database pool closes. Then the signal
+  ends the process. Compose allows 15 s (`stop_grace_period`).
 - **Proxy.** Nginx proxies `location = /api/events` (and the Android app's
   `/api/notifications/android/stream`) with `proxy_buffering off`, no gzip and a
   one-hour read timeout. The API sends `X-Accel-Buffering: no`, and Nginx passes

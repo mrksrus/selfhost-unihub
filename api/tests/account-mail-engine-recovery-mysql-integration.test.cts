@@ -219,6 +219,20 @@ test('MySQL 8 mail-engine migration, identity, durable recovery and restore safe
     assert.equal((await one(pool,'SELECT state FROM mail_writebacks WHERE id=?',[op])).state,'reconciling');
   });
 
+  await t.test('a stopping worker ends only its own leases, so the next start recovers its jobs at once', async () => {
+    const stopping = await runtime.enqueueJob({userId:owner,accountId:secondAccount,kind:'sync'},pool);
+    const kept = await runtime.enqueueJob({userId:other,accountId:otherAccount,kind:'sync'},pool);
+    const mine = await runtime.claimDueJob({workerId:'stopping-worker',accountId:secondAccount},pool);
+    const theirs = await runtime.claimDueJob({workerId:'other-worker',accountId:otherAccount},pool);
+    assert.deepEqual([mine!.id, theirs!.id], [stopping.id, kept.id]);
+    assert.equal(await runtime.expireWorkerLeases('stopping-worker',pool),1);
+    await assert.rejects(runtime.updateJob({jobId:stopping.id,accountId:secondAccount,workerId:'stopping-worker',generation:Number(mine!.worker_generation),phase:'late'},pool),{code:'MAIL_WORKER_FENCED'});
+    await runtime.recoverExpiredJobs(pool);
+    assert.deepEqual(await one(pool,'SELECT state,phase,lease_owner FROM mail_engine_jobs WHERE id=?',[stopping.id]),{state:'queued',phase:'recovery',lease_owner:null});
+    assert.deepEqual(await one(pool,'SELECT state,lease_owner FROM mail_engine_jobs WHERE id=?',[kept.id]),{state:'running',lease_owner:'other-worker'});
+    await runtime.completeJob({jobId:kept.id,accountId:otherAccount,workerId:'other-worker',generation:Number(theirs!.worker_generation)},pool);
+  });
+
   await t.test('restore retains accepted journal, remaps receipt and quarantines provider evidence without executable mappings', async () => {
     const { restoreMailEngineEvidence } = require('../dist/src/services/backup-mail-engine') as typeof import('../src/services/backup-mail-engine');
     const prior = await insertOp({emailId:uuid(2),state:'executing',dispatched:1,uid:20,folder:'Archive'});

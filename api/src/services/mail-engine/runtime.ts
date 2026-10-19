@@ -244,6 +244,20 @@ async function recoverExpiredJobs(executor: EngineExecutor = db) {
     return { jobs: jobs.affectedRows, operations: ops.affectedRows };
   });
 }
+// Shutdown: this worker's leases end now instead of 30 s later, so the next
+// process recovers its unfinished jobs at once (recoverExpiredJobs: running
+// jobs requeue, dispatched provider changes reconcile). A heartbeat of a job
+// still running here then fails its fence and the job stops.
+async function expireWorkerLeases(workerId: string, executor: EngineExecutor = db) {
+  return tx(executor, async cx => {
+    const [jobs] = await cx.execute<ResultSetHeader>(`UPDATE mail_engine_jobs SET lease_until = UTC_TIMESTAMP()
+      WHERE lease_owner = ? AND state = 'running' AND lease_until > UTC_TIMESTAMP()`, [workerId]);
+    await cx.execute(`UPDATE mail_engine_accounts SET lease_until = UTC_TIMESTAMP()
+      WHERE lease_owner = ? AND lease_until > UTC_TIMESTAMP()`, [workerId]);
+    return jobs.affectedRows;
+  });
+}
+
 // Finished jobs are scheduling history, not evidence. Keep the latest job of
 // each account/kind/mailbox (status, discovery cadence) and every job of an
 // unsettled operation (runDueWritebacks backs off on its job count).
@@ -314,6 +328,7 @@ export {
   pauseAccount,
   resumeAccount,
   recoverExpiredJobs,
+  expireWorkerLeases,
   pruneFinishedJobs,
   getJobStatus,
   beginOperationAttempt,
