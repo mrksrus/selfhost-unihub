@@ -120,7 +120,8 @@ async function saveCalDavAccount({ userId, emailAddress, displayName, username, 
     );
   }
   const [rows] = await db.execute<(RowDataPacket & AccountRow)[]>('SELECT * FROM calendar_accounts WHERE id = ?', [accountId]);
-  const calendars = await calendarSync.reconcileCalendarList(rows[0], found.discovery.calendars);
+  const calendars = await calendarSync.reconcileCalendarList(rows[0], found.discovery.calendars,
+    { username: username || emailAddress, password, credentialScope: found.credentialScope });
   return { account: rows[0], calendars: calendars.map(item => item.calendar) };
 }
 

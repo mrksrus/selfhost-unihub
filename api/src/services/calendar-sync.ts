@@ -289,7 +289,7 @@ async function deleteCalendarAccount(userId: string, accountId: string) {
 
 // --- Calendar list ----------------------------------------------------------
 
-async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<ReturnType<typeof caldav.listCalendars>>) {
+async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<ReturnType<typeof caldav.listCalendars>>, login: caldav.CalDavLogin) {
   const [rows] = await db.execute<(RowDataPacket & Calendar)[]>('SELECT * FROM calendar_calendars WHERE account_id = ? AND user_id = ? ORDER BY created_at ASC', [account.id, account.user_id]);
   const byHref = new Map<string, Calendar>();
   for (const row of rows) {
@@ -320,7 +320,14 @@ async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<
     result.push({ calendar: { id, user_id: account.user_id, account_id: account.id, name: remote.displayName, external_id: remote.href, color,
       read_only: remote.readOnly ? 1 : 0, remote_ctag: null, remote_expanded_on: null }, remote, isNew: true });
   }
-  const vanished = rows.filter(row => !matched.has(row.id)).map(row => row.id);
+  // A calendar missing from the listing is removed only once the server
+  // confirms it is gone; one that still answers is kept and synced next time.
+  const vanished: string[] = [];
+  for (const row of rows.filter(row => !matched.has(row.id))) {
+    let url: string | null = null;
+    try { url = row.external_id ? new URL(row.external_id, account.base_url!).toString() : null; } catch { /* unusable legacy id */ }
+    if (!url || await caldav.resourceGone({ url, kind: 'calendar', ...login })) vanished.push(row.id);
+  }
   if (vanished.length) {
     const connection = await db.getConnection();
     try {
@@ -478,7 +485,12 @@ async function storeObject(account: Account, calendar: Calendar, { id, href, eta
 // fetchObjects downloads the listed objects whose ETag changed. Returns the
 // number of objects that could not be read; their last readable copy and its
 // ETag are kept, so the next sync downloads them again.
-async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: ObjectListing[], fetchObjects: (changed: ObjectListing[]) => Promise<FetchedObject[]>, { expandAll }: { expandAll: boolean }) {
+// verifyVanished (CalDAV) checks the stored objects the listing left out: a
+// listing can be incomplete, so only those the server confirms gone are
+// removed. It returns those ids and the left-out objects it could still read.
+type VerifyVanished = (rows: { id: string; href: string }[]) => Promise<{ gone: string[]; present: FetchedObject[] }>;
+
+async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: ObjectListing[], fetchObjects: (changed: ObjectListing[]) => Promise<FetchedObject[]>, { expandAll, verifyVanished }: { expandAll: boolean; verifyVanished?: VerifyVanished }) {
   const unreadableBefore = ctx.stats.unreadable;
   const [stored] = await db.execute<RowDataPacket[]>('SELECT id, href, href_hash, etag FROM calendar_remote_objects WHERE calendar_id = ?', [calendar.id]);
   const storedByHash = new Map(stored.map(row => [row.href_hash, row]));
@@ -491,11 +503,29 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
     const known = storedByHash.get(hash);
     if (!known || !item.etag || known.etag !== item.etag) changed.push(item);
   }
-  const removed = stored.filter(row => !listed.has(row.href_hash)).map(row => row.id);
+  const vanished = stored.filter(row => !listed.has(row.href_hash));
+  let removed = vanished.map(row => String(row.id));
+  const kept: FetchedObject[] = [];
+  if (vanished.length && verifyVanished) {
+    const { gone, present } = await verifyVanished(vanished.map(row => ({ id: String(row.id), href: String(row.href) })));
+    const confirmed = new Set(gone);
+    for (const object of present) {
+      const row = vanished.find(item => item.href_hash === hrefHash(object.href));
+      if (!row) continue;
+      // Still on the server: outside the window its local copy goes as
+      // before; inside it (or unreadable) the listing missed it, so it stays.
+      const expanded = expandObject(ctx, object.ics);
+      if (expanded && !expanded.occurrences.length) confirmed.add(String(row.id));
+      else { kept.push(object); listed.add(row.href_hash); }
+    }
+    // Neither confirmed gone nor readable: kept, and the calendar is listed again next time.
+    ctx.stats.unreadable += vanished.filter(row => !confirmed.has(String(row.id)) && !listed.has(row.href_hash)).length;
+    removed = removed.filter(id => confirmed.has(id));
+  }
   await removeObjects(ctx, removed);
   ctx.stats.removedObjects += removed.length;
 
-  const fetched = changed.length ? await fetchObjects(changed) : [];
+  const fetched = [...(changed.length ? await fetchObjects(changed) : []), ...kept];
   const applied = new Set();
   for (const item of fetched) {
     const known = storedByHash.get(hrefHash(item.href));
@@ -559,7 +589,7 @@ async function syncCalDavAccount(ctx: Context, { full }: { full?: boolean }) {
   const { account } = ctx; const login = ctx.login!;
   if (!login.password) throw syncError('The calendar has no saved password. Reconnect the account.', 422, 'CALDAV_NO_PASSWORD');
   const remoteCalendars = await caldav.listCalendars({ homeUrl: account.base_url!, ...login });
-  const calendars = await reconcileCalendarList(account, remoteCalendars);
+  const calendars = await reconcileCalendarList(account, remoteCalendars, login);
   const today = todayUtc();
   for (const { calendar, remote, isNew } of calendars) {
     const expandAll = full || dateValue(calendar.remote_expanded_on) !== today;
@@ -568,8 +598,18 @@ async function syncCalDavAccount(ctx: Context, { full }: { full?: boolean }) {
     const listing = await caldav.listCalendarObjects({
       calendarUrl: remote.url, ...login, windowStartMs: ctx.windowStartMs, windowEndMs: ctx.windowEndMs,
     });
-    const unreadable = await syncCalendarObjects(calendarCtx, calendar, listing,
-      objects => caldav.fetchCalendarObjects({ calendarUrl: remote.url, objects: objects as Parameters<typeof caldav.fetchCalendarObjects>[0]['objects'], ...login }), { expandAll });
+    const fetchObjects = (objects: ObjectListing[]) => caldav.fetchCalendarObjects({ calendarUrl: remote.url, objects: objects as Parameters<typeof caldav.fetchCalendarObjects>[0]['objects'], ...login });
+    const verifyVanished: VerifyVanished = async rows => {
+      const objects = rows.map(row => ({ ...row, url: new URL(row.href, remote.url).toString(), etag: null }));
+      const present = await fetchObjects(objects);
+      const read = new Set(present.map(object => hrefHash(object.href)));
+      const gone = [];
+      for (const object of objects) {
+        if (!read.has(hrefHash(object.href)) && await caldav.resourceGone({ url: object.url, kind: 'object', ...login })) gone.push(object.id);
+      }
+      return { gone, present };
+    };
+    const unreadable = await syncCalendarObjects(calendarCtx, calendar, listing, fetchObjects, { expandAll, verifyVanished });
     ctx.newEvents = calendarCtx.newEvents;
     // Without the ctag the next sync lists the calendar again and retries
     // the objects it could not read.
@@ -604,6 +644,12 @@ async function syncIcsAccount(ctx: Context, { full }: { full?: boolean }) {
   const feed = await caldav.fetchIcsFeed({ url: feedUrl, etag: expandAll ? null : calendar.remote_ctag });
   if (feed.notModified) return;
   const { objects } = ical.splitIcsFeed(feed.text, { tooLarge: caldav.icsTooLarge });
+  // A feed that suddenly has no events is more likely an error page or an
+  // outage than a calendar emptied on purpose: the saved events stay.
+  if (!objects.length) {
+    const [[saved]] = await db.execute<RowDataPacket[]>('SELECT COUNT(*) AS count FROM calendar_remote_objects WHERE calendar_id = ?', [calendar.id]);
+    if (Number(saved.count) > 0) throw syncError('The subscription returned no events, so the saved ones are kept. Remove the subscription if its calendar was emptied on purpose.', 502, 'ICS_FEED_EMPTY');
+  }
   const listing = objects.map(object => ({ href: `#${object.uid}`, etag: object.etag, ics: object.ics }));
   const calendarCtx = { ...ctx, notify: ctx.notify && !isNew && !!calendar.remote_expanded_on };
   const unreadable = await syncCalendarObjects(calendarCtx, calendar, listing, async changed => changed as FetchedObject[], { expandAll });

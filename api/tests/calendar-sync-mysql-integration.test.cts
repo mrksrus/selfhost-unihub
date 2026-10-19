@@ -34,7 +34,7 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
     const pool = mysql.createPool({ ...options, connectionLimit: 4 });
     const previous = getDb();
     const caldav = require('../dist/src/services/caldav') as typeof import('../src/services/caldav');
-    const stubbed = ['listCalendars', 'listCalendarObjects', 'fetchCalendarObjects', 'putCalendarObject', 'deleteCalendarObject', 'findCalDavServer'] as const;
+    const stubbed = ['listCalendars', 'listCalendarObjects', 'fetchCalendarObjects', 'resourceGone', 'putCalendarObject', 'deleteCalendarObject', 'findCalDavServer', 'fetchIcsFeed'] as const;
     const originals = Object.fromEntries(stubbed.map(name => [name, caldav[name]]));
     let ownsDatabase = false;
     t.after(async () => {
@@ -71,7 +71,10 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
     const serverWrites: FixtureValue[] = [];
     caldav.listCalendars = async () => [{ href: CALENDAR_HREF, url: `${BASE}${CALENDAR_HREF}`, displayName: 'Work', ctag: remote.ctag, readOnly: false }] as FixtureValue;
     caldav.listCalendarObjects = async () => [...remote.objects].map(([href, object]) => ({ href, url: `${BASE}${href}`, etag: object.etag }));
-    caldav.fetchCalendarObjects = async ({ objects }) => objects.map((item) => ({ href: item.href, etag: remote.objects.get(item.href).etag, ics: remote.objects.get(item.href).ics }));
+    // A multiget leaves out what the server no longer has.
+    caldav.fetchCalendarObjects = async ({ objects }) => objects.filter(item => remote.objects.has(item.href))
+      .map((item) => ({ href: item.href, etag: remote.objects.get(item.href).etag, ics: remote.objects.get(item.href).ics }));
+    caldav.resourceGone = async ({ url, kind }) => kind === 'calendar' ? !url.endsWith(CALENDAR_HREF) : !remote.objects.has(new URL(url).pathname);
     caldav.putCalendarObject = async (args) => { serverWrites.push(['put', args.url]); return { etag: '"put"' }; };
     caldav.deleteCalendarObject = async (args) => { serverWrites.push(['delete', args.url]); };
 
@@ -210,6 +213,69 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
         remote.objects.delete(href);
         remote.ctag = 'series-2';
       }
+    });
+
+    await t.test('only what the server confirms gone is removed, never what an incomplete listing or a failed check left out', async () => {
+      const userId = crypto.randomUUID();
+      await connection.execute<ResultSetHeader>('INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)', [userId, 'gaps@example.test', 'synthetic-hash']);
+      const accountId = await insertCalDav(userId, 'gaps@example.test', current);
+      const [planning, review] = [`${CALENDAR_HREF}planning.ics`, `${CALENDAR_HREF}review.ics`];
+      const start = Date.now() + 2 * 86400000;
+      const titles = async () => (await connection.execute<RowDataPacket[]>('SELECT title FROM calendar_events WHERE user_id = ? ORDER BY title', [userId]))[0].map(row => row.title);
+      const sync = async () => { remote.ctag = crypto.randomUUID(); return calendarSync.syncCalendarAccount(accountId, { userId }) as Promise<FixtureValue>; };
+      const { listCalendarObjects, listCalendars, resourceGone } = caldav;
+      const earlier = new Map(remote.objects);
+      remote.objects.clear();
+      remote.objects.set(planning, { etag: '"p1"', ics: eventIcs('planning@example.test', 'Planning', start) });
+      remote.objects.set(review, { etag: '"r1"', ics: eventIcs('review@example.test', 'Review', start) });
+      try {
+        await sync();
+        assert.deepEqual(await titles(), ['Planning', 'Review']);
+
+        // The server's listing misses an object it still has in the window.
+        caldav.listCalendarObjects = async args => (await listCalendarObjects(args)).filter(item => item.href !== planning);
+        assert.equal((await sync()).ok, true);
+        assert.deepEqual(await titles(), ['Planning', 'Review'], 'a listing gap removes nothing');
+
+        // Gone from the listing and the multiget, but the check fails: kept.
+        remote.objects.delete(planning);
+        caldav.resourceGone = async () => { throw Object.assign(new Error('CalDAV request failed (503)'), { status: 503 }); };
+        await assert.rejects(sync(), /503/);
+        assert.deepEqual(await titles(), ['Planning', 'Review'], 'an unanswered check removes nothing');
+
+        caldav.resourceGone = resourceGone;
+        await sync();
+        assert.deepEqual(await titles(), ['Review'], 'a confirmed deletion is applied');
+
+        // A calendar left out of the list stays while the server still has it.
+        caldav.listCalendars = async () => [];
+        caldav.resourceGone = async args => args.kind === 'calendar' ? false : resourceGone(args);
+        await sync();
+        assert.deepEqual(await titles(), ['Review']);
+        caldav.resourceGone = async args => args.kind === 'calendar' ? true : resourceGone(args);
+        await sync();
+        assert.deepEqual(await titles(), [], 'a calendar the server confirms gone is removed');
+      } finally {
+        Object.assign(caldav, { listCalendarObjects, listCalendars, resourceGone });
+        remote.objects.clear();
+        for (const [href, object] of earlier) remote.objects.set(href, object);
+      }
+
+      // A subscription that suddenly returns no events keeps the saved ones.
+      const icsId = crypto.randomUUID();
+      await connection.execute<ResultSetHeader>(
+        `INSERT INTO calendar_accounts (id, user_id, provider, display_name, encrypted_password, is_active) VALUES (?, ?, 'ics', 'Holidays', ?, TRUE)`,
+        [icsId, userId, encrypt('https://feeds.example.test/holidays.ics')]);
+      let feed = eventIcs('holiday@example.test', 'Holiday', start);
+      caldav.fetchIcsFeed = async () => ({ notModified: false, text: feed, etag: null });
+      await calendarSync.syncCalendarAccount(icsId, { userId, full: true });
+      assert.deepEqual(await titles(), ['Holiday']);
+      feed = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n';
+      await assert.rejects(calendarSync.syncCalendarAccount(icsId, { userId, full: true }), /returned no events/);
+      assert.deepEqual(await titles(), ['Holiday']);
+      const [[icsAccount]] = await connection.execute<RowDataPacket[]>('SELECT sync_status, sync_error FROM calendar_accounts WHERE id = ?', [icsId]);
+      assert.equal(icsAccount.sync_status, 'error');
+      assert.match(icsAccount.sync_error, /returned no events/);
     });
 
     await t.test('an owed first sync waits for the module, not for background sync', async () => {
