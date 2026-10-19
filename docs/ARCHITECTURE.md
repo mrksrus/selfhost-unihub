@@ -63,6 +63,7 @@ and an icon, and that the page loads no inline script.
 | `api/src/http/route.ts` | `RouteSpec`, `defineRoutes`, `mergeRouteTables` and the route-table invariants (see Request Handling) |
 | `api/src/routes/` | Route handlers grouped by feature; `routes/mail.ts` combines `mail-folders`, `mail-accounts`, `mail-drafts` (and send), `mail-messages`, `mail-operations` and `mail-sync`. Every mail route answers a caught error through `routeError` in `mail-route-helpers.ts`: a status-bearing error passes its message, anything else gets the route's fallback with 500. Account fields are parsed by `services/mail-account-input.ts` before anything is tested or stored |
 | `api/src/services/` | Database, mail, calendar, backup creation/encryption/restore workers, recordings, 2FA logic |
+| `api/src/routes/settings.ts` | User settings: there is no settings service yet. The account preferences (keys, defaults, allowed values in `USER_SETTING_DEFAULTS` and `USER_SETTING_ALLOWED_VALUES`, stored in `user_settings`), system settings and the `clear-*` data deletion live here; a new preference starts with those two tables and the table in [Auth](AUTH_ADMIN_SETTINGS.md) |
 | `api/src/services/mail.ts` | Facade re-exporting `mail-host-policy` (host checks, IMAP config), `mail-folders` (folders, sender rules), `mail-durable-jobs` (job executor, scheduler), `mail-sync-control` (sync admission, cancel/stop), `mail-server-delete` and `mail-send` |
 | `api/src/services/backup.ts` | Facade re-exporting `backup-common`, `backup-export`, `backup-validate`, `backup-restore-mapping`, `backup-zip-reader` and `backup-import` |
 | `api/src/services/mail-attachments.ts` | Attachment validation, staging and inline references |
@@ -313,7 +314,9 @@ Sessions use:
 - `csrf-token` HttpOnly cookie and `X-CSRF-Token` header comparison for writes
 - Sliding 21-day sessions (renewed on use, at most daily)
 
-`/api/auth/me` refreshes the CSRF token for regular frontend auth checks.
+`/api/auth/me` returns the browser's existing CSRF token and issues one only
+when it is missing or malformed, so another tab's token stays valid
+([Auth](AUTH_ADMIN_SETTINGS.md#csrf-protection)).
 
 Auth and CSRF cookies are marked `Secure` when `NODE_ENV=production`
 (`COOKIE_SECURE` in `api/src/config.ts`, the only place that reads it). The
@@ -531,7 +534,11 @@ Opt-in offline reading uses a separate versioned IndexedDB snapshot with explici
 
 Important boundaries in the current code:
 
-- all feature rows include `user_id` and routes scope queries by current user
+- every feature row is owned by one user: it has a `user_id`, or every path to
+  it goes through a parent row that has one (`mail_folder_remote_boxes`,
+  `mail_folder_rule_overrides`; `ownership: 'owned_parents'` in
+  `backup-catalog.ts`). Routes and services scope queries by the current user
+  on the row or on that parent
 - admin routes require `role = 'admin'`
 - delete/deactivate/demote operations protect the last active admin
 - mail and CalDAV connections use DNS-checked IPs, block private/special addresses

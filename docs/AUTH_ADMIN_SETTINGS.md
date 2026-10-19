@@ -47,8 +47,10 @@ The exemptions are read from the matched route's spec
 ([Request Handling](ARCHITECTURE.md#request-handling)), not from the URL;
 `routes-policy.test.cts` pins which routes declare them.
 
-The last rule is what lets a native client (the planned Android app) write
-without cookies. It is safe because a browser never attaches an `Authorization`
+The last rule is what lets a native client write without cookies. No client
+uses it today: the Android app runs the pages in a WebView with the ordinary
+session cookie and CSRF token ([Android](ANDROID.md)); the rule stays, tested,
+for a client that holds a bearer token. It is safe because a browser never attaches an `Authorization`
 header on its own, and cross-origin script cannot add one without a preflight
 that the API refuses for foreign origins, so such a request cannot be a forged
 form or image load. `verifyToken` records which credential it accepted in
@@ -318,7 +320,9 @@ Supported preferences:
 | Key | Allowed values | Default |
 | --- | --- | --- |
 | `email_link_behavior` | `mailto`, `internal` | `mailto` |
-| `default_start_page` | `mail`, `calendar`, `todo`, `contacts`, `recordings`, `dashboard` | `mail` |
+| `default_start_page` | `mail`, `calendar`, `todo`, `contacts`, `recordings`, `music`, `dashboard` | `mail` |
+| `default_mail_account_id` | the id of one of the user's active, connected mail accounts; empty means the first account | empty |
+| `accent_color` | `blue`, `indigo`, `violet`, `pink`, `teal`, `green` (src/lib/accent.ts) | `blue` |
 
 Unknown preference keys are ignored. Invalid values are rejected.
 
