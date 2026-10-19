@@ -43,6 +43,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   removes every file under the configured roots. Deleting a user whose restore
   is still running is refused (409) instead of leaving the restore writing for
   a vanished account.
+- **Mail sending library updated for security fixes.** Nodemailer 10.1.7 and
+  mailparser 3.9.46 fix, among others, a shared DNS cache that could present
+  one SMTP server's name to another account's connection, recipient-domain
+  checks that a crafted address could bypass, and slow parsing of crafted
+  address lists.
 - **The interface fonts load in the installed app.** Inter and JetBrains Mono
   were requested from Google Fonts, which the app's own security policy
   refused, so an installed UniHub showed the system's fallback fonts. Both
@@ -233,6 +238,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   formatting and stops on anything but `major.minor.patch`; the server ignores app metadata with
   version code 0 or an empty version name instead of advertising it. docs/ANDROID_COMPATIBILITY.md
   lists the 0.22.4 window.
+- CI names third-party actions by commit SHA; `.github/dependabot.yml` proposes action, npm,
+  Docker and Gradle updates; each run reports `npm audit` for shipped dependencies; a monthly
+  workflow deletes `candidate-*` images older than 30 days that no release adopted
+  (docs/RELEASE_CONTRACT.md).
 
 ## 0.22.4
 

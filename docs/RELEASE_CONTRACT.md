@@ -22,6 +22,16 @@ that run holds the release evidence (`unihub-release-evidence`, kept 30 days,
 and the emulator logs). Record what the release needs from it with the
 release.
 
+The workflows name every third-party action by its full commit SHA (the
+version in a comment), so a moved or compromised tag cannot change what a
+release runs. Dependabot (`.github/dependabot.yml`) proposes updates to the
+actions, both npm packages, the interface check, the Docker base images and
+the Android build as ordinary pull requests that pass the same checks. Each
+run reports `npm audit` findings for shipped dependencies without blocking.
+`prune-candidates.yml` deletes, monthly, `candidate-*` images older than 30
+days that no release adopted; it needs the package to grant this repository
+the Admin role, and a manual run lists without deleting by default.
+
 Feature details stay in their own documents; this page lists what must be
 shown before publishing and how.
 

@@ -17,9 +17,9 @@
     "ical.js": "2.2.1",
     "imapflow": "2.1.2",
     "jsonwebtoken": "^9.0.2",
-    "mailparser": "3.9.16",
+    "mailparser": "3.9.46",
     "mysql2": "3.23.1",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^10.1.7",
     "web-push": "^3.6.7"
   },
   "overrides": {
