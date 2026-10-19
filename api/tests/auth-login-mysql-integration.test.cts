@@ -20,28 +20,15 @@ function otp() {
 test('MySQL login isolation, valid 2FA sessions, recovery reuse, replay and transaction rollback', {
   skip: !process.env.MYSQL_TEST_HOST, timeout: 30000,
 }, async t => {
-  assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/);
-  const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
   const bcrypt = require('bcryptjs');
-  const { setDb } = require('../dist/src/state') as typeof import('../src/state');
+  const { withTestDatabase } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  // The real schema, so a session or audit write the routes add is covered too.
+  const pool = await withTestDatabase(t);
   const { encrypt } = require('../dist/src/security/encryption') as typeof import('../src/security/encryption');
   const { verifyToken } = require('../dist/src/auth') as typeof import('../src/auth');
   const routes = require('../dist/src/routes/auth') as typeof import('../src/routes/auth');
-  const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
-    user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE, connectionLimit: 4 });
-  const created: FixtureValue[] = [];
-  t.after(async () => {
-    for (const name of created.reverse()) await pool.execute(`DROP TABLE ${name}`);
-    setDb(null); await pool.end();
-  });
-  const [existing] = await pool.query<RowDataPacket[]>('SHOW TABLES');
-  assert.equal(existing.length, 0, 'This integration fixture requires an empty disposable test database');
-  for (const [name, ddl] of [
-    ['users', `id CHAR(36) PRIMARY KEY, email VARCHAR(255) UNIQUE, password_hash TEXT, full_name TEXT, avatar_url TEXT, role VARCHAR(20), timezone VARCHAR(80), is_active BOOLEAN, two_factor_enabled BOOLEAN DEFAULT FALSE, encrypted_two_factor_secret TEXT, two_factor_recovery_codes JSON`],
-    ['sessions', `id INT AUTO_INCREMENT PRIMARY KEY, user_id CHAR(36), token VARCHAR(512) NOT NULL UNIQUE, expires_at DATETIME, FOREIGN KEY (user_id) REFERENCES users(id)`],
-    ['two_factor_challenges', `id CHAR(36) PRIMARY KEY, user_id CHAR(36), token_hash CHAR(64) UNIQUE, expires_at DATETIME, ip_address VARCHAR(64), user_agent TEXT, FOREIGN KEY (user_id) REFERENCES users(id)`],
-  ] as const) { await pool.execute(`CREATE TABLE ${name} (${ddl}) ENGINE=InnoDB`); created.push(name); }
-  setDb(pool);
   const [one, two, three, four] = Array.from({ length: 4 }, () => crypto.randomUUID());
   const password = 'integration-correct-password';
   const hash = await bcrypt.hash(password, 4);

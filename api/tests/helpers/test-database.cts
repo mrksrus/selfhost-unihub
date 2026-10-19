@@ -12,6 +12,9 @@ const mysql = require('mysql2/promise') as typeof import('mysql2/promise');
 async function withTestDatabase(t: TestContext, { migrate = true } = {}): Promise<Pool> {
   assert.match(process.env.MYSQL_TEST_DATABASE || '', /_test$/, 'Only an isolated disposable schema is allowed');
   process.env.JWT_SECRET ||= 'disposable-database-test-only-secret';
+  // A fresh install refuses to start without its first admin.
+  process.env.BOOTSTRAP_ADMIN_EMAIL ||= 'test-bootstrap-admin@example.test';
+  process.env.BOOTSTRAP_ADMIN_PASSWORD ||= 'synthetic-test-bootstrap-password';
   const pool = mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
     user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD,
     database: process.env.MYSQL_TEST_DATABASE, timezone: '+00:00', connectionLimit: 5 });
