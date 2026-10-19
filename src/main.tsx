@@ -1,6 +1,14 @@
 import { createRoot } from "react-dom/client";
 import { registerSW } from "virtual:pwa-register";
 import App from "./App.tsx";
+// Served with the app: the Content-Security-Policy allows no font host, and the
+// interface keeps its fonts offline. The weights are the ones the styles use.
+import "@fontsource/inter/400.css";
+import "@fontsource/inter/500.css";
+import "@fontsource/inter/600.css";
+import "@fontsource/inter/700.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
 import "./index.css";
 import { initServiceWorker } from "./utils/service-worker";
 import { createPwaUpdateManager } from "./lib/pwa-update";
