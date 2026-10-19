@@ -7,6 +7,9 @@ process.env.TRUSTED_MAIL_HOSTS = '127.0.0.1';
 const test: typeof import('node:test') = require('node:test');
 const assert: typeof import('node:assert/strict') = require('node:assert/strict');
 const net = require('node:net') as typeof import('node:net');
+type Server = import('node:net').Server;
+type Socket = import('node:net').Socket;
+type AddressInfo = import('node:net').AddressInfo;
 const tls = require('node:tls') as typeof import('node:tls');
 const fs = require('node:fs') as typeof import('node:fs');
 const os = require('node:os') as typeof import('node:os');
@@ -32,11 +35,11 @@ let confirmedCert: ReturnType<typeof selfSigned> | null = null, otherCert: Retur
 try { confirmedCert = selfSigned('mail.example.test'); otherCert = selfSigned('mail.example.test'); } catch { /* openssl unavailable */ }
 const skip = !confirmedCert && 'openssl unavailable';
 
-async function listen(server: net.Server) {
-  const sockets = new Set<net.Socket>();
+async function listen(server: Server) {
+  const sockets = new Set<Socket>();
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  return { port: (server.address() as net.AddressInfo).port, close: () => new Promise<void>(resolve => { for (const socket of sockets) socket.destroy(); server.close(() => resolve()); }) };
+  return { port: (server.address() as AddressInfo).port, close: () => new Promise<void>(resolve => { for (const socket of sockets) socket.destroy(); server.close(() => resolve()); }) };
 }
 
 function imapPeer(cert: FixtureValue, commands: string[]) {
@@ -61,7 +64,7 @@ function imapPeer(cert: FixtureValue, commands: string[]) {
 
 // SMTP on one port: implicit TLS when `implicit`, otherwise STARTTLS.
 function smtpPeer(cert: FixtureValue, commands: string[], { implicit = false } = {}) {
-  const serve = (socket: net.Socket, secure: boolean) => {
+  const serve = (socket: Socket, secure: boolean) => {
     socket.on('error', () => {});
     let buffer = '', inData = false;
     const onData = (data: Buffer) => {
