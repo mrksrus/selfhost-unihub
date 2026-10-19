@@ -56,6 +56,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   email with a long subject was wider than the list: on phones its menu, the
   "Show email" button and the subtasks were cut off, and the page scrolled
   sideways. The subject is now shortened inside the row.
+- **Browsers stay on HTTPS.** Behind an HTTPS reverse proxy, UniHub now sends
+  `Strict-Transport-Security` (one year), so a browser that has reached it
+  securely never falls back to plain HTTP, where a network attacker could read
+  or change the page. Plain-HTTP requests are unaffected.
 - **The Android app survives a crash of its page renderer.** When Android
   ended the WebView's renderer (a very large mail, or memory pressure while the
   app was in the background), the whole app closed and its notification

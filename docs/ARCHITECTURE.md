@@ -36,7 +36,9 @@ background jobs and do not depend on the proxy connection after job creation.
 Nginx sends the security headers from `docker/nginx/security-headers.conf`
 (`X-Frame-Options`, `X-Content-Type-Options: nosniff`, `X-XSS-Protection: 0`,
 `Referrer-Policy`, `Content-Security-Policy`, `Permissions-Policy`) with every
-response. nginx inherits `add_header` all or nothing, so the file is included at
+response, and `Strict-Transport-Security` when the request arrived over HTTPS
+(here or, by `X-Forwarded-Proto`, at the reverse proxy; the `$unihub_hsts` map
+in `docker/nginx/nginx.conf`). nginx inherits `add_header` all or nothing, so the file is included at
 the `http` level and again inside each location that sets its own `add_header`
 (`/assets/`, `/sw.js`, the manifest, `/icons/`); the SSE locations set none and
 inherit it. The policy allows scripts from this origin only, which is why the

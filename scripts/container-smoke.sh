@@ -148,6 +148,12 @@ const icon = page.match(/\/icons\/[^"']+/)?.[0];
 if (!asset || !icon) throw new Error('index.html names no asset or icon');
 for (const path of ['/theme-init.js', '/sw.js', '/manifest.webmanifest', asset, icon]) await secured(path);
 console.log(`Security headers present on /, ${asset}, /sw.js, /theme-init.js, the manifest and ${icon}; no inline script`);
+// HSTS only when the proxy in front reports HTTPS; plain HTTP gets none.
+const hsts = async headers => (await fetch('http://localhost/', { headers })).headers.get('strict-transport-security');
+if (await hsts({})) throw new Error('Plain HTTP must not carry Strict-Transport-Security');
+if (await hsts({ 'X-Forwarded-Proto': 'https' }) !== 'max-age=31536000') throw new Error('A request the proxy reports as HTTPS must carry Strict-Transport-Security');
+if (!(await (await fetch(`http://localhost${asset}`, { headers: { 'X-Forwarded-Proto': 'https' } })).headers.get('strict-transport-security'))) throw new Error(`${asset} lacks Strict-Transport-Security over HTTPS`);
+console.log('Strict-Transport-Security sent only for HTTPS requests');
 NODE
 # The Android app built into the image: the version handshake offers it and
 # Nginx serves the same bytes as an Android package.
