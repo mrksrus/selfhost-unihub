@@ -42,6 +42,7 @@ const AdminUsers = () => {
   const [newPassword, setNewPassword] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [resetTwoFactorUser, setResetTwoFactorUser] = useState<UserRow | null>(null);
+  const [roleChangeUser, setRoleChangeUser] = useState<UserRow | null>(null);
   const [deletingUser, setDeletingUser] = useState<UserRow | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
   // The user the reset dialog shows now, read when a request completes.
@@ -73,13 +74,15 @@ const AdminUsers = () => {
   });
 
   const updateUserRole = useMutation({
-    mutationFn: async ({ userId, role }: { userId: string; role: 'user' | 'admin' }) => {
-      const response = await api.put(`/admin/users/${userId}/role`, { role });
+    mutationFn: async ({ userId, role, currentPassword }: { userId: string; role: 'user' | 'admin'; currentPassword: string }) => {
+      const response = await api.put(`/admin/users/${userId}/role`, { role, current_password: currentPassword });
       if (response.error) throw new Error(response.error);
     },
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
       toast({ title: variables.role === 'admin' ? 'User promoted to admin' : 'User changed to standard user' });
+      setRoleChangeUser(current => (current?.id === variables.userId ? null : current));
+      setAdminPassword('');
     },
     onError: (err: Error) => {
       toast({ title: 'Failed to update role', description: err.message, variant: 'destructive' });
@@ -124,10 +127,15 @@ const AdminUsers = () => {
       toast({ title: 'New password must be at least 12 characters', variant: 'destructive' });
       return;
     }
+    if (!adminPassword) {
+      toast({ title: 'Enter your own password to confirm', variant: 'destructive' });
+      return;
+    }
     setPasswordLoading(true);
     try {
       const response = await api.put(`/admin/users/${passwordDialogUser.id}/password`, {
         new_password: newPassword,
+        current_password: adminPassword,
       });
       if (response.error) {
         toast({ title: 'Failed to change password', description: response.error, variant: 'destructive' });
@@ -135,6 +143,7 @@ const AdminUsers = () => {
         toast({ title: `Password updated for ${passwordDialogUser.email}` });
         setPasswordDialogUser(null);
         setNewPassword('');
+        setAdminPassword('');
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -172,10 +181,10 @@ const AdminUsers = () => {
                   <Button variant="ghost" size="icon" aria-label={`Actions for ${u.email}`}><MoreHorizontal aria-hidden="true" /></Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => updateUserRole.mutate({ userId: u.id, role: u.role === 'admin' ? 'user' : 'admin' })} disabled={updateUserRole.isPending}>
+                  <DropdownMenuItem onClick={() => { setRoleChangeUser(u); setAdminPassword(''); }} disabled={updateUserRole.isPending}>
                     {u.role === 'admin' ? 'Remove admin rights' : 'Make admin'}
                   </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => { setPasswordDialogUser(u); setNewPassword(''); }}>Set a new password</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => { setPasswordDialogUser(u); setNewPassword(''); setAdminPassword(''); }}>Set a new password</DropdownMenuItem>
                   {u.two_factor_enabled && !self && (
                     <DropdownMenuItem onClick={() => { setResetTwoFactorUser(u); setAdminPassword(''); }}>Reset 2FA</DropdownMenuItem>
                   )}
@@ -226,7 +235,7 @@ const AdminUsers = () => {
 
       {/* Password change dialog */}
       <Dialog open={!!passwordDialogUser} onOpenChange={(open) => {
-        if (!open) { setPasswordDialogUser(null); setNewPassword(''); }
+        if (!open) { setPasswordDialogUser(null); setNewPassword(''); setAdminPassword(''); }
       }}>
         <DialogContent>
           <DialogHeader>
@@ -243,11 +252,21 @@ const AdminUsers = () => {
                 placeholder="At least 12 characters"
               />
             </div>
+            <div className="space-y-2">
+              <Label htmlFor="adminConfirmPassword">Your password</Label>
+              <Input
+                id="adminConfirmPassword"
+                type="password"
+                autoComplete="current-password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+              />
+            </div>
             <div className="flex justify-end gap-2 pt-2">
-              <Button variant="outline" onClick={() => setPasswordDialogUser(null)}>
+              <Button variant="outline" onClick={() => { setPasswordDialogUser(null); setAdminPassword(''); }}>
                 Cancel
               </Button>
-              <Button onClick={handleChangePassword} disabled={passwordLoading}>
+              <Button onClick={handleChangePassword} disabled={passwordLoading || !adminPassword}>
                 {passwordLoading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                 Set password
               </Button>
@@ -292,6 +311,49 @@ const AdminUsers = () => {
               <Button type="submit" variant="destructive" disabled={resetTwoFactor.isPending || !adminPassword}>
                 {resetTwoFactor.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
                 Reset 2FA
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!roleChangeUser} onOpenChange={(open) => {
+        if (!open) { setRoleChangeUser(null); setAdminPassword(''); }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{roleChangeUser?.role === 'admin' ? `Remove admin rights from ${roleChangeUser?.email}?` : `Make ${roleChangeUser?.email} an admin?`}</DialogTitle>
+            <DialogDescription>
+              {roleChangeUser?.role === 'admin'
+                ? 'They keep their account and data but can no longer manage users or server settings.'
+                : 'Admins can manage every account on this server, including passwords and two-factor authentication.'}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-4 pt-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (roleChangeUser && adminPassword) {
+                updateUserRole.mutate({ userId: roleChangeUser.id, role: roleChangeUser.role === 'admin' ? 'user' : 'admin', currentPassword: adminPassword });
+              }
+            }}
+          >
+            <div className="space-y-2">
+              <Label htmlFor="adminRolePassword">Your password</Label>
+              <Input
+                id="adminRolePassword"
+                type="password"
+                autoComplete="current-password"
+                value={adminPassword}
+                onChange={(e) => setAdminPassword(e.target.value)}
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => { setRoleChangeUser(null); setAdminPassword(''); }}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={updateUserRole.isPending || !adminPassword}>
+                {updateUserRole.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                {roleChangeUser?.role === 'admin' ? 'Remove admin rights' : 'Make admin'}
               </Button>
             </div>
           </form>
