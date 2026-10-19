@@ -330,7 +330,7 @@ test('draft routes create, update, and delete draft attachments', async (t) => {
 test('send draft sends stored content and removes the local draft', async (t) => {
   let sentPayload: FixtureValue = null;
   const { routes, state } = await createDraftRouteHarness(t, {
-    sendEmail: async (accountId: string, payload: FixtureValue) => {
+    sendEmail: async ({ accountId }: { accountId: string }, payload: FixtureValue) => {
       sentPayload = { accountId, payload };
       return { success: true, messageId: '<sent@example.test>' };
     },

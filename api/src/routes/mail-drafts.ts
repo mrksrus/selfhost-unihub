@@ -276,7 +276,7 @@ export = {
         return { error: 'Draft needs a message or attachment before sending', status: 400 };
       }
 
-      const result = await sendEmail(draft.mail_account_id, {
+      const result = await sendEmail({ userId, accountId: draft.mail_account_id }, {
         to,
         cc,
         bcc,
@@ -322,7 +322,7 @@ export = {
       );
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
 
-      const result = await sendEmail(account_id, { to: to || '', cc, bcc, subject, body: emailBody, isHtml, attachments: attachments || [] });
+      const result = await sendEmail({ userId, accountId: account_id }, { to: to || '', cc, bcc, subject, body: emailBody, isHtml, attachments: attachments || [] });
       return { ...result, success: true, messageId: result.messageId };
     } catch (error) {
       // SMTP errors carry the rejected recipients in their message and fields; the log gets the kind only.

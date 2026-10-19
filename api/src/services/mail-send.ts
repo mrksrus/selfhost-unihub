@@ -40,15 +40,17 @@ interface OutgoingEmail {
 
 const storedRecipients = (recipients: string[]) => recipients.length ? JSON.stringify(recipients) : null;
 
-async function sendEmail(accountId: string, { subject, body, isHtml = false, attachments = [], ...recipients }: OutgoingEmail) {
+// The account is looked up with its owner: a stored reference (a draft's
+// account) cannot send from another user's account.
+async function sendEmail({ userId, accountId }: { userId: string; accountId: string }, { subject, body, isHtml = false, attachments = [], ...recipients }: OutgoingEmail) {
   // SMTP and the Sent copy get the same parsed recipients, names kept, whichever route sent.
   const to = normalizeRecipients(recipients.to);
   const cc = normalizeRecipients(recipients.cc);
   const bcc = normalizeRecipients(recipients.bcc);
   try {
     const [accounts] = await db.execute<(RowDataPacket & SmtpAccount)[]>(
-      'SELECT * FROM mail_accounts WHERE id = ?',
-      [accountId]
+      'SELECT * FROM mail_accounts WHERE id = ? AND user_id = ?',
+      [accountId, userId]
     );
     if (!accounts[0]) throw new Error('Account not found');
 

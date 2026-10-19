@@ -301,6 +301,8 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - `api/src/services/sessions.ts` owns every session query by token (create, find, renew, lock,
   end, end others, end all); routes and the notification services call it. Upgrade step 18
   (`session-token-hashes`) hashes existing tokens in place.
+- `sendEmail` takes `{ userId, accountId }` and loads the account with its owner, so a draft's
+  stored account reference cannot send from another user's account.
 - `api/src/services/settings.ts` owns the account preferences (one declaration of keys, defaults
   and allowed values) and the sign-up mode; the settings, auth and admin routes call it. A stored
   sign-up mode that is not one of the three reads as closed.

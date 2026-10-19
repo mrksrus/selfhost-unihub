@@ -35,7 +35,7 @@ function mailFixture(t: import('node:test').TestContext, { active = 1, disconnec
   // The Sent copy commits through a pool connection; attachment rows are only
   // visible when the same transaction committed.
   const execute = async (sql: string, params: FixtureValue[]) => {
-    if (sql.includes('FROM mail_accounts')) return [[account]];
+    if (sql.includes('FROM mail_accounts')) return [[account].filter(row => row.id === params[0] && row.user_id === params[1])];
     if (sql.includes('INSERT INTO emails')) {
       inserts++; if (failCopy) throw Error('storage offline');
       sentCopy = { from_address: params[5], from_name: params[6], cc: params[8], bcc: params[9], has_attachments: params[12] };
@@ -69,16 +69,19 @@ function mailFixture(t: import('node:test').TestContext, { active = 1, disconnec
   const { sendEmail } = require(mailPath) as typeof import('../src/services/mail');
   const routes = require('../dist/src/routes/mail-messages') as typeof import('../src/routes/mail-messages');
   t.after(() => { for (const [p, entry] of original) { if (entry) require.cache[p] = entry; else delete require.cache[p]; } });
-  return { send: (recipients: FixtureValue = {}) => sendEmail(account.id, { to: 'receiver@example.test', subject: 'Fixture', body: 'hello', ...recipients }),
+  return { send: (recipients: FixtureValue = {}, userId = account.user_id) => sendEmail({ userId, accountId: account.id }, { to: 'receiver@example.test', subject: 'Fixture', body: 'hello', ...recipients }),
     download: (attachmentId: string, userId = account.user_id) => (routes['GET /api/mail/attachments/:id'] as FixtureValue)({ url: `/api/mail/attachments/${attachmentId}` }, userId),
     get sends() { return sends; }, get inserts() { return inserts; }, get delivered() { return delivered; }, get sentCopy() { return sentCopy; },
     get attachmentRows() { return attachmentRows; }, get transactions() { return transactions; } };
 }
 
-test('inactive and disconnected accounts cannot dispatch SMTP', async t => {
+test('inactive, disconnected and other users\' accounts cannot dispatch SMTP', async t => {
   const inactive = mailFixture(t, { active: '0' });
   await assert.rejects(inactive.send(), /inactive or disconnected/);
   assert.equal(inactive.sends, 0);
+  const foreign = mailFixture(t);
+  await assert.rejects(foreign.send({}, 'user-2'), /Account not found/);
+  assert.equal(foreign.sends, 0);
 });
 test('SMTP success plus local Sent-copy failure is not reported as overall send failure', async t => {
   const root = await temporaryAttachmentRoot(t);
