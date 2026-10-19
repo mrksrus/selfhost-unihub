@@ -73,7 +73,10 @@ if (compare(handshake.minApp, oldest) > 0) problems.push(`minApp ${handshake.min
 // From 0.22.1 the app offers notifications only while the server lists them.
 const usesNotifications = window.releases.some(release => release.shell !== 'unavailable' && compare(release.version, '0.22.1') >= 0);
 if (usesNotifications && !handshake.features.includes('android-notifications')) problems.push('features must list android-notifications: an app in the window turns notifications on only then');
-if (JSON.stringify(window.handshake.shellReads) !== JSON.stringify(['app', 'features'])) problems.push('A shell now reads more of the handshake: extend this check for it');
+// From 0.23.0 the app refuses a server whose protocol is not its own (1); minApp is checked above.
+const readsProtocol = window.releases.some(release => release.shell !== 'unavailable' && compare(release.version, '0.23.0') >= 0);
+if (readsProtocol && handshake.protocol !== 1) problems.push(`protocol ${handshake.protocol} would refuse every app from 0.23.0 in the window, which speak protocol 1`);
+if (JSON.stringify(window.handshake.shellReads) !== JSON.stringify(['app', 'features', 'minApp', 'protocol'])) problems.push('A shell now reads more of the handshake: extend this check for it');
 
 for (const release of window.releases) {
   for (const emulator of window.emulators) {

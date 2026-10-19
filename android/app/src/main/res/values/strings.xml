@@ -9,6 +9,8 @@
     <string name="connect_invalid">Enter an address like hub.example.com. It must use HTTPS.</string>
     <string name="connect_not_unihub">No UniHub server answered at this address.</string>
     <string name="connect_unreachable">Could not reach this address. Check it and your connection.</string>
+    <string name="connect_incompatible">This UniHub server needs a different version of the app. Install the app from the server\'s download page.</string>
+    <string name="connect_app_too_old">This app is too old for this server. Install the current app from %1$s.</string>
     <string name="connect_confirm_title">Connect to %1$s?</string>
     <string name="connect_confirm_body">UniHub will open this server. Only continue if it is yours or you trust it.</string>
     <string name="connect_confirm_ok">Connect</string>

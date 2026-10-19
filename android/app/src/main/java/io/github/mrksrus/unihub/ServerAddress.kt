@@ -55,10 +55,28 @@ object ServerAddress {
 
     fun host(origin: String): String = Uri.parse(origin).host ?: origin
 
+    // The handshake version this app speaks (api/src/services/app-version.ts).
+    private const val PROTOCOL = 1
+
     sealed interface Check {
         data object Ok : Check
         data object NotUniHub : Check
         data object Unreachable : Check
+        /** The server speaks another handshake version than this app. */
+        data object Incompatible : Check
+        /** The server no longer serves an app as old as this one (its minApp). */
+        data object AppTooOld : Check
+    }
+
+    /** Compares "major.minor.patch" versions; a part that is not a number counts as 0. */
+    fun compareVersions(a: String, b: String): Int {
+        val left = a.split('.').map { it.toIntOrNull() ?: 0 }
+        val right = b.split('.').map { it.toIntOrNull() ?: 0 }
+        for (index in 0 until maxOf(left.size, right.size)) {
+            val difference = left.getOrElse(index) { 0 }.compareTo(right.getOrElse(index) { 0 })
+            if (difference != 0) return difference
+        }
+        return 0
     }
 
     /** Asks the server's public version endpoint whether it is UniHub. Blocks; call off the main thread. */
@@ -74,7 +92,13 @@ object ServerAddress {
                 val body = connection.inputStream.use { stream ->
                     String(readAtMost(stream, 64 * 1024), Charsets.UTF_8)
                 }
-                if (JSONObject(body).optString("app") == "unihub") Check.Ok else Check.NotUniHub
+                val info = JSONObject(body)
+                when {
+                    info.optString("app") != "unihub" -> Check.NotUniHub
+                    info.optInt("protocol", PROTOCOL) != PROTOCOL -> Check.Incompatible
+                    compareVersions(BuildConfig.VERSION_NAME, info.optString("minApp", "0")) < 0 -> Check.AppTooOld
+                    else -> Check.Ok
+                }
             } finally {
                 connection.disconnect()
             }

@@ -25,6 +25,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ### Fixed
 
+- **The Android app tells you when it does not fit the server.** Connecting
+  the app to a server that needs a newer app (or another app version) now says
+  so and points to the server's app download, instead of opening pages that
+  may not work. The app also pauses its page's media and animations while it
+  is in the background.
 - **A message is sent once, even when Send is pressed again.** When the answer
   to Send got lost (a weak mobile connection, a server restart) and you pressed
   Send again, the message went out twice. Each composed message now carries a
