@@ -7,7 +7,6 @@ import { MIN_PASSWORD_LENGTH } from '../config';
 import {
   getClientIP,
   consumeAuthAttempt,
-  getSignupMode,
   hashPassword,
   verifyPassword,
   generateToken,
@@ -21,6 +20,7 @@ import {
   clearCsrfCookie,
   SESSION_DAYS,
 } from '../auth';
+import { getSignupMode } from '../services/settings';
 import {
   generateTwoFactorSecret,
   verifyTotp,

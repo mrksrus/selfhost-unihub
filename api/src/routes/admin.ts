@@ -16,10 +16,10 @@ import {
   hashPassword,
   verifyPassword,
   consumeAuthAttempt,
-  getSignupMode,
   getAuthTokenFromRequest,
 } from '../auth';
 import { disableTwoFactor } from '../services/two-factor';
+import { getSignupMode, isSignupMode, setSignupMode } from '../services/settings';
 import { defineRoutes } from '../http/route';
 
 type Request = RouteRequest & { url: string; params: Record<string, string> };
@@ -467,15 +467,12 @@ export = defineRoutes({
   'PUT /api/admin/settings/signup-mode': { auth: 'admin', permission: 'server.settings', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
 
     const { signup_mode } = body;
-    if (!['open', 'approval', 'disabled'].includes(signup_mode)) {
+    if (!isSignupMode(signup_mode)) {
       return { error: 'Invalid signup mode. Must be: open, approval, or disabled', status: 400 };
     }
 
     try {
-      await db.execute(
-        'INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?',
-        ['signup_mode', signup_mode, signup_mode]
-      );
+      await setSignupMode(signup_mode);
       await recordAuditAfter({ action: 'admin.signup_mode_changed', actorId: userId, req, details: { mode: signup_mode } });
       return { message: `Signup mode set to: ${signup_mode}` };
     } catch (error) {

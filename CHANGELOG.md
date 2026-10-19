@@ -301,6 +301,9 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - `api/src/services/sessions.ts` owns every session query by token (create, find, renew, lock,
   end, end others, end all); routes and the notification services call it. Upgrade step 18
   (`session-token-hashes`) hashes existing tokens in place.
+- `api/src/services/settings.ts` owns the account preferences (one declaration of keys, defaults
+  and allowed values) and the sign-up mode; the settings, auth and admin routes call it. A stored
+  sign-up mode that is not one of the three reads as closed.
 - Admin routes name a permission (`api/src/security/permissions.ts`) that the request boundary
   checks; `defineRoutes()` refuses an admin route without one. Upgrade step 19 (`audit-log`) adds
   the activity log, written by `api/src/services/audit.ts` inside the change's transaction where

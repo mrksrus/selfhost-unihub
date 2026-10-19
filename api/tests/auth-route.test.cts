@@ -49,7 +49,6 @@ test('password change invalidates all sessions and clears auth cookies', async (
   setRequireStub(authPath, {
     getClientIP: () => '127.0.0.1',
     consumeAuthAttempt: () => null,
-    getSignupMode: async () => 'disabled',
     hashPassword: async () => 'new-hash',
     verifyPassword: async () => true,
     generateToken: () => 'jwt-token',
@@ -115,7 +114,6 @@ test('public signup mode endpoint defaults to disabled', async (t) => {
   setRequireStub(authPath, {
     getClientIP: () => '127.0.0.1',
     consumeAuthAttempt: () => null,
-    getSignupMode: async () => 'disabled',
     hashPassword: async () => 'hash',
     verifyPassword: async () => true,
     generateToken: () => 'jwt-token',
