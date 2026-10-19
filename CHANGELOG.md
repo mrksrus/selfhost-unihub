@@ -62,6 +62,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   work.** Only one API process at a time runs the mail sync, IDLE sessions and
   timers; another one logs a warning, serves requests and takes over when the
   first stops.
+- **Admins confirm with their password before changing someone's password or
+  role.** Resetting two-factor authentication already asked for it; setting a
+  new password and making someone an admin (or removing that) now ask too, so
+  an unattended admin session cannot be used to take over an account.
 - **Session tokens are stored hashed.** The database kept a copy of every
   signed-in session's token, so anyone holding a database dump or a copy of
   the volume could sign in as any of those users for up to 21 days. It now

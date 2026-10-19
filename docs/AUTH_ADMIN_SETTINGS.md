@@ -226,6 +226,16 @@ Recovery codes are bcrypt hashes and keep working:
 
 Without recovery codes, an admin resets 2FA for the user (below).
 
+### Admin confirmation
+
+Changing another person's password, role or 2FA takes the admin's own password
+again (`current_password`), so an unattended or stolen admin session cannot take
+over an account. The same rule applies to all three: a missing password is `400`
+(`ADMIN_PASSWORD_REQUIRED`), a wrong one `403` (`ADMIN_PASSWORD_INCORRECT`, not
+`401`, which the browser treats as an expired session), and each admin has 10
+attempts per 10 minutes (`429` with `Retry-After`). In **Admin > Users** the
+password dialog and the role change ask for it.
+
 ### Admin reset
 
 `POST /api/admin/users/:id/2fa/reset` with `{ "current_password": "..." }` is
@@ -281,9 +291,9 @@ Admin routes require an authenticated user whose `users.role` is `admin`.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/api/admin/users` | List users |
-| PUT | `/api/admin/users/:id/password` | Reset a user's password and delete their sessions |
+| PUT | `/api/admin/users/:id/password` | Reset a user's password and delete their sessions; needs the admin's password (`current_password`) |
 | DELETE | `/api/admin/users/:id` | Delete user, their data and their uploaded files |
-| PUT | `/api/admin/users/:id/role` | Set role to `user` or `admin` |
+| PUT | `/api/admin/users/:id/role` | Set role to `user` or `admin`; needs the admin's password (`current_password`) |
 | PUT | `/api/admin/users/:id/activate` | Activate/deactivate user |
 | POST | `/api/admin/users/:id/2fa/reset` | Turn off another user's 2FA and delete their sessions; needs the admin's password |
 | GET | `/api/admin/storage` | Aggregate server storage counts and byte usage |

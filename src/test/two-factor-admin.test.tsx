@@ -101,3 +101,38 @@ describe('authenticator QR code', () => {
     expect(svg.querySelector('path')?.getAttribute('d')).not.toMatch(/M[0-3] /);
   });
 });
+
+describe('admin changes to another account', () => {
+  const openEntry = async (email: string, name: string) => {
+    fireEvent.pointerDown(await screen.findByRole('button', { name: `Actions for ${email}` }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name }));
+  };
+
+  it('a role change waits for the admin password', async () => {
+    vi.mocked(api.put).mockResolvedValue({ data: { message: 'User role set to admin' } });
+    mount();
+    await openEntry('plain@example.test', 'Make admin');
+    await screen.findByText('Make plain@example.test an admin?');
+    expect(api.put).not.toHaveBeenCalled();
+    const submit = screen.getByRole('button', { name: 'Make admin' });
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(api.put).toHaveBeenCalledExactlyOnceWith('/admin/users/user-3/role', { role: 'admin', current_password: 'synthetic-admin-password' }));
+    await waitFor(() => expect(screen.queryByText('Make plain@example.test an admin?')).not.toBeInTheDocument());
+  });
+
+  it('a new password is sent with the admin password, and a refusal keeps the dialog', async () => {
+    vi.mocked(api.put).mockResolvedValue({ error: 'Current password is incorrect', status: 403 });
+    mount();
+    await openEntry('person@example.test', 'Set a new password');
+    await screen.findByText('New password for person@example.test');
+    fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'synthetic-new-password' } });
+    expect(screen.getByRole('button', { name: 'Set password' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'wrong' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set password' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledExactlyOnceWith('/admin/users/user-2/password', { new_password: 'synthetic-new-password', current_password: 'wrong' }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: 'Current password is incorrect', variant: 'destructive' })));
+    expect(screen.getByText('New password for person@example.test')).toBeInTheDocument();
+  });
+});

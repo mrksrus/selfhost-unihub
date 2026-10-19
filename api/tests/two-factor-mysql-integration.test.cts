@@ -63,7 +63,7 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     setDb(pool);
     await (require('../dist/src/services/database') as typeof import('../src/services/database')).ensureSchema();
 
-    const { hashPassword } = require('../dist/src/auth') as typeof import('../src/auth');
+    const { hashPassword, verifyPassword } = require('../dist/src/auth') as typeof import('../src/auth');
     const authRoutes = require('../dist/src/routes/auth') as typeof import('../src/routes/auth');
     const adminRoutes = require('../dist/src/routes/admin') as typeof import('../src/routes/admin');
     const { createTwoFactorLoginChallenge, replaceRecoveryCodes } = require('../dist/src/services/two-factor') as typeof import('../src/services/two-factor');
@@ -137,8 +137,8 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     await createTwoFactorLoginChallenge(person, request() as FixtureValue);
 
     // Admin reset: admins only, not for themselves, with the admin's own password.
-    const reset = (userId: string, target: FixtureValue, password: FixtureValue, token = 'admin-session') => adminRoutes['POST /api/admin/users/:id/2fa/reset'].handler(
-      request(token, `/api/admin/users/${target}/2fa/reset`, { id: target }) as FixtureValue, userId, { current_password: password } as FixtureValue, response() as FixtureValue);
+    const reset = async (userId: string, target: FixtureValue, password: FixtureValue, token = 'admin-session') => (await adminRoutes['POST /api/admin/users/:id/2fa/reset'].handler(
+      request(token, `/api/admin/users/${target}/2fa/reset`, { id: target }) as FixtureValue, userId, { current_password: password } as FixtureValue, response() as FixtureValue)) as FixtureValue;
     // The boundary admits only admins (routes-policy.test.cts); the route's own
     // in-transaction role check still refuses a non-admin whose password verified.
     assert.equal((await reset(person, admin, 'synthetic-person-password', 'person-current')).status, 403);
@@ -189,4 +189,29 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     assert.equal(await replaceRecoveryCodes(person, []), false);
     const [[still]] = await pool.execute<RowDataPacket[]>('SELECT two_factor_enabled, two_factor_recovery_codes FROM users WHERE id = ?', [person]);
     assert.deepEqual({ ...still, two_factor_enabled: !!still.two_factor_enabled }, { two_factor_enabled: false, two_factor_recovery_codes: null });
+
+    // Setting another person's password or role also needs the admin's own
+    // password (its own attempt budget: a second admin).
+    const steward = crypto.randomUUID();
+    await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'steward@example.test',?,'admin',TRUE)",
+      [steward, await hashPassword('synthetic-steward-password')]);
+    await addSession(person, 'person-phone');
+    const stored = async () => (await pool.execute<RowDataPacket[]>('SELECT role, password_hash FROM users WHERE id = ?', [person]))[0][0];
+    const before = await stored();
+    const setPassword = async (body: FixtureValue) => (await adminRoutes['PUT /api/admin/users/:id/password'].handler(
+      request('admin-session', `/api/admin/users/${person}/password`, { id: person }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
+    const setRole = async (body: FixtureValue) => (await adminRoutes['PUT /api/admin/users/:id/role'].handler(
+      request('admin-session', `/api/admin/users/${person}/role`, { id: person }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
+    assert.deepEqual([(await setPassword({ new_password: 'synthetic-new-person-password' })).code, (await setRole({ role: 'admin' })).code],
+      ['ADMIN_PASSWORD_REQUIRED', 'ADMIN_PASSWORD_REQUIRED']);
+    assert.equal((await setPassword({ new_password: 'synthetic-new-person-password', current_password: 'wrong' })).status, 403);
+    assert.equal((await setRole({ role: 'admin', current_password: 'wrong' })).status, 403);
+    assert.deepEqual(await stored(), before, 'nothing changed without the admin password');
+    assert.deepEqual(await sessions(person), ['person-phone']);
+    assert.equal((await setRole({ role: 'admin', current_password: 'synthetic-steward-password' })).message, 'User role set to admin');
+    assert.equal((await setPassword({ new_password: 'synthetic-new-person-password', current_password: 'synthetic-steward-password' })).message, 'Password updated successfully');
+    const changed = await stored();
+    assert.equal(changed.role, 'admin');
+    assert.ok(await verifyPassword('synthetic-new-person-password', changed.password_hash));
+    assert.deepEqual(await sessions(person), [], 'the new password signs the person out everywhere');
   });

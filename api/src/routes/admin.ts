@@ -37,6 +37,27 @@ async function getActiveAdminCount() {
   return Number(rows[0]?.count || 0);
 }
 
+// Changing another person's password, role or 2FA needs the admin's own
+// password again, so a stolen or unattended admin session cannot take over an
+// account. Not 401: the client treats a 401 outside /api/auth/ as an expired
+// session and signs out.
+async function confirmAdminPassword(userId: string, body: Input, res?: import('node:http').ServerResponse | null) {
+  const retryAfter = consumeAuthAttempt('password', userId);
+  if (retryAfter) {
+    res?.setHeader('Retry-After', String(retryAfter));
+    return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
+  }
+  const currentPassword = body?.current_password;
+  if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 1024) {
+    return { error: 'Your current password is required', code: 'ADMIN_PASSWORD_REQUIRED', status: 400 };
+  }
+  const [admins] = await db.execute<RowDataPacket[]>('SELECT password_hash FROM users WHERE id = ?', [userId]);
+  if (!admins.length || !(await verifyPassword(currentPassword, admins[0].password_hash))) {
+    return { error: 'Current password is incorrect', code: 'ADMIN_PASSWORD_INCORRECT', status: 403 };
+  }
+  return null;
+}
+
 async function getUserRoleStatus(targetId: string) {
   const [rows] = await db.execute<RowDataPacket[]>(
     'SELECT id, email, role, is_active FROM users WHERE id = ? LIMIT 1',
@@ -274,7 +295,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/admin/users/:id/password': { auth: 'admin', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/admin/users/:id/password': { auth: 'admin', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const targetId = req.params.id;
     const { new_password } = body;
@@ -284,6 +305,8 @@ export = defineRoutes({
     }
 
     try {
+      const refused = await confirmAdminPassword(userId, body, res);
+      if (refused) return refused;
       const newHash = await hashPassword(new_password);
       await db.execute('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, targetId]);
       // Invalidate all sessions so the user must re-login
@@ -304,23 +327,11 @@ export = defineRoutes({
     if (targetId === userId) {
       return { error: 'Turn off your own two-factor authentication in Settings', status: 400 };
     }
-    const retryAfter = consumeAuthAttempt('password', userId);
-    if (retryAfter) {
-      res?.setHeader('Retry-After', String(retryAfter));
-      return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
-    }
-    const currentPassword = body?.current_password;
-    if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 1024) {
-      return { error: 'Your current password is required', status: 400 };
-    }
-
     let connection;
     try {
+      const refused = await confirmAdminPassword(userId, body, res);
+      if (refused) return refused;
       const [admins] = await db.execute<RowDataPacket[]>('SELECT password_hash FROM users WHERE id = ?', [userId]);
-      if (!admins.length || !(await verifyPassword(currentPassword, admins[0].password_hash))) {
-        // Not 401: the client treats a 401 outside /api/auth/ as an expired session and signs out.
-        return { error: 'Current password is incorrect', status: 403 };
-      }
       connection = await db.getConnection();
       await connection.beginTransaction();
       // Both rows in one statement, in id order, so two admins resetting each other cannot deadlock.
@@ -381,7 +392,7 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/admin/users/:id/role': { auth: 'admin', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/admin/users/:id/role': { auth: 'admin', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const id = req.params.id;
     const nextRole = String(body?.role || '').trim().toLowerCase();
@@ -390,6 +401,8 @@ export = defineRoutes({
     }
 
     try {
+      const refused = await confirmAdminPassword(userId, body, res);
+      if (refused) return refused;
       const targetUser = await getUserRoleStatus(id);
       if (!targetUser) return { error: 'User not found', status: 404 };
       if (targetUser.role === 'admin' && nextRole === 'user' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
