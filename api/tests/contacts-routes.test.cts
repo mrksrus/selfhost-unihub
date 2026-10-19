@@ -14,8 +14,8 @@ test('contact create and update refuse fields that do not fit their columns befo
 
   const tooLong = await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: 'A'.repeat(101) });
   assert.equal(tooLong.status, 400); assert.match(tooLong.error!, /First name is too long/);
-  const notText = await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: 5 } as FixtureValue);
-  assert.equal(notText.status, 400); assert.match(notText.error!, /First name must be text/);
+  const notText = await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: 'Ann', company: { name: 'x' } } as FixtureValue);
+  assert.equal(notText.status, 400); assert.match(notText.error!, /Company must be text/);
   const longPhone = await routes['PUT /api/contacts/:id'](req('/api/contacts/c1', { id: 'c1' }), 'u1', { first_name: 'Ann', phone: '1'.repeat(51) });
   assert.equal(longPhone.status, 400); assert.match(longPhone.error!, /Phone is too long/);
   const blank = await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: '   ' });
@@ -43,6 +43,12 @@ test('contact create and update refuse fields that do not fit their columns befo
   const inserts = calls.filter(call => /INSERT INTO contacts/.test(call.sql));
   assert.equal(inserts.length, 2);
   assert.equal(inserts[1].params[5], 'ann at work');
+
+  // As in 0.22.4, a number is stored as its text and notes keep their own whitespace.
+  await routes['POST /api/contacts'](req('/api/contacts'), 'u1', { first_name: 'Ann', phone: 5550100, notes: '  indented\n\n' } as FixtureValue);
+  const third = calls.filter(call => /INSERT INTO contacts/.test(call.sql))[2];
+  assert.equal(third.params[7], '5550100');
+  assert.equal(third.params[12], '  indented\n\n');
 });
 
 test('updating a contact that belongs to another user answers 404 and changes nothing', async (t) => {

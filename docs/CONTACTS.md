@@ -60,8 +60,9 @@ require `X-CSRF-Token`.
 
 `POST /api/contacts` and `PUT /api/contacts/:id` run the body through
 `normalizeContactInput` (`api/src/services/contacts.ts`): every field must be
-text or absent, is trimmed, an empty value becomes `NULL`, a value longer than
-its column is refused with 400 naming the limit. Email fields are not checked
+text, a number (stored as its text) or absent; every field but the notes is
+trimmed, an empty value becomes `NULL`, and a value longer than its column is
+refused with 400 naming the limit. Email fields are not checked
 for a format. A first name is required to create a contact; an edit may leave
 it empty, as a vCard imported without a name has none. The route ids come from
 the matcher (`req.params.id`), so a query string on the URL does not become

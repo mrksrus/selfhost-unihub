@@ -58,6 +58,7 @@ function boundContactFields<T extends Contact>(contact: T): Omit<T, ContactField
 // trimmed, empty becomes null, and nothing longer than its column gets through.
 // Email fields are not checked for a format: phones, vCards and older entries
 // hold whatever was typed, and refusing it would stop that contact from syncing.
+// A number is stored as its text, as before; notes keep their own whitespace.
 function normalizeContactInput(body: unknown, { requireFirstName = true } = {}): { fields: NormalizedContact } | { error: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: 'Contact fields are required' };
   const input = body as Record<string, unknown>;
@@ -65,11 +66,12 @@ function normalizeContactInput(body: unknown, { requireFirstName = true } = {}):
   for (const field of CONTACT_FIELDS) {
     const value = input[field];
     if (value == null) { fields[field] = null; continue; }
-    if (typeof value !== 'string') return { error: `${CONTACT_FIELD_LABELS[field]} must be text` };
-    const trimmed = value.trim();
-    if (!trimmed) { fields[field] = null; continue; }
-    if (!fitsContactColumn(field, trimmed)) return { error: `${CONTACT_FIELD_LABELS[field]} is too long (at most ${CONTACT_FIELD_LIMITS[field]} ${field === 'notes' ? 'bytes' : 'characters'})` };
-    fields[field] = trimmed;
+    if (typeof value !== 'string' && !(typeof value === 'number' && Number.isFinite(value))) return { error: `${CONTACT_FIELD_LABELS[field]} must be text` };
+    const text = String(value);
+    if (!text.trim()) { fields[field] = null; continue; }
+    const stored = field === 'notes' ? text : text.trim();
+    if (!fitsContactColumn(field, stored)) return { error: `${CONTACT_FIELD_LABELS[field]} is too long (at most ${CONTACT_FIELD_LIMITS[field]} ${field === 'notes' ? 'bytes' : 'characters'})` };
+    fields[field] = stored;
   }
   if (requireFirstName && !fields.first_name) return { error: 'First name is required' };
   return { fields: { ...fields, first_name: fields.first_name || '' } };
