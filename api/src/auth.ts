@@ -16,6 +16,8 @@ import {
 import { createClientIpResolver } from './security/client-ip';
 import { consumeAuthAttempt } from './security/login-limits';
 import { log } from './log';
+import { can } from './security/permissions';
+import type { Permission } from './security/permissions';
 import { findSession, renewSession } from './services/sessions';
 
 
@@ -240,12 +242,12 @@ async function verifyToken(req: AuthRequest, { renew = false } = {}) {
   }
 }
 
-// Admin check
-async function isAdmin(userId: string | null | undefined) {
+// Whether the user's role grants `permission` (security/permissions.ts).
+async function hasPermission(userId: string | null | undefined, permission: Permission) {
   if (!userId) return false;
   try {
     const [users] = await db.execute<(RowDataPacket & { role: string })[]>('SELECT role FROM users WHERE id = ?', [userId]);
-    return users.length > 0 && users[0].role === 'admin';
+    return users.length > 0 && can(users[0].role, permission);
   } catch {
     return false;
   }
@@ -269,6 +271,7 @@ export {
   verifyPassword,
   generateCsrfToken,
   generateToken,
+  SESSION_DAYS,
   getSessionExpiry,
   sessionNeedsRenewal,
   refreshSessionCookies,
@@ -285,6 +288,6 @@ export {
   setAuthCookie,
   clearAuthCookie,
   verifyToken,
-  isAdmin,
+  hasPermission,
   getSignupMode,
 };

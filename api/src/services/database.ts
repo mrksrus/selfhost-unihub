@@ -302,6 +302,14 @@ const MIGRATIONS: readonly Migration[] = [
       await verifyDatabaseInventory(connection, { throughMigration: 18 });
     },
   },
+  {
+    id: 19,
+    name: 'audit-log',
+    up: createAuditLog,
+    verify: async (connection: PoolConnection) => {
+      await verifyDatabaseInventory(connection, { throughMigration: 19 });
+    },
+  },
 ];
 const LATEST_MIGRATION_ID = MIGRATIONS[MIGRATIONS.length - 1].id;
 
@@ -396,6 +404,24 @@ async function createNotificationTables(connection: SqlExecutor) {
 // characters is a hash (a session token is a JWT with dots).
 async function hashSessionTokens(connection: SqlExecutor) {
   await connection.execute("UPDATE sessions SET token = LOWER(SHA2(token, 256)) WHERE token NOT REGEXP '^[0-9a-f]{64}$'");
+}
+
+// Administration and account-security events (services/audit.ts). No foreign
+// keys: an entry about a deleted user stays as evidence until it is pruned.
+async function createAuditLog(connection: SqlExecutor) {
+  await connection.execute(`CREATE TABLE IF NOT EXISTS audit_log (
+    id CHAR(36) NOT NULL DEFAULT UUID() PRIMARY KEY,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    actor_id CHAR(36) NULL,
+    action VARCHAR(64) NOT NULL,
+    target_user_id CHAR(36) NULL,
+    ip_address VARCHAR(45) NULL,
+    request_id VARCHAR(64) NULL,
+    details JSON NULL,
+    KEY idx_audit_created (created_at),
+    KEY idx_audit_target (target_user_id, created_at),
+    KEY idx_audit_actor (actor_id, created_at)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 
 async function addPushTransport(connection: SqlExecutor) {

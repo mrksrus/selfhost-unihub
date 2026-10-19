@@ -7,6 +7,7 @@ import { useToast } from '@/hooks/use-toast';
 import { KeyRound, Loader2 } from 'lucide-react';
 import { PageBody, PageHeader, PageShell } from '@/components/layout/PageShell';
 import { SettingsPanel } from '@/components/settings/SettingsPanel';
+import { AuditLog } from '@/components/settings/AuditLog';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 
 type StorageSection = {
@@ -196,6 +197,8 @@ const AdminSettings = () => {
           </p>
         </SettingsBlock>
       </SettingsSection>
+
+      <AuditLog />
     </>
   );
 

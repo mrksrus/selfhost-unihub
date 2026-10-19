@@ -3,7 +3,22 @@
 -- Schema changes are numbered migrations in api/src/services/database.ts; the app
 -- creates and upgrades its own schema on startup. This file is a reviewable
 -- reference, and a database test fails when it differs from a freshly migrated database.
--- Through migration 18.
+-- Through migration 19.
+
+CREATE TABLE `audit_log` (
+  `id` char(36) NOT NULL DEFAULT uuid(),
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `actor_id` char(36) DEFAULT NULL,
+  `action` varchar(64) NOT NULL,
+  `target_user_id` char(36) DEFAULT NULL,
+  `ip_address` varchar(45) DEFAULT NULL,
+  `request_id` varchar(64) DEFAULT NULL,
+  `details` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`details`)),
+  PRIMARY KEY (`id`),
+  KEY `idx_audit_created` (`created_at`),
+  KEY `idx_audit_target` (`target_user_id`,`created_at`),
+  KEY `idx_audit_actor` (`actor_id`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE `backup_archive_keys` (
   `backup_uuid` char(36) NOT NULL,

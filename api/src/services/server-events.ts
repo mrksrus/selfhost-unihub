@@ -244,7 +244,11 @@ function createServerEvents(options: BusOptions = {}) {
   }
 
   function closeToken(token: unknown, { reason = 'session_ended' } = {}) {
-    const hash = hashToken(token);
+    return closeTokenHash(hashToken(token), { reason });
+  }
+
+  // The streams of a session known only by its stored hash (services/sessions.ts uses the same SHA-256).
+  function closeTokenHash(hash: string | null, { reason = 'session_ended' } = {}) {
     if (!hash) return 0;
     let closed = 0;
     for (const stream of [...streams]) {
@@ -272,6 +276,7 @@ function createServerEvents(options: BusOptions = {}) {
     publish,
     closeUser,
     closeToken,
+    closeTokenHash,
     closeAll,
     setUserModules,
     tick,

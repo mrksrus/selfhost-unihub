@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ErrorState } from '@/components/ui/page-states';
 import { TotpQrCode } from '@/components/settings/TotpQrCode';
+import { SignedInDevices } from '@/components/settings/SignedInDevices';
 import { SettingsBlock, SettingsRow, SettingsSection } from '@/components/settings/SettingsLayout';
 
 type TwoFactorStatus = { enabled: boolean; recoveryCodesRemaining: number; secretReadable?: boolean };
@@ -201,6 +202,8 @@ export default function SecuritySettings() {
           </SettingsBlock>
         )}
       </SettingsSection>
+
+      <SignedInDevices />
 
       <PasswordDialog open={passwordOpen} onOpenChange={setPasswordOpen} />
 

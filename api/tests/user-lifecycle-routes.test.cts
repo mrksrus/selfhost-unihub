@@ -56,7 +56,9 @@ test('admin user deletion keeps its own checks and reports the service refusal',
   assert.deepEqual(lifecycle.calls, [], 'no refusal reached the service');
 
   assert.deepEqual(await remove('admin-1', 'user-1'), { message: 'User deleted' });
-  assert.deepEqual(lifecycle.calls, [['user-1', { actor: 'admin' }]]);
+  assert.equal(lifecycle.calls.length, 1);
+  const [deleted, options] = lifecycle.calls[0] as FixtureValue;
+  assert.deepEqual([deleted, options.actor, options.actorId], ['user-1', 'admin', 'admin-1'], 'the acting admin is recorded');
 
   const { conflict } = require('../dist/src/http/errors') as typeof import('../src/http/errors');
   const refused = lifecycleStub(conflict('RESTORE_IN_PROGRESS', 'Restore in progress.'));
@@ -85,7 +87,7 @@ test('self deletion calls the service as the owner and clears cookies only after
   const req = { url: '/api/settings/account', headers: {} } as FixtureValue;
 
   assert.deepEqual(await routes['DELETE /api/settings/account'].handler(req, 'user-1', {}, {} as FixtureValue), { deleted: true });
-  assert.deepEqual(lifecycle.calls, [['user-1', { actor: 'self' }]]);
+  assert.deepEqual(lifecycle.calls, [['user-1', { actor: 'self', actorId: 'user-1', req }]]);
   assert.deepEqual(cleared, ['auth', 'csrf']);
 
   const { conflict } = require('../dist/src/http/errors') as typeof import('../src/http/errors');

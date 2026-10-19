@@ -10,6 +10,8 @@ import { RECORDINGS_ROOT, deleteRecordingFiles } from './recordings';
 import { BACKUPS_ROOT, isBackupPathUnderRoot } from './export-jobs';
 import { realtime } from './realtime';
 import { log } from '../log';
+import { recordAudit } from './audit';
+import type { AuthRequest } from '../types';
 
 type DeleteActor = 'self' | 'admin';
 interface DeleteUserResult { files: { removed: number; failed: number } }
@@ -23,7 +25,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // mail work that could still write files, delete the users row (every table
 // cascades from it), then remove the files. A file that outlives its rows is a
 // hygiene problem; a row whose file is gone would be data loss, so files go last.
-async function deleteUser(userId: string, { actor }: { actor: DeleteActor }): Promise<DeleteUserResult> {
+async function deleteUser(userId: string, { actor, actorId = null, req = null }: { actor: DeleteActor; actorId?: string | null; req?: AuthRequest | null }): Promise<DeleteUserResult> {
   if ((await getActiveRestoreSections(userId)).size > 0) {
     throw conflict('RESTORE_IN_PROGRESS', 'Restore in progress. The account can be deleted when it has finished.');
   }
@@ -59,6 +61,9 @@ async function deleteUser(userId: string, { actor }: { actor: DeleteActor }): Pr
 
   const deleted = await withTransaction(async connection => {
     const [result] = await connection.execute<ResultSetHeader>('DELETE FROM users WHERE id = ?', [userId]);
+    if (result.affectedRows > 0) {
+      await recordAudit({ action: actor === 'admin' ? 'admin.user_deleted' : 'auth.account_deleted', actorId, targetUserId: userId, req }, connection);
+    }
     return result.affectedRows > 0;
   });
   if (!deleted) throw notFound('USER_NOT_FOUND', 'User not found');

@@ -8,6 +8,15 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.23.0 (unreleased)
 
+### Added
+
+- **Signed-in devices.** Settings > Security lists the browsers and apps
+  signed in to your account, with the address and day of last use, and signs
+  out any one of them except the one you are using.
+- **Activity log for administrators.** Settings > Server settings > Activity
+  shows sign-ins, failed sign-ins, password and two-factor changes and every
+  admin action on accounts and sign-up, kept for a year.
+
 ### Fixed
 
 - **A draft's HTML is made inert before it reaches the editor.** Opening a
@@ -275,6 +284,10 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - `api/src/services/sessions.ts` owns every session query by token (create, find, renew, lock,
   end, end others, end all); routes and the notification services call it. Upgrade step 18
   (`session-token-hashes`) hashes existing tokens in place.
+- Admin routes name a permission (`api/src/security/permissions.ts`) that the request boundary
+  checks; `defineRoutes()` refuses an admin route without one. Upgrade step 19 (`audit-log`) adds
+  the activity log, written by `api/src/services/audit.ts` inside the change's transaction where
+  there is one; sessions record their address and user agent.
 
 ## 0.22.4
 

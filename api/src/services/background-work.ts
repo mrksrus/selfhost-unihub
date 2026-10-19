@@ -11,6 +11,7 @@ import { cleanupExpiredRecordingUploads } from './recordings';
 import { isSectionRestoreActive } from './restore-locks';
 import { idleSupervisor } from './mail-idle';
 import { processNotificationJobs } from './notifications';
+import { pruneAuditLog } from './audit';
 import { log } from '../log';
 
 // The periodic work of this API process: the nine timers listed in
@@ -39,6 +40,7 @@ interface BackgroundWorkDeps {
   isSectionRestoreActive: typeof isSectionRestoreActive;
   idleSupervisor: Pick<typeof idleSupervisor, 'start' | 'stop' | 'options'>;
   runCalendarSyncPass: () => Promise<unknown>;
+  pruneAuditLog: () => Promise<number>;
 }
 interface BackgroundWorkHandle { stop(): void }
 
@@ -55,6 +57,7 @@ function defaultDeps(): BackgroundWorkDeps {
     cleanupExpiredRecordingUploads,
     isSectionRestoreActive,
     idleSupervisor,
+    pruneAuditLog: () => pruneAuditLog(),
     runCalendarSyncPass: (...args) => (require('./calendar-sync') as typeof import('./calendar-sync')).runCalendarSyncPass(...args),
   };
 }
@@ -121,10 +124,13 @@ async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}):
     if (processed > 0) log.info('SERVER DELETE', 'Periodic pass processed queued messages', { processed });
   });
 
-  // Expired sessions, every hour, so the table does not grow.
+  // Expired sessions and audit entries past their year, every hour, so the
+  // tables do not grow.
   every('CLEANUP', 60 * 60 * 1000, async () => {
     const [result] = await deps.db.execute<ResultSetHeader>('DELETE FROM sessions WHERE expires_at < UTC_TIMESTAMP()');
     if (result.affectedRows > 0) log.info('CLEANUP', 'Deleted expired sessions', { deleted: result.affectedRows });
+    const audit = await deps.pruneAuditLog();
+    if (audit > 0) log.info('CLEANUP', 'Deleted audit entries older than a year', { deleted: audit });
   });
 
   // Finished mail engine jobs older than 7 days, in bounded batches.

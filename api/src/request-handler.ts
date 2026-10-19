@@ -7,7 +7,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import routes = require('./routes');
-import { verifyToken, validateCsrfToken, refreshSessionCookies, isAdmin } from './auth';
+import { verifyToken, validateCsrfToken, refreshSessionCookies, hasPermission } from './auth';
 import {
   parseBody,
   parseRawBodyToFile,
@@ -142,7 +142,7 @@ async function dispatchRequest(req: RouteRequest, res: ServerResponse) {
       return;
     }
 
-    if (spec.auth === 'admin' && !(await isAdmin(userId))) {
+    if (spec.auth === 'admin' && !(await hasPermission(userId, spec.permission!))) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Forbidden', status: 403 }));
       return;
