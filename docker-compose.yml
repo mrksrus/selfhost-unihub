@@ -57,6 +57,8 @@ services:
       JWT_SECRET: ${UNIHUB_JWT_SECRET:?Set UNIHUB_JWT_SECRET to a strong random value before starting}
       # ── Encryption key for stored email passwords ──────────────────
       ENCRYPTION_KEY: ${UNIHUB_ENCRYPTION_KEY:?Set UNIHUB_ENCRYPTION_KEY to a strong random value before starting}
+      # The key before a change of ENCRYPTION_KEY (docs/INSTALLATION.md, Changing the encryption key)
+      ENCRYPTION_KEY_PREVIOUS: ${UNIHUB_ENCRYPTION_KEY_PREVIOUS:-}
       BACKUP_MASTER_KEY: ${UNIHUB_BACKUP_MASTER_KEY:-}
       # ── Log lines: readable text by default, "json" for a log collector ──
       LOG_FORMAT: ${UNIHUB_LOG_FORMAT:-text}

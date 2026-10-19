@@ -1,6 +1,8 @@
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+// The key before the last change: stored values encrypted with it stay readable.
+const ENCRYPTION_KEY_PREVIOUS = process.env.ENCRYPTION_KEY_PREVIOUS || '';
 const BACKUP_MASTER_KEY = process.env.BACKUP_MASTER_KEY || ENCRYPTION_KEY;
 const BOOTSTRAP_ADMIN_EMAIL = (process.env.BOOTSTRAP_ADMIN_EMAIL || '').trim().toLowerCase();
 const BOOTSTRAP_ADMIN_PASSWORD = process.env.BOOTSTRAP_ADMIN_PASSWORD || '';
@@ -30,6 +32,7 @@ export {
   PORT,
   JWT_SECRET,
   ENCRYPTION_KEY,
+  ENCRYPTION_KEY_PREVIOUS,
   BACKUP_MASTER_KEY,
   BOOTSTRAP_ADMIN_EMAIL,
   BOOTSTRAP_ADMIN_PASSWORD,

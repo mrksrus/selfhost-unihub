@@ -13,6 +13,12 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 - **Signed-in devices.** Settings > Security lists the browsers and apps
   signed in to your account, with the address and day of last use, and signs
   out any one of them except the one you are using.
+- **The encryption key can be changed without losing saved sign-ins.** With
+  `ENCRYPTION_KEY_PREVIOUS` set to the old key, mail and calendar passwords,
+  authenticator keys and the push key stored before the change stay readable,
+  and new values use the new key (docs/INSTALLATION.md, Changing the
+  encryption key). Stored secrets now carry a format version (`v1:`); older
+  values are read as before.
 - **Activity log for administrators.** Settings > Server settings > Activity
   shows sign-ins, failed sign-ins, password and two-factor changes and every
   admin action on accounts and sign-up, kept for a year.

@@ -79,6 +79,7 @@ the runtime names shown below. Do not paste actual secrets into public issues.
 | `UNIHUB_ENCRYPTION_KEY` | `ENCRYPTION_KEY` | Yes | Another independent random secret protecting saved account credentials, 2FA secrets and the push private key. Preserve it across upgrades. |
 | `UNIHUB_BOOTSTRAP_ADMIN_EMAIL` | `BOOTSTRAP_ADMIN_EMAIL` | Yes in supplied Compose | The email address you will use as the first UniHub administrator login. You do not need to connect its mailbox to create the account. |
 | `UNIHUB_BOOTSTRAP_ADMIN_PASSWORD` | `BOOTSTRAP_ADMIN_PASSWORD` | Yes in supplied Compose | Your initial web-login password, at least 12 characters. Use a password manager. |
+| `UNIHUB_ENCRYPTION_KEY_PREVIOUS` | `ENCRYPTION_KEY_PREVIOUS` | Only after a key change | The encryption key before the last change; values stored with it stay readable. See [Changing the encryption key](#changing-the-encryption-key). |
 | `UNIHUB_BACKUP_MASTER_KEY` | `BACKUP_MASTER_KEY` | Optional | A separate persistent key for server-side backup unlocking. If blank, the app uses `ENCRYPTION_KEY`. Set it before first use if wanted, then preserve it. |
 
 Generate each database password/key separately. This produces a single-line value
@@ -252,3 +253,22 @@ For ordinary configuration edits to an existing deployment, keep keys/data and u
 `docker compose up -d` to apply changed container settings. A plain container
 restart does not apply edited environment definitions. For version changes, follow
 the [upgrade guide](UPGRADING.md).
+
+## Changing the encryption key
+
+Saved mail and calendar passwords, authenticator keys, subscription addresses
+and the push private key are encrypted with `ENCRYPTION_KEY`. To replace the key
+(for example after it was exposed):
+
+1. Make a backup and keep it with the current key.
+2. If `UNIHUB_BACKUP_MASTER_KEY` is blank, set it to the current
+   `UNIHUB_ENCRYPTION_KEY`; backup archives are sealed with that key and stay
+   unlockable only while it stays the same.
+3. Set `UNIHUB_ENCRYPTION_KEY_PREVIOUS` to the current key and
+   `UNIHUB_ENCRYPTION_KEY` to a new random value, then restart UniHub.
+
+Stored values are read with the new key and then with the previous one, so
+nothing has to be entered again; everything saved from then on uses the new
+key. Values are not rewritten in bulk yet: keep the previous key set as long as
+any value stored before the change remains.
+
