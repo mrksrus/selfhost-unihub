@@ -170,7 +170,7 @@ async function probeIcsFeed(rawUrl: unknown) {
   const policy = await caldav.validateDavUrlPolicy(url);
   if (policy.error) throw fail(policy.error, 422, 'OUTBOUND_HOST_BLOCKED');
   const feed = await caldav.fetchIcsFeed({ url }).catch((error: ApiError) => {
-    if (error.code === 'ICS_INVALID') throw error;
+    if (error.code === 'ICS_INVALID' || error.code === 'ICS_TOO_LARGE') throw error;
     throw fail(error.status === 404 || error.status === 401 || error.status === 403
       ? 'The calendar address was not accepted. Copy the private or public iCal address again.'
       : `The calendar address could not be read: ${error.message}`, 422, 'ICS_UNREACHABLE');

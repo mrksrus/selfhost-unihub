@@ -6,7 +6,7 @@ const { PassThrough } = (require('node:stream') as typeof import('node:stream'))
 const https: FixtureValue = (require('node:https') as typeof import('node:https'));
 const dns = (require('node:dns') as typeof import('node:dns')).promises;
 const { davRequest, MAX_DAV_RESPONSE_BYTES } = require('../dist/src/security/caldav-transport') as typeof import('../src/security/caldav-transport');
-const { discoverCalDavCalendars, validateDavUrlPolicy } = require('../dist/src/services/caldav') as typeof import('../src/services/caldav');
+const { discoverCalDavCalendars, validateDavUrlPolicy, fetchIcsFeed, MAX_ICS_FEED_BYTES } = require('../dist/src/services/caldav') as typeof import('../src/services/caldav');
 
 const origin = 'https://calendar.example';
 const credentials = { username: 'fixture-user', password: 'fixture-secret' };
@@ -98,6 +98,15 @@ test('CalDAV limits redirect loops and response bytes (headers and streamed bodi
   t.mock.restoreAll();
   installDavFixture(t, [{ chunks: [Buffer.alloc(MAX_DAV_RESPONSE_BYTES), Buffer.from('x')] }]);
   await assert.rejects(davRequest(`${origin}/large`, credentials), /16 MiB/);
+});
+
+test('a calendar subscription has its own, smaller byte budget', async t => {
+  const feed = (size: number) => [Buffer.from('BEGIN:VCALENDAR\r\n'), Buffer.alloc(size - 17, 'x')];
+  installDavFixture(t, [{ status: 200, chunks: feed(MAX_ICS_FEED_BYTES + 1) }]);
+  await assert.rejects(fetchIcsFeed({ url: `${origin}/feed.ics` }), (error: FixtureValue) => error.code === 'ICS_TOO_LARGE' && error.status === 422);
+  t.mock.restoreAll();
+  installDavFixture(t, [{ status: 200, chunks: feed(MAX_ICS_FEED_BYTES) }]);
+  assert.equal((await fetchIcsFeed({ url: `${origin}/feed.ics` }) as FixtureValue).text.length, MAX_ICS_FEED_BYTES);
 });
 
 test('discovery never sends credentials to a server named by an untrusted principal/home/calendar href', async t => {

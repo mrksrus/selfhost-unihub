@@ -603,7 +603,7 @@ async function syncIcsAccount(ctx: Context, { full }: { full?: boolean }) {
   const expandAll = full || dateValue(calendar.remote_expanded_on) !== today;
   const feed = await caldav.fetchIcsFeed({ url: feedUrl, etag: expandAll ? null : calendar.remote_ctag });
   if (feed.notModified) return;
-  const { objects } = ical.splitIcsFeed(feed.text);
+  const { objects } = ical.splitIcsFeed(feed.text, { tooLarge: caldav.icsTooLarge });
   const listing = objects.map(object => ({ href: `#${object.uid}`, etag: object.etag, ics: object.ics }));
   const calendarCtx = { ...ctx, notify: ctx.notify && !isNew && !!calendar.remote_expanded_on };
   const unreadable = await syncCalendarObjects(calendarCtx, calendar, listing, async changed => changed as FetchedObject[], { expandAll });

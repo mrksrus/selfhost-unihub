@@ -48,6 +48,12 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
   one SMTP server's name to another account's connection, recipient-domain
   checks that a crafted address could bypass, and slow parsing of crafted
   address lists.
+- **A huge mail or calendar feed no longer stalls the server.** Converting a
+  very large HTML email to text, or reading a very large calendar
+  subscription, ran on the process that serves every user. HTML over 2 Mi
+  characters is now shown but not converted for search and previews, and a
+  subscription may be at most 8 MiB and 10,000 entries; a larger one shows an
+  error and keeps its last synced entries instead of being imported in part.
 - **The interface fonts load in the installed app.** Inter and JetBrains Mono
   were requested from Google Fonts, which the app's own security policy
   refused, so an installed UniHub showed the system's fallback fonts. Both

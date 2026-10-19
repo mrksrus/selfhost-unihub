@@ -460,13 +460,18 @@ function normalizeIcsFeedUrl(value: unknown) {
   return parseCalDavUrl(text).toString();
 }
 
+// A subscription is parsed in one piece on the process that serves every
+// request (calendar-ical.ts); CalDAV listings keep the transport's 16 MiB.
+const MAX_ICS_FEED_BYTES = 8 * 1024 * 1024;
+const icsTooLarge = () => davError('This calendar subscription is larger than UniHub reads (8 MiB or 10,000 entries).', { status: 422, code: 'ICS_TOO_LARGE' });
+
 // Read an iCalendar subscription. No credentials are involved; the address
 // itself is the secret. The ETag (or Last-Modified) avoids re-downloading.
 async function fetchIcsFeed({ url, etag }: { url: string; etag?: string | null }): Promise<{ notModified: true; etag?: string | null } | { notModified: false; text: string; etag: string | null }> {
   const result = await davRequest(normalizeIcsFeedUrl(url), {
-    method: 'GET', anonymous: true, accept: 'text/calendar, */*;q=0.5',
+    method: 'GET', anonymous: true, accept: 'text/calendar, */*;q=0.5', maxBytes: MAX_ICS_FEED_BYTES,
     headers: etag ? { 'If-None-Match': etag } : {}, acceptStatuses: [304],
-  });
+  }).catch((error: NodeJS.ErrnoException) => { throw error.code === 'DAV_RESPONSE_TOO_LARGE' ? icsTooLarge() : error; });
   if (result.status === 304) return { notModified: true, etag };
   if (!/BEGIN:VCALENDAR/i.test(result.text.slice(0, 2000))) {
     throw davError('This address did not return an iCalendar file.', { status: 422, code: 'ICS_INVALID' });
@@ -490,6 +495,8 @@ export {
   deleteCalendarObject,
   normalizeIcsFeedUrl,
   fetchIcsFeed,
+  icsTooLarge,
+  MAX_ICS_FEED_BYTES,
   canonicalHref,
   scopeOrigin,
   accountCredentialScope,
