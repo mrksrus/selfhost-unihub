@@ -6,6 +6,7 @@ const {
   resolveUserTimeZone,
   expandCalendarObject,
   splitIcsFeed,
+  MAX_FEED_OBJECTS,
   createEventIcs,
   updateEventIcs,
   removeOccurrenceIcs,
@@ -128,4 +129,11 @@ test('subscription feeds are split per UID with their time zones', () => {
   assert.match(feed.objects[1].ics, /BEGIN:VTIMEZONE/);
   assert.equal((feed.objects[1].ics.match(/BEGIN:VEVENT/g) || []).length, 2);
   assert.equal(splitIcsFeed(feed.objects[0].ics).objects[0].etag, feed.objects[0].etag, 'Unchanged events keep their ETag');
+});
+
+test('a feed with more entries than the cap is refused as a whole, not imported in part', () => {
+  const events = (count: number) => Array.from({ length: count }, (_, index) => ['BEGIN:VEVENT', `UID:event-${index}`, 'DTSTART:20260101T100000Z', 'END:VEVENT']).flat();
+  assert.equal(splitIcsFeed(calendar(...events(MAX_FEED_OBJECTS))).objects.length, MAX_FEED_OBJECTS);
+  const tooLarge = () => Object.assign(new Error('too large'), { code: 'ICS_TOO_LARGE' });
+  assert.throws(() => splitIcsFeed(calendar(...events(MAX_FEED_OBJECTS + 1)), { tooLarge }), { code: 'ICS_TOO_LARGE' });
 });

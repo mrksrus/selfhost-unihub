@@ -45,6 +45,15 @@ const DEFAULT_TIMEOUT_MS = 300_000;
 // Deadline codes of fetchRawBounded and the per-command guard: data arrived,
 // but the whole message did not within the deadline.
 const BODY_DEADLINE_CODES = new Set(['MAIL_BODY_TIMEOUT', 'MAIL_IMAP_TIMEOUT']);
+// HTML larger than this is stored and shown as it is, but not converted to the
+// plain text that search and previews read: the conversion runs synchronously
+// on the process that serves every request, and a message may be 50 MiB.
+const MAX_HTML_TO_TEXT_CHARS = 2 * 1024 * 1024;
+
+async function parseMessage(raw: Buffer) {
+  const { simpleParser } = require('mailparser') as typeof import('mailparser');
+  return simpleParser(raw, { maxHtmlLengthToParse: MAX_HTML_TO_TEXT_CHARS });
+}
 // A server-side SQL error carries a SQLSTATE (mysql2); a lost connection, a
 // local or a filesystem error does not. Deadlocks and lock waits are transient.
 function isDatabaseRefusal(error: unknown) {
@@ -176,7 +185,6 @@ async function processBodySlice({ maxMessages = BODY_SLICE_MESSAGES, maxMs = BOD
   return { processed, deferred, emailId, more: true };
 }
 async function processBodyItem({ db, connection, account, folder, mailboxId, signal, job = null }: BodyInput) {
-  const { simpleParser } = require('mailparser') as typeof import('mailparser');
   const transport = require('./transport') as typeof import('./transport');
   const runtime = require('./runtime') as typeof import('./runtime');
   const markDeferred = async (emailId: string, state = 'deferred') => (require('./repository') as typeof import('./repository')).withTransaction(async cx => {
@@ -235,7 +243,7 @@ async function processBodyItem({ db, connection, account, folder, mailboxId, sig
   if (job) await runtime.assertFence({ accountId: account.id, jobId: job.id, workerId: job.lease_owner,
     generation: job.worker_generation }, db);
   let parsed;
-  try { parsed = await simpleParser(raw); }
+  try { parsed = await parseMessage(raw); }
   catch (error) {
     await markDeferred(row.email_id);
     return { processed: 0, deferred: true, reason: 'parse_failure', more: true };
@@ -288,6 +296,8 @@ export {
   verifyArchive,
   eligibleForProviderErasure,
   fetchRawBounded,
+  parseMessage,
   processBodySlice,
+  MAX_HTML_TO_TEXT_CHARS,
   uint32,
 };

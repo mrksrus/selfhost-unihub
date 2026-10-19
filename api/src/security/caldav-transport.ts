@@ -21,6 +21,8 @@ interface RequestOptions {
   contentType?: string;
   accept?: string;
   anonymous?: boolean;
+  /** Largest response body accepted; MAX_DAV_RESPONSE_BYTES by default. */
+  maxBytes?: number;
 }
 interface DavOptions extends Partial<RequestOptions> {
   credentialOrigin?: CredentialScope;
@@ -97,7 +99,7 @@ function digestAuthorization(challenge: DigestChallenge, { method, uri, username
   return `Digest ${parts.join(', ')}`;
 }
 
-function requestOnce(url: URL, target: ConnectionTarget, { method, username, password, authorization, body, depth, signal, headers: extraHeaders, contentType, accept, anonymous }: RequestOptions, request = https.request): Promise<DavResponse> {
+function requestOnce(url: URL, target: ConnectionTarget, { method, username, password, authorization, body, depth, signal, headers: extraHeaders, contentType, accept, anonymous, maxBytes = MAX_DAV_RESPONSE_BYTES }: RequestOptions, request = https.request): Promise<DavResponse> {
   return new Promise<DavResponse>((resolve, reject) => {
     const req = request({
       protocol: 'https:',
@@ -130,13 +132,14 @@ function requestOnce(url: URL, target: ConnectionTarget, { method, username, pas
       const fail = (error: Error) => { reject(error); response.destroy(); req.destroy(); };
       response.on('error', reject);
       response.on('aborted', () => reject(new Error('CalDAV response ended unexpectedly.')));
-      if (Number(response.headers['content-length']) > MAX_DAV_RESPONSE_BYTES) {
-        fail(new Error('CalDAV response exceeds the 16 MiB limit.'));
+      const tooLarge = () => Object.assign(new Error(`CalDAV response exceeds the ${Math.round(maxBytes / 1024 / 1024)} MiB limit.`), { code: 'DAV_RESPONSE_TOO_LARGE' });
+      if (Number(response.headers['content-length']) > maxBytes) {
+        fail(tooLarge());
         return;
       }
       response.on('data', chunk => {
         size += chunk.length;
-        if (size > MAX_DAV_RESPONSE_BYTES) return fail(new Error('CalDAV response exceeds the 16 MiB limit.'));
+        if (size > maxBytes) return fail(tooLarge());
         chunks.push(chunk);
       });
       response.on('end', () => resolve({
@@ -159,7 +162,7 @@ const READ_METHODS = new Set(['PROPFIND', 'REPORT', 'GET', 'HEAD', 'OPTIONS']);
 // acceptStatuses: non-2xx statuses returned to the caller instead of thrown.
 async function davRequest(urlString: string, {
   method = 'PROPFIND', username, password, body, depth = ['PROPFIND', 'REPORT'].includes(method) ? '0' : null,
-  credentialOrigin = urlString, headers, contentType, accept, anonymous = false, acceptStatuses = [], timeoutMs = DAV_TIMEOUT_MS, signal,
+  credentialOrigin = urlString, headers, contentType, accept, anonymous = false, acceptStatuses = [], timeoutMs = DAV_TIMEOUT_MS, signal, maxBytes,
 }: DavOptions, { request = https.request, resolveTarget = resolveMailConnectionTarget } = {}) {
   let current = anonymous ? parseCalDavUrl(urlString).toString() : resolveCalDavUrl(urlString, undefined, credentialOrigin);
   const controller = new AbortController();
@@ -182,7 +185,7 @@ async function davRequest(urlString: string, {
       const url = parseCalDavUrl(current);
       const target = await resolveTarget(url.hostname, { timeoutMs: Math.max(1, Math.min(10000, deadline - Date.now())) });
       throwIfStopped();
-      const options = { method, username, password, body, depth, headers, contentType, accept, anonymous, signal: controller.signal };
+      const options = { method, username, password, body, depth, headers, contentType, accept, anonymous, maxBytes, signal: controller.signal };
       let response = await requestOnce(url, target, options, request);
       const challenge = response.status === 401 && !anonymous ? parseDigestChallenge(response.headers?.['www-authenticate']) : null;
       if (challenge) {

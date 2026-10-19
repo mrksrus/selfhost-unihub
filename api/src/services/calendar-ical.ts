@@ -218,12 +218,18 @@ function expandCalendarObject(ics: unknown, { windowStartMs, windowEndMs, userTi
 
 // An ICS feed (subscription) holds many UIDs. Split it into one object per
 // UID with the feed's VTIMEZONEs, so feeds and CalDAV share the same pipeline.
-function splitIcsFeed(ics: unknown) {
+// Splitting copies the feed's time zones into every entry, all on the event
+// loop; past this many entries the feed is refused as a whole (the caller keeps
+// the last synced copy) rather than imported in part.
+const MAX_FEED_OBJECTS = 10_000;
+
+function splitIcsFeed(ics: unknown, { tooLarge = () => new Error('Too many calendar entries') }: { tooLarge?: () => Error } = {}) {
   const root = parseIcs(ics);
   const timezones = root.getAllSubcomponents('vtimezone');
   const byUid = new Map<string, Component[]>();
   for (const vevent of root.getAllSubcomponents('vevent')) {
     const uid = text(vevent, 'uid') || `generated-${crypto.createHash('sha256').update(vevent.toString()).digest('hex').slice(0, 32)}`;
+    if (!byUid.has(uid) && byUid.size >= MAX_FEED_OBJECTS) throw tooLarge();
     if (!byUid.has(uid)) byUid.set(uid, []);
     byUid.get(uid)!.push(vevent);
   }
@@ -477,6 +483,7 @@ export {
   utcToZonedFields,
   expandCalendarObject,
   splitIcsFeed,
+  MAX_FEED_OBJECTS,
   createEventIcs,
   updateEventIcs,
   removeOccurrenceIcs,

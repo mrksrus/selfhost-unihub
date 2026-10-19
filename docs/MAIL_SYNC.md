@@ -480,8 +480,11 @@ For each selected folder:
 4. Validate all returned UIDs before advancing any checkpoint. Filter already
    complete imports by account, exact source folder, UID and UIDVALIDITY.
 5. Fetch pending UIDs sequentially and parse complete RFC 822 messages with
-   `mailparser`. If an incomplete message is absent from the provider, its
-   guarded local `.eml` archive can supply the content for repair.
+   `mailparser`. An HTML part over 2 Mi characters is stored and shown, but
+   not converted to the plain text that search and previews use (the
+   conversion blocks the API process). If an incomplete message is absent from
+   the provider, its guarded local `.eml` archive can supply the content for
+   repair.
 6. Preserve existing local folder/read/star choices when repairing a message.
    Apply the operation's sender-rule ordering to genuinely new messages.
 7. Stage a raw archive and all attachments, then commit message metadata,

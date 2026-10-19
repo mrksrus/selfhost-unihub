@@ -369,8 +369,12 @@ and local addresses are blocked unless the host is listed in
 was confirmed, or to a built-in provider's own hosts (for example iCloud's
 `pNN-caldav.icloud.com`). Redirects to another origin are followed without
 credentials only during discovery. Requests allow at most five redirects, 20
-seconds total and 16 MiB of response data. Blocked restored account settings
-remain inactive with warnings.
+seconds total and 16 MiB of response data. A subscription feed is parsed in
+one piece on the API's event loop, so it may be at most 8 MiB and hold at most
+10,000 entries (UIDs); a larger feed is refused as a whole (`ICS_TOO_LARGE`)
+when it is added, and at a later sync its last synced entries are kept and the
+account shows the error. Blocked restored account settings remain inactive
+with warnings.
 
 ## Security Notes
 

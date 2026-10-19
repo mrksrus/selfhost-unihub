@@ -6,7 +6,7 @@ const fs = (require('node:fs/promises') as typeof import('node:fs/promises'));
 const path = (require('node:path') as typeof import('node:path'));
 const os = (require('node:os') as typeof import('node:os'));
 const crypto = (require('node:crypto') as typeof import('node:crypto'));
-const { publishRaw, verifyArchive, eligibleForProviderErasure, fetchRawBounded } = require('../dist/src/services/mail-engine/content') as typeof import('../src/services/mail-engine/content');
+const { publishRaw, verifyArchive, eligibleForProviderErasure, fetchRawBounded, parseMessage, MAX_HTML_TO_TEXT_CHARS } = require('../dist/src/services/mail-engine/content') as typeof import('../src/services/mail-engine/content');
 const owner = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
 const item = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 async function root(t: import('node:test').TestContext) {
@@ -48,4 +48,18 @@ test('raw fetch refuses decoded text and aborts slow reads at deadline', async (
   await assert.rejects(fetchRawBounded({ fetchRawMessage: async () => new Promise(() => {}) } as FixtureValue, connection as FixtureValue, address,
     { timeoutMs: 5 }), { code: 'MAIL_BODY_TIMEOUT' });
   assert.equal(connection.ended, true);
+});
+
+test('an oversized HTML-only message keeps its HTML but is not converted to text', async () => {
+  const message = (html: string) => Buffer.from(['From: sender@example.test', 'To: person@example.test', 'Subject: Big',
+    'MIME-Version: 1.0', 'Content-Type: text/html; charset=utf-8', '', html].join('\r\n'));
+  const small = await parseMessage(message('<p>Quarterly <b>notes</b></p>'));
+  assert.match(String(small.text), /Quarterly notes/);
+  const cell = '<td><a href="https://example.test/x">cell</a></td>';
+  const big = `<table><tr>${cell.repeat(Math.ceil((MAX_HTML_TO_TEXT_CHARS + 1024 * 1024) / cell.length))}</tr></table>`;
+  const started = Date.now();
+  const parsed = await parseMessage(message(big));
+  assert.ok(Date.now() - started < 5000, 'a bounded parse');
+  assert.equal(parsed.text || '', '');
+  assert.equal(String(parsed.html).length, big.length);
 });
