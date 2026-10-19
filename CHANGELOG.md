@@ -217,13 +217,13 @@ database upgrades; no configuration change is needed (see
   move or delete the event instead.
 - **Contact fields are checked before they are saved.** A name, phone,
   email, company or title longer than its column reached the database and the
-  dialog saw "Failed to create contact"; a field that was not text failed the
-  same way. Creating and editing a contact now trims every field, refuses one
-  that does not fit (with the limit in the message). An email field still
-  keeps whatever was typed, and a contact imported without a name can still be
-  edited, so contacts from phones and vCards keep syncing. Editing a contact that is
-  not yours, or no longer exists, answers "Contact not found" instead of
-  succeeding with no contact.
+  dialog saw "Failed to create contact". Creating and editing a contact now
+  trims every field except the notes, and refuses one that does not fit (with
+  the limit in the message) or that is neither text nor a number. An email
+  field still keeps whatever was typed, and a contact imported without a name
+  can still be edited, so contacts from phones and vCards keep syncing. Editing
+  a contact that is not yours, or no longer exists, answers "Contact not found"
+  instead of succeeding with no contact.
 - **vCard import keeps a card with an over-long field.** An `ORG`, `NOTE` or
   other value longer than its column was reported as a failed card with the
   database's message; the card is now imported with that field cut to the
