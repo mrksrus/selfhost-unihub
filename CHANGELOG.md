@@ -35,6 +35,12 @@ configuration change.
   With the keyboard open, From, To, Subject and the buttons kept their space
   and the message had almost none. On a short screen the fields now scroll
   away while you write. The compact phone composer follows in 0.25.0.
+- **No duplicate background work when the database connection drops.** If
+  the API process lost its database session briefly, a second API process
+  (for example the next one during an update) could start mail sync and
+  notifications while the first still ran them for up to 30 seconds. A
+  process now waits 10 seconds after taking over, and the first one notices
+  within 5. Background work starts 10 seconds after the server starts.
 - **Deleting or deactivating a user asks for your password,** like changing
   their role, password or two-factor authentication already did.
 - **Failed sign-ins no longer lock an admin out of admin actions.** Confirming
