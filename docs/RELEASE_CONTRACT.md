@@ -24,7 +24,9 @@ release.
 
 The workflows name every third-party action by its full commit SHA (the
 version in a comment), so a moved or compromised tag cannot change what a
-release runs. Dependabot (`.github/dependabot.yml`) proposes updates to the
+release runs. `node scripts/check-action-pins.mts` checks that each SHA is the
+commit its version comment names upstream; run it when a pull request changes
+a pin (including Dependabot's). Dependabot (`.github/dependabot.yml`) proposes updates to the
 actions, both npm packages, the interface check, the Docker base images and
 the Android build as ordinary pull requests that pass the same checks. Each
 run reports `npm audit` findings for shipped dependencies without blocking.
