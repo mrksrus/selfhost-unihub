@@ -259,6 +259,14 @@ async function recordReceipt({ userId, clientKey, requestHash, response }: Recei
   if (known[0].request_hash !== requestHash) throw fail('IDEMPOTENCY_KEY_REUSED', 'Idempotency key belongs to a different request');
   return { response: parseReceipt(known[0].response_json), replayed: true };
 }
+// Receipts answer repeats of a request for minutes, not months. A request
+// repeated after this long is treated as new.
+const RECEIPT_RETENTION_DAYS = 30;
+async function pruneCommandReceipts(executor: SqlExecutor = db) {
+  const [result] = await executor.execute<ResultSetHeader>(
+    `DELETE FROM mail_command_receipts WHERE updated_at < UTC_TIMESTAMP() - INTERVAL ${RECEIPT_RETENTION_DAYS} DAY LIMIT 10000`);
+  return Number(result.affectedRows) || 0;
+}
 // Stores the final response of a request that recordReceipt claimed in the same transaction.
 async function finishReceipt({ userId, clientKey, requestHash, response }: ReceiptInput, executor: SqlExecutor = db) {
   validateClientKey(clientKey); requireId(userId, 'userId');
@@ -267,6 +275,7 @@ async function finishReceipt({ userId, clientKey, requestHash, response }: Recei
   if (result.affectedRows !== 1) throw fail('IDEMPOTENCY_KEY_BUSY', 'Idempotency receipt was not claimed by this request');
 }
 export {
+  pruneCommandReceipts,
   CLIENT_KEY_PATTERN,
   withTransaction,
   isDeadlock,

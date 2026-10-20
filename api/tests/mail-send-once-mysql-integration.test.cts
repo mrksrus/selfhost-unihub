@@ -5,7 +5,7 @@ const assert: typeof import('node:assert/strict') = require('node:assert/strict'
 const crypto = require('node:crypto') as typeof import('node:crypto');
 const { withTestDatabase } = require('./helpers/test-database.cts') as import('./helpers/test-database.cts').TestDatabaseHelpers;
 
-test('a send with an Idempotency-Key goes out once: repeats get its result, a running one is refused, a failed one can be retried', {
+test('a send with an Idempotency-Key goes out once: repeats get its result, a running one is refused, a failed one can be retried, an unknown outcome never is', {
   skip: !process.env.MYSQL_TEST_HOST, timeout: 120000,
 }, async t => {
   process.env.BOOTSTRAP_ADMIN_EMAIL = 'send-once-bootstrap@example.test';
@@ -50,4 +50,38 @@ test('a send with an Idempotency-Key goes out once: repeats get its result, a ru
   // Without a key every request sends, as before.
   await once(undefined); await once(undefined);
   assert.equal(sent, 5);
+
+  // The connection ended after the message was handed over (B-02): the key
+  // stays taken, and every repeat says the outcome is unknown, never sends.
+  const unknown = (error: FixtureValue) => error.status === 409 && error.code === 'SEND_OUTCOME_UNKNOWN';
+  const lostAfterData = async () => { throw Object.assign(new Error('lost after DATA'), { status: 409, code: 'SEND_OUTCOME_UNKNOWN' }); };
+  await assert.rejects(once('send-d', lostAfterData), unknown);
+  await assert.rejects(once('send-d'), unknown);
+  await assert.rejects(once('send-d'), unknown);
+  assert.equal(sent, 5);
+
+  // A send that stopped without an outcome (a crash, B-03) is in progress for
+  // a while and then reported as unknown, without closing the composer.
+  const pendingHash = (request: unknown) => crypto.createHash('sha256').update(JSON.stringify({ kind: 'send', request })).digest('hex');
+  await pool.execute(`INSERT INTO mail_command_receipts (user_id, client_key, request_hash, response_json) VALUES (?, 'send-e', ?, '{"send_pending":true}')`, [owner, pendingHash(message)]);
+  await assert.rejects(once('send-e'), (error: FixtureValue) => error.status === 409 && error.code === 'SEND_IN_PROGRESS');
+  await pool.execute("UPDATE mail_command_receipts SET updated_at = UTC_TIMESTAMP() - INTERVAL 3 MINUTE WHERE user_id = ? AND client_key = 'send-e'", [owner]);
+  await assert.rejects(once('send-e'), unknown);
+  await assert.rejects(once('send-e'), unknown, 'and stays unknown');
+  assert.equal(sent, 5);
+  // A send running in this process longer than that is still in progress.
+  let finishLong!: () => void;
+  const long = once('send-f', () => new Promise(resolve => { finishLong = () => resolve({ success: true, messageId: '<long@example.test>' }); }));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  await pool.execute("UPDATE mail_command_receipts SET updated_at = UTC_TIMESTAMP() - INTERVAL 10 MINUTE WHERE user_id = ? AND client_key = 'send-f'", [owner]);
+  await assert.rejects(once('send-f'), (error: FixtureValue) => error.code === 'SEND_IN_PROGRESS');
+  finishLong();
+  assert.equal((await long).messageId, '<long@example.test>');
+
+  // Receipts are kept for 30 days, then pruned.
+  const { pruneCommandReceipts } = require('../dist/src/services/mail-engine/repository') as typeof import('../src/services/mail-engine/repository');
+  await pool.execute("UPDATE mail_command_receipts SET updated_at = UTC_TIMESTAMP() - INTERVAL 31 DAY WHERE user_id = ? AND client_key = 'send-a'", [owner]);
+  assert.equal(await pruneCommandReceipts(pool), 1);
+  const [left] = await pool.execute<FixtureValue[]>('SELECT client_key FROM mail_command_receipts WHERE user_id = ? ORDER BY client_key', [owner]);
+  assert.deepEqual(left.map((row: FixtureValue) => row.client_key), ['send-b', 'send-c', 'send-d', 'send-e', 'send-f']);
 });

@@ -16,7 +16,9 @@ async function temporaryAttachmentRoot(t: import('node:test').TestContext) {
   return root;
 }
 
-function mailFixture(t: import('node:test').TestContext, { active = 1, disconnected = null, failCopy = false, displayName = null }: FixtureValue = {}) {
+// `smtp` sends through the real nodemailer to a loopback peer with that port
+// and confirmed certificate instead of a stub.
+function mailFixture(t: import('node:test').TestContext, { active = 1, disconnected = null, failCopy = false, displayName = null, smtp = null }: FixtureValue = {}) {
   const state = require.resolve('../dist/src/state');
   const nodemailer = require.resolve('nodemailer');
   const encryption = require.resolve('../dist/src/security/encryption');
@@ -53,17 +55,20 @@ function mailFixture(t: import('node:test').TestContext, { active = 1, disconnec
       async rollback() { transactions.push('rollback'); }, release() {} };
   } };
   const account = { id: 'account-1', user_id: 'user-1', email_address: 'sender@example.test', display_name: displayName,
-    smtp_host: 'smtp.example.test', smtp_port: 587, encrypted_password: 'vault-ciphertext',
-    is_active: active, disconnected_at: disconnected, allow_self_signed: 0 };
+    smtp_host: 'smtp.example.test', smtp_port: smtp?.port ?? 587, encrypted_password: 'vault-ciphertext',
+    is_active: active, disconnected_at: disconnected, allow_self_signed: smtp ? 1 : 0, trusted_smtp_fingerprint256: smtp?.fingerprint256 ?? null };
   const stubs = [
     [state, { db }],
-    [nodemailer, { createTransport: () => ({ async sendMail(message: FixtureValue) { sends++; delivered = message; return { messageId: '<delivered@example.test>' }; } }) }],
+    ...(smtp ? [] : [[nodemailer, { createTransport: () => ({ async sendMail(message: FixtureValue) { sends++; delivered = message; return { messageId: '<delivered@example.test>' }; } }) }]]),
     [encryption, { decrypt: () => 'test-placeholder' }],
     [network, { normalizeNetworkHost: (x: FixtureValue) => x, isTrustedMailHost: () => true, isPublicNetworkAddress: () => true,
-      resolveNetworkHost: async () => [], resolveMailConnectionTarget: async () => ({ address: '127.0.0.1', hostname: 'smtp.example.test' }) }],
+      resolveNetworkHost: async () => [], resolveMailConnectionTarget: async () => ({ address: '127.0.0.1', hostname: smtp ? 'mail.example.test' : 'smtp.example.test' }) }],
     [settings, { isModuleEnabled: async () => true, isModuleBackgroundEnabled: async () => true }],
   ];
   for (const [p, exports] of stubs) require.cache[(p as FixtureValue)] = { id: p, filename: p, loaded: true, exports } as NodeJS.Module;
+  // A test with two fixtures restores the first one's stub as the "original"
+  // of the second; the real transport must not inherit a stub.
+  if (smtp) delete require.cache[nodemailer];
   t.after(require('./helpers/mail-service-modules.cts').evictMailServiceModules());
   t.after(require('./helpers/mail-service-modules.cts').evictMailRouteModules());
   const { sendEmail } = require(mailPath) as typeof import('../src/services/mail');
@@ -144,4 +149,38 @@ test('a display name containing an address does not change the sender address', 
   assert.match(mime, /^From: "Jane <evil@example.net> Doe" <sender@example.test>$/m);
   assert.equal(h.sentCopy.from_address, 'sender@example.test');
   assert.equal(h.sentCopy.from_name, 'Jane <evil@example.net> Doe');
+});
+
+const { trySelfSigned, listen, smtpPeer } = require('./helpers/mail-peers.cts') as import('./helpers/mail-peers.cts').MailPeerHelpers;
+const peerCert = trySelfSigned('mail.example.test');
+
+test('a connection lost after the message was handed over is an unknown outcome; a refusal is an ordinary failure', { skip: !peerCert && 'openssl unavailable' }, async t => {
+  const outcome = async (behaviour: FixtureValue) => {
+    const commands: string[] = [];
+    const peer = await listen(smtpPeer(peerCert, commands, behaviour));
+    t.after(peer.close);
+    const h = mailFixture(t, { smtp: { port: peer.port, fingerprint256: peerCert!.fingerprint256 } });
+    const error = await h.send().then(() => null, (failure: FixtureValue) => failure);
+    return { error, commands, inserts: h.inserts };
+  };
+
+  const accepted = await outcome({ afterData: 'accept' });
+  assert.equal(accepted.error, null, 'the peer accepts a normal send');
+  assert.equal(accepted.inserts, 1);
+
+  // The body and its final dot reached the server, then the connection ended:
+  // the server may have queued it, so this must not invite a second send.
+  const dropped = await outcome({ afterData: 'drop' });
+  assert.deepEqual(dropped.commands.slice(-2), ['DATA', '.']);
+  assert.equal(dropped.error?.code, 'SEND_OUTCOME_UNKNOWN');
+  assert.equal(dropped.error?.status, 409);
+  assert.equal(dropped.inserts, 0, 'no Sent copy for a message that may not exist');
+
+  // A server that answers and refuses the message, or a recipient before
+  // DATA, proves nothing was sent: an ordinary failure, the key is released.
+  for (const behaviour of [{ afterData: 'refuse' }, { refuseRecipients: true }]) {
+    const refused = await outcome(behaviour);
+    assert.ok(refused.error, JSON.stringify(behaviour));
+    assert.notEqual(refused.error.code, 'SEND_OUTCOME_UNKNOWN', JSON.stringify(behaviour));
+  }
 });
