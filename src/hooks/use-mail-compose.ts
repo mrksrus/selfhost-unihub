@@ -336,6 +336,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       return null;
     }
 
+    // A save that ends after its message was closed or replaced leaves the
+    // message open now as it is.
+    const composition = compositionRef.current;
     setIsDraftSaving(true);
     try {
       const includeAttachments = options.includeAttachments ?? attachmentsDirty;
@@ -352,9 +355,11 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       if (includeAttachments) {
         payload.existing_attachment_ids = existingDraftAttachments.map(attachment => attachment.id);
         payload.attachments = await buildAttachmentPayload();
+        if (composition !== compositionRef.current) return null;
       }
 
       const savedDraft = await saveDraft(activeDraftId, payload);
+      if (composition !== compositionRef.current) return savedDraft;
       setActiveDraftId(savedDraft.id);
       setExistingDraftAttachments(savedDraft.attachments || []);
       if (includeAttachments) {
@@ -376,7 +381,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       }
       throw error;
     } finally {
-      setIsDraftSaving(false);
+      if (composition === compositionRef.current) setIsDraftSaving(false);
     }
   }, [
     activeDraftId,
@@ -420,6 +425,9 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   };
 
   const discardCurrentCompose = async () => {
+    // A send still preparing (saving the draft, reading attachments) stops
+    // now, before the draft is deleted; the key stays for this message.
+    compositionRef.current += 1;
     try {
       if (activeDraftId) {
         await deleteDraftById(activeDraftId);
@@ -436,8 +444,10 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   };
 
   const saveAndClose = () => {
+    const composition = compositionRef.current;
     saveCurrentDraft({ includeAttachments: true })
       .then(() => {
+        if (composition !== compositionRef.current) return;
         setComposeClosePromptOpen(false);
         closeComposeFlow({ force: true });
       })
