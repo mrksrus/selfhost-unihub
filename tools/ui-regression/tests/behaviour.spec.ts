@@ -291,3 +291,32 @@ test.describe('P-11 touch targets are big enough and never overlap', () => {
     expectOnlyKnown(await touchViolations(page), [KNOWN_DEFECTS.recordingTagTargets]);
   });
 });
+
+// With the keyboard open the Android app's page is only about 560 px tall. The
+// composer's fields must scroll away so the message keeps room to write in.
+test.describe('the phone composer leaves the message room with the keyboard open', () => {
+  test.use({ ...VIEWPORTS.phone, viewport: { width: VIEWPORTS.phone.viewport.width, height: 560 } });
+
+  test('typing in the message shows at least 120 px of it', async ({ page, open, settle }) => {
+    await open('/mail');
+    await page.getByRole('button', { name: 'Compose', exact: true }).click();
+    const editor = page.locator('#compose-body');
+    await editor.click();
+    await page.keyboard.type('Line\n'.repeat(12));
+    await settle();
+    // The part of the editor that is on screen: clipped by every scrolling or
+    // clipping box around it, and above the dialog's button bar.
+    const visible = await editor.evaluate(element => {
+      let { top, bottom } = element.getBoundingClientRect();
+      for (let box = element.parentElement; box; box = box.parentElement) {
+        const { overflowY } = getComputedStyle(box);
+        if (overflowY === 'visible') continue;
+        const rect = box.getBoundingClientRect();
+        top = Math.max(top, rect.top); bottom = Math.min(bottom, rect.bottom);
+      }
+      const buttons = element.closest('form')!.lastElementChild!.getBoundingClientRect();
+      return Math.min(bottom, buttons.top, window.innerHeight) - top;
+    });
+    expect(visible).toBeGreaterThanOrEqual(120);
+  });
+});

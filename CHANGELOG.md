@@ -31,6 +31,10 @@ configuration change.
   mail program showed it as a new conversation. Replies now carry the
   standard In-Reply-To and References headers. A reply saved as a draft and
   finished later from Drafts does not have them yet.
+- **The keyboard no longer squeezes the message out of the phone composer.**
+  With the keyboard open, From, To, Subject and the buttons kept their space
+  and the message had almost none. On a short screen the fields now scroll
+  away while you write. The compact phone composer follows in 0.25.0.
 - **Deleting or deactivating a user asks for your password,** like changing
   their role, password or two-factor authentication already did.
 - **Failed sign-ins no longer lock an admin out of admin actions.** Confirming
