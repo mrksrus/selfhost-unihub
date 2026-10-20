@@ -406,6 +406,11 @@ export function MailInlineCompose({ compose, onAddTask, fill = false }: { compos
   );
 }
 
+// Below this height (a phone with the keyboard open) the phone composer
+// scrolls as one; the message area stops being a scroller of its own.
+const SHORT_SCREEN_SCROLL = '[@media(max-height:44rem)]:block [@media(max-height:44rem)]:min-h-0 [@media(max-height:44rem)]:flex-1 [@media(max-height:44rem)]:overflow-y-auto [@media(max-height:44rem)]:overscroll-contain';
+const SHORT_SCREEN_STATIC = '[@media(max-height:44rem)]:overflow-visible';
+
 /** New message dialog, and reply/forward on phones. */
 export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
   compose: MailCompose; accounts: MailAccount[]; isMobile: boolean; onAddTask?: () => void;
@@ -426,6 +431,11 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={compose.handleSendEmail} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {/* On a short phone screen (the keyboard is open) the fields and the
+              message scroll together, so the header scrolls away and the
+              message keeps the space instead of fixed fields leaving it almost
+              none. At full height the layout stays as it was. */}
+          <div className={isMobile ? `contents ${SHORT_SCREEN_SCROLL}` : 'contents'}>
           <div className="shrink-0 space-y-4 px-4 py-3">
             <div className="space-y-2">
               <Label>From</Label>
@@ -453,7 +463,7 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
               />
             </div>
           </div>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3">
+          <div className={`min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3 ${isMobile ? SHORT_SCREEN_STATIC : ''}`}>
             <div className="flex min-h-0 flex-col space-y-2">
               <Label htmlFor="compose-body">Message</Label>
               <RichComposeEditor
@@ -464,6 +474,7 @@ export function MailComposeDialog({ compose, accounts, isMobile, onAddTask }: {
               />
             </div>
             <ComposeAttachmentsSection compose={compose} inputId="compose-attachments-dialog" />
+          </div>
           </div>
           <div className="flex shrink-0 flex-wrap justify-end gap-3 border-t border-border bg-background px-4 py-3">
             <AddTaskFromDraft compose={compose} onAddTask={onAddTask} />
