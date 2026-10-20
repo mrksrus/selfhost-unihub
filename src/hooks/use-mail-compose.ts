@@ -82,6 +82,13 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   // response returns the first result instead of sending the message twice.
   const sendKeyRef = useRef<string | null>(null);
   const sendKey = () => (sendKeyRef.current ??= `send-${crypto.randomUUID()}`);
+  // Counts the messages composed here: a send's result (and its "Send again")
+  // belongs to the message it sent, not to one opened since.
+  const compositionRef = useRef(0);
+  const newComposition = () => {
+    compositionRef.current += 1;
+    sendKeyRef.current = null;
+  };
   // The message a reply answers, for its threading headers. A draft opened
   // later from Drafts does not know it.
   const [replyToEmailId, setReplyToEmailId] = useState<string | null>(null);
@@ -123,6 +130,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     isComposeMeaningful(composeForm, composeAttachments.length, existingDraftAttachments.length);
 
   const openDraftForCompose = useCallback((draft: Email) => {
+    newComposition();
     setComposeMode('new');
     setReplyToEmailId(null);
     setActiveDraftId(draft.id);
@@ -240,6 +248,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   };
 
   const resetComposeState = () => {
+    newComposition();
     setComposeMode('new');
     setReplyToEmailId(null);
     setComposeForm(EMPTY_COMPOSE_FORM);
@@ -265,7 +274,6 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     const target = composeReturnTo;
     setIsComposeOpen(false);
     resetComposeState();
-    sendKeyRef.current = null;
     setComposeReturnTo(null);
     if (target) navigate(target);
   };
@@ -276,6 +284,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       setComposeClosePromptOpen(true);
       return;
     }
+    newComposition();
     setComposeMode(mode);
     setReplyToEmailId(mode === 'reply' ? email.id : null);
     setComposeAttachments([]);
@@ -300,11 +309,12 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
 
   const sendEmailMutation = useMutation({
     mutationFn: (message: OutgoingMessage & ReplyThreading & { attachments?: AttachmentPayload }) => sendMessage(message, sendKey()),
-    onSuccess: () => {
+    onMutate: () => ({ composition: compositionRef.current }),
+    onSuccess: (_result, _message, context) => {
       toast({ title: '✓ Email sent successfully' });
-      closeComposeFlow({ force: true });
+      if (context?.composition === compositionRef.current) closeComposeFlow({ force: true });
     },
-    onError: (error: Error) => toast(sendFailureToast(error, sendAgain)),
+    onError: (error: Error, _message, context) => toast(sendFailureToast(error, sendAgainFor(context?.composition))),
   });
 
   const buildAttachmentPayload = useCallback(async (): Promise<AttachmentPayload> =>
@@ -465,6 +475,7 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       return;
     }
 
+    const composition = compositionRef.current;
     try {
       if (activeDraftId) {
         const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
@@ -472,12 +483,12 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
         try {
           await sendDraft(draftId, sendKey(), threading);
         } catch (error) {
-          toast(sendFailureToast(error, sendAgain));
+          toast(sendFailureToast(error, sendAgainFor(composition)));
           return;
         }
         toast({ title: '✓ Email sent successfully' });
         void invalidateMailQueries(queryClient);
-        closeComposeFlow({ force: true });
+        if (composition === compositionRef.current) closeComposeFlow({ force: true });
         return;
       }
 
@@ -503,12 +514,19 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
     }
   };
   // "Send again" after an unknown outcome is a new send of what the composer
-  // holds when it is pressed, under a new key.
+  // holds when it is pressed, under a new key, while that message is still
+  // the one open. Another message opened since is never sent by it.
   const submitRef = useRef(submitCompose);
   submitRef.current = submitCompose;
-  function sendAgain() {
-    sendKeyRef.current = null;
-    void submitRef.current();
+  function sendAgainFor(composition: number | undefined) {
+    return () => {
+      if (composition !== compositionRef.current) {
+        toast({ title: 'Not sent again', description: 'That message is no longer open.' });
+        return;
+      }
+      sendKeyRef.current = null;
+      void submitRef.current();
+    };
   }
   const handleSendEmail = (e: FormEvent) => {
     e.preventDefault();

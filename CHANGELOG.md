@@ -20,7 +20,8 @@ and no configuration change (see [Upgrading](docs/UPGRADING.md#0231-fixes)).
   the connection to the mail server ended after the message had been handed
   over, UniHub treated the send as failed, and pressing Send again could
   deliver it a second time. UniHub now says that the email may have been sent
-  and asks you to check Sent; "Send again" sends it anyway if you choose to.
+  and asks you to check Sent; "Send again" sends it anyway if you choose to,
+  while that message is still open.
   A send interrupted by a server restart no longer stays "already being sent"
   until the message is closed: after two minutes it is reported the same way.
 - **PDF attachments open on older phones and browsers.** The viewer showed

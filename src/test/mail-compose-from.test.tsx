@@ -161,4 +161,23 @@ describe('sending a message once', () => {
     expect(sendKeys()[2]).not.toBe(sendKeys()[0]);
     await waitFor(() => expect(screen.queryByLabelText('To')).toBeNull());
   });
+
+  it('"Send again" of a message no longer open sends nothing, not the message opened since', async () => {
+    vi.mocked(api.post).mockResolvedValueOnce({ error: 'Lost after the message was handed over.', status: 409, code: 'SEND_OUTCOME_UNKNOWN' });
+    wrap(<Host />);
+    fireEvent.click(screen.getByRole('button', { name: 'New message' }));
+    await fillAndSend('someone@example.test', 'Hello', 'compose-body');
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'The email may have been sent' })));
+    const { action } = state.toast.mock.calls.at(-1)![0] as { action: React.ReactElement<{ onClick: () => void }> };
+
+    // Another message takes its place before the old notice is answered
+    // (the page behind the open dialog is hidden from the accessibility tree).
+    fireEvent.click(screen.getByRole('button', { name: 'Open draft', hidden: true }));
+    expect(await screen.findByLabelText('Subject')).toHaveValue('Plan');
+    const posts = vi.mocked(api.post).mock.calls.length;
+    action.props.onClick();
+    await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Not sent again' })));
+    expect(vi.mocked(api.post).mock.calls).toHaveLength(posts);
+    expect(api.put).not.toHaveBeenCalled();
+  });
 });

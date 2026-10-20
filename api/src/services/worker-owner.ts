@@ -108,7 +108,8 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, h
         log.info('OWNER', 'This process runs the background work');
         Promise.resolve().then(onGained).catch(error => {
           log.error('OWNER', 'Starting the background work failed', error);
-          failedRole = mine;
+          // A start-up of a role already lost has been stopped; its failure says nothing about the current one.
+          if (mine === role && owner) failedRole = mine;
         });
       } else if (!warned) {
         warned = true;
