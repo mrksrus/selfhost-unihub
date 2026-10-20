@@ -17,6 +17,17 @@ test('account budgets remain separate on shared IPs and survive other account su
   assert.equal(limiter.consume('password', 'user-one', 10, 600000), null);
 });
 
+test('checking a budget spends nothing; only consumed attempts count', () => {
+  let now = 0;
+  const limiter = createLoginLimiter({ now: () => now });
+  for (let index = 0; index < 50; index++) assert.equal(limiter.check('reauth', 'admin', 10), null);
+  for (let index = 0; index < 10; index++) limiter.consume('reauth', 'admin', 10, 600000);
+  assert.equal(limiter.check('reauth', 'admin', 10), 600);
+  assert.equal(limiter.check('password', 'admin', 10), null, 'another scope is separate');
+  now = 600001;
+  assert.equal(limiter.check('reauth', 'admin', 10), null);
+});
+
 test('IP overload recovers in one minute and memory pressure never resets active budgets', () => {
   let now = 0;
   const limiter = createLoginLimiter({ now: () => now, maxEntries: 2 });

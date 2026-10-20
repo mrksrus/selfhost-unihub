@@ -16,15 +16,17 @@ export const adminUsersQueryKey = ['admin', 'users'] as const;
 export async function fetchAdminUsers(signal?: AbortSignal) {
   return unwrap(await api.get<{ users: AdminUser[] }>('/admin/users', { signal }))?.users ?? [];
 }
-export async function deleteAdminUser(userId: string) {
-  unwrap(await api.delete(`/admin/users/${userId}`));
+// Deleting, deactivating, role, password and two-factor changes need the
+// acting admin's own password.
+export async function deleteAdminUser(userId: string, currentPassword: string) {
+  unwrap(await api.delete(`/admin/users/${userId}`, { current_password: currentPassword }));
 }
-// Role, password and two-factor changes need the acting admin's own password.
 export async function setUserRole(userId: string, role: AdminUser['role'], currentPassword: string) {
   unwrap(await api.put(`/admin/users/${userId}/role`, { role, current_password: currentPassword }));
 }
-export async function setUserActive(userId: string, isActive: boolean) {
-  unwrap(await api.put(`/admin/users/${userId}/activate`, { is_active: isActive }));
+/** Activating needs no password; deactivating does. */
+export async function setUserActive(userId: string, isActive: boolean, currentPassword?: string) {
+  unwrap(await api.put(`/admin/users/${userId}/activate`, { is_active: isActive, ...(currentPassword ? { current_password: currentPassword } : {}) }));
 }
 export async function resetUserTwoFactor(userId: string, currentPassword: string) {
   unwrap(await api.post(`/admin/users/${userId}/2fa/reset`, { current_password: currentPassword }));

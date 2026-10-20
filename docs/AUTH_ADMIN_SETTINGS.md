@@ -102,8 +102,11 @@ Authentication uses bounded in-memory attempt budgets, consumed before expensive
 | Password checks per existing user ID | 10 per 10 minutes |
 | Second-factor checks per user ID | 10 per 10 minutes |
 | Signup requests per client IP | 10 per hour |
+| Wrong passwords confirming an admin action, per admin | 10 per 10 minutes |
 
-Success does not clear any budget. Password and second-factor budgets are
+Success does not clear any budget. The admin confirmation budget counts only
+wrong passwords and is separate from sign-in, so failed sign-ins cannot lock an
+admin out of admin actions, nor the other way round. Password and second-factor budgets are
 separate; a fresh password login cannot reset second-factor guesses. Account
 budgets follow the database user ID, including email case variants. A limited
 request returns HTTP 429 with `Retry-After` in seconds. The previous five-hour
@@ -230,13 +233,15 @@ Without recovery codes, an admin resets 2FA for the user (below).
 
 ### Admin confirmation
 
-Changing another person's password, role or 2FA takes the admin's own password
-again (`current_password`), so an unattended or stolen admin session cannot take
-over an account. The same rule applies to all three: a missing password is `400`
+Changing another person's password, role or 2FA, deactivating them or deleting
+them takes the admin's own password again (`current_password`, in the body of
+`DELETE /api/admin/users/:id` too), so an unattended or stolen admin session
+cannot take over or remove an account. Activating an account needs no
+password. The same rule applies to all of them: a missing password is `400`
 (`ADMIN_PASSWORD_REQUIRED`), a wrong one `403` (`ADMIN_PASSWORD_INCORRECT`, not
-`401`, which the browser treats as an expired session), and each admin has 10
-attempts per 10 minutes (`429` with `Retry-After`). In **Admin > Users** the
-password dialog and the role change ask for it.
+`401`, which the browser treats as an expired session), and after 10 wrong
+passwords in 10 minutes an admin gets `429` with `Retry-After`. In **Admin >
+Users** each of these actions asks for it.
 
 ### Admin reset
 
@@ -245,8 +250,8 @@ for a user who lost both the authenticator and the recovery codes. In **Admin >
 Users**, accounts with 2FA show a **2FA** badge and a **Reset 2FA** button.
 
 - the admin confirms with their own password; a wrong one returns `403` (not
-  `401`, which the browser treats as an expired session); each admin gets 10
-  attempts per 10 minutes (`429` with `Retry-After` after that)
+  `401`, which the browser treats as an expired session); after 10 wrong
+  passwords in 10 minutes the admin gets `429` with `Retry-After`
 - the admin's own row and session are locked and rechecked with the target, so
   a request from an admin session that was signed out or deactivated meanwhile,
   or whose password changed after it was checked, returns `401` and changes

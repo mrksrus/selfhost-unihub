@@ -23,7 +23,14 @@ function createLoginLimiter({ now = Date.now, maxEntries = 20000 } = {}) {
     entry.count++;
     return null;
   }
-  return { consume };
+  // The wait while the budget is used up, without spending from it.
+  function check(scope: string, identity: string, limit: number) {
+    const entry = entries.get(`${scope}:${identity}`);
+    const time = now();
+    if (!entry || entry.until <= time || entry.count < limit) return null;
+    return Math.max(1, Math.ceil((entry.until - time) / 1000));
+  }
+  return { consume, check };
 }
 
 const limiter = createLoginLimiter();
@@ -39,4 +46,15 @@ function consumeAuthAttempt(scope: AuthAttemptScope, identity: unknown) {
   return limiter.consume(scope, String(identity), ...budget);
 }
 
-export { createLoginLimiter, consumeAuthAttempt };
+// An admin confirming an action with their password has a budget of its own,
+// so failed sign-ins cannot lock them out of admin actions or the other way
+// round, and only wrong passwords spend from it.
+const REAUTH_BUDGET: [number, number] = [10, 600000];
+function reauthRetryAfter(userId: string) {
+  return limiter.check('reauth', userId, REAUTH_BUDGET[0]);
+}
+function recordFailedReauth(userId: string) {
+  limiter.consume('reauth', userId, ...REAUTH_BUDGET);
+}
+
+export { createLoginLimiter, consumeAuthAttempt, reauthRetryAfter, recordFailedReauth };
