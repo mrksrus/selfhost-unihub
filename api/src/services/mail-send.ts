@@ -61,11 +61,15 @@ const outcomeUnknown = () => Object.assign(new Error('The connection to the mail
   { status: 409, code: 'SEND_OUTCOME_UNKNOWN' });
 
 // Once DATA has been sent, a lost connection or timeout does not prove that
-// the server refused the message: it may have queued it. Only a reply that
-// refuses the message (or the DATA command) proves it was not taken.
+// the server refused the message: it may have queued it. A reply refusing the
+// sender, every recipient, the DATA command or the message proves it was not
+// taken. With PIPELINING nodemailer sends DATA together with MAIL FROM and
+// RCPT TO, so a refused envelope arrives after DATA went out.
+const REFUSABLE_COMMANDS = new Set(['MAIL FROM', 'RCPT TO', 'DATA']);
 function refusedByServer(error: unknown) {
   const { command, responseCode } = (error || {}) as { command?: unknown; responseCode?: unknown };
-  return command === 'DATA' && typeof responseCode === 'number' && responseCode >= 400 && responseCode < 600;
+  return typeof command === 'string' && REFUSABLE_COMMANDS.has(command)
+    && typeof responseCode === 'number' && responseCode >= 400 && responseCode < 600;
 }
 
 // nodemailer's transaction log is the only place that says which SMTP
@@ -207,7 +211,9 @@ async function sendEmail({ userId, accountId }: { userId: string; accountId: str
 }
 
 const SEND_PENDING = { send_pending: true };
-const SEND_UNKNOWN = { send_unknown: true };
+// It keeps send_pending, which 0.23.0 answers with SEND_IN_PROGRESS: after a
+// rollback the message must not be reported as sent.
+const SEND_UNKNOWN = { send_pending: true, send_unknown: true };
 // A pending receipt whose send is not running in this process belongs to a
 // send that crashed, or to the previous process during a handover (B-06).
 // After this long it is reported as unknown instead of in progress.

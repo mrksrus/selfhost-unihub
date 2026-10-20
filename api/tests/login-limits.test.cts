@@ -17,15 +17,19 @@ test('account budgets remain separate on shared IPs and survive other account su
   assert.equal(limiter.consume('password', 'user-one', 10, 600000), null);
 });
 
-test('checking a budget spends nothing; only consumed attempts count', () => {
+test('a refunded attempt is given back; the budget still caps what is in flight', () => {
   let now = 0;
   const limiter = createLoginLimiter({ now: () => now });
-  for (let index = 0; index < 50; index++) assert.equal(limiter.check('reauth', 'admin', 10), null);
-  for (let index = 0; index < 10; index++) limiter.consume('reauth', 'admin', 10, 600000);
-  assert.equal(limiter.check('reauth', 'admin', 10), 600);
-  assert.equal(limiter.check('password', 'admin', 10), null, 'another scope is separate');
+  // Fifty right passwords, each reserved and given back: never limited.
+  for (let index = 0; index < 50; index++) { assert.equal(limiter.consume('reauth', 'admin', 10, 600000), null); limiter.refund('reauth', 'admin'); }
+  // Fifteen at once: ten are admitted, the rest wait, whatever they turn out to be.
+  const admitted = Array.from({ length: 15 }, () => limiter.consume('reauth', 'admin', 10, 600000)).filter(wait => wait === null).length;
+  assert.equal(admitted, 10);
+  limiter.refund('reauth', 'admin');
+  assert.equal(limiter.consume('reauth', 'admin', 10, 600000), null, 'a refund frees one place');
+  assert.equal(limiter.consume('password', 'admin', 10, 600000), null, 'another scope is separate');
   now = 600001;
-  assert.equal(limiter.check('reauth', 'admin', 10), null);
+  assert.equal(limiter.consume('reauth', 'admin', 10, 600000), null);
 });
 
 test('IP overload recovers in one minute and memory pressure never resets active budgets', () => {

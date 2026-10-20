@@ -17,7 +17,7 @@ import {
   verifyPassword,
   getAuthTokenFromRequest,
 } from '../auth';
-import { recordFailedReauth, reauthRetryAfter } from '../security/login-limits';
+import { refundReauth, reserveReauth } from '../security/login-limits';
 import { disableTwoFactor } from '../services/two-factor';
 import { getSignupMode, isSignupMode, setSignupMode } from '../services/settings';
 import { defineRoutes } from '../http/route';
@@ -43,20 +43,24 @@ async function getActiveAdminCount() {
 // session cannot take over or remove an account. Not 401: the client treats a
 // 401 outside /api/auth/ as an expired session and signs out.
 async function confirmAdminPassword(userId: string, body: Input, res?: import('node:http').ServerResponse | null) {
-  const retryAfter = reauthRetryAfter(userId);
-  if (retryAfter) {
-    res?.setHeader('Retry-After', String(retryAfter));
-    return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
-  }
   const currentPassword = body?.current_password;
   if (typeof currentPassword !== 'string' || !currentPassword || currentPassword.length > 1024) {
     return { error: 'Your current password is required', code: 'ADMIN_PASSWORD_REQUIRED', status: 400 };
   }
-  const [admins] = await db.execute<RowDataPacket[]>('SELECT password_hash FROM users WHERE id = ?', [userId]);
-  if (!admins.length || !(await verifyPassword(currentPassword, admins[0].password_hash))) {
-    recordFailedReauth(userId);
-    return { error: 'Current password is incorrect', code: 'ADMIN_PASSWORD_INCORRECT', status: 403 };
+  const retryAfter = reserveReauth(userId);
+  if (retryAfter) {
+    res?.setHeader('Retry-After', String(retryAfter));
+    return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
   }
+  let wrong: boolean | null = null;
+  try {
+    const [admins] = await db.execute<RowDataPacket[]>('SELECT password_hash FROM users WHERE id = ?', [userId]);
+    wrong = !admins.length || !(await verifyPassword(currentPassword, admins[0].password_hash));
+  } finally {
+    // A right password, or a check that failed for another reason, is not a guess.
+    if (wrong !== true) refundReauth(userId);
+  }
+  if (wrong) return { error: 'Current password is incorrect', code: 'ADMIN_PASSWORD_INCORRECT', status: 403 };
   return null;
 }
 

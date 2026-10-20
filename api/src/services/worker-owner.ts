@@ -41,10 +41,20 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, h
   let checking = false, stopped = false, warned = false;
 
   const drop = (connection: PoolConnection | null) => { try { connection?.destroy(); } catch { /* gone already */ } };
+  // Every database step of a check ends within one interval, so a stalled
+  // database cannot keep a check (and an old role) alive.
+  const stepMs = Math.max(1000, everyMs - 1000);
+  const connect = () => new Promise<PoolConnection>((resolve, reject) => {
+    let late = false;
+    const timer = setTimeout(() => { late = true; reject(new Error('Timed out waiting for a database connection')); }, stepMs);
+    pool.getConnection().then(connection => {
+      if (late) drop(connection); else { clearTimeout(timer); resolve(connection); }
+    }, error => { if (!late) { clearTimeout(timer); reject(error); } });
+  });
   const acquire = async () => {
-    const connection = await pool.getConnection();
+    const connection = await connect();
     try {
-      const [[row]] = await connection.query<RowDataPacket[]>('SELECT GET_LOCK(?, 0) AS got', [LOCK_NAME]);
+      const [[row]] = await connection.query<RowDataPacket[]>({ sql: 'SELECT GET_LOCK(?, 0) AS got', timeout: stepMs }, [LOCK_NAME]);
       if (Number(row?.got) === 1) return connection;
     } catch (error) { drop(connection); throw error; }
     connection.release();
@@ -53,7 +63,7 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, h
   // Still ours: the session holding the lock is this connection's.
   const stillHeld = async () => {
     try {
-      const [[row]] = await held!.query<RowDataPacket[]>({ sql: 'SELECT IS_USED_LOCK(?) = CONNECTION_ID() AS mine', timeout: Math.max(1000, everyMs - 1000) }, [LOCK_NAME]);
+      const [[row]] = await held!.query<RowDataPacket[]>({ sql: 'SELECT IS_USED_LOCK(?) = CONNECTION_ID() AS mine', timeout: stepMs }, [LOCK_NAME]);
       return Number(row?.mine) === 1;
     } catch { return false; }
   };
@@ -62,33 +72,31 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, h
     if (checking || stopped) return;
     checking = true;
     try {
-      if (owner && await stillHeld()) return;
-      if (owner) { drop(held); held = null; }
-      // The session that held it may have ended with the database still up;
-      // take the lock again before giving up the role.
+      if (owner) {
+        if (await stillHeld()) return;
+        // Not ours any more, or no answer: another process may hold the lock
+        // already, so the work stops before anything else. Taking the lock
+        // again below then waits for the handover like any new owner.
+        drop(held); held = null;
+        owner = false; warned = true;
+        log.error('OWNER', 'Lost the background work lock; background work stops until this process holds it again');
+        await onLost();
+      }
       let next: PoolConnection | null = null;
       try { next = await acquire(); }
       catch (error) {
-        // The database is unreachable: nobody can take the lock meanwhile
-        // unless our session ended, which the next check finds out.
         log.error('OWNER', 'Could not check the background work lock', error);
         return;
       }
       if (next) {
         held = next;
-        if (!owner) {
-          // A previous owner whose session ended may still be working; it
-          // notices within one check and stops.
-          await new Promise(resolve => (timers.setTimeout ?? setTimeout)(resolve, handoverMs));
-          if (stopped || !await stillHeld()) { drop(held); held = null; return; }
-          owner = true; warned = false;
-          log.info('OWNER', 'This process runs the background work');
-          await onGained();
-        }
-      } else if (owner) {
-        owner = false;
-        log.error('OWNER', 'Another API process took over the background work; this one now serves requests only');
-        await onLost();
+        // A previous owner whose session ended may still be working; it
+        // notices within one check and stops.
+        await new Promise(resolve => (timers.setTimeout ?? setTimeout)(resolve, handoverMs));
+        if (stopped || !await stillHeld()) { drop(held); held = null; return; }
+        owner = true; warned = false;
+        log.info('OWNER', 'This process runs the background work');
+        await onGained();
       } else if (!warned) {
         warned = true;
         log.warn('OWNER', 'Another UniHub API process runs the background work on this database; this one serves requests only (docs/ARCHITECTURE.md, Operational Notes)');

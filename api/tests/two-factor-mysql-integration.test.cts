@@ -237,4 +237,12 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     for (let attempt = 4; attempt <= 10; attempt++) assert.equal((await remove({ current_password: 'wrong' })).status, 403, `wrong confirmation ${attempt}`);
     assert.equal((await remove({ current_password: 'synthetic-steward-password' })).status, 429, 'ten wrong confirmations pause confirmations');
     assert.ok(await leaverRow(), 'and nothing was deleted');
+
+    // A burst of parallel guesses gets no more than the ten attempts.
+    const burstAdmin = crypto.randomUUID();
+    await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'burst@example.test',?,'admin',TRUE)",
+      [burstAdmin, await hashPassword('synthetic-burst-password')]);
+    const burst = await Promise.all(Array.from({ length: 30 }, async () => ((await adminRoutes['DELETE /api/admin/users/:id'].handler(
+      request('admin-session', `/api/admin/users/${leaver}`, { id: leaver }) as FixtureValue, burstAdmin, { current_password: 'wrong' } as FixtureValue, response() as FixtureValue)) as FixtureValue).status));
+    assert.deepEqual([burst.filter(status => status === 403).length, burst.filter(status => status === 429).length], [10, 20]);
   });

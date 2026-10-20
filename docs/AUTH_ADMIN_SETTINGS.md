@@ -104,8 +104,10 @@ Authentication uses bounded in-memory attempt budgets, consumed before expensive
 | Signup requests per client IP | 10 per hour |
 | Wrong passwords confirming an admin action, per admin | 10 per 10 minutes |
 
-Success does not clear any budget. The admin confirmation budget counts only
-wrong passwords and is separate from sign-in, so failed sign-ins cannot lock an
+Success does not clear any budget. The admin confirmation budget is separate
+from sign-in and counts only wrong passwords: each confirmation holds an
+attempt while it is checked and a right password gives it back, so parallel
+requests cannot get past the limit, so failed sign-ins cannot lock an
 admin out of admin actions, nor the other way round. Password and second-factor budgets are
 separate; a fresh password login cannot reset second-factor guesses. Account
 budgets follow the database user ID, including email case variants. A limited
