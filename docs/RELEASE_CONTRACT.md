@@ -52,6 +52,11 @@ shown before publishing and how.
 | The candidate app receives, shows, acknowledges and opens notifications over its own connection, survives an app update and stops on sign-out | `android/scripts/notifications-test.sh` on each emulator | an emulator and `adb` ([Android](ANDROID.md#notifications)) |
 | A published image carries the release-signed Android app | Check and keep the Android app | — |
 
+`scripts/pwa-update-check.mts` exits with 75 when headless Chrome itself stops
+answering (a browser-level DevTools command times out), which says nothing
+about the app; CI then runs that check once more. Any other failure, or a
+second 75, fails the step.
+
 ## Required acceptance beyond the current CI
 
 Until these scenarios are automated, the release owner must record their

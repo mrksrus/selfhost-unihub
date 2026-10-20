@@ -261,11 +261,23 @@ jobs:
       # In Chrome: this build's worker hands over to a following build while a
       # request hangs and another tab has unsaved input and an upload; and
       # every earlier release in the support window updates to this build.
+      # Exit 75: headless Chrome stopped answering (not an app failure); that
+      # check runs once more. Any other failure fails the step at once.
       - name: Update the open web app
         run: |
-          node scripts/pwa-update-check.mts --image unihub:ci
+          check() {
+            local code=0
+            node scripts/pwa-update-check.mts "$@" || code=$?
+            if [ "$code" -eq 75 ]; then
+              echo "Chrome stopped answering; running this check once more."
+              code=0
+              node scripts/pwa-update-check.mts "$@" || code=$?
+            fi
+            return "$code"
+          }
+          check --image unihub:ci
           for version in $(node -p 'require("./android/support-window.json").releases.slice(1).map(release => release.version).join(" ")'); do
-            node scripts/pwa-update-check.mts --image unihub:ci --old "$version" --new dist
+            check --image unihub:ci --old "$version" --new dist
           done
 
       # The app is kept with each run (Artifacts) for trying it on a phone.

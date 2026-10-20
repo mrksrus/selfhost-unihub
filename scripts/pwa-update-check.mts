@@ -133,9 +133,13 @@ interface Pending { resolve: (value: Record<string, unknown>) => void; reject: (
 const profile = path.join(work, 'profile');
 const browser = spawn(browserBinary, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking',
   '--disable-component-update', '--disable-sync', '--no-sandbox', '--remote-debugging-pipe', `--user-data-dir=${profile}`, 'about:blank'],
-{ stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
+// Its own process group, so its helpers can be ended with it.
+{ stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], detached: true });
 let browserLog = '';
 browser.stderr!.on('data', chunk => { browserLog = (browserLog + chunk).slice(-4000); });
+// A Chrome killed after it stopped answering closes the pipe with an error;
+// the commands still waiting time out on their own.
+for (const stream of [browser.stdio[3], browser.stdio[4]]) stream?.on('error', () => {});
 const pending = new Map<number, Pending>();
 let sequence = 0, buffer = '';
 (browser.stdio[4] as Readable).on('data', chunk => {
@@ -151,10 +155,19 @@ let sequence = 0, buffer = '';
     if (message.error) waiter.reject(new Error(JSON.stringify(message.error))); else waiter.resolve(message.result);
   }
 });
+// A browser-level command (no page session) that gets no answer means Chrome
+// itself stopped answering, not that the app failed (CI runs 39285675264 and
+// 39483538018). The check then exits with STUCK and CI runs it once more.
+class BrowserStuck extends Error {}
+const STUCK = 75;
 function command(method: string, params: Record<string, unknown> = {}, sessionId?: string, timeoutMs = 30000): Promise<Record<string, unknown>> {
   const id = ++sequence;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`Timed out: ${method}\n${browserLog}`)); }, timeoutMs);
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      const message = `Timed out: ${method}\n${browserLog}`;
+      reject(sessionId ? new Error(message) : new BrowserStuck(message));
+    }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
     (browser.stdio[3] as Writable).write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + '\0');
   });
@@ -336,10 +349,17 @@ try {
       console.log('PWA update check passed: updated with a stalled request, a second tab with unsaved text and an upload in flight.');
     }
   }
+} catch (error) {
+  if (!(error instanceof BrowserStuck)) throw error;
+  console.error(`Chrome stopped answering; the check did not run to the end (exit ${STUCK}).\n${error.message}`);
+  process.exitCode = STUCK;
 } finally {
   for (const release of stalled) release();
   browser.kill('SIGTERM');
+  // A Chrome that stopped answering may ignore SIGTERM too.
+  const killer = setTimeout(() => { try { process.kill(-browser.pid!, 'SIGKILL'); } catch { /* gone */ } }, 5000);
   await new Promise<void>(resolve => { if (browser.exitCode !== null || browser.signalCode !== null) resolve(); else browser.once('exit', () => resolve()); });
+  clearTimeout(killer);
   for (const waiter of pending.values()) clearTimeout(waiter.timer);
   server.closeAllConnections();
   server.close();
