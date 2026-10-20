@@ -184,3 +184,15 @@ test('a connection lost after the message was handed over is an unknown outcome;
     assert.notEqual(refused.error.code, 'SEND_OUTCOME_UNKNOWN', JSON.stringify(behaviour));
   }
 });
+
+test('a reply carries In-Reply-To and References on the wire (B-10)', { skip: !peerCert && 'openssl unavailable' }, async t => {
+  const commands: string[] = [], messages: string[] = [];
+  const peer = await listen(smtpPeer(peerCert, commands, { messages }));
+  t.after(peer.close);
+  const h = mailFixture(t, { smtp: { port: peer.port, fingerprint256: peerCert!.fingerprint256 } });
+  await h.send({ subject: 'Re: Quote', inReplyTo: '<quote-1@example.test>' });
+  await h.send({ subject: 'New topic' });
+  assert.match(messages[0], /^In-Reply-To: <quote-1@example.test>$/m);
+  assert.match(messages[0], /^References: <quote-1@example.test>$/m);
+  assert.doesNotMatch(messages[1], /^(In-Reply-To|References):/m, 'a new message answers nothing');
+});

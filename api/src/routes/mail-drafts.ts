@@ -9,6 +9,7 @@ import {
   ensureDefaultMailFoldersForUser,
   sendEmail,
   sendOnce,
+  replyThreading,
   deleteStoredAttachmentFiles,
 } from '../services/mail';
 import { saveDraftMutation } from '../services/mail-drafts';
@@ -33,6 +34,8 @@ interface Input {
   body_html?: string;
   attachments?: unknown;
   existing_attachment_ids?: unknown[] | null;
+  /** The UniHub id of the message a reply answers. */
+  in_reply_to_email_id?: unknown;
 }
 
 const readFile = promisify(fs.readFile);
@@ -241,13 +244,14 @@ export = {
     }
   },
 
-  'POST /api/mail/drafts/:id/send': async (req: Request, userId: string | null) => {
+  'POST /api/mail/drafts/:id/send': async (req: Request, userId: string | null, body: Input) => {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
       const draftId = extractMailRouteId(req, 2)!;
+      const replyTo = body?.in_reply_to_email_id;
       // A repeat after a lost response gets the first result, before the (deleted) draft is looked up.
-      return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { draftId } }, async () => {
+      return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { draftId, replyTo } }, async () => {
         const draft = await loadDraftEmail(userId, draftId);
         if (!draft) return { error: 'Draft not found', status: 404 };
 
@@ -287,6 +291,7 @@ export = {
           body: bodyContent,
           isHtml: !!draft.body_html || (!draft.body_text && attachments.length > 0),
           attachments,
+          inReplyTo: await replyThreading(userId, replyTo),
       });
       // The message is out: a draft that cannot be removed now stays, and the send still succeeded.
       const deleteResult = await deleteDraftWithFiles(userId, draftId).catch((error: unknown) => {
@@ -313,7 +318,7 @@ export = {
     if (!userId) return { error: 'Unauthorized', status: 401 };
 
     try {
-      const { account_id, to, cc, bcc, subject, body: emailBody, isHtml, attachments } = body;
+      const { account_id, to, cc, bcc, subject, body: emailBody, isHtml, attachments, in_reply_to_email_id } = body;
       const invalidRecipients = recipientFieldError(body);
       if (invalidRecipients) return { error: invalidRecipients, status: 400 };
       if (!account_id || !(to?.trim() || cc?.trim() || bcc?.trim()) || !subject || !emailBody) {
@@ -331,8 +336,8 @@ export = {
       if (accounts.length === 0) return { error: 'Account not found', status: 404 };
 
       const message = { to: to || '', cc, bcc, subject, body: emailBody, isHtml, attachments: attachments || [] };
-      return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { account_id, ...message } }, async () => {
-        const result = await sendEmail({ userId, accountId: account_id }, message);
+      return await sendOnce({ userId, clientKey: idempotencyKey(req), request: { account_id, ...message, in_reply_to_email_id } }, async () => {
+        const result = await sendEmail({ userId, accountId: account_id }, { ...message, inReplyTo: await replyThreading(userId, in_reply_to_email_id) });
         return { ...result, success: true, messageId: result.messageId };
       });
     } catch (error) {

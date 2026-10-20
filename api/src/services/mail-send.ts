@@ -37,9 +37,25 @@ interface OutgoingEmail {
   body: string;
   isHtml?: boolean;
   attachments?: unknown;
+  /** The Message-ID this message answers, from replyThreading. */
+  inReplyTo?: string | null;
 }
 
 const storedRecipients = (recipients: string[]) => recipients.length ? JSON.stringify(recipients) : null;
+
+const MESSAGE_ID = /^<[^<>\s]{1,995}>$/;
+/**
+ * The Message-ID a reply answers, from the user's own copy of the message, so
+ * the reply's In-Reply-To and References put it in the same conversation at
+ * the recipient. Nothing when the message is not the user's or has no usable id.
+ */
+async function replyThreading(userId: string, emailId: unknown) {
+  if (emailId === undefined || emailId === null || emailId === '') return null;
+  if (typeof emailId !== 'string' || emailId.length > 64) throw Object.assign(new Error('Invalid in_reply_to_email_id'), { status: 400 });
+  const [rows] = await db.execute<RowDataPacket[]>('SELECT message_id FROM emails WHERE id = ? AND user_id = ?', [emailId, userId]);
+  const messageId = typeof rows[0]?.message_id === 'string' ? rows[0].message_id.trim() : '';
+  return MESSAGE_ID.test(messageId) ? messageId : null;
+}
 
 const outcomeUnknown = () => Object.assign(new Error('The connection to the mail server was lost after the message was handed over, so it may have been sent. Check Sent, or ask a recipient, before sending it again.'),
   { status: 409, code: 'SEND_OUTCOME_UNKNOWN' });
@@ -66,7 +82,7 @@ function dataPhaseWatcher() {
 
 // The account is looked up with its owner: a stored reference (a draft's
 // account) cannot send from another user's account.
-async function sendEmail({ userId, accountId }: { userId: string; accountId: string }, { subject, body, isHtml = false, attachments = [], ...recipients }: OutgoingEmail) {
+async function sendEmail({ userId, accountId }: { userId: string; accountId: string }, { subject, body, isHtml = false, attachments = [], inReplyTo = null, ...recipients }: OutgoingEmail) {
   // SMTP and the Sent copy get the same parsed recipients, names kept, whichever route sent.
   const to = normalizeRecipients(recipients.to);
   const cc = normalizeRecipients(recipients.cc);
@@ -118,6 +134,7 @@ async function sendEmail({ userId, accountId }: { userId: string; accountId: str
       text: isHtml ? undefined : body,
       html: isHtml ? body : undefined,
       attachments: smtpAttachments.length > 0 ? smtpAttachments : undefined,
+      ...(inReplyTo ? { inReplyTo, references: [inReplyTo] } : {}),
       disableFileAccess: true,
       disableUrlAccess: true,
     }).catch((error: unknown) => {
@@ -270,6 +287,7 @@ async function sendOnce<T extends Record<string, unknown>>({ userId, clientKey, 
 }
 
 export {
+  replyThreading,
   sendEmail,
   sendOnce,
 };

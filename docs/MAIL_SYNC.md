@@ -692,6 +692,14 @@ which is a new send under a new key. The same key with a different message is
 `409 IDEMPOTENCY_KEY_REUSED`, offered the same way. Receipts are deleted
 30 days after their last change.
 
+A reply names the message it answers with `in_reply_to_email_id` (on
+`POST /api/mail/send`, or in the body of `POST /api/mail/drafts/:id/send`).
+The server reads that message's `Message-ID` from the user's own copy and sends
+it as `In-Reply-To` and `References`, so the recipient's mail program shows the
+reply in the same conversation. Another user's message, or one without a usable
+`Message-ID`, adds nothing. A draft keeps no reply link yet: a reply finished
+later from Drafts goes out without these headers.
+
 Send and draft requests take `to`, `cc` and `bcc` as comma-separated strings;
 at least one of them needs a recipient. The Sent copy and drafts keep all three
 (`to_addresses`, `cc_addresses`, `bcc_addresses`), and the email detail returns

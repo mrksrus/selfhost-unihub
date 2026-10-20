@@ -69,6 +69,7 @@ describe('which account a message is sent from', () => {
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'From' })).toHaveTextContent('alex.work@example.test'));
     await fillAndSend('someone@example.test', 'Hello', 'compose-body');
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-b', to: 'someone@example.test' }), expect.anything()));
+    expect(vi.mocked(api.post).mock.calls[0][1]).not.toHaveProperty('in_reply_to_email_id');
   });
 
   it('starts from the open account, and replies from the account that received the message', async () => {
@@ -80,7 +81,8 @@ describe('which account a message is sent from', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reply to Sparks' }));
     expect(await screen.findByLabelText('To')).toHaveValue('sparks@example.test');
     await fillAndSend('sparks@example.test', 'Thanks', 'compose-body-inline');
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-a' }), expect.anything()));
+    // The reply names the message it answers, so the server can thread it at the recipient.
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/mail/send', expect.objectContaining({ account_id: 'acc-a', in_reply_to_email_id: 'email-1' }), expect.anything()));
   });
 
   it('closes the contact list after a pick until more is typed, and sends a Bcc-only message', async () => {

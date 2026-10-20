@@ -41,20 +41,22 @@ async function listen(server: Server) {
  * verbs it received go into `commands`. `afterData` says what happens once
  * the message body has arrived: accept it (250), refuse it (554), or close
  * the connection without a reply. `refuseRecipients` answers RCPT with 550.
+ * The messages it received go into `messages`.
  */
-function smtpPeer(cert: FixtureValue, commands: string[], { implicit = false, afterData = 'accept', refuseRecipients = false }:
-  { implicit?: boolean; afterData?: 'accept' | 'refuse' | 'drop'; refuseRecipients?: boolean } = {}) {
+function smtpPeer(cert: FixtureValue, commands: string[], { implicit = false, afterData = 'accept', refuseRecipients = false, messages = [] }:
+  { implicit?: boolean; afterData?: 'accept' | 'refuse' | 'drop'; refuseRecipients?: boolean; messages?: string[] } = {}) {
   const serve = (socket: Socket, secure: boolean) => {
     socket.on('error', () => {});
-    let buffer = '', inData = false;
+    let buffer = '', inData = false, message = '';
     const onData = (data: Buffer) => {
       buffer += data.toString('latin1');
       let index;
       while ((index = buffer.indexOf('\r\n')) !== -1) {
         const line = buffer.slice(0, index); buffer = buffer.slice(index + 2);
         if (inData) {
-          if (line !== '.') continue;
+          if (line !== '.') { message += `${line}\r\n`; continue; }
           inData = false;
+          messages.push(message); message = '';
           commands.push('.');
           if (afterData === 'drop') { socket.destroy(); return; }
           socket.write(afterData === 'refuse' ? '554 5.7.1 message refused\r\n' : '250 queued\r\n');
