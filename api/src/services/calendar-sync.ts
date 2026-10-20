@@ -302,8 +302,11 @@ async function reconcileCalendarList(account: Account, remoteCalendars: Awaited<
     const existing = byHref.get(remote.href);
     if (existing) {
       matched.add(existing.id);
-      await db.execute('UPDATE calendar_calendars SET name = ?, read_only = ?, external_id = ? WHERE id = ?',
-        [remote.displayName, remote.readOnly ? 1 : 0, remote.href, existing.id]);
+      // Written only when the server changed something, not on every sync.
+      if (existing.name !== remote.displayName || Number(existing.read_only) !== (remote.readOnly ? 1 : 0) || existing.external_id !== remote.href) {
+        await db.execute('UPDATE calendar_calendars SET name = ?, read_only = ?, external_id = ? WHERE id = ?',
+          [remote.displayName, remote.readOnly ? 1 : 0, remote.href, existing.id]);
+      }
       result.push({ calendar: { ...existing, name: remote.displayName, read_only: remote.readOnly ? 1 : 0, external_id: remote.href }, remote, isNew: false });
       continue;
     }
@@ -506,6 +509,8 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
   const vanished = stored.filter(row => !listed.has(row.href_hash));
   let removed = vanished.map(row => String(row.id));
   const kept: FetchedObject[] = [];
+  // Expanded once per object and sync, however it was found.
+  const expansions = new Map<string, ReturnType<typeof expandObject>>();
   if (vanished.length && verifyVanished) {
     const { gone, present } = await verifyVanished(vanished.map(row => ({ id: String(row.id), href: String(row.href) })));
     const confirmed = new Set(gone);
@@ -515,8 +520,14 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
       // Still on the server: outside the window its local copy goes as
       // before; inside it (or unreadable) the listing missed it, so it stays.
       const expanded = expandObject(ctx, object.ics);
-      if (expanded && !expanded.occurrences.length) confirmed.add(String(row.id));
-      else { kept.push(object); listed.add(row.href_hash); }
+      if (expanded && !expanded.occurrences.length) { confirmed.add(String(row.id)); continue; }
+      listed.add(row.href_hash);
+      // A server whose listing keeps leaving it out would otherwise have it
+      // stored and applied again on every sync; unchanged, it is already
+      // applied (the daily expansion below still refreshes it).
+      if (object.etag && row.etag === object.etag) continue;
+      kept.push(object);
+      expansions.set(row.href_hash, expanded);
     }
     // Neither confirmed gone nor readable: kept, and the calendar is listed again next time.
     ctx.stats.unreadable += vanished.filter(row => !confirmed.has(String(row.id)) && !listed.has(row.href_hash)).length;
@@ -529,7 +540,7 @@ async function syncCalendarObjects(ctx: Context, calendar: Calendar, listing: Ob
   const applied = new Set();
   for (const item of fetched) {
     const known = storedByHash.get(hrefHash(item.href));
-    const expanded = expandObject(ctx, item.ics);
+    const expanded = expansions.has(hrefHash(item.href)) ? expansions.get(hrefHash(item.href))! : expandObject(ctx, item.ics);
     if (!expanded) {
       ctx.stats.unreadable += 1;
       continue;

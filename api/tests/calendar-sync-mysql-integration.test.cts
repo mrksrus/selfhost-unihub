@@ -234,14 +234,22 @@ test('calendar sync keeps unreadable entries, refuses unlinked writes, honours t
 
         // The server's listing misses an object it still has in the window.
         caldav.listCalendarObjects = async args => (await listCalendarObjects(args)).filter(item => item.href !== planning);
-        assert.equal((await sync()).ok, true);
+        const gap = await sync();
+        assert.equal(gap.ok, true);
         assert.deepEqual(await titles(), ['Planning', 'Review'], 'a listing gap removes nothing');
+        // Unchanged on the server, it is not stored and applied again on every sync (B-07).
+        assert.equal(gap.changedObjects, 0);
+        assert.equal((await sync()).changedObjects, 0);
+        // Changed on the server, it is applied although the listing still leaves it out.
+        remote.objects.set(planning, { etag: '"p2"', ics: eventIcs('planning@example.test', 'Planning moved', start) });
+        assert.equal((await sync()).changedObjects, 1);
+        assert.deepEqual(await titles(), ['Planning moved', 'Review']);
 
         // Gone from the listing and the multiget, but the check fails: kept.
         remote.objects.delete(planning);
         caldav.resourceGone = async () => { throw Object.assign(new Error('CalDAV request failed (503)'), { status: 503 }); };
         await assert.rejects(sync(), /503/);
-        assert.deepEqual(await titles(), ['Planning', 'Review'], 'an unanswered check removes nothing');
+        assert.deepEqual(await titles(), ['Planning moved', 'Review'], 'an unanswered check removes nothing');
 
         caldav.resourceGone = resourceGone;
         await sync();
