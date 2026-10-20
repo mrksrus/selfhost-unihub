@@ -355,11 +355,13 @@ try {
   process.exitCode = STUCK;
 } finally {
   for (const release of stalled) release();
-  browser.kill('SIGTERM');
-  // A Chrome that stopped answering may ignore SIGTERM too.
-  const killer = setTimeout(() => { try { process.kill(-browser.pid!, 'SIGKILL'); } catch { /* gone */ } }, 5000);
-  await new Promise<void>(resolve => { if (browser.exitCode !== null || browser.signalCode !== null) resolve(); else browser.once('exit', () => resolve()); });
-  clearTimeout(killer);
+  // Chrome and its helpers end together: a frozen helper can outlive the
+  // main process and keep the pipes open, so the group is always killed.
+  const group = (signal: NodeJS.Signals) => { try { process.kill(-browser.pid!, signal); } catch { /* none left */ } };
+  const exited = new Promise<void>(resolve => { if (browser.exitCode !== null || browser.signalCode !== null) resolve(); else browser.once('exit', () => resolve()); });
+  group('SIGTERM');
+  await Promise.race([exited, sleep(5000)]);
+  group('SIGKILL');
   for (const waiter of pending.values()) clearTimeout(waiter.timer);
   server.closeAllConnections();
   server.close();
