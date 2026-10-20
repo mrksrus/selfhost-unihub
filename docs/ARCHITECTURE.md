@@ -48,7 +48,11 @@ markup. `img-src` also admits `http:` and `https:` because the mail reader's
 (`src/lib/email-privacy.ts`), and that inner policy alone decides whether remote
 images load; the page never renders sender HTML outside that frame. The
 service worker and the pdf.js worker run under the policy of their own script
-response, so `/sw.js` and `/assets/` must carry it. `scripts/container-smoke.sh`
+response, so `/sw.js` and `/assets/` must carry it. The policy allows no
+WebAssembly, so the viewer loads pdf.js's JavaScript image decoders (JPEG 2000,
+JBIG2) from `/pdfjs/wasm/` instead of its `.wasm` files (`src/lib/pdf.ts`), and
+uses pdf.js's legacy build, which brings fallbacks for JavaScript features
+older Android WebViews lack. `scripts/container-smoke.sh`
 asserts the headers on `/`, `/sw.js`, `/theme-init.js`, an asset, the manifest
 and an icon, and that the page loads no inline script.
 

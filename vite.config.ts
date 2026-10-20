@@ -62,6 +62,27 @@ function classicWorkers(): Plugin {
   };
 }
 
+// pdf.js's JavaScript image decoders (JPEG 2000, JBIG2), which it imports by
+// name from one folder at run time (src/lib/pdf.ts, PDF_DECODERS_PATH).
+function pdfImageDecoders(): Plugin {
+  const folder = path.resolve(__dirname, "node_modules/pdfjs-dist/wasm");
+  const files = ["openjpeg_nowasm_fallback.js", "jbig2_nowasm_fallback.js", "LICENSE_OPENJPEG", "LICENSE_PDFJS_OPENJPEG", "LICENSE_JBIG2", "LICENSE_PDFJS_JBIG2"];
+  return {
+    name: "unihub-pdf-image-decoders",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const name = req.url?.split("?")[0]?.match(/^\/pdfjs\/wasm\/([^/]+)$/)?.[1];
+        if (!name || !files.includes(name)) return next();
+        res.setHeader("Content-Type", name.endsWith(".js") ? "application/javascript" : "text/plain");
+        res.end(fs.readFileSync(path.join(folder, name)));
+      });
+    },
+    generateBundle() {
+      for (const name of files) this.emitFile({ type: "asset", fileName: `pdfjs/wasm/${name}`, source: fs.readFileSync(path.join(folder, name)) });
+    },
+  };
+}
+
 // https://vitejs.dev/config/
 export default defineConfig(() => ({
   server: {
@@ -75,6 +96,7 @@ export default defineConfig(() => ({
     react(),
     recordingUploadsWorker(),
     classicWorkers(),
+    pdfImageDecoders(),
     VitePWA({
       registerType: "prompt",
       // theme-init.js and viewport-init.js run before the stylesheet; an offline cold start needs them precached.
@@ -83,6 +105,9 @@ export default defineConfig(() => ({
         // Workbox's default patterns plus mjs: the pdf.js worker is a hashed
         // .mjs asset, and an open tab must still find it after a deploy.
         globPatterns: ["**/*.{js,mjs,wasm,css,html}"],
+        // pdf.js's image decoders keep their names across deploys and are only
+        // needed for a PDF, which is never available offline.
+        globIgnores: ["pdfjs/**"],
         navigateFallbackDenylist: [
           /^\/api\//,
           // The Android app download (served by Nginx, not the page).

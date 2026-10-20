@@ -20,6 +20,12 @@ configuration change.
   and asks you to check Sent; "Send again" sends it anyway if you choose to.
   A send interrupted by a server restart no longer stays "already being sent"
   until the message is closed: after two minutes it is reported the same way.
+- **PDF attachments open on older phones and browsers.** The viewer showed
+  "Could not show this PDF" for ordinary PDFs where the browser engine (for
+  example an Android WebView that is not fully up to date) lacks some very new
+  JavaScript features. It now uses a build of the PDF library that works
+  there, shows images in scanned PDFs (JPEG 2000, JBIG2), and names the
+  reason under the message when a PDF still cannot be shown.
 
 ## 0.23.0
 
