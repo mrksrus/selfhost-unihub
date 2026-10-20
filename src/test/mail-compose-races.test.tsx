@@ -130,4 +130,53 @@ describe('edits made while a draft is saved', () => {
     await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2), { timeout: 2500 });
     expect(vi.mocked(api.put).mock.calls[1][1]).toEqual(expect.objectContaining({ subject: 'second edit' }));
   });
+
+  it('an attachment removed while a save runs stays removed, and the next save drops it on the server', async () => {
+    const file = { id: 'file-a', filename: 'notes.txt', size_bytes: 1, content_type: 'text/plain' };
+    const stored = { ...draft, attachments: [file] } as Email;
+    const save = deferred<Awaited<ReturnType<typeof api.put>>>();
+    // The server keeps what each save names; the first save names nothing new.
+    vi.mocked(api.put).mockReturnValueOnce(save.promise).mockResolvedValue({ data: { draft: { ...draft, attachments: [] } } });
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(stored));
+    act(() => hook.result.current.updateComposeForm({ subject: 'edited' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    act(() => hook.result.current.removeExistingDraftAttachment('file-a'));
+    await act(async () => save.resolve({ data: { draft: stored } }));
+    expect(hook.result.current.existingDraftAttachments).toEqual([]);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2), { timeout: 2500 });
+    expect(vi.mocked(api.put).mock.calls[1][1]).toHaveProperty('existing_attachment_ids', []);
+  });
+
+  it('a file removed while it is uploaded with a save does not come back', async () => {
+    const save = deferred<Awaited<ReturnType<typeof api.put>>>();
+    vi.mocked(api.put).mockReturnValueOnce(save.promise).mockResolvedValue({ data: { draft } });
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.addComposeFiles([new File(['A'], 'notes.txt', { type: 'text/plain' })]));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    act(() => hook.result.current.removeComposeAttachment(hook.result.current.composeAttachments[0].id));
+    await act(async () => save.resolve({ data: { draft: { ...draft, attachments: [{ id: 'file-a', filename: 'notes.txt', size_bytes: 1, content_type: 'text/plain' }] } } }));
+    expect(hook.result.current.existingDraftAttachments).toEqual([]);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2), { timeout: 2500 });
+    expect(vi.mocked(api.put).mock.calls[1][1]).toHaveProperty('existing_attachment_ids', []);
+  });
+
+  it('Save draft in the close prompt does not close a message edited again meanwhile', async () => {
+    const save = deferred<Awaited<ReturnType<typeof api.put>>>();
+    vi.mocked(api.put).mockReturnValueOnce(save.promise);
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.updateComposeForm({ subject: 'first edit' }));
+    act(() => hook.result.current.closeComposeFlow());
+    act(() => hook.result.current.saveAndClose());
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1));
+    // Keep editing, while the save runs.
+    act(() => hook.result.current.setComposeClosePromptOpen(false));
+    act(() => hook.result.current.updateComposeForm({ subject: 'newest text' }));
+    await act(async () => save.resolve({ data: { draft } }));
+    expect(hook.result.current.isComposeOpen).toBe(true);
+    expect(hook.result.current.composeForm.subject).toBe('newest text');
+    expect(hook.result.current.isDirty).toBe(true);
+  });
 });
