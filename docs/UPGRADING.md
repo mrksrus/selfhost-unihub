@@ -5,6 +5,22 @@
 For a new installation, use [Installation](INSTALLATION.md). This page includes
 version-specific upgrade guidance. Preserve existing data and keys when upgrading.
 
+## 0.23.1 Fixes
+
+No database upgrade and no configuration change. Going back to 0.23.0 is
+possible. Worth knowing:
+
+- **Background work starts 10 seconds after the server starts** (mail sync,
+  notifications, calendar sync), so a process that takes over from another
+  never runs it at the same time as the old one.
+- **A send cut off after the message was handed over** is reported as "may
+  have been sent" instead of failed; check Sent before choosing "Send again".
+- **Deleting or deactivating a user** asks for the admin's password, like role,
+  password and two-factor changes.
+- **Android app.** The composer fix comes with the server's pages, so every
+  app in the window gets it; installing 0.23.1's app is optional. The window
+  is 0.23.1, 0.23.0, 0.22.4 and 0.22.3.
+
 ## 0.23.0 Hardening
 
 Two automatic database upgrades: step 18 replaces each stored session token

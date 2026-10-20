@@ -8,8 +8,11 @@ secrets. Releases between 0.9.20.0 and 0.10.0 have no entry here.
 
 ## 0.23.1
 
-Fixes found in the reviews and first use of 0.23.0. No database upgrade and no
-configuration change.
+Fixes found in the reviews and first use of 0.23.0: a message is never sent
+twice by itself, PDFs open on older phones, replies stay in their
+conversation, the phone composer keeps room for the message, and admin
+actions are confirmed and limited separately from sign-in. No database upgrade
+and no configuration change (see [Upgrading](docs/UPGRADING.md#0231-fixes)).
 
 ### Fixed
 
