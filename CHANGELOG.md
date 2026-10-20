@@ -36,6 +36,12 @@ and no configuration change (see [Upgrading](docs/UPGRADING.md#0231-fixes)).
   mail program showed it as a new conversation. Replies now carry the
   standard In-Reply-To and References headers. A reply saved as a draft and
   finished later from Drafts does not have them yet.
+- **Edits made while a draft is being saved are kept.** Text typed while the
+  automatic draft save was running counted as saved when that save ended, so
+  closing the message did not ask and the newest text could be lost. It is
+  now saved by the next draft save. A save, send or Discard that ends after
+  its message was closed no longer changes or closes the message opened
+  since.
 - **The keyboard no longer squeezes the message out of the phone composer.**
   With the keyboard open, From, To, Subject and the buttons kept their space
   and the message had almost none. On a short screen the fields now scroll

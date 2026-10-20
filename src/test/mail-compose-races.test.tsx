@@ -80,4 +80,54 @@ describe('a send or save that ends after its message was closed', () => {
     expect(vi.mocked(api.post).mock.calls.filter(([path]) => path.endsWith('/send'))).toHaveLength(0);
     expect(api.put).not.toHaveBeenCalled();
   });
+
+  it('a Discard that fails leaves the message usable once its autosave ends', async () => {
+    const save = deferred<Awaited<ReturnType<typeof api.put>>>();
+    vi.mocked(api.put).mockReturnValueOnce(save.promise);
+    vi.mocked(api.delete).mockResolvedValueOnce({ error: 'Temporary outage', status: 503 });
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.updateComposeForm({ subject: 'A edited' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalled(), { timeout: 2500 });
+    await act(async () => hook.result.current.discardCurrentCompose());
+    await act(async () => save.resolve({ data: { draft } }));
+    expect(hook.result.current.isComposeOpen).toBe(true);
+    expect(hook.result.current.isDraftSaving).toBe(false);
+  });
+
+  it('a Discard that answers after the message was saved and closed leaves the next message open', async () => {
+    const deletion = deferred<Awaited<ReturnType<typeof api.delete>>>();
+    vi.mocked(api.delete).mockReturnValueOnce(deletion.promise);
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.updateComposeForm({ subject: 'A edited' }));
+    act(() => hook.result.current.closeComposeFlow());
+    let discarding!: Promise<void>;
+    act(() => { discarding = hook.result.current.discardCurrentCompose(); });
+    // The same prompt's Save draft is chosen while the deletion runs.
+    act(() => hook.result.current.saveAndClose());
+    await waitFor(() => expect(hook.result.current.isComposeOpen).toBe(false));
+    act(() => hook.result.current.openCompose());
+    act(() => hook.result.current.updateComposeForm({ to: 'b@example.test', subject: 'Unsaved B' }));
+    await act(async () => { deletion.resolve({ data: {} }); await discarding; });
+    expect(hook.result.current.isComposeOpen).toBe(true);
+    expect(hook.result.current.composeForm.subject).toBe('Unsaved B');
+  });
+});
+
+describe('edits made while a draft is saved', () => {
+  it('stay unsaved, and the next autosave stores them', async () => {
+    const save = deferred<Awaited<ReturnType<typeof api.put>>>();
+    vi.mocked(api.put).mockReturnValueOnce(save.promise);
+    const hook = mount();
+    act(() => hook.result.current.openDraftForCompose(draft));
+    act(() => hook.result.current.updateComposeForm({ subject: 'first edit' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1), { timeout: 2500 });
+    act(() => hook.result.current.updateComposeForm({ subject: 'second edit' }));
+    await act(async () => save.resolve({ data: { draft } }));
+    expect(vi.mocked(api.put).mock.calls[0][1]).toEqual(expect.objectContaining({ subject: 'first edit' }));
+    expect(hook.result.current.isDirty).toBe(true);
+    await waitFor(() => expect(api.put).toHaveBeenCalledTimes(2), { timeout: 2500 });
+    expect(vi.mocked(api.put).mock.calls[1][1]).toEqual(expect.objectContaining({ subject: 'second edit' }));
+  });
 });
