@@ -1,11 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { api } from '@/lib/api';
 import type { Email, MailAccount } from '@/lib/mail-api';
 import { useMailCompose } from '@/hooks/use-mail-compose';
-import { MailComposeDialog, MailInlineCompose } from '@/components/mail/MailCompose';
+import { MailComposeDialog, MailComposeDialogs, MailInlineCompose } from '@/components/mail/MailCompose';
 
 const state = vi.hoisted(() => ({ toast: vi.fn() }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: state.toast }) }));
@@ -34,6 +34,7 @@ function Host({ activeMailAccountId = null }: { activeMailAccountId?: string | n
       <button type="button" onClick={() => compose.startResponse(received, 'reply')}>Reply to Sparks</button>
       <button type="button" onClick={() => compose.openDraftForCompose(draft)}>Open draft</button>
       <MailComposeDialog compose={compose} accounts={accounts} isMobile={false} />
+      <MailComposeDialogs compose={compose} />
       {compose.isReplying && <MailInlineCompose compose={compose} />}
     </div>
   );
@@ -179,5 +180,34 @@ describe('sending a message once', () => {
     await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Not sent again' })));
     expect(vi.mocked(api.post).mock.calls).toHaveLength(posts);
     expect(api.put).not.toHaveBeenCalled();
+  });
+
+  it('a message discarded while its attachments are still read is not sent, and the next message stays open', async () => {
+    let finishRead!: () => void;
+    const reader = vi.spyOn(FileReader.prototype, 'readAsDataURL').mockImplementation(function (this: FileReader) {
+      finishRead = () => {
+        Object.defineProperty(this, 'result', { value: 'data:text/plain;base64,SGVsbG8=' });
+        this.onload?.(new ProgressEvent('load') as ProgressEvent<FileReader>);
+      };
+    });
+    try {
+      wrap(<Host />);
+      fireEvent.click(screen.getByRole('button', { name: 'New message' }));
+      await screen.findByLabelText('To');
+      fireEvent.change(document.querySelector<HTMLInputElement>('input[type="file"]')!, { target: { files: [new File(['Hello'], 'hello.txt', { type: 'text/plain' })] } });
+      await fillAndSend('someone@example.test', 'A to send', 'compose-body');
+      expect(finishRead).toBeTypeOf('function');
+      // Discarded before its attachment was read, then a new message is started.
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard' }));
+      await waitFor(() => expect(screen.queryByLabelText('To')).toBeNull());
+      fireEvent.click(screen.getByRole('button', { name: 'New message' }));
+      fireEvent.change(await screen.findByLabelText('Subject'), { target: { value: 'Unsaved B' } });
+
+      await act(async () => finishRead());
+      await waitFor(() => expect(state.toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Not sent' })));
+      expect(vi.mocked(api.post).mock.calls.filter(([path]) => path === '/mail/send')).toHaveLength(0);
+      expect(screen.getByLabelText('Subject')).toHaveValue('Unsaved B');
+    } finally { reader.mockRestore(); }
   });
 });
