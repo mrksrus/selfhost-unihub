@@ -23,14 +23,13 @@ function createLoginLimiter({ now = Date.now, maxEntries = 20000 } = {}) {
     entry.count++;
     return null;
   }
-  // The wait while the budget is used up, without spending from it.
-  function check(scope: string, identity: string, limit: number) {
+  // Gives back an attempt that consume() spent, for a check that turned out
+  // not to be a guess (a right password).
+  function refund(scope: string, identity: string) {
     const entry = entries.get(`${scope}:${identity}`);
-    const time = now();
-    if (!entry || entry.until <= time || entry.count < limit) return null;
-    return Math.max(1, Math.ceil((entry.until - time) / 1000));
+    if (entry && entry.until > now() && entry.count > 0) entry.count--;
   }
-  return { consume, check };
+  return { consume, refund };
 }
 
 const limiter = createLoginLimiter();
@@ -48,13 +47,15 @@ function consumeAuthAttempt(scope: AuthAttemptScope, identity: unknown) {
 
 // An admin confirming an action with their password has a budget of its own,
 // so failed sign-ins cannot lock them out of admin actions or the other way
-// round, and only wrong passwords spend from it.
+// round. Each confirmation reserves an attempt before anything is awaited, so
+// a burst of parallel requests gets no more than the budget; a right password
+// gives its attempt back, so only wrong passwords use it up.
 const REAUTH_BUDGET: [number, number] = [10, 600000];
-function reauthRetryAfter(userId: string) {
-  return limiter.check('reauth', userId, REAUTH_BUDGET[0]);
+function reserveReauth(userId: string) {
+  return limiter.consume('reauth', userId, ...REAUTH_BUDGET);
 }
-function recordFailedReauth(userId: string) {
-  limiter.consume('reauth', userId, ...REAUTH_BUDGET);
+function refundReauth(userId: string) {
+  limiter.refund('reauth', userId);
 }
 
-export { createLoginLimiter, consumeAuthAttempt, reauthRetryAfter, recordFailedReauth };
+export { createLoginLimiter, consumeAuthAttempt, reserveReauth, refundReauth };

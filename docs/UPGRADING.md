@@ -8,7 +8,8 @@ version-specific upgrade guidance. Preserve existing data and keys when upgradin
 ## 0.23.1 Fixes
 
 No database upgrade and no configuration change. Going back to 0.23.0 is
-possible. Worth knowing:
+possible; a message whose sending 0.23.1 recorded as "may have been sent" is
+then reported as still being sent, never as sent. Worth knowing:
 
 - **Background work starts 10 seconds after the server starts** (mail sync,
   notifications, calendar sync), so a process that takes over from another

@@ -59,21 +59,31 @@ test('when the owner\'s session ends, the next owner starts only after the old o
   const events: string[] = [];
   const ticks: (() => void)[] = [];
   const timers = { setInterval: ((fn: () => void) => { ticks.push(fn); return { unref() {} }; }) as unknown as typeof setInterval, clearInterval: (() => {}) as typeof clearInterval };
-  // Checks run when the test says; the handover wait is a real 1.5 s.
-  const ownerA = await a.startWorkerOwnership({ pool: first, timers, handoverMs: 1500, onGained: () => events.push('a gained'), onLost: () => events.push('a lost') });
+  // Checks run when the test says; the handover wait is a real 1.5 s. A's
+  // database can be made unreachable for new connections.
+  let unreachable = false;
+  const firstPool = { getConnection: () => unreachable ? Promise.reject(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' })) : first.getConnection() };
+  const ownerA = await a.startWorkerOwnership({ pool: firstPool, timers, handoverMs: 1500, onGained: () => events.push('a gained'), onLost: () => events.push('a lost') });
   const ownerB = await b.startWorkerOwnership({ pool: second, timers, handoverMs: 1500, onGained: () => events.push('b gained'), onLost: () => events.push('b lost') });
   t.after(async () => { await ownerA.stop(); await ownerB.stop(); });
   assert.deepEqual(events, ['a gained']);
 
-  // A's lock session ends (as in a database restart for that connection); A does not know yet.
+  // A's lock session ends (as in a database restart for that connection); A does
+  // not know yet, and cannot reach the database to take the lock again.
   const [[{ holder }]] = await admin.query<FixtureRow[]>('SELECT IS_USED_LOCK(?) AS holder', [a.LOCK_NAME]);
   await admin.query(`KILL ${Number(holder)}`);
+  unreachable = true;
   const bChecks = new Promise(resolve => { ticks[1](); setTimeout(resolve, 300); });
   await bChecks;
   assert.equal(b.isWorkerOwner(), false, 'B holds the lock but waits for the handover');
   ticks[0]();
   await new Promise(resolve => setTimeout(resolve, 2000));
-  assert.deepEqual(events, ['a gained', 'a lost', 'b gained'], 'A stopped before B started');
+  assert.deepEqual(events, ['a gained', 'a lost', 'b gained'], 'A stopped before B started, although it could not take the lock again');
+  assert.deepEqual([a.isWorkerOwner(), b.isWorkerOwner()], [false, true]);
+  // A's database is back: it stays a follower while B holds the lock.
+  unreachable = false;
+  ticks[0]();
+  await new Promise(resolve => setTimeout(resolve, 300));
   assert.deepEqual([a.isWorkerOwner(), b.isWorkerOwner()], [false, true]);
 });
 type FixtureRow = import('mysql2/promise').RowDataPacket & { holder: number | string };

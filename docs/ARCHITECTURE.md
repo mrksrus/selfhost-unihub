@@ -581,10 +581,12 @@ Important boundaries in the current code:
   MariaDB named lock `unihub:background-work` on a connection it keeps
   (`api/src/services/worker-owner.ts`). Another process logs that it serves
   requests only; mail work it accepts stays queued for the owner. Every process
-  checks the lock every 5 s. A process that gets it waits 10 s (two checks)
-  before it starts, so an owner whose session ended unnoticed has stopped by
-  then and the two never run background work at the same time; a fresh start
-  also begins background work after those 10 s. Backup jobs, rate limits and
+  checks the lock every 5 s, and each database step of a check ends within
+  4 s. An owner that finds the lock no longer its own, or gets no answer,
+  stops its background work at once. A process that gets the lock waits 10 s
+  (two checks) and checks again before it starts, so the two never run
+  background work at the same time; a fresh start, and an owner taking its
+  lock back after a database restart, also begin after those 10 s. Backup jobs, rate limits and
   live events remain per process.
 - Mail and backup workers use in-process execution locks and are not designed
   for multiple app containers. Backup/restore job state itself is durable.

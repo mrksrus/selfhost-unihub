@@ -59,6 +59,11 @@ test('a send with an Idempotency-Key goes out once: repeats get its result, a ru
   await assert.rejects(once('send-d'), unknown);
   await assert.rejects(once('send-d'), unknown);
   assert.equal(sent, 5);
+  // 0.23.0 treats any receipt without send_pending as the sent result; after a
+  // rollback the unknown outcome must still read as "being sent", never "sent".
+  const [[stored]] = await pool.execute<FixtureValue[]>("SELECT response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = 'send-d'", [owner]);
+  const storedResponse = typeof stored.response_json === 'string' ? JSON.parse(stored.response_json) : stored.response_json;
+  assert.deepEqual(storedResponse, { send_pending: true, send_unknown: true });
 
   // A send that stopped without an outcome (a crash, B-03) is in progress for
   // a while and then reported as unknown, without closing the composer.
@@ -68,6 +73,8 @@ test('a send with an Idempotency-Key goes out once: repeats get its result, a ru
   await pool.execute("UPDATE mail_command_receipts SET updated_at = UTC_TIMESTAMP() - INTERVAL 3 MINUTE WHERE user_id = ? AND client_key = 'send-e'", [owner]);
   await assert.rejects(once('send-e'), unknown);
   await assert.rejects(once('send-e'), unknown, 'and stays unknown');
+  const [[settled]] = await pool.execute<FixtureValue[]>("SELECT response_json FROM mail_command_receipts WHERE user_id = ? AND client_key = 'send-e'", [owner]);
+  assert.equal((typeof settled.response_json === 'string' ? JSON.parse(settled.response_json) : settled.response_json).send_pending, true);
   assert.equal(sent, 5);
   // A send running in this process longer than that is still in progress.
   let finishLong!: () => void;

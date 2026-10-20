@@ -178,7 +178,8 @@ test('a connection lost after the message was handed over is an unknown outcome;
 
   // A server that answers and refuses the message, or a recipient before
   // DATA, proves nothing was sent: an ordinary failure, the key is released.
-  for (const behaviour of [{ afterData: 'refuse' }, { refuseRecipients: true }]) {
+  // With PIPELINING, DATA goes out with the envelope, before the refusal arrives.
+  for (const behaviour of [{ afterData: 'refuse' }, { refuseRecipients: true }, { refuseRecipients: true, pipelining: true }, { afterData: 'refuse', pipelining: true }]) {
     const refused = await outcome(behaviour);
     assert.ok(refused.error, JSON.stringify(behaviour));
     assert.notEqual(refused.error.code, 'SEND_OUTCOME_UNKNOWN', JSON.stringify(behaviour));

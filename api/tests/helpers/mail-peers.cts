@@ -41,10 +41,10 @@ async function listen(server: Server) {
  * verbs it received go into `commands`. `afterData` says what happens once
  * the message body has arrived: accept it (250), refuse it (554), or close
  * the connection without a reply. `refuseRecipients` answers RCPT with 550.
- * The messages it received go into `messages`.
+ * `pipelining` advertises PIPELINING. The messages it received go into `messages`.
  */
-function smtpPeer(cert: FixtureValue, commands: string[], { implicit = false, afterData = 'accept', refuseRecipients = false, messages = [] }:
-  { implicit?: boolean; afterData?: 'accept' | 'refuse' | 'drop'; refuseRecipients?: boolean; messages?: string[] } = {}) {
+function smtpPeer(cert: FixtureValue, commands: string[], { implicit = false, afterData = 'accept', refuseRecipients = false, pipelining = false, messages = [] }:
+  { implicit?: boolean; afterData?: 'accept' | 'refuse' | 'drop'; refuseRecipients?: boolean; pipelining?: boolean; messages?: string[] } = {}) {
   const serve = (socket: Socket, secure: boolean) => {
     socket.on('error', () => {});
     let buffer = '', inData = false, message = '';
@@ -64,13 +64,15 @@ function smtpPeer(cert: FixtureValue, commands: string[], { implicit = false, af
         }
         commands.push(line.split(' ')[0].toUpperCase());
         const verb = commands[commands.length - 1];
-        if (verb === 'EHLO') socket.write(`250-mail.example.test\r\n${secure ? '' : '250-STARTTLS\r\n'}250 AUTH PLAIN LOGIN\r\n`);
+        if (verb === 'EHLO') socket.write(`250-mail.example.test\r\n${secure ? '' : '250-STARTTLS\r\n'}${pipelining ? '250-PIPELINING\r\n' : ''}250 AUTH PLAIN LOGIN\r\n`);
         else if (verb === 'STARTTLS') {
           socket.off('data', onData);
           socket.write('220 go ahead\r\n', () => serve(new tls.TLSSocket(socket, { isServer: true, key: cert.key, cert: cert.cert }), true));
           return;
         } else if (verb === 'AUTH') socket.write('235 accepted\r\n');
         else if (verb === 'RCPT' && refuseRecipients) socket.write('550 5.1.1 no such user\r\n');
+        // With every recipient refused, DATA is refused too (as pipelined servers answer).
+        else if (verb === 'DATA' && refuseRecipients) socket.write('503 5.5.1 no valid recipients\r\n');
         else if (verb === 'DATA') { inData = true; socket.write('354 go\r\n'); }
         else if (verb === 'QUIT') socket.end('221 bye\r\n');
         else socket.write('250 ok\r\n');
