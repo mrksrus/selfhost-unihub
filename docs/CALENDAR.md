@@ -311,8 +311,9 @@ rows from it: one row per occurrence within 365 days back and 730 days ahead.
   objects in the window and downloads only new or changed ones (by ETag) with
   `calendar-multiget`, in batches of 50. ICS feeds use `If-None-Match`.
 - **What is removed.** A listing can be incomplete, so a stored object it
-  leaves out is requested again: one the server still has stays (and is
-  updated) while it has occurrences in the window, and loses its local rows
+  leaves out is requested again: one the server still has stays while it has
+  occurrences in the window (it is applied again only when its ETag changed;
+  the daily expansion refreshes it as any other), and loses its local rows
   once it moved out of the window, as before. An object is removed only when
   the server answers `404` or `410` for it; a calendar missing from the list
   only on `403`, `404` or `410`. Any other answer (a timeout, a server error,

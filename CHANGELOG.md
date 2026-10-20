@@ -41,6 +41,11 @@ configuration change.
   notifications while the first still ran them for up to 30 seconds. A
   process now waits 10 seconds after taking over, and the first one notices
   within 5. Background work starts 10 seconds after the server starts.
+- **Calendar sync no longer redoes work on every run.** An event that the
+  server's listing kept leaving out, although the server still had it, was
+  downloaded and written again on every sync; now only when it changed.
+  Calendars whose name and permissions did not change are no longer
+  rewritten either.
 - **Deleting or deactivating a user asks for your password,** like changing
   their role, password or two-factor authentication already did.
 - **Failed sign-ins no longer lock an admin out of admin actions.** Confirming
