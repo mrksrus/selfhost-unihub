@@ -151,10 +151,10 @@ let sequence = 0, buffer = '';
     if (message.error) waiter.reject(new Error(JSON.stringify(message.error))); else waiter.resolve(message.result);
   }
 });
-function command(method: string, params: Record<string, unknown> = {}, sessionId?: string): Promise<Record<string, unknown>> {
+function command(method: string, params: Record<string, unknown> = {}, sessionId?: string, timeoutMs = 30000): Promise<Record<string, unknown>> {
   const id = ++sequence;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`Timed out: ${method}\n${browserLog}`)); }, 30000);
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`Timed out: ${method}\n${browserLog}`)); }, timeoutMs);
     pending.set(id, { resolve, reject, timer });
     (browser.stdio[3] as Writable).write(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }) + '\0');
   });
@@ -174,8 +174,27 @@ async function waitFor<T>(session: string, expression: string, description: stri
   }
   throw new Error(`${description} (last: ${JSON.stringify(last)?.slice(0, 300)})`);
 }
+// Headless Chrome sometimes never answers Target.createTarget (CI run
+// 39285675264). Ask again, and use a blank page an unanswered request may
+// still have opened.
+async function createBlankTab() {
+  const known = new Set<string>();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { targetId } = await command('Target.createTarget', { url: 'about:blank' }, undefined, 15000) as { targetId: string };
+      return targetId;
+    } catch (error) {
+      if (attempt === 3) throw error;
+      console.log(`Opening a tab timed out (attempt ${attempt}); trying again.`);
+      const { targetInfos } = await command('Target.getTargets') as { targetInfos: { targetId: string; type: string; url: string; attached: boolean }[] };
+      const blank = targetInfos.find(item => item.type === 'page' && item.url === 'about:blank' && !item.attached && !known.has(item.targetId));
+      if (blank) return blank.targetId;
+      for (const item of targetInfos) known.add(item.targetId);
+    }
+  }
+}
 async function openTab(url: string) {
-  const { targetId } = await command('Target.createTarget', { url: 'about:blank' }) as { targetId: string };
+  const targetId = await createBlankTab();
   const { sessionId } = await command('Target.attachToTarget', { targetId, flatten: true }) as { sessionId: string };
   await command('Page.enable', {}, sessionId);
   await command('Page.navigate', { url }, sessionId);
@@ -273,7 +292,7 @@ try {
       for (const release of stalled) release();
       stalled.clear();
       const { targetInfos } = await command('Target.getTargets') as { targetInfos: { targetId: string; type: string; url: string }[] };
-      await command('Target.createTarget', { url: 'about:blank' });
+      await createBlankTab();
       for (const target of targetInfos.filter(item => item.type === 'page' && item.url.startsWith(origin))) await command('Target.closeTarget', { targetId: target.targetId });
       await sleep(2000);
       const reopened = await openTab(`${origin}/contacts`);
