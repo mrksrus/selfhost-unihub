@@ -9,6 +9,13 @@ import { log } from '../log';
 // serves requests only and takes over when the lock becomes free. Jobs it
 // accepts stay queued in the database until the owner's scheduler claims them.
 //
+// The lock can change hands without the owner noticing at once: when its
+// session ends (a database restart, a dropped connection) another process
+// gets the lock while the old one still runs work until its next check. So
+// the owner checks every few seconds, a check that does not answer in time
+// counts as lost, and a process that gets the lock waits two check intervals
+// (the handover) before it starts, by which time the old owner has stopped.
+//
 // Before startWorkerOwnership runs (tests, scripts) every caller counts as the
 // owner, as the single-process design always assumed.
 const LOCK_NAME = 'unihub:background-work';
@@ -23,10 +30,12 @@ interface OwnershipOptions {
   onGained: () => unknown;
   onLost: () => unknown;
   everyMs?: number;
-  timers?: Pick<typeof globalThis, 'setInterval' | 'clearInterval'>;
+  /** How long a new owner waits before it starts; two checks by default. */
+  handoverMs?: number;
+  timers?: Pick<typeof globalThis, 'setInterval' | 'clearInterval'> & Partial<Pick<typeof globalThis, 'setTimeout'>>;
 }
 
-async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 30_000, timers = globalThis }: OwnershipOptions) {
+async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, handoverMs = 2 * everyMs, timers = globalThis }: OwnershipOptions) {
   owner = false;
   let held: PoolConnection | null = null;
   let checking = false, stopped = false, warned = false;
@@ -44,7 +53,7 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 30_000, 
   // Still ours: the session holding the lock is this connection's.
   const stillHeld = async () => {
     try {
-      const [[row]] = await held!.query<RowDataPacket[]>('SELECT IS_USED_LOCK(?) = CONNECTION_ID() AS mine', [LOCK_NAME]);
+      const [[row]] = await held!.query<RowDataPacket[]>({ sql: 'SELECT IS_USED_LOCK(?) = CONNECTION_ID() AS mine', timeout: Math.max(1000, everyMs - 1000) }, [LOCK_NAME]);
       return Number(row?.mine) === 1;
     } catch { return false; }
   };
@@ -68,6 +77,10 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 30_000, 
       if (next) {
         held = next;
         if (!owner) {
+          // A previous owner whose session ended may still be working; it
+          // notices within one check and stops.
+          await new Promise(resolve => (timers.setTimeout ?? setTimeout)(resolve, handoverMs));
+          if (stopped || !await stillHeld()) { drop(held); held = null; return; }
           owner = true; warned = false;
           log.info('OWNER', 'This process runs the background work');
           await onGained();

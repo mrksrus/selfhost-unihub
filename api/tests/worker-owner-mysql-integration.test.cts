@@ -24,10 +24,11 @@ test('one API process runs the background work; another takes over only when the
   const events: string[] = [];
   const ticks: (() => void)[] = [];
   const timers = { setInterval: ((fn: () => void) => { ticks.push(fn); return { unref() {} }; }) as unknown as typeof setInterval, clearInterval: (() => {}) as typeof clearInterval };
-  const tick = async (index: number) => { ticks[index](); await new Promise(resolve => setTimeout(resolve, 200)); };
+  const tick = async (index: number, settle = 200) => { ticks[index](); await new Promise(resolve => setTimeout(resolve, settle)); };
+  const handoverMs = 100;
 
-  const ownerA = await a.startWorkerOwnership({ pool: first, timers, onGained: () => events.push('a gained'), onLost: () => events.push('a lost') });
-  const ownerB = await b.startWorkerOwnership({ pool: second, timers, onGained: () => events.push('b gained'), onLost: () => events.push('b lost') });
+  const ownerA = await a.startWorkerOwnership({ pool: first, timers, handoverMs, onGained: () => events.push('a gained'), onLost: () => events.push('a lost') });
+  const ownerB = await b.startWorkerOwnership({ pool: second, timers, handoverMs, onGained: () => events.push('b gained'), onLost: () => events.push('b lost') });
   assert.deepEqual([a.isWorkerOwner(), b.isWorkerOwner()], [true, false]);
   await tick(0); await tick(1);
   assert.deepEqual(events, ['a gained'], 'checks change nothing while the owner holds the lock');
@@ -39,3 +40,40 @@ test('one API process runs the background work; another takes over only when the
   assert.deepEqual(events, ['a gained', 'b gained']);
   await ownerB.stop();
 });
+
+test('when the owner\'s session ends, the next owner starts only after the old one has stopped (B-06)', {
+  skip: !process.env.MYSQL_TEST_HOST, timeout: 60000,
+}, async t => {
+  const pool = () => mysql.createPool({ host: process.env.MYSQL_TEST_HOST, port: Number(process.env.MYSQL_TEST_PORT || 3306),
+    user: process.env.MYSQL_TEST_USER, password: process.env.MYSQL_TEST_PASSWORD, database: process.env.MYSQL_TEST_DATABASE, connectionLimit: 3 });
+  const first = pool(), second = pool(), admin = pool();
+  t.after(async () => { await first.end(); await second.end(); await admin.end(); });
+  const { captureLog } = require('../dist/src/log') as typeof import('../src/log');
+  t.after(captureLog(() => {}));
+  const load = () => {
+    const path = require.resolve('../dist/src/services/worker-owner');
+    delete require.cache[path];
+    return require(path) as typeof import('../src/services/worker-owner');
+  };
+  const a = load(), b = load();
+  const events: string[] = [];
+  const ticks: (() => void)[] = [];
+  const timers = { setInterval: ((fn: () => void) => { ticks.push(fn); return { unref() {} }; }) as unknown as typeof setInterval, clearInterval: (() => {}) as typeof clearInterval };
+  // Checks run when the test says; the handover wait is a real 1.5 s.
+  const ownerA = await a.startWorkerOwnership({ pool: first, timers, handoverMs: 1500, onGained: () => events.push('a gained'), onLost: () => events.push('a lost') });
+  const ownerB = await b.startWorkerOwnership({ pool: second, timers, handoverMs: 1500, onGained: () => events.push('b gained'), onLost: () => events.push('b lost') });
+  t.after(async () => { await ownerA.stop(); await ownerB.stop(); });
+  assert.deepEqual(events, ['a gained']);
+
+  // A's lock session ends (as in a database restart for that connection); A does not know yet.
+  const [[{ holder }]] = await admin.query<FixtureRow[]>('SELECT IS_USED_LOCK(?) AS holder', [a.LOCK_NAME]);
+  await admin.query(`KILL ${Number(holder)}`);
+  const bChecks = new Promise(resolve => { ticks[1](); setTimeout(resolve, 300); });
+  await bChecks;
+  assert.equal(b.isWorkerOwner(), false, 'B holds the lock but waits for the handover');
+  ticks[0]();
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  assert.deepEqual(events, ['a gained', 'a lost', 'b gained'], 'A stopped before B started');
+  assert.deepEqual([a.isWorkerOwner(), b.isWorkerOwner()], [false, true]);
+});
+type FixtureRow = import('mysql2/promise').RowDataPacket & { holder: number | string };
