@@ -308,13 +308,13 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
   };
 
   const sendEmailMutation = useMutation({
-    mutationFn: (message: OutgoingMessage & ReplyThreading & { attachments?: AttachmentPayload }) => sendMessage(message, sendKey()),
-    onMutate: () => ({ composition: compositionRef.current }),
-    onSuccess: (_result, _message, context) => {
+    mutationFn: ({ key, composition: _composition, ...message }: OutgoingMessage & ReplyThreading & { attachments?: AttachmentPayload; key: string; composition: number }) =>
+      sendMessage(message, key),
+    onSuccess: (_result, { composition }) => {
       toast({ title: '✓ Email sent successfully' });
-      if (context?.composition === compositionRef.current) closeComposeFlow({ force: true });
+      if (composition === compositionRef.current) closeComposeFlow({ force: true });
     },
-    onError: (error: Error, _message, context) => toast(sendFailureToast(error, sendAgainFor(context?.composition))),
+    onError: (error: Error, { composition }) => toast(sendFailureToast(error, sendAgainFor(composition))),
   });
 
   const buildAttachmentPayload = useCallback(async (): Promise<AttachmentPayload> =>
@@ -475,13 +475,22 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       return;
     }
 
+    // Taken before anything is awaited: a message closed or replaced while
+    // its draft is saved or its attachments are read is not sent.
     const composition = compositionRef.current;
+    const key = sendKey();
+    const closedMeanwhile = () => {
+      if (composition === compositionRef.current) return false;
+      toast({ title: 'Not sent', description: 'The message was closed before it was sent.' });
+      return true;
+    };
     try {
       if (activeDraftId) {
         const savedDraft = await saveCurrentDraft({ includeAttachments: true, quiet: true });
+        if (closedMeanwhile()) return;
         const draftId = savedDraft?.id || activeDraftId;
         try {
-          await sendDraft(draftId, sendKey(), threading);
+          await sendDraft(draftId, key, threading);
         } catch (error) {
           toast(sendFailureToast(error, sendAgainFor(composition)));
           return;
@@ -493,8 +502,11 @@ export function useMailCompose({ activeMailAccountId, selectedAccount, isMobile 
       }
 
       const attachmentPayload = await buildAttachmentPayload();
+      if (closedMeanwhile()) return;
 
       sendEmailMutation.mutate({
+        key,
+        composition,
         account_id: fromAccountId,
         to: composeForm.to,
         cc: composeForm.cc,
