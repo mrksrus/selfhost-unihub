@@ -1,12 +1,59 @@
 # UniHub agent guide
 
-UniHub is a self-hosted PWA for mail, contacts, calendars, tasks and recordings, accessible through one UniHub login across devices. People trust it with private data. Favor correct ownership, recoverability, and clear behavior over clever abstractions. These are project defaults; the task and the maintainer's instructions take priority.
+UniHub is a self-hosted PWA for mail, contacts, calendars, tasks and recordings, accessible through one UniHub login across devices. It is heading to 1.0 as the self-hosted workplace and communication system of one organisation: the same apps plus administration, sharing, end-to-end encrypted chat and internal calls, on the web and Android. People trust it with private data. Favor correct ownership, recoverability, and clear behavior over clever abstractions. These are project defaults; the task and the maintainer's instructions take priority.
 
 ## Accepted decisions and verification
 
 Before changing behavior, read [PROJECT-PREFERENCES.md](PROJECT-PREFERENCES.md). Use the shared `project-preferences` skill when available to preserve accepted choices, record new durable user decisions and surface genuinely unresolved conflicts. Explicit new user direction may supersede an old choice; general design freedom does not. Use the canonical project file across local worktrees when a user registry is available. In a scoped/read-only task, propose any update outside that scope rather than editing it.
 
 For frontend work, read [UI acceptance](docs/UI_ACCEPTANCE.md) before applying frontend-design. Preserve accepted tokens, components and interactions during ordinary changes. For feature acceptance and releases, use [unihub-verify](.agents/skills/unihub-verify/SKILL.md) and the [release contract](docs/RELEASE_CONTRACT.md); use focused checks for ordinary changes and full required gates before publishing. A missing required runtime check is not a pass. Keep model routing in user-wide guidance rather than copying model IDs here.
+
+## Road to 1.0: versions, decisions and testing
+
+[docs/ROADMAP.md](docs/ROADMAP.md) is the public plan up to 1.0: what 1.0 contains, the versions with their themes, the foundations F1 to F15, the scope rules and the parking lot. Contributors and clones without the private files follow it.
+
+The maintainer's private plan holds the details. It lives in `.private/road-to-1.0/` of the canonical checkout: the `projectRoot` reported by the project-preferences `locate` helper. Git and Docker ignore `.private/`. Worktrees read and write those canonical files, never copies. Keep their contents (decisions, test results, devices, known-bug details) out of commits, issues, PRs and public documents. The only public reflection is docs/ROADMAP.md, a summary without dates, which changes when a version's theme, main contents or the parking lot change.
+
+| File | Holds |
+| --- | --- |
+| `ROAD-TO-1.0.md` | Scope rules, version status, each version's goal, scope, foundations and tests, known bugs, parking lot, change log |
+| `DECISIONS.md` | Open questions with a recommendation, when each is needed, and the maintainer's answers |
+| `ARCHITECTURE-AND-SECURITY.md` | Foundations F1 to F15 and the reasoning behind [Building toward 1.0](#building-toward-10) |
+| `TEST-TRACKER.md` | The maintainer's results on real phones, the live server, several people and real providers, and the session log |
+
+**Scope.** Work only on what the current version lists, or on a bug in what already exists. Bug fixes ship in patch releases, never together with features. Any other idea, including an agent's own, goes to the parking lot as a proposal. Only the maintainer swaps something into a version, and the swap is dated in the roadmap's change log.
+
+**A version runs in five steps.** One thread owns a version's steps and its updates to these files; another thread proposes its updates instead of editing them.
+
+1. **Start.** When the maintainer asks for the roadmap or the next version:
+   - read all four files
+   - take the next version from the status table
+   - summarise its goal, scope and foundations, the decisions due, and tracker rows still ❌ or ⚠️ from earlier versions
+   - resolve the branch (`feat/0.N.0-<theme>` from `main`) and its starting commit
+2. **Decide.** Ask the decisions due for this version in one round, recommendation first.
+   - Record the answers in `DECISIONS.md` and in the roadmap's version text and change log.
+   - If an answer changes a version's main contents or the parking lot, update docs/ROADMAP.md in the version's PR.
+   - Durable product or design choices also go into PROJECT-PREFERENCES.md.
+   - The version's list is then closed, and its status becomes "in development".
+3. **Build.** Implement against the version text and [Building toward 1.0](#building-toward-10), with focused checks, independent review and the release contract.
+   - Add tracker rows for whatever the maintainer must check (P phone, S live server, U several people, X real provider), marked *must* where they gate the release.
+   - An agent fills in a row only for a check it ran itself, and says so in the note.
+4. **Test and fix.** After the release, or on a candidate image the maintainer installs, the status becomes "testing".
+   - Every result the maintainer reports goes into the tracker in the same session.
+   - A ❌ becomes a "Problems found" entry and a fix on `fix/0.N.x-<topic>`, released as a patch.
+5. **Finish.** When every *must* row is ✅ or deferred in writing by the maintainer:
+   - the status becomes "done"
+   - the change log gets an entry
+   - the next version starts at step 1
+
+**Before a thread ends,** or when the maintainer says they are done:
+
+- record every result and problem reported in the chat in the tracker, with version and device
+- add a session-log line
+- update the version status and the change log
+- state the next step
+
+Test results never live only in a chat.
 
 ## How the app fits together
 
@@ -45,6 +92,54 @@ For feature details, follow the corresponding file in docs/ rather than treating
 - Backup/import/restore is experimental and has durable jobs and recovery-format contracts. A change to stored data may need a migration, backup/export mapping, restore mapping, and tests. Do not test against a live database or real uploads.
 - Optional modules affect navigation, API access, background work, search, and offline reads. Calendar and ToDo share one module, as do Recordings and Music; their pages are shown, hidden and ordered separately (page preferences), but enabling stays per module. A route affecting another module must check that module and its restore lock before side effects, regardless of its URL prefix. See docs/MODULES.md.
 - MariaDB 10.11 or later is required; Compose and CI use 11.8. Keep database sessions and DATETIME handling in UTC. Historical MYSQL_* configuration names, mysql2 and *-mysql-integration.test.cts filenames still apply to MariaDB.
+
+## Building toward 1.0
+
+Architecture and security rules for new work, so each version fits the 1.0 end state without rework. The F numbers refer to the foundations listed in [docs/ROADMAP.md](docs/ROADMAP.md#foundations); the private `ARCHITECTURE-AND-SECURITY.md` (see Road to 1.0) explains them in detail. Design a foundation for its later users, and build only the slice the current version needs, together with its first feature, never as a refactor-only change. Until a foundation lands, the existing contracts above apply.
+
+- **Declare data, don't infer it.** A new table states five things, and the recovery catalog and data inventory carry them:
+  - its owner: user, organisation or installation
+  - whether it can be shared (grants)
+  - its data class
+  - its module
+  - what restore does with it
+
+  The data classes (F2) are:
+  - `local`: only UniHub holds it
+  - `local-by-policy`: Download-mode mail
+  - `mirror`: a provider holds it; it is re-synced, not backed up per user
+  - `org`
+  - `config`
+  - `installation`: never restored
+  - `ciphertext`
+
+  UniHub's own additions to a mirrored item (subtasks, ToDo state, manual order, links) are a `local` overlay keyed by the provider identity.
+- **The server decides, the client shows.** Permissions, admin policies, privacy levels and module gates are enforced in the API and workers before side effects. The web page and the Android shell only reflect them: a locked control is greyed out with its reason. A rule that lives only in the client is a defect.
+- **One owner per concern,** each called from routes and workers, never re-implemented beside it:
+  - settings and policies (F1)
+  - access and grants (F4)
+  - devices (F5)
+  - notifications (F6)
+  - realtime (F7)
+  - the platform boundary in `src/lib/platform.ts` (F8)
+
+  Lint fences keep these boundaries, as they keep the 0.23 ones.
+- **Settings and policies (F1).** A new option is one typed registry entry with a scope (user, mail account, calendar, device) and, where an admin may set a minimum or lock it, a policy. Policies resolve as user → group (strictest wins) → installation → default. A setting that points at a record is typed as a reference and remapped on restore. Identity-bound values such as signatures are columns of their record, not settings.
+- **Destructive actions are policy-checked (F13).** A route that deletes or resets data names its policy key on its route spec. The boundary refuses it with `POLICY_FORBIDS` and a plain reason when the policy forbids it, and the policy test covers it. An admin path remains, with re-authentication and an activity-log entry. Changing a policy never deletes data by itself.
+- **Sharing goes through principals and grants (F3, F4).** Access is stored for principals (user, group, everyone), never as lists of user ids. Shareable resources carry `owner_kind` (user or organisation). Every shared read and write asks the access service. Revoking access reaches live streams, offline snapshots, Android copies and pending notifications. Test access with an owner, a grantee, a stranger and a revoked member through the real request handler and database.
+- **Devices are records (F5).** Behaviour that differs per device (push channel, app lock, capabilities, chat keys, ringing) is keyed by device id, never by session token or push endpoint.
+- **One notification pipeline (F6).** A new notification kind declares its source, its renderings per privacy level and its expiry, and uses the existing filters and per-device delivery. The server renders content at the resolved privacy level before encryption, except for end-to-end encrypted chat, which the device renders.
+- **Live updates are hints (F7).** Every state a client can see is a row it can fetch again; an event only says what to refetch. WebSockets (from chat) go through the same request boundary and are bound to the session, so revocation closes them.
+- **Files leave the page only through tickets (F9).** Android's open, save and share actions, external downloads and backup downloads use short-lived, single-use tickets bound to user and device. The session cookie is never handed to another app.
+- **Identifiers and contracts are stable.** Anything exported, synced or shared carries a UID or UUID that survives other installations; auto-increment ids never leave the server. New routes get shared request and response schemas (F11), and a new module is added through a module manifest. Expand, then contract: old apps and archives keep working within their windows.
+- **Keys and encryption (F10, F14).**
+  - Every secret can be given as a file (`*_FILE`) or an environment variable.
+  - Every ciphertext carries a key version.
+  - No key is stored in a backup it protects, and the instance backup has its own key.
+  - Encryption at rest is the volume's job, documented as an installation requirement.
+  - End-to-end encryption is reserved for chat and calls: MLS through OpenMLS and WebRTC media; key backups are passphrase-protected.
+- **Dependencies fit the licence.** New libraries must be compatible with PolyForm Noncommercial plus the paid commercial licence; AGPL or GPL code (for example libsignal) is not linked in.
+- **The deployment stays small.** One app container plus MariaDB, one API process (the worker owner runs background work), and the thin Android shell with native code only where the web cannot do the job. Calls add coturn and a media server as optional containers only.
 
 ## Visual style
 
@@ -90,6 +185,16 @@ Every review must end with an explicit verdict for the reviewed commit. When not
 - Check writeback identity, read-only providers and conflict handling before mutation. CalDAV writes must respect ETags and recurrence scope; missing restored/legacy remote links must not silently fall back to local-only edits or deletes. Account links need explicit provenance, not email equality alone. Inspect partial failure of cross-calendar moves and retries for duplicates or data loss.
 - Preserve mail mode, UID/UIDVALIDITY identity, account locking, cancellation and provider-deletion opt-in. Distinguish accepted intent from confirmed provider state. Accepted jobs/intents and pending UI state must survive retries or recover predictably; a lost connection does not prove a remote operation failed. A dispatched IMAP MOVE must reconcile its outcome without sending the MOVE again. Restore must not replay destructive provider operations.
 - For persisted-data changes, review migrations, backup-catalog field policies, data-inventory coverage, mail-engine/recovery-policy.ts, owner-safe ID remapping and credentials together. Stage files before writes; clean replaced files only after a known commit, and retain staged files while a commit outcome is uncertain. Restore must not resurrect sessions, push credentials or installation-local worker leases. Keep archive versions distinct from database migration IDs; preserve historical fixtures. Respect section locks and retired-module handling; test old archives as well as new round trips. Confirm older documentation against the current catalog and format readers when they disagree.
+
+### Roadmap fit
+
+- Check that a change is in the current version's scope or fixes a bug in existing behaviour; a feature outside the version is a finding, not a bonus.
+- Check new work against [Building toward 1.0](#building-toward-10). Report these as findings:
+  - a table without its declarations
+  - a destructive route without a policy key
+  - a sharing check outside the access service
+  - a missing three-person test
+  - a second implementation of an existing foundation
 
 ### Browser state and maintainability
 
