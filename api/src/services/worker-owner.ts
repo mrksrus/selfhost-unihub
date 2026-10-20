@@ -16,7 +16,9 @@ import { log } from '../log';
 // counts as lost, and a process that gets the lock waits three check
 // intervals (the handover) before it starts, by which time the old owner has
 // stopped. Starting the work does not hold up the checks: a slow start-up is
-// told it lost the role like running work (the caller fences both).
+// told it lost the role like running work (the caller fences both). A start-up
+// that fails ends the role at the next check, which frees the lock and tries
+// to take it again: the work starts afresh here or in another process.
 //
 // Before startWorkerOwnership runs (tests, scripts) every caller counts as the
 // owner, as the single-process design always assumed.
@@ -41,6 +43,8 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, h
   owner = false;
   let held: PoolConnection | null = null;
   let checking = false, stopped = false, warned = false;
+  // Counts the roles this process gained; failedRole is one whose start-up failed.
+  let role = 0, failedRole = 0;
 
   const drop = (connection: PoolConnection | null) => { try { connection?.destroy(); } catch { /* gone already */ } };
   // Every database step of a check ends within one interval, so a stalled
@@ -75,13 +79,16 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, h
     checking = true;
     try {
       if (owner) {
-        if (await stillHeld()) return;
+        const failed = failedRole === role;
+        if (!failed && await stillHeld()) return;
         // Not ours any more, or no answer: another process may hold the lock
         // already, so the work stops before anything else. Taking the lock
-        // again below then waits for the handover like any new owner.
+        // again below then waits for the handover like any new owner. Ending
+        // the lock's session frees it.
         drop(held); held = null;
         owner = false; warned = true;
-        log.error('OWNER', 'Lost the background work lock; background work stops until this process holds it again');
+        if (failed) log.warn('OWNER', 'Background work did not start; this process lets the lock go and tries again');
+        else log.error('OWNER', 'Lost the background work lock; background work stops until this process holds it again');
         await onLost();
       }
       let next: PoolConnection | null = null;
@@ -97,8 +104,12 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, h
         await new Promise(resolve => (timers.setTimeout ?? setTimeout)(resolve, handoverMs));
         if (stopped || !await stillHeld()) { drop(held); held = null; return; }
         owner = true; warned = false;
+        const mine = ++role;
         log.info('OWNER', 'This process runs the background work');
-        Promise.resolve().then(onGained).catch(error => log.error('OWNER', 'Starting the background work failed', error));
+        Promise.resolve().then(onGained).catch(error => {
+          log.error('OWNER', 'Starting the background work failed', error);
+          failedRole = mine;
+        });
       } else if (!warned) {
         warned = true;
         log.warn('OWNER', 'Another UniHub API process runs the background work on this database; this one serves requests only (docs/ARCHITECTURE.md, Operational Notes)');

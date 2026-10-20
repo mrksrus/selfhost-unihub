@@ -45,7 +45,8 @@ and no configuration change (see [Upgrading](docs/UPGRADING.md#0231-fixes)).
   calendar sync already running could still write. A process now waits 15
   seconds after taking over; the first one notices within 10, does no more
   background work and stops its running calendar syncs. Background work
-  starts 15 seconds after the server starts.
+  starts 15 seconds after the server starts; if starting it fails, the
+  process tries again instead of running only part of it.
 - **Calendar sync no longer redoes work on every run.** An event that the
   server's listing kept leaving out, although the server still had it, was
   downloaded and written again on every sync; now only when it changed.
