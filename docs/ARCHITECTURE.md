@@ -583,10 +583,13 @@ Important boundaries in the current code:
   requests only; mail work it accepts stays queued for the owner. Every process
   checks the lock every 5 s, and each database step of a check ends within
   4 s. An owner that finds the lock no longer its own, or gets no answer,
-  stops its background work at once. A process that gets the lock waits 10 s
-  (two checks) and checks again before it starts, so the two never run
-  background work at the same time; a fresh start, and an owner taking its
-  lock back after a database restart, also begin after those 10 s. Backup jobs, rate limits and
+  stops its background work at once: its timers do nothing more (even while
+  its start-up is still running) and running calendar syncs are aborted
+  before their next write. A process that gets the lock waits 15 s (three
+  checks) and checks again before it starts, so the two never run background
+  work at the same time; a fresh start, and an owner taking its lock back
+  after a database restart, also begin after those 15 s. Durable mail jobs
+  are claimed only by the owner (`isWorkerOwner`). Backup jobs, rate limits and
   live events remain per process.
 - Mail and backup workers use in-process execution locks and are not designed
   for multiple app containers. Backup/restore job state itself is durable.

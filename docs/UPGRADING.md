@@ -11,7 +11,7 @@ No database upgrade and no configuration change. Going back to 0.23.0 is
 possible; a message whose sending 0.23.1 recorded as "may have been sent" is
 then reported as still being sent, never as sent. Worth knowing:
 
-- **Background work starts 10 seconds after the server starts** (mail sync,
+- **Background work starts 15 seconds after the server starts** (mail sync,
   notifications, calendar sync), so a process that takes over from another
   never runs it at the same time as the old one.
 - **A send cut off after the message was handed over** is reported as "may

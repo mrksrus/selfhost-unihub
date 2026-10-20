@@ -479,9 +479,9 @@ const icsTooLarge = () => davError('This calendar subscription is larger than Un
 
 // Read an iCalendar subscription. No credentials are involved; the address
 // itself is the secret. The ETag (or Last-Modified) avoids re-downloading.
-async function fetchIcsFeed({ url, etag }: { url: string; etag?: string | null }): Promise<{ notModified: true; etag?: string | null } | { notModified: false; text: string; etag: string | null }> {
+async function fetchIcsFeed({ url, etag, signal }: { url: string; etag?: string | null; signal?: AbortSignal }): Promise<{ notModified: true; etag?: string | null } | { notModified: false; text: string; etag: string | null }> {
   const result = await davRequest(normalizeIcsFeedUrl(url), {
-    method: 'GET', anonymous: true, accept: 'text/calendar, */*;q=0.5', maxBytes: MAX_ICS_FEED_BYTES,
+    method: 'GET', anonymous: true, accept: 'text/calendar, */*;q=0.5', maxBytes: MAX_ICS_FEED_BYTES, signal,
     headers: etag ? { 'If-None-Match': etag } : {}, acceptStatuses: [304],
   }).catch((error: NodeJS.ErrnoException) => { throw error.code === 'DAV_RESPONSE_TOO_LARGE' ? icsTooLarge() : error; });
   if (result.status === 304) return { notModified: true, etag };

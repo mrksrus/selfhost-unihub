@@ -13,8 +13,10 @@ import { log } from '../log';
 // session ends (a database restart, a dropped connection) another process
 // gets the lock while the old one still runs work until its next check. So
 // the owner checks every few seconds, a check that does not answer in time
-// counts as lost, and a process that gets the lock waits two check intervals
-// (the handover) before it starts, by which time the old owner has stopped.
+// counts as lost, and a process that gets the lock waits three check
+// intervals (the handover) before it starts, by which time the old owner has
+// stopped. Starting the work does not hold up the checks: a slow start-up is
+// told it lost the role like running work (the caller fences both).
 //
 // Before startWorkerOwnership runs (tests, scripts) every caller counts as the
 // owner, as the single-process design always assumed.
@@ -30,12 +32,12 @@ interface OwnershipOptions {
   onGained: () => unknown;
   onLost: () => unknown;
   everyMs?: number;
-  /** How long a new owner waits before it starts; two checks by default. */
+  /** How long a new owner waits before it starts; three checks by default, more than an old owner needs to notice (one check plus its bounded query). */
   handoverMs?: number;
   timers?: Pick<typeof globalThis, 'setInterval' | 'clearInterval'> & Partial<Pick<typeof globalThis, 'setTimeout'>>;
 }
 
-async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, handoverMs = 2 * everyMs, timers = globalThis }: OwnershipOptions) {
+async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, handoverMs = 3 * everyMs, timers = globalThis }: OwnershipOptions) {
   owner = false;
   let held: PoolConnection | null = null;
   let checking = false, stopped = false, warned = false;
@@ -96,7 +98,7 @@ async function startWorkerOwnership({ pool, onGained, onLost, everyMs = 5_000, h
         if (stopped || !await stillHeld()) { drop(held); held = null; return; }
         owner = true; warned = false;
         log.info('OWNER', 'This process runs the background work');
-        await onGained();
+        Promise.resolve().then(onGained).catch(error => log.error('OWNER', 'Starting the background work failed', error));
       } else if (!warned) {
         warned = true;
         log.warn('OWNER', 'Another UniHub API process runs the background work on this database; this one serves requests only (docs/ARCHITECTURE.md, Operational Notes)');

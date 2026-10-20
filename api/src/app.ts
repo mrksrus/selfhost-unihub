@@ -62,6 +62,7 @@ async function start() {
   // nothing to stop. Stopping them (and the IDLE sessions they own) comes
   // before the Android streams; then services/shutdown.ts drains the rest.
   let work: BackgroundWorkHandle | null = null;
+  let generation = 0;
   let ownership: Awaited<ReturnType<typeof startWorkerOwnership>> | null = null;
   let stopping = false;
   const serverClosed = new Promise(resolve => server.once('close', resolve));
@@ -76,8 +77,15 @@ async function start() {
   // (services/worker-owner.ts); another one serves requests and waits.
   ownership = await startWorkerOwnership({
     pool: db,
-    onGained: async () => { if (!stopping) work = await startBackgroundWork(); },
-    onLost: () => { work?.stop(); work = null; },
+    // A start that finishes after the role was lost (or a newer start began)
+    // stops what it started; its timers already skip work meanwhile.
+    onGained: async () => {
+      const mine = ++generation;
+      if (stopping) return;
+      const started = await startBackgroundWork();
+      if (mine === generation && !stopping) work = started; else started.stop();
+    },
+    onLost: () => { generation++; work?.stop(); work = null; },
   });
 }
 

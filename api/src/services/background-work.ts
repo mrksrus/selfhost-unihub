@@ -13,6 +13,7 @@ import { isSectionRestoreActive } from './restore-locks';
 import { idleSupervisor } from './mail-idle';
 import { processNotificationJobs } from './notifications';
 import { pruneAuditLog } from './audit';
+import { isWorkerOwner } from './worker-owner';
 import { log } from '../log';
 
 // The periodic work of this API process: the nine timers listed in
@@ -41,7 +42,9 @@ interface BackgroundWorkDeps {
   isSectionRestoreActive: typeof isSectionRestoreActive;
   idleSupervisor: Pick<typeof idleSupervisor, 'start' | 'stop' | 'options'>;
   runCalendarSyncPass: () => Promise<unknown>;
+  stopCalendarWork: () => void;
   pruneAuditLog: () => Promise<number>;
+  isWorkerOwner: () => boolean;
 }
 interface BackgroundWorkHandle { stop(): void }
 
@@ -59,6 +62,8 @@ function defaultDeps(): BackgroundWorkDeps {
     isSectionRestoreActive,
     idleSupervisor,
     pruneAuditLog: () => pruneAuditLog(),
+    isWorkerOwner,
+    stopCalendarWork: () => (require('./calendar-sync') as typeof import('./calendar-sync')).stopAllCalendarWork(),
     runCalendarSyncPass: (...args) => (require('./calendar-sync') as typeof import('./calendar-sync')).runCalendarSyncPass(...args),
   };
 }
@@ -69,8 +74,11 @@ async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}):
   const intervals: { stop(): void }[] = [];
   const delayed: NodeJS.Timeout[] = [];
   let stopped = false;
+  // A process that lost the background-work lock does nothing more, even
+  // while its start-up (or stop) has not finished.
+  const active = () => !stopped && deps.isWorkerOwner();
   const every = (label: string, intervalMs: number, task: () => unknown) => {
-    const handle = everyInterval(label, intervalMs, task, timers);
+    const handle = everyInterval(label, intervalMs, () => active() ? task() : undefined, timers);
     intervals.push(handle);
     return handle;
   };
@@ -111,8 +119,8 @@ async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}):
   };
   // Let the API begin serving before starting the first bounded recovery pass.
   // IDLE sessions start after the first pass has started the durable scheduler.
-  timers.setImmediate(() => schedulePeriodicMail().catch(error => log.error('SYNC', 'Startup pass failed', error))
-    .finally(() => { if (!stopped) deps.idleSupervisor.start(); }));
+  timers.setImmediate(() => { if (active()) schedulePeriodicMail().catch(error => log.error('SYNC', 'Startup pass failed', error))
+    .finally(() => { if (active()) deps.idleSupervisor.start(); }); });
   every('SYNC', MAIL_SYNC_INTERVAL_MS, schedulePeriodicMail);
   // Re-enqueues due provider changes (with per-operation backoff) and nudges the
   // durable mail scheduler, which is the only worker that runs them.
@@ -176,6 +184,8 @@ async function startBackgroundWork(overrides: Partial<BackgroundWorkDeps> = {}):
       for (const timer of delayed) timers.clearTimeout(timer);
       for (const handle of intervals) handle.stop();
       deps.idleSupervisor.stop();
+      // Running calendar syncs write nothing more; the owner syncs them again.
+      deps.stopCalendarWork();
     },
   };
 }

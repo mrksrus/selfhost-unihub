@@ -37,6 +37,8 @@ function deps(timers: ReturnType<typeof fakeTimers>) {
       idleSupervisor: { start: () => { idle.started++; }, stop: () => { idle.stopped++; }, options: { maxSessions: 0 } },
       runCalendarSyncPass: async () => {},
       pruneAuditLog: async () => 0,
+      isWorkerOwner: () => true,
+      stopCalendarWork: () => { calls.push('stop calendar work'); },
     } as FixtureValue,
   };
 }
@@ -66,4 +68,22 @@ test('background work starts the nine timers and stop clears every one of them',
   assert.equal(idle.started, 0);
   work.stop();
   assert.equal(idle.stopped, 1);
+  assert.equal(calls.filter(call => call === 'stop calendar work').length, 1, 'running calendar syncs are stopped once');
+});
+
+test('after this process lost the background-work lock its timers do nothing, even before stop (B-06)', async () => {
+  const timers = fakeTimers();
+  const { overrides, calls, idle } = deps(timers);
+  let owner = true;
+  const work = await quietly(() => startBackgroundWork({ ...overrides, isWorkerOwner: () => owner }));
+  owner = false;
+  calls.length = 0;
+  await quietly(async () => {
+    for (const { fn } of timers.intervals.values()) fn();
+    for (const run of timers.immediates) run();
+    await new Promise(resolve => setTimeout(resolve, 10));
+  });
+  assert.deepEqual(calls, [], 'no notification, mail, calendar or cleanup work ran');
+  assert.equal(idle.started, 0);
+  work.stop();
 });
