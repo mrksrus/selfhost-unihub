@@ -214,4 +214,27 @@ test('2FA setup signs out other devices, an unreadable secret keeps recovery cod
     assert.equal(changed.role, 'admin');
     assert.ok(await verifyPassword('synthetic-new-person-password', changed.password_hash));
     assert.deepEqual(await sessions(person), [], 'the new password signs the person out everywhere');
+
+    // Deactivating or deleting someone needs it too (B-05); activating does not.
+    const leaver = crypto.randomUUID();
+    await pool.execute<ResultSetHeader>("INSERT INTO users (id,email,password_hash,role,is_active) VALUES (?,'leaver@example.test','x','user',TRUE)", [leaver]);
+    const setActive = async (body: FixtureValue) => (await adminRoutes['PUT /api/admin/users/:id/activate'].handler(
+      request('admin-session', `/api/admin/users/${leaver}/activate`, { id: leaver }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
+    const remove = async (body: FixtureValue) => (await adminRoutes['DELETE /api/admin/users/:id'].handler(
+      request('admin-session', `/api/admin/users/${leaver}`, { id: leaver }) as FixtureValue, steward, body, response() as FixtureValue)) as FixtureValue;
+    const leaverRow = async () => (await pool.execute<RowDataPacket[]>('SELECT is_active FROM users WHERE id = ?', [leaver]))[0][0];
+    assert.deepEqual([(await setActive({ is_active: false })).code, (await remove({})).code], ['ADMIN_PASSWORD_REQUIRED', 'ADMIN_PASSWORD_REQUIRED']);
+    assert.equal((await remove({ current_password: 'wrong' })).status, 403);
+    assert.equal(!!(await leaverRow())?.is_active, true, 'still there and active');
+    assert.equal((await setActive({ is_active: false, current_password: 'synthetic-steward-password' })).message, 'User deactivated');
+    assert.equal((await setActive({ is_active: true })).message, 'User activated');
+
+    // Confirmations have their own budget (B-04), spent only by wrong
+    // passwords: failed sign-ins do not lock the admin out of admin actions.
+    const { consumeAuthAttempt } = require('../dist/src/auth') as typeof import('../src/auth');
+    while (consumeAuthAttempt('password', steward) === null);
+    // Three wrong confirmations so far, and three right ones that cost nothing.
+    for (let attempt = 4; attempt <= 10; attempt++) assert.equal((await remove({ current_password: 'wrong' })).status, 403, `wrong confirmation ${attempt}`);
+    assert.equal((await remove({ current_password: 'synthetic-steward-password' })).status, 429, 'ten wrong confirmations pause confirmations');
+    assert.ok(await leaverRow(), 'and nothing was deleted');
   });

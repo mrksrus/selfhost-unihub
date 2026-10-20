@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -136,3 +136,46 @@ describe('admin changes to another account', () => {
     expect(screen.getByText('New password for person@example.test')).toBeInTheDocument();
   });
 });
+
+describe('deleting and deactivating someone', () => {
+  async function choose(email: string, item: string) {
+    fireEvent.pointerDown(await screen.findByRole('button', { name: `Actions for ${email}` }), { button: 0, ctrlKey: false });
+    fireEvent.click(await screen.findByRole('menuitem', { name: item }));
+  }
+
+  it('deletes only with the admin password, and keeps the dialog when it is wrong', async () => {
+    vi.mocked(api.delete).mockResolvedValueOnce({ error: 'Current password is incorrect', status: 403 }).mockResolvedValueOnce({ data: { message: 'User deleted' } });
+    mount();
+    await choose('plain@example.test', 'Delete user');
+    const submit = await screen.findByRole('button', { name: 'Delete user' });
+    expect(submit).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'wrong' } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ description: 'Current password is incorrect' })));
+    expect(screen.getByText('Delete plain@example.test?')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete user' }));
+    await waitFor(() => expect(api.delete).toHaveBeenLastCalledWith('/admin/users/user-3', { current_password: 'synthetic-admin-password' }));
+    await waitFor(() => expect(screen.queryByText('Delete plain@example.test?')).not.toBeInTheDocument());
+  });
+
+  it('deactivates with the admin password; activating again needs none', async () => {
+    vi.mocked(api.put).mockResolvedValue({ data: { message: 'ok' } });
+    mount();
+    await choose('plain@example.test', 'Deactivate');
+    fireEvent.change(await screen.findByLabelText('Your password'), { target: { value: 'synthetic-admin-password' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Deactivate' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/users/user-3/activate', { is_active: false, current_password: 'synthetic-admin-password' }));
+    await waitFor(() => expect(screen.queryByText('Deactivate plain@example.test?')).not.toBeInTheDocument());
+
+    vi.mocked(api.get).mockResolvedValue({ data: { users: users.map(u => (u.id === 'user-3' ? { ...u, is_active: false } : u)) } });
+    cleanupAndMount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Activate' }));
+    await waitFor(() => expect(api.put).toHaveBeenCalledWith('/admin/users/user-3/activate', { is_active: true }));
+  });
+});
+
+function cleanupAndMount() {
+  cleanup();
+  mount();
+}

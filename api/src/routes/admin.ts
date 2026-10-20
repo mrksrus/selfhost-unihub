@@ -15,9 +15,9 @@ import { clientError } from '../http/errors';
 import {
   hashPassword,
   verifyPassword,
-  consumeAuthAttempt,
   getAuthTokenFromRequest,
 } from '../auth';
+import { recordFailedReauth, reauthRetryAfter } from '../security/login-limits';
 import { disableTwoFactor } from '../services/two-factor';
 import { getSignupMode, isSignupMode, setSignupMode } from '../services/settings';
 import { defineRoutes } from '../http/route';
@@ -38,12 +38,12 @@ async function getActiveAdminCount() {
   return Number(rows[0]?.count || 0);
 }
 
-// Changing another person's password, role or 2FA needs the admin's own
-// password again, so a stolen or unattended admin session cannot take over an
-// account. Not 401: the client treats a 401 outside /api/auth/ as an expired
-// session and signs out.
+// Changing another person's password, role or 2FA, deactivating or deleting
+// them needs the admin's own password again, so a stolen or unattended admin
+// session cannot take over or remove an account. Not 401: the client treats a
+// 401 outside /api/auth/ as an expired session and signs out.
 async function confirmAdminPassword(userId: string, body: Input, res?: import('node:http').ServerResponse | null) {
-  const retryAfter = consumeAuthAttempt('password', userId);
+  const retryAfter = reauthRetryAfter(userId);
   if (retryAfter) {
     res?.setHeader('Retry-After', String(retryAfter));
     return { error: `Too many attempts. Try again in ${retryAfter} seconds.`, status: 429 };
@@ -54,6 +54,7 @@ async function confirmAdminPassword(userId: string, body: Input, res?: import('n
   }
   const [admins] = await db.execute<RowDataPacket[]>('SELECT password_hash FROM users WHERE id = ?', [userId]);
   if (!admins.length || !(await verifyPassword(currentPassword, admins[0].password_hash))) {
+    recordFailedReauth(userId);
     return { error: 'Current password is incorrect', code: 'ADMIN_PASSWORD_INCORRECT', status: 403 };
   }
   return null;
@@ -373,7 +374,7 @@ export = defineRoutes({
     }
   } },
 
-  'DELETE /api/admin/users/:id': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, handler: async (req: Request, userId: string) => {
+  'DELETE /api/admin/users/:id': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const id = req.params.id;
 
@@ -382,6 +383,8 @@ export = defineRoutes({
     }
 
     try {
+      const refused = await confirmAdminPassword(userId, body, res);
+      if (refused) return refused;
       const targetUser = await getUserRoleStatus(id);
       if (!targetUser) return { error: 'User not found', status: 404 };
       if (targetUser.role === 'admin' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {
@@ -420,12 +423,17 @@ export = defineRoutes({
     }
   } },
 
-  'PUT /api/admin/users/:id/activate': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, handler: async (req: Request, userId: string, body: Input) => {
+  'PUT /api/admin/users/:id/activate': { auth: 'admin', permission: 'users.manage', module: null, restoreSection: null, body: { limit: 4096 }, handler: async (req: Request, userId: string, body: Input, res: import('node:http').ServerResponse) => {
 
     const id = req.params.id;
     const { is_active } = body;
 
     try {
+      // Activating gives an account back; taking it away is confirmed.
+      if (!is_active) {
+        const refused = await confirmAdminPassword(userId, body, res);
+        if (refused) return refused;
+      }
       const targetUser = await getUserRoleStatus(id);
       if (!targetUser) return { error: 'User not found', status: 404 };
       if (!is_active && targetUser.role === 'admin' && targetUser.is_active && (await getActiveAdminCount()) <= 1) {

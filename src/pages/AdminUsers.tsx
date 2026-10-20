@@ -6,17 +6,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import { buttonVariants } from '@/components/ui/button-variants';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
 import { ErrorState, LoadingState } from '@/components/ui/page-states';
@@ -36,6 +25,7 @@ const AdminUsers = () => {
   const [resetTwoFactorUser, setResetTwoFactorUser] = useState<UserRow | null>(null);
   const [roleChangeUser, setRoleChangeUser] = useState<UserRow | null>(null);
   const [deletingUser, setDeletingUser] = useState<UserRow | null>(null);
+  const [deactivatingUser, setDeactivatingUser] = useState<UserRow | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
   // The user the reset dialog shows now, read when a request completes.
   const openResetUserId = useRef<string | null>(null);
@@ -48,10 +38,11 @@ const AdminUsers = () => {
   });
   
   const deleteUser = useMutation({
-    mutationFn: deleteAdminUser,
-    onSuccess: () => {
+    mutationFn: ({ userId, currentPassword }: { userId: string; currentPassword: string }) => deleteAdminUser(userId, currentPassword),
+    onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
       toast({ title: 'User deleted' });
+      setDeletingUser(current => (current?.id === variables.userId ? null : current));
     },
     onError: (err: Error) => {
       toast({ title: 'Failed to delete user', description: err.message, variant: 'destructive' });
@@ -72,10 +63,11 @@ const AdminUsers = () => {
   });
   
   const toggleUserActive = useMutation({
-    mutationFn: ({ userId, is_active }: { userId: string; is_active: boolean }) => setUserActive(userId, is_active),
+    mutationFn: ({ userId, is_active, currentPassword }: { userId: string; is_active: boolean; currentPassword?: string }) => setUserActive(userId, is_active, currentPassword),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: adminUsersQueryKey });
       toast({ title: variables.is_active ? 'User activated' : 'User deactivated' });
+      if (!variables.is_active) setDeactivatingUser(current => (current?.id === variables.userId ? null : current));
     },
     onError: (err: Error) => {
       toast({ title: 'Failed to update user status', description: err.message, variant: 'destructive' });
@@ -158,7 +150,7 @@ const AdminUsers = () => {
                     <DropdownMenuItem onClick={() => { setResetTwoFactorUser(u); setAdminPassword(''); }}>Reset 2FA</DropdownMenuItem>
                   )}
                   {u.is_active && !self && (
-                    <DropdownMenuItem onClick={() => toggleUserActive.mutate({ userId: u.id, is_active: false })} disabled={toggleUserActive.isPending}>Deactivate</DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setDeactivatingUser(u)}>Deactivate</DropdownMenuItem>
                   )}
                   {!self && <>
                     <DropdownMenuSeparator />
@@ -187,20 +179,25 @@ const AdminUsers = () => {
         )}
       </PageBody>
 
-      <AlertDialog open={!!deletingUser} onOpenChange={(open) => { if (!open) setDeletingUser(null); }}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete {deletingUser?.email}?</AlertDialogTitle>
-            <AlertDialogDescription>Their account and all of their data are deleted permanently. This cannot be undone.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction className={buttonVariants({ variant: 'destructive' })} onClick={() => { if (deletingUser) deleteUser.mutate(deletingUser.id); }}>
-              Delete user
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <PasswordConfirmDialog
+        open={!!deletingUser}
+        onClose={() => setDeletingUser(null)}
+        title={`Delete ${deletingUser?.email}?`}
+        description="Their account and all of their data are deleted permanently. This cannot be undone."
+        actionLabel="Delete user"
+        destructive
+        pending={deleteUser.isPending}
+        onConfirm={currentPassword => { if (deletingUser) deleteUser.mutate({ userId: deletingUser.id, currentPassword }); }}
+      />
+      <PasswordConfirmDialog
+        open={!!deactivatingUser}
+        onClose={() => setDeactivatingUser(null)}
+        title={`Deactivate ${deactivatingUser?.email}?`}
+        description="They are signed out everywhere and cannot sign in until an admin activates the account again. Their data stays."
+        actionLabel="Deactivate"
+        pending={toggleUserActive.isPending}
+        onConfirm={currentPassword => { if (deactivatingUser) toggleUserActive.mutate({ userId: deactivatingUser.id, is_active: false, currentPassword }); }}
+      />
 
       {/* Password change dialog */}
       <Dialog open={!!passwordDialogUser} onOpenChange={(open) => {
@@ -331,5 +328,38 @@ const AdminUsers = () => {
     </PageShell>
   );
 };
+
+// Confirms an action on another account with the admin's own password; the
+// dialog stays open with the password kept when the server refuses it.
+function PasswordConfirmDialog({ open, onClose, title, description, actionLabel, destructive = false, pending, onConfirm }: {
+  open: boolean; onClose: () => void; title: string; description: string; actionLabel: string;
+  destructive?: boolean; pending: boolean; onConfirm: (currentPassword: string) => void;
+}) {
+  const [password, setPassword] = useState('');
+  useEffect(() => { if (!open) setPassword(''); }, [open]);
+  return (
+    <Dialog open={open} onOpenChange={next => { if (!next) onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <form className="space-y-4 pt-2" onSubmit={event => { event.preventDefault(); if (password) onConfirm(password); }}>
+          <div className="space-y-2">
+            <Label htmlFor="adminConfirmPassword">Your password</Label>
+            <Input id="adminConfirmPassword" type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" variant={destructive ? 'destructive' : 'default'} disabled={pending || !password}>
+              {pending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              {actionLabel}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export default AdminUsers;

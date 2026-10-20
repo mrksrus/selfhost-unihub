@@ -74,7 +74,9 @@ test('deleting a user removes their rows and files under every root, nothing of 
     const settingsRoutes = require('../dist/src/routes/settings') as RouteTable<typeof import('../src/routes/settings')>;
 
     const admin = crypto.randomUUID();
-    await connection.execute<ResultSetHeader>("INSERT INTO users (id, email, password_hash, role, is_active) VALUES (?, 'admin@example.test', 'synthetic-hash', 'admin', TRUE)", [admin]);
+    const { hashPassword } = require('../dist/src/auth') as typeof import('../src/auth');
+    await connection.execute<ResultSetHeader>("INSERT INTO users (id, email, password_hash, role, is_active) VALUES (?, 'admin@example.test', ?, 'admin', TRUE)",
+      [admin, await hashPassword('synthetic-lifecycle-admin-password')]);
 
     // Each person owns a mail account with two messages (raw copy and one
     // attachment each), a recording with its converted copy, a finished backup
@@ -123,7 +125,8 @@ test('deleting a user removes their rows and files under every root, nothing of 
     assert.deepEqual(await everythingOf(b), intact);
 
     const adminDelete = (actor: string, target: string) =>
-      adminRoutes['DELETE /api/admin/users/:id'].handler({ url: `/api/admin/users/${target}`, headers: {}, params: { id: target } } as FixtureValue, actor);
+      adminRoutes['DELETE /api/admin/users/:id'].handler({ url: `/api/admin/users/${target}`, headers: {}, params: { id: target } } as FixtureValue, actor,
+        { current_password: 'synthetic-lifecycle-admin-password' } as FixtureValue, response() as FixtureValue);
 
     // A restore writing for A: the admin's request is refused and nothing of A changes.
     const restore = crypto.randomUUID();
